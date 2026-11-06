@@ -27,12 +27,12 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   raiseRecordedPendingRequest,
   requireUsableRecord,
 } from '../runtime/pending-request-flow.js';
 import {
-  PendingRequestCommandError,
   type PendingRequestRecord,
   preflightPendingRequest,
   type RaisePendingRequestInput,

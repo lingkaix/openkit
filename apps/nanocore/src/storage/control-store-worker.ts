@@ -80,6 +80,7 @@ import {
 } from '../runtime/goal-owner.js';
 import { StoredGoalCompletionCandidateV1Schema } from '../runtime/goal-retained-v1.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type {
   ControlPendingCommandInput,
   PreparedControlPendingCommand,
@@ -87,7 +88,6 @@ import type {
 import {
   applyControlPendingCommand,
   assertControlPendingArchive,
-  PendingRequestCommandError,
   pendingRequestItemId,
   readPendingRequest,
 } from '../runtime/pending-requests.js';

@@ -3,6 +3,7 @@ import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-owner.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   applyControlPendingCommand,
   assertControlPendingArchive,
@@ -10,7 +11,6 @@ import {
   ControlPendingCommandInputSchema,
   type ControlPendingCommandResult,
   isCommandIntentApproval,
-  PendingRequestCommandError,
   type PreparedControlPendingCommand,
   pendingRequestItemId,
   readPendingRequest,

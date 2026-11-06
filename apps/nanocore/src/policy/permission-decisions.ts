@@ -20,9 +20,9 @@ import {
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   executionCallIdForRequest,
-  PendingRequestCommandError,
   type PendingRequestRecord,
   readPendingRequest,
 } from '../runtime/pending-requests.js';

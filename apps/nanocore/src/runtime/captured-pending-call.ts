@@ -26,11 +26,8 @@ import {
   readCurrentMcpToolSchemaSnapshot,
   readRetainedMcpToolSchemaSnapshot,
 } from './mcp-tool-schema-snapshots.js';
-import {
-  executionCallIdForRequest,
-  PendingRequestCommandError,
-  type PendingRequestRecord,
-} from './pending-requests.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
+import { executionCallIdForRequest, type PendingRequestRecord } from './pending-requests.js';
 import {
   assertCurrentMcpVaultAuthority,
   completeMcpVaultInjections,

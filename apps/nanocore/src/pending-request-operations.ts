@@ -18,6 +18,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import {
   answerRecordedUserInput,
   type PendingAdmissionDependencies,
@@ -27,7 +28,6 @@ import {
   withdrawRecordedPendingRequest,
 } from './runtime/pending-request-flow.js';
 import {
-  PendingRequestCommandError,
   type PendingRequestRecord,
   preflightPendingRequest,
   projectApprovalRequest,

@@ -12,7 +12,7 @@ import { OperationError } from './operation-error.js';
 import { updateTurnFeedback } from './runtime/feedback.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
-import { PendingRequestCommandError } from './runtime/pending-requests.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import { interruptProductTurn, readTurn, startTurn } from './turn-routes.js';
 /** Joins Turn commands, feedback and detail to their existing lifecycle, receipts and evidence owners. */
 export function createTurnOperationImplementations(

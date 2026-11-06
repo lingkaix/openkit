@@ -64,7 +64,7 @@ import {
 import { OperationError } from './operation-error.js';
 import { admitUserMemoryCaller, admitUserMemoryRetrieval } from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
-import { PendingRequestCommandError } from './runtime/pending-requests.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import { openUserDb } from './storage/db.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';

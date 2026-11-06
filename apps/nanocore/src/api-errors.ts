@@ -10,7 +10,7 @@ import {
   AgentEnvironmentSnapshotReadError,
 } from './runtime/aep-snapshot-ledger.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
-import { PendingRequestCommandError } from './runtime/pending-requests.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 
 /**
  * Creates a protocol-stamped API error response.

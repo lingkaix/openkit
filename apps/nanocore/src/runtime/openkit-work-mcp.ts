@@ -60,12 +60,9 @@ import {
   WorkSubmitArtifactArgsSchema,
   WorkViewSourceArgsSchema,
 } from './openkit-work-supply.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './pending-request-flow.js';
-import {
-  PendingRequestCommandError,
-  preflightPendingRequest,
-  type RaisePendingRequestInput,
-} from './pending-requests.js';
+import { preflightPendingRequest, type RaisePendingRequestInput } from './pending-requests.js';
 import { assertWorkerArtifactDigestProof } from './worker-artifact-credential-scan.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';

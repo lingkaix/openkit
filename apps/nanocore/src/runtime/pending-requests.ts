@@ -29,6 +29,8 @@ import {
   readCommandRequestRecordsFromSqlite,
 } from '../storage/command-request-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
+import type { ControlPendingCommandResultSchema } from './pending-request-codecs.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
 
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
@@ -140,29 +142,6 @@ export function pendingRequestSystemActor(responsibleUserId: string | null): {
   responsibleUserId: string | null;
 } {
   return { kind: 'system', id: 'nanocore-pending-request', responsibleUserId };
-}
-
-/** Closed failure raised by a pending-request command before any record write. */
-export class PendingRequestCommandError extends Error {
-  /** Stable API error code. */
-  public readonly code: string;
-
-  /** HTTP status for the command failure. */
-  public readonly status: number;
-
-  /**
-   * Creates one command failure.
-   *
-   * @param code Stable API code.
-   * @param message Product-safe message.
-   * @param status HTTP status.
-   */
-  public constructor(code: string, message: string, status: number) {
-    super(message);
-    this.name = 'PendingRequestCommandError';
-    this.code = code;
-    this.status = status;
-  }
 }
 
 /** Identifies captured command intent independently of who requested it. */
@@ -2816,14 +2795,6 @@ export const ControlPendingCommandInputSchema = z.discriminatedUnion('action', [
 ]);
 /** One bounded native Pending family command, not a generic work-resource operation. */
 export type ControlPendingCommandInput = z.infer<typeof ControlPendingCommandInputSchema>;
-/** Responses carry only affected identities and the existing CAS outcome; captured input/results stay in their owner. */
-export const ControlPendingCommandResultSchema = z
-  .object({
-    requestIds: z.array(z.string().min(1)),
-    applied: z.enum(['claimed', 'refused', 'ended', 'lost']).nullable(),
-    created: z.boolean().nullable(),
-  })
-  .strict();
 /** Small Pending acknowledgement after its enclosing native transaction commits. */
 export type ControlPendingCommandResult = z.infer<typeof ControlPendingCommandResultSchema>;
 

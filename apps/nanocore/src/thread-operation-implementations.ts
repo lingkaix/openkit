@@ -11,7 +11,7 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
-import { PendingRequestCommandError } from './runtime/pending-requests.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import { markThreadRead, readThreadReadState } from './thread-read-state.js';
 import { archiveThread, createThread, updateThread } from './thread-routes.js';
 /** Joins Thread creation, record/history reads and dashboard projection without a second lifecycle. */

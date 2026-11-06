@@ -39,6 +39,7 @@ import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   admitIfIdle,
   raiseRecordedPendingRequest,
@@ -46,7 +47,6 @@ import {
 } from '../runtime/pending-request-flow.js';
 import {
   listThreadPendingRequests,
-  PendingRequestCommandError,
   type PendingRequestRecord,
   preflightPendingRequest,
   readPendingRequest,

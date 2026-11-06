@@ -30,8 +30,8 @@ import {
   createOpenkitGenerativeMcpSupply,
   dispatchOpenkitGenerativeTool,
 } from '../runtime/openkit-generative-mcp.js';
+import * as pendingRequests from '../runtime/pending-request-error.js';
 import { recoverPendingRequestsAtBoot } from '../runtime/pending-request-flow.js';
-import * as pendingRequests from '../runtime/pending-requests.js';
 import { claimCommandIntentGrant, readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
 import {

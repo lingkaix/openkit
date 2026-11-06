@@ -8,9 +8,9 @@ import type { z } from 'zod';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import { requireUsableRecord } from '../runtime/pending-request-flow.js';
 import {
-  PendingRequestCommandError,
   preflightPendingRequest,
   projectApprovalRequest,
   readPendingRequest,

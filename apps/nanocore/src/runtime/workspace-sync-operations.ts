@@ -39,7 +39,7 @@ import {
   runIdempotentCommand,
 } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import { PendingRequestCommandError } from './pending-requests.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
 import { listWorkspaceApplyPlans } from './workspace-apply-plans.js';
 import {
   getWorkspaceApplyResult,

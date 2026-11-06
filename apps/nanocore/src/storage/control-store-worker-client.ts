@@ -134,10 +134,8 @@ import {
   GoalCommandError,
 } from '../runtime/goal-owner.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
-import {
-  type ControlPendingCommandResult,
-  PendingRequestCommandError,
-} from '../runtime/pending-requests.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
+import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
 import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,

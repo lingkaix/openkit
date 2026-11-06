@@ -16,6 +16,7 @@ import {
   openAssistantTimeline,
 } from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   admitIfIdle,
   raiseRecordedPendingRequest,
@@ -24,7 +25,6 @@ import {
 import {
   listThreadPendingRequests,
   PENDING_REQUEST_BOUND,
-  PendingRequestCommandError,
   type PendingRequestRecord,
   pendingRequestItemId,
   readPendingRequest,

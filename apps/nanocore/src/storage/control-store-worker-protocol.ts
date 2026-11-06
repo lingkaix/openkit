@@ -83,10 +83,8 @@ import {
   ControlGoalInputSchema,
 } from '../runtime/goal-owner.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
-import {
-  type ControlPendingCommandResult,
-  ControlPendingCommandResultSchema,
-} from '../runtime/pending-requests.js';
+import { ControlPendingCommandResultSchema } from '../runtime/pending-request-codecs.js';
+import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
 import {
   type ProjectWorkerBackendCleanupInput,
   ProjectWorkerBackendCleanupInputSchema,

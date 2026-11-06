@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { PendingRequestCommandError } from '../runtime/pending-requests.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   checkResourcePolicyOperationIntent,
   createResourcePolicyOperationImplementations,

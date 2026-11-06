@@ -25,6 +25,7 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
 import type { ControlPendingCommandInput } from './pending-requests.js';
 import {
   archiveSelects,
@@ -38,7 +39,6 @@ import {
   listThreadPendingRequests,
   type PendingExecutorKind,
   type PendingRequestActor,
-  PendingRequestCommandError,
   type PendingRequestRecord,
   renderPendingInvalidationItem as pendingInvalidationItem,
   renderPendingOutcomeItems as pendingOutcomeItems,
