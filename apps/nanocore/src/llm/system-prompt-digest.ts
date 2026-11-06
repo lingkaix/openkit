@@ -1,7 +1,7 @@
-import { canonicalJsonText, readRetainedV1, SystemPromptDigestSchema } from '@openkit/protocol';
+import { canonicalJsonText, SystemPromptDigestSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
+import type { persistLlmCapabilityCallSystemPromptDigestInDb } from '../capability/usage-ledger.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
 /** Gateway endpoint family that carries a pre-adapter system prompt. */
 export type LlmSystemPromptEndpoint = 'chat_completions' | 'responses';
@@ -134,40 +134,4 @@ export function persistLlmCapabilityCallSystemPromptDigest(
       systemPromptDigest: SystemPromptDigestSchema.parse(input.systemPromptDigest),
     })
     .then(() => {});
-}
-
-/**
- * Records the system-prompt digest on an already-opened gateway-entry family llm CapabilityCall row.
- *
- * @param input Owning database, durable call id, and digest.
- * @throws When the row is missing, is not a gateway-entry llm call, or the digest is not recorded.
- */
-export function persistLlmCapabilityCallSystemPromptDigestInDb(input: {
-  /** Workspace database that owns the opened CapabilityCall. */
-  readonly workspaceDb: WorkspaceDb | CoreDb;
-  /** Durable capability call id. */
-  readonly callId: string;
-  /** Pre-adapter system-prompt digest. */
-  readonly systemPromptDigest: string;
-}): void {
-  const systemPromptDigest = SystemPromptDigestSchema.parse(input.systemPromptDigest);
-  const retainedCall = input.workspaceDb.sqlite
-    .prepare(`SELECT schema_version FROM capability_calls
-      WHERE call_id = ? AND family = 'llm'
-        AND capability_id IN ('llm.chat_completions', 'llm.responses')`)
-    .get(input.callId) as { schema_version: number } | undefined;
-  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
-  const result = input.workspaceDb.sqlite
-    .prepare(
-      `UPDATE capability_calls
-       SET system_prompt_digest = ?
-       WHERE call_id = ?
-         AND family = 'llm'
-         AND capability_id IN ('llm.chat_completions', 'llm.responses')`
-    )
-    .run(systemPromptDigest, input.callId);
-
-  if (result.changes !== 1) {
-    throw new Error(`LLM capability call system-prompt digest was not recorded: ${input.callId}`);
-  }
 }

@@ -34,13 +34,13 @@ import {
   finishCapabilityCallInDb,
   hasCapabilityCallRequestId,
   normalizeCapabilityRequestId,
+  persistLlmCapabilityCallSystemPromptDigestInDb,
   recordUsageInDb,
   stampCapabilityCallSchemaSnapshotInDb,
   startCapabilityCallInDb,
   writeCapabilityCallCacheInDb,
   writeGatewayRouteLineageInDb,
 } from '../capability/usage-ledger.js';
-import { persistLlmCapabilityCallSystemPromptDigestInDb } from '../llm/system-prompt-digest.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   prepareCapturedCapabilityAdmission,

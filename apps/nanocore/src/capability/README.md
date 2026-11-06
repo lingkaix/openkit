@@ -37,3 +37,5 @@ Model measurements retain logical modelId, the actual dispatched providerModel a
 A captured MCP submission refusal joins its existing PermissionDecision, linked Audit and failed Call finish in one native transition without Usage. A later refusal has a distinct decision identity, so the original allow remains immutable. Portable ledger reads derive known no-contact from the explicit retained refusal context; an error code alone never proves contact certainty.
 
 Both Workspace LLM/MCP admission paths require an existing non-null authority actor before native dispatch or call insertion/replay. The shared recorder checks attribution presence only; producers retain current Policy admission. Unattributed Server diagnostics and existing other-family evidence stay separate, and historical actorless rows gain no inferred actor.
+
+`usage-ledger.ts` records the pre-adapter system-prompt digest on the existing eligible CapabilityCall row in the supplied native savepoint. Control Capability calls this native mutation through the existing ledger owner; prompt selection and digest computation remain in `../llm/system-prompt-digest.ts`.

@@ -147,3 +147,5 @@ Worker inference refuses a syntactically valid model outside its authenticated A
 A failed account create removes only its own exclusively created, still-identical empty directory when current account and Vault inventory prove no published authority. Existing, replaced, nonempty, published or credential-bearing residue remains refused for ordinary recovery. Exclusive creation uses the Storage byte owner; account deletion and unpublished cleanup share the existing account removal path.
 
 Server-owned Gateway calls, prompt attribution, usage and closeout await the existing Core physical owner. Core admission and its linked Audit commit together before upstream contact; prompt attribution follows as its original separate stage. Workspace owner validation and client projection remain unchanged.
+
+`system-prompt-digest.ts` retains pre-adapter prompt normalization, digest computation and asynchronous publication through the Control Store worker. The existing `../capability/usage-ledger.ts` owner applies the native digest write to the eligible retained Call row in the supplied savepoint.
