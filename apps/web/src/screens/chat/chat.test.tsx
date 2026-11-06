@@ -6440,6 +6440,10 @@ function workerSelectRequest(
   };
 }
 
+function sandboxButton() {
+  return screen.getByRole('button', { name: /Sandbox/, expanded: false });
+}
+
 function workerEnvironmentOptionName(sourceLabel: string, occupancy: string, createdAt: string) {
   return `${sourceLabel} · ${occupancy} · Created ${new Date(createdAt).toLocaleString(undefined, { timeZoneName: 'short' })}`;
 }
@@ -6450,16 +6454,16 @@ async function chooseRetainedEnvironment(
     'Competitive teardown',
     'Idle',
     WORKER_ENVIRONMENT.createdAt
-  ),
-  storageRef = WORKER_STORAGE_REF
+  )
 ) {
   await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
   const details = screen.getByText('Advanced settings').closest('details');
   expect(details).toBeInstanceOf(HTMLDetailsElement);
   expect((details as HTMLDetailsElement).open).toBe(false);
   await user.click(screen.getByText('Advanced settings'));
-  await waitFor(() => expect(screen.getByRole('option', { name: optionName })).toBeInTheDocument());
-  await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), storageRef);
+  await user.click(screen.getByRole('button', { name: /Sandbox/, expanded: false }));
+  await user.click(await screen.findByRole('option', { name: optionName }));
+  screen.getByRole('button', { name: /Sandbox/, expanded: false }).focus();
   await user.keyboard('{Escape}');
 }
 
@@ -6547,6 +6551,7 @@ describe('Worker environment Advanced choice', () => {
     await chooseNewTaskWorker(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
+    await user.click(sandboxButton());
     expect(
       await screen.findByRole('option', {
         name: workerEnvironmentOptionName(
@@ -6556,12 +6561,13 @@ describe('Worker environment Advanced choice', () => {
         ),
       })
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('option', {
-        name: workerEnvironmentOptionName('Goal closeout', 'Attached', attached.createdAt),
-      })
-    ).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), attachedRef);
+    const attachedName = workerEnvironmentOptionName(
+      'Goal closeout',
+      'Attached',
+      attached.createdAt
+    );
+    expect(screen.getByRole('option', { name: attachedName })).toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: attachedName }));
     expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
     await waitFor(() =>
       expect(selectWorkerEnvironment).toHaveBeenCalledWith({
@@ -6610,7 +6616,7 @@ describe('Worker environment Advanced choice', () => {
         ...workerSelectRequest('th_00000000-0000-70a0-9cde-4561f64881c6'),
       })
     );
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveDisplayValue(
+    expect(sandboxButton()).toHaveTextContent(
       workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
     );
     expect(screen.getByText('Idle')).toBeInTheDocument();
@@ -6686,18 +6692,14 @@ describe('Worker environment Advanced choice', () => {
     await chooseNewTaskWorker(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
-    await waitFor(() =>
-      expect(
-        screen.getByRole('option', {
-          name: workerEnvironmentOptionName(
-            'Competitive teardown',
-            'Idle',
-            WORKER_ENVIRONMENT.createdAt
-          ),
-        })
-      ).toBeInTheDocument()
+    await user.click(sandboxButton());
+    const retainedName = workerEnvironmentOptionName(
+      'Competitive teardown',
+      'Idle',
+      WORKER_ENVIRONMENT.createdAt
     );
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), WORKER_STORAGE_REF);
+    expect(await screen.findByRole('option', { name: retainedName })).toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: retainedName }));
     expect(
       await screen.findByText('Preview passed. Task permissions are checked again when you send.')
     ).toBeInTheDocument();
@@ -6898,7 +6900,9 @@ describe('Worker environment Advanced choice', () => {
     expect(input).toHaveValue('Stale reuse');
     expect(document.body).not.toHaveTextContent('revision_conflict');
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(WORKER_STORAGE_REF);
+    expect(sandboxButton()).toHaveTextContent(
+      workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
+    );
   });
 
   it('shows idle occupancy with the actual select denial on an existing Thread', async () => {
@@ -6981,26 +6985,25 @@ describe('Worker environment Advanced choice', () => {
     await chooseNewTaskWorker(user);
     await chooseRetainedEnvironment(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(WORKER_STORAGE_REF);
+    expect(sandboxButton()).toHaveTextContent(
+      workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
+    );
     await user.click(screen.getByText('Advanced settings'));
     await waitFor(() => expect(listWorkerEnvironments).toHaveBeenCalledTimes(2));
+    await user.click(sandboxButton());
     expect(
       screen.getByRole('option', {
         name: workerEnvironmentOptionName('Goal closeout', 'Idle', other.createdAt),
       })
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('option', {
-        name: workerEnvironmentOptionName(
-          'Competitive teardown',
-          'Idle',
-          WORKER_ENVIRONMENT.createdAt
-        ),
-      })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveValue(WORKER_STORAGE_REF);
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveDisplayValue(
-      workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
+    const retainedName = workerEnvironmentOptionName(
+      'Competitive teardown',
+      'Idle',
+      WORKER_ENVIRONMENT.createdAt
+    );
+    expect(screen.getByRole('option', { name: retainedName })).toHaveAttribute(
+      'aria-selected',
+      'true'
     );
     expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
   });
@@ -7038,10 +7041,11 @@ describe('Worker environment Advanced choice', () => {
       WORKER_ENVIRONMENT.createdAt
     );
     const laterName = workerEnvironmentOptionName('Competitive teardown', 'Idle', laterAt);
+    await user.click(sandboxButton());
     expect(await screen.findByRole('option', { name: earlierName })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: laterName })).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), laterRef);
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveDisplayValue(laterName);
+    await user.click(screen.getByRole('option', { name: laterName }));
+    expect(sandboxButton()).toHaveTextContent(laterName);
     expect(
       screen.getByRole('dialog', { name: 'Attachments' }).querySelector('time')
     ).toHaveAttribute('datetime', laterAt);

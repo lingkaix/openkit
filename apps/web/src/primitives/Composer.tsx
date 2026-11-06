@@ -29,6 +29,7 @@ import {
 import { setUnsentDraft } from '../pwa/unsent-draft';
 import { Dialog as ConfirmationDialog } from './Dialog';
 import { Icon } from './Icon';
+import { Select as FieldSelect } from './Select';
 import { ErrorBanner } from './states';
 
 type ConversationTarget = ConversationTargetCatalog['targets'][number];
@@ -699,7 +700,7 @@ function isWorkerEnvironmentTarget(kind: ConversationTarget['kind'] | undefined)
   return kind === 'warm-worker' || kind === 'new-task-worker';
 }
 
-/** Native Advanced settings for an explicit retained Sandbox choice. */
+/** Advanced settings for an explicit retained Sandbox choice. */
 function WorkerEnvironmentPicker({
   environments,
   onSelect,
@@ -732,15 +733,21 @@ function WorkerEnvironmentPicker({
         Advanced settings
       </summary>
       <div className="mt-2 flex flex-col gap-1 px-2">
-        <label className="text-xs font-bold text-fg-muted" htmlFor="composer-worker-environment">
-          Sandbox
-        </label>
-        <select
-          id="composer-worker-environment"
-          aria-label="Sandbox"
-          value={selected?.storageRef ?? 'new'}
-          onChange={(event) => {
-            const value = event.currentTarget.value;
+        <FieldSelect
+          label="Sandbox"
+          items={[
+            { id: 'new', label: 'Fresh' },
+            ...options.map((item) => ({
+              id: item.storageRef,
+              label:
+                'sourceLabel' in item
+                  ? `${item.sourceLabel} · ${item.occupancy} · Created ${formatRecordedTime(item.createdAt)}`
+                  : 'Selected Sandbox',
+            })),
+          ]}
+          selectedKey={selected?.storageRef ?? 'new'}
+          onSelectionChange={(key) => {
+            const value = key == null ? 'new' : String(key);
             if (value === 'new') {
               onSelect(null);
               return;
@@ -750,17 +757,7 @@ function WorkerEnvironmentPicker({
             onSelect(listed);
             if ('layoutDigest' in listed) environments?.onCheck?.(listed);
           }}
-          className="w-full rounded-ok border border-border bg-card px-2 py-1 text-sm text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
-        >
-          <option value="new">Fresh</option>
-          {options.map((item) => (
-            <option key={item.storageRef} value={item.storageRef}>
-              {'sourceLabel' in item
-                ? `${item.sourceLabel} · ${item.occupancy} · Created ${formatRecordedTime(item.createdAt)}`
-                : 'Selected Sandbox'}
-            </option>
-          ))}
-        </select>
+        />
         {environments?.status === 'denied' ? (
           <p className="text-xs text-fg-muted">Access denied</p>
         ) : environments?.status === 'error' ? (

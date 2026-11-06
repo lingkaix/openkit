@@ -806,6 +806,15 @@ describe('primitive tier — behavior', () => {
     return `${sourceLabel} · ${occupancy} · Created ${new Date(createdAt).toLocaleString(undefined, { timeZoneName: 'short' })}`;
   }
 
+  function sandboxButton() {
+    return screen.getByRole('button', { name: /Sandbox/, expanded: false });
+  }
+
+  async function chooseSandbox(user: ReturnType<typeof userEvent.setup>, optionName: string) {
+    await user.click(sandboxButton());
+    await user.click(await screen.findByRole('option', { name: optionName }));
+  }
+
   it('keeps Advanced Worker environment settings closed inside + and omits a new-environment choice', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
@@ -865,7 +874,7 @@ describe('primitive tier — behavior', () => {
     await user.click(screen.getByText('Advanced settings'));
     expect((details as HTMLDetailsElement).open).toBe(true);
     expect(onBrowse).toHaveBeenCalled();
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveDisplayValue('Fresh');
+    expect(sandboxButton()).toHaveTextContent('Fresh');
     await user.keyboard('{Escape}');
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -939,15 +948,15 @@ describe('primitive tier — behavior', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), storageRef);
+    const retainedName = workerEnvironmentOptionName('Goal closeout', 'Idle', retained.createdAt);
+    await chooseSandbox(user, retainedName);
     expect(onCheck).toHaveBeenCalledWith(retained);
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveDisplayValue(
-      workerEnvironmentOptionName('Goal closeout', 'Idle', retained.createdAt)
-    );
+    expect(sandboxButton()).toHaveTextContent(retainedName);
     expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
     expect(screen.getByText('Idle')).toBeInTheDocument();
     expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(storageRef);
+    sandboxButton().focus();
     await user.keyboard('{Escape}');
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Reuse storage');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -967,7 +976,11 @@ describe('primitive tier — behavior', () => {
     onSubmit.mockClear();
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), storageRef);
+    await chooseSandbox(
+      user,
+      workerEnvironmentOptionName('Goal closeout', 'Idle', retained.createdAt)
+    );
+    sandboxButton().focus();
     await user.keyboard('{Escape}');
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Keep reuse');
     await user.click(screen.getByRole('button', { name: /Conversation agent/ }));
@@ -1032,12 +1045,13 @@ describe('primitive tier — behavior', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), storageRef);
-    expect(
-      screen.getByRole('option', {
-        name: workerEnvironmentOptionName('Competitive teardown', 'Idle', retained.createdAt),
-      })
-    ).toBeInTheDocument();
+    const retainedName = workerEnvironmentOptionName(
+      'Competitive teardown',
+      'Idle',
+      retained.createdAt
+    );
+    await chooseSandbox(user, retainedName);
+    expect(sandboxButton()).toHaveTextContent(retainedName);
     expect(
       screen.getByText('Current deployment administrator authority is required.')
     ).toBeInTheDocument();
@@ -1124,30 +1138,29 @@ describe('primitive tier — behavior', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), storageRef);
+    const retainedName = workerEnvironmentOptionName(
+      'Competitive teardown',
+      'Idle',
+      retained.createdAt
+    );
+    await chooseSandbox(user, retainedName);
     rerender(
       <Composer
         workerEnvironments={{ items: [replacement], onBrowse: vi.fn(), status: 'ready' }}
         targetCatalog={catalog}
       />
     );
-    const combobox = screen.getByRole('combobox', { name: 'Sandbox' });
-    expect(combobox).toHaveValue(storageRef);
-    expect(combobox).toHaveDisplayValue(
-      workerEnvironmentOptionName('Competitive teardown', 'Idle', retained.createdAt)
-    );
+    expect(sandboxButton()).toHaveTextContent(retainedName);
+    await user.click(sandboxButton());
     expect(
       screen.getByRole('option', {
         name: workerEnvironmentOptionName('Goal closeout', 'Idle', replacement.createdAt),
       })
     ).toBeInTheDocument();
-    await user.selectOptions(combobox, 'new');
-    expect(combobox).toHaveValue('new');
-    expect(
-      screen.queryByRole('option', {
-        name: workerEnvironmentOptionName('Competitive teardown', 'Idle', retained.createdAt),
-      })
-    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: 'Fresh' }));
+    expect(sandboxButton()).toHaveTextContent('Fresh');
+    await user.click(sandboxButton());
+    expect(screen.queryByRole('option', { name: retainedName })).not.toBeInTheDocument();
   });
 
   it('distinguishes same-source retained environments by recorded creation time', async () => {
@@ -1204,10 +1217,11 @@ describe('primitive tier — behavior', () => {
       'Idle',
       laterAt
     );
+    await user.click(sandboxButton());
     expect(screen.getByRole('option', { name: earlierName })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: laterName })).toBeInTheDocument();
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), laterRef);
-    expect(screen.getByRole('combobox', { name: 'Sandbox' })).toHaveDisplayValue(laterName);
+    await user.click(screen.getByRole('option', { name: laterName }));
+    expect(sandboxButton()).toHaveTextContent(laterName);
     expect(document.querySelector('time')).toHaveAttribute('datetime', laterAt);
     expect(document.body).not.toHaveTextContent(earlierRef);
     expect(document.body).not.toHaveTextContent(laterRef);
