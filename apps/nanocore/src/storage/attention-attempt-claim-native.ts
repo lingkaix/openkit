@@ -1,4 +1,5 @@
-import { AttentionError, claimAttentionAttemptInDb } from '../notifications/attention.js';
+import { claimAttentionAttemptInDb } from '../notifications/attention.js';
+import { AttentionError } from '../notifications/attention-error.js';
 import {
   type ControlAttentionAttemptClaim,
   ControlAttentionAttemptClaimRefusalSchema,

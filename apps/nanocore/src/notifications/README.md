@@ -2,6 +2,8 @@
 
 This module owns durable attention references and external delivery attempts in the Core SQLite database. It implements the [communication owner](../../../../docs/core/communication.md) and the external attention criteria in [Pending Requests](../../../../docs/specs/20260930-pending_requests.md). It does not resolve a request, execute its captured call, publish an Item, or infer that a person read a message.
 
+`attention-codecs.ts` holds the original input and retained-row schemas shared with the private claim wire codec. `attention-error.ts` holds the single nominal Attention refusal class used by the domain, native adapter and worker client. Wire validation and error restoration import these leaves directly; `attention.ts` keeps all SQL, read projection, claim, delivery, retry and reconciliation bodies.
+
 ## Composition
 
 The composition root supplies an already migrated raw `better-sqlite3` database. The native Core migration journal creates both tables; the module has no separate DDL copy. The constructor never creates tables or runs migrations. Its optional `buildAppPath(source)` callback selects the current authorized App route; the default points to `/tasks/:workspaceId/:threadId` with an exact request query. The composition root supplies the conversation route for a private conversation source. The composition root calls `reconcileIncompleteAttempts()` once at startup before it admits commands or starts sends. Calling it while sends run would classify those sends as unknown.

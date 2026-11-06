@@ -1,61 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import {
-  ApprovalRequestIdSchema,
-  isThreadId,
-  isUserId,
-  isWorkspaceId,
-  RequestIdSchema,
-  UserInputRequestIdSchema,
-} from '@openkit/protocol';
+import { isUserId, RequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { CoreDb } from '../storage/db.js';
+import {
+  type AttemptStatusSchema,
+  type ChannelSchema,
+  DeliverSchema,
+  type FailureCodeSchema,
+  RowSchema,
+  SourceSchema,
+} from './attention-codecs.js';
+import { AttentionError } from './attention-error.js';
 
-const ChannelSchema = z.enum(['discord', 'email']);
-const AttemptStatusSchema = z.enum(['sending', 'sent', 'failed-no-send', 'delivery-unknown']);
-const FailureCodeSchema = z.enum([
-  'authority-unavailable',
-  'transport-refused',
-  'transport-unknown',
-  'restart',
-]);
-const SourceSchema = z
-  .object({
-    workspaceId: z.string().refine(isWorkspaceId),
-    threadId: z.string().refine(isThreadId),
-    kind: z.enum(['approval-request', 'user-input-request']),
-    requestId: z.union([ApprovalRequestIdSchema, UserInputRequestIdSchema]),
-  })
-  .strict();
 const EnqueueSchema = z
   .object({ source: SourceSchema, recipientUserId: z.string().refine(isUserId) })
   .strict();
-const DeliverSchema = z
-  .object({
-    deliveryId: RequestIdSchema,
-    recipientUserId: z.string().refine(isUserId),
-    channel: ChannelSchema,
-    retry: z.boolean().optional(),
-    expectedAttemptId: z.number().int().positive().nullable(),
-  })
-  .strict();
-const RowSchema = z.object({
-  id: RequestIdSchema,
-  workspaceId: z.string().refine(isWorkspaceId),
-  threadId: z.string().refine(isThreadId),
-  sourceKind: SourceSchema.shape.kind,
-  requestId: SourceSchema.shape.requestId,
-  recipientUserId: z.string().refine(isUserId),
-  channel: ChannelSchema.nullable(),
-  createdAt: z.string().datetime(),
-  attemptId: z.number().int().positive().nullable(),
-  attemptChannel: ChannelSchema.nullable(),
-  status: AttemptStatusSchema.nullable(),
-  failureCode: FailureCodeSchema.nullable(),
-  startedAt: z.string().datetime().nullable(),
-  finishedAt: z.string().datetime().nullable(),
-  invalidHistory: z.number().int(),
-});
 
 /** Exact Core references; neither captured arguments nor source content are retained. */
 export type AttentionSource = z.infer<typeof SourceSchema>;
@@ -87,22 +47,6 @@ export type AttentionTransport = (
 ) => Promise<{ status: 'sent' | 'failed-no-send' | 'delivery-unknown' }>;
 /** Synchronous current source, audience, recipient and channel-account admission. */
 export type AttentionEligibility = (delivery: AttentionDelivery) => boolean;
-/** Safe error code for operation adapters; dependency details are never published. */
-export class AttentionError extends Error {
-  constructor(
-    public readonly code:
-      | 'invalid_attention_input'
-      | 'attention_not_found'
-      | 'attention_not_eligible'
-      | 'attention_not_sendable'
-      | 'attention_channel_conflict'
-      | 'attention_recovery_required'
-      | 'attention_attempt_conflict'
-  ) {
-    super(code);
-    this.name = 'AttentionError';
-  }
-}
 
 const SELECT = `SELECT a.id, a.workspace_id AS workspaceId, a.thread_id AS threadId,
   a.source_kind AS sourceKind, a.request_id AS requestId, a.recipient_user_id AS recipientUserId,
@@ -160,30 +104,6 @@ function decodeRow(value: unknown): AttentionDelivery {
     attempt,
   };
 }
-
-/** The existing admitted claim fields, shared with only the private native wire codec. */
-export const AttentionAttemptClaimSchema = DeliverSchema;
-
-/** Exact original in-transaction claim snapshot; request identities keep their existing unbounded semantics. */
-export const AttentionClaimedDeliverySchema = z
-  .object({
-    id: RowSchema.shape.id,
-    source: SourceSchema,
-    recipientUserId: RowSchema.shape.recipientUserId,
-    channel: ChannelSchema,
-    status: z.literal('sending'),
-    createdAt: RowSchema.shape.createdAt,
-    attempt: z
-      .object({
-        id: RowSchema.shape.attemptId.unwrap(),
-        status: z.literal('sending'),
-        failureCode: z.null(),
-        startedAt: RowSchema.shape.startedAt.unwrap(),
-        finishedAt: z.null(),
-      })
-      .strict(),
-  })
-  .strict();
 
 /** Original get primitive, also used inside the original claim transaction. */
 function getAttentionDeliveryInDb(sqlite: Database.Database, id: string): AttentionDelivery | null {

@@ -15,11 +15,8 @@ import {
 import type { createDiscordRestTransport } from './channels/discord-rest.js';
 import type { CoreMode } from './config/mode.js';
 import type { FsStore } from './lib/store.js';
-import {
-  type AttentionDelivery,
-  AttentionError,
-  AttentionNotifications,
-} from './notifications/attention.js';
+import { type AttentionDelivery, AttentionNotifications } from './notifications/attention.js';
+import { AttentionError } from './notifications/attention-error.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';

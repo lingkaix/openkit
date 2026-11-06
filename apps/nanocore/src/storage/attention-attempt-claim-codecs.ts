@@ -2,7 +2,7 @@ import { z } from 'zod';
 import {
   AttentionAttemptClaimSchema,
   AttentionClaimedDeliverySchema,
-} from '../notifications/attention.js';
+} from '../notifications/attention-codecs.js';
 
 /** Main-prepared clock; null preserves clock refusal at the original insertion point. */
 export const ControlAttentionAttemptClaimSchema = AttentionAttemptClaimSchema.extend({

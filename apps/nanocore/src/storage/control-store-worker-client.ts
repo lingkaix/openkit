@@ -9,7 +9,8 @@ import {
   type ControlBootstrapEnsureResult,
   ControlBootstrapEnsureResultSchema,
 } from '../auth/bootstrap-ensure-codecs.js';
-import { type AttentionDelivery, AttentionError } from '../notifications/attention.js';
+import type { AttentionDelivery } from '../notifications/attention.js';
+import { AttentionError } from '../notifications/attention-error.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   PreservedWorkspaceCaptureRefusal,
