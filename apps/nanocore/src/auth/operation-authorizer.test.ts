@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,17 @@ import {
 import * as policyKernel from '@openkit/policy-kernel';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import { createBootReadinessSnapshot, refuseScope } from '../bootstrap/readiness.js';
 import {
@@ -24,6 +34,7 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -33,6 +44,7 @@ import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
+import { createTestStore } from '../test-support/store.js';
 import { createWorkerEnvironmentOperations } from '../worker-environments/worker-environment-operations.js';
 import {
   createWorkspaceDeletionRequest,
@@ -73,10 +85,35 @@ vi.mock('./operation-access.js', async (importOriginal) => {
   return { ...actual, PUBLIC_OPERATION_ACCESS: { ...actual.PUBLIC_OPERATION_ACCESS } };
 });
 
-/** Creates one real Core membership fixture behind a tiny guarded Hono app. */
-async function createFixture() {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-operation-authorizer-'));
-  const coreDb = openCoreDb(dataRoot);
+interface PreparedAuthBase {
+  dataRoot: string;
+  quickChatWorkspaceId: string;
+  workspaceId: string;
+  foreignWorkspaceId: string;
+  filesystemOnlyWorkspaceId: string;
+  turnId: string;
+  foreignThreadId: string;
+}
+
+let preparedAuthBase: PreparedAuthBase | undefined;
+let preparedAuthRoot: string | undefined;
+
+/** Opens the persisted fixture objects from one copied base root without creating authority. */
+function openPreparedAuthFixture(dataRoot: string, prepared: PreparedAuthBase) {
+  const store = createTestStore({ dataRoot });
+  return {
+    store,
+    quickChatWorkspace: store.getWorkspace(prepared.quickChatWorkspaceId),
+    workspace: store.getWorkspace(prepared.workspaceId),
+    foreignWorkspace: store.getWorkspace(prepared.foreignWorkspaceId),
+    filesystemOnlyWorkspace: store.getWorkspace(prepared.filesystemOnlyWorkspaceId),
+    turn: store.getTurnById(prepared.turnId),
+    foreignThread: store.getThread(prepared.foreignWorkspaceId, prepared.foreignThreadId),
+  };
+}
+
+/** Creates the persisted Core, Workspace, membership and Turn facts once for the prepared base. */
+async function createPersistedAuthFixture(coreDb: ReturnType<typeof openCoreDb>, dataRoot: string) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
 
@@ -147,6 +184,34 @@ async function createFixture() {
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
   const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign thread');
+  return {
+    store,
+    quickChatWorkspace,
+    workspace,
+    foreignWorkspace,
+    filesystemOnlyWorkspace,
+    turn,
+    foreignThread,
+  };
+}
+
+/** Creates one real Core membership fixture behind a tiny guarded Hono app. */
+async function createFixture(prepared?: PreparedAuthBase) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-operation-authorizer-'));
+  if (prepared) cpSync(prepared.dataRoot, dataRoot, { recursive: true });
+  const coreDb = openCoreDb(dataRoot);
+  const persisted = prepared
+    ? openPreparedAuthFixture(dataRoot, prepared)
+    : await createPersistedAuthFixture(coreDb, dataRoot);
+  const {
+    store,
+    quickChatWorkspace,
+    workspace,
+    foreignWorkspace,
+    filesystemOnlyWorkspace,
+    turn,
+    foreignThread,
+  } = persisted;
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
@@ -272,13 +337,36 @@ async function createFixture() {
 let fixture: ReturnType<typeof createFixture>;
 
 // Real database and Workspace initialization can exceed the default hook bound on shared CI hosts.
+beforeAll(async () => {
+  const base = await createFixture();
+  preparedAuthRoot = base.dataRoot;
+  preparedAuthBase = {
+    dataRoot: base.dataRoot,
+    quickChatWorkspaceId: base.quickChatWorkspace.id,
+    workspaceId: base.workspace.id,
+    foreignWorkspaceId: base.foreignWorkspace.id,
+    filesystemOnlyWorkspaceId: base.filesystemOnlyWorkspace.id,
+    turnId: base.turn.id,
+    foreignThreadId: base.foreignThread.id,
+  };
+  await shutdownControlStoreWorkerClient();
+  if (base.coreDb.sqlite.open) base.coreDb.sqlite.close();
+  closeWorkspaceProductReadHandles(base.dataRoot);
+}, 60_000);
+
+afterAll(() => {
+  if (preparedAuthRoot) rmSync(preparedAuthRoot, { recursive: true, force: true });
+});
+
 beforeEach(async () => {
-  fixture = await createFixture();
+  fixture = await createFixture(preparedAuthBase);
 }, 30_000);
 
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
-  fixture.coreDb.sqlite.close();
+  if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
+  closeWorkspaceProductReadHandles(fixture.dataRoot);
+  rmSync(fixture.dataRoot, { recursive: true, force: true });
 });
 
 describe('central Workspace operation authorizer', () => {
