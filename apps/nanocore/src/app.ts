@@ -42,12 +42,12 @@ import { resolveSessionDeploymentAdminTokenId } from './auth/access-token-store.
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import { type Actor, ensureLocalUser } from './auth/identity.js';
+import { isLoopbackHost } from './auth/loopback-host.js';
 // Actor type used by mode worker turn request credential threading
 import {
   type AuthVariables,
   type BetterAuthServer,
   createAuthMiddleware,
-  isLoopbackHost,
 } from './auth/middleware.js';
 import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
 import { fenceNanoHostTransportAuthority } from './auth/nanohost-transport-lifecycle.js';

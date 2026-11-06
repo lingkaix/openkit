@@ -1,4 +1,4 @@
-import { isLoopbackHost } from '../auth/middleware.js';
+import { isLoopbackHost } from '../auth/loopback-host.js';
 import type { CoreMode } from './mode.js';
 import type { OpenKitConfig } from './openkit-config.js';
 

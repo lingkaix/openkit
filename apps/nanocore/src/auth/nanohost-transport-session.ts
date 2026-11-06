@@ -12,7 +12,7 @@ import { Http2ServerRequest } from 'node:http2';
 
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 
-import { isLoopbackHost } from './middleware.js';
+import { isLoopbackHost } from './loopback-host.js';
 
 /** Role of one connection generation for a NanoHost identity. */
 export type NanoHostTransportSessionRole = 'authoritative' | 'candidate' | 'fenced' | 'rejected';
