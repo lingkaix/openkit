@@ -25,7 +25,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import { gatewayCapabilitiesForProfile } from '../providers/registry.js';
+import { gatewayCapabilitiesForProfile } from '../providers/profile-capabilities.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
 import type { ResolvedLogicalModel } from './logical-models.js';
 import {

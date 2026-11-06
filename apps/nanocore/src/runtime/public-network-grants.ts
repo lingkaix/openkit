@@ -11,7 +11,8 @@ import {
 import { type ResolvedAgentManifest, resolveAgentSetup } from '../agents/setup-resolver.js';
 import type { ProviderProfile } from '../config/providers-loader.js';
 import { createDefaultPiAiGatewayModels } from '../llm/pi-ai-client.js';
-import { normalizeProviderId, type ProviderRegistry } from '../providers/registry.js';
+import { normalizeProviderId } from '../providers/profile-capabilities.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 import { OPENKIT_GENERATIVE_MCP_ID } from './openkit-generative-supply.js';
 
 /** Current authoritative destination facts used only for public grant admission. */

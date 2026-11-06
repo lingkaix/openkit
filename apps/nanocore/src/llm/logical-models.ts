@@ -10,13 +10,12 @@ import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/a
 };
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
 import type { ProviderProfile } from '../config/providers-loader.js';
-import { isProviderProfileDispatchable } from '../providers/llm-config.js';
 import {
   gatewayCapabilitiesForProfile,
-  type ProviderCredentialConfigured,
-  type ProviderRegistry,
+  isProviderProfileDispatchable,
   providerRequiresCredentials,
-} from '../providers/registry.js';
+} from '../providers/profile-capabilities.js';
+import type { ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 
 interface ModelsDevModel {

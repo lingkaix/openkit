@@ -151,10 +151,8 @@ import {
 } from './policy/resource-policy-requests.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
-import {
-  isProviderProfileDispatchable,
-  resolveProviderProfileToLLMConfig,
-} from './providers/llm-config.js';
+import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
+import { isProviderProfileDispatchable } from './providers/profile-capabilities.js';
 import {
   type ProviderCredentialUseContext,
   type ProviderRegistry,

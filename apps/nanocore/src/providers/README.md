@@ -13,6 +13,7 @@ This directory owns configured provider instances, provider profiles, credential
 
 ## File Map
 
+- `profile-capabilities.ts` owns pure provider-id normalization, credential requirement, gateway capability matrix, and readiness-dispatchability predicates over `ProviderProfile`.
 - `registry.ts` owns configured provider instance lookup, readiness, and capability projection.
 - `../config/providers-loader.ts` validates and loads provider profiles using the canonical `@openkit/config-schema` profile schema.
 - `data-root.ts` assembles the registry from the canonical file-backed Provider profiles.

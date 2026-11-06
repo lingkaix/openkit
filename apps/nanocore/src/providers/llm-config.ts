@@ -5,12 +5,12 @@ import {
 import type { ProviderProfile } from '../config/providers-loader.js';
 import {
   gatewayCapabilitiesForProfile,
+  isProviderProfileDispatchable,
   normalizeProviderId,
-  type ProviderCredentialResolver,
   type ProviderGatewayCapabilities,
   providerRequiresCredentials,
-  resolveProviderSecretRef,
-} from './registry.js';
+} from './profile-capabilities.js';
+import { type ProviderCredentialResolver, resolveProviderSecretRef } from './registry.js';
 
 /** Secret-bearing provider configuration used by internal LLM callers. */
 export interface ResolvedLLMProviderConfig {
@@ -78,20 +78,6 @@ export async function resolveProviderProfileToLLMConfig(
     requiresApiKey: isSubscriptionProfile ? false : providerRequiresCredentials(profile),
     ...(isSubscriptionProfile ? { accountSlotId, subscriptionProviderId } : {}),
   };
-}
-
-/**
- * Checks whether provider readiness permits dispatch.
- *
- * @param profile Provider profile to inspect.
- * @returns True when readiness is omitted, ready, or degraded.
- */
-export function isProviderProfileDispatchable(profile: ProviderProfile): boolean {
-  return (
-    profile.readiness === undefined ||
-    profile.readiness.status === 'ready' ||
-    profile.readiness.status === 'degraded'
-  );
 }
 
 /**
