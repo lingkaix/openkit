@@ -899,25 +899,42 @@ export function useLiveThreadItems(
   return dashboard;
 }
 
-/** Opens the thread that received a sent message. */
-function sentMessagePath(response: {
-  outcome: string;
-  receivingWorkspaceId: string;
-  receivingThreadId: string;
-}): string {
+/**
+ * Returns a toast only when a handoff opens a different thread.
+ *
+ * A same-thread send stays on the open composer and queues nothing.
+ */
+function handoffToast(
+  input: ConversationSubmission,
+  response: {
+    outcome: string;
+    receivingWorkspaceId: string;
+    receivingThreadId: string;
+  }
+): { message: string; path: string } | null {
+  if (response.outcome !== 'task-handoff' && response.outcome !== 'goal-handoff') return null;
+  if (
+    response.receivingWorkspaceId === input.workspaceId &&
+    response.receivingThreadId === input.threadId
+  ) {
+    return null;
+  }
   if (response.outcome === 'goal-handoff') {
-    return `/goals/${encodeURIComponent(response.receivingWorkspaceId)}/${encodeURIComponent(response.receivingThreadId)}`;
+    return {
+      message: 'Sent to a goal',
+      path: `/goals/${encodeURIComponent(response.receivingWorkspaceId)}/${encodeURIComponent(response.receivingThreadId)}`,
+    };
   }
-  if (response.outcome === 'task-handoff') {
-    return taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId);
-  }
-  return chatThreadPath(response.receivingWorkspaceId, response.receivingThreadId);
+  return {
+    message: 'Sent to a task',
+    path: taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId),
+  };
 }
 
 /**
  * Enter the route-selected Chat or Task mode, then refresh its projections.
  *
- * A successful admission queues a toast whose View action returns to the receiving thread.
+ * A handoff to another thread queues a toast whose View action opens that thread.
  *
  * @returns A mutation whose variables retain the original route owner and input.
  */
@@ -929,15 +946,18 @@ export function useSendTurn() {
     mutationKey: chatKeys.submitMutation,
     mutationFn: async (input: ConversationSubmission) =>
       submitConversationDraft(client, input.workspaceId, input.threadId, input.draft),
-    onSuccess: (response) => {
-      const path = sentMessagePath(response);
-      toastQueue.add(
-        {
-          message: 'Message sent',
-          onAction: () => navigate(path),
-        },
-        { timeout: 15_000 }
-      );
+    onSuccess: (response, input) => {
+      const toast = handoffToast(input, response);
+      if (toast) {
+        const path = toast.path;
+        toastQueue.add(
+          {
+            message: toast.message,
+            onAction: () => navigate(path),
+          },
+          { timeout: 15_000 }
+        );
+      }
       void queryClient.invalidateQueries({
         queryKey: chatKeys.items(response.receivingWorkspaceId, response.receivingThreadId),
       });

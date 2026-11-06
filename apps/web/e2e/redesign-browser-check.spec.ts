@@ -243,9 +243,14 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
         button: () => region.getByRole('button', { name: 'Load more', exact: true }),
         names: async () =>
           phoneList
-            ? (
-                await region.locator('p').filter({ hasText: 'an attention link' }).allTextContents()
-              ).map((name) => name.trim())
+            ? distinctLabels(
+                (
+                  await region
+                    .locator('p')
+                    .filter({ hasText: 'an attention link' })
+                    .allTextContents()
+                ).map((name) => name.trim())
+              )
             : region
                 .getByRole('link', { name: 'Inspect request' })
                 .evaluateAll((links) => links.map((link) => link.getAttribute('href') ?? '')),
@@ -256,31 +261,33 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
   });
 
   await check('toast', async () => {
+    // The local fixture does not publish a goal or task handoff. The design
+    // has no toast for a same-thread send, so this check measures the toast
+    // primitive on Debug and confirms a thread page queues none.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${stack!.webUrl}/tasks/${seeded.workspaceId}/${seeded.threadId}`);
     const composer = page.getByRole('textbox', { name: 'Message' });
     await expect(composer).toBeVisible();
-    await composer.fill('Paging proof');
-    const sending = page.waitForResponse(
-      (response) =>
-        response.request().method() === 'POST' &&
-        new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
-        response.ok()
-    );
-    await page.getByRole('button', { name: 'Send message', exact: true }).click();
-    expect((await sending).ok()).toBe(true);
-    const toast = page.locator('.ok-toast');
+    await expect(page.locator('.ok-toast')).toHaveCount(0);
+    await page.goto(`${stack!.webUrl}/settings/debug`);
+    const toast = page.locator('.ok-toast', { hasText: 'Scout finished the teardown.' });
+    await toast.scrollIntoViewIfNeeded();
     await expect(toast).toBeVisible();
     const action = toast.getByRole('button', { name: 'View', exact: true });
     const actionBox = await action.boundingBox();
     expect(actionBox?.height ?? 0).toBeGreaterThanOrEqual(44);
     expect(actionBox?.width ?? 0).toBeGreaterThanOrEqual(44);
-    expect(overlaps(await toast.boundingBox(), await composer.boundingBox())).toBe(false);
     await shot('phone-toast');
     await page.setViewportSize({ width: 1280, height: 800 });
-    await expect(toast).toBeVisible();
+    await toast.scrollIntoViewIfNeeded();
+    await expect(action).toBeVisible();
+    const desktopBox = await action.boundingBox();
+    expect(desktopBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expect(desktopBox?.width ?? 0).toBeGreaterThanOrEqual(44);
     await shot('desktop-toast');
-    notes.push('toast: Message sent, 44px View, clear of the phone composer');
+    notes.push(
+      'toast: finding, the fixture cannot hand off; Debug primitive View is 44px; a thread page queues no toast'
+    );
   });
 
   await check('offline banner and composer', async () => {
@@ -506,15 +513,12 @@ async function proveContinuation(
   for (const name of before) expect(after).toContain(name);
 }
 
-function overlaps(
-  first: { x: number; y: number; width: number; height: number } | null,
-  second: { x: number; y: number; width: number; height: number } | null
-) {
-  if (!first || !second) return true;
-  return (
-    first.x < second.x + second.width &&
-    first.x + first.width > second.x &&
-    first.y < second.y + second.height &&
-    first.y + first.height > second.y
-  );
+/** Keeps repeated sentences distinct so one clock second does not collapse two rows. */
+function distinctLabels(labels: string[]): string[] {
+  const seen = new Map<string, number>();
+  return labels.map((label) => {
+    const count = (seen.get(label) ?? 0) + 1;
+    seen.set(label, count);
+    return count === 1 ? label : `${label} (${count})`;
+  });
 }
