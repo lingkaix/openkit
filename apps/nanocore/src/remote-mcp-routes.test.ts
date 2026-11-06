@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,7 @@ import {
   RotateOpenKitAccessTokenResponseSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -29,6 +29,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -38,40 +39,48 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-suppo
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestStore } from './test-support/store.js';
 import * as materialOwners from './workspace-materials.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
+interface PreparedRemoteBase {
+  dataRoot: string;
+  appId: string;
+}
+
+let preparedRemoteBase: PreparedRemoteBase | undefined;
+let preparedRemoteRoot: string | undefined;
+
 /** Real isolated credential, membership and Kernel owners behind the App listener. */
 async function fixture(
   mode: 'local' | 'server' = 'server',
-  getBootReadiness?: () => BootReadinessSnapshot
+  getBootReadiness?: () => BootReadinessSnapshot,
+  prepared: PreparedRemoteBase | undefined = preparedRemoteBase
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-remote-mcp-'));
+  if (prepared) cpSync(prepared.dataRoot, dataRoot, { recursive: true });
   const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
-  coreDb.db
-    .insert(users)
-    .values({
-      id: testEntityId('usr', 'user_remote_mcp'),
-      kind: 'human',
-      displayName: 'Remote User',
-      email: 'remote@example.test',
-      emailVerified: false,
-      image: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      lastSeenAt: new Date().toISOString(),
-    })
-    .run();
-  const store = await createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: testEntityId('usr', 'user_remote_mcp'),
-    workspaceId: DEMO_WORKSPACE_ID,
-  });
+  if (!prepared) {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    coreDb.db
+      .insert(users)
+      .values({
+        id: testEntityId('usr', 'user_remote_mcp'),
+        kind: 'human',
+        displayName: 'Remote User',
+        email: 'remote@example.test',
+        emailVerified: false,
+        image: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastSeenAt: new Date().toISOString(),
+      })
+      .run();
+  }
+  const store = prepared ? createTestStore({ dataRoot }) : await createDemoStore({ dataRoot });
   const command = {
     store,
     dataRoot,
@@ -80,21 +89,31 @@ async function fixture(
     requestId: randomUUID(),
     inflightCommands: new WeakMap(),
   };
-  const appRecord = await createLightApp(command, {
-    format: 'openkit.light-app',
-    schemaVersion: 1,
-    title: 'Remote MCP',
-    purpose: 'Regression',
-    collections: [
-      {
-        name: 'entries',
-        type: 'base',
-        description: 'Entries',
-        indexes: [],
-        fields: [{ name: 'note', type: 'text', required: true, description: 'Note' }],
-      },
-    ],
-  });
+  let appRecord: Awaited<ReturnType<typeof createLightApp>> | { appId: string };
+  if (prepared) {
+    appRecord = { appId: prepared.appId };
+  } else {
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    appRecord = await createLightApp(command, {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Remote MCP',
+      purpose: 'Regression',
+      collections: [
+        {
+          name: 'entries',
+          type: 'base',
+          description: 'Entries',
+          indexes: [],
+          fields: [{ name: 'note', type: 'text', required: true, description: 'Note' }],
+        },
+      ],
+    });
+  }
   const token = (scope: 'workspace' | 'workspace-readonly' = 'workspace') =>
     createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: testEntityId('usr', 'user_remote_mcp'),
@@ -184,6 +203,19 @@ async function fixture(
     automationStore,
   };
 }
+
+beforeAll(async () => {
+  const base = await fixture();
+  preparedRemoteRoot = base.dataRoot;
+  preparedRemoteBase = { dataRoot: base.dataRoot, appId: base.appRecord.appId };
+  await shutdownControlStoreWorkerClient();
+  if (base.coreDb.sqlite.open) base.coreDb.sqlite.close();
+  closeWorkspaceProductReadHandles(base.dataRoot);
+}, 60_000);
+
+afterAll(() => {
+  if (preparedRemoteRoot) rmSync(preparedRemoteRoot, { recursive: true, force: true });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
