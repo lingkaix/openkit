@@ -139,7 +139,7 @@ export function ServerAuditScreen() {
                 <section className="flex flex-col gap-3" aria-labelledby="server-audit-events">
                   <h2
                     id="server-audit-events"
-                    className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
+                    className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
                   >
                     Audit events
                   </h2>
@@ -175,7 +175,7 @@ export function ServerAuditScreen() {
                 >
                   <h2
                     id="server-permission-decisions"
-                    className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
+                    className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
                   >
                     Permission decisions
                   </h2>

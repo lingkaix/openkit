@@ -302,7 +302,7 @@ function UsageSection({
 }) {
   return (
     <section className="flex flex-col gap-3" aria-labelledby={id}>
-      <h2 id={id} className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+      <h2 id={id} className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">
         {title}
       </h2>
       {empty ? (

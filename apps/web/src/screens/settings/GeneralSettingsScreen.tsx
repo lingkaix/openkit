@@ -70,7 +70,7 @@ export function GeneralSettingsScreen() {
           <section className="flex flex-col gap-3" aria-labelledby="settings-workspace">
             <h2
               id="settings-workspace"
-              className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
+              className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
             >
               Workspace
             </h2>
@@ -134,10 +134,7 @@ function KnowledgeSection({
 }) {
   return (
     <section className="flex flex-col gap-3" aria-labelledby="settings-knowledge">
-      <h2
-        id="settings-knowledge"
-        className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-      >
+      <h2 id="settings-knowledge" className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">
         Knowledge & Memory
       </h2>
       <Card className="flex items-center gap-3">

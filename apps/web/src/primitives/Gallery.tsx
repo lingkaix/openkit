@@ -44,7 +44,7 @@ const galleryToastQueue = new AriaToastQueue<string>();
 function Specimen({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-3 rounded-ok-lg border border-separator bg-card p-4 shadow-ok-card">
-      <h3 className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">{title}</h3>
+      <h3 className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">{title}</h3>
       <div className="flex flex-col gap-3">{children}</div>
     </section>
   );

@@ -872,6 +872,7 @@ describe('chat starter (board 01)', () => {
     );
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
+    expect(screen.getByText('Recent')).not.toHaveClass('uppercase');
     const recent = within(screen.getByText('Recent').closest('section')!);
     expect(listWorkspaces).toHaveBeenCalled();
     expect(listConversationNavigation).not.toHaveBeenCalled();

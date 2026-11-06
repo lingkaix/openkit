@@ -18,7 +18,7 @@ import { A2UIRenderer } from './render';
  */
 function SurfaceTag({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-1.5 border-b border-separator bg-sunken px-3 py-1.5 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+    <div className="flex items-center gap-1.5 border-b border-separator bg-sunken px-3 py-1.5 text-eyebrow font-bold tracking-eyebrow text-fg-muted">
       <Icon name="generative" size="sm" />
       {label}
     </div>
@@ -56,7 +56,7 @@ export function GenerativeScreen() {
 
         <AssistantMessage hue="scout" initials="OK" author="Assistant">
           <p className="mb-3">Here&apos;s the setup — adjust anything and confirm.</p>
-          <p className="mb-2 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+          <p className="mb-2 text-eyebrow font-bold tracking-eyebrow text-fg-muted">
             Rendered · whitelist
           </p>
           <GeneratedSurface tag="Generated view">
@@ -75,7 +75,7 @@ export function GenerativeScreen() {
 
         <AssistantMessage hue="scout" initials="OK" author="Assistant">
           <p className="mb-3">Across the three competitors with public pricing:</p>
-          <p className="mb-2 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+          <p className="mb-2 text-eyebrow font-bold tracking-eyebrow text-fg-muted">
             Plain-content fallback
           </p>
           <GeneratedSurface tag="Generated view · plain fallback">
@@ -88,7 +88,7 @@ export function GenerativeScreen() {
         </UserMessage>
 
         <AssistantMessage hue="scout" initials="OK" author="Assistant">
-          <p className="mb-2 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+          <p className="mb-2 text-eyebrow font-bold tracking-eyebrow text-fg-muted">
             Streaming skeleton
           </p>
           <GeneratedSurface tag="Generated view">

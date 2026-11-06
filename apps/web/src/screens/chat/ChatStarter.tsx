@@ -176,7 +176,7 @@ export function ChatStarter() {
       />
 
       <section className="flex flex-col gap-2">
-        <p className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">Recent</p>
+        <p className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">Recent</p>
         {disconnected ? (
           <ErrorBanner message="Couldn't reach the local runtime." onRetry={retryConnection} />
         ) : recentRead.isError || workspaceUnavailable ? (

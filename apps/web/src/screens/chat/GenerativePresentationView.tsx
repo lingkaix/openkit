@@ -218,7 +218,7 @@ export function GenerativePresentationView({
 
   return (
     <Card className="max-w-[480px] overflow-hidden p-0">
-      <div className="border-b border-separator bg-sunken px-3 py-1.5 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+      <div className="border-b border-separator bg-sunken px-3 py-1.5 text-eyebrow font-bold tracking-eyebrow text-fg-muted">
         Generated view
       </div>
       <div className="flex flex-col gap-3 p-4">

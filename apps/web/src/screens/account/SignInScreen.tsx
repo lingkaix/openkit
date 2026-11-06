@@ -94,7 +94,7 @@ export function SignInScreen() {
     <AccountFrame>
       <Card className="flex flex-col gap-5">
         <header>
-          <p className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">OpenKit</p>
+          <p className="text-eyebrow font-bold tracking-eyebrow text-fg-muted">OpenKit</p>
           <h1 className="mt-1 text-title font-extrabold text-fg-strong">Account access</h1>
           <p className="mt-1 text-sm text-fg-muted">Sign in or create an account to continue.</p>
         </header>
