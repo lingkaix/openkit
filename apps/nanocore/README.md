@@ -401,7 +401,7 @@ The configured deterministic simulator raises product-backed questions through t
 
 The migration-idempotency e2e reads the persisted SQLite ledger against the released Drizzle journal after two process boots; it imports no NanoCore source internals. Secret-redaction e2e reads the Workspace dashboard through `workspace.dashboard` and checks it together with diagnostics and Knowledge payloads.
 
-`e2e/no-src-imports.spec.ts` enforces the L3 bound that no black-box e2e spec imports NanoCore `src/` modules for the behavior under test. It parses every `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.mjs`, `.cjs` and `.jsx` file under `e2e/` and collects static, multi-line, re-export, `import type`, dynamic `import()`, `require()` and test-runner mock specifiers, resolving each against the referring file. Each form has a fixture that makes the check report an offender, so the check is admitted as the deciding instrument rather than an unverified line filter. A path used as a child-process argument is not a module reference and stays admissible.
+The L3 bound that no black-box e2e spec imports NanoCore `src/` modules for the behavior under test remains a review rule. The former `e2e/no-src-imports.spec.ts` source scanner was retired in test cleanup v2, so no automated test enforces this bound. A path used as a child-process argument is not a module reference and stays admissible.
 
 Run the quick NanoCore e2e smoke subset with:
 

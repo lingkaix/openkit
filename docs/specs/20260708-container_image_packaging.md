@@ -656,8 +656,6 @@ Applied Docker helper scripts:
 Updated tests that enforce the manifest and Dockerfile paths:
 
 - `apps/nanocore/src/docker/container-images-manifest.test.ts`
-- `apps/nanocore/src/docker/app-dockerfile.test.ts`
-- `apps/nanocore/src/docker/openshell-worker-dockerfile.test.ts`
 - `apps/nanocore/src/docker/app-run-script.test.ts`
 - `apps/nanocore/src/docker/app-persistence-smoke.test.ts`
 

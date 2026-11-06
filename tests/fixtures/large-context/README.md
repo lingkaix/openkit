@@ -1,6 +1,6 @@
 # Large-context fixture preparation
 
-This corpus freezes byte inputs and expected observations before P17 production implementation. It is preparation evidence only. The root test verifies fixture integrity, ZIP fields at frozen offsets, UTF-8 ranges, and arithmetic. It does not exercise upload admission, storage, authorization, extraction, provider routing, model admission, or output metering. Its green result cannot qualify those behaviors.
+This corpus freezes byte inputs and expected observations before P17 production implementation. It is preparation evidence only. The former root test verified fixture integrity, ZIP fields at frozen offsets, UTF-8 ranges, and arithmetic; test cleanup v2 retired that root test, so each consumer now validates only the frozen bytes it reads. The corpus does not exercise upload admission, storage, authorization, extraction, provider routing, model admission, or output metering. No fixture check can qualify those behaviors.
 
 ## Provenance
 
@@ -16,16 +16,11 @@ The engineer's #190 ruling and delegation are in `~/AI/temp/backlog-20261015/eng
 
 Small originals were specified as literal byte patterns. Their SHA-256 values were computed once with Python's standard `hashlib`, independently of the Node fixture functions. ZIP bytes were generated once with Python's standard `zipfile`, fixed timestamps, Unix mode fields, and no extraction. Truncation removes seven end-record bytes. The CRC fault changes both stored CRC fields to zero. The size fault changes both advertised expanded sizes to one while retaining nine actual body bytes. `cases.json` retains frozen base64 bytes, sizes, SHA-256 values, body digests, and exact local/central offsets. Node's built-in SHA-256, CRC-32 and bounded raw inflation check those bytes. Compression output is frozen; regeneration with another zlib version is not required.
 
-## Run
+## Inspection
 
-Run from the repository root with the existing pinned Node installation. No install, service, network, container, provider, or archive extraction is required.
+No root fixture test remains. Read `cases.json` and `corpus.mjs` directly with the existing pinned Node installation. No install, service, network, container, provider, or archive extraction is required.
 
-```bash
-export PATH=$HOME/.local/share/mise/installs/node/24.18.0/bin:$PATH
-$HOME/AI/temp/backlog-20261015/bin/run-slot.sh node --test --test-concurrency=1 tests/large-context-fixtures.test.mjs
-```
-
-The deliberate negative control flips one original byte and uses the same SHA-256 comparison as the positive check. The test must observe that mismatch. Invalid UTF-8 also must fail strict decoding, and replacing its bytes through text decoding must change its digest. These checks prove that the fixture oracle can detect byte damage. They are not production failure tests.
+The retired root test used a deliberate negative control: it flipped one original byte and used the same SHA-256 comparison as the positive check, it expected invalid UTF-8 to fail strict decoding, and it expected replacement of those bytes through text decoding to change the digest. Those observations remain the damage-detection bar for a consumer that reads a frozen byte set. They were not production failure tests.
 
 ## Consume
 
@@ -45,4 +40,4 @@ Context ranges use zero-based, half-open UTF-8 byte offsets. They preserve chara
 
 The expected current-main failures are not yet executed: text-only and non-empty Artifact admission cannot preserve empty or arbitrary binary originals; a published-file 16 MiB aggregate would reject an otherwise admitted large file; missing real range/representation and raw-meter seams cannot prove bounded context or shared emission accounting. These are hypotheses from the inspected planning baseline, not observed red production results. No production implementation diff was read to derive this corpus.
 
-The deciding integrity oracle is prior to the production candidate, finite, deterministic for the frozen bytes, and cheap to rerun. Its sufficiency ends at the fixture boundary. Independent review must still inspect these bytes, source clauses and test assertions. The following require later real qualification: exact immutable upload/download and receipt replay, combined upload admission, streamed-byte and actual-entry enforcement against lying headers, isolated extraction and bounded CPU/memory/disk, concurrent reserve admission, real SQLite race/restart/recovery, every supported inference and child route, cancellation and incomplete argument prevention, provider-visible request and token bounds, current authorization and destination disclosure, and parser/processor failure without full-body fallback. PDF and vision processor fixtures and resource measurements are outside this preparation slice.
+The retired deciding integrity oracle was prior to the production candidate, finite, deterministic for the frozen bytes, and cheap to rerun. Its sufficiency ended at the fixture boundary. Independent review must still inspect these bytes, source clauses and test assertions. The following require later real qualification: exact immutable upload/download and receipt replay, combined upload admission, streamed-byte and actual-entry enforcement against lying headers, isolated extraction and bounded CPU/memory/disk, concurrent reserve admission, real SQLite race/restart/recovery, every supported inference and child route, cancellation and incomplete argument prevention, provider-visible request and token bounds, current authorization and destination disclosure, and parser/processor failure without full-body fallback. PDF and vision processor fixtures and resource measurements are outside this preparation slice.
