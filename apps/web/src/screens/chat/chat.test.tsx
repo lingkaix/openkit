@@ -1021,6 +1021,10 @@ describe('chat starter (board 01)', () => {
     await screen.findByRole('heading', { name: 'What can we get done?' });
     const recent = within(screen.getByText('Recent').closest('section')!);
     expect(await recent.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
+      'placeholder',
+      'OpenKit needs a connection.'
+    );
     expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
   });
 
@@ -2487,6 +2491,10 @@ describe('chat thread (boards 02/03)', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled(), {
       timeout: 3000,
     });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
+      'placeholder',
+      'OpenKit needs a connection.'
+    );
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 });

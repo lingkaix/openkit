@@ -238,6 +238,7 @@ describe('P1 offline state', () => {
     try {
       await renderShell('/');
       await waitFor(() => expect(screen.getByText('Offline')).toBeInTheDocument());
+      expect(screen.getByText('Last opened on this device.')).toBeInTheDocument();
     } finally {
       delete (navigator as { onLine?: boolean }).onLine;
     }

@@ -167,7 +167,7 @@ export function ChatStarter() {
         workerEnvironments={workerEnvironments}
         disabledReason={
           disconnected
-            ? "Couldn't reach the local runtime."
+            ? 'OpenKit needs a connection.'
             : targets.isError
               ? "Couldn't load conversation agents."
               : undefined

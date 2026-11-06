@@ -18,7 +18,8 @@ export function DisconnectedBanner() {
       className="flex items-center gap-2 border-b border-separator bg-negative-bg px-4 py-3 text-sm font-medium text-negative-fg"
     >
       <Icon name="disconnected" size="sm" />
-      <span className="flex-1">Offline</span>
+      <span className="font-bold">Offline</span>
+      <span className="flex-1">Last opened on this device.</span>
       <button
         type="button"
         onClick={retry}
