@@ -580,7 +580,7 @@ export function Composer({
           isDisabled={disabled}
           ariaLabel="Logical model"
           selectedKey={logicalModelId}
-          placeholder="Model"
+          placeholder="Logical model"
           items={(selectedTarget?.logicalModels ?? []).map((model) => ({
             targetRef: model.id,
             label: model.label,

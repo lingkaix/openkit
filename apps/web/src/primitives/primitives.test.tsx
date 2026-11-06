@@ -786,6 +786,9 @@ describe('primitive tier — behavior', () => {
         }}
       />
     );
+    expect(screen.getByRole('button', { name: /Logical model/ })).toHaveTextContent(
+      'Logical model'
+    );
     const trigger = screen.getByRole('button', { name: /Conversation agent/ });
     await user.click(trigger);
     expect(
