@@ -377,6 +377,15 @@ describe('primitive tier — behavior', () => {
     await waitFor(() => expect(screen.queryByText('Material saved')).not.toBeInTheDocument());
   });
 
+  it('gives the toast action a 44px target and no 340px width floor', () => {
+    const Toast =
+      requiredPrimitive<ComponentType<{ message: string; onAction: () => void }>>('Toast');
+    render(<Toast message="Material saved" onAction={() => undefined} />);
+    const action = screen.getByRole('button', { name: 'View' });
+    expect(action).toHaveClass('min-h-11', 'min-w-11');
+    expect(action.closest('.ok-toast')).not.toHaveClass('min-w-[340px]');
+  });
+
   it('CodeView renders the exact input bytes visibly in preformatted code', () => {
     const CodeView = requiredPrimitive<ComponentType<{ label: string; value: string }>>('CodeView');
     const value = 'first line\n  second\t<&>';

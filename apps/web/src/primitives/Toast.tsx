@@ -19,11 +19,11 @@ export interface ToastProps {
 /**
  * Toast (`ok-toast`, DESIGN.md §9.10).
  *
- * The only floating layer. It wraps within the page padding, with a "View"
- * action and a close button. Transient, dismissible, non-blocking — for events
- * that finished while the user was elsewhere (D-006 #3). This component is
- * presentational; the mounted provider owns announcements. Keeps an explicit
- * dark fill under Noir.
+ * The only floating layer. It wraps within the page padding and has no 340px
+ * width floor. The action is a 44px target. Transient, dismissible, and
+ * non-blocking, for events that finished while the user was elsewhere (D-006 #3).
+ * This component is presentational; the mounted provider owns announcements.
+ * Keeps an explicit dark fill under Noir.
  */
 export function Toast({ message, actionLabel = 'View', onAction, onDismissAction }: ToastProps) {
   return (
@@ -33,7 +33,7 @@ export function Toast({ message, actionLabel = 'View', onAction, onDismissAction
         <button
           type="button"
           onClick={onAction}
-          className="rounded-ok px-2 py-0.5 text-xs font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok px-2 text-xs font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           {actionLabel}
         </button>
