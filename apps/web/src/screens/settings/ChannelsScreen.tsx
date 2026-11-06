@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
@@ -17,6 +17,24 @@ import { attentionSentence, isAttention, LongList, matchesLoadedRow } from './Lo
 
 const channelKey = [...accountChannelsKey, 'status'] as const;
 const notificationKey = [...accountChannelsKey, 'deliveries'] as const;
+/** One bounded notification.list page. The server maximum is 100. */
+const NOTIFICATION_PAGE_LIMIT = 50;
+
+/**
+ * One notification page's continuation.
+ *
+ * A missing, empty, or repeated cursor stops the read. The cursor stays opaque.
+ */
+function nextNotificationCursor(
+  nextCursor: string | null | undefined,
+  pageParam: string | undefined,
+  previousCursors: readonly (string | null | undefined)[]
+): string | undefined {
+  if (typeof nextCursor !== 'string' || nextCursor.length === 0) return undefined;
+  if (pageParam !== undefined && nextCursor === pageParam) return undefined;
+  if (previousCursors.includes(nextCursor)) return undefined;
+  return nextCursor;
+}
 const labels = {
   queued: 'Queued',
   sending: 'Sending',
@@ -24,6 +42,35 @@ const labels = {
   'failed-no-send': 'Not sent',
   'delivery-unknown': 'Delivery unknown',
 } as const;
+
+/** Loads notification history one server page at a time. */
+function useNotificationDeliveries() {
+  const client = useCoreClient();
+  const query = useInfiniteQuery({
+    queryKey: [...notificationKey, 'pages'],
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam, signal }) => {
+      signal.throwIfAborted();
+      const page = await client.operations['notification.list']({
+        limit: NOTIFICATION_PAGE_LIMIT,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      });
+      signal.throwIfAborted();
+      return page;
+    },
+    getNextPageParam: (last, pages, pageParam) =>
+      nextNotificationCursor(
+        last.nextCursor,
+        pageParam,
+        pages.slice(0, -1).map((page) => page.nextCursor)
+      ),
+    retry: false,
+  });
+  return {
+    ...query,
+    data: query.data ? { items: query.data.pages.flatMap((page) => page.items) } : undefined,
+  };
+}
 
 /** Current user's proven Discord binding and truthful Pending Request delivery observations. */
 export function ChannelsScreen() {
@@ -36,11 +83,7 @@ export function ChannelsScreen() {
     queryFn: () => client.operations['channel.discord.status']({}),
     retry: false,
   });
-  const deliveries = useQuery({
-    queryKey: notificationKey,
-    queryFn: () => client.operations['notification.list']({ limit: 50 }),
-    retry: false,
-  });
+  const deliveries = useNotificationDeliveries();
   const refresh = () => {
     void queries.invalidateQueries({ queryKey: channelKey });
     void queries.invalidateQueries({ queryKey: notificationKey });
@@ -180,94 +223,107 @@ export function ChannelsScreen() {
             hint="Current Pending Request attention appears here."
           />
         ) : (
-          <LongList
-            summary={(filter) => {
-              const lines = (deliveries.data?.items ?? [])
-                .filter(
-                  (delivery) =>
-                    isAttention(delivery.status) &&
+          <>
+            <LongList
+              summary={(filter) => {
+                const lines = (deliveries.data?.items ?? [])
+                  .filter(
+                    (delivery) =>
+                      isAttention(delivery.status) &&
+                      matchesLoadedRow(filter, {
+                        outcome: delivery.status,
+                        title: 'an attention link',
+                        at: delivery.createdAt,
+                      })
+                  )
+                  .map((delivery) => (
+                    <p key={delivery.id}>
+                      {attentionSentence(
+                        delivery.status === 'failed-no-send'
+                          ? 'A delivery failed'
+                          : 'A delivery needs a decision',
+                        'an attention link',
+                        delivery.createdAt
+                      )}
+                    </p>
+                  ));
+                return lines.length > 0 ? (
+                  lines
+                ) : (
+                  <p>Nothing failed, was denied, or needs a decision.</p>
+                );
+              }}
+              records={(filter) =>
+                (deliveries.data?.items ?? [])
+                  .filter((delivery) =>
                     matchesLoadedRow(filter, {
                       outcome: delivery.status,
                       title: 'an attention link',
                       at: delivery.createdAt,
                     })
-                )
-                .map((delivery) => (
-                  <p key={delivery.id}>
-                    {attentionSentence(
-                      delivery.status === 'failed-no-send'
-                        ? 'A delivery failed'
-                        : 'A delivery needs a decision',
-                      'an attention link',
-                      delivery.createdAt
-                    )}
-                  </p>
-                ));
-              return lines.length > 0 ? (
-                lines
-              ) : (
-                <p>Nothing failed, was denied, or needs a decision.</p>
-              );
-            }}
-            records={(filter) =>
-              (deliveries.data?.items ?? [])
-                .filter((delivery) =>
-                  matchesLoadedRow(filter, {
-                    outcome: delivery.status,
-                    title: 'an attention link',
-                    at: delivery.createdAt,
-                  })
-                )
-                .map((delivery) => (
-                  <Card key={delivery.id} className="flex flex-col gap-2">
-                    <p role="status" className="text-sm font-bold">
-                      {labels[delivery.status]}
-                    </p>
-                    <Link
-                      to={delivery.appPath}
-                      className="inline-flex min-h-11 items-center text-sm text-accent underline"
-                    >
-                      Inspect request
-                    </Link>
-                    {status.data?.configured && status.data.binding ? (
-                      <div className="flex flex-col gap-2">
-                        <p className="text-sm text-fg-muted">
-                          Copy this command to a private message with the bot:
-                        </p>
-                        <code className="break-all">
-                          {`/openkit inspect workspace:${delivery.source.workspaceId} thread:${delivery.source.threadId} request:${delivery.source.requestId}`}
-                        </code>
-                      </div>
-                    ) : null}
-                    {delivery.status === 'delivery-unknown' ? (
-                      <p className="text-sm text-fg-muted">
-                        The channel might have received this message. Automatic resend is disabled.
+                  )
+                  .map((delivery) => (
+                    <Card key={delivery.id} className="flex flex-col gap-2">
+                      <p role="status" className="text-sm font-bold">
+                        {labels[delivery.status]}
                       </p>
-                    ) : null}
-                    {delivery.status === 'queued' || delivery.status === 'failed-no-send' ? (
-                      <Button
-                        size="sm"
-                        className="min-h-11"
-                        isDisabled={
-                          disconnected ||
-                          busy ||
-                          !status.data?.binding ||
-                          !status.data.sendingAvailable
-                        }
-                        onPress={() =>
-                          send.mutate({
-                            deliveryId: delivery.id,
-                            expectedAttemptId: delivery.attempt?.id ?? null,
-                          })
-                        }
+                      <Link
+                        to={delivery.appPath}
+                        className="inline-flex min-h-11 items-center text-sm text-accent underline"
                       >
-                        {delivery.status === 'queued' ? 'Send attention link' : 'Retry send'}
-                      </Button>
-                    ) : null}
-                  </Card>
-                ))
-            }
-          />
+                        Inspect request
+                      </Link>
+                      {status.data?.configured && status.data.binding ? (
+                        <div className="flex flex-col gap-2">
+                          <p className="text-sm text-fg-muted">
+                            Copy this command to a private message with the bot:
+                          </p>
+                          <code className="break-all">
+                            {`/openkit inspect workspace:${delivery.source.workspaceId} thread:${delivery.source.threadId} request:${delivery.source.requestId}`}
+                          </code>
+                        </div>
+                      ) : null}
+                      {delivery.status === 'delivery-unknown' ? (
+                        <p className="text-sm text-fg-muted">
+                          The channel might have received this message. Automatic resend is
+                          disabled.
+                        </p>
+                      ) : null}
+                      {delivery.status === 'queued' || delivery.status === 'failed-no-send' ? (
+                        <Button
+                          size="sm"
+                          className="min-h-11"
+                          isDisabled={
+                            disconnected ||
+                            busy ||
+                            !status.data?.binding ||
+                            !status.data.sendingAvailable
+                          }
+                          onPress={() =>
+                            send.mutate({
+                              deliveryId: delivery.id,
+                              expectedAttemptId: delivery.attempt?.id ?? null,
+                            })
+                          }
+                        >
+                          {delivery.status === 'queued' ? 'Send attention link' : 'Retry send'}
+                        </Button>
+                      ) : null}
+                    </Card>
+                  ))
+              }
+            />
+            {deliveries.hasNextPage ? (
+              <Button
+                variant="quiet"
+                className="min-h-11 justify-start px-3"
+                isDisabled={deliveries.isFetchingNextPage}
+                onPress={() => void deliveries.fetchNextPage()}
+              >
+                Load more
+              </Button>
+            ) : null}
+          </>
         )}
       </section>
     </Page>

@@ -225,4 +225,52 @@ describe('Discord settings', () => {
     );
     expect(screen.getAllByRole('link', { name: 'Inspect request' })).toHaveLength(2);
   });
+
+  it('loads the next notification page only when the server returns a cursor', async () => {
+    const base = {
+      source: {
+        workspaceId,
+        threadId,
+        requestId: 'req_channels',
+        kind: 'approval-request' as const,
+      },
+      recipientUserId,
+      channel: 'discord' as const,
+      createdAt: '2026-10-16T00:00:00Z',
+      appPath: `/tasks/${workspaceId}/${threadId}?requestId=req_channels`,
+      attempt: null,
+    };
+    const list = vi.fn(async (input: { limit?: number; cursor?: string }) =>
+      input.cursor === 'cursor-2'
+        ? {
+            items: [
+              {
+                ...base,
+                id: '10000000-0000-4000-8000-000000000002',
+                status: 'failed-no-send' as const,
+                createdAt: '2026-10-16T01:00:00Z',
+              },
+            ],
+            nextCursor: null,
+          }
+        : {
+            items: [
+              {
+                ...base,
+                id: '10000000-0000-4000-8000-000000000001',
+                status: 'queued' as const,
+              },
+            ],
+            nextCursor: 'cursor-2',
+          }
+    );
+    show(client({ 'notification.list': list }));
+    expect(await screen.findByText(/A delivery needs a decision/)).toBeInTheDocument();
+    expect(screen.queryByText(/A delivery failed/)).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith({ limit: 50 });
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText(/A delivery failed/)).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith({ limit: 50, cursor: 'cursor-2' });
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
 });
