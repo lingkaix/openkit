@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect, isDeepStrictEqual } from 'node:util';
@@ -12,7 +12,7 @@ import {
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
@@ -171,12 +171,36 @@ import {
 } from './workspace-sync-records.js';
 
 const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
+let failedStartBaseRoot: string | undefined;
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   for (const coreDb of fixtureDatabases.splice(0)) {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
   }
+});
+
+/** Prepares the identical Demo Store base that every failed-start fixture copies. */
+beforeAll(async () => {
+  const base = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-restart-base-')));
+  failedStartBaseRoot = base.dataRoot;
+  try {
+    applyMigrations(base);
+    ensureLocalUser(base);
+    await createDemoStore({ dataRoot: base.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb: base,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+  } finally {
+    base.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+  }
+});
+
+afterAll(() => {
+  if (failedStartBaseRoot) rmSync(failedStartBaseRoot, { recursive: true, force: true });
 });
 
 /** Publishes native Demo storage before membership; explicit import fixtures retain their own publication. */
@@ -193,6 +217,16 @@ async function createMigratedCoreDb(registerDemoMembership = true) {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   }
+  return coreDb;
+}
+
+/** Copies the prepared Demo Store bytes so every fixture starts from one identical base. */
+function createFailedStartBase() {
+  if (!failedStartBaseRoot) throw new Error('Failed-start base template is not prepared.');
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-restart-'));
+  cpSync(failedStartBaseRoot, dataRoot, { recursive: true });
+  const coreDb = openCoreDb(dataRoot);
+  fixtureDatabases.push(coreDb);
   return coreDb;
 }
 
@@ -233,15 +267,9 @@ async function createFailedStartFixture(
   finalized = true,
   workspaceInputIds: readonly string[] = []
 ) {
-  const coreDb = await createMigratedCoreDb(false);
+  const coreDb = createFailedStartBase();
   const dataRoot = coreDb.dataRoot;
-  ensureLocalUser(coreDb);
-  const store = await createDemoStore({ dataRoot });
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: LOCAL_USER_ID,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
+  const store = new FsStore({ dataRoot });
   const threadId = testEntityId('th', `th_${suffix}`);
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const agentSessionId = testEntityId('as', `as_${suffix}`);
@@ -715,11 +743,11 @@ function recoveryCostInput(f: FailedStartFixture) {
   });
   return {
     input,
-    assertNoEffects: () => {
+    assertNoEffects: (message?: string) => {
       for (const effect of [...Object.values(effects), ...backendSpies])
-        expect(effect).not.toHaveBeenCalled();
-      expect(f.input.projectRecoveredTurn).not.toHaveBeenCalled();
-      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+        expect(effect, message).not.toHaveBeenCalled();
+      expect(f.input.projectRecoveredTurn, message).not.toHaveBeenCalled();
+      expect(f.workerDelivery.startTurn, message).not.toHaveBeenCalled();
     },
     restore: () => {
       for (const spy of backendSpies) spy.mockRestore();
@@ -860,129 +888,168 @@ describe('failed-start busy-history proof cost (#164)', () => {
     // The SQL-count oracle is unchanged; this budget also covers three durable fixtures and history snapshots.
   }, 60_000);
 
-  it.each([
-    ['phase-open', 'phase', 'open'],
-    ['phase-closing', 'phase', 'closing'],
-    ['accepted', 'disposition', 'accepted'],
-    ['unknown', 'disposition', 'unknown'],
-    ['operation', 'operation_id', 'unproved-operation'],
-    ['empty-operation', 'operation_id', ''],
-    ['other-terminal', 'terminal_cause', 'execution-failed'],
-    ['missing-terminal', 'terminal_cause', null],
-    ['invalid-deadline', 'deadline', 'invalid'],
-    ['invalid-created-at', 'created_at', 'invalid'],
-    ['empty-binding', 'binding_ref', ''],
-    ['empty-backend', 'backend_id', ''],
-    ['heartbeat', 'last_accepted_heartbeat_at', '2026-07-05T00:00:00.000Z'],
-    ['sequence-zero', 'last_worker_sequence', 0],
-    ['process-key', 'worker_process_key_hash', 'a'.repeat(64)],
-    ['control-token', 'worker_control_token_hash', 'a'.repeat(64)],
-    ['inference-token', 'worker_inference_token_hash', 'b'.repeat(64)],
-    ['capability-token', 'worker_capability_token_hash', 'c'.repeat(64)],
-    ['empty-heartbeat', 'last_accepted_heartbeat_at', ''],
-    ['empty-process-key', 'worker_process_key_hash', ''],
-    ['empty-token', 'worker_control_token_hash', ''],
-  ] as const)('preserves refusal and terminal history for sibling %s', async (name, column, value) => {
-    const f = await createFailedStartFixture(`cost_conflict_${name}`);
-    await terminalizeRecoveryCostFixture(f);
-    const siblingId = seedRecoveryBusyHistory(f, 3)!;
-    f.coreDb.sqlite
-      .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-      .run(value, siblingId);
-    const before = recoveryProofSnapshot(f);
-    const recovery = recoveryCostInput(f);
-    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      for (let pass = 0; pass < 2; pass++) {
-        await expect(
-          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input)
-        ).rejects.toThrow();
-        expect(recoveryProofSnapshot(f)).toEqual(before);
-        recovery.assertNoEffects();
+  it('preserves refusal and terminal history for sibling variants', async () => {
+    const variants = [
+      ['phase-open', 'phase', 'open'],
+      ['phase-closing', 'phase', 'closing'],
+      ['accepted', 'disposition', 'accepted'],
+      ['unknown', 'disposition', 'unknown'],
+      ['operation', 'operation_id', 'unproved-operation'],
+      ['empty-operation', 'operation_id', ''],
+      ['other-terminal', 'terminal_cause', 'execution-failed'],
+      ['missing-terminal', 'terminal_cause', null],
+      ['invalid-deadline', 'deadline', 'invalid'],
+      ['invalid-created-at', 'created_at', 'invalid'],
+      ['empty-binding', 'binding_ref', ''],
+      ['empty-backend', 'backend_id', ''],
+      ['heartbeat', 'last_accepted_heartbeat_at', '2026-07-05T00:00:00.000Z'],
+      ['sequence-zero', 'last_worker_sequence', 0],
+      ['process-key', 'worker_process_key_hash', 'a'.repeat(64)],
+      ['control-token', 'worker_control_token_hash', 'a'.repeat(64)],
+      ['inference-token', 'worker_inference_token_hash', 'b'.repeat(64)],
+      ['capability-token', 'worker_capability_token_hash', 'c'.repeat(64)],
+      ['empty-heartbeat', 'last_accepted_heartbeat_at', ''],
+      ['empty-process-key', 'worker_process_key_hash', ''],
+      ['empty-token', 'worker_control_token_hash', ''],
+    ] as const;
+    for (const [name, column, value] of variants) {
+      const label = `sibling ${name}`;
+      const f = await createFailedStartFixture(`cost_conflict_${name}`);
+      await terminalizeRecoveryCostFixture(f);
+      const siblingId = seedRecoveryBusyHistory(f, 3)!;
+      const baseline = recoveryProofSnapshot(f);
+      const original = f.coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
+        .get(siblingId) as Record<string, string | number | null>;
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        f.coreDb.sqlite
+          .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+          .run(value, siblingId);
+        const before = recoveryProofSnapshot(f);
+        const recovery = recoveryCostInput(f);
+        try {
+          for (let pass = 0; pass < 2; pass++) {
+            await expect(
+              runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input),
+              label
+            ).rejects.toThrow();
+            expect(recoveryProofSnapshot(f), label).toEqual(before);
+            recovery.assertNoEffects(label);
+          }
+        } finally {
+          recovery.restore();
+        }
+        f.coreDb.sqlite
+          .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+          .run(original[column], siblingId);
+        expect(recoveryProofSnapshot(f), label).toEqual(baseline);
+      } finally {
+        log.mockRestore();
+        f.coreDb.sqlite.close();
       }
-    } finally {
-      log.mockRestore();
-      recovery.restore();
+    }
+  });
+
+  it('checks sibling binding variants without replay', async () => {
+    const variants = [
+      ['session', 'active'],
+      ['session', 'closed'],
+      ['session', 'unknown'],
+      ['session', 'malformed'],
+      ['turn', 'active'],
+      ['turn', 'closed'],
+      ['turn', 'unknown'],
+      ['attempt', 'active'],
+      ['attempt', 'closed'],
+      ['attempt', 'unknown'],
+      ['unrelated', 'closed'],
+    ] as const;
+    for (const [match, state] of variants) {
+      const label = `sibling binding ${match} ${state}`;
+      const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
+      await terminalizeRecoveryCostFixture(f);
+      const siblingId = seedRecoveryBusyHistory(f, 3)!;
+      const baseline = recoveryProofSnapshot(f);
+      recordRecoverySiblingBinding(f, siblingId, match, state);
+      const before = recoveryProofSnapshot(f);
+      const recovery = recoveryCostInput(f);
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (let pass = 0; pass < 2; pass++) {
+          const result = runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
+          if (match === 'unrelated') await expect(result, label).resolves.toBeUndefined();
+          else await expect(result, label).rejects.toThrow();
+          expect(recoveryProofSnapshot(f), label).toEqual(before);
+          recovery.assertNoEffects(label);
+        }
+      } finally {
+        log.mockRestore();
+        recovery.restore();
+      }
+      f.coreDb.sqlite
+        .prepare(
+          'DELETE FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+        )
+        .run('binding_cost');
+      f.coreDb.sqlite
+        .prepare('DELETE FROM harness_instance_records WHERE harness_instance_id = ?')
+        .run('harness_cost');
+      f.coreDb.sqlite
+        .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
+        .run('sandbox_cost');
+      expect(recoveryProofSnapshot(f), label).toEqual(baseline);
       f.coreDb.sqlite.close();
     }
   });
 
-  it.each([
-    ['session', 'active'],
-    ['session', 'closed'],
-    ['session', 'unknown'],
-    ['session', 'malformed'],
-    ['turn', 'active'],
-    ['turn', 'closed'],
-    ['turn', 'unknown'],
-    ['attempt', 'active'],
-    ['attempt', 'closed'],
-    ['attempt', 'unknown'],
-    ['unrelated', 'closed'],
-  ] as const)('checks sibling binding by %s with state %s without replay', async (match, state) => {
-    const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
-    await terminalizeRecoveryCostFixture(f);
-    const siblingId = seedRecoveryBusyHistory(f, 3)!;
-    recordRecoverySiblingBinding(f, siblingId, match, state);
-    const before = recoveryProofSnapshot(f);
-    const recovery = recoveryCostInput(f);
-    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      for (let pass = 0; pass < 2; pass++) {
-        const result = runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
-        if (match === 'unrelated') await expect(result).resolves.toBeUndefined();
-        else await expect(result).rejects.toThrow();
-        expect(recoveryProofSnapshot(f)).toEqual(before);
-        recovery.assertNoEffects();
-      }
-    } finally {
-      log.mockRestore();
-      recovery.restore();
-      f.coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'cleaned',
-    'unknown',
-    'malformed',
-  ] as const)('refuses a sibling backend association with %s proof', async (proof) => {
-    const f = await createFailedStartFixture(`cost_backend_${proof}`);
-    await terminalizeRecoveryCostFixture(f);
-    const siblingId = seedRecoveryBusyHistory(f, 3)!;
-    const columns = f.coreDb.sqlite.pragma('table_info(worker_backend_sessions)') as Array<{
-      name: string;
-    }>;
-    const replacements: Record<string, string> = {
-      attempt_id: siblingId,
-      agent_session_id: testEntityId('as', `as_${siblingId}`),
-      package_snapshot_id: 'package_sibling_backend',
-      staging_directory_ref: 'server/runtime/worker-backend-sessions/sibling',
-      backend_session_id: testNanoHostBackendSessionId('sibling'),
-      sandbox_binding_ref: 'sibling-backend-binding',
-      ...(proof === 'unknown' ? { state: 'unknown' } : {}),
-      ...(proof === 'malformed' ? { backend_lineage_json: 'invalid-json' } : {}),
-    };
-    const keys = columns.filter(({ name }) => name in replacements).map(({ name }) => name);
-    f.coreDb.sqlite
-      .prepare(`INSERT INTO worker_backend_sessions (${columns.map(({ name }) => name).join(', ')})
+  it('refuses sibling backend association variants', async () => {
+    const variants = ['cleaned', 'unknown', 'malformed'] as const;
+    for (const proof of variants) {
+      const label = `sibling backend ${proof}`;
+      const f = await createFailedStartFixture(`cost_backend_${proof}`);
+      await terminalizeRecoveryCostFixture(f);
+      const siblingId = seedRecoveryBusyHistory(f, 3)!;
+      const baseline = recoveryProofSnapshot(f);
+      const columns = f.coreDb.sqlite.pragma('table_info(worker_backend_sessions)') as Array<{
+        name: string;
+      }>;
+      const replacements: Record<string, string> = {
+        attempt_id: siblingId,
+        agent_session_id: testEntityId('as', `as_${siblingId}`),
+        package_snapshot_id: 'package_sibling_backend',
+        staging_directory_ref: 'server/runtime/worker-backend-sessions/sibling',
+        backend_session_id: testNanoHostBackendSessionId('sibling'),
+        sandbox_binding_ref: 'sibling-backend-binding',
+        ...(proof === 'unknown' ? { state: 'unknown' } : {}),
+        ...(proof === 'malformed' ? { backend_lineage_json: 'invalid-json' } : {}),
+      };
+      const keys = columns.filter(({ name }) => name in replacements).map(({ name }) => name);
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO worker_backend_sessions (${columns.map(({ name }) => name).join(', ')})
       SELECT ${columns.map(({ name }) => (name in replacements ? '?' : name)).join(', ')}
       FROM worker_backend_sessions WHERE attempt_id = ?`)
-      .run(...keys.map((name) => replacements[name]), f.attemptId);
-    const before = recoveryProofSnapshot(f);
-    const recovery = recoveryCostInput(f);
-    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      for (let pass = 0; pass < 2; pass++) {
-        await expect(
-          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input)
-        ).rejects.toThrow();
-        expect(recoveryProofSnapshot(f)).toEqual(before);
-        recovery.assertNoEffects();
+        .run(...keys.map((name) => replacements[name]), f.attemptId);
+      const before = recoveryProofSnapshot(f);
+      const recovery = recoveryCostInput(f);
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (let pass = 0; pass < 2; pass++) {
+          await expect(
+            runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input),
+            label
+          ).rejects.toThrow();
+          expect(recoveryProofSnapshot(f), label).toEqual(before);
+          recovery.assertNoEffects(label);
+        }
+      } finally {
+        log.mockRestore();
+        recovery.restore();
       }
-    } finally {
-      log.mockRestore();
-      recovery.restore();
+      f.coreDb.sqlite
+        .prepare('DELETE FROM worker_backend_sessions WHERE attempt_id = ?')
+        .run(siblingId);
+      expect(recoveryProofSnapshot(f), label).toEqual(baseline);
       f.coreDb.sqlite.close();
     }
   });
