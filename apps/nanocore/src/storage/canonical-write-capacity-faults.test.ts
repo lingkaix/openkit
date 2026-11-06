@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
-import { appendCanonicalTextFile, writeFileAtomic } from './workspace-file-records.js';
+import { withCanonicalFileWriteAdmission, writeFileAtomic } from './canonical-write-capacity.js';
+import { appendCanonicalTextFile } from './workspace-file-records.js';
 
 vi.mock('node:fs', async (original) => {
   const actual = await original<typeof import('node:fs')>();

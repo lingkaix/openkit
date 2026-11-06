@@ -1,3 +1,4 @@
+import { writeCanonicalFileAtomic } from '@openkit/storage';
 import type { FileStorageAdmission, FileStorageReservation } from './artifacts/file-admission.js';
 
 let activeAdmission: FileStorageAdmission | undefined;
@@ -30,4 +31,23 @@ export function reserveCanonicalFileWrite(byteLength: number): FileStorageReserv
     derivativeBytes: 0n,
     publicationBytes: 65_536n,
   });
+}
+
+/**
+ * Writes complete bytes durably through a same-directory temporary file.
+ *
+ * @param path Target file path.
+ * @param content Complete file content.
+ * @param mode Exact replacement mode when supplied; otherwise the private writer default.
+ * @param publication Replace by rename, or create by link without clobbering an existing file.
+ */
+export function writeFileAtomic(
+  path: string,
+  content: string | Uint8Array,
+  mode?: number,
+  publication: 'replace' | 'create' = 'replace'
+): void {
+  const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
+  const reservation = reserveCanonicalFileWrite(byteLength);
+  writeCanonicalFileAtomic(path, content, byteLength, reservation, mode, publication);
 }

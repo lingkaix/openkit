@@ -13,12 +13,12 @@ import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb, UserDb } from '../storage/db.js';
 import {
   ActorRefReaderSchema,
   preserveDescriptiveRecord,
   serializeKnowledgeProposalRecord,
-  writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { admitMemoryContext } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';

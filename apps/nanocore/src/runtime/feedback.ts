@@ -18,7 +18,7 @@ import {
 import { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 
 type Turn = import('zod').infer<typeof TurnSchema>;
 

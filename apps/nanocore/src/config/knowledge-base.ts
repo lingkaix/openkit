@@ -18,8 +18,9 @@ import {
 import { readCanonicalTextFile } from '@openkit/storage';
 import { applyEdits, modify } from 'jsonc-parser';
 import { NotebookError } from '../knowledge/notebook.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+
 import { parseJsoncObject } from './jsonc.js';
 import { openKitConfigPath } from './openkit-config.js';
 

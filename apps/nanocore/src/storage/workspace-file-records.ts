@@ -16,7 +16,6 @@ import {
   removeUnkeptCanonicalDirectories as removeStaleDirectories,
   syncCanonicalDirectory,
   throwCanonicalLinkError,
-  writeCanonicalFileAtomic,
 } from '@openkit/storage';
 
 export {
@@ -142,7 +141,7 @@ import {
 } from './artifacts/artifact-version-records.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
 
-import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import { reserveCanonicalFileWrite, writeFileAtomic } from './canonical-write-capacity.js';
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
@@ -2807,25 +2806,6 @@ export function appendCanonicalTextFile(path: string, content: string): void {
       if (safeToRelease) reservation?.release();
     }
   }
-}
-
-/**
- * Writes complete bytes durably through a same-directory temporary file.
- *
- * @param path Target file path.
- * @param content Complete file content.
- * @param mode Exact replacement mode when supplied; otherwise the private writer default.
- * @param publication Replace by rename, or create by link without clobbering an existing file.
- */
-export function writeFileAtomic(
-  path: string,
-  content: string | Uint8Array,
-  mode?: number,
-  publication: 'replace' | 'create' = 'replace'
-): void {
-  const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
-  const reservation = reserveCanonicalFileWrite(byteLength);
-  writeCanonicalFileAtomic(path, content, byteLength, reservation, mode, publication);
 }
 
 /** Preserves owned annotations while replacing known fields; append-order arrays retain their member annotations. */

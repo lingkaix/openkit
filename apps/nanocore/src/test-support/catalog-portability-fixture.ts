@@ -2,6 +2,7 @@
  * Test-only fixtures for retained catalog history and physical snapshot assertions.
  * Ordinary portable Workspace import is not a product capability.
  */
+
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -16,7 +17,7 @@ import { compareCodeUnits } from '@openkit/protocol';
 import { ensureCanonicalDirectory, publishCanonicalPath } from '@openkit/storage';
 import { skillPayloadExportPath } from '../catalog/catalog-portability.js';
 import { validateLightAppDefinitionCatalog } from '../catalog/resource-catalog.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 
 /**
  * Reconstructs an inactive target catalog from a verified portable projection.

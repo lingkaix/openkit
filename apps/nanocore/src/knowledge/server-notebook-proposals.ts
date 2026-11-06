@@ -14,12 +14,12 @@ import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   ActorRefReaderSchema,
   preserveDescriptiveRecord,
   serializeKnowledgeProposalRecord,
-  writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { projectSelectedKnowledgeProposalPreview } from './notebook-proposal-preview.js';

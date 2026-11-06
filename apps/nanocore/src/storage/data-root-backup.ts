@@ -23,8 +23,8 @@ import { compareCodeUnits, DataRootBackupIdSchema, DeploymentIdSchema } from '@o
 import { sha256Hex } from '@openkit/protocol/digest';
 import { copyBackupTree, copyMissingBackupDefinitions } from '@openkit/storage';
 import Database from 'better-sqlite3';
+import { writeFileAtomic } from './canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
-import { writeFileAtomic } from './workspace-file-records.js';
 
 /** File name for the data-root backup manifest. */
 export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';

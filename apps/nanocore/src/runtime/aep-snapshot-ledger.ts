@@ -1,4 +1,5 @@
 import { syncCanonicalDirectory, syncCanonicalTree } from '@openkit/storage';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 
 export type {
   AgentEnvironmentPackageSnapshotReadRecord,
@@ -28,7 +29,6 @@ import {
   readSnapshotRecord,
   snapshotDigest,
   validateSnapshotRecord,
-  writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 
 /** Local write-intent failure whose decoder cause stays private at publication. */

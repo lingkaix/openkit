@@ -44,6 +44,7 @@ import {
 import { conversationTaskThreadId, conversationTaskTurnId } from '../runtime/idempotent-command.js';
 import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-request-codecs.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
@@ -51,7 +52,6 @@ import {
   readCanonicalTextFile,
   syncCanonicalDirectory,
   syncCanonicalTree,
-  writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
 

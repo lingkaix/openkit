@@ -13,7 +13,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
+import { withCanonicalFileWriteAdmission, writeFileAtomic } from './canonical-write-capacity.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -24,7 +24,6 @@ import {
   appendCanonicalTextFile,
   loadWorkspaceFileRecords,
   nativeProductScope,
-  writeFileAtomic,
   writeWorkspaceFileRecords,
 } from './workspace-file-records.js';
 

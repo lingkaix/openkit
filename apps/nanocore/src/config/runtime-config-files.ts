@@ -53,7 +53,8 @@ import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
 import { policyDigest } from '../policy/statements.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
+
 import { VaultBackendError } from '../vault/vault-backend.js';
 import { parseJsoncObject } from './jsonc.js';
 import {

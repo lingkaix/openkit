@@ -39,9 +39,10 @@ import {
   removeCanonicalTreeSync,
 } from '@openkit/storage';
 import { ZodError, z } from 'zod';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 
 import { ensureWorkspaceLayout, resolveDataRootPath } from '../storage/fs-layout.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+
 import {
   CatalogInputError,
   type CatalogTreeFile,

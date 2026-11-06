@@ -47,7 +47,7 @@ import {
   readArtifactVersionRecord,
 } from './artifacts/artifact-version-records.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
-import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import { reserveCanonicalFileWrite, writeFileAtomic } from './canonical-write-capacity.js';
 import {
   RECURRING_PORTABLE_FEATURE,
   RECURRING_PORTABLE_PATHS,
@@ -81,7 +81,6 @@ import {
   readCanonicalTextFile,
   turnFilePayloadPath,
   verifyTurnFileInputs,
-  writeFileAtomic,
 } from './workspace-file-records.js';
 import {
   parseWorkspaceRetrievalTraceFile,

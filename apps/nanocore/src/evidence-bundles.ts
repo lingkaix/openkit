@@ -1,3 +1,4 @@
+import { writeFileAtomic } from './storage/canonical-write-capacity.js';
 import {
   assertEvidenceBundleDirectoryId,
   type EvidenceBundleRow,
@@ -25,10 +26,7 @@ import {
 } from '@openkit/storage';
 
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import {
-  assertSafeWorkspacePathSegment,
-  writeFileAtomic,
-} from './storage/workspace-file-records.js';
+import { assertSafeWorkspacePathSegment } from './storage/workspace-file-records.js';
 
 /** Input for compacting expired workspace evidence bundle refs. */
 export interface CompactWorkspaceEvidenceBundlesInput {

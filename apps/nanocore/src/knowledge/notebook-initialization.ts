@@ -11,7 +11,10 @@ import {
   recordUserAuditEvent,
 } from '../audit-events.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import {
+  withCanonicalFileWriteAdmission,
+  writeFileAtomic,
+} from '../storage/canonical-write-capacity.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import {
   prepareControlKnowledgeAuthorityTransfer,
@@ -19,7 +22,7 @@ import {
 } from '../storage/control-store-knowledge.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';

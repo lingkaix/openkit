@@ -21,11 +21,10 @@ import {
   removePrivateTreeSync,
 } from '@openkit/storage';
 import { ArtifactAuthorityError } from '../../artifact-authority.js';
-import {
-  ActorRefReaderSchema,
-  ArtifactReaderSchema,
-  writeFileAtomic,
-} from '../workspace-file-records.js';
+import { writeFileAtomic } from '../canonical-write-capacity.js';
+import { ActorRefReaderSchema } from '../knowledge-proposal-codecs.js';
+import { StoredArtifactSnapshotV1Schema as ArtifactReaderSchema } from '../retained-work-events-v1.js';
+
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './file-records.js';
 
 type Artifact = ArtifactVersionRecord['artifact'];

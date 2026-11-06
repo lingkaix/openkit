@@ -46,9 +46,9 @@ import {
 } from '../../retrieval-knowledge-adapter.js';
 import type { InflightIdempotentCommand } from '../../runtime/idempotent-command.js';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
-import { withCanonicalFileWriteAdmission } from '../canonical-write-capacity.js';
+import { withCanonicalFileWriteAdmission, writeFileAtomic } from '../canonical-write-capacity.js';
 import type { WorkspaceDb } from '../db.js';
-import { writeFileAtomic } from '../workspace-file-records.js';
+
 import { KNOWLEDGE_PACKAGE_LIMITS } from './archive.js';
 import {
   type KnowledgePackageFile,

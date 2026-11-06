@@ -28,9 +28,10 @@ import {
 } from '../config/knowledge-base.js';
 import { IdempotencyKeyConflictError, OperationError } from '../operation-error.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+
 import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { initializeNotebook } from './notebook-initialization.js';

@@ -17,7 +17,6 @@ import {
   syncCanonicalDirectory,
   syncCanonicalTree,
 } from '@openkit/storage';
-
 import { prepareAuditEvent, prepareAuditEventStatement } from '../audit-events.js';
 import { readCurrentWorkspacePolicy } from '../auth/operation-authorizer.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
@@ -31,6 +30,7 @@ import {
   readAuthorizedWorkspaceNotebookPagesSteps,
 } from '../retrieval-knowledge-adapter.js';
 import { readAgentEnvironmentPackageSnapshotInventory } from '../runtime/aep-snapshot-ledger.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import {
   getCommandRequestRecordFromDb,
   prepareControlCommandRequestStatement,
@@ -50,11 +50,7 @@ import { bindCoreSqlite, type WorkspaceDb } from '../storage/db.js';
 import { coreDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { readImmutableContentBytes } from '../storage/immutable-content-read.js';
 import { readRetrievalTraceInventory } from '../storage/retrieval-traces.js';
-import {
-  nativeProductScope,
-  readNativeProductPages,
-  writeFileAtomic,
-} from '../storage/workspace-file-records.js';
+import { nativeProductScope, readNativeProductPages } from '../storage/workspace-file-records.js';
 import { NotebookError } from './notebook-error.js';
 import {
   assertWorkspaceNotebookWrite,

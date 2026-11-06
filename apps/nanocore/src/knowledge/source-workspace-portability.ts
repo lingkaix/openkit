@@ -6,8 +6,8 @@ import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { assertCanonicalDirectory, measureCanonicalFile } from '@openkit/storage';
 import type { z } from 'zod';
 import { assertKnowledgeMountNamespaces } from '../config/knowledge-base.js';
-import { reserveCanonicalFileWrite } from '../storage/canonical-write-capacity.js';
-import { writeFileAtomic } from '../storage/workspace-file-records.js';
+import { reserveCanonicalFileWrite, writeFileAtomic } from '../storage/canonical-write-capacity.js';
+
 import { NotebookError } from './notebook.js';
 import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { updateOkfFrontmatter } from './okf.js';

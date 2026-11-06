@@ -30,10 +30,10 @@ import {
 } from '@openkit/config-schema';
 import { allocateEntityId, isEntityId, isRecord } from '@openkit/protocol';
 import { createDirectoryExclusive } from '@openkit/storage';
-
 import { type RecordServerAuditEventInput, recordServerAuditEvent } from '../audit-events.js';
+import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb } from '../storage/db.js';
-import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
+import { ensureCanonicalDirectory } from '../storage/workspace-file-records.js';
 import {
   type VaultBackend,
   VaultBackendError,
