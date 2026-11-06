@@ -90,8 +90,8 @@ import {
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
-  WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import {
   abandonWorkspaceRecoveryAtCore,
   activateWorkspaceRecoveryAtCore,

@@ -24,7 +24,6 @@ import {
   readWorkspaceBackupManifest,
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
-  WorkspaceRecoveryError,
   type workspaceSnapshotOperationPolicy,
 } from './workspace-backup.js';
 import { readWorkspaceSnapshotMetadata } from './workspace-backup-bundle.js';
@@ -53,6 +52,7 @@ import type {
   WorkspaceRecoveryCliReport,
   WorkspaceRecoverySelection,
 } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 
 /** Exact process-crash boundaries; internal dependencies only, never operator input. */
 export type WorkspaceRecoveryBoundary =

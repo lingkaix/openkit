@@ -43,8 +43,8 @@ import {
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
-  WorkspaceRecoveryError,
 } from '../storage/workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from '../storage/workspace-recovery-error.js';
 import {
   admitWorkspaceBackup,
   finishWorkspaceRecovery,

@@ -22,7 +22,6 @@ import { ControlProductPreconditionError } from './control-store-product-records
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
-import { WorkspaceRecoveryError } from './workspace-backup.js';
 import {
   WORKSPACE_BACKUP_MAX_FILE_BYTES,
   type WorkspaceBackupManifest,
@@ -41,6 +40,7 @@ import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import {
   type ControlRecoveryTargetPreparationInput,
   ControlRecoveryTargetPreparationInputSchema,

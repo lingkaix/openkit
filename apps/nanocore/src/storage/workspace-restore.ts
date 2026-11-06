@@ -46,8 +46,6 @@ import {
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
   type WorkspaceBackupStageInput,
-  WorkspaceRecoveryError,
-  type WorkspaceRecoveryErrorCode,
   workspaceSnapshotOperationPolicy,
 } from './workspace-backup.js';
 import {
@@ -89,6 +87,10 @@ import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
+import {
+  WorkspaceRecoveryError,
+  type WorkspaceRecoveryErrorCode,
+} from './workspace-recovery-error.js';
 import type {
   ControlRecoveryTargetPreparationInput,
   ControlRecoveryTargetRegistrationInput,

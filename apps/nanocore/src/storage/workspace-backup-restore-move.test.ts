@@ -27,8 +27,8 @@ import { nativeProductScope, readNativeTurnHistory } from './workspace-file-reco
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
-  WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const roots: string[] = [];

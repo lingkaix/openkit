@@ -44,8 +44,8 @@ import { nativeProductScope } from './workspace-file-records.js';
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
-  WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import { admitWorkspaceBackup } from './workspace-restore.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;

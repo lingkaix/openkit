@@ -264,7 +264,6 @@ import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.j
 import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js';
 import { WorkspaceBackendHandoffRefusal } from './workspace-backend-handoff-codecs.js';
 import { applyWorkspaceBackendHandoffInDb } from './workspace-backend-handoff-native.js';
-import { WorkspaceRecoveryError } from './workspace-backup.js';
 import { applyWorkspaceBaselineInDb } from './workspace-baseline-native.js';
 import {
   ControlWorkspaceCaptureRefusalSchema,
@@ -278,6 +277,7 @@ import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reac
 import { applyControlRecoverySourceReactivation } from './workspace-reactivation-native.js';
 import { WorkspaceRecoveryDecisionRefusal } from './workspace-recovery-decision-codecs.js';
 import { applyWorkspaceRecoveryDecisionInDb } from './workspace-recovery-decision-native.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import { ControlRecoveryTargetRegistrationRefusalSchema } from './workspace-recovery-target-codecs.js';
 import {
   applyControlRecoveryTargetPreparation,

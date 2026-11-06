@@ -18,8 +18,8 @@ import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliArgs,
   type WorkspaceRecoveryCliReport,
-  WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 
 // D0 release-policy ruling (12:23Z): the installed parser reads only this case's private identity.
 const runCli: (

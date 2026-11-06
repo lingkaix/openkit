@@ -17,7 +17,8 @@ import {
   type RecoveryProof,
   readRecoveryAdmission,
 } from './workspace-recovery-admissions.js';
-import { runWorkspaceRecoveryCli, WorkspaceRecoveryError } from './workspace-recovery-cli.js';
+import { runWorkspaceRecoveryCli } from './workspace-recovery-cli.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 
 let root: string;
 let core: CoreDb;

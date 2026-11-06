@@ -9,7 +9,6 @@ import {
   readWorkspaceBackupManifest,
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
-  WorkspaceRecoveryError,
 } from './workspace-backup.js';
 import {
   abandonWorkspaceMove,
@@ -20,13 +19,12 @@ import {
 } from './workspace-move.js';
 import type { WorkspaceMoveMemberMapping } from './workspace-move-mapping.js';
 import { recoveryReport } from './workspace-recovery-admissions.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import {
   abandonWorkspaceRecovery,
   admitWorkspaceBackup,
   finishWorkspaceRecovery,
 } from './workspace-restore.js';
-
-export { WorkspaceRecoveryError, type WorkspaceRecoveryErrorCode } from './workspace-backup.js';
 
 /** Selects existing capture or admission ownership; this is not a new command journal. */
 export type WorkspaceRecoverySelection =

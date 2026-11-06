@@ -1,9 +1,6 @@
 import { parentPort, receiveMessageOnPort, workerData } from 'node:worker_threads';
-import {
-  runWorkspaceCaptureWorker,
-  type WorkspaceCaptureControl,
-  WorkspaceRecoveryError,
-} from './workspace-backup.js';
+import { runWorkspaceCaptureWorker, type WorkspaceCaptureControl } from './workspace-backup.js';
+import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 
 const port = parentPort!;
 const signal = new Int32Array(workerData.signal);

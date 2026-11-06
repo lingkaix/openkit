@@ -59,8 +59,6 @@ import {
   type WorkspaceBackupCreateInput,
   type WorkspaceBackupSource,
   type WorkspaceBackupStageInput,
-  WorkspaceRecoveryError,
-  type WorkspaceRecoveryErrorCode,
 } from './workspace-backup.js';
 import {
   parseWorkspaceBackupManifest,
@@ -69,6 +67,10 @@ import {
   type WorkspaceBackupVerificationInput,
   withVerifiedWorkspaceBackupBundle,
 } from './workspace-backup-bundle.js';
+import {
+  WorkspaceRecoveryError,
+  type WorkspaceRecoveryErrorCode,
+} from './workspace-recovery-error.js';
 
 // Independent D0-1 oracles: WM "Workspace Bundle And Authority", capture steps 2–5,
 // restore steps 1–2, and the cold/H1 amendment. No capture collector is substituted.

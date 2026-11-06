@@ -22,11 +22,7 @@ import type {
 } from './control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck, openWorkspaceReadDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
-import {
-  type WorkspaceBackupReport,
-  WorkspaceRecoveryError,
-  type WorkspaceRecoveryErrorCode,
-} from './workspace-backup.js';
+import type { WorkspaceBackupReport } from './workspace-backup.js';
 import {
   parseWorkspaceBackupManifest,
   type WorkspaceBackupManifest,
@@ -37,6 +33,10 @@ import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
+import {
+  WorkspaceRecoveryError,
+  type WorkspaceRecoveryErrorCode,
+} from './workspace-recovery-error.js';
 
 /** Closed proof retained by the offline admission owner, not the command receipt ledger. */
 export interface RecoveryProof {
