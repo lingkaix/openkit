@@ -922,6 +922,7 @@ describe('Knowledge Manager answer operation', () => {
       ],
       excluded: [],
       createdAt: expect.any(String),
+      nextCursor: null,
     });
     expect(body.selected[0]!.score).toBeGreaterThan(0);
     expect(body).not.toHaveProperty('retrievalTraceRef');
