@@ -1,5 +1,6 @@
 import { useConnection } from '../../app/core-client';
 import {
+  Button,
   Card,
   ContextChip,
   EmptyState,
@@ -96,7 +97,13 @@ export function UsageScreen() {
           onRetry={() => void evidence.refetch()}
         />
       ) : evidence.data ? (
-        <UsageRecords evidence={evidence.data} activity={activity} />
+        <UsageRecords
+          evidence={evidence.data}
+          activity={activity}
+          hasNextPage={evidence.hasNextPage}
+          isFetchingNextPage={evidence.isFetchingNextPage}
+          fetchNextPage={() => void evidence.fetchNextPage()}
+        />
       ) : null}
     </Page>
   );
@@ -110,9 +117,15 @@ export function UsageScreen() {
 function UsageRecords({
   evidence,
   activity,
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage,
 }: {
   evidence: NonNullable<ReturnType<typeof useUsageAndAudit>['data']>;
   activity: ReturnType<typeof useThreadActivity>;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
 }) {
   const empty =
     evidence.capabilityCalls.length === 0 &&
@@ -141,147 +154,159 @@ function UsageRecords({
     );
   }
   return (
-    <LongList
-      summary={(filter) => {
-        const lines = [
-          ...evidence.capabilityCalls
-            .filter(
-              (call) =>
-                isAttention(call.status) &&
-                matchesLoadedRow(filter, {
-                  outcome: call.status,
-                  title: call.operation,
-                  at: call.startedAt,
-                })
-            )
-            .map((call) => (
-              <p key={call.id}>
-                {attentionSentence(attentionClause(call.status), call.operation, call.startedAt)}
-              </p>
-            )),
-          ...evidence.auditEvents
-            .filter(
-              (event) =>
-                isAttention(event.outcome) &&
-                matchesLoadedRow(filter, {
-                  outcome: event.outcome,
-                  title: event.summary || event.action,
-                  at: event.recordedAt,
-                })
-            )
-            .map((event) => (
-              <div key={event.id} className="flex flex-col gap-1">
-                <p>
-                  {attentionSentence(
-                    attentionClause(event.outcome),
-                    event.summary || event.action,
-                    event.recordedAt
-                  )}
-                </p>
-                <ThreadLink
-                  workspaceId={event.workspaceId}
-                  threadId={event.threadId}
-                  activity={activity.activityFor(event.threadId)}
-                />
-              </div>
-            )),
-          ...evidence.permissionDecisions
-            .filter(
-              (decision) =>
-                isAttention(decision.result) &&
-                matchesLoadedRow(filter, {
-                  outcome: decision.result,
-                  title: decision.action,
-                  at: decision.createdAt,
-                })
-            )
-            .map((decision) => (
-              <p key={decision.decisionId}>
-                {attentionSentence(
-                  attentionClause(decision.result),
-                  decision.action,
-                  decision.createdAt
-                )}
-              </p>
-            )),
-        ];
-        return lines.length > 0 ? lines : <p>Nothing failed, was denied, or needs a decision.</p>;
-      }}
-      records={(filter) => (
-        <>
-          <UsageSection
-            id="usage-records"
-            title="Usage"
-            empty={evidence.usageRecords.length === 0 && evidence.capabilityCalls.length === 0}
-          >
-            {evidence.usageRecords
-              .filter((record) =>
-                matchesLoadedRow(filter, {
-                  outcome: 'succeeded',
-                  title: record.measurement,
-                  at: record.recordedAt,
-                })
-              )
-              .map((record) => (
-                <UsageRow key={record.id} record={record} />
-              ))}
-            {evidence.capabilityCalls
-              .filter((call) =>
-                matchesLoadedRow(filter, {
-                  outcome: call.status,
-                  title: call.operation,
-                  at: call.startedAt,
-                })
+    <>
+      <LongList
+        summary={(filter) => {
+          const lines = [
+            ...evidence.capabilityCalls
+              .filter(
+                (call) =>
+                  isAttention(call.status) &&
+                  matchesLoadedRow(filter, {
+                    outcome: call.status,
+                    title: call.operation,
+                    at: call.startedAt,
+                  })
               )
               .map((call) => (
-                <CapabilityCallRow key={call.id} call={call} />
-              ))}
-          </UsageSection>
-          <UsageSection
-            id="workspace-audit-events"
-            title="Audit events"
-            empty={evidence.auditEvents.length === 0}
-            emptyTitle="No audit events"
-            emptyHint="Workspace audit events will appear here as Core records them."
-          >
-            {evidence.auditEvents
-              .filter((event) =>
-                matchesLoadedRow(filter, {
-                  outcome: event.outcome,
-                  title: event.summary || event.action,
-                  at: event.recordedAt,
-                })
+                <p key={call.id}>
+                  {attentionSentence(attentionClause(call.status), call.operation, call.startedAt)}
+                </p>
+              )),
+            ...evidence.auditEvents
+              .filter(
+                (event) =>
+                  isAttention(event.outcome) &&
+                  matchesLoadedRow(filter, {
+                    outcome: event.outcome,
+                    title: event.summary || event.action,
+                    at: event.recordedAt,
+                  })
               )
               .map((event) => (
-                <AuditEventRow
-                  key={event.id}
-                  event={event}
-                  activity={activity.activityFor(event.threadId)}
-                />
-              ))}
-          </UsageSection>
-          <UsageSection
-            id="permission-decisions"
-            title="Permission decisions"
-            empty={evidence.permissionDecisions.length === 0}
-            emptyTitle="No permission decisions"
-            emptyHint="Workspace permission decisions will appear here as policy is evaluated."
-          >
-            {evidence.permissionDecisions
-              .filter((decision) =>
-                matchesLoadedRow(filter, {
-                  outcome: decision.result,
-                  title: decision.action,
-                  at: decision.createdAt,
-                })
+                <div key={event.id} className="flex flex-col gap-1">
+                  <p>
+                    {attentionSentence(
+                      attentionClause(event.outcome),
+                      event.summary || event.action,
+                      event.recordedAt
+                    )}
+                  </p>
+                  <ThreadLink
+                    workspaceId={event.workspaceId}
+                    threadId={event.threadId}
+                    activity={activity.activityFor(event.threadId)}
+                  />
+                </div>
+              )),
+            ...evidence.permissionDecisions
+              .filter(
+                (decision) =>
+                  isAttention(decision.result) &&
+                  matchesLoadedRow(filter, {
+                    outcome: decision.result,
+                    title: decision.action,
+                    at: decision.createdAt,
+                  })
               )
               .map((decision) => (
-                <PermissionDecisionRow key={decision.decisionId} decision={decision} />
-              ))}
-          </UsageSection>
-        </>
-      )}
-    />
+                <p key={decision.decisionId}>
+                  {attentionSentence(
+                    attentionClause(decision.result),
+                    decision.action,
+                    decision.createdAt
+                  )}
+                </p>
+              )),
+          ];
+          return lines.length > 0 ? lines : <p>Nothing failed, was denied, or needs a decision.</p>;
+        }}
+        records={(filter) => (
+          <>
+            <UsageSection
+              id="usage-records"
+              title="Usage"
+              empty={evidence.usageRecords.length === 0 && evidence.capabilityCalls.length === 0}
+            >
+              {evidence.usageRecords
+                .filter((record) =>
+                  matchesLoadedRow(filter, {
+                    outcome: 'succeeded',
+                    title: record.measurement,
+                    at: record.recordedAt,
+                  })
+                )
+                .map((record) => (
+                  <UsageRow key={record.id} record={record} />
+                ))}
+              {evidence.capabilityCalls
+                .filter((call) =>
+                  matchesLoadedRow(filter, {
+                    outcome: call.status,
+                    title: call.operation,
+                    at: call.startedAt,
+                  })
+                )
+                .map((call) => (
+                  <CapabilityCallRow key={call.id} call={call} />
+                ))}
+            </UsageSection>
+            <UsageSection
+              id="workspace-audit-events"
+              title="Audit events"
+              empty={evidence.auditEvents.length === 0}
+              emptyTitle="No audit events"
+              emptyHint="Workspace audit events will appear here as Core records them."
+            >
+              {evidence.auditEvents
+                .filter((event) =>
+                  matchesLoadedRow(filter, {
+                    outcome: event.outcome,
+                    title: event.summary || event.action,
+                    at: event.recordedAt,
+                  })
+                )
+                .map((event) => (
+                  <AuditEventRow
+                    key={event.id}
+                    event={event}
+                    activity={activity.activityFor(event.threadId)}
+                  />
+                ))}
+            </UsageSection>
+            <UsageSection
+              id="permission-decisions"
+              title="Permission decisions"
+              empty={evidence.permissionDecisions.length === 0}
+              emptyTitle="No permission decisions"
+              emptyHint="Workspace permission decisions will appear here as policy is evaluated."
+            >
+              {evidence.permissionDecisions
+                .filter((decision) =>
+                  matchesLoadedRow(filter, {
+                    outcome: decision.result,
+                    title: decision.action,
+                    at: decision.createdAt,
+                  })
+                )
+                .map((decision) => (
+                  <PermissionDecisionRow key={decision.decisionId} decision={decision} />
+                ))}
+            </UsageSection>
+          </>
+        )}
+      />
+      {hasNextPage ? (
+        <Button
+          variant="quiet"
+          className="min-h-11 justify-start px-3"
+          isDisabled={isFetchingNextPage}
+          onPress={fetchNextPage}
+        >
+          Load more
+        </Button>
+      ) : null}
+    </>
   );
 }
 

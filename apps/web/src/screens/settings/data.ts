@@ -1,7 +1,7 @@
 import type { CoreClient, WorkspaceRecord } from '@openkit/core-client';
 import { ApiCallError, createRequestId } from '@openkit/core-client';
 import type { ActorRef } from '@openkit/protocol';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import { useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { projectSafeValue } from './secret-safe';
@@ -25,6 +25,39 @@ export const settingsKeys = {
     ['settings', 'aep-snapshot', workspaceId, snapshotId] as const,
   usage: (workspaceId: string) => ['settings', 'usage', workspaceId] as const,
   aiInterface: ['settings', 'ai-interface'] as const,
+};
+
+/** One bounded governance page. Omitted limit returns the whole remainder. */
+export const GOVERNANCE_PAGE_LIMIT = 50;
+
+/**
+ * One governance page's continuation.
+ *
+ * A missing, empty, or repeated cursor stops that read. The cursor stays opaque.
+ * `null` means the read is finished and must not be requested again.
+ */
+function nextGovernanceCursor(
+  nextCursor: string | null | undefined,
+  pageParam: string | null | undefined,
+  previousCursors: readonly (string | null | undefined)[]
+): string | null {
+  if (typeof nextCursor !== 'string' || nextCursor.length === 0) return null;
+  if (typeof pageParam === 'string' && nextCursor === pageParam) return null;
+  if (previousCursors.includes(nextCursor)) return null;
+  return nextCursor;
+}
+
+function governancePageInput(cursor: string | null | undefined) {
+  return {
+    limit: GOVERNANCE_PAGE_LIMIT,
+    ...(typeof cursor === 'string' ? { cursor } : {}),
+  };
+}
+
+type GovernanceCursors = {
+  usage?: string | null;
+  audit?: string | null;
+  permission?: string | null;
 };
 
 /** Re-export workspace selection for General settings. */
@@ -1083,71 +1116,102 @@ export function useAepSnapshotDetail(workspaceId: string | null, snapshotId: str
   });
 }
 
-type WorkspaceAuditPage = Awaited<ReturnType<CoreClient['operations']['audit.workspace-list']>>;
-
-/**
- * Reads Workspace Audit history without a client page cap.
- * The first call omits `limit`, so the server returns its full remaining collection.
- * A later call sends that response's opaque cursor unchanged, with the same Workspace
- * and still no limit. Each call is a new authorized read. The cursor is not decoded,
- * stored, or treated as an access grant. A repeated cursor stops the read.
- *
- * @param client Live Core client for the current mount.
- * @param workspaceId Selected Workspace. Continuation never substitutes another id.
- * @param signal Aborts the walk when this mount or selection is no longer current.
- * @returns Events in the server's descending page order, with no further cursor.
- */
-async function readWorkspaceAudit(
-  client: CoreClient,
-  workspaceId: string,
-  signal: AbortSignal
-): Promise<WorkspaceAuditPage> {
-  const auditEvents: WorkspaceAuditPage['auditEvents'] = [];
-  const seen = new Set<string>();
-  let cursor: string | undefined;
-  let reportedWorkspaceId = workspaceId;
-  for (;;) {
-    signal.throwIfAborted();
-    const page = await client.operations['audit.workspace-list'](
-      cursor === undefined ? { workspaceId } : { workspaceId, cursor }
-    );
-    signal.throwIfAborted();
-    reportedWorkspaceId = page.workspaceId;
-    auditEvents.push(...page.auditEvents);
-    const next = page.nextCursor;
-    if (typeof next !== 'string' || next.length === 0) {
-      return { workspaceId: reportedWorkspaceId, auditEvents, nextCursor: null };
-    }
-    if (seen.has(next)) throw new Error('Workspace audit continuation repeated.');
-    seen.add(next);
-    cursor = next;
-  }
-}
-
 /**
  * Loads live usage, audit, and permission evidence for the selected Workspace.
- * Capability calls and usage records stay two separate arrays from one `usage.read`.
- * Audit history follows continuation. Permission decisions stay one read.
+ * Each read requests one bounded page. Load more continues only a read whose
+ * server cursor is new. The cursor stays opaque.
  *
  * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
  * @returns TanStack query for the selected-Workspace projection.
  */
 export function useUsageAndAudit(workspaceId: string | null) {
   const client = useCoreClient();
-  return useQuery({
+  const query = useInfiniteQuery({
     queryKey: settingsKeys.usage(workspaceId ?? ''),
-    queryFn: async ({ signal }) => {
+    initialPageParam: {
+      usage: undefined,
+      audit: undefined,
+      permission: undefined,
+    } as GovernanceCursors,
+    queryFn: async ({ pageParam, signal }) => {
       const selectedWorkspaceId = workspaceId as string;
       const [usage, audit, decisions] = await Promise.all([
-        client.operations['usage.read']({ workspaceId: selectedWorkspaceId }),
-        readWorkspaceAudit(client, selectedWorkspaceId, signal),
-        client.operations['permission.workspace-list']({ workspaceId: selectedWorkspaceId }),
+        pageParam.usage === null
+          ? {
+              workspaceId: selectedWorkspaceId,
+              capabilityCalls: [],
+              usageRecords: [],
+              nextCursor: null,
+            }
+          : client.operations['usage.read']({
+              workspaceId: selectedWorkspaceId,
+              ...governancePageInput(pageParam.usage),
+            }),
+        pageParam.audit === null
+          ? { workspaceId: selectedWorkspaceId, auditEvents: [], nextCursor: null }
+          : client.operations['audit.workspace-list']({
+              workspaceId: selectedWorkspaceId,
+              ...governancePageInput(pageParam.audit),
+            }),
+        pageParam.permission === null
+          ? { workspaceId: selectedWorkspaceId, permissionDecisions: [], nextCursor: null }
+          : client.operations['permission.workspace-list']({
+              workspaceId: selectedWorkspaceId,
+              ...governancePageInput(pageParam.permission),
+            }),
       ]);
       signal.throwIfAborted();
-      return projectUsageAndAudit(usage, audit, decisions);
+      return {
+        ...projectUsageAndAudit(usage, audit, decisions),
+        cursors: {
+          usage: usage.nextCursor ?? null,
+          audit: audit.nextCursor ?? null,
+          permission: decisions.nextCursor ?? null,
+        },
+      };
+    },
+    getNextPageParam: (last, pages, pageParam) => {
+      const earlier = pages.slice(0, -1);
+      const usage =
+        pageParam.usage === null
+          ? null
+          : nextGovernanceCursor(
+              last.cursors.usage,
+              pageParam.usage,
+              earlier.map((page) => page.cursors.usage)
+            );
+      const audit =
+        pageParam.audit === null
+          ? null
+          : nextGovernanceCursor(
+              last.cursors.audit,
+              pageParam.audit,
+              earlier.map((page) => page.cursors.audit)
+            );
+      const permission =
+        pageParam.permission === null
+          ? null
+          : nextGovernanceCursor(
+              last.cursors.permission,
+              pageParam.permission,
+              earlier.map((page) => page.cursors.permission)
+            );
+      if (usage === null && audit === null && permission === null) return undefined;
+      return { usage, audit, permission };
     },
     enabled: Boolean(workspaceId),
   });
+  return {
+    ...query,
+    data: query.data
+      ? {
+          capabilityCalls: query.data.pages.flatMap((page) => page.capabilityCalls),
+          usageRecords: query.data.pages.flatMap((page) => page.usageRecords),
+          auditEvents: query.data.pages.flatMap((page) => page.auditEvents),
+          permissionDecisions: query.data.pages.flatMap((page) => page.permissionDecisions),
+        }
+      : undefined,
+  };
 }
 
 /** Update the active workspace display name from General settings. */
@@ -1174,17 +1238,30 @@ export function useUpdateWorkspaceName(workspaceId: string | null) {
 /** Rechecks deployment-admin audit and decisions for each mount, with safe cached data and errors. */
 export function useServerAudit() {
   const client = useCoreClient();
-  return useQuery({
+  const query = useInfiniteQuery({
     queryKey: ['settings', 'server-audit'],
-    queryFn: async ({ signal }) => {
+    initialPageParam: { audit: undefined, permission: undefined } as GovernanceCursors,
+    queryFn: async ({ pageParam, signal }) => {
       try {
         const [audit, decisions] = await Promise.all([
-          client.operations['audit.server-list']({}),
-          client.operations['permission.server-list']({}),
+          pageParam.audit === null
+            ? { auditEvents: [], nextCursor: null }
+            : client.operations['audit.server-list'](governancePageInput(pageParam.audit)),
+          pageParam.permission === null
+            ? { permissionDecisions: [], nextCursor: null }
+            : client.operations['permission.server-list'](
+                governancePageInput(pageParam.permission)
+              ),
         ]);
         // A departed observer must not authorize a later mount with its pending response.
         signal.throwIfAborted();
-        return projectAuditAndDecisions(audit, decisions);
+        return {
+          ...projectAuditAndDecisions(audit, decisions),
+          cursors: {
+            audit: audit.nextCursor ?? null,
+            permission: decisions.nextCursor ?? null,
+          },
+        };
       } catch (error) {
         // Only fixed copy and the denial status may enter this query's error cache.
         if (error instanceof ApiCallError && (error.status === 401 || error.status === 403)) {
@@ -1193,7 +1270,37 @@ export function useServerAudit() {
         throw new Error("Couldn't load server audit records.");
       }
     },
+    getNextPageParam: (last, pages, pageParam) => {
+      const earlier = pages.slice(0, -1);
+      const audit =
+        pageParam.audit === null
+          ? null
+          : nextGovernanceCursor(
+              last.cursors.audit,
+              pageParam.audit,
+              earlier.map((page) => page.cursors.audit)
+            );
+      const permission =
+        pageParam.permission === null
+          ? null
+          : nextGovernanceCursor(
+              last.cursors.permission,
+              pageParam.permission,
+              earlier.map((page) => page.cursors.permission)
+            );
+      if (audit === null && permission === null) return undefined;
+      return { audit, permission };
+    },
     retry: false,
     refetchOnMount: 'always',
   });
+  return {
+    ...query,
+    data: query.data
+      ? {
+          auditEvents: query.data.pages.flatMap((page) => page.auditEvents),
+          permissionDecisions: query.data.pages.flatMap((page) => page.permissionDecisions),
+        }
+      : undefined,
+  };
 }

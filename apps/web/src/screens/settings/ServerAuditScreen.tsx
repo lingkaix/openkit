@@ -44,7 +44,9 @@ export function ServerAuditScreen() {
           </Button>
         }
       />
-      {records.isLoading || records.isFetching || !records.isFetchedAfterMount ? (
+      {records.isLoading ||
+      (records.isFetching && !records.isFetchingNextPage) ||
+      !records.isFetchedAfterMount ? (
         <Skeleton lines={8} />
       ) : records.isError ? (
         denied ? (
@@ -79,131 +81,143 @@ export function ServerAuditScreen() {
             />
           </>
         ) : (
-          <LongList
-            summary={(filter) => {
-              const lines = [
-                ...(records.data?.auditEvents ?? [])
-                  .filter(
-                    (event) =>
-                      isAttention(event.outcome) &&
-                      matchesLoadedRow(filter, {
-                        outcome: event.outcome,
-                        title: event.summary || event.action,
-                        at: event.recordedAt,
-                      })
-                  )
-                  .map((event) => (
-                    <div key={event.id} className="flex flex-col gap-1">
-                      <p>
+          <>
+            <LongList
+              summary={(filter) => {
+                const lines = [
+                  ...(records.data?.auditEvents ?? [])
+                    .filter(
+                      (event) =>
+                        isAttention(event.outcome) &&
+                        matchesLoadedRow(filter, {
+                          outcome: event.outcome,
+                          title: event.summary || event.action,
+                          at: event.recordedAt,
+                        })
+                    )
+                    .map((event) => (
+                      <div key={event.id} className="flex flex-col gap-1">
+                        <p>
+                          {attentionSentence(
+                            attentionClause(event.outcome),
+                            event.summary || event.action,
+                            event.recordedAt
+                          )}
+                        </p>
+                        <ThreadLink
+                          workspaceId={event.workspaceId}
+                          threadId={event.threadId}
+                          activity={activity.activityFor(event.threadId)}
+                        />
+                      </div>
+                    )),
+                  ...(records.data?.permissionDecisions ?? [])
+                    .filter(
+                      (decision) =>
+                        isAttention(decision.result) &&
+                        matchesLoadedRow(filter, {
+                          outcome: decision.result,
+                          title: decision.action,
+                          at: decision.createdAt,
+                        })
+                    )
+                    .map((decision) => (
+                      <p key={decision.decisionId}>
                         {attentionSentence(
-                          attentionClause(event.outcome),
-                          event.summary || event.action,
-                          event.recordedAt
+                          attentionClause(decision.result),
+                          decision.action,
+                          decision.createdAt
                         )}
                       </p>
-                      <ThreadLink
-                        workspaceId={event.workspaceId}
-                        threadId={event.threadId}
-                        activity={activity.activityFor(event.threadId)}
+                    )),
+                ];
+                return lines.length > 0 ? (
+                  lines
+                ) : (
+                  <p>Nothing failed, was denied, or needs a decision.</p>
+                );
+              }}
+              records={(filter) => (
+                <>
+                  <section className="flex flex-col gap-3" aria-labelledby="server-audit-events">
+                    <h2
+                      id="server-audit-events"
+                      className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
+                    >
+                      Audit events
+                    </h2>
+                    {records.data?.auditEvents.length === 0 ? (
+                      <EmptyState
+                        icon="usage"
+                        title="No server audit events"
+                        hint="Server audit events will appear here as Core records them."
                       />
-                    </div>
-                  )),
-                ...(records.data?.permissionDecisions ?? [])
-                  .filter(
-                    (decision) =>
-                      isAttention(decision.result) &&
-                      matchesLoadedRow(filter, {
-                        outcome: decision.result,
-                        title: decision.action,
-                        at: decision.createdAt,
-                      })
-                  )
-                  .map((decision) => (
-                    <p key={decision.decisionId}>
-                      {attentionSentence(
-                        attentionClause(decision.result),
-                        decision.action,
-                        decision.createdAt
-                      )}
-                    </p>
-                  )),
-              ];
-              return lines.length > 0 ? (
-                lines
-              ) : (
-                <p>Nothing failed, was denied, or needs a decision.</p>
-              );
-            }}
-            records={(filter) => (
-              <>
-                <section className="flex flex-col gap-3" aria-labelledby="server-audit-events">
-                  <h2
-                    id="server-audit-events"
-                    className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
+                    ) : (
+                      <Card className="py-0">
+                        {records.data?.auditEvents
+                          .filter((event) =>
+                            matchesLoadedRow(filter, {
+                              outcome: event.outcome,
+                              title: event.summary || event.action,
+                              at: event.recordedAt,
+                            })
+                          )
+                          .map((event) => (
+                            <AuditEventRow
+                              key={event.id}
+                              event={event}
+                              activity={activity.activityFor(event.threadId)}
+                            />
+                          ))}
+                      </Card>
+                    )}
+                  </section>
+                  <section
+                    className="flex flex-col gap-3"
+                    aria-labelledby="server-permission-decisions"
                   >
-                    Audit events
-                  </h2>
-                  {records.data?.auditEvents.length === 0 ? (
-                    <EmptyState
-                      icon="usage"
-                      title="No server audit events"
-                      hint="Server audit events will appear here as Core records them."
-                    />
-                  ) : (
-                    <Card className="py-0">
-                      {records.data?.auditEvents
-                        .filter((event) =>
-                          matchesLoadedRow(filter, {
-                            outcome: event.outcome,
-                            title: event.summary || event.action,
-                            at: event.recordedAt,
-                          })
-                        )
-                        .map((event) => (
-                          <AuditEventRow
-                            key={event.id}
-                            event={event}
-                            activity={activity.activityFor(event.threadId)}
-                          />
-                        ))}
-                    </Card>
-                  )}
-                </section>
-                <section
-                  className="flex flex-col gap-3"
-                  aria-labelledby="server-permission-decisions"
-                >
-                  <h2
-                    id="server-permission-decisions"
-                    className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
-                  >
-                    Permission decisions
-                  </h2>
-                  {records.data?.permissionDecisions.length === 0 ? (
-                    <EmptyState
-                      icon="usage"
-                      title="No server permission decisions"
-                      hint="Server permission decisions will appear here as policy is evaluated."
-                    />
-                  ) : (
-                    <Card className="py-0">
-                      {records.data?.permissionDecisions
-                        .filter((decision) =>
-                          matchesLoadedRow(filter, {
-                            outcome: decision.result,
-                            title: decision.action,
-                            at: decision.createdAt,
-                          })
-                        )
-                        .map((decision) => (
-                          <PermissionDecisionRow key={decision.decisionId} decision={decision} />
-                        ))}
-                    </Card>
-                  )}
-                </section>
-              </>
-            )}
-          />
+                    <h2
+                      id="server-permission-decisions"
+                      className="text-eyebrow font-bold tracking-eyebrow text-fg-muted"
+                    >
+                      Permission decisions
+                    </h2>
+                    {records.data?.permissionDecisions.length === 0 ? (
+                      <EmptyState
+                        icon="usage"
+                        title="No server permission decisions"
+                        hint="Server permission decisions will appear here as policy is evaluated."
+                      />
+                    ) : (
+                      <Card className="py-0">
+                        {records.data?.permissionDecisions
+                          .filter((decision) =>
+                            matchesLoadedRow(filter, {
+                              outcome: decision.result,
+                              title: decision.action,
+                              at: decision.createdAt,
+                            })
+                          )
+                          .map((decision) => (
+                            <PermissionDecisionRow key={decision.decisionId} decision={decision} />
+                          ))}
+                      </Card>
+                    )}
+                  </section>
+                </>
+              )}
+            />
+            {records.hasNextPage ? (
+              <Button
+                variant="quiet"
+                className="min-h-11 justify-start px-3"
+                isDisabled={records.isFetchingNextPage}
+                onPress={() => void records.fetchNextPage()}
+              >
+                Load more
+              </Button>
+            ) : null}
+          </>
         )
       ) : null}
     </Page>

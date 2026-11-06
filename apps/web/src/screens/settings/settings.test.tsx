@@ -1779,9 +1779,9 @@ describe('Usage and audit settings (board 17)', () => {
       serverAudit: vi.mocked(client.operations['audit.server-list']).mock.calls,
       serverDecisions: vi.mocked(client.operations['permission.server-list']).mock.calls,
     }).toEqual({
-      usage: [[{ workspaceId: WORKSPACE.id }]],
-      audit: [[{ workspaceId: WORKSPACE.id }]],
-      decisions: [[{ workspaceId: WORKSPACE.id }]],
+      usage: [[{ workspaceId: WORKSPACE.id, limit: 50 }]],
+      audit: [[{ workspaceId: WORKSPACE.id, limit: 50 }]],
+      decisions: [[{ workspaceId: WORKSPACE.id, limit: 50 }]],
       serverAudit: [],
       serverDecisions: [],
     });
@@ -1835,9 +1835,9 @@ describe('Usage and audit settings (board 17)', () => {
       },
       serverAudit: vi.mocked(client.operations['audit.server-list']).mock.calls,
     }).toEqual({
-      usage: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
-      audit: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
-      decisions: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
+      usage: { calls: [[{ workspaceId: WORKSPACE.id, limit: 50 }]], afterValidation: true },
+      audit: { calls: [[{ workspaceId: WORKSPACE.id, limit: 50 }]], afterValidation: true },
+      decisions: { calls: [[{ workspaceId: WORKSPACE.id, limit: 50 }]], afterValidation: true },
       serverAudit: [],
     });
   });
@@ -1916,7 +1916,8 @@ describe('Usage and audit settings (board 17)', () => {
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
   });
 
-  it('follows the opaque Workspace Audit cursor without a limit and keeps both usage arrays', async () => {
+  it('loads the next Workspace audit page only when the server returns a cursor', async () => {
+    const user = userEvent.setup();
     const cursor = 'opaque-workspace-audit-cursor';
     const older = {
       ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
@@ -1925,14 +1926,12 @@ describe('Usage and audit settings (board 17)', () => {
       category: 'workspace',
       summary: 'Older Workspace audit page.',
     };
-    const listWorkspaceAuditEvents = vi
-      .fn()
-      .mockResolvedValueOnce({ ...WORKSPACE_AUDIT_EVENTS, nextCursor: cursor })
-      .mockResolvedValueOnce({
-        workspaceId: WORKSPACE.id,
-        auditEvents: [older],
-        nextCursor: null,
-      });
+    const listWorkspaceAuditEvents = vi.fn(
+      async (input: { workspaceId: string; cursor?: string }) =>
+        input.cursor === cursor
+          ? { workspaceId: WORKSPACE.id, auditEvents: [older], nextCursor: null }
+          : { ...WORKSPACE_AUDIT_EVENTS, nextCursor: cursor }
+    );
     const client = makeClient({
       app: {},
       operations: { 'audit.workspace-list': listWorkspaceAuditEvents },
@@ -1940,30 +1939,36 @@ describe('Usage and audit settings (board 17)', () => {
     renderApp('/workspace/usage', client);
 
     await openRecords();
-    const text = document.body.textContent ?? '';
-    expect(text.indexOf('llm.chat_completions')).toBeGreaterThan(-1);
-    expect(text.indexOf('llm.chat_completions')).toBeLessThan(text.indexOf('workspace.inspect'));
-    expect(screen.getByText('Older Workspace audit page.', { exact: true })).toBeVisible();
     expect(screen.getByText('chat_completions', { exact: true })).toBeVisible();
-    expect(screen.getByText('12 tokens', { exact: true })).toBeVisible();
-    expect(listWorkspaceAuditEvents.mock.calls).toEqual([
-      [{ workspaceId: WORKSPACE.id }],
-      [{ workspaceId: WORKSPACE.id, cursor }],
-    ]);
-    expect(listWorkspaceAuditEvents.mock.calls.every(([input]) => !('limit' in input))).toBe(true);
-    expect(vi.mocked(client.operations['usage.read']).mock.calls).toEqual([
-      [{ workspaceId: WORKSPACE.id }],
-    ]);
-    expect(vi.mocked(client.operations['permission.workspace-list']).mock.calls).toEqual([
-      [{ workspaceId: WORKSPACE.id }],
-    ]);
-    expect(document.body.textContent).not.toContain(cursor);
     expect(
-      screen.queryByRole('button', { name: /next page|load more|show more|more records/i })
+      screen.queryByText('Older Workspace audit page.', { exact: true })
     ).not.toBeInTheDocument();
+    expect(screen.getByText('12 tokens', { exact: true })).toBeVisible();
+    expect(listWorkspaceAuditEvents).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      limit: 50,
+    });
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Older Workspace audit page.', { exact: true })).toBeVisible();
+    expect(listWorkspaceAuditEvents).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      limit: 50,
+      cursor,
+    });
+    expect(vi.mocked(client.operations['usage.read'])).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      limit: 50,
+    });
+    expect(vi.mocked(client.operations['permission.workspace-list'])).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      limit: 50,
+    });
+    expect(document.body.textContent).not.toContain(cursor);
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
   it('stops when a Workspace Audit cursor repeats and does not render that cursor', async () => {
+    const user = userEvent.setup();
     const cursor = 'opaque-workspace-audit-cursor';
     const listWorkspaceAuditEvents = vi.fn().mockResolvedValue({
       ...WORKSPACE_AUDIT_EVENTS,
@@ -1977,15 +1982,17 @@ describe('Usage and audit settings (board 17)', () => {
       })
     );
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't load usage and audit/i);
-    expect(alert).not.toHaveTextContent(cursor);
-    expect(listWorkspaceAuditEvents).toHaveBeenCalledTimes(2);
+    await openRecords();
+    expect(screen.getByText('chat_completions', { exact: true })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(listWorkspaceAuditEvents).toHaveBeenCalledTimes(2));
     expect(listWorkspaceAuditEvents.mock.calls).toEqual([
-      [{ workspaceId: WORKSPACE.id }],
-      [{ workspaceId: WORKSPACE.id, cursor }],
+      [{ workspaceId: WORKSPACE.id, limit: 50 }],
+      [{ workspaceId: WORKSPACE.id, limit: 50, cursor }],
     ]);
-    expect(screen.queryByText('chat_completions', { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(cursor);
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 });
 

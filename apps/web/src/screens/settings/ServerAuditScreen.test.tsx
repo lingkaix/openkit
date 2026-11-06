@@ -143,8 +143,10 @@ describe('Server audit administration', () => {
     expect(screen.getAllByText('server.read [redacted]').length).toBeGreaterThan(0);
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(screen.getByText('Rejected')).toBeInTheDocument();
-    expect(client.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({});
-    expect(client.operations['permission.server-list']).toHaveBeenCalledExactlyOnceWith({});
+    expect(client.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({ limit: 50 });
+    expect(client.operations['permission.server-list']).toHaveBeenCalledExactlyOnceWith({
+      limit: 50,
+    });
   });
 
   it('whitelists and redacts records before rendering or caching', async () => {
@@ -244,7 +246,11 @@ describe('Server audit administration', () => {
     await openRecords();
     expect(screen.getByText('server.inspect')).toBeInTheDocument();
     for (const method of ['audit.server-list', 'permission.server-list'] as const) {
-      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([[{}], [{}], [{}]]);
+      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
+        [{ limit: 50 }],
+        [{ limit: 50 }],
+        [{ limit: 50 }],
+      ]);
     }
   });
 
@@ -266,7 +272,9 @@ describe('Server audit administration', () => {
     const currentClient = makeClient();
     renderScreen(currentClient, first.queryClient);
     await waitFor(() =>
-      expect(currentClient.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({})
+      expect(currentClient.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({
+        limit: 50,
+      })
     );
     await openRecords();
     expect(screen.getByText('server.inspect')).toBeInTheDocument();
@@ -274,7 +282,9 @@ describe('Server audit administration', () => {
     expect(first.queryClient.isFetching()).toBe(0);
     expect(screen.getByText('server.inspect')).toBeInTheDocument();
     expect(screen.queryByText('No server audit events')).not.toBeInTheDocument();
-    expect(currentClient.operations['permission.server-list']).toHaveBeenCalledExactlyOnceWith({});
+    expect(currentClient.operations['permission.server-list']).toHaveBeenCalledExactlyOnceWith({
+      limit: 50,
+    });
   });
 
   it('refreshes both read-only lists and prevents repeat refresh while pending', async () => {
@@ -304,7 +314,10 @@ describe('Server audit administration', () => {
     expect(screen.getByText('No server permission decisions')).toBeInTheDocument();
     expect(refresh).toBeEnabled();
     for (const method of ['audit.server-list', 'permission.server-list'] as const) {
-      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([[{}], [{}]]);
+      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
+        [{ limit: 50 }],
+        [{ limit: 50 }],
+      ]);
     }
   });
 
@@ -359,7 +372,11 @@ describe('Server audit administration', () => {
     await openRecords();
     expect(screen.getByText('server.inspect')).toBeInTheDocument();
     for (const method of ['audit.server-list', 'permission.server-list'] as const) {
-      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([[{}], [{}], [{}]]);
+      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
+        [{ limit: 50 }],
+        [{ limit: 50 }],
+        [{ limit: 50 }],
+      ]);
     }
   });
 
