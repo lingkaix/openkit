@@ -109,11 +109,13 @@ type ModelFixture = {
   capabilities: string[];
   autoFailover?: boolean;
   routes?: RouteFixture[];
+  modelFamilyId?: string | null;
   contract?: {
     context: number | null;
     output: number | null;
     inputModalities: string[] | null;
     reasoning: boolean | null;
+    modelFamilyId?: string | null;
   };
   reasoningEffortLevels?: string[];
 };
@@ -549,6 +551,38 @@ describe('Gateway piles', () => {
     expect(within(card).getAllByText(/low/).length).toBeGreaterThan(0);
     expect(within(card).getAllByText(/med/).length).toBeGreaterThan(0);
     expect(within(card).queryByText(/mixed/i)).toBeNull();
+  });
+
+  it('shows the published model family, and mixed only when that family is null', async () => {
+    const models = MODELS.map((model) => {
+      if (model.id === 'notes' && model.contract) {
+        return {
+          ...model,
+          modelFamilyId: 'claude',
+          contract: { ...model.contract, modelFamilyId: 'claude' },
+        };
+      }
+      if (model.id === 'fast' && model.contract) {
+        return {
+          ...model,
+          modelFamilyId: null,
+          contract: { ...model.contract, modelFamilyId: null },
+        };
+      }
+      return model;
+    });
+    renderScreen(makeClient({ diagnostics: diagnosticsFixture({ models }) }));
+
+    const notes = await screen.findByRole('region', { name: 'Notes model' });
+    await userEvent.click(within(notes).getByText('Contract'));
+    expect(await within(notes).findByText('Family claude')).toBeVisible();
+    expect(within(notes).queryByText('mixed')).toBeNull();
+    expect(within(notes).queryByText('Family unknown')).toBeNull();
+
+    const fast = screen.getByRole('region', { name: 'Fast model' });
+    await userEvent.click(within(fast).getByText('Contract'));
+    expect(await within(fast).findByText('mixed')).toBeVisible();
+    expect(within(fast).queryByText('Family unknown')).toBeNull();
   });
 
   it('labels account rotation once above the members that differ only in account slot', async () => {

@@ -1079,7 +1079,24 @@ function MetadataValue({
   );
 }
 
-/** Compact contract line. Family is not on the admin read model, so it stays unknown. */
+/**
+ * Published logical-model family.
+ * A missing field stays unknown. Null means the members do not share one family.
+ */
+function familyLabel(model: GatewayModel): string {
+  const contract = model.contract;
+  const published =
+    contract && Object.hasOwn(contract, 'modelFamilyId')
+      ? contract.modelFamilyId
+      : Object.hasOwn(model, 'modelFamilyId')
+        ? model.modelFamilyId
+        : undefined;
+  if (published === undefined) return 'Family unknown';
+  if (published === null) return 'mixed';
+  return `Family ${published}`;
+}
+
+/** Compact contract line. The family is the separate published field. */
 function contractSummary(model: GatewayModel): string {
   const contract = model.contract;
   const reasoning = contract?.reasoning == null ? 'unknown' : contract.reasoning ? 'on' : 'off';
@@ -1167,7 +1184,7 @@ function ContractDisclosure({ model }: { model: GatewayModel }) {
       </Button>
       {open ? (
         <p className="mt-2 text-sm text-fg">
-          {contractSummary(model)} · <span>Family unknown</span>
+          {contractSummary(model)} · <span>{familyLabel(model)}</span>
         </p>
       ) : null}
     </div>
