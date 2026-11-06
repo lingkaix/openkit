@@ -70,6 +70,7 @@ export function createDiagnosticsOperationImplementations(
               id,
               displayName,
               capabilities,
+              modelFamilyId,
               autoFailover,
               routes,
               contract,
@@ -79,6 +80,7 @@ export function createDiagnosticsOperationImplementations(
               id,
               displayName,
               capabilities: [...capabilities],
+              modelFamilyId,
               autoFailover,
               routes: routes.map((route) => ({
                 ...route,
@@ -93,6 +95,7 @@ export function createDiagnosticsOperationImplementations(
                     inputModalities: contract.inputModalities
                       ? [...contract.inputModalities]
                       : null,
+                    modelFamilyId,
                   }
                 : undefined,
               reasoningEffortLevels: reasoningEffortLevels ? [...reasoningEffortLevels] : undefined,

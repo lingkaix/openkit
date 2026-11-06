@@ -147,3 +147,14 @@ it('admits missing API key supply as an unavailable route reason', () => {
   });
   expect(AppDiagnosticsResponseSchema.safeParse(input).success).toBe(true);
 });
+
+it('preserves logical model family id on gateway models and contract diagnostics', () => {
+  const input = diagnosticsWithInputModalities(['text']);
+  Object.assign(input.gateway.models[0]!, {
+    modelFamilyId: 'gpt-5',
+    contract: { ...input.gateway.models[0]!.contract, modelFamilyId: 'gpt-5' },
+  });
+  const parsed = AppDiagnosticsResponseSchema.parse(input);
+  expect(parsed.gateway.models[0]?.modelFamilyId).toBe('gpt-5');
+  expect(parsed.gateway.models[0]?.contract?.modelFamilyId).toBe('gpt-5');
+});

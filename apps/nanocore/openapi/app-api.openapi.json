@@ -144951,6 +144951,17 @@
                         "minLength": 1
                       }
                     },
+                    "modelFamilyId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "autoFailover": {
                       "type": "boolean"
                     },
@@ -145049,6 +145060,17 @@
                           "type": [
                             "boolean",
                             "null"
+                          ]
+                        },
+                        "modelFamilyId": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         }
                       },
@@ -155320,5 +155342,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:24ff01973b8516eff801a8c64d1439aa12e6295684106622f7a3cdfc1a31feac"
+  "x-openkit-source-digest": "sha256:6776e4bf542afa6d633d9ba87f0c403773cb6aeac6a66ac36cabdc605947c962"
 }

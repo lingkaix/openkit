@@ -108,6 +108,7 @@ const LogicalModelContractDiagnosticSchema = z
     output: z.number().int().positive().nullable(),
     inputModalities: z.array(ModalitySchema).nullable(),
     reasoning: z.boolean().nullable(),
+    modelFamilyId: z.string().min(1).nullable().optional(),
   })
   .strict();
 
@@ -415,6 +416,7 @@ function appDiagnosticsResponseSchema<T extends z.ZodType>(build: T) {
               id: z.string().min(1),
               displayName: z.string().min(1),
               capabilities: z.array(z.string().min(1)),
+              modelFamilyId: z.string().min(1).nullable().optional(),
               autoFailover: z.boolean().optional(),
               routes: z.array(LogicalModelRouteDiagnosticSchema).optional(),
               contract: LogicalModelContractDiagnosticSchema.optional(),

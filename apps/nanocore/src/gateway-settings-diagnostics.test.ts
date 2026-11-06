@@ -149,7 +149,14 @@ describe('Gateway settings active diagnostics', () => {
     ).toBe(300000);
     expect(body.gateway.models[0]).toMatchObject({
       autoFailover: false,
-      contract: { context: 300000, output: 128000, inputModalities: [], reasoning: false },
+      modelFamilyId: 'gpt',
+      contract: {
+        context: 300000,
+        output: 128000,
+        inputModalities: [],
+        reasoning: false,
+        modelFamilyId: 'gpt',
+      },
       routes: [
         {
           id: 'primary',
