@@ -5966,3 +5966,24 @@ describe('conversation.navigation pagination contract', () => {
     ).toEqual({ items: [], nextCursor: 'next' });
   });
 });
+
+describe('notification.list pagination contract', () => {
+  it('accepts optional 1..100 limit and non-empty cursor and parses nullable nextCursor', () => {
+    const definition = appApiSchemas.CHANNEL_OPERATION_DEFINITIONS['notification.list'];
+    expect(definition.inputSchema.parse({ limit: 50, cursor: 'opaque' })).toEqual({
+      limit: 50,
+      cursor: 'opaque',
+    });
+    expect(definition.inputSchema.safeParse({ limit: 0 }).success).toBe(false);
+    expect(definition.inputSchema.safeParse({ limit: 101 }).success).toBe(false);
+    expect(definition.inputSchema.safeParse({ cursor: '' }).success).toBe(false);
+    expect(definition.outputSchema.parse({ items: [], nextCursor: null })).toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect(definition.outputSchema.parse({ items: [], nextCursor: 'next' })).toEqual({
+      items: [],
+      nextCursor: 'next',
+    });
+  });
+});

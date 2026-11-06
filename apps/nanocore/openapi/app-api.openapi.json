@@ -19511,6 +19511,10 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "additionalProperties": false
@@ -19687,6 +19691,12 @@
               ],
               "additionalProperties": false
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -155191,5 +155201,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:653a7cb2a198156471aceb37dd5a1ebfdbbe3bc2263f5b916c985deea5ccef04"
+  "x-openkit-source-digest": "sha256:e9c2d592682a1a1d37ad17f701760009dbf6f9e625290fe082fe721ef13e90bd"
 }

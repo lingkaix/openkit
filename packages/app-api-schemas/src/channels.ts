@@ -82,8 +82,16 @@ export const CHANNEL_OPERATION_DEFINITIONS = {
   'notification.list': {
     ...userBoundary,
     description: 'List your currently authorized Pending Request delivery observations.',
-    inputSchema: z.object({ limit: z.number().int().min(1).max(100).optional() }).strict(),
-    outputSchema: z.object({ items: z.array(NotificationDeliverySchema).max(100) }),
+    inputSchema: z
+      .object({
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
+    outputSchema: z.object({
+      items: z.array(NotificationDeliverySchema).max(100),
+      nextCursor: z.string().nullable().optional(),
+    }),
     mutating: false,
     returnsOneTimeSecret: false,
   },

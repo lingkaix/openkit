@@ -3,6 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  type ChannelServices,
+  createChannelOperationImplementations,
+} from '../channel-services.js';
 import { applyNativeScopeMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
@@ -91,6 +95,40 @@ describe('attention delivery owner', () => {
         'invalid_attention_input'
       );
     }
+
+    const firstPage = notifications.pageForActor(aliceId, { limit: 2 }, () => true);
+    expect(firstPage.items).toHaveLength(2);
+    expect(firstPage.hasMore).toBe(true);
+    const secondPage = notifications.pageForActor(
+      aliceId,
+      {
+        limit: 2,
+        cursor: {
+          createdAt: firstPage.items.at(-1)!.createdAt,
+          id: firstPage.items.at(-1)!.id,
+        },
+      },
+      () => true
+    );
+    expect(secondPage.items).toHaveLength(2);
+    expect(secondPage.hasMore).toBe(true);
+    const thirdPage = notifications.pageForActor(
+      aliceId,
+      {
+        limit: 2,
+        cursor: {
+          createdAt: secondPage.items.at(-1)!.createdAt,
+          id: secondPage.items.at(-1)!.id,
+        },
+      },
+      () => true
+    );
+    expect(thirdPage.items).toHaveLength(1);
+    expect(thirdPage.hasMore).toBe(false);
+    const pagedIds = [...firstPage.items, ...secondPage.items, ...thirdPage.items].map(
+      (item) => item.id
+    );
+    expect(new Set(pagedIds).size).toBe(5);
   });
 
   it('rejects malformed identities and captured source arguments at admission', () => {
@@ -467,5 +505,47 @@ describe('attention delivery owner', () => {
         { isEligible: () => true, transport }
       )
     ).rejects.toThrow('attention_not_found');
+  });
+
+  it('paginates notification.list with an opaque recipient-scoped cursor and rejects foreign cursors', () => {
+    const { notifications } = fixture();
+    for (let index = 0; index < 3; index++) {
+      notifications.enqueue({
+        source: { ...source, requestId: `apr_page_${index}` },
+        recipientUserId: aliceId,
+      });
+    }
+    const operations = createChannelOperationImplementations({
+      notifications,
+      readableDelivery: () => true,
+      attentionPath: (exact) =>
+        `/tasks/${exact.workspaceId}/${exact.threadId}?requestId=${exact.requestId}`,
+    } as unknown as ChannelServices);
+    const aliceContext = {
+      actor: { kind: 'session' as const, userId: aliceId },
+      actorRef: { kind: 'user' as const, id: aliceId },
+    };
+    const bobContext = {
+      actor: { kind: 'session' as const, userId: bobId },
+      actorRef: { kind: 'user' as const, id: bobId },
+    };
+
+    const page1 = operations['notification.list']({ limit: 2 }, aliceContext);
+    expect(page1.items).toHaveLength(2);
+    expect(typeof page1.nextCursor).toBe('string');
+
+    const page2 = operations['notification.list'](
+      { limit: 2, cursor: page1.nextCursor! },
+      aliceContext
+    );
+    expect(page2.items).toHaveLength(2);
+    expect(page2.nextCursor).toBeNull();
+
+    expect(() => operations['notification.list']({ cursor: 'not-a-cursor' }, aliceContext)).toThrow(
+      'Invalid notification continuation.'
+    );
+    expect(() =>
+      operations['notification.list']({ cursor: page1.nextCursor! }, bobContext)
+    ).toThrow('Invalid notification continuation.');
   });
 });

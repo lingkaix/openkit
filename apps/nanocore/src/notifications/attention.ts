@@ -247,6 +247,42 @@ export class AttentionNotifications {
       .filter((delivery) => isEligible(delivery) === true);
   }
 
+  /** Reads one recipient-scoped page in descending (createdAt, id) order after current source/audience admission. */
+  pageForActor(
+    userId: string,
+    options: {
+      limit?: number | undefined;
+      cursor?: { createdAt: string; id: string } | undefined;
+    },
+    isEligible: AttentionEligibility
+  ): { items: AttentionDelivery[]; hasMore: boolean } {
+    const limit = options.limit ?? 50;
+    if (!isUserId(userId) || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new AttentionError('invalid_attention_input');
+    }
+    const cursor = options.cursor;
+    const rows = cursor
+      ? this.sqlite
+          .prepare(
+            `${SELECT} WHERE a.recipient_user_id = ? AND (a.created_at < ? OR (a.created_at = ? AND a.id < ?)) ORDER BY a.created_at DESC, a.id DESC`
+          )
+          .all(userId, cursor.createdAt, cursor.createdAt, cursor.id)
+      : this.sqlite
+          .prepare(`${SELECT} WHERE a.recipient_user_id = ? ORDER BY a.created_at DESC, a.id DESC`)
+          .all(userId);
+    const items: AttentionDelivery[] = [];
+    for (const raw of rows) {
+      const delivery = decodeRow(raw);
+      if (isEligible(delivery) !== true) continue;
+      if (items.length < limit) {
+        items.push(delivery);
+      } else {
+        return { items, hasMore: true };
+      }
+    }
+    return { items, hasMore: false };
+  }
+
   /** Claims before contact; only explicit retry after proved no-send can create another attempt. */
   async deliver(
     input: {

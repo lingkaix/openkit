@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { CHANNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { OpenKitConfig } from '@openkit/config-schema';
-import { canonicalJsonText } from '@openkit/protocol';
+import { canonicalJsonText, RequestIdSchema, UserIdSchema } from '@openkit/protocol';
+import { z } from 'zod';
 import { type Actor, getLocalUserId } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
@@ -335,18 +336,29 @@ export function createChannelOperationImplementations(services: ChannelServices 
       requireServices().revokeBinding(publicOperationActor(context));
       return null;
     },
-    'notification.list': (input, context) => ({
-      items: requireServices()
-        .notifications.listForActor(
-          publicOperationActor(context).userId,
-          input,
-          requireServices().readableDelivery
-        )
-        .map((delivery) => ({
-          ...delivery,
-          appPath: requireServices().attentionPath(delivery.source),
-        })),
-    }),
+    'notification.list': (input, context) => {
+      const userId = publicOperationActor(context).userId;
+      const position = decodeNotificationListCursor(input.cursor, userId);
+      const { items: deliveries, hasMore } = requireServices().notifications.pageForActor(
+        userId,
+        { limit: input.limit, cursor: position },
+        requireServices().readableDelivery
+      );
+      const items = deliveries.map((delivery) => ({
+        ...delivery,
+        appPath: requireServices().attentionPath(delivery.source),
+      }));
+      const last = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          last && hasMore
+            ? Buffer.from(
+                JSON.stringify(['notification.list', userId, last.createdAt, last.id])
+              ).toString('base64url')
+            : null,
+      };
+    },
     'notification.send': (input, context) =>
       requireServices().send(
         publicOperationActor(context),
@@ -354,4 +366,30 @@ export function createChannelOperationImplementations(services: ChannelServices 
         input.expectedAttemptId
       ),
   } satisfies FamilyImplementations<typeof CHANNEL_OPERATION_DEFINITIONS>;
+}
+
+/** A continuation is a recipient-scoped position, not a retained anchor or an authorization grant. */
+const notificationListCursorSchema = z.tuple([
+  z.literal('notification.list'),
+  UserIdSchema,
+  z.string().datetime(),
+  RequestIdSchema,
+]);
+
+/** Reject malformed or foreign positions without reading an anchor or disclosing cursor content. */
+function decodeNotificationListCursor(
+  cursor: string | undefined,
+  userId: string
+): { createdAt: string; id: string } | undefined {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = notificationListCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor || position[1] !== userId) {
+      throw new Error('Invalid notification continuation.');
+    }
+    return { createdAt: position[2], id: position[3] };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid notification continuation.', 400);
+  }
 }
