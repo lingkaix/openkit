@@ -81,7 +81,7 @@ import {
   type ControlGoalCommandResult,
   type ControlGoalInput,
   ControlGoalInputSchema,
-} from '../runtime/goal-owner.js';
+} from '../runtime/goal-codecs.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import { ControlPendingCommandResultSchema } from '../runtime/pending-request-codecs.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';

@@ -71,10 +71,10 @@ import {
   decodeExecutionJournalSettlement,
   readExecutionJournalRoot,
 } from '../runtime/execution-journal.js';
+import { GoalCommandError } from '../runtime/goal-error.js';
 import {
   advanceGoalRevision,
   applyControlGoalCommand,
-  GoalCommandError,
   type PreparedControlGoalCommand,
   prepareControlGoalCommand,
 } from '../runtime/goal-owner.js';

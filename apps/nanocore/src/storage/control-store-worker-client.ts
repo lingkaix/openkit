@@ -11,6 +11,8 @@ import {
 } from '../auth/bootstrap-ensure-codecs.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
 import { AttentionError } from '../notifications/attention-error.js';
+import type { ControlGoalCommandResult, ControlGoalInput } from '../runtime/goal-codecs.js';
+import { GoalCommandError } from '../runtime/goal-error.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   PreservedWorkspaceCaptureRefusal,
@@ -128,11 +130,6 @@ import {
   restoreControlCapabilityFailure,
 } from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
-import {
-  type ControlGoalCommandResult,
-  type ControlGoalInput,
-  GoalCommandError,
-} from '../runtime/goal-owner.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';

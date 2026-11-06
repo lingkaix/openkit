@@ -16,7 +16,8 @@ import { OperationError } from '../operation-error.js';
 import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { GoalCommandError, goalActor, readGoalView } from './goal-owner.js';
+import { GoalCommandError } from './goal-error.js';
+import { goalActor, readGoalView } from './goal-owner.js';
 import {
   commandInputHash,
   type IdempotentCommandReceipt,

@@ -1,7 +1,8 @@
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { advanceGoalRevision, GoalCommandError, goalPlanDigest } from './goal-owner.js';
+import { GoalCommandError } from './goal-error.js';
+import { advanceGoalRevision, goalPlanDigest } from './goal-owner.js';
 import {
   StoredGoalCardTaskV1Schema,
   StoredGoalCardV1Schema,

@@ -15,9 +15,9 @@ import {
   publicOperationActor,
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { GoalCommandError } from './runtime/goal-error.js';
 import {
   executeGoalOperation,
-  GoalCommandError,
   type GoalOperationId,
   requireCoordinatorGoal,
 } from './runtime/goal-owner.js';

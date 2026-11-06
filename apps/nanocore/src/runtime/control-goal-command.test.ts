@@ -20,13 +20,12 @@ import { publishImmutableContent } from '../storage/immutable-content.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import {
-  applyControlGoalCommand,
   type ControlGoalCommandInput,
   ControlGoalCommandInputSchema,
   type ControlGoalCommandResult,
   type ControlGoalInput,
-  executeGoalOperation,
-} from './goal-owner.js';
+} from './goal-codecs.js';
+import { applyControlGoalCommand, executeGoalOperation } from './goal-owner.js';
 import { commandInputHash } from './idempotent-command.js';
 import { readPendingRequest } from './pending-requests.js';
 
@@ -62,6 +61,7 @@ async function fixture() {
     import(${JSON.stringify(loader)}).then(async ({ register }) => {
       register();
       const goal = await import(${JSON.stringify(moduleUrl)});
+      const { ControlGoalInputSchema } = await import(${JSON.stringify(new URL('./goal-codecs.ts', import.meta.url).href)});
       const storage = await import(${JSON.stringify(dbUrl)});
       const migrations = await import(${JSON.stringify(migrationsUrl)});
       const products = await import(${JSON.stringify(productsUrl)});
@@ -82,7 +82,7 @@ async function fixture() {
           else if (command === 'release-plan') db.sqlite.exec('DROP TRIGGER reject_plan_receipt');
           else if (command === 'reopen') { db.sqlite.close(); db = storage.openWorkspaceDb(workerData.root, workerData.workspaceId); }
           else {
-            const admitted = goal.ControlGoalInputSchema.parse(input);
+            const admitted = ControlGoalInputSchema.parse(input);
             const prepared = await goal.prepareControlGoalCommand(db, admitted, workerData.mount);
             result = db.sqlite.transaction(() => goal.applyControlGoalCommand(db, admitted, prepared))();
           }
