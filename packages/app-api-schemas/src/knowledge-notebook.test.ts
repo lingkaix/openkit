@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { UpdateKnowledgeNotebookRequestSchema } from './knowledge-notebook.js';
+import {
+  ListKnowledgeNotebookResponseSchema,
+  UpdateKnowledgeNotebookRequestSchema,
+} from './knowledge-notebook.js';
 import { KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS } from './knowledge-operation-definitions.js';
 
 /** Human payloads carry exact content intent and one fixed base, never publication authority. */
@@ -87,5 +90,25 @@ describe('Fixed-base notebook publication contract', () => {
     expect(UpdateKnowledgeNotebookRequestSchema.safeParse({ ...value, changes: [] }).success).toBe(
       false
     );
+  });
+});
+
+describe('Workspace Knowledge collection identity', () => {
+  it('exposes the exact selected Knowledge Base even for an empty collection', () => {
+    const knowledgeBaseId = 'kb_0190f4c8-0000-7000-8000-000000000001';
+    const response = { knowledgeBaseId, notebookRevision: '1'.repeat(40), pages: [] };
+    expect(ListKnowledgeNotebookResponseSchema.parse(response)).toEqual(response);
+    expect(
+      ListKnowledgeNotebookResponseSchema.safeParse({
+        notebookRevision: response.notebookRevision,
+        pages: [],
+      }).success
+    ).toBe(false);
+    expect(
+      ListKnowledgeNotebookResponseSchema.safeParse({
+        ...response,
+        knowledgeBaseId: 'ws_0190f4c8-0000-7000-8000-000000000001',
+      }).success
+    ).toBe(false);
   });
 });

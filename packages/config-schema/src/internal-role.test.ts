@@ -1,7 +1,11 @@
 import { ReasoningEffortSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { InternalRoleExecutionProfileSchema } from './internal-role.js';
+import { getConfigSchemaCatalog } from './catalog.js';
+import {
+  InternalRoleExecutionProfileSchema,
+  InternalRoleProfilesConfigSchema,
+} from './internal-role.js';
 
 const roles = ['knowledge-manager', 'assistant', 'goal-orchestrator', 'custom-role'];
 
@@ -39,5 +43,99 @@ describe('internal-role reasoning effort', () => {
       });
       expect(branch.required).not.toContain('reasoningEffort');
     }
+  });
+});
+
+describe('Knowledge Manager default run deadline', () => {
+  it('gives omitted limits the accepted KM, Assistant and Coordinator defaults', () => {
+    const config = InternalRoleProfilesConfigSchema.parse({
+      schemaVersion: 1,
+      profiles: ['knowledge-manager', 'assistant', 'workflow-coordinator'].map((roleId) => ({
+        id: roleId,
+        roleId,
+      })),
+    });
+    expect(config.profiles.map(({ roleId, limits }) => ({ roleId, limits }))).toEqual([
+      {
+        roleId: 'knowledge-manager',
+        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
+      },
+      {
+        roleId: 'assistant',
+        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 600_000 },
+      },
+      {
+        roleId: 'workflow-coordinator',
+        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
+      },
+    ]);
+  });
+
+  it.each([
+    'knowledge-manager',
+    'assistant',
+    'workflow-coordinator',
+  ])('refuses the %s deadline that overflows the host timer', (roleId) => {
+    const config = (deadlineMs: number) => ({
+      schemaVersion: 1,
+      profiles: [{ id: roleId, roleId, limits: { maxModelTurns: 1, maxToolCalls: 1, deadlineMs } }],
+    });
+    expect(
+      InternalRoleProfilesConfigSchema.parse(config(2_147_483_647)).profiles[0]!.limits.deadlineMs
+    ).toBe(2_147_483_647);
+    expect(InternalRoleProfilesConfigSchema.safeParse(config(2_147_483_648)).success).toBe(false);
+  });
+
+  it('preserves an explicitly authored KM limit object exactly', () => {
+    const limits = { maxModelTurns: 7, maxToolCalls: 19, deadlineMs: 90_000 };
+    const config = InternalRoleProfilesConfigSchema.parse({
+      schemaVersion: 1,
+      profiles: [{ id: 'km-explicit', roleId: 'knowledge-manager', limits }],
+    });
+    expect(config.profiles[0]!.limits).toEqual(limits);
+  });
+});
+
+const exportedSchema = getConfigSchemaCatalog().find((entry) => entry.kind === 'internal-role');
+if (!exportedSchema) throw new Error('Internal-role JSON Schema is unavailable.');
+
+describe.each([
+  { name: 'parsed profiles', schema: InternalRoleProfilesConfigSchema },
+  { name: 'exported JSON Schema', schema: z.fromJSONSchema(exportedSchema.schema) },
+])('Assistant deadline through $name', ({ schema }) => {
+  it('defaults Assistant to 600 seconds while retaining KM and Coordinator limits', () => {
+    const config = schema.parse({
+      schemaVersion: 1,
+      profiles: ['assistant', 'knowledge-manager', 'workflow-coordinator'].map((roleId) => ({
+        id: roleId,
+        roleId,
+      })),
+    });
+    expect(config).toMatchObject({
+      profiles: [
+        {
+          roleId: 'assistant',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 600_000 },
+        },
+        {
+          roleId: 'knowledge-manager',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
+        },
+        {
+          roleId: 'workflow-coordinator',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
+        },
+      ],
+    });
+  });
+
+  it('preserves explicitly authored Assistant limits rather than applying defaults', () => {
+    const limits = { maxModelTurns: 5, maxToolCalls: 11, deadlineMs: 4_000 };
+    expect(
+      schema.parse({
+        schemaVersion: 1,
+        profiles: [{ id: 'assistant-explicit', roleId: 'assistant', limits }],
+      })
+    ).toMatchObject({ profiles: [{ id: 'assistant-explicit', roleId: 'assistant', limits }] });
   });
 });
