@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { compareCodeUnits } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -273,5 +274,84 @@ describe('conversation navigation', () => {
     expect(
       (await adminResponse.json()).items.map((row: { thread: { id: string } }) => row.thread.id)
     ).toContain(outsider.id);
+  });
+
+  it('walks equal-lastActivityAt idle Threads with limit 1 in exact descending Thread-id order', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'navigation-tie-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
+    const store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId,
+    });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      scope: 'workspace',
+      workspaceIds: [workspaceId],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }).secret;
+    await store.archiveThread(workspaceId, 'th_00000000-0000-7000-8000-000000000001');
+
+    const tieLeft = await store.createThread(workspaceId, 'Tie left');
+    const tieRight = await store.createThread(workspaceId, 'Tie right');
+    for (const thread of [tieLeft, tieRight]) {
+      const turn = await store.createTurn(
+        workspaceId,
+        thread.id,
+        'Tied activity input',
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        null,
+        { startedAt: '2026-09-15T05:00:00.000Z' }
+      );
+      await store.updateTurn(turn.id, {
+        agentId: 'quick-chat',
+        status: 'completed',
+        completedAt: '2026-09-15T05:00:00.000Z',
+      });
+    }
+
+    const expectedOrder = [tieLeft.id, tieRight.id].sort((a, b) => compareCodeUnits(b, a));
+    const app = createAppWithWorkspaceAuthority({
+      mode: 'server',
+      coreDb,
+      store,
+      agentManifests: [createTestAgentSetup().manifest],
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+    });
+
+    const page1 = await (
+      await app.request(
+        ...operationRequest(
+          'conversation.navigation',
+          { workspaceId, limit: 1 },
+          { headers: { authorization: `Bearer ${token}` } }
+        )
+      )
+    ).json();
+    expect(page1.items.map((row: { thread: { id: string } }) => row.thread.id)).toEqual([
+      expectedOrder[0],
+    ]);
+    expect(page1.items[0]?.lastActivityAt).toBe('2026-09-15T05:00:00.000Z');
+    expect(typeof page1.nextCursor).toBe('string');
+
+    const page2 = await (
+      await app.request(
+        ...operationRequest(
+          'conversation.navigation',
+          { workspaceId, limit: 1, cursor: page1.nextCursor },
+          { headers: { authorization: `Bearer ${token}` } }
+        )
+      )
+    ).json();
+    expect(page2.items.map((row: { thread: { id: string } }) => row.thread.id)).toEqual([
+      expectedOrder[1],
+    ]);
+    expect(page2.items[0]?.lastActivityAt).toBe('2026-09-15T05:00:00.000Z');
+    expect(page2.nextCursor).toBeNull();
   });
 });
