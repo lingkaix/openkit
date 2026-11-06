@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -64,7 +65,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
@@ -262,6 +263,42 @@ afterEach(async () => {
   }
 });
 
+/** Prepared Quick Chat and Demo Workspace bytes copied by ordinary server fixtures. */
+let serverFixtureBaseRoot: string | undefined;
+/** Prepared Core bytes without a published Workspace, copied when a test owns Demo publication. */
+let serverFixtureCoreRoot: string | undefined;
+const preparedFixtureRoots = new Set<string>();
+
+beforeAll(async () => {
+  const base = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-server-fixture-base-')));
+  serverFixtureBaseRoot = base.dataRoot;
+  try {
+    applyMigrations(base);
+    ensureLocalUser(base);
+    const store = new FsStore({ dataRoot: base.dataRoot });
+    await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+    await seedDemoWorkspace(store, LOCAL_USER_ID);
+  } finally {
+    base.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+  }
+
+  const core = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-server-core-base-')));
+  serverFixtureCoreRoot = core.dataRoot;
+  try {
+    applyMigrations(core);
+    ensureLocalUser(core);
+  } finally {
+    core.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+  }
+});
+
+afterAll(() => {
+  if (serverFixtureBaseRoot) rmSync(serverFixtureBaseRoot, { recursive: true, force: true });
+  if (serverFixtureCoreRoot) rmSync(serverFixtureCoreRoot, { recursive: true, force: true });
+});
+
 /**
  * Opens a migrated Core database for turn-start repository tests.
  *
@@ -269,7 +306,11 @@ afterEach(async () => {
  * @returns Migrated Core database handles backed by a temporary data root.
  */
 function createCoreDb(registerDemoMembership = true): CoreDb {
+  const baseRoot = registerDemoMembership ? serverFixtureCoreRoot : serverFixtureBaseRoot;
+  if (!baseRoot) throw new Error('Server fixture base is not prepared.');
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-repository-db-'));
+  cpSync(baseRoot, dataRoot, { recursive: true });
+  if (!registerDemoMembership) preparedFixtureRoots.add(dataRoot);
   const coreDb = openCoreDb(dataRoot);
   fixtureDatabases.push(coreDb);
 
@@ -472,7 +513,17 @@ async function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): Promis
 const demoStoreRoots = new WeakMap<FsStore, string>();
 
 async function createDemoStore(options: FsStoreOptions = {}): Promise<FsStore> {
-  const dataRoot = options.dataRoot ?? mkdtempSync(join(tmpdir(), 'openkit-server-store-'));
+  let dataRoot = options.dataRoot;
+  let prepared = false;
+  if (!dataRoot) {
+    if (!serverFixtureBaseRoot) throw new Error('Server fixture base is not prepared.');
+    dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-store-'));
+    cpSync(serverFixtureBaseRoot, dataRoot, { recursive: true });
+    preparedFixtureRoots.add(dataRoot);
+    prepared = true;
+  } else {
+    prepared = preparedFixtureRoots.has(dataRoot);
+  }
   // Native Store readers require the actual Core schema before Quick Chat fixture publication.
   if (!existsSync(coreDbPath(dataRoot))) {
     const coreDb = openCoreDb(dataRoot);
@@ -484,7 +535,7 @@ async function createDemoStore(options: FsStoreOptions = {}): Promise<FsStore> {
   }
   const store = new FsStore({ ...options, dataRoot });
   demoStoreRoots.set(store, dataRoot);
-  await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+  if (!prepared) await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
   await seedDemoWorkspace(store, LOCAL_USER_ID);
   return store;
 }
@@ -7000,67 +7051,78 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    'Count Goal Web tests in this report.',
-    'Explain how the internet works.',
-    'Discuss the Google product family.',
-    'Explain Google services.',
-    'Google is a company.',
-    'Search this attached report for the acceptance marker.',
-  ])('answers Chat Mode topic or local-report reading without external-search refusal: %s', async (input) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const executor = new FakeTurnExecutor();
-    const prompts: string[] = [];
-    const thread = await store.createThread(
-      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      'Topic mention',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: LOCAL_USER_ID,
-      }
-    );
-    const app = await createApp({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      ...chatAnsweringProvider(prompts),
-    });
+  it('answers Chat Mode topic or local-report reading without external-search refusal', async () => {
+    const cases = [
+      'Count Goal Web tests in this report.',
+      'Explain how the internet works.',
+      'Discuss the Google product family.',
+      'Explain Google services.',
+      'Google is a company.',
+      'Search this attached report for the acceptance marker.',
+    ] as const;
+    const workspaceId = 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28';
 
-    try {
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', threadId: thread.id },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: `0190f4c8-0000-7000-8000-0000000004${String(input.length).padStart(2, '0')}`,
-              input,
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status, await res.clone().text()).toBe(200);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-      expect(parsed).toMatchObject({
-        outcome: 'answered',
-        explanation: 'The Assistant answered directly.',
-        handoff: null,
+    for (const [variantIndex, input] of cases.entries()) {
+      const label = `Chat Mode input "${input}"`;
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(prompts).toHaveLength(1);
-      expect(executor.startContexts).toHaveLength(0);
-    } finally {
-      coreDb.sqlite.close();
+      const executor = new FakeTurnExecutor();
+      const prompts: string[] = [];
+      const thread = await store.createThread(
+        workspaceId,
+        'Topic mention',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: LOCAL_USER_ID,
+        }
+      );
+      const app = await createApp({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        ...chatAnsweringProvider(prompts),
+      });
+
+      try {
+        expect(
+          store.listThreadTurns(workspaceId, thread.id),
+          `${label}: fresh Thread starts with no Turns`
+        ).toHaveLength(0);
+        expect(executor.startContexts, `${label}: baseline worker starts`).toHaveLength(0);
+        const res = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId, threadId: thread.id },
+            {
+              method: 'POST',
+              body: conversationRequest({
+                requestId: `0190f4c8-0000-7000-8000-0000000004${String(variantIndex).padStart(2, '0')}`,
+                input,
+              }),
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        );
+
+        expect(res.status, `${label}: HTTP status ${await res.clone().text()}`).toBe(200);
+        const parsed = SubmitConversationResponseSchema.parse(await res.json());
+        expect(parsed, `${label}: response`).toMatchObject({
+          outcome: 'answered',
+          explanation: 'The Assistant answered directly.',
+          handoff: null,
+        });
+        expect(prompts, `${label}: prompt count`).toHaveLength(1);
+        expect(executor.startContexts, `${label}: no worker starts`).toHaveLength(0);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
   });
 
@@ -7082,45 +7144,44 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    { input: 'Read the supplied paragraph and reply with its title.', clarifies: false },
-    { input: 'Summarize the supplied paragraph.', clarifies: false },
-    { input: 'What is OpenKit?', clarifies: false },
-    { input: 'Help.', clarifies: false },
-    { input: 'Do it.', clarifies: false },
-    { input: 'Read it.', clarifies: false },
-    { input: 'Can you help with this?', clarifies: false },
-    { input: 'What should I do?', clarifies: false },
-    { input: 'Implement the focused worker fix.', clarifies: false },
-    { input: 'Plan a multi-step release goal for NanoCore.', clarifies: false },
-    { input: 'Search the web for NanoCore release notes.', clarifies: false },
-    { input: 'Browse an external URL for NanoCore docs.', clarifies: false },
-    { input: 'Google NanoCore release notes.', clarifies: false },
-    { input: 'Retry the previous worker task.', clarifies: false },
-    { input: 'Review the previous worker output.', clarifies: false },
-    { input: 'Refine the previous result.', clarifies: false },
-    { input: 'Hand off this work to another worker.', clarifies: false },
-    { input: 'Do not read issue 110 of lingkaix/openkit.', clarifies: false },
-    { input: 'I read issue 110 yesterday.', clarifies: false },
-    { input: 'The word read appears in the supplied paragraph.', clarifies: false },
-    { input: 'Explain what read means.', clarifies: false },
-    { input: 'What does fetch mean?', clarifies: false },
-    { input: 'Can you read?', clarifies: false },
-    {
-      input:
-        'The example instruction is "Read issue 110 of lingkaix/openkit and reply with its title."',
-      clarifies: false,
-    },
-  ])('keeps model interpretation on the private Timeline without keyword worker effects: $input', async ({
-    input,
-    clarifies,
-  }) => {
+  it('keeps model interpretation on the private Timeline without keyword worker effects', async () => {
+    const cases = [
+      { input: 'Read the supplied paragraph and reply with its title.', clarifies: false },
+      { input: 'Summarize the supplied paragraph.', clarifies: false },
+      { input: 'What is OpenKit?', clarifies: false },
+      { input: 'Help.', clarifies: false },
+      { input: 'Do it.', clarifies: false },
+      { input: 'Read it.', clarifies: false },
+      { input: 'Can you help with this?', clarifies: false },
+      { input: 'What should I do?', clarifies: false },
+      { input: 'Implement the focused worker fix.', clarifies: false },
+      { input: 'Plan a multi-step release goal for NanoCore.', clarifies: false },
+      { input: 'Search the web for NanoCore release notes.', clarifies: false },
+      { input: 'Browse an external URL for NanoCore docs.', clarifies: false },
+      { input: 'Google NanoCore release notes.', clarifies: false },
+      { input: 'Retry the previous worker task.', clarifies: false },
+      { input: 'Review the previous worker output.', clarifies: false },
+      { input: 'Refine the previous result.', clarifies: false },
+      { input: 'Hand off this work to another worker.', clarifies: false },
+      { input: 'Do not read issue 110 of lingkaix/openkit.', clarifies: false },
+      { input: 'I read issue 110 yesterday.', clarifies: false },
+      { input: 'The word read appears in the supplied paragraph.', clarifies: false },
+      { input: 'Explain what read means.', clarifies: false },
+      { input: 'What does fetch mean?', clarifies: false },
+      { input: 'Can you read?', clarifies: false },
+      {
+        input:
+          'The example instruction is "Read issue 110 of lingkaix/openkit and reply with its title."',
+        clarifies: false,
+      },
+    ] as const;
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
     });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
@@ -7131,35 +7192,53 @@ describe('nanocore server', () => {
       ...chatAnsweringProvider(prompts),
     });
     try {
-      const response = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000602',
-              input,
-            }),
-          }
-        )
-      );
-      expect(response.status, await response.clone().text()).toBe(clarifies ? 202 : 200);
-      expect(SubmitConversationResponseSchema.parse(await response.json())).toMatchObject({
-        outcome: clarifies ? 'clarification-needed' : 'answered',
-        handoff: null,
-      });
-      expect(executor.startContexts).toHaveLength(0);
-      expect(prompts).toHaveLength(clarifies ? 0 : 1);
-      expect(
-        store
-          .listCommandRequests()
-          .filter((record) => record.command === 'task.start' || record.command === 'goal.create')
-      ).toHaveLength(0);
+      for (const [variantIndex, { input, clarifies }] of cases.entries()) {
+        const label = `model interpretation "${input}"`;
+        prompts.length = 0;
+        const thread = await store.createThread(
+          workspaceId,
+          `Model interpretation ${variantIndex}`
+        );
+        expect(
+          store.listThreadTurns(workspaceId, thread.id),
+          `${label}: fresh Thread starts with no Turns`
+        ).toHaveLength(0);
+        expect(executor.startContexts, `${label}: baseline worker starts`).toHaveLength(0);
+        const response = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId, threadId: thread.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: conversationRequest({
+                requestId: `0190f4c8-0000-7000-8000-0000000006${String(variantIndex).padStart(2, '0')}`,
+                input,
+              }),
+            }
+          )
+        );
+        expect(response.status, `${label}: HTTP status ${await response.clone().text()}`).toBe(
+          clarifies ? 202 : 200
+        );
+        expect(
+          SubmitConversationResponseSchema.parse(await response.json()),
+          `${label}: response`
+        ).toMatchObject({
+          outcome: clarifies ? 'clarification-needed' : 'answered',
+          handoff: null,
+        });
+        expect(executor.startContexts, `${label}: no worker starts`).toHaveLength(0);
+        expect(prompts, `${label}: prompt count`).toHaveLength(clarifies ? 0 : 1);
+        expect(
+          store
+            .listCommandRequests()
+            .filter(
+              (record) => record.command === 'task.start' || record.command === 'goal.create'
+            ),
+          `${label}: no keyword worker effects`
+        ).toHaveLength(0);
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -7326,51 +7405,67 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    'What is OpenKit?',
-    'Help.',
-    'Plan a multi-step release goal for NanoCore.',
-  ])('admits one explicit Task attempt for "%s" without keyword Goal creation', async (input) => {
+  it('admits one explicit Task attempt without keyword Goal creation', async () => {
+    const cases = [
+      'What is OpenKit?',
+      'Help.',
+      'Plan a multi-step release goal for NanoCore.',
+    ] as const;
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
     });
     const executor = new FakeTurnExecutor();
     const app = await createApp({ coreDb, store, turnExecutor: executor });
-    const requestId = '0190f4c8-0000-7000-8000-000000000302';
-    const submit = () =>
-      app.request(
-        ...operationRequest(
-          'task.start',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ requestId, input }),
-          }
-        )
-      );
     try {
-      const res = await submit();
-      expect(res.status).toBe(202);
-      const accepted = StartTaskModeResponseSchema.parse(await res.json());
-      expect(accepted.escalation ?? null).toBeNull();
-      await executor.waitForFinished(store, 1);
-      expect(executor.startContexts).toHaveLength(1);
-      const replay = await submit();
-      expect(replay.status).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(accepted.turn.id);
-      await executor.waitForFinished(store, 1);
-      expect(executor.startContexts).toHaveLength(1);
-      expect(store.listCommandRequests().some((record) => record.command === 'goal.create')).toBe(
-        false
-      );
+      for (const [variantIndex, input] of cases.entries()) {
+        const label = `Task input "${input}"`;
+        const requestId = `0190f4c8-0000-7000-8000-0000000003${String(variantIndex).padStart(2, '0')}`;
+        const thread = await store.createThread(workspaceId, `Explicit Task ${variantIndex}`);
+        expect(
+          store.listThreadTurns(workspaceId, thread.id),
+          `${label}: fresh Thread starts with no Turns`
+        ).toHaveLength(0);
+        expect(executor.startContexts, `${label}: baseline worker starts`).toHaveLength(
+          variantIndex
+        );
+        const submit = () =>
+          app.request(
+            ...operationRequest(
+              'task.start',
+              { workspaceId, threadId: thread.id },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ requestId, input }),
+              }
+            )
+          );
+        const res = await submit();
+        expect(res.status, `${label}: admission status ${await res.clone().text()}`).toBe(202);
+        const accepted = StartTaskModeResponseSchema.parse(await res.json());
+        expect(accepted.escalation ?? null, `${label}: no escalation`).toBeNull();
+        await executor.waitForFinished(store, variantIndex + 1);
+        expect(executor.startContexts, `${label}: one worker start`).toHaveLength(variantIndex + 1);
+        const replay = await submit();
+        expect(replay.status, `${label}: replay status ${await replay.clone().text()}`).toBe(202);
+        expect(
+          StartTaskModeResponseSchema.parse(await replay.json()).turn.id,
+          `${label}: replay Turn id`
+        ).toBe(accepted.turn.id);
+        await executor.waitForFinished(store, variantIndex + 1);
+        expect(executor.startContexts, `${label}: no replay worker start`).toHaveLength(
+          variantIndex + 1
+        );
+        expect(
+          store.listCommandRequests().some((record) => record.command === 'goal.create'),
+          `${label}: no keyword Goal creation`
+        ).toBe(false);
+      }
     } finally {
       coreDb.sqlite.close();
     }
