@@ -207,6 +207,7 @@ export const RetrieveKnowledgeRequestSchema = z
   .object({
     query: z.string().min(1),
     limit: z.number().int().positive().max(20).default(5),
+    cursor: z.string().min(1).optional(),
     pinnedReferences: z.array(KnowledgePageReferenceSchema).default([]),
     states: z
       .array(z.enum(['active', 'draft', 'archived', 'superseded']))
@@ -305,6 +306,7 @@ export const KnowledgeRetrievalResponseSchema = RetrievalSelectionMetadataSchema
   selected: z.array(KnowledgeRetrievalCandidateSchema),
   excluded: z.array(KnowledgeRetrievalExclusionSchema),
   retrievalTraceRef: RetrievalTraceReferenceSchema.optional(),
+  nextCursor: z.string().nullable().optional(),
 }).strict();
 
 /** Immutable query-owned evidence, distinct from the source-local scored response. */

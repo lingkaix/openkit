@@ -6012,3 +6012,28 @@ describe('governance list pagination contracts', () => {
     }
   });
 });
+
+describe('knowledge notebook list and retrieval pagination contracts', () => {
+  it('accepts optional limit and cursor on knowledge.notebook.list and cursor on knowledge.retrieval', () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const listDef =
+      appApiSchemas.KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS['knowledge.notebook.list'];
+    expect(listDef.inputSchema.parse({ workspaceId, limit: 10, cursor: 'opaque' })).toEqual({
+      workspaceId,
+      limit: 10,
+      cursor: 'opaque',
+    });
+    expect(listDef.inputSchema.safeParse({ workspaceId, limit: 0 }).success).toBe(false);
+    expect(listDef.inputSchema.safeParse({ workspaceId, cursor: '' }).success).toBe(false);
+
+    const retrievalDef = appApiSchemas.KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.retrieval'];
+    expect(
+      retrievalDef.inputSchema.parse({ workspaceId, query: 'topic', limit: 5, cursor: 'opaque' })
+    ).toMatchObject({
+      workspaceId,
+      query: 'topic',
+      limit: 5,
+      cursor: 'opaque',
+    });
+  });
+});

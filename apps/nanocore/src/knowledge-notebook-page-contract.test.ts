@@ -241,6 +241,12 @@ describe('canonical page commands compose the native Notebook publisher and read
       content: original,
       contentDigest: digest(original),
     });
+    const paged = await call(f, 'knowledge.notebook.list', { limit: 1 });
+    expect(paged.status).toBe(200);
+    expect(paged.body.pages).toHaveLength(1);
+    expect(paged.body.nextCursor).toBeNull();
+    const invalidCursor = await call(f, 'knowledge.notebook.list', { cursor: 'not-a-cursor' });
+    expect(invalidCursor.status).toBe(400);
     const duplicate = await call(f, 'knowledge.notebook.create', {
       ...create,
       requestId: randomUUID(),

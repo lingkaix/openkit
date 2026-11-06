@@ -104,7 +104,13 @@ export const UpdateKnowledgeNotebookResponseSchema = z
 export const ListKnowledgeNotebookResponseSchema = z.object({
   knowledgeBaseId: KnowledgeBaseIdSchema,
   notebookRevision: z.string().min(1),
-  pages: z.array(KnowledgeNotebookPageSchema),
+  pages: z.array(
+    KnowledgeNotebookPageSchema.extend({
+      updatedAt: z.string().min(1).nullable().optional(),
+      parentId: z.string().min(1).nullable().optional(),
+    })
+  ),
+  nextCursor: z.string().nullable().optional(),
 });
 
 /** Creates only a new path through the existing fixed-base Notebook publisher. */

@@ -388,7 +388,13 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'Read an authorized fixed Notebook snapshot with complete OKF page bytes.',
-    inputSchema: z.object({ ...workspaceSelector }).strict(),
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: ListKnowledgeNotebookResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
