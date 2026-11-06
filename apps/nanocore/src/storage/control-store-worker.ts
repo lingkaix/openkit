@@ -91,10 +91,8 @@ import {
   pendingRequestItemId,
   readPendingRequest,
 } from '../runtime/pending-requests.js';
-import {
-  ProjectWorkerBackendCleanupInputSchema,
-  projectWorkerBackendCleanupInDb,
-} from '../runtime/worker-backend-cleanup-projection.js';
+import { ProjectWorkerBackendCleanupInputSchema } from '../runtime/worker-backend-cleanup-codecs.js';
+import { projectWorkerBackendCleanupInDb } from '../runtime/worker-backend-cleanup-projection.js';
 import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {

@@ -1,5 +1,7 @@
 # Runtime
 
+The worker protocol and native dispatcher import the unchanged backend cleanup request and reply schemas from `worker-backend-cleanup-codecs.ts`. Types, SQL, cleanup projection and native transaction bodies remain in `worker-backend-cleanup-projection.ts`; the codec links to its input type through an erased import.
+
 Pending publication and flow, execution-attempt records and Goal Task context import receipt input hashing directly from `../storage/control-store-input.ts`. Their existing decisions and retained input encodings stay with the same owners.
 
 Worker outcome wakes retain their exact selected request IDs through native admission. If a competing answer already froze that complete batch into one valid different Turn for the same Worker and responsible User, an unpublished losing wake returns without another effect instead of rejecting the original native completion. Missing, inconsistent or differently owned associations and unknown native results still fail closed. No queue, retry, new durable state or alternate delivery owner is added. The simulator's real terminal-hook/answer race regression covers this boundary.

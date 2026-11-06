@@ -86,10 +86,12 @@ import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js'
 import { ControlPendingCommandResultSchema } from '../runtime/pending-request-codecs.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
 import {
-  type ProjectWorkerBackendCleanupInput,
   ProjectWorkerBackendCleanupInputSchema,
-  type WorkerBackendCleanupProjectionResult,
   WorkerBackendCleanupProjectionResultSchema,
+} from '../runtime/worker-backend-cleanup-codecs.js';
+import type {
+  ProjectWorkerBackendCleanupInput,
+  WorkerBackendCleanupProjectionResult,
 } from '../runtime/worker-backend-cleanup-projection.js';
 import {
   type ControlWorkerRejectedEvidence,
