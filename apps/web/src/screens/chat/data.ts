@@ -261,7 +261,7 @@ function workerEnvironmentSelectRequest(
 function workerEnvironmentCheckMessage(error: unknown): string {
   return error instanceof Error && error.message.trim()
     ? error.message
-    : "Couldn't use this Worker environment.";
+    : "Couldn't use this Sandbox.";
 }
 
 /** Distinguishes an access refusal from an unavailable inventory. */

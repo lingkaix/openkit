@@ -32,7 +32,7 @@ const MAINTENANCE = [
   {
     path: '/settings/administration',
     title: 'Administration',
-    hint: 'Prepare a technical change or inspect retained Worker environments before deletion.',
+    hint: 'Prepare a technical change or inspect retained Sandboxes before deletion.',
   },
   {
     path: '/settings/workspace-access-recovery',

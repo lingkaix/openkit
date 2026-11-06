@@ -807,10 +807,8 @@ describe('Administration', () => {
     renderScreen(client);
 
     await user.click(await screen.findByRole('button', { name: 'Delete' }));
-    expect(
-      screen.getByRole('dialog', { name: 'Delete retained environment?' })
-    ).toBeInTheDocument();
-    expect(screen.getByText(`Environment ${STORAGE_REF} at revision 2`)).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Delete this Sandbox?' })).toBeInTheDocument();
+    expect(screen.getByText(`Sandbox ${STORAGE_REF} at revision 2`)).toBeInTheDocument();
     expect(screen.getByText('Retained targets: /workspace, /sandbox')).toBeInTheDocument();
     expect(purgeWorkerEnvironment).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Delete environment' }));
@@ -1623,9 +1621,7 @@ describe('Administration', () => {
     });
     const { queryClient } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
-    expect(
-      screen.getByRole('dialog', { name: 'Delete retained environment?' })
-    ).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Delete this Sandbox?' })).toBeInTheDocument();
     vi.mocked(client.operations['token.list']).mockRejectedValue(
       new ApiCallError(403, 'administrator-denied')
     );

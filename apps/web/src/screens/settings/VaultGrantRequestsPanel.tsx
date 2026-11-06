@@ -262,7 +262,7 @@ export function VaultGrantRequestsPanel({ workspaceId }: { readonly workspaceId:
             items={[
               { id: 'gateway-only', label: 'Gateway only' },
               ...(scope === 'workspace'
-                ? [{ id: 'runtime-env', label: 'Worker environment (GitHub token only)' }]
+                ? [{ id: 'runtime-env', label: 'Sandbox (GitHub token only)' }]
                 : []),
             ]}
             isDisabled={disabled}

@@ -673,14 +673,14 @@ export function Composer({
       {selectedEnvironment && !environmentApplicable ? (
         <div className="mt-2 flex flex-col items-start gap-1">
           <p className="text-xs text-fg-muted">
-            Reset this Worker environment to new, or choose a Task Worker target.
+            Reset this Sandbox to new, or choose a Task target.
           </p>
           <button
             type="button"
             onClick={() => setSelectedEnvironment(null)}
             className="text-xs font-bold text-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
           >
-            Use new environment
+            Use a fresh Sandbox
           </button>
         </div>
       ) : null}
@@ -699,7 +699,7 @@ function isWorkerEnvironmentTarget(kind: ConversationTarget['kind'] | undefined)
   return kind === 'warm-worker' || kind === 'new-task-worker';
 }
 
-/** Native Advanced settings for an explicit retained Worker environment choice. */
+/** Native Advanced settings for an explicit retained Sandbox choice. */
 function WorkerEnvironmentPicker({
   environments,
   onSelect,
@@ -733,11 +733,11 @@ function WorkerEnvironmentPicker({
       </summary>
       <div className="mt-2 flex flex-col gap-1 px-2">
         <label className="text-xs font-bold text-fg-muted" htmlFor="composer-worker-environment">
-          Worker environment
+          Sandbox
         </label>
         <select
           id="composer-worker-environment"
-          aria-label="Worker environment"
+          aria-label="Sandbox"
           value={selected?.storageRef ?? 'new'}
           onChange={(event) => {
             const value = event.currentTarget.value;
@@ -752,19 +752,19 @@ function WorkerEnvironmentPicker({
           }}
           className="w-full rounded-ok border border-border bg-card px-2 py-1 text-sm text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
-          <option value="new">New environment</option>
+          <option value="new">Fresh</option>
           {options.map((item) => (
             <option key={item.storageRef} value={item.storageRef}>
               {'sourceLabel' in item
                 ? `${item.sourceLabel} · ${item.occupancy} · Created ${formatRecordedTime(item.createdAt)}`
-                : 'Selected environment'}
+                : 'Selected Sandbox'}
             </option>
           ))}
         </select>
         {environments?.status === 'denied' ? (
           <p className="text-xs text-fg-muted">Access denied</p>
         ) : environments?.status === 'error' ? (
-          <p className="text-xs text-fg-muted">Couldn't load retained environments.</p>
+          <p className="text-xs text-fg-muted">Couldn't load Sandboxes.</p>
         ) : selectedItem && 'createdAt' in selectedItem ? (
           <>
             <p className="text-xs text-fg-muted">{selectedItem.lineage}</p>

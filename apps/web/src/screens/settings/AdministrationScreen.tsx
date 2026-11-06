@@ -138,7 +138,7 @@ function AdministratorWorkspaces() {
   );
 }
 
-/** Private administrator conversation plus target-Workspace Worker environment status. */
+/** Private administrator conversation plus target-Workspace Sandbox status. */
 export function AdministrationScreen() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
@@ -293,7 +293,7 @@ export function AdministrationScreen() {
       <PageHeader
         eyebrow="Administration"
         title="Administration"
-        subtitle="Use a private administrator conversation to prepare technical changes, then inspect the retained Worker environments for the selected Workspace."
+        subtitle="Use a private administrator conversation to prepare technical changes, then inspect the retained Sandboxes for the selected Workspace."
       />
       {!access.isFetchedAfterMount || access.isPending ? (
         <Skeleton lines={7} />
@@ -521,7 +521,7 @@ function WorkerEnvironmentSection({
       {administrationVisible ? (
         <div>
           <h2 id="worker-environments" className="text-lg font-extrabold text-fg-strong">
-            Worker environments
+            Sandboxes
           </h2>
           <p className="text-sm font-bold text-fg">Target Workspace: {workspaceName ?? 'None'}</p>
           <p className="text-xs text-fg-muted">
@@ -555,7 +555,7 @@ function WorkerEnvironmentSection({
             <Skeleton lines={4} />
           ) : environments.isError ? (
             <ErrorBanner
-              message="Couldn't load Worker environments."
+              message="Couldn't load Sandboxes."
               onRetry={() => void environments.refetch()}
             />
           ) : environments.data?.items.length ? (
@@ -596,14 +596,14 @@ function WorkerEnvironmentSection({
               </Card>
               {environments.data.nextCursor ? (
                 <p className="text-xs text-fg-muted">
-                  More retained environments exist than this bounded view can display.
+                  More Sandboxes exist than this bounded view can display.
                 </p>
               ) : null}
             </>
           ) : (
             <EmptyState
               icon="agents"
-              title="No retained environments"
+              title="No Sandboxes"
               hint="New Worker work creates retained storage when no environment is selected."
             />
           )}
@@ -1273,13 +1273,12 @@ function EnvironmentRow({
             </Button>
           }
         >
-          <Dialog title="Delete retained environment?">
+          <Dialog title="Delete this Sandbox?">
             <p>
-              This deletes the complete retained environment and its stored files. This action
-              cannot be undone.
+              This deletes the complete Sandbox and its stored files. This action cannot be undone.
             </p>
             <p className="break-all text-xs text-fg-muted">
-              Environment {environment.storageRef} at revision {environment.revision}
+              Sandbox {environment.storageRef} at revision {environment.revision}
             </p>
             <p className="text-xs text-fg-muted">
               Retained targets: {environment.layout.targets.map(({ target }) => target).join(', ')}
@@ -1313,8 +1312,8 @@ function PurgeResult({ outcome }: { outcome: 'purged' | 'retained' | 'unknown' }
     <Card>
       <p className="text-sm text-fg">
         {outcome === 'purged'
-          ? 'The retained environment was deleted.'
-          : 'The environment was retained because it cannot be deleted in its current state.'}
+          ? 'The Sandbox was deleted.'
+          : 'The Sandbox was kept because it cannot be deleted in its current state.'}
       </p>
     </Card>
   );
