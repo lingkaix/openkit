@@ -14,7 +14,7 @@ use std::os::unix::process::CommandExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1037,15 +1037,62 @@ fn run_image_metadata_command(
     result
 }
 
+/// Waits for one presence probe, keeps its stderr in the service journal, and kills it at the deadline.
+fn run_bounded_probe(mut command: Command, deadline: Instant) -> Result<bool, ImageImportError> {
+    if Instant::now() >= deadline {
+        return Err(ImageImportError::Probe);
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|_| ImageImportError::Probe)?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status.success()),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ImageImportError::Probe);
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ImageImportError::Probe);
+            }
+        }
+    }
+}
+
 /// Direct Docker CLI projection bound to the epoch-private socket.
 pub struct DockerImageBackend {
     docker_socket: PathBuf,
+    #[cfg(test)]
+    program: PathBuf,
+    #[cfg(test)]
+    probe_budget: Duration,
 }
 
 impl DockerImageBackend {
     /// Creates one direct backend projection for the epoch-private daemon.
     pub fn new(docker_socket: PathBuf) -> Self {
-        Self { docker_socket }
+        Self {
+            docker_socket,
+            #[cfg(test)]
+            program: PathBuf::from("/usr/bin/docker"),
+            #[cfg(test)]
+            probe_budget: IMAGE_METADATA_TIMEOUT,
+        }
+    }
+
+    /// Points presence probes at a fixture program and a short deadline.
+    #[cfg(test)]
+    fn with_probe_fixture(mut self, program: PathBuf, probe_budget: Duration) -> Self {
+        self.program = program;
+        self.probe_budget = probe_budget;
+        self
     }
 
     /// Returns the exact epoch-private Docker socket used by image effects.
@@ -1055,6 +1102,9 @@ impl DockerImageBackend {
 
     /// Builds a direct Docker command bound only to the epoch-private daemon.
     fn command(&self) -> Command {
+        #[cfg(test)]
+        let mut command = Command::new(&self.program);
+        #[cfg(not(test))]
         let mut command = Command::new("/usr/bin/docker");
         command.env(
             "DOCKER_HOST",
@@ -1183,15 +1233,13 @@ impl DockerImageBackend {
 impl ImageBackend for DockerImageBackend {
     /// Probes exact image presence without retrieval.
     fn contains_digest(&mut self, digest: &str) -> Result<bool, ImageImportError> {
-        let status = self
-            .command()
-            .args(["image", "inspect", digest])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|_| ImageImportError::Probe)?;
-        Ok(status.success())
+        #[cfg(test)]
+        let budget = self.probe_budget;
+        #[cfg(not(test))]
+        let budget = IMAGE_METADATA_TIMEOUT;
+        let mut command = self.command();
+        command.args(["image", "inspect", digest]);
+        run_bounded_probe(command, Instant::now() + budget).map_err(|_| ImageImportError::Probe)
     }
 
     /// Loads an OCI archive into the private daemon within the hard bound.
@@ -1287,6 +1335,108 @@ pub struct EpochCoordinator {
     collection_scan_root: PathBuf,
     #[cfg(test)]
     collection_test_sandbox: Option<String>,
+    /// Lets a fixture settle deletion for the named test sandbox without a gateway `SandboxRef`.
+    #[cfg(test)]
+    fixture_settle_named_sandbox: bool,
+}
+
+/// Wakes the outer session when the member monitor has decided to fence.
+///
+/// `commit_gate` covers only the failure flag and the consumption epoch. Marker
+/// removal stays outside it: a stalled unlink must not delay `fail` or the
+/// export-before-fence that follows. A consumption that began on an older epoch
+/// is discarded after the unlink, and the caller restores the marker.
+#[derive(Clone)]
+pub(crate) struct MemberFailureSignal {
+    failed: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    notify: Arc<tokio::sync::Notify>,
+    commit_gate: Arc<Mutex<()>>,
+}
+
+impl MemberFailureSignal {
+    fn new() -> Self {
+        Self {
+            failed: Arc::new(AtomicBool::new(false)),
+            epoch: Arc::new(AtomicU64::new(0)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            commit_gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn fail(&self) {
+        {
+            let _gate = self
+                .commit_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.epoch.fetch_add(1, Ordering::Release);
+            self.failed.store(true, Ordering::Release);
+        }
+        self.notify.notify_waiters();
+    }
+
+    pub(crate) fn is_failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
+    /// Reads the failure flag in the same order as a readiness consumption permit.
+    ///
+    /// The gate is released before the caller performs network I/O.
+    pub(crate) fn observed_failed(&self) -> bool {
+        let _gate = self
+            .commit_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.is_failed()
+    }
+
+    /// Permits marker removal only while the monitor has not published failure.
+    ///
+    /// The returned epoch is the value [`Self::finish_consumption`] must still
+    /// observe. The gate is not held after this returns.
+    pub(crate) fn begin_consumption(&self) -> Result<u64, ()> {
+        let _gate = self
+            .commit_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.is_failed() {
+            return Err(());
+        }
+        Ok(self.epoch.load(Ordering::Acquire))
+    }
+
+    /// Applies `commit` only when `epoch` is still the current healthy epoch.
+    ///
+    /// `commit` must not perform filesystem or network I/O. `Err(())` means the
+    /// monitor published failure after the permit and `commit` did not run.
+    pub(crate) fn finish_consumption<T>(
+        &self,
+        epoch: u64,
+        commit: impl FnOnce() -> T,
+    ) -> Result<T, ()> {
+        let _gate = self
+            .commit_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.is_failed() || self.epoch.load(Ordering::Acquire) != epoch {
+            return Err(());
+        }
+        Ok(commit())
+    }
+
+    /// Resolves when [`Self::fail`] has run, including a failure that won the race
+    /// before this wait subscribed.
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            if self.is_failed() {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 /// Sole owner of Runtime Epoch member handles and whole-group fencing.
@@ -1298,6 +1448,23 @@ struct EpochMemberMonitor {
     harness_tasks: Arc<Mutex<Option<HarnessTaskHandles>>>,
     readiness: Arc<AtomicU8>,
     inspection: Option<Arc<crate::live_inspection::InspectionState>>,
+    member_failure_signal: MemberFailureSignal,
+    requested_trigger: Arc<Mutex<Option<EpochInvalidationTrigger>>>,
+}
+
+/// Distinguishes a monitor observation from a fence request so a requested
+/// trigger override cannot relabel a more specific local member fault.
+enum ObservedFault {
+    Local(EpochFault),
+    Requested(EpochFault),
+}
+
+impl ObservedFault {
+    fn fault(self) -> EpochFault {
+        match self {
+            Self::Local(fault) | Self::Requested(fault) => fault,
+        }
+    }
 }
 
 /// Child-handle aggregate whose normal drop always kills and reaps the group.
@@ -1563,21 +1730,36 @@ impl EpochMemberMonitor {
         let watched_tasks = Arc::clone(&harness_tasks);
         let observed_readiness = Arc::clone(&readiness);
         let observed_inspection = inspection.clone();
+        let member_failure_signal = MemberFailureSignal::new();
+        let worker_signal = member_failure_signal.clone();
+        let requested_trigger = Arc::new(Mutex::new(None));
+        let worker_trigger = Arc::clone(&requested_trigger);
         let worker = thread::spawn(move || {
             let mut children = OwnedEpochChildren {
                 children,
                 private_namespaces,
             };
-            if let Some(fault) =
+            if let Some(observed) =
                 Self::observe_members(&mut children.children, &fence_rx, &watched_tasks)
             {
                 if let Some(inspection) = &observed_inspection {
                     inspection.close();
                 }
+                let trigger = match &observed {
+                    ObservedFault::Local(fault) => invalidation_trigger(fault),
+                    ObservedFault::Requested(fault) => worker_trigger
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take()
+                        .unwrap_or_else(|| invalidation_trigger(fault)),
+                };
+                let fault = observed.fault();
+                worker_signal.fail();
                 fence_initiated(
                     &evidence,
                     &mut children.children,
                     &fault,
+                    trigger,
                     fence_started_path,
                     &observed_readiness,
                     inventory,
@@ -1593,6 +1775,8 @@ impl EpochMemberMonitor {
             harness_tasks,
             readiness,
             inspection,
+            member_failure_signal,
+            requested_trigger,
         }
     }
 
@@ -1605,21 +1789,25 @@ impl EpochMemberMonitor {
         children: &mut [Child],
         requests: &mpsc::Receiver<Option<EpochFault>>,
         harness_tasks: &Mutex<Option<HarnessTaskHandles>>,
-    ) -> Option<EpochFault> {
+    ) -> Option<ObservedFault> {
         loop {
             if let Some(failure) = Self::watched_task_failure(harness_tasks) {
                 failure.trace_failure();
-                return Some(EpochFault::MemberExited(Some(failure)));
+                return Some(ObservedFault::Local(EpochFault::MemberExited(Some(
+                    failure,
+                ))));
             }
             for (index, child) in children.iter_mut().enumerate() {
                 if let Some(failure) = MemberFailure::from_child_wait(index, child.try_wait()) {
                     failure.trace_failure();
-                    return Some(EpochFault::MemberExited(Some(failure)));
+                    return Some(ObservedFault::Local(EpochFault::MemberExited(Some(
+                        failure,
+                    ))));
                 }
             }
             match requests.recv_timeout(Duration::from_millis(50)) {
-                Ok(fault) => return fault,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                Ok(Some(fault)) => return Some(ObservedFault::Requested(fault)),
+                Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
@@ -1731,6 +1919,19 @@ impl EpochMemberMonitor {
 
     /// Requests the existing partial-start invalidation path before readiness.
     fn invalidate_startup(&mut self) {
+        self.fence(EpochFault::PartialStart);
+    }
+
+    /// Exports `terminal-session-failure` and fences an already-ready epoch.
+    ///
+    /// A local member fault observed first keeps its own trigger. The request
+    /// itself carries no member, containment, or operation outcome.
+    fn fence_terminal_session(&mut self) {
+        *self
+            .requested_trigger
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(EpochInvalidationTrigger::TerminalSessionFailure);
         self.fence(EpochFault::PartialStart);
     }
 
@@ -2098,6 +2299,8 @@ impl EpochCoordinator {
             collection_scan_root: PathBuf::from(crate::workspace_collect::WORKSPACE_SCAN_ROOT),
             #[cfg(test)]
             collection_test_sandbox: None,
+            #[cfg(test)]
+            fixture_settle_named_sandbox: false,
         })
     }
 
@@ -2176,6 +2379,8 @@ impl EpochCoordinator {
                     harness_tasks: Arc::new(Mutex::new(None)),
                     readiness: Arc::new(AtomicU8::new(ReadinessProof::Unavailable as u8)),
                     inspection: None,
+                    member_failure_signal: MemberFailureSignal::new(),
+                    requested_trigger: Arc::new(Mutex::new(None)),
                 },
                 inspection_server: None,
                 runtime: Handle::current(),
@@ -2198,6 +2403,7 @@ impl EpochCoordinator {
                 worker_bootstrap_monitor: None,
                 collection_scan_root: root.join("scans"),
                 collection_test_sandbox: Some("sandbox-one".into()),
+                fixture_settle_named_sandbox: false,
             },
             worktree,
         )
@@ -2352,6 +2558,8 @@ impl EpochCoordinator {
             )
         });
         self.settle(deletion)?;
+        self.remove_credentials_after_absence()?;
+        self.release_deleted_sandbox_attachment(&sandbox.name)?;
         self.current_sandbox = None;
         Ok(())
     }
@@ -2410,7 +2618,8 @@ impl EpochCoordinator {
         let exact_current_sandbox = self
             .current_sandbox
             .as_ref()
-            .is_some_and(|sandbox| sandbox.name.as_str() == name);
+            .is_some_and(|sandbox| sandbox.name.as_str() == name)
+            || self.fixture_named_sandbox_is_current(name);
         if !exact_current_sandbox {
             return self.settle(Err(EpochFault::IdentityMismatch));
         }
@@ -2418,8 +2627,30 @@ impl EpochCoordinator {
             exec_monitor.discard_after_sandbox_deletion();
         }
         self.remove_credentials_after_absence()?;
+        self.release_deleted_sandbox_attachment(name)?;
         self.current_sandbox = None;
         Ok(())
+    }
+
+    /// Releases attachment metadata for one proved Sandbox deletion without deleting bytes.
+    fn release_deleted_sandbox_attachment(&mut self, name: &str) -> Result<(), EpochFault> {
+        if self.persistent_volumes.detach(name).is_err() {
+            return self.settle(Err(EpochFault::IdentityMismatch));
+        }
+        Ok(())
+    }
+
+    fn fixture_named_sandbox_is_current(&self, name: &str) -> bool {
+        #[cfg(test)]
+        {
+            self.fixture_settle_named_sandbox
+                && self.collection_test_sandbox.as_deref() == Some(name)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = name;
+            false
+        }
     }
 
     /// Exempts expected task completion before deleting the exact current Sandbox.
@@ -2591,10 +2822,11 @@ impl EpochCoordinator {
                 if deletion.is_err() {
                     return self.settle(Err(EpochFault::DeleteOutcomeUncertain));
                 }
+                self.release_deleted_sandbox_attachment(&sandbox.name)?;
                 self.remove_credentials_after_absence()?;
                 self.current_sandbox = None;
                 self.worker_bootstrap_monitor = None;
-                return Err(fault);
+                return self.settle(Err(fault));
             }
             result => result,
         };
@@ -2634,9 +2866,6 @@ impl EpochCoordinator {
             }
             LifecycleEffectResult::SandboxDeleted => {
                 self.settle_definite_sandbox_deletion(request.sandbox_id())?;
-                self.persistent_volumes
-                    .detach(request.sandbox_id())
-                    .map_err(|_| EpochFault::IdentityMismatch)?;
                 Ok("deleted".to_string())
             }
             LifecycleEffectResult::BridgeOpened {
@@ -3139,9 +3368,20 @@ impl EpochCoordinator {
         self.member_failure().await
     }
 
+    /// Shares the monitor's fence decision so connect and admission can observe it
+    /// without borrowing the coordinator for the whole session.
+    pub(crate) fn member_failure_signal(&self) -> MemberFailureSignal {
+        self.monitor.member_failure_signal.clone()
+    }
+
     /// Exports one partial-start invalidation and fences the locally healthy but non-admitted epoch.
     pub fn invalidate_startup(&mut self) {
         self.monitor.invalidate_startup();
+    }
+
+    /// Exports one `terminal-session-failure` report and fences an already-ready epoch.
+    pub fn invalidate_terminal_session(&mut self) {
+        self.monitor.fence_terminal_session();
     }
 
     /// Settles a typed lifecycle result or terminates the invalid epoch.
@@ -3191,6 +3431,7 @@ fn fence_startup_failure(
         evidence,
         children,
         fault,
+        invalidation_trigger(fault),
         fence_started_path,
         readiness,
         inventory,
@@ -3227,6 +3468,7 @@ fn fence_initiated(
     evidence: &EpochEvidenceWriter,
     children: &mut [Child],
     fault: &EpochFault,
+    trigger: EpochInvalidationTrigger,
     fence_started_path: PathBuf,
     readiness: &AtomicU8,
     mut inventory: Vec<MemberInventory>,
@@ -3258,7 +3500,7 @@ fn fence_initiated(
                 .iter()
                 .map(|(name, value)| (*name, value.as_str()))
                 .collect::<Vec<_>>();
-            let _ = writer.export_invalidation(invalidation_trigger(&fault), &field_refs, started);
+            let _ = writer.export_invalidation(trigger, &field_refs, started);
             let _ = completed_tx.send(());
         })
     }));
@@ -4136,12 +4378,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, EpochAction,
-        EpochEvidenceWriter, EpochFault, EpochInvalidationTrigger, EpochMemberMonitor,
-        EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend, ImageImportError,
-        MID_EPOCH_IMPORT_TIMEOUT, MemberFailure, MemberFailureSubject, MemberObservation,
-        MemberProofKind, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind, compose_epoch_name,
-        dockerd_dns_arguments, finished_watched_task, gateway_cert_command,
+        AttemptImportOutcome, CreateCertaintyLossPoint, CreateUncertainty, DockerImageBackend,
+        EpochAction, EpochCoordinator, EpochEvidenceWriter, EpochFault, EpochInvalidationTrigger,
+        EpochMemberMonitor, EpochNetworkNamespaceMode, EpochPlan, EpochProcessRole, ImageBackend,
+        ImageImportError, MID_EPOCH_IMPORT_TIMEOUT, MemberFailure, MemberFailureSubject,
+        MemberObservation, MemberProofKind, OPENKIT_NANOHOST_SLICE, RuntimeEffectKind,
+        compose_epoch_name, dockerd_dns_arguments, finished_watched_task, gateway_cert_command,
         has_up_tap0_default_route, import_attempt_image, invalidation_report_fields,
         invalidation_trigger, is_canonical_local_digest, physical_epoch_for_plan,
         preflight_lifecycle_result, resolve_epoch_nameservers, run_image_metadata_command,
@@ -4204,10 +4446,12 @@ mod tests {
         let harness_tasks = Arc::new(Mutex::new(None));
         let watched_tasks = Arc::clone(&harness_tasks);
         let worker = std::thread::spawn(move || {
-            if let Some(fault) =
+            if let Some(observed) =
                 EpochMemberMonitor::observe_members(&mut [], &requests, &watched_tasks)
             {
-                faults.send(fault).expect("acknowledge requested fence");
+                faults
+                    .send(observed.fault())
+                    .expect("acknowledge requested fence");
             }
         });
         EpochMemberMonitor {
@@ -4220,6 +4464,8 @@ mod tests {
                 super::ReadinessProof::Unavailable as u8,
             )),
             inspection: None,
+            member_failure_signal: super::MemberFailureSignal::new(),
+            requested_trigger: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -4618,7 +4864,8 @@ mod tests {
             shell_child("sleep 30"),
         ]);
         let fault = EpochMemberMonitor::observe_members(&mut children.0, &requests, &tasks)
-            .expect("third child exit");
+            .expect("third child exit")
+            .fault();
         drop(fence);
         assert!(
             matches!(children.0[0].try_wait(), Ok(None)),
@@ -4686,7 +4933,8 @@ mod tests {
         }));
         let (fence, requests) = std::sync::mpsc::sync_channel(1);
         let locked = EpochMemberMonitor::observe_members(&mut [], &requests, &tasks)
-            .expect("poisoned harness lock");
+            .expect("poisoned harness lock")
+            .fault();
         drop(fence);
         assert_eq!(
             locked,
@@ -5588,6 +5836,145 @@ mod tests {
             dockerd_dns_arguments(&resolvers),
             ["--dns", "1.1.1.1", "--dns", "8.8.8.8", "--dns", "9.9.9.9",]
         );
+    }
+
+    #[tokio::test]
+    async fn proved_sandbox_deletion_releases_attachment_without_deleting_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-detach-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut coordinator, worktree) = EpochCoordinator::collection_fixture(&root);
+        assert_eq!(
+            coordinator.inspect_storage("storage-one", 1)["state"],
+            "attached"
+        );
+        coordinator.fixture_settle_named_sandbox = true;
+        coordinator
+            .settle_definite_sandbox_deletion("sandbox-one")
+            .expect("proved deletion releases the attachment");
+        assert_eq!(
+            coordinator.inspect_storage("storage-one", 1)["state"],
+            "available"
+        );
+        assert!(
+            worktree.is_dir(),
+            "releasing attachment metadata keeps volume bytes"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn contains_digest_kills_a_stalled_probe_and_keeps_stderr() {
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let program = root.join("docker");
+        let stderr_note = root.join("stderr.txt");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho probe-diagnostic >> {}\nsleep 5\nexit 0\n",
+                stderr_note.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut backend = DockerImageBackend::new(root.join("sock"))
+            .with_probe_fixture(program, Duration::from_millis(200));
+        let started = Instant::now();
+        let error = backend
+            .contains_digest(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .expect_err("a stalled inspect must hit the metadata deadline");
+        assert_eq!(error, ImageImportError::Probe);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "presence probe must not run until the child exits"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&stderr_note).unwrap_or_default(),
+            "probe-diagnostic\n",
+            "the probe child must start before the deadline kills it"
+        );
+        let probe = include_str!("epoch_coordinator.rs")
+            .split_once("fn run_bounded_probe(")
+            .expect("bounded presence probe")
+            .1
+            .split_once("\n/// Direct Docker CLI")
+            .expect("end of bounded presence probe")
+            .0;
+        assert!(probe.contains(".stderr(Stdio::inherit())"));
+        assert!(!probe.contains(".stderr(Stdio::null())"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installer_resolver_probe_matches_epoch_nameserver_grammar() {
+        let script = include_str!("../deploy/install.sh");
+        let function = script
+            .split_once("# NH_RESOLVER_GRAMMAR_START\n")
+            .expect("installer resolver grammar")
+            .1
+            .split_once("# NH_RESOLVER_GRAMMAR_END\n")
+            .expect("end of installer resolver grammar")
+            .0;
+        let cases = [
+            "nameserver 1.1.1.1\n",
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\n",
+            "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n",
+            "nameserver 127.0.0.53\n",
+            "nameserver 1.1.1.1 # comment\n",
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\nnameserver 1.0.0.1\n",
+            "nameserver 0.0.0.0\n",
+            "nameserver 255.255.255.255\n",
+            "nameserver 224.0.0.1\n",
+            "nameserver not-an-address\nnameserver 1.1.1.1\n",
+        ];
+        let program = format!(
+            "{function}\nimport json,sys\ntext=sys.stdin.read()\nfound=resolver_nameservers(text)\njson.dump(found, sys.stdout)\n"
+        );
+        for source in cases {
+            let mut child = std::process::Command::new("/usr/bin/python3")
+                .args(["-I", "-B", "-c", &program])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("python3");
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(source.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "resolver probe failed");
+            let parsed: Option<Vec<String>> =
+                serde_json::from_slice(&output.stdout).expect("probe json");
+            let expected = resolve_epoch_nameservers(source).ok().map(|addresses| {
+                addresses
+                    .into_iter()
+                    .map(|address| address.to_string())
+                    .collect()
+            });
+            assert_eq!(parsed, expected, "installer disagreed on {source:?}");
+        }
     }
 
     #[test]

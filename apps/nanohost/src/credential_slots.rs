@@ -15,7 +15,7 @@
 
 #![allow(dead_code)]
 
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 /// Declared execution-host credential slot.
@@ -123,6 +123,9 @@ pub fn select_usable_credential(
     paths: &SlotPairPaths,
     context: &CredentialSelectionContext,
 ) -> SelectedCredential {
+    let Ok(_lock) = SlotPairLock::acquire(paths) else {
+        return SelectedCredential::Empty;
+    };
     let slot_a = load_usable_slot(
         CredentialSlot::A,
         &paths.slot_a_secret,
@@ -219,13 +222,22 @@ fn is_exact_mode_0600(path: &Path) -> bool {
     }
 }
 
-/// Reads raw `okt_` secret bytes as UTF-8; rejects missing or non-`okt_` material.
+/// Reads raw `okt_` secret bytes as UTF-8.
+///
+/// A usable secret is `okt_` plus a token body and nothing else. Whitespace,
+/// control bytes, and a bare prefix cannot be presented as one header value,
+/// so they are empty rather than a higher-generation slot.
 fn read_okt_secret(path: &Path) -> Option<String> {
     let secret = fs::read_to_string(path).ok()?;
-    if !secret.starts_with("okt_") || secret.is_empty() {
-        return None;
-    }
-    Some(secret)
+    usable_okt_secret(&secret).then_some(secret)
+}
+
+/// Returns whether `secret` is one presentable raw `okt_` token.
+fn usable_okt_secret(secret: &str) -> bool {
+    let Some(body) = secret.strip_prefix("okt_") else {
+        return false;
+    };
+    !body.is_empty() && secret.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 /// Parses companion `key=value` lines; malformed or incomplete companions are empty.
@@ -354,27 +366,256 @@ pub fn write_credential_slot(
         material.deployment_id
     );
 
-    write_mode_0600(secret_path, &material.secret).map_err(|message| SlotWriteError { message })?;
-    write_mode_0600(companion_path, &companion).map_err(|message| SlotWriteError { message })?;
+    #[cfg(unix)]
+    {
+        let secret_staged = stage_mode_0600(secret_path, &material.secret)
+            .map_err(|message| SlotWriteError { message })?;
+        let companion_staged = stage_mode_0600(companion_path, &companion)
+            .map_err(|message| SlotWriteError { message })?;
+        publish_staged_pair(
+            paths,
+            secret_path,
+            secret_staged,
+            companion_path,
+            companion_staged,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (secret_path, companion_path, companion);
+        Err(SlotWriteError {
+            message: "credential slot write requires unix 0600 file semantics".to_string(),
+        })
+    }
+}
+
+/// Publishes a staged secret and companion as one pair.
+///
+/// The process-shared slot lock covers companion invalidation and both renames.
+/// The old companion is removed before the secret is replaced, so a writer that
+/// dies between the renames leaves a secret with no valid companion. A reader
+/// treats that slot as unusable. Failure to remove the old companion happens
+/// before the secret is touched.
+#[cfg(unix)]
+fn publish_staged_pair(
+    paths: &SlotPairPaths,
+    secret_path: &Path,
+    secret_staged: StagedSlotFile,
+    companion_path: &Path,
+    companion_staged: StagedSlotFile,
+) -> Result<(), SlotWriteError> {
+    let _lock = SlotPairLock::acquire(paths)?;
+    before_companion_invalidation();
+    remove_published_file(companion_path)?;
+    secret_staged
+        .publish(secret_path)
+        .map_err(|message| SlotWriteError { message })?;
+    between_pair_publication();
+    if companion_publication_rejected() {
+        remove_published_file(secret_path)?;
+        return Err(SlotWriteError {
+            message: "credential companion publication failed".to_string(),
+        });
+    }
+    if let Err(message) = companion_staged.publish(companion_path) {
+        remove_published_file(secret_path)?;
+        return Err(SlotWriteError { message });
+    }
     Ok(())
 }
 
-/// Writes UTF-8 contents to `path` and sets mode exactly `0600`.
-fn write_mode_0600(path: &Path, contents: &str) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+fn before_companion_invalidation() {
+    #[cfg(all(test, unix))]
+    tests::before_companion_invalidation();
+}
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+fn between_pair_publication() {
+    #[cfg(all(test, unix))]
+    tests::between_pair_publication();
+}
+
+fn companion_publication_rejected() -> bool {
+    #[cfg(all(test, unix))]
+    {
+        tests::companion_publication_rejected()
+    }
+    #[cfg(not(all(test, unix)))]
+    {
+        false
+    }
+}
+
+/// Removes one published slot file. Absence is success; any other error is returned.
+fn remove_published_file(path: &Path) -> Result<(), SlotWriteError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(SlotWriteError {
+            message: format!("credential slot cleanup failed: {error}"),
+        }),
+    }
+}
+
+/// Service state directory that stays writable when the credential sink is not.
+///
+/// This is the same durable NanoHost directory as the rebuild-fence marker. The
+/// slot lock lives here so selection does not need to create a file beside the
+/// credential sink, which may be a read-only facility or bind mount.
+const NANOHOST_STATE_DIRECTORY: &str = "/var/lib/openkit/nanohost";
+
+/// Stable lock file name. The file is created once and never replaced or removed.
+const CREDENTIAL_SLOT_LOCK_FILE_NAME: &str = ".nanohost-credential-slot.lock";
+
+/// Directory that owns the shared slot lock for this process.
+///
+/// Production uses [`NANOHOST_STATE_DIRECTORY`]. Tests use one private directory
+/// under the temp dir so they never create the lock on the host state root.
+fn credential_slot_lock_directory() -> PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join("nanohost-credential-slot-lock")
+    }
+    #[cfg(not(test))]
+    {
+        PathBuf::from(NANOHOST_STATE_DIRECTORY)
+    }
+}
+
+/// Exclusive lock on the stable service-state slot file.
+///
+/// Delivery, clearing, and runtime selection in any process take this same
+/// mode-`0600` file. The credential sink directory is not used and is not made
+/// writable. A caller that cannot take the lock must not read or publish a slot.
+struct SlotPairLock {
+    file: File,
+}
+
+impl SlotPairLock {
+    fn acquire(paths: &SlotPairPaths) -> Result<Self, SlotWriteError> {
+        // The guarded pair identifies the operation. The lock file does not
+        // live beside those paths.
+        let _ = paths;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            use std::os::unix::io::AsRawFd;
+            let directory = credential_slot_lock_directory();
+            fs::create_dir_all(&directory).map_err(|error| SlotWriteError {
+                message: error.to_string(),
+            })?;
+            let lock_path = directory.join(CREDENTIAL_SLOT_LOCK_FILE_NAME);
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .mode(REQUIRED_FILE_MODE)
+                .open(&lock_path)
+                .map_err(|error| SlotWriteError {
+                    message: error.to_string(),
+                })?;
+            let mut permissions = file
+                .metadata()
+                .map_err(|error| SlotWriteError {
+                    message: error.to_string(),
+                })?
+                .permissions();
+            permissions.set_mode(REQUIRED_FILE_MODE);
+            fs::set_permissions(&lock_path, permissions).map_err(|error| SlotWriteError {
+                message: error.to_string(),
+            })?;
+            let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if locked != 0 {
+                Err(SlotWriteError {
+                    message: std::io::Error::last_os_error().to_string(),
+                })
+            } else {
+                Ok(Self { file })
+            }
         }
+        #[cfg(not(unix))]
+        {
+            let _ = paths;
+            Err(SlotWriteError {
+                message: "credential slot lock requires unix flock".to_string(),
+            })
+        }
+    }
+}
+
+impl Drop for SlotPairLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            unsafe {
+                libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+
+/// A mode-`0600` temp that becomes the destination only after [`StagedSlotFile::publish`].
+#[cfg(unix)]
+struct StagedSlotFile {
+    temp: PathBuf,
+    published: bool,
+}
+
+#[cfg(unix)]
+impl Drop for StagedSlotFile {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.temp);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl StagedSlotFile {
+    fn publish(mut self, path: &Path) -> Result<(), String> {
+        fs::rename(&self.temp, path).map_err(|error| error.to_string())?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+/// Stages UTF-8 contents in a new mode-`0600` temp beside `path` without publishing it.
+///
+/// An existing inode is not truncated in place, so a permissive mode cannot
+/// observe the new bytes before the mode is `0600`.
+#[cfg(unix)]
+fn stage_mode_0600(path: &Path, contents: &str) -> Result<StagedSlotFile, String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "credential slot path has no file name".to_string())?;
+    let parent = parent.unwrap_or_else(|| Path::new("."));
+    let nonce = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(".{}.{nanos}.{nonce}.tmp", std::process::id()));
+    let temp_path = parent.join(temp_name);
+    let write_result = (|| {
         let mut file = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(REQUIRED_FILE_MODE)
-            .open(path)
+            .open(&temp_path)
             .map_err(|error| error.to_string())?;
         file.write_all(contents.as_bytes())
             .map_err(|error| error.to_string())?;
@@ -383,14 +624,17 @@ fn write_mode_0600(path: &Path, contents: &str) -> Result<(), String> {
             .map_err(|error| error.to_string())?
             .permissions();
         permissions.set_mode(REQUIRED_FILE_MODE);
-        fs::set_permissions(path, permissions).map_err(|error| error.to_string())?;
-        Ok(())
+        fs::set_permissions(&temp_path, permissions).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        Ok(StagedSlotFile {
+            temp: temp_path.clone(),
+            published: false,
+        })
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, contents);
-        Err("credential slot write requires unix 0600 file semantics".to_string())
-    }
+    write_result
 }
 
 /// Clears one declared credential slot so it no longer holds usable material.
@@ -410,16 +654,9 @@ pub fn clear_credential_slot(
         CredentialSlot::A => (&paths.slot_a_secret, &paths.slot_a_companion),
         CredentialSlot::B => (&paths.slot_b_secret, &paths.slot_b_companion),
     };
+    let _lock = SlotPairLock::acquire(paths)?;
     for path in [secret_path, companion_path] {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(SlotWriteError {
-                    message: format!("credential slot clear failed: {error}"),
-                });
-            }
-        }
+        remove_published_file(path)?;
     }
     Ok(())
 }
@@ -427,12 +664,63 @@ pub fn clear_credential_slot(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::SystemTime;
+
+    thread_local! {
+        static PAIR_PUBLICATION_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static BEFORE_INVALIDATION_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+        static REJECT_COMPANION_PUBLICATION: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn between_pair_publication() {
+        let hook = PAIR_PUBLICATION_HOOK.with(|hook| hook.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub(super) fn before_companion_invalidation() {
+        let hook = BEFORE_INVALIDATION_HOOK.with(|hook| hook.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub(super) fn companion_publication_rejected() -> bool {
+        REJECT_COMPANION_PUBLICATION.with(|flag| flag.replace(false))
+    }
+
+    fn reject_next_companion_publication() {
+        REJECT_COMPANION_PUBLICATION.with(|flag| flag.set(true));
+    }
+
+    fn install_pair_publication_hook(hook: impl FnOnce() + 'static) {
+        PAIR_PUBLICATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    fn install_before_invalidation_hook(hook: impl FnOnce() + 'static) {
+        BEFORE_INVALIDATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    struct ClearPairHook;
+    impl Drop for ClearPairHook {
+        fn drop(&mut self) {
+            PAIR_PUBLICATION_HOOK.with(|hook| {
+                hook.borrow_mut().take();
+            });
+            BEFORE_INVALIDATION_HOOK.with(|hook| {
+                hook.borrow_mut().take();
+            });
+            REJECT_COMPANION_PUBLICATION.with(|flag| flag.set(false));
+        }
+    }
 
     const IDENTITY: &str = "nanohost_test_identity";
     const DEPLOYMENT: &str = "deployment_test";
@@ -540,6 +828,40 @@ mod tests {
                 secret: SECRET_B.to_string(),
             },
             "must present only the usable higher-generation slot"
+        );
+    }
+
+    #[test]
+    fn newline_or_bare_prefix_cannot_shadow_a_usable_lower_generation_slot() {
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "tok_a", 1, SECRET_A);
+        for rejected in [
+            format!("{SECRET_B}\n"),
+            format!("{SECRET_B}\r\n"),
+            format!("{SECRET_B} "),
+            "okt_\u{0001}body".to_string(),
+            "okt_".to_string(),
+        ] {
+            fixture.write_usable_slot(CredentialSlot::B, "tok_b", 2, &rejected);
+            let selected = select_usable_credential(&fixture.paths, &fixture.context);
+            assert_eq!(
+                selected,
+                SelectedCredential::Usable {
+                    slot: CredentialSlot::A,
+                    token_id: "tok_a".to_string(),
+                    issuance_generation: 1,
+                    secret: SECRET_A.to_string(),
+                },
+                "rejected secret {rejected:?} must not shadow slot A"
+            );
+        }
+        fixture.write_usable_slot(CredentialSlot::A, "tok_only", 4, "okt_");
+        fs::remove_file(&fixture.paths.slot_b_secret).unwrap();
+        fs::remove_file(&fixture.paths.slot_b_companion).unwrap();
+        assert_eq!(
+            select_usable_credential(&fixture.paths, &fixture.context),
+            SelectedCredential::Empty,
+            "a bare okt_ prefix is not a presentable credential"
         );
     }
 
@@ -793,6 +1115,39 @@ mod tests {
     }
 
     #[test]
+    fn write_credential_slot_replaces_a_permissive_inode_instead_of_truncating_it() {
+        use std::os::unix::fs::MetadataExt;
+
+        let fixture = Fixture::new();
+        write_mode(&fixture.paths.slot_a_secret, 0o644, "visible-before-write");
+        let previous = fs::metadata(&fixture.paths.slot_a_secret).expect("existing secret");
+        assert_eq!(previous.permissions().mode() & 0o777, 0o644);
+        write_credential_slot(
+            &fixture.paths,
+            CredentialSlot::A,
+            &SlotWriteMaterial {
+                token_id: "tok_replaced".to_string(),
+                issuance_generation: 3,
+                identity_id: IDENTITY.to_string(),
+                deployment_id: DEPLOYMENT.to_string(),
+                secret: SECRET_A.to_string(),
+            },
+        )
+        .expect("atomic slot write");
+        let current = fs::metadata(&fixture.paths.slot_a_secret).expect("replaced secret");
+        assert_ne!(
+            current.ino(),
+            previous.ino(),
+            "the permissive inode must not receive the new secret bytes"
+        );
+        assert_eq!(current.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::read_to_string(&fixture.paths.slot_a_secret).unwrap(),
+            SECRET_A
+        );
+    }
+
+    #[test]
     fn clear_credential_slot_leaves_exactly_one_usable_slot_after_cutover() {
         let fixture = Fixture::new();
         write_credential_slot(
@@ -836,5 +1191,228 @@ mod tests {
         );
         assert!(!fixture.paths.slot_a_secret.exists());
         assert!(!fixture.paths.slot_a_companion.exists());
+    }
+
+    #[test]
+    fn incomplete_companion_publication_leaves_the_old_slot_unusable() {
+        let _clear = ClearPairHook;
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "old-token", 1, SECRET_A);
+        reject_next_companion_publication();
+        let error = write_credential_slot(
+            &fixture.paths,
+            CredentialSlot::A,
+            &SlotWriteMaterial {
+                token_id: "new-token".to_string(),
+                issuance_generation: 2,
+                identity_id: IDENTITY.to_string(),
+                deployment_id: DEPLOYMENT.to_string(),
+                secret: "okt_testc".to_string(),
+            },
+        )
+        .expect_err("companion publication must fail");
+        assert_eq!(error.message, "credential companion publication failed");
+        assert_eq!(
+            select_usable_credential(&fixture.paths, &fixture.context),
+            SelectedCredential::Empty
+        );
+        assert!(!fixture.paths.slot_a_secret.exists());
+    }
+
+    fn paths_under(root: &Path) -> SlotPairPaths {
+        SlotPairPaths {
+            slot_a_secret: root.join("A.token"),
+            slot_a_companion: root.join("A.meta"),
+            slot_b_secret: root.join("B.token"),
+            slot_b_companion: root.join("B.meta"),
+        }
+    }
+
+    fn test_context() -> CredentialSelectionContext {
+        CredentialSelectionContext {
+            identity_id: IDENTITY.to_string(),
+            deployment_id: DEPLOYMENT.to_string(),
+        }
+    }
+
+    fn replacement_material() -> SlotWriteMaterial {
+        SlotWriteMaterial {
+            token_id: "new-token".to_string(),
+            issuance_generation: 2,
+            identity_id: IDENTITY.to_string(),
+            deployment_id: DEPLOYMENT.to_string(),
+            secret: "okt_testc".to_string(),
+        }
+    }
+
+    fn spawn_slot_child(test_name: &str, role: &str, root: &Path) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg(test_name)
+            .arg("--exact")
+            .env("NANOHOS_SLOT_CHILD", role)
+            .env("NANOHOS_SLOT_DIR", root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("slot child")
+    }
+
+    #[test]
+    fn cross_process_selector_between_renames_waits_for_the_complete_pair() {
+        if std::env::var("NANOHOS_SLOT_CHILD").ok().as_deref() == Some("select") {
+            let root = PathBuf::from(std::env::var("NANOHOS_SLOT_DIR").expect("slot dir"));
+            let paths = paths_under(&root);
+            fs::write(root.join("child-entered"), b"1").expect("child entered");
+            let selected = select_usable_credential(&paths, &test_context());
+            let line = match selected {
+                SelectedCredential::Usable { token_id, .. } => format!("token={token_id}"),
+                SelectedCredential::Empty => "empty".to_string(),
+            };
+            fs::write(root.join("child-result"), line).expect("child result");
+            return;
+        }
+        let _clear = ClearPairHook;
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "old-token", 1, SECRET_A);
+        let root = fixture.root.clone();
+        let child_slot = Arc::new(Mutex::new(None));
+        let child_for_hook = Arc::clone(&child_slot);
+        let hook_root = root.clone();
+        install_pair_publication_hook(move || {
+            let child = spawn_slot_child(
+                "credential_slots::tests::cross_process_selector_between_renames_waits_for_the_complete_pair",
+                "select",
+                &hook_root,
+            );
+            *child_for_hook
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(child);
+            while !hook_root.join("child-entered").is_file() {
+                std::thread::yield_now();
+            }
+        });
+        write_credential_slot(&fixture.paths, CredentialSlot::A, &replacement_material())
+            .expect("complete pair publication");
+        let mut child = child_slot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .expect("selector child");
+        let status = child.wait().expect("selector wait");
+        assert!(status.success());
+        assert_eq!(
+            fs::read_to_string(root.join("child-result")).expect("selector result"),
+            "token=new-token"
+        );
+    }
+
+    #[test]
+    fn read_only_parent_blocks_publication_before_the_secret_is_replaced() {
+        let _clear = ClearPairHook;
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "old-token", 1, SECRET_A);
+        let root = fixture.root.clone();
+        struct RestoreMode(PathBuf);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = RestoreMode(root.clone());
+        install_before_invalidation_hook(move || {
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o555))
+                .expect("read-only parent");
+        });
+        let error =
+            write_credential_slot(&fixture.paths, CredentialSlot::A, &replacement_material())
+                .expect_err("cleanup must fail before secret replacement");
+        assert!(error.message.contains("credential slot cleanup failed"));
+        assert_eq!(
+            fs::read_to_string(&fixture.paths.slot_a_secret).expect("old secret"),
+            SECRET_A
+        );
+        assert!(
+            fs::read_to_string(&fixture.paths.slot_a_companion)
+                .expect("old companion")
+                .contains("token_id=old-token")
+        );
+        assert_eq!(
+            select_usable_credential(&fixture.paths, &fixture.context),
+            SelectedCredential::Usable {
+                slot: CredentialSlot::A,
+                token_id: "old-token".to_string(),
+                issuance_generation: 1,
+                secret: SECRET_A.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn writer_exit_between_renames_leaves_the_slot_unusable() {
+        if std::env::var("NANOHOS_SLOT_CHILD").ok().as_deref() == Some("die") {
+            let root = PathBuf::from(std::env::var("NANOHOS_SLOT_DIR").expect("slot dir"));
+            let paths = paths_under(&root);
+            install_pair_publication_hook(|| std::process::exit(0));
+            let _ = write_credential_slot(&paths, CredentialSlot::A, &replacement_material());
+            std::process::exit(2);
+        }
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "old-token", 1, SECRET_A);
+        let mut child = spawn_slot_child(
+            "credential_slots::tests::writer_exit_between_renames_leaves_the_slot_unusable",
+            "die",
+            &fixture.root,
+        );
+        let status = child.wait().expect("writer wait");
+        assert!(status.success());
+        assert_eq!(
+            select_usable_credential(&fixture.paths, &fixture.context),
+            SelectedCredential::Empty
+        );
+        assert!(
+            !fixture.paths.slot_a_companion.exists(),
+            "the old companion must not remain beside the replaced secret"
+        );
+    }
+
+    #[test]
+    fn read_only_directory_slot_without_sidecar_stays_usable() {
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "kept-token", 1, SECRET_A);
+        let sidecar = fixture.root.join(CREDENTIAL_SLOT_LOCK_FILE_NAME);
+        assert!(
+            !sidecar.exists(),
+            "the credential directory starts without a sidecar lock"
+        );
+        struct RestoreMode(PathBuf);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = RestoreMode(fixture.root.clone());
+        fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o500))
+            .expect("read-only credential directory");
+
+        assert_eq!(
+            select_usable_credential(&fixture.paths, &fixture.context),
+            SelectedCredential::Usable {
+                slot: CredentialSlot::A,
+                token_id: "kept-token".to_string(),
+                issuance_generation: 1,
+                secret: SECRET_A.to_string(),
+            }
+        );
+        assert!(
+            !sidecar.exists(),
+            "selection must not create a lock in the credential directory"
+        );
+        let lock = credential_slot_lock_directory().join(CREDENTIAL_SLOT_LOCK_FILE_NAME);
+        let mode = fs::metadata(&lock)
+            .expect("service-state slot lock")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "the shared slot lock stays mode 0600");
     }
 }

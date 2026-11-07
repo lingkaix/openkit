@@ -146,6 +146,23 @@ impl From<io::Error> for AcquisitionError {
     }
 }
 
+/// Continues a registry fetch after a missing or evicted corrupt cache entry.
+fn retained_store_read(error: StoreError) -> Result<(), AcquisitionError> {
+    match error {
+        StoreError::Missing | StoreError::Corrupt => Ok(()),
+        StoreError::Io => Err(AcquisitionError::Io),
+        _ => Err(AcquisitionError::InvalidOciResult),
+    }
+}
+
+/// Preserves filesystem I/O from store admission instead of an OCI classification.
+fn acquisition_error_for_store(error: StoreError) -> AcquisitionError {
+    match error {
+        StoreError::Io => AcquisitionError::Io,
+        _ => AcquisitionError::InvalidOciResult,
+    }
+}
+
 /// One exact image-effect input admitted from the outer session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImageEffectInput {
@@ -367,8 +384,7 @@ impl RegistryAcquisition {
     ) -> Result<String, AcquisitionError> {
         match store.read_verified(&self.digest) {
             Ok(_) => return Ok(self.digest.clone()),
-            Err(StoreError::Missing) => {}
-            Err(_) => return Err(AcquisitionError::InvalidOciResult),
+            Err(error) => retained_store_read(error)?,
         }
         validate_owned_path(staging_root)?;
         if staging_root.exists() {
@@ -397,7 +413,7 @@ impl RegistryAcquisition {
                         StoreLineage::Registry(self.reference.whole()),
                         acquired_at,
                     )
-                    .map_err(|_| AcquisitionError::InvalidOciResult)?;
+                    .map_err(acquisition_error_for_store)?;
                 digest
             }
         };
@@ -494,8 +510,7 @@ impl RegistryAcquisition {
                 }
                 return Ok(StagedArchive::Retained(selected.digest));
             }
-            Err(StoreError::Missing) => {}
-            Err(_) => return Err(AcquisitionError::InvalidOciResult),
+            Err(error) => retained_store_read(error)?,
         }
         let child = self.with_digest(&selected.digest)?;
         let child_manifest = child.fetch_verified_manifest(bearer_token).await?;
@@ -3589,8 +3604,9 @@ mod tests {
     use super::{
         AcquisitionError, AcquisitionTrigger, BUILD_MAX_OUTPUT_BYTES, BUILD_MAX_TIME,
         BuildCapabilities, BuildDefinition, BuildPlan, ImageEffectEvidence, ImageEffectRequest,
-        RegistryAcquisition, archived_layout_digest, clear_registry_fixture,
-        install_registry_fixture, select_host_platform_manifest, stage_registry_layout,
+        RegistryAcquisition, acquisition_error_for_store, archived_layout_digest,
+        clear_registry_fixture, install_registry_fixture, retained_store_read,
+        select_host_platform_manifest, stage_registry_layout,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -5459,6 +5475,83 @@ mod tests {
             error.report_effect_failure(&mut unavailable),
             "image.acquire failed"
         );
+    }
+
+    #[test]
+    fn corrupt_cache_is_a_miss_and_store_io_stays_filesystem_io() {
+        assert_eq!(retained_store_read(StoreError::Missing), Ok(()));
+        assert_eq!(retained_store_read(StoreError::Corrupt), Ok(()));
+        assert_eq!(
+            retained_store_read(StoreError::Io),
+            Err(AcquisitionError::Io)
+        );
+        assert_eq!(
+            retained_store_read(StoreError::InvalidMetadata),
+            Err(AcquisitionError::InvalidOciResult)
+        );
+        assert_eq!(
+            acquisition_error_for_store(StoreError::Io),
+            AcquisitionError::Io
+        );
+        let mut journal = Vec::new();
+        assert_eq!(
+            AcquisitionError::Io.report_effect_failure(&mut journal),
+            "image.acquire failed"
+        );
+        assert_eq!(
+            String::from_utf8(journal).unwrap(),
+            "nanohost_image_acquisition_failed cause=filesystem_io\n"
+        );
+    }
+
+    /// A corrupt retained archive is discarded by the store and fetched again.
+    #[tokio::test]
+    async fn corrupt_retained_archive_is_refetched() {
+        let _registry_guard = REGISTRY_TEST_LOCK.lock().await;
+        let bytes = host_platform_bytes();
+        let root = test_root("corrupt-refetch");
+        let _root_cleanup = remove_test_root(root.clone());
+        let _fixture_cleanup = clear_fixture_on_drop();
+        install_registry_fixture(
+            BTreeMap::from([(
+                bytes.selected_digest.clone(),
+                bytes.selected_manifest.clone(),
+            )]),
+            BTreeMap::from([
+                (
+                    bytes.selected_config_digest.clone(),
+                    bytes.selected_config.clone(),
+                ),
+                (bytes.layer_digest.clone(), bytes.layer.clone()),
+            ]),
+        );
+        let acquisition = RegistryAcquisition::validate(
+            AcquisitionTrigger::AuthorizedAttempt,
+            &format!("ghcr.io/openkit/worker@{}", bytes.selected_digest),
+            &BTreeSet::from(["ghcr.io".to_string()]),
+        )
+        .expect("manifest reference");
+        let store = open_store(&root);
+        let staging = root.join("staging-first");
+        assert_eq!(
+            acquisition.acquire(&staging, &store, 1).await,
+            Ok(bytes.selected_digest.clone())
+        );
+        let stem = bytes
+            .selected_digest
+            .strip_prefix("sha256:")
+            .expect("canonical digest");
+        fs::write(root.join("store/content").join(stem), b"corrupt")
+            .expect("corrupt retained archive");
+        let again = root.join("staging-again");
+        assert_eq!(
+            acquisition.acquire(&again, &store, 2).await,
+            Ok(bytes.selected_digest.clone()),
+            "evicted corrupt content must be fetched again"
+        );
+        store
+            .read_verified(&bytes.selected_digest)
+            .expect("refetched archive is retained");
     }
 
     /// Keeps backend failures distinct from observed filesystem evidence.

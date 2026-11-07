@@ -442,6 +442,41 @@ def ignored_restart_step_diagnostic(line, unit_path):
     return re.fullmatch(source + r":\d+: Unknown (?:key name|lvalue) '(?:RestartSteps|RestartMaxDelaySec)' in section 'Service', ignoring\.", line) is not None
 
 
+# NH_RESOLVER_GRAMMAR_START
+import ipaddress
+def resolver_nameservers(text):
+    """Matches resolve_epoch_nameservers: one to three unique unicast IPv4 literals."""
+    addresses = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line == '' or line[0] in '#;':
+            continue
+        fields = line.split()
+        if not fields or fields[0] != 'nameserver':
+            continue
+        if len(fields) != 2:
+            return None
+        try:
+            address = ipaddress.ip_address(fields[1])
+        except ValueError:
+            return None
+        if not isinstance(address, ipaddress.IPv4Address):
+            return None
+        if (address.is_unspecified or address.is_loopback or address.is_multicast
+                or address == ipaddress.IPv4Address('255.255.255.255')):
+            return None
+        rendered = str(address)
+        if rendered in addresses:
+            return None
+        addresses.append(rendered)
+        if len(addresses) > 3:
+            return None
+    if not addresses:
+        return None
+    return addresses
+# NH_RESOLVER_GRAMMAR_END
+
+
 def observe(entry, root, release):
     """Collects bounded non-secret capability facts; equality with a qualified host is never required."""
     probe, predicate = entry['probe'], entry['predicate']
@@ -510,15 +545,10 @@ def observe(entry, root, release):
         if not stat.S_ISREG(mode):
             return {'regularNonSymlink': False, 'usableNameserver': False}
         text = read_regular(path).decode()
-        addresses = []
-        for line in text.splitlines():
-            fields = re.split(r'\s+', re.split(r'[#;]', line)[0].strip())
-            if fields[0] == 'nameserver' and len(fields) == 2:
-                try:
-                    addresses.append(str(ipaddress.ip_address(fields[1])))
-                except ValueError:
-                    pass
-        return {'regularNonSymlink': True, 'usableNameserver': bool(addresses), 'nameservers': addresses[:3]}
+        addresses = resolver_nameservers(text)
+        if addresses is None:
+            return {'regularNonSymlink': True, 'usableNameserver': False, 'nameservers': []}
+        return {'regularNonSymlink': True, 'usableNameserver': True, 'nameservers': addresses}
     if probe == 'ancestors':
         facts = []
         for destination in predicate['paths']:

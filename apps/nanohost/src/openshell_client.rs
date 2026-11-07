@@ -424,6 +424,53 @@ pub struct NanoHostOpenShellClient {
 }
 
 #[allow(dead_code)]
+/// Aborts the route task when the opening future is dropped before the bridge takes it.
+struct AbortOnDropJoin<T> {
+    handle: Option<JoinHandle<T>>,
+}
+
+impl<T> AbortOnDropJoin<T> {
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.handle.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
+    fn abort(&mut self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    fn disarm(mut self) -> JoinHandle<T> {
+        self.handle.take().expect("route task")
+    }
+}
+
+impl<T> Drop for AbortOnDropJoin<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+impl<T> std::future::Future for AbortOnDropJoin<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let handle = self.get_mut().handle.as_mut().expect("route task");
+        std::pin::Pin::new(handle).poll(cx)
+    }
+}
+
 impl NanoHostOpenShellClient {
     /// Describes the epoch-local Gateway connection before it becomes ready.
     pub fn new(endpoint: String, auth_path: PathBuf) -> Self {
@@ -797,7 +844,7 @@ impl NanoHostOpenShellClient {
             let (harness_ready, mut harness_ready_rx) = mpsc::channel(1);
             let projection = route_projection.clone();
             let route_sandbox_integration_binding_ref = sandbox_integration_binding_ref.clone();
-            let mut route_server = tokio::spawn(async move {
+            let mut route_server = AbortOnDropJoin::new(tokio::spawn(async move {
                 let admission_binding_ref = route_sandbox_integration_binding_ref.clone();
                 let result = serve_sandbox_http2(
                     &mut stream,
@@ -827,14 +874,14 @@ impl NanoHostOpenShellClient {
                 });
                 record_task_return(MemberFailureSubject::HarnessRoute, error_kind.as_deref());
                 result
-            });
+            }));
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let mut route_server_finished = false;
             let deadline_reached = tokio::select! {
                 readiness = harness_ready_rx.recv() => {
                     if readiness.is_some() && !route_server.is_finished() {
                         let bridge = OpenSandboxBridge::new(
-                            route_server,
+                            route_server.disarm(),
                             session.token,
                             sandbox_integration_binding_ref,
                             true,
@@ -957,7 +1004,14 @@ impl NanoHostOpenShellClient {
                         &sandbox_id,
                         sandbox_integration_binding_ref,
                         route_projection,
-                    ) => bridge?,
+                    ) => match bridge {
+                        Ok(bridge) => bridge,
+                        Err(fault) => {
+                            record_task_abort(MemberFailureSubject::HarnessResponse);
+                            exec_monitor.response.abort();
+                            return Err(fault);
+                        }
+                    },
                     _ = &mut exec_monitor.response => return Err(EpochFault::MemberExited(None)),
                 };
                 exec_monitor.bridge_route = Some(route_monitor);
@@ -1262,15 +1316,45 @@ mod tests {
     use tonic::Status;
 
     use super::{
-        CompiledOpenShellClient, LifecycleEffectKind, LifecycleEffectRequest, ReadinessFailure,
-        TypedOpenShellLifecycleClient, WorkerBootstrapMonitor, classify_ready_observation,
-        monitor_worker_bootstrap, storage_driver_config,
+        AbortOnDropJoin, CompiledOpenShellClient, LifecycleEffectKind, LifecycleEffectRequest,
+        ReadinessFailure, TypedOpenShellLifecycleClient, WorkerBootstrapMonitor,
+        classify_ready_observation, monitor_worker_bootstrap, storage_driver_config,
     };
     use crate::epoch_coordinator::CreateCertaintyLossPoint;
     use crate::persistent_volume::StorageMount;
 
     /// Exact fixed worker-entry vocabulary accepted from stdout.
     const WORKER_ENTRY_MARKER: &[u8] = b"OPENKIT_WORKER_SHIM_ENTRY_V1\n";
+
+    #[tokio::test]
+    async fn dropping_an_unfinished_route_join_aborts_it() {
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let dropped = std::sync::Arc::new(tokio::sync::Notify::new());
+        let started_task = std::sync::Arc::clone(&started);
+        let dropped_task = std::sync::Arc::clone(&dropped);
+        let started_wait = started.notified();
+        tokio::pin!(started_wait);
+        let guard = AbortOnDropJoin::new(tokio::spawn(async move {
+            let _drop_notice = DropNotice(dropped_task);
+            started_task.notify_one();
+            std::future::pending::<()>().await
+        }));
+        started_wait.await;
+        let dropped_wait = dropped.notified();
+        tokio::pin!(dropped_wait);
+        drop(guard);
+        timeout(Duration::from_secs(2), dropped_wait)
+            .await
+            .expect("dropping the route join aborts the task");
+    }
+
+    struct DropNotice(std::sync::Arc<tokio::sync::Notify>);
+
+    impl Drop for DropNotice {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
 
     #[test]
     fn retained_storage_uses_the_pinned_docker_bind_driver_shape() {

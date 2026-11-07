@@ -899,8 +899,17 @@ async fn run() -> Result<(), NanoHostRunFailure> {
     };
     let mut image_backend = Some(DockerImageBackend::new(plan.docker_socket().to_path_buf()));
     let persistent_volume_store =
-        PersistentVolumeStore::open_after_epoch_fence(plan.docker_socket().to_path_buf())
-            .map_err(|_| "nanohost persistent volume store unavailable")?;
+        match PersistentVolumeStore::open_after_epoch_fence(plan.docker_socket().to_path_buf()) {
+            Ok(persistent_volume_store) => persistent_volume_store,
+            Err(_) => {
+                let _ = evidence.export_invalidation(
+                    EpochInvalidationTrigger::EpochCreationFailure,
+                    &[("fence", "not-started")],
+                    Instant::now(),
+                );
+                return Err("nanohost persistent volume store unavailable".into());
+            }
+        };
     let mut persistent_volumes = Some(persistent_volume_store);
     let client = NanoHostOpenShellClient::new(
         plan.gateway_endpoint(),
@@ -928,6 +937,77 @@ fn attach_member_failure(failure: OuterSessionFailure, fault: EpochFault) -> Out
             failure.with_member_failure(member_failure)
         }
         _ => failure,
+    }
+}
+
+fn readiness_member_failure() -> OuterSessionFailure {
+    OuterSessionFailure::terminal(
+        OuterSessionStage::Readiness,
+        OuterSessionOperation::None,
+        None,
+        "nanohost epoch member failed",
+    )
+}
+
+/// Records readiness and consumes the rebuild marker unless the monitor has failed.
+///
+/// The last liveness check stays outside the commit gate so that gate is never
+/// held across a monitor join. Marker removal also stays outside the gate: the
+/// permit and the post-removal recheck are the ordering protocol, and a removal
+/// that loses to `fail` restores the marker instead of clearing the local guards.
+fn commit_acknowledged_readiness(
+    coordinator: &mut EpochCoordinator,
+    fence_started: &mut Option<SystemTime>,
+    initial_startup_deadline: &mut Option<tokio::time::Instant>,
+    clear_marker: impl FnOnce() -> std::io::Result<()>,
+    restore_marker: impl FnOnce(SystemTime) -> std::io::Result<()>,
+) -> Result<(), OuterSessionFailure> {
+    let member_failure = if coordinator.member_failure_signal().is_failed() {
+        Some(readiness_member_failure())
+    } else if let Err(fault) = coordinator.check_member_liveness() {
+        Some(attach_member_failure(readiness_member_failure(), fault))
+    } else {
+        None
+    };
+    if let Some(failure) = member_failure {
+        return Err(failure);
+    }
+    note_readiness_commit_boundary();
+    let signal = coordinator.member_failure_signal();
+    let epoch = signal
+        .begin_consumption()
+        .map_err(|()| readiness_member_failure())?;
+    let removed = if let Some(started) = *fence_started {
+        match clear_marker() {
+            Ok(()) => Some(started),
+            Err(_) => {
+                return Err(if signal.observed_failed() {
+                    readiness_member_failure()
+                } else {
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        None,
+                        "epoch rebuild marker could not be consumed",
+                    )
+                });
+            }
+        }
+    } else {
+        None
+    };
+    match signal.finish_consumption(epoch, || {
+        coordinator.record_readiness_acknowledgement();
+        *fence_started = None;
+        *initial_startup_deadline = None;
+    }) {
+        Ok(()) => Ok(()),
+        Err(()) => {
+            if let Some(started) = removed {
+                let _ = restore_marker(started);
+            }
+            Err(readiness_member_failure())
+        }
     }
 }
 
@@ -970,12 +1050,25 @@ async fn run_sessions(
                 coordinator.invalidate_startup();
                 return Err(terminal_connect("outer-session startup hard bound exceeded").into());
             }
-            let connected = nanocore_session::connect_verified_session_transport(
+            let member_failure = coordinator.member_failure_signal();
+            let connect_fut = nanocore_session::connect_verified_session_transport(
                 &session_inputs.rendezvous_url,
                 &session_inputs.transport,
                 startup_deadline,
-            )
-            .await;
+            );
+            tokio::pin!(connect_fut);
+            let connected = tokio::select! {
+                biased;
+                () = member_failure.cancelled() => {
+                    let fault = coordinator.wait().await;
+                    return Err(attach_member_failure(
+                        terminal_connect("nanohost epoch member failed"),
+                        fault,
+                    )
+                    .into());
+                }
+                connected = &mut connect_fut => connected,
+            };
             match connected {
                 Ok(io) => break (io, startup_deadline),
                 Err("nanohost NanoCore rendezvous timed out")
@@ -1007,7 +1100,10 @@ async fn run_sessions(
         };
         let readiness_fence = fence_started;
         let physical_epoch = coordinator.physical_epoch().to_string();
-        let session_result = nanocore_session::run_outer_session(
+        let member_failure = coordinator.member_failure_signal();
+        let session_result = nanocore_session::scope_member_failure(
+            member_failure.clone(),
+            nanocore_session::run_outer_session(
             io,
             &session_inputs.rendezvous_url,
             &selection_context,
@@ -1039,23 +1135,13 @@ async fn run_sessions(
                 },
             ),
             |generation, mut sender| {
-                coordinator.record_readiness_acknowledgement();
-                let readiness_commit = if fence_started.is_some() {
-                    clear_fence_started().map_err(|_| {
-                        OuterSessionFailure::terminal(
-                            OuterSessionStage::Readiness,
-                            OuterSessionOperation::None,
-                            None,
-                            "epoch rebuild marker could not be consumed",
-                        )
-                    })
-                } else {
-                    Ok(())
-                };
-                if readiness_commit.is_ok() {
-                    fence_started = None;
-                    initial_startup_deadline = None;
-                }
+                let readiness_commit = commit_acknowledged_readiness(
+                    &mut coordinator,
+                    &mut fence_started,
+                    &mut initial_startup_deadline,
+                    clear_fence_started,
+                    record_fence_started,
+                );
                 let coordinator = &mut coordinator;
                 let pending_result = &mut pending_result;
                 let authority = session_inputs.rendezvous_url.as_str();
@@ -1345,6 +1431,7 @@ async fn run_sessions(
                     }
                 }
             },
+        ),
         )
         .await;
         match session_result {
@@ -1363,15 +1450,27 @@ async fn run_sessions(
                         retained.as_str()
                     );
                     reconnect_after = failure.reconnect_after();
+                    note_outer_session_reconnect_delay();
+                    tokio::select! {
+                        biased;
+                        () = member_failure.cancelled() => {
+                            return Err(OuterSessionFailure::terminal(
+                                OuterSessionStage::Connect,
+                                OuterSessionOperation::None,
+                                None,
+                                "nanohost epoch member failed",
+                            )
+                            .with_reconnect_after(reconnect_after)
+                            .into());
+                        }
+                        () = tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY) => {}
+                    }
                 }
                 OuterSessionDisposition::Terminal => {
-                    if matches!(
-                        failure.reason(),
-                        "epoch rebuild hard bound exceeded"
-                            | "outer-session startup hard bound exceeded"
-                            | "epoch rebuild marker could not be consumed"
-                    ) {
+                    if initial_startup_deadline.is_some() {
                         coordinator.invalidate_startup();
+                    } else {
+                        coordinator.invalidate_terminal_session();
                     }
                     return Err(failure.into());
                 }
@@ -1442,6 +1541,16 @@ fn main() {
     }
 }
 
+fn note_outer_session_reconnect_delay() {
+    #[cfg(test)]
+    tests::note_outer_session_reconnect_delay();
+}
+
+fn note_readiness_commit_boundary() {
+    #[cfg(test)]
+    tests::run_readiness_commit_hook();
+}
+
 #[cfg(test)]
 mod credential_carrier_acceptance_tests;
 #[cfg(test)]
@@ -1453,7 +1562,39 @@ mod startup_tls_tests;
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+
+    pub(super) static OUTER_SESSION_RECONNECT_DELAYS: AtomicU64 = AtomicU64::new(0);
+    static READINESS_COMMIT_HOOK: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+
+    pub(super) fn note_outer_session_reconnect_delay() {
+        OUTER_SESSION_RECONNECT_DELAYS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn run_readiness_commit_hook() {
+        let hook = READINESS_COMMIT_HOOK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    fn install_readiness_commit_hook(hook: impl FnOnce() + Send + 'static) {
+        *READINESS_COMMIT_HOOK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(Box::new(hook));
+    }
+
+    fn clear_readiness_commit_hook() {
+        READINESS_COMMIT_HOOK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    }
 
     use super::{
         CREDENTIAL_HELD_EXIT_STATUS, NanoHostRunFailure, image_store_cli_error_message,
@@ -1531,6 +1672,48 @@ mod tests {
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect()
+    }
+
+    fn loopback_session_inputs(root: &std::path::Path, url: &str) -> super::NanoHostSessionInputs {
+        use crate::credential_slots::{
+            CredentialSlot, SlotPairPaths, SlotWriteMaterial, write_credential_slot,
+        };
+        use crate::nanocore_session::{TlsTrustMaterial, prepare_verified_session_transport};
+
+        let mut environment = valid_nanohost_environment();
+        environment.insert(
+            "OPENKIT_NANOHOST_NANOCORE_RENDEZVOUS_URL".into(),
+            url.to_string(),
+        );
+        let slot_paths = SlotPairPaths {
+            slot_a_secret: root.join("token-a"),
+            slot_a_companion: root.join("token-a-meta"),
+            slot_b_secret: root.join("token-b"),
+            slot_b_companion: root.join("token-b-meta"),
+        };
+        let selection_context = super::CredentialSelectionContext {
+            identity_id: environment["OPENKIT_NANOHOST_IDENTITY_ID"].clone(),
+            deployment_id: environment["OPENKIT_NANOHOST_DEPLOYMENT_ID"].clone(),
+        };
+        write_credential_slot(
+            &slot_paths,
+            CredentialSlot::A,
+            &SlotWriteMaterial {
+                token_id: "admission-fixture".into(),
+                issuance_generation: 1,
+                identity_id: selection_context.identity_id.clone(),
+                deployment_id: selection_context.deployment_id.clone(),
+                secret: "okt_admitfix".into(),
+            },
+        )
+        .unwrap();
+        super::NanoHostSessionInputs {
+            transport: prepare_verified_session_transport(url, &TlsTrustMaterial::Platform)
+                .unwrap(),
+            rendezvous_url: url.to_string(),
+            slot_paths,
+            selection_context,
+        }
     }
 
     #[test]
@@ -1909,6 +2092,412 @@ mod tests {
         );
         peer.abort();
         assert!(peer.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn ready_epoch_terminal_poll_exports_terminal_session_failure() {
+        use tokio::net::{TcpListener, TcpStream};
+
+        struct FixtureRoot(std::path::PathBuf);
+        impl Drop for FixtureRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = FixtureRoot(std::env::temp_dir().join(format!(
+            "nanohost-terminal-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let inputs = loopback_session_inputs(&root.0, &format!("http://{address}"));
+        let (mut coordinator, _) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root.0);
+        let reports = coordinator.fixture_invalidation_reports(&root.0);
+        let marker = root.0.join("fence-started");
+
+        async fn core_peer(socket: TcpStream) {
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let mut admitted = false;
+            let mut ready = false;
+            while let Some(request) = connection.accept().await {
+                let (request, mut respond) = request.unwrap();
+                let path = request.uri().path().to_string();
+                let mut body = request.into_body();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk.unwrap();
+                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                if path == "/api/nanohost/transport/session/admit" {
+                    assert!(!admitted);
+                    admitted = true;
+                    assert_eq!(bytes, b"{}");
+                    let payload = serde_json::json!({
+                        "connectionGeneration": 1, "deploymentId": "deployment-main",
+                        "identityId": "integration_nanohost_main", "mayCarryWork": true, "role": "authoritative"
+                    });
+                    let mut response = respond
+                        .send_response(
+                            http::Response::builder()
+                                .status(200)
+                                .header(
+                                    crate::nanocore_session::NANOHOST_TRANSPORT_REVISION_HEADER,
+                                    crate::nanocore_session::NANOHOST_TRANSPORT_REVISION.trim(),
+                                )
+                                .body(())
+                                .unwrap(),
+                            false,
+                        )
+                        .unwrap();
+                    response
+                        .send_data(
+                            bytes::Bytes::from(serde_json::to_vec(&payload).unwrap()),
+                            true,
+                        )
+                        .unwrap();
+                } else if path == "/api/nanohost/transport/session/readiness" {
+                    assert!(admitted);
+                    assert!(!ready);
+                    ready = true;
+                    respond
+                        .send_response(
+                            http::Response::builder().status(204).body(()).unwrap(),
+                            true,
+                        )
+                        .unwrap();
+                } else {
+                    assert!(ready, "poll follows readiness");
+                    respond
+                        .send_response(
+                            http::Response::builder().status(400).body(()).unwrap(),
+                            true,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
+        tokio::pin!(host);
+        let (socket, _) = tokio::select! {
+            result = &mut host => panic!("Host ended before admission: {}", result.unwrap_err()),
+            accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) => accepted.unwrap().unwrap(),
+        };
+        let peer = tokio::spawn(core_peer(socket));
+        let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
+            .await
+            .expect("terminal poll")
+            .expect_err("poll rejection is terminal");
+        assert_eq!(terminal.process_exit_status(), 1);
+        let super::NanoHostRunFailure::OuterSession(failure) = terminal else {
+            panic!("expected the original outer-session failure");
+        };
+        assert_eq!(
+            failure.disposition(),
+            crate::nanocore_session::OuterSessionDisposition::Terminal
+        );
+        assert_eq!(failure.reason(), "effect command poll rejected");
+        assert_eq!(failure.status(), Some(400));
+        let rendered = super::NanoHostRunFailure::OuterSession(failure).to_string();
+        assert!(rendered.contains("effect command poll rejected"));
+        let reports = std::fs::read_dir(reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["trigger"], "terminal-session-failure");
+        assert_eq!(reports[0]["complete"], true);
+        assert!(
+            marker.is_file(),
+            "terminal session failure preserves a fence marker"
+        );
+        peer.abort();
+        let _ = peer.await;
+    }
+
+    #[tokio::test]
+    async fn admission_rejection_waits_before_the_next_physical_connection() {
+        use tokio::net::TcpListener;
+
+        struct FixtureRoot(std::path::PathBuf);
+        impl Drop for FixtureRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = FixtureRoot(std::env::temp_dir().join(format!(
+            "nanohost-reconnect-delay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let inputs = loopback_session_inputs(&root.0, &format!("http://{address}"));
+        let (coordinator, _) =
+            crate::epoch_coordinator::EpochCoordinator::collection_fixture(&root.0);
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
+        tokio::pin!(host);
+        let (socket, _) = tokio::select! {
+            result = &mut host => panic!("Host ended before admission: {}", result.unwrap_err()),
+            accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) => {
+                accepted.unwrap().unwrap()
+            }
+        };
+        let (flushed_tx, mut flushed_rx) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+            let mut body = request.into_body();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.unwrap();
+                body.flow_control().release_capacity(chunk.len()).unwrap();
+            }
+            respond
+                .send_response(
+                    http::Response::builder().status(503).body(()).unwrap(),
+                    true,
+                )
+                .unwrap();
+            let next = connection.accept();
+            tokio::pin!(next);
+            std::future::poll_fn(|context| {
+                let _ = std::future::Future::poll(next.as_mut(), context);
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let _ = flushed_tx.send(());
+            let _ = next.await;
+        });
+        tokio::time::pause();
+        let mut flushed = false;
+        for _ in 0..2000 {
+            tokio::select! {
+                biased;
+                result = &mut host => panic!("Host ended on admission rejection: {}", result.unwrap_err()),
+                accepted = listener.accept() => panic!("reconnected before the delay: {accepted:?}"),
+                result = &mut flushed_rx => {
+                    result.expect("admission response flushed");
+                    flushed = true;
+                    break;
+                }
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        assert!(flushed, "the admission rejection must reach the host");
+        let armed_at = OUTER_SESSION_RECONNECT_DELAYS.load(std::sync::atomic::Ordering::Relaxed);
+        let mut armed = false;
+        for _ in 0..2000 {
+            tokio::select! {
+                biased;
+                result = &mut host => panic!("Host ended on admission rejection: {}", result.unwrap_err()),
+                accepted = listener.accept() => panic!("reconnected before the delay: {accepted:?}"),
+                () = tokio::time::advance(Duration::ZERO) => {}
+            }
+            if OUTER_SESSION_RECONNECT_DELAYS.load(std::sync::atomic::Ordering::Relaxed) > armed_at
+            {
+                armed = true;
+                break;
+            }
+        }
+        assert!(armed, "admission rejection must arm the reconnect delay");
+        tokio::time::advance(Duration::from_millis(249)).await;
+        for _ in 0..50 {
+            tokio::select! {
+                biased;
+                result = &mut host => panic!("Host ended during the reconnect delay: {}", result.unwrap_err()),
+                accepted = listener.accept() => panic!("reconnected 1ms early: {accepted:?}"),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        tokio::time::advance(Duration::from_millis(2)).await;
+        let mut reconnected = false;
+        for _ in 0..200 {
+            tokio::select! {
+                biased;
+                result = &mut host => panic!("Host ended at the reconnect delay: {}", result.unwrap_err()),
+                accepted = listener.accept() => {
+                    accepted.expect("the delayed reconnect reaches the listener");
+                    reconnected = true;
+                    break;
+                }
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        assert!(reconnected, "reconnect must follow the 250ms delay");
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn member_loss_during_admission_stops_before_readiness() {
+        use crate::epoch_coordinator::{EpochCoordinator, EpochFault};
+        use tokio::net::TcpListener;
+
+        struct FixtureRoot(std::path::PathBuf);
+        impl Drop for FixtureRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = FixtureRoot(std::env::temp_dir().join(format!(
+            "nanohost-admit-member-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let inputs = loopback_session_inputs(&root.0, &format!("http://{address}"));
+        let (mut coordinator, _) = EpochCoordinator::collection_fixture(&root.0);
+        coordinator.fixture_invalidation_reports(&root.0);
+        let members = coordinator.fixture_invalidation_requester();
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
+        tokio::pin!(host);
+        let (socket, _) = tokio::select! {
+            result = &mut host => panic!("Host ended before admission: {}", result.unwrap_err()),
+            accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) => {
+                accepted.unwrap().unwrap()
+            }
+        };
+        let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+        let admitted = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let (request, respond) = connection.accept().await.unwrap().unwrap();
+            assert_eq!(
+                request.uri().path(),
+                "/api/nanohost/transport/session/admit"
+            );
+            let _held = (request, respond);
+            let _ = arrived_tx.send(());
+            std::future::pending::<()>().await
+        });
+        tokio::select! {
+            result = &mut host => panic!("Host ended before the stalled admission: {}", result.unwrap_err()),
+            arrived = tokio::time::timeout(Duration::from_secs(5), arrived_rx) => {
+                arrived.expect("admission request").unwrap();
+            }
+        };
+        members.send(Some(EpochFault::MemberExited(None))).unwrap();
+        let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
+            .await
+            .expect("member loss must not wait out the startup deadline")
+            .unwrap_err();
+        let super::NanoHostRunFailure::OuterSession(terminal) = terminal else {
+            panic!("expected classified member failure")
+        };
+        assert_eq!(terminal.reason(), "nanohost epoch member failed");
+        assert!(root.0.join("fence-started").is_file());
+        admitted.abort();
+    }
+
+    #[tokio::test]
+    async fn initial_admission_refusal_exports_epoch_creation_failure() {
+        use crate::epoch_coordinator::EpochCoordinator;
+        use tokio::net::TcpListener;
+
+        struct FixtureRoot(std::path::PathBuf);
+        impl Drop for FixtureRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = FixtureRoot(std::env::temp_dir().join(format!(
+            "nanohost-admit-401-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let inputs = loopback_session_inputs(&root.0, &format!("http://{address}"));
+        let (mut coordinator, _) = EpochCoordinator::collection_fixture(&root.0);
+        let reports = coordinator.fixture_invalidation_reports(&root.0);
+        let host = super::run_sessions(
+            inputs,
+            coordinator,
+            None,
+            tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT,
+        );
+        tokio::pin!(host);
+        let (socket, _) = tokio::select! {
+            result = &mut host => panic!("Host ended before admission: {}", result.unwrap_err()),
+            accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) => {
+                accepted.unwrap().unwrap()
+            }
+        };
+        let peer = tokio::spawn(async move {
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+            let mut body = request.into_body();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk.unwrap();
+                body.flow_control().release_capacity(chunk.len()).unwrap();
+            }
+            respond
+                .send_response(
+                    http::Response::builder().status(401).body(()).unwrap(),
+                    true,
+                )
+                .unwrap();
+            let _ = connection.accept().await;
+        });
+        let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
+            .await
+            .expect("initial admission refusal must finish inside the startup budget")
+            .unwrap_err();
+        let super::NanoHostRunFailure::OuterSession(terminal) = terminal else {
+            panic!("expected a terminal admission refusal")
+        };
+        assert_eq!(terminal.reason(), "outer-session admission rejected");
+        let reports = std::fs::read_dir(reports)
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["trigger"], "epoch-creation-failure");
+        assert!(root.0.join("fence-started").is_file());
+        peer.await.unwrap();
     }
 
     #[test]
@@ -2427,7 +3016,7 @@ mod tests {
             .split_once("let terminal_connect = |reason|")
             .expect("bounded rendezvous connect loop")
             .1
-            .split_once("let session_result = nanocore_session::run_outer_session(")
+            .split_once("let session_result = nanocore_session::scope_member_failure(")
             .expect("end of rendezvous connect handling")
             .0;
         assert!(connect.contains("connect_verified_session_transport("));
@@ -2719,6 +3308,137 @@ mod tests {
             image_cli < install && install <= require_success && require_success < runtime_entry
         );
         assert!(!main_body[..runtime_entry].contains("aws_lc_rs::default_provider"));
+    }
+
+    #[tokio::test]
+    async fn failure_between_liveness_and_marker_consumption_preserves_marker() {
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                clear_readiness_commit_hook();
+            }
+        }
+        let _clear_hook = ClearHook;
+
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-readiness-commit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp epoch root");
+        let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+        let _reports = coordinator.fixture_invalidation_reports(&root);
+        let members = coordinator.fixture_invalidation_requester();
+        let signal = coordinator.member_failure_signal();
+        let marker = root.join("fence-started");
+        let started = std::time::SystemTime::now();
+        crate::epoch_evidence::record_fence_started_at(&marker, started).expect("recovery marker");
+        let mut fence_started = Some(started);
+        let mut initial_startup_deadline =
+            Some(tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT);
+        let hook_members = members.clone();
+        let hook_signal = signal.clone();
+        install_readiness_commit_hook(move || {
+            hook_members
+                .send(Some(super::EpochFault::MemberExited(None)))
+                .expect("monitor fence request");
+            while !hook_signal.is_failed() {
+                std::thread::yield_now();
+            }
+        });
+
+        let committed = super::commit_acknowledged_readiness(
+            &mut coordinator,
+            &mut fence_started,
+            &mut initial_startup_deadline,
+            || crate::epoch_evidence::clear_fence_started_at(&marker),
+            |started| crate::epoch_evidence::record_fence_started_at(&marker, started),
+        );
+
+        assert_eq!(
+            committed.expect_err("fenced epoch").reason(),
+            "nanohost epoch member failed"
+        );
+        assert!(signal.is_failed());
+        assert!(
+            marker.is_file(),
+            "readiness must not consume a marker after the epoch was fenced"
+        );
+        assert!(fence_started.is_some());
+        assert!(initial_startup_deadline.is_some());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).expect("remove temp epoch root");
+    }
+
+    #[tokio::test]
+    async fn stalled_marker_removal_does_not_block_monitor_fence() {
+        let root = std::env::temp_dir().join(format!(
+            "nanohost-blocked-marker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp epoch root");
+        let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+        let reports = coordinator.fixture_invalidation_reports(&root);
+        let members = coordinator.fixture_invalidation_requester();
+        let signal = coordinator.member_failure_signal();
+        let marker = root.join("fence-started");
+        let started = std::time::SystemTime::now();
+        crate::epoch_evidence::record_fence_started_at(&marker, started).expect("recovery marker");
+        let mut fence_started = Some(started);
+        let mut initial_startup_deadline =
+            Some(tokio::time::Instant::now() + super::STARTUP_READINESS_HARD_LIMIT);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            entered_rx.recv().expect("marker removal entered");
+            members
+                .send(Some(super::EpochFault::MemberExited(None)))
+                .expect("monitor fence request");
+            while !signal.is_failed() {
+                std::thread::yield_now();
+            }
+            while std::fs::read_dir(&reports)
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+                == 0
+            {
+                std::thread::yield_now();
+            }
+            release_tx.send(()).expect("release marker removal");
+        });
+        let committed = super::commit_acknowledged_readiness(
+            &mut coordinator,
+            &mut fence_started,
+            &mut initial_startup_deadline,
+            || {
+                entered_tx.send(()).expect("observe marker removal");
+                release_rx.recv().expect("marker removal released");
+                crate::epoch_evidence::clear_fence_started_at(&marker)
+            },
+            |started| crate::epoch_evidence::record_fence_started_at(&marker, started),
+        );
+        observer.join().expect("observer");
+        assert_eq!(
+            committed
+                .expect_err("fenced during marker removal")
+                .reason(),
+            "nanohost epoch member failed"
+        );
+        assert!(
+            marker.is_file(),
+            "a removal that loses to fencing must restore the marker"
+        );
+        assert!(fence_started.is_some());
+        assert!(initial_startup_deadline.is_some());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).expect("remove temp epoch root");
     }
 
     #[test]

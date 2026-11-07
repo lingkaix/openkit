@@ -52,6 +52,8 @@ pub enum EpochInvalidationTrigger {
     EpochCreationFailure,
     /// An explicit operator action invalidated the epoch.
     OperatorAction,
+    /// A live ready epoch hit a terminal outer-session failure.
+    TerminalSessionFailure,
 }
 
 impl EpochInvalidationTrigger {
@@ -66,6 +68,7 @@ impl EpochInvalidationTrigger {
             Self::ContainmentLoss => "containment-loss",
             Self::EpochCreationFailure => "epoch-creation-failure",
             Self::OperatorAction => "operator-action",
+            Self::TerminalSessionFailure => "terminal-session-failure",
         }
     }
 }
@@ -84,6 +87,7 @@ impl FromStr for EpochInvalidationTrigger {
             "containment-loss" => Ok(Self::ContainmentLoss),
             "epoch-creation-failure" => Ok(Self::EpochCreationFailure),
             "operator-action" => Ok(Self::OperatorAction),
+            "terminal-session-failure" => Ok(Self::TerminalSessionFailure),
             _ => Err("unknown NanoHost-initiated invalidation trigger"),
         }
     }
@@ -760,6 +764,7 @@ mod tests {
             "containment-loss",
             "epoch-creation-failure",
             "operator-action",
+            "terminal-session-failure",
         ] {
             assert!(trigger.parse::<EpochInvalidationTrigger>().is_ok());
             assert!(trigger.parse::<AbsentEpochTrigger>().is_err());

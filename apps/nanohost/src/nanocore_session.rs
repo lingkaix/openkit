@@ -19,6 +19,37 @@ use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::epoch_coordinator::MemberFailureSignal;
+
+tokio::task_local! {
+    static MEMBER_FAILURE_WATCH: MemberFailureSignal;
+}
+
+/// Runs `future` where outer-session admission can observe member fencing.
+pub(crate) async fn scope_member_failure<F: Future>(
+    signal: MemberFailureSignal,
+    future: F,
+) -> F::Output {
+    MEMBER_FAILURE_WATCH.scope(signal, future).await
+}
+
+fn member_failure_terminal(reconnect_after: Option<u64>) -> OuterSessionFailure {
+    OuterSessionFailure::terminal(
+        OuterSessionStage::Connect,
+        OuterSessionOperation::None,
+        None,
+        "nanohost epoch member failed",
+    )
+    .with_reconnect_after(reconnect_after)
+}
+
+async fn member_failure_cancelled() {
+    match MEMBER_FAILURE_WATCH.try_with(MemberFailureSignal::clone) {
+        Ok(signal) => signal.cancelled().await,
+        Err(_) => std::future::pending().await,
+    }
+}
 use std::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
@@ -1553,122 +1584,135 @@ where
         .initial_window_size(PER_STREAM_RECEIVE_WINDOW_BYTES as u32)
         .max_send_buffer_size(PER_STREAM_RECEIVE_WINDOW_BYTES)
         .max_concurrent_streams(OUTER_MAX_CONCURRENT_STREAMS);
-    let (sender, connection) = tokio::time::timeout_at(startup_deadline, builder.handshake(io))
-        .await
-        .map_err(|_| startup_failure())?
-        .map_err(|_| {
-            OuterSessionFailure::terminal(
-                OuterSessionStage::Connect,
-                OuterSessionOperation::None,
-                None,
-                "outer-session HTTP/2 handshake failed",
-            )
-            .with_reconnect_after(reconnect_after)
-        })?;
+    let handshake = async {
+        tokio::time::timeout_at(startup_deadline, builder.handshake(io))
+            .await
+            .map_err(|_| startup_failure())?
+            .map_err(|_| {
+                OuterSessionFailure::terminal(
+                    OuterSessionStage::Connect,
+                    OuterSessionOperation::None,
+                    None,
+                    "outer-session HTTP/2 handshake failed",
+                )
+                .with_reconnect_after(reconnect_after)
+            })
+    };
+    tokio::pin!(handshake);
+    let (sender, connection) = tokio::select! {
+        biased;
+        () = member_failure_cancelled() => {
+            return Err(member_failure_terminal(reconnect_after));
+        }
+        result = &mut handshake => result?,
+    };
     let admitted_generation = Arc::new(AtomicU64::new(0));
     let exchange_generation = Arc::clone(&admitted_generation);
     let (startup_ready, startup_observation) = tokio::sync::oneshot::channel();
     let exchange = async move {
-        let mut sender = sender.ready().await.map_err(|_| {
-            OuterSessionFailure::reconnect(
-                OuterSessionStage::Admission,
-                OuterSessionOperation::None,
-                None,
-                "outer-session physical connection closed",
-                reconnect_after,
-            )
-        })?;
-        let admission_uri = format!(
-            "{}/api/nanohost/transport/session/admit",
-            authority.trim_end_matches('/')
-        );
-        let admission = Request::builder()
-            .method(Method::POST)
-            .uri(admission_uri)
-            .header(
-                NANOHOST_TRANSPORT_REVISION_HEADER,
-                NANOHOST_TRANSPORT_REVISION.trim(),
-            )
-            .header("authorization", format!("Bearer {authorization_secret}"))
-            .header("content-type", "application/json")
-            .body(())
-            .map_err(|_| {
-                OuterSessionFailure::terminal(
-                    OuterSessionStage::Admission,
-                    OuterSessionOperation::None,
-                    None,
-                    "outer-session admission request invalid",
-                )
-                .with_reconnect_after(reconnect_after)
-            })?;
-        let (response, mut request_body) = sender.send_request(admission, false).map_err(|_| {
-            OuterSessionFailure::reconnect(
-                OuterSessionStage::Admission,
-                OuterSessionOperation::None,
-                None,
-                "outer-session admission send failed",
-                reconnect_after,
-            )
-        })?;
-        request_body
-            .send_data(Bytes::from_static(b"{}"), true)
-            .map_err(|_| {
+        let pre_dispatch = async move {
+            let mut sender = sender.ready().await.map_err(|_| {
                 OuterSessionFailure::reconnect(
                     OuterSessionStage::Admission,
                     OuterSessionOperation::None,
                     None,
-                    "outer-session admission body send failed",
+                    "outer-session physical connection closed",
                     reconnect_after,
                 )
             })?;
-        let response = response.await.map_err(|_| {
-            OuterSessionFailure::reconnect(
-                OuterSessionStage::Admission,
-                OuterSessionOperation::None,
-                None,
-                "outer-session admission response failed",
-                reconnect_after,
-            )
-        })?;
-        let status = response.status();
-        if status != StatusCode::OK {
-            let mut reason = "outer-session admission rejected";
-            if status == StatusCode::CONFLICT {
-                // Read only the bounded existing error envelope. Other conflicts retain
-                // their ordinary admission failure, including incomplete or invalid bodies.
-                let mut body = response.into_body();
-                let mut bytes = BytesMut::new();
-                let mut complete = true;
-                while let Some(chunk) = body.data().await {
-                    let Ok(chunk) = chunk else {
-                        complete = false;
-                        break;
-                    };
-                    if bytes.len() + chunk.len()
-                        > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
-                        || body.flow_control().release_capacity(chunk.len()).is_err()
-                    {
-                        complete = false;
-                        break;
+            let admission_uri = format!(
+                "{}/api/nanohost/transport/session/admit",
+                authority.trim_end_matches('/')
+            );
+            let admission = Request::builder()
+                .method(Method::POST)
+                .uri(admission_uri)
+                .header(
+                    NANOHOST_TRANSPORT_REVISION_HEADER,
+                    NANOHOST_TRANSPORT_REVISION.trim(),
+                )
+                .header("authorization", format!("Bearer {authorization_secret}"))
+                .header("content-type", "application/json")
+                .body(())
+                .map_err(|_| {
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session admission request invalid",
+                    )
+                    .with_reconnect_after(reconnect_after)
+                })?;
+            let (response, mut request_body) =
+                sender.send_request(admission, false).map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session admission send failed",
+                        reconnect_after,
+                    )
+                })?;
+            request_body
+                .send_data(Bytes::from_static(b"{}"), true)
+                .map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session admission body send failed",
+                        reconnect_after,
+                    )
+                })?;
+            let response = response.await.map_err(|_| {
+                OuterSessionFailure::reconnect(
+                    OuterSessionStage::Admission,
+                    OuterSessionOperation::None,
+                    None,
+                    "outer-session admission response failed",
+                    reconnect_after,
+                )
+            })?;
+            let status = response.status();
+            if status != StatusCode::OK {
+                let mut reason = "outer-session admission rejected";
+                if status == StatusCode::CONFLICT {
+                    // Read only the bounded existing error envelope. Other conflicts retain
+                    // their ordinary admission failure, including incomplete or invalid bodies.
+                    let mut body = response.into_body();
+                    let mut bytes = BytesMut::new();
+                    let mut complete = true;
+                    while let Some(chunk) = body.data().await {
+                        let Ok(chunk) = chunk else {
+                            complete = false;
+                            break;
+                        };
+                        if bytes.len() + chunk.len()
+                            > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
+                            || body.flow_control().release_capacity(chunk.len()).is_err()
+                        {
+                            complete = false;
+                            break;
+                        }
+                        bytes.extend_from_slice(&chunk);
                     }
-                    bytes.extend_from_slice(&chunk);
+                    if complete
+                        && serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .ok()
+                            .is_some_and(|error| {
+                                error.get("code").and_then(serde_json::Value::as_str)
+                                    == Some("nanohost_protocol_mismatch")
+                            })
+                    {
+                        reason = "nanohost_protocol_mismatch";
+                    }
                 }
-                if complete
-                    && serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .ok()
-                        .is_some_and(|error| {
-                            error.get("code").and_then(serde_json::Value::as_str)
-                                == Some("nanohost_protocol_mismatch")
-                        })
+                // A consumed physical admission cannot be repeated on this connection. Only
+                // credentials and an actual protocol mismatch hold; other failures reconnect
+                // through the existing fresh-physical-IO path, without retrying an allocation.
+                let failure = if status == StatusCode::UNAUTHORIZED
+                    || reason == "nanohost_protocol_mismatch"
                 {
-                    reason = "nanohost_protocol_mismatch";
-                }
-            }
-            // A consumed physical admission cannot be repeated on this connection. Only
-            // credentials and an actual protocol mismatch hold; other failures reconnect
-            // through the existing fresh-physical-IO path, without retrying an allocation.
-            let failure =
-                if status == StatusCode::UNAUTHORIZED || reason == "nanohost_protocol_mismatch" {
                     OuterSessionFailure::terminal(
                         OuterSessionStage::Admission,
                         OuterSessionOperation::None,
@@ -1685,238 +1729,264 @@ where
                         reconnect_after,
                     )
                 };
-            return Err(failure);
-        }
-        if required_header(response.headers(), NANOHOST_TRANSPORT_REVISION_HEADER).ok()
-            != Some(NANOHOST_TRANSPORT_REVISION.trim())
-        {
-            return Err(OuterSessionFailure::terminal(
-                OuterSessionStage::Admission,
-                OuterSessionOperation::None,
-                Some(status.as_u16()),
-                "nanohost_protocol_mismatch",
-            )
-            .with_reconnect_after(reconnect_after));
-        }
-
-        let mut response_body = response.into_body();
-        let mut admission_bytes = BytesMut::new();
-        while let Some(chunk) = response_body.data().await {
-            let chunk = chunk.map_err(|_| {
-                OuterSessionFailure::reconnect(
-                    OuterSessionStage::Admission,
-                    OuterSessionOperation::None,
-                    Some(StatusCode::OK.as_u16()),
-                    "outer-session admission response failed",
-                    reconnect_after,
-                )
-            })?;
-            if admission_bytes.len() + chunk.len()
-                > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
+                return Err(failure);
+            }
+            if required_header(response.headers(), NANOHOST_TRANSPORT_REVISION_HEADER).ok()
+                != Some(NANOHOST_TRANSPORT_REVISION.trim())
             {
                 return Err(OuterSessionFailure::terminal(
                     OuterSessionStage::Admission,
                     OuterSessionOperation::None,
-                    Some(StatusCode::OK.as_u16()),
-                    "outer-session admission response exceeded bound",
+                    Some(status.as_u16()),
+                    "nanohost_protocol_mismatch",
                 )
                 .with_reconnect_after(reconnect_after));
             }
-            response_body
-                .flow_control()
-                .release_capacity(chunk.len())
-                .map_err(|_| {
-                    OuterSessionFailure::terminal(
-                        OuterSessionStage::Admission,
-                        OuterSessionOperation::None,
-                        Some(StatusCode::OK.as_u16()),
-                        "outer-session admission flow control failed",
-                    )
-                    .with_reconnect_after(reconnect_after)
-                })?;
-            admission_bytes.extend_from_slice(&chunk);
-        }
-        let admission: serde_json::Value =
-            serde_json::from_slice(&admission_bytes).map_err(|_| {
-                OuterSessionFailure::terminal(
-                    OuterSessionStage::Admission,
-                    OuterSessionOperation::None,
-                    Some(StatusCode::OK.as_u16()),
-                    "outer-session admission response invalid",
-                )
-                .with_reconnect_after(reconnect_after)
-            })?;
-        let connection_generation = admission
-            .get("connectionGeneration")
-            .and_then(serde_json::Value::as_u64)
-            .filter(|generation| {
-                *generation > 0
-                    && reconnect_after.is_none_or(|predecessor| *generation > predecessor)
-            })
-            .ok_or_else(|| {
-                OuterSessionFailure::terminal(
-                    OuterSessionStage::Admission,
-                    OuterSessionOperation::None,
-                    Some(StatusCode::OK.as_u16()),
-                    "outer-session admission generation invalid",
-                )
-                .with_reconnect_after(reconnect_after)
-            })?;
-        let response_identity = admission
-            .get("identityId")
-            .and_then(serde_json::Value::as_str);
-        let response_deployment = admission
-            .get("deploymentId")
-            .and_then(serde_json::Value::as_str);
-        let authoritative = admission.get("role").and_then(serde_json::Value::as_str)
-            == Some("authoritative")
-            && admission
-                .get("mayCarryWork")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true);
-        if response_identity != Some(context.identity_id.as_str())
-            || response_deployment != Some(context.deployment_id.as_str())
-            || !authoritative
-        {
-            return Err(OuterSessionFailure::terminal(
-                OuterSessionStage::Admission,
-                OuterSessionOperation::None,
-                Some(StatusCode::OK.as_u16()),
-                "outer-session admission binding invalid",
-            )
-            .with_reconnect_after(Some(connection_generation)));
-        }
-        exchange_generation.store(connection_generation, Ordering::Release);
 
-        let mut sender = sender.ready().await.map_err(|_| {
-            OuterSessionFailure::reconnect(
-                OuterSessionStage::Readiness,
-                OuterSessionOperation::None,
-                None,
-                "outer-session physical connection closed",
-                Some(connection_generation),
-            )
-        })?;
-        let readiness_deadline = readiness_gate()
-            .map_err(|failure| failure.with_reconnect_after(Some(connection_generation)))?;
-        let hard_bound_failure = || {
-            OuterSessionFailure::terminal(
-                OuterSessionStage::Readiness,
-                OuterSessionOperation::None,
-                None,
-                "epoch rebuild hard bound exceeded",
-            )
-            .with_reconnect_after(Some(connection_generation))
-        };
-        let readiness_exchange = async {
-            let readiness_uri = format!(
-                "{}/api/nanohost/transport/session/readiness",
-                authority.trim_end_matches('/')
-            );
-            let readiness = Request::builder()
-                .method(Method::POST)
-                .uri(readiness_uri)
-                .header("content-type", "application/json")
-                .body(())
-                .map_err(|_| {
-                    OuterSessionFailure::terminal(
-                        OuterSessionStage::Readiness,
-                        OuterSessionOperation::None,
-                        None,
-                        "outer-session readiness request invalid",
-                    )
-                    .with_reconnect_after(Some(connection_generation))
-                })?;
-            if readiness_deadline.is_some_and(|deadline| tokio::time::Instant::now() > deadline) {
-                return Err(hard_bound_failure());
-            }
-            let (response, mut request_body) =
-                sender.send_request(readiness, false).map_err(|_| {
-                    OuterSessionFailure::reconnect(
-                        OuterSessionStage::Readiness,
-                        OuterSessionOperation::None,
-                        None,
-                        "outer-session physical connection closed",
-                        Some(connection_generation),
-                    )
-                })?;
-            request_body.send_data(readiness_body, true).map_err(|_| {
-                OuterSessionFailure::reconnect(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    None,
-                    "outer-session physical connection closed",
-                    Some(connection_generation),
-                )
-            })?;
-            let response = response.await.map_err(|_| {
-                OuterSessionFailure::reconnect(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    None,
-                    "outer-session physical connection closed",
-                    Some(connection_generation),
-                )
-            })?;
-            if response.status() != StatusCode::NO_CONTENT {
-                return Err(OuterSessionFailure::terminal(
-                    OuterSessionStage::Readiness,
-                    OuterSessionOperation::None,
-                    Some(response.status().as_u16()),
-                    "outer-session readiness rejected",
-                )
-                .with_reconnect_after(Some(connection_generation)));
-            }
             let mut response_body = response.into_body();
+            let mut admission_bytes = BytesMut::new();
             while let Some(chunk) = response_body.data().await {
                 let chunk = chunk.map_err(|_| {
                     OuterSessionFailure::reconnect(
-                        OuterSessionStage::Readiness,
+                        OuterSessionStage::Admission,
                         OuterSessionOperation::None,
-                        Some(StatusCode::NO_CONTENT.as_u16()),
-                        "outer-session physical connection closed",
-                        Some(connection_generation),
+                        Some(StatusCode::OK.as_u16()),
+                        "outer-session admission response failed",
+                        reconnect_after,
                     )
                 })?;
-                if !chunk.is_empty() {
+                if admission_bytes.len() + chunk.len()
+                    > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
+                {
                     return Err(OuterSessionFailure::terminal(
-                        OuterSessionStage::Readiness,
+                        OuterSessionStage::Admission,
                         OuterSessionOperation::None,
-                        Some(StatusCode::NO_CONTENT.as_u16()),
-                        "outer-session readiness response invalid",
+                        Some(StatusCode::OK.as_u16()),
+                        "outer-session admission response exceeded bound",
                     )
-                    .with_reconnect_after(Some(connection_generation)));
+                    .with_reconnect_after(reconnect_after));
                 }
                 response_body
                     .flow_control()
                     .release_capacity(chunk.len())
                     .map_err(|_| {
                         OuterSessionFailure::terminal(
+                            OuterSessionStage::Admission,
+                            OuterSessionOperation::None,
+                            Some(StatusCode::OK.as_u16()),
+                            "outer-session admission flow control failed",
+                        )
+                        .with_reconnect_after(reconnect_after)
+                    })?;
+                admission_bytes.extend_from_slice(&chunk);
+            }
+            let admission: serde_json::Value =
+                serde_json::from_slice(&admission_bytes).map_err(|_| {
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        Some(StatusCode::OK.as_u16()),
+                        "outer-session admission response invalid",
+                    )
+                    .with_reconnect_after(reconnect_after)
+                })?;
+            let connection_generation = admission
+                .get("connectionGeneration")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|generation| {
+                    *generation > 0
+                        && reconnect_after.is_none_or(|predecessor| *generation > predecessor)
+                })
+                .ok_or_else(|| {
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        Some(StatusCode::OK.as_u16()),
+                        "outer-session admission generation invalid",
+                    )
+                    .with_reconnect_after(reconnect_after)
+                })?;
+            let response_identity = admission
+                .get("identityId")
+                .and_then(serde_json::Value::as_str);
+            let response_deployment = admission
+                .get("deploymentId")
+                .and_then(serde_json::Value::as_str);
+            let authoritative = admission.get("role").and_then(serde_json::Value::as_str)
+                == Some("authoritative")
+                && admission
+                    .get("mayCarryWork")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
+            if response_identity != Some(context.identity_id.as_str())
+                || response_deployment != Some(context.deployment_id.as_str())
+                || !authoritative
+            {
+                return Err(OuterSessionFailure::terminal(
+                    OuterSessionStage::Admission,
+                    OuterSessionOperation::None,
+                    Some(StatusCode::OK.as_u16()),
+                    "outer-session admission binding invalid",
+                )
+                .with_reconnect_after(Some(connection_generation)));
+            }
+            exchange_generation.store(connection_generation, Ordering::Release);
+
+            let mut sender = sender.ready().await.map_err(|_| {
+                OuterSessionFailure::reconnect(
+                    OuterSessionStage::Readiness,
+                    OuterSessionOperation::None,
+                    None,
+                    "outer-session physical connection closed",
+                    Some(connection_generation),
+                )
+            })?;
+            let readiness_deadline = readiness_gate()
+                .map_err(|failure| failure.with_reconnect_after(Some(connection_generation)))?;
+            let hard_bound_failure = || {
+                OuterSessionFailure::terminal(
+                    OuterSessionStage::Readiness,
+                    OuterSessionOperation::None,
+                    None,
+                    "epoch rebuild hard bound exceeded",
+                )
+                .with_reconnect_after(Some(connection_generation))
+            };
+            let readiness_exchange = async {
+                let readiness_uri = format!(
+                    "{}/api/nanohost/transport/session/readiness",
+                    authority.trim_end_matches('/')
+                );
+                let readiness = Request::builder()
+                    .method(Method::POST)
+                    .uri(readiness_uri)
+                    .header("content-type", "application/json")
+                    .body(())
+                    .map_err(|_| {
+                        OuterSessionFailure::terminal(
                             OuterSessionStage::Readiness,
                             OuterSessionOperation::None,
-                            Some(StatusCode::NO_CONTENT.as_u16()),
-                            "outer-session readiness flow control failed",
+                            None,
+                            "outer-session readiness request invalid",
                         )
                         .with_reconnect_after(Some(connection_generation))
                     })?;
+                if readiness_deadline.is_some_and(|deadline| tokio::time::Instant::now() > deadline)
+                {
+                    return Err(hard_bound_failure());
+                }
+                if MEMBER_FAILURE_WATCH
+                    .try_with(|signal| signal.observed_failed())
+                    .unwrap_or(false)
+                {
+                    return Err(member_failure_terminal(Some(connection_generation)));
+                }
+                let (response, mut request_body) =
+                    sender.send_request(readiness, false).map_err(|_| {
+                        OuterSessionFailure::reconnect(
+                            OuterSessionStage::Readiness,
+                            OuterSessionOperation::None,
+                            None,
+                            "outer-session physical connection closed",
+                            Some(connection_generation),
+                        )
+                    })?;
+                request_body.send_data(readiness_body, true).map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session physical connection closed",
+                        Some(connection_generation),
+                    )
+                })?;
+                let response = response.await.map_err(|_| {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        None,
+                        "outer-session physical connection closed",
+                        Some(connection_generation),
+                    )
+                })?;
+                if response.status() != StatusCode::NO_CONTENT {
+                    return Err(OuterSessionFailure::terminal(
+                        OuterSessionStage::Readiness,
+                        OuterSessionOperation::None,
+                        Some(response.status().as_u16()),
+                        "outer-session readiness rejected",
+                    )
+                    .with_reconnect_after(Some(connection_generation)));
+                }
+                let mut response_body = response.into_body();
+                while let Some(chunk) = response_body.data().await {
+                    let chunk = chunk.map_err(|_| {
+                        OuterSessionFailure::reconnect(
+                            OuterSessionStage::Readiness,
+                            OuterSessionOperation::None,
+                            Some(StatusCode::NO_CONTENT.as_u16()),
+                            "outer-session physical connection closed",
+                            Some(connection_generation),
+                        )
+                    })?;
+                    if !chunk.is_empty() {
+                        return Err(OuterSessionFailure::terminal(
+                            OuterSessionStage::Readiness,
+                            OuterSessionOperation::None,
+                            Some(StatusCode::NO_CONTENT.as_u16()),
+                            "outer-session readiness response invalid",
+                        )
+                        .with_reconnect_after(Some(connection_generation)));
+                    }
+                    response_body
+                        .flow_control()
+                        .release_capacity(chunk.len())
+                        .map_err(|_| {
+                            OuterSessionFailure::terminal(
+                                OuterSessionStage::Readiness,
+                                OuterSessionOperation::None,
+                                Some(StatusCode::NO_CONTENT.as_u16()),
+                                "outer-session readiness flow control failed",
+                            )
+                            .with_reconnect_after(Some(connection_generation))
+                        })?;
+                }
+                if readiness_deadline.is_some_and(|deadline| tokio::time::Instant::now() > deadline)
+                {
+                    return Err(hard_bound_failure());
+                }
+                Ok(())
+            };
+            if let Some(deadline) = readiness_deadline {
+                tokio::time::timeout_at(deadline, readiness_exchange)
+                    .await
+                    .map_err(|_| hard_bound_failure())??;
+            } else {
+                readiness_exchange.await?;
             }
-            if readiness_deadline.is_some_and(|deadline| tokio::time::Instant::now() > deadline) {
-                return Err(hard_bound_failure());
-            }
-            Ok(())
-        };
-        if let Some(deadline) = readiness_deadline {
-            tokio::time::timeout_at(deadline, readiness_exchange)
-                .await
-                .map_err(|_| hard_bound_failure())??;
-        } else {
-            readiness_exchange.await?;
-        }
 
-        // The startup deadline ends only after the complete readiness acknowledgement.
-        if tokio::time::Instant::now() > startup_deadline {
-            return Err(startup_failure().with_reconnect_after(Some(connection_generation)));
+            // The startup deadline ends only after the complete readiness acknowledgement.
+            if tokio::time::Instant::now() > startup_deadline {
+                return Err(startup_failure().with_reconnect_after(Some(connection_generation)));
+            }
+            Ok((connection_generation, sender, request_body, response_body))
+        };
+        tokio::pin!(pre_dispatch);
+        let (connection_generation, sender, _admission_request, _admission_response) = tokio::select! {
+            biased;
+            () = member_failure_cancelled() => {
+                return Err(member_failure_terminal(reconnect_after));
+            }
+            result = &mut pre_dispatch => result?,
+        };
+        if MEMBER_FAILURE_WATCH
+            .try_with(|signal| signal.observed_failed())
+            .unwrap_or(false)
+        {
+            return Err(member_failure_terminal(reconnect_after));
         }
+        // The observation guard must outlive dispatch. Dropping it with the
+        // pre-dispatch future clears the admission the caller just published.
         if let Some(inspection) = &_inspection_lifetime {
             inspection.admit(
                 &context.identity_id,
