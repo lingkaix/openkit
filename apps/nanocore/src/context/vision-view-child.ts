@@ -214,6 +214,10 @@ async function render(): Promise<void> {
       target.canvas = null;
       target.context = null;
     }
+    // pdf.js 6.5 draws the output page through this context. It does not allocate.
+    getNoAlphaContext(canvas: Canvas) {
+      return canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    }
   }
   let size: Dimensions;
   let draw: (canvas: Canvas, crop: VisionCrop, scale: number) => Promise<void>;
