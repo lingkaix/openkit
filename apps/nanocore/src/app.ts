@@ -1950,6 +1950,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         mode,
         providerRegistry: runtimeConfig().providerRegistry,
         agentManifests: runtimeConfig().agentManifests,
+        gatewayConfig: runtimeConfig().gatewayConfig,
+        providerCredentialConfigured,
+        ...(providerSubscriptionAccountManager
+          ? { subscriptionAccounts: providerSubscriptionAccountManager }
+          : {}),
         ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       })
     );

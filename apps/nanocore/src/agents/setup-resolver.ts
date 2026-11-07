@@ -77,6 +77,24 @@ export interface AgentSetupResolverDependencies {
   supportedRequiredFeatures?: readonly string[];
 }
 
+/**
+ * Reports the setup owner's resource refusal.
+ *
+ * This check does not need Gateway supply. Diagnostics can apply it before a
+ * catalog check has run.
+ */
+export function unsupportedAgentResourceDiagnostic(
+  config: AgentManifest
+): AgentSetupDiagnostic | null {
+  if (!config.resources || Object.keys(config.resources).length === 0) return null;
+  return {
+    agentId: config.id,
+    code: 'agent_setup.unsupported_resources',
+    message: `Agent ${config.id} declares resource limits that the Worker cannot enforce; leave resources empty or absent.`,
+    severity: 'error',
+  };
+}
+
 /** Resolves one immutable Agent setup from currently available Server supply plus Workspace and User composition. */
 export function resolveAgentSetup(
   config: AgentManifest,
@@ -91,14 +109,8 @@ export function resolveAgentSetup(
   );
 
   // No Worker backend enforces these limits; match the AEP refusal before reporting readiness.
-  if (config.resources && Object.keys(config.resources).length > 0) {
-    diagnostics.push({
-      agentId: config.id,
-      code: 'agent_setup.unsupported_resources',
-      message: `Agent ${config.id} declares resource limits that the Worker cannot enforce; leave resources empty or absent.`,
-      severity: 'error',
-    });
-  }
+  const unsupportedResources = unsupportedAgentResourceDiagnostic(config);
+  if (unsupportedResources) diagnostics.push(unsupportedResources);
 
   // AEP construction requires both fixed control paths, regardless of the native adapter.
   for (const name of ['node', 'openkit-worker-shim'] as const) {

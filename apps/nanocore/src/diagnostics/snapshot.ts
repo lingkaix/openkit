@@ -1,8 +1,15 @@
+import type { GatewayConfig } from '@openkit/config-schema';
 import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness } from '../agents/readiness.js';
+import { resolveAgentSetup, unsupportedAgentResourceDiagnostic } from '../agents/setup-resolver.js';
 import type { Actor } from '../auth/identity.js';
 import type { CoreMode } from '../config/mode.js';
-import type { ProviderRegistry, ProviderRegistrySummary } from '../providers/registry.js';
+import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import type {
+  ProviderCredentialConfigured,
+  ProviderRegistry,
+  ProviderRegistrySummary,
+} from '../providers/registry.js';
 import type { CoreDb } from '../storage/db.js';
 import { listAppliedMigrationIds } from '../storage/migrate.js';
 
@@ -64,6 +71,15 @@ interface CreateDiagnosticsSnapshotInput {
   providerRegistry: ProviderRegistry;
   /** Loaded agent manifests. */
   agentManifests: AgentManifest[];
+  /**
+   * Current Gateway supply. Absent means Agent readiness checks have not run,
+   * so a declared or omitted `ready` is not launchability proof.
+   */
+  gatewayConfig?: GatewayConfig;
+  /** Current API-key presence without resolving Vault material. */
+  providerCredentialConfigured?: ProviderCredentialConfigured;
+  /** Current network-free subscription supply when its live owner is available. */
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>;
 }
 
 /**
@@ -83,17 +99,60 @@ export function createDiagnosticsSnapshot(
     },
     mode: input.mode,
     providers: input.providerRegistry.summarize(),
-    agents: input.agentManifests.map((manifest) => {
-      const readiness = computeReadiness(manifest);
-
-      return {
-        displayName: manifest.displayName,
-        id: manifest.id,
-        readiness: readiness.status,
-        reasons: readiness.reasons,
-      };
-    }),
+    agents: input.agentManifests.map((manifest) => projectAgentDiagnostics(manifest, input)),
   };
+}
+
+/**
+ * Projects launchability for one Agent.
+ *
+ * Omitted or declared `ready` is published only after the setup resolver accepts
+ * the manifest. Without that check, or when a required setup check fails, the
+ * snapshot reports `unknown` or `blocked` instead of `ready`.
+ */
+function projectAgentDiagnostics(
+  manifest: AgentManifest,
+  input: CreateDiagnosticsSnapshotInput
+): DiagnosticsAgentSnapshot {
+  const declared = computeReadiness(manifest);
+  const identity = { displayName: manifest.displayName, id: manifest.id };
+  const unsupportedResources = unsupportedAgentResourceDiagnostic(manifest);
+  if (!input.gatewayConfig) {
+    if (unsupportedResources) {
+      return { ...identity, readiness: 'blocked', reasons: [unsupportedResources.message] };
+    }
+    // Omitted readiness defaults to ready. That default is not launchability proof.
+    if (declared.status === 'ready') {
+      return {
+        ...identity,
+        readiness: 'unknown',
+        reasons: ['Agent readiness has not been established.'],
+      };
+    }
+    return { ...identity, readiness: declared.status, reasons: declared.reasons };
+  }
+
+  const setup = resolveAgentSetup(manifest, {
+    gatewayConfig: input.gatewayConfig,
+    providerRegistry: input.providerRegistry,
+    providerCredentialConfigured: input.providerCredentialConfigured,
+    subscriptionAccounts: input.subscriptionAccounts,
+  });
+  if (setup.diagnostics.length > 0) {
+    return {
+      ...identity,
+      readiness: 'blocked',
+      reasons: [
+        ...(declared.status === 'ready' ? [] : declared.reasons),
+        ...setup.diagnostics.map((diagnostic) => diagnostic.message),
+      ],
+    };
+  }
+
+  const established = manifest.readiness?.status
+    ? declared
+    : { reasons: [], status: 'ready' as const };
+  return { ...identity, readiness: established.status, reasons: established.reasons };
 }
 
 /**
