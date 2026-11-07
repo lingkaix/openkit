@@ -306,6 +306,73 @@ describe('createBetterAuth', () => {
     }
   });
 
+  it('returns the incomplete bootstrap refusal while sign-up is disabled, then keeps sign-up disabled', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-signup-disabled-'));
+    const coreDb = openCoreDb(dataRoot);
+    const now = new Date('2026-10-30T00:00:00.000Z');
+
+    try {
+      applyMigrations(coreDb);
+      const issued = ensureServerBootstrapToken(coreDb, { now });
+      expect(issued).not.toBeNull();
+      if (!issued) throw new Error('Bootstrap token was not issued.');
+      const baseURL = 'https://core.openkit.example';
+      const auth = createBetterAuth(coreDb, {
+        env: { BETTER_AUTH_SECRET: randomBytes(32).toString('hex') },
+        mode: 'server',
+        openKitConfig: {
+          auth: { signup: { enabled: false } },
+          server: { publicBaseUrl: baseURL },
+        },
+      });
+      const signUp = () =>
+        auth.handler(
+          new Request(`${baseURL}/api/auth/sign-up/email`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              email: `${randomUUID()}@example.test`,
+              name: 'Signup fixture',
+              password: randomBytes(24).toString('base64url'),
+            }),
+          })
+        );
+      const userCount = () =>
+        (coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number })
+          .count;
+
+      const pending = await signUp();
+      expect(pending.status).toBe(403);
+      expect(((await pending.json()) as { message?: string }).message).toBe(
+        'Server bootstrap is incomplete.'
+      );
+      expect(userCount()).toBe(0);
+
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        token: issued.token,
+        ownerUserId: allocateEntityId('usr'),
+        displayName: 'Bootstrap owner',
+        email: `${randomUUID()}@example.test`,
+        password: randomBytes(24).toString('base64url'),
+        tokenExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+        now,
+      });
+      expect(consumed.status).toBe('consumed');
+      expect(userCount()).toBe(1);
+
+      const disabled = await signUp();
+      const disabledBody = (await disabled.json()) as { code?: string; message?: string };
+      expect(disabled.status).toBe(400);
+      expect(disabledBody.code).toBe('EMAIL_PASSWORD_SIGN_UP_DISABLED');
+      expect(disabledBody.message).toBe('Email and password sign up is not enabled');
+      expect(userCount()).toBe(1);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('derives base URL, trusted origins, and sign-up policy from server config', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-config-'));
     const coreDb = openCoreDb(dataRoot);
@@ -341,7 +408,10 @@ describe('createBetterAuth', () => {
       expect(auth.options.baseURL).toBe('https://core.openkit.example');
       expect(auth.options.trustedOrigins).toEqual(['https://console.openkit.example']);
       expect(auth.options.emailAndPassword?.disableSignUp).toBe(true);
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(403);
+      expect(((await response.json()) as { message?: string }).message).toBe(
+        'Server bootstrap is incomplete.'
+      );
       expect(
         coreDb.sqlite.prepare('SELECT id FROM users WHERE email = ?').get('disabled@example.com')
       ).toBeUndefined();

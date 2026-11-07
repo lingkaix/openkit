@@ -129,6 +129,21 @@ interface OpenKitAccessTokenRow {
 }
 
 /**
+ * Reports whether a caller-supplied access-token expiry is strictly after the server clock.
+ *
+ * A current or past instant is not a usable server-admin credential. Bootstrap must refuse it
+ * before any write so consumption cannot close the ceremony and leave no administrator token.
+ *
+ * @param expiresAt Caller-supplied expiration timestamp.
+ * @param now Server clock used for the refusal.
+ * @returns True only when the instant parses and is later than `now`.
+ */
+export function isAccessTokenExpiryStrictlyFuture(expiresAt: string, now: Date): boolean {
+  const expiresMs = Date.parse(expiresAt);
+  return Number.isFinite(expiresMs) && expiresMs > now.getTime();
+}
+
+/**
  * Creates one durable OpenKit access-token record in the server Core database.
  *
  * @param coreDb Open Core database handles.

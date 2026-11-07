@@ -132,6 +132,12 @@ export function createAccessTokenOperationImplementations({
         );
       const consumed = await consumeServerBootstrapToken(coreDb, input);
       if (consumed.status !== 'consumed') {
+        if (consumed.status === 'admin_expiry')
+          throw new OperationError(
+            'bootstrap_admin_token_expiry',
+            'Administrator token expiration must be strictly after the server clock.',
+            400
+          );
         if (consumed.status === 'unavailable')
           throw new OperationError(
             'bootstrap_unavailable',

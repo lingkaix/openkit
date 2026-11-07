@@ -71,8 +71,14 @@ async function parseResponseBody(response: Response): Promise<unknown> {
   }
 }
 
+/** Today's incomplete server sign-up refusal. Better Auth sends it without a protocol envelope. */
+const SERVER_BOOTSTRAP_INCOMPLETE_MESSAGE = 'Server bootstrap is incomplete.';
+
 /**
  * Builds a useful generic HTTP error message.
+ *
+ * The incomplete-bootstrap sentence is preserved so Web can reveal the bootstrap field.
+ * Other non-protocol bodies stay a status line and are not echoed.
  *
  * @param response Fetch response that failed.
  * @param body Parsed response body.
@@ -83,5 +89,16 @@ function fallbackHttpErrorMessage(response: Response, body: unknown): string {
     return body.trim();
   }
 
+  if (jsonMessage(body) === SERVER_BOOTSTRAP_INCOMPLETE_MESSAGE) {
+    return SERVER_BOOTSTRAP_INCOMPLETE_MESSAGE;
+  }
+
   return `HTTP ${response.status}`;
+}
+
+/** Reads a JSON object's message when that field is a string. */
+function jsonMessage(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || !('message' in body)) return null;
+  const message = body.message;
+  return typeof message === 'string' ? message : null;
 }

@@ -1,6 +1,6 @@
 import { allocateEntityId } from '@openkit/protocol';
 import { betterAuth } from 'better-auth';
-import { APIError } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { resolveBindHost, resolveBindPort } from '../config/bind-host.js';
 import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
@@ -10,6 +10,11 @@ import { isServerBootstrapComplete } from './bootstrap-token.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const LOCAL_DEVELOPMENT_SECRET = 'openkit-local-development-secret-at-least-32-characters';
+
+/** Today's refusal while server bootstrap has not been consumed. */
+function refuseIncompleteServerBootstrap(): never {
+  throw new APIError('FORBIDDEN', { message: 'Server bootstrap is incomplete.' });
+}
 
 /**
  * Resolves the Better Auth secret for one deployment mode.
@@ -123,7 +128,7 @@ export function createBetterAuth(
         create: {
           before: async () => {
             if (mode === 'server' && !isServerBootstrapComplete(coreDb)) {
-              throw new APIError('FORBIDDEN', { message: 'Server bootstrap is incomplete.' });
+              refuseIncompleteServerBootstrap();
             }
           },
         },
@@ -144,6 +149,22 @@ export function createBetterAuth(
       enabled: true,
     },
     plugins: [
+      {
+        id: 'openkit-incomplete-bootstrap',
+        hooks: {
+          before: [
+            {
+              matcher: (context) => context.path === '/sign-up/email',
+              handler: createAuthMiddleware(async () => {
+                // disableSignUp rejects inside the route, before the user-create hook.
+                if (mode === 'server' && !isServerBootstrapComplete(coreDb)) {
+                  refuseIncompleteServerBootstrap();
+                }
+              }),
+            },
+          ],
+        },
+      },
       {
         id: 'openkit-configured-origins',
         init: (context) => {

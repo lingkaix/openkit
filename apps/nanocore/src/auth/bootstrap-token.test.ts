@@ -294,4 +294,53 @@ describe('server bootstrap token', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it.each([
+    'past',
+    'now',
+  ] as const)('refuses a %s administrator token expiry before any user, token, or consumedAt write', async (when) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-admin-expiry-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const now = new Date('2026-07-06T00:02:00.000Z');
+      const issued = ensureServerBootstrapToken(coreDb, {
+        now: new Date('2026-07-06T00:00:00.000Z'),
+      });
+      const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
+      const beforeEmission = readFileSync(emission.path, 'utf8');
+      const tokenExpiresAt =
+        when === 'now' ? now.toISOString() : new Date(now.getTime() - 1_000).toISOString();
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        displayName: 'Owner',
+        email: 'owner@example.com',
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        password: 'password123456',
+        token: issued!.token,
+        tokenExpiresAt,
+        now,
+      });
+      const users = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+        count: number;
+      };
+      const tokens = coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM openkit_access_tokens')
+        .get() as { count: number };
+      const setting = JSON.parse(
+        (
+          coreDb.sqlite
+            .prepare('SELECT value FROM server_settings WHERE key = ?')
+            .get('auth.bootstrap_token') as { value: string }
+        ).value
+      ) as { consumedAt: string | null };
+
+      expect(consumed).toEqual({ status: 'admin_expiry' });
+      expect(users.count).toBe(0);
+      expect(tokens.count).toBe(0);
+      expect(setting.consumedAt).toBeNull();
+      expect(readFileSync(emission.path, 'utf8')).toBe(beforeEmission);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 });
