@@ -57,7 +57,11 @@ import {
 } from './config/runtime-config.js';
 import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
-import { recoverServerKnowledgeManagerTurns } from './knowledge/server-knowledge-maintenance.js';
+import { NotebookError } from './knowledge/notebook-error.js';
+import {
+  admitServerKnowledgeBoot,
+  recoverServerKnowledgeManagerTurns,
+} from './knowledge/server-knowledge-maintenance.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { resolveLogicalModelCatalog } from './llm/logical-models.js';
@@ -295,6 +299,20 @@ const bootResult = await runBootPhases({
           if (!existsSync(workspaceDbPath(dataRoot, workspaceId))) {
             refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
           }
+        }
+        try {
+          admitServerKnowledgeBoot(coreDb);
+        } catch (error) {
+          if (!(error instanceof NotebookError)) throw error;
+          return {
+            status: 'failed',
+            reason: {
+              code: 'knowledge.server_recovery_required',
+              message:
+                'Server Knowledge authority failed closed; check=integrity; stage=migrations.',
+              blocks: ['product_work'],
+            },
+          };
         }
         await verifyAndMigrateExistingScopedDatabases(dataRoot, () => {
           // File validation cannot query projections that still need their scoped migrations.

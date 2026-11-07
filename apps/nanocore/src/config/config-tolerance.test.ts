@@ -6,6 +6,7 @@ import { EMPTY_BUILD_CONTEXT_DIGEST, EMPTY_BUILD_CONTEXT_REF } from '@openkit/co
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { loadOpenKitConfigWithDiagnostics } from './openkit-config.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
@@ -427,18 +428,29 @@ describe('authored configuration tolerance', () => {
     );
   });
 
-  it.each([
-    ['users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc', { schemaVersion: 1 }],
-    [
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc',
-      { schemaVersion: 1, workspace: { name: 'Demo' } },
-    ],
-  ])('rejects unsupported required features in %s', (relativePath, base) => {
+  it('rejects unsupported required features in a User config', () => {
     const { dataRoot } = authoredFile(
-      relativePath,
-      JSON.stringify({ ...base, requiredFeatures: ['future.config.rule'] })
+      'users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc',
+      JSON.stringify({ schemaVersion: 1, requiredFeatures: ['future.config.rule'] })
     );
     expect(() => loadRuntimeConfig(dataRoot)).toThrow(/future\.config\.rule/);
+  });
+
+  it('quarantines a Workspace that declares an unsupported required feature', () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const relativePath = `workspaces/${workspaceId}/config/workspace.jsonc`;
+    const content = JSON.stringify({
+      schemaVersion: 1,
+      workspace: { name: 'Demo' },
+      requiredFeatures: ['future.config.rule'],
+    });
+    const { dataRoot, path } = authoredFile(relativePath, content);
+
+    const snapshot = loadRuntimeConfig(dataRoot);
+
+    expect(snapshot.workspaceConfigs).toEqual([]);
+    expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe(content);
   });
 });
 

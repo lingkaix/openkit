@@ -55,6 +55,7 @@ import {
   registerServerKnowledgeSource,
 } from './server-knowledge-owner.js';
 import { createServerNotebookProposal } from './server-notebook-proposals.js';
+import { readPublishedSourcePointers } from './source-publication.js';
 
 /** Existing application owners, shared by requested and fixed daily Server maintenance. */
 export interface ServerKnowledgeMaintenanceDependencies {
@@ -758,6 +759,19 @@ export async function runServerKnowledgeMaintenanceCommand(
       );
     },
   });
+}
+
+/**
+ * Admits Server Knowledge at the critical boot boundary.
+ *
+ * A missing notebook with no established authority is fresh initialization.
+ * Unreadable, unsupported, or missing expected authority fails closed.
+ */
+export function admitServerKnowledgeBoot(coreDb: CoreDb): void {
+  readPublishedSourcePointers(
+    { dataRoot: coreDb.dataRoot, ownerScope: { kind: 'server' } },
+    { kind: 'server', coreDb }
+  );
 }
 
 /** Boot marks interrupted Server KM work inspect-only; it never replays a model or notebook effect. */

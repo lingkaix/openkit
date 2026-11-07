@@ -33,6 +33,7 @@ import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
+import { refuseScope } from '../bootstrap/readiness.js';
 import {
   loadWorkspaceResourceCatalog,
   projectEffectiveWorkspaceMcpCatalog,
@@ -372,12 +373,24 @@ export function loadRuntimeConfig(
     { diagnostics: authoredDiagnostics, dataRoot, kind: 'internal-role' }
   );
   const userConfigs = loadUserConfigs(dataRoot, authoredDiagnostics);
-  const workspaceConfigs = loadWorkspaceConfigs(dataRoot, authoredDiagnostics);
+  const quarantinedWorkspaceIds = new Set<string>();
+  const workspaceConfigs = loadWorkspaceConfigs(
+    dataRoot,
+    authoredDiagnostics,
+    undefined,
+    quarantinedWorkspaceIds
+  );
   const workspaceDataSourceCatalogs = loadWorkspaceDataSourceCatalogs(
     dataRoot,
-    authoredDiagnostics
+    authoredDiagnostics,
+    undefined,
+    quarantinedWorkspaceIds
   );
-  const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(dataRoot);
+  const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(
+    dataRoot,
+    undefined,
+    quarantinedWorkspaceIds
+  );
   try {
     assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry, gatewayConfig);
   } catch (error) {
@@ -1445,7 +1458,8 @@ function replaceWorkspaceConfigEntries<T extends { workspaceId: string }>(
 function loadWorkspaceConfigs(
   dataRoot: string,
   diagnostics: RuntimeConfigDiagnostic[],
-  workspaceId?: string
+  workspaceId?: string,
+  quarantinedWorkspaceIds?: Set<string>
 ): LoadedWorkspaceConfig[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
 
@@ -1462,36 +1476,44 @@ function loadWorkspaceConfigs(
       continue;
     }
 
-    const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
     let result: ReturnType<typeof WorkspaceConfigSchema.safeParse>;
     try {
+      const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
       result = readRetainedV1(parsed, (record) => WorkspaceConfigSchema.safeParse(record));
-    } catch {
-      throw new Error(
-        `Invalid workspace config ${configPath}: Unsupported retained record format.`
+      if (!result.success) {
+        quarantineMalformedWorkspaceConfig(dataRoot, id, quarantinedWorkspaceIds);
+        continue;
+      }
+      addUnknownConfigDiagnostics(
+        diagnostics,
+        'workspace',
+        parsed,
+        result.data,
+        dataRoot,
+        configPath
       );
+      configs.push({
+        workspaceId: id,
+        path: configPath,
+        config: result.data,
+      });
+    } catch {
+      // Keep the original bytes. One Workspace cannot refuse the server load.
+      quarantineMalformedWorkspaceConfig(dataRoot, id, quarantinedWorkspaceIds);
     }
-
-    if (!result.success) {
-      throw new Error(`Invalid workspace config ${configPath}: ${z.prettifyError(result.error)}`);
-    }
-    addUnknownConfigDiagnostics(
-      diagnostics,
-      'workspace',
-      parsed,
-      result.data,
-      dataRoot,
-      configPath
-    );
-
-    configs.push({
-      workspaceId: id,
-      path: configPath,
-      config: result.data,
-    });
   }
 
   return configs;
+}
+
+/** Records the existing scope quarantine and excludes this Workspace from the current load. */
+function quarantineMalformedWorkspaceConfig(
+  dataRoot: string,
+  workspaceId: string,
+  quarantinedWorkspaceIds: Set<string> | undefined
+): void {
+  quarantinedWorkspaceIds?.add(workspaceId);
+  refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
 }
 
 /**
@@ -1503,7 +1525,8 @@ function loadWorkspaceConfigs(
 function loadWorkspaceDataSourceCatalogs(
   dataRoot: string,
   diagnostics: RuntimeConfigDiagnostic[],
-  workspaceId?: string
+  workspaceId?: string,
+  quarantinedWorkspaceIds?: ReadonlySet<string>
 ): LoadedWorkspaceDataSourceCatalog[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
 
@@ -1514,6 +1537,7 @@ function loadWorkspaceDataSourceCatalogs(
   const catalogs: LoadedWorkspaceDataSourceCatalog[] = [];
 
   for (const id of workspaceConfigDirectories(workspacesRoot, workspaceId)) {
+    if (quarantinedWorkspaceIds?.has(id)) continue;
     const catalogPath = join(workspacesRoot, id, 'config', 'data-sources.jsonc');
 
     if (!existsSync(catalogPath)) {
@@ -1537,12 +1561,14 @@ function loadWorkspaceDataSourceCatalogs(
 /** Loads every Workspace MCP server catalog under DATA_ROOT/workspaces. */
 function loadWorkspaceMcpServerCatalogs(
   dataRoot: string,
-  workspaceId?: string
+  workspaceId?: string,
+  quarantinedWorkspaceIds?: ReadonlySet<string>
 ): LoadedWorkspaceMcpServerCatalog[] {
   const workspacesRoot = join(dataRoot, 'workspaces');
   if (!existsSync(workspacesRoot)) return [];
   const catalogs: LoadedWorkspaceMcpServerCatalog[] = [];
   for (const id of workspaceConfigDirectories(workspacesRoot, workspaceId)) {
+    if (quarantinedWorkspaceIds?.has(id)) continue;
     const catalogPath = join(workspacesRoot, id, 'catalog', 'catalog.json');
     if (!existsSync(catalogPath)) continue;
     catalogs.push({
