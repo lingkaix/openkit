@@ -7,10 +7,10 @@ import {
 } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
-  finishCapabilityCallInDb as finishCapabilityCall,
   recordUsageInDb as recordUsage,
   startCapabilityCallInDb as startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { finishCapabilityCallInDb as finishCapabilityCall } from '../capability/usage-ledger-native.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ControlCheckpointCommandInput } from '../storage/control-store-checkpoints.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
