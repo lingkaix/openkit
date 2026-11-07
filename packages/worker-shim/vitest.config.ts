@@ -13,19 +13,36 @@ const deepseekNative = [
 ];
 export default defineConfig({
   test: {
+    // Keep Vitest 4 mock-history semantics (Vitest 5 clears before every test); suites assert history across tests.
+    clearMocks: false,
     globalSetup: [
       fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
     ],
     projects: [
       {
         test: {
+          clearMocks: false,
           name: 'parallel',
           exclude: [...fixedListeners, ...deepseekNative, '**/node_modules/**'],
           include: ['src/**/*.test.ts'],
         },
       },
-      { test: { name: 'fixed-listeners', include: fixedListeners, fileParallelism: false } },
-      { test: { name: 'deepseek-native', include: deepseekNative, fileParallelism: false } },
+      {
+        test: {
+          clearMocks: false,
+          name: 'fixed-listeners',
+          include: fixedListeners,
+          fileParallelism: false,
+        },
+      },
+      {
+        test: {
+          clearMocks: false,
+          name: 'deepseek-native',
+          include: deepseekNative,
+          fileParallelism: false,
+        },
+      },
     ],
   },
 });

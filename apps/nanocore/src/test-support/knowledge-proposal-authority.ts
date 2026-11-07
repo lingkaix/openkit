@@ -65,8 +65,11 @@ export function candidatePage(
   ].join('\n');
 }
 
+/** Registers teardown for one fixture; defaults to Vitest's per-test hook. */
+type RegisterCleanup = (cleanup: () => Promise<void> | void) => void;
+
 /** Creates fresh real Git and current Core membership; no standalone page mutation is admitted. */
-export async function createOwners(registerCleanup = onTestFinished) {
+export async function createOwners(registerCleanup: RegisterCleanup = onTestFinished) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-proposal-authority-'));
   const coreDb = openCoreDb(dataRoot);
   registerCleanup(async () => {
@@ -217,7 +220,7 @@ export function draft(
 export async function createFixture(
   label = 'proposal-authority-draft',
   includeStatus = true,
-  registerCleanup = onTestFinished
+  registerCleanup: RegisterCleanup = onTestFinished
 ) {
   const f = await createOwners(registerCleanup);
   const publication = await call(f, 'knowledge.notebook.create', {

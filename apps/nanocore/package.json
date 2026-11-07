@@ -66,7 +66,7 @@
     "pdfjs-dist": "6.5.438",
     "seek-bzip": "2.0.0",
     "tar-stream": "3.2.2",
-    "undici": "^7.30.2",
+    "undici": "^8.12.4",
     "yaml": "2.9.1",
     "yauzl": "3.4.0",
     "zod": "4.6.7"
@@ -76,10 +76,10 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.19.2",
     "@types/yauzl": "3.4.0",
-    "@vitest/coverage-v8": "4.1.12",
+    "@vitest/coverage-v8": "5.1.0",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.12"
+    "vitest": "^5.1.0"
   }
 }

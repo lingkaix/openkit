@@ -10745,7 +10745,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  describe.sequential('direct-Task Knowledge delivery and completed-work lineage', () => {
+  describe('direct-Task Knowledge delivery and completed-work lineage', {
+    concurrent: false,
+  }, () => {
     // The original observations share one completed Task; the schema companion owns a fresh fixture.
     type CompletedKnowledgeTask = {
       fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
@@ -11725,7 +11727,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ]
       ).toBe(changedPageBytes);
     }, 60_000);
-    describe.sequential('live schema application with independent completed-work history', () => {
+    describe('live schema application with independent completed-work history', {
+      concurrent: false,
+    }, () => {
       let companion: CompletedKnowledgeTask | undefined;
       let lineage: Awaited<ReturnType<typeof proveCompletedWorkLineage>>;
       let history: ReturnType<typeof assertLiveSchemaHistory> | undefined;

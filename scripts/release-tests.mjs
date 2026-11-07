@@ -99,6 +99,8 @@ export function coveredSuite(
         cli,
         'list',
         '--json',
+        // Vitest 5 parses statically by default, which ignores --shard and approximates case names.
+        '--no-static-parse',
         `--maxWorkers=${nanoCore ? workers : 4}`,
         '--pool=threads',
         // Partition collection only builds a case inventory. Let those files share one module graph;
@@ -116,7 +118,7 @@ export function coveredSuite(
       );
     return JSON.parse(r.stdout);
   };
-  // Vitest 4's file-only list ignores --shard. Collect cases for each partition instead.
+  // The file-only list ignores --shard. Collect cases for each partition instead.
   const expectedPartition = partition ? collect(false) : undefined;
   const coveredPartition = partition ? collect(true) : undefined;
   const count = partition
