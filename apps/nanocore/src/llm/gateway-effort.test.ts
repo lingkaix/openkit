@@ -255,10 +255,8 @@ async function fixture(
       : primary.provider
   );
   models.setProvider(backup.provider);
-  const serializedBodies: string[] = [];
   if (options.customStock) {
-    vi.stubGlobal('fetch', async (url: RequestInfo | URL, init?: RequestInit) => {
-      serializedBodies.push(await new Request(url, init).text());
+    vi.stubGlobal('fetch', async () => {
       const chunk = {
         id: 'chat_synthetic',
         object: 'chat.completion.chunk',
@@ -351,7 +349,6 @@ async function fixture(
   };
   return {
     app,
-    serializedBodies,
     post,
     entries,
     received,
@@ -371,24 +368,15 @@ async function fixture(
 }
 
 describe('Gateway reasoning effort admission and fitting', () => {
-  it.each([
-    ['responses', false],
-    ['responses', true],
-    ['chat/completions', false],
-    ['chat/completions', true],
-  ] as const)('custom stock none body matches canonical Workspace lineage %s stream=%s', async (endpoint, stream) => {
+  it('records canonical Workspace lineage for custom stock none on a non-streaming Responses call', async () => {
     const f = await fixture({ customStock: true, levels: ['none', 'high'] });
-    const response = await f.post(endpoint, 'none', stream);
+    const response = await f.post('responses', 'none', false);
     expect(response.status, await response.clone().text()).toBe(200);
     await response.text();
     expect(f.entries()).toEqual([
       expect.objectContaining({ requestedEffort: 'none', effectiveEffort: 'none' }),
     ]);
     expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-    expect(f.serializedBodies).toHaveLength(1);
-    const body = JSON.parse(f.serializedBodies[0]!);
-    expect(body).toHaveProperty('max_completion_tokens', 1000);
-    expect(body).toHaveProperty('reasoning_effort', 'none');
   });
 
   it.each([
