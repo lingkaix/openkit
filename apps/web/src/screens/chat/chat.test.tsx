@@ -6379,7 +6379,12 @@ it('closes the outputs panel from inside and returns focus to its toggle', async
     makeClient()
   );
   const panel = await screen.findByRole('complementary', { name: 'Details' });
-  await user.click(within(panel).getByRole('button', { name: 'Close details' }));
+  expect(panel).toHaveClass('w-full', '@min-[47rem]/thread:w-60');
+  const close = within(panel).getByRole('button', { name: 'Close details' });
+  expect(close).toHaveClass('min-h-11', 'min-w-11');
+  close.focus();
+  expect(screen.queryByRole('tooltip', { name: 'Close details' })).not.toBeInTheDocument();
+  await user.click(close);
   expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
   const toggle = screen.getByRole('button', { name: 'Show Details' });
   expect(toggle).toHaveFocus();

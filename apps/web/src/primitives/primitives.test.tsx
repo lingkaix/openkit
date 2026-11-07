@@ -236,8 +236,11 @@ describe('primitive tier — behavior', () => {
       />
     );
 
-    expect(screen.getByRole('tablist', { name: 'Goal lens' })).toBeInTheDocument();
+    const tablist = screen.getByRole('tablist', { name: 'Goal lens' });
+    expect(tablist).toHaveClass('w-full');
+    expect(tablist).not.toHaveClass('ml-auto');
     const thread = screen.getByRole('tab', { name: 'Thread' });
+    expect(thread).toHaveClass('min-h-11', 'flex-1');
     const plan = screen.getByRole('tab', { name: 'Plan' });
     expect(thread).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Thread content');
@@ -1359,8 +1362,25 @@ describe('primitive tier — behavior', () => {
     const onRetry = vi.fn();
     render(<ErrorBanner message="Couldn't reach the local runtime." onRetry={onRetry} />);
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't reach the local runtime.");
-    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    const retry = screen.getByRole('button', { name: 'Try again' });
+    expect(retry).toHaveClass('min-h-11', 'min-w-11');
+    await user.click(retry);
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it('PageHeader keeps actions below the title until the desktop row', () => {
+    render(
+      <P.PageHeader
+        title="Artifacts"
+        subtitle="Documents, reports and files explicitly submitted as outputs or imported into this Workspace."
+        actions={<Button>Compare candidates</Button>}
+      />
+    );
+    const header = screen.getByRole('banner');
+    expect(header).toHaveClass('flex-col', 'min-[800px]:flex-row');
+    const actions = screen.getByRole('button', { name: 'Compare candidates' }).parentElement;
+    expect(actions).toHaveClass('w-full');
+    expect(actions).not.toHaveClass('shrink-0');
   });
 
   it('Select is a labeled, listbox-backed control with its items wired', () => {

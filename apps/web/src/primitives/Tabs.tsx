@@ -45,12 +45,18 @@ export function Tabs({ 'aria-label': ariaLabel, items, leading, className, ...pr
         <AriaTabList
           aria-label={ariaLabel}
           items={items}
-          className="ml-auto flex items-center gap-0.5 rounded-ok bg-sunken p-0.5"
+          className={[
+            'flex items-center gap-0.5 rounded-ok bg-sunken p-0.5',
+            leading ? 'ml-auto' : 'w-full',
+          ].join(' ')}
         >
           {(item) => (
             <AriaTab
               id={item.id}
-              className="cursor-pointer rounded-ok px-2.5 py-1 text-xs font-bold text-fg-muted outline-none hover:text-fg data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus data-[selected]:bg-card data-[selected]:text-fg data-[selected]:shadow-ok-card"
+              className={[
+                'cursor-pointer rounded-ok text-xs font-bold text-fg-muted outline-none hover:text-fg data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus data-[selected]:bg-card data-[selected]:text-fg data-[selected]:shadow-ok-card',
+                leading ? 'px-2.5 py-1' : 'flex min-h-11 flex-1 items-center justify-center px-4',
+              ].join(' ')}
             >
               {item.label}
             </AriaTab>

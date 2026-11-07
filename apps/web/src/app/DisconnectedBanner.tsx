@@ -23,7 +23,7 @@ export function DisconnectedBanner() {
       <button
         type="button"
         onClick={retry}
-        className="rounded-ok px-2 py-0.5 font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok px-3 font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
       >
         Try again
       </button>

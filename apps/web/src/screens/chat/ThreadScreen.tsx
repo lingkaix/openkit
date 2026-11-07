@@ -78,7 +78,7 @@ function SidePanel({
   return (
     <aside
       aria-label="Details"
-      className="absolute inset-y-0 right-0 z-10 w-60 shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu @min-[47rem]/thread:static @min-[47rem]/thread:shadow-none"
+      className="absolute inset-y-0 right-0 z-10 w-full shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none"
     >
       <div className="flex items-center justify-between gap-2">
         <Eyebrow>Details</Eyebrow>
@@ -86,8 +86,7 @@ function SidePanel({
           size="sm"
           variant="quiet"
           aria-label="Close details"
-          title="Close details"
-          className="h-7 w-7 shrink-0 px-0!"
+          className="min-h-11 min-w-11 shrink-0 px-0!"
           onPress={onClose}
         >
           <Icon name="close" />

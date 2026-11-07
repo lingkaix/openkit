@@ -6,6 +6,8 @@ import {
   Heading,
   ModalOverlay,
 } from 'react-aria-components';
+import { Button } from './Button';
+import { Icon } from './Icon';
 
 /** Properties for the OpenKit dialog surface. */
 export interface DialogProps {
@@ -13,6 +15,8 @@ export interface DialogProps {
   title: string;
   /** Dialog body and actions. */
   children: ReactNode;
+  /** Accessible name for a 44px dismiss control shown beside the title. */
+  closeLabel?: string;
 }
 
 /**
@@ -21,12 +25,24 @@ export interface DialogProps {
  * The title labels the dialog and the body owns its action layout so callers
  * can compose the smallest confirmation or form needed by the surface.
  */
-export function Dialog({ title, children }: DialogProps) {
+export function Dialog({ title, children, closeLabel }: DialogProps) {
   return (
     <AriaDialog className="outline-none">
-      <Heading slot="title" className="text-lg font-extrabold text-fg-strong">
-        {title}
-      </Heading>
+      <div className="flex items-start justify-between gap-2">
+        <Heading slot="title" className="text-lg font-extrabold text-fg-strong">
+          {title}
+        </Heading>
+        {closeLabel ? (
+          <Button
+            slot="close"
+            variant="quiet"
+            aria-label={closeLabel}
+            className="min-h-11 min-w-11 shrink-0 px-0"
+          >
+            <Icon name="close" />
+          </Button>
+        ) : null}
+      </div>
       <div className="mt-4 flex flex-col gap-3 text-sm text-fg">{children}</div>
     </AriaDialog>
   );

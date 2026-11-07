@@ -11,7 +11,6 @@ export function WorkScreen() {
   return (
     <Tabs
       aria-label="Work"
-      className="[&_[role=tab]]:min-h-11 [&_[role=tab]]:px-4"
       items={[
         {
           id: 'tasks',

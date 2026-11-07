@@ -555,6 +555,29 @@ function register_p1_shell_behavior_test_tsx_0() {
         await renderShell('/');
         await waitFor(() => expect(screen.getByText('Offline')).toBeInTheDocument());
         expect(screen.getByText('Last opened on this device.')).toBeInTheDocument();
+        const banner = screen.getByText('Last opened on this device.').closest('[role="status"]');
+        expect(banner).not.toBeNull();
+        expect(
+          within(banner as HTMLElement).getByRole('button', { name: 'Try again' })
+        ).toHaveClass('min-h-11', 'min-w-11');
+      } finally {
+        delete (navigator as { onLine?: boolean }).onLine;
+      }
+    });
+
+    it('shows Offline when the browser goes offline after the shell has loaded', async () => {
+      let online = true;
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => online });
+      try {
+        await renderShell('/');
+        await waitFor(() => expect(screen.getByRole('main', { name: 'Workspace' })).toBeVisible());
+        expect(screen.queryByText('Offline')).not.toBeInTheDocument();
+        online = false;
+        act(() => {
+          window.dispatchEvent(new Event('offline'));
+        });
+        expect(await screen.findByText('Offline')).toBeInTheDocument();
+        expect(screen.getByText('Last opened on this device.')).toBeInTheDocument();
       } finally {
         delete (navigator as { onLine?: boolean }).onLine;
       }
@@ -622,7 +645,7 @@ function register_p1_shell_behavior_test_tsx_0() {
           await Promise.resolve();
         });
         expect(await screen.findByText('A new version is ready')).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Reload' })).toHaveClass('min-h-11', 'min-w-11');
       } finally {
         delete (navigator as { serviceWorker?: unknown }).serviceWorker;
       }

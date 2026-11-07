@@ -91,7 +91,7 @@ export function ErrorBanner({ message, onRetry }: ErrorBannerProps) {
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-ok px-2 py-0.5 text-xs font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-ok px-3 text-xs font-bold underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           Try again
         </button>

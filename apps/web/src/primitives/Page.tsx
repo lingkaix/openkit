@@ -28,21 +28,21 @@ export interface PageHeaderProps {
   eyebrow?: string;
   title: string;
   subtitle?: string;
-  /** Right-aligned actions that wrap within half the header width. */
+  /** Actions under the title on a phone, and on the right from 800px. */
   actions?: ReactNode;
 }
 
 /** Page header: optional eyebrow, page title (`ok-page-title`), subtitle, actions. */
 export function PageHeader({ eyebrow, title, subtitle, actions }: PageHeaderProps) {
   return (
-    <header className="flex items-start justify-between gap-4">
+    <header className="flex flex-col gap-3 min-[800px]:flex-row min-[800px]:items-start min-[800px]:justify-between min-[800px]:gap-4">
       <div className="min-w-0">
         {eyebrow ? <p className="mb-1 text-eyebrow font-bold text-fg-muted">{eyebrow}</p> : null}
         <h1 className="text-title font-extrabold text-fg-strong">{title}</h1>
         {subtitle ? <p className="mt-1 text-sm text-fg-muted">{subtitle}</p> : null}
       </div>
       {actions ? (
-        <div className="flex min-w-0 max-w-1/2 shrink-0 flex-wrap items-center justify-end gap-2">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 min-[800px]:w-auto min-[800px]:max-w-1/2 min-[800px]:justify-end">
           {actions}
         </div>
       ) : null}

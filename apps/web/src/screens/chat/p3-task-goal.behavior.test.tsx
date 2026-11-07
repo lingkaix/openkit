@@ -648,6 +648,28 @@ describe('P3 New Task dialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New Task' });
     expect(within(dialog).getByRole('button', { name: 'Start Task' })).toBeVisible();
   });
+
+  it('closes the phone New Task and New Goal sheets from a 44px control', async () => {
+    setViewportWidth(390);
+    const user = userEvent.setup();
+    renderAt('/work', makeClient());
+
+    await user.click(await screen.findByRole('tab', { name: 'Tasks' }));
+    await user.click(await screen.findByRole('button', { name: 'New Task' }));
+    const task = await screen.findByRole('dialog', { name: 'New Task' });
+    const closeTask = within(task).getByRole('button', { name: 'Close New Task' });
+    expect(closeTask).toHaveClass('min-h-11', 'min-w-11');
+    await user.click(closeTask);
+    expect(screen.queryByRole('dialog', { name: 'New Task' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'Goals' }));
+    await user.click(await screen.findByRole('button', { name: 'New Goal' }));
+    const goal = await screen.findByRole('dialog', { name: 'New Goal' });
+    const closeGoal = within(goal).getByRole('button', { name: 'Close New Goal' });
+    expect(closeGoal).toHaveClass('min-h-11', 'min-w-11');
+    await user.click(closeGoal);
+    expect(screen.queryByRole('dialog', { name: 'New Goal' })).not.toBeInTheDocument();
+  });
 });
 
 describe('P3 New Goal dialog', () => {
