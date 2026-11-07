@@ -1263,19 +1263,37 @@ describe('Gateway deployment-admin workflow', () => {
         'provider-subscription.account-status': getAccountStatus,
       },
     });
-    renderScreen(client);
-
-    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
-    await waitFor(() =>
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      renderScreen(client);
+      for (let step = 0; step < 20; step += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1);
+        });
+        if (
+          screen.queryByRole('region', { name: 'OpenAI Codex' }) &&
+          getAccountStatus.mock.calls.length > 0
+        ) {
+          break;
+        }
+      }
+      const codex = screen.getByRole('region', { name: 'OpenAI Codex' });
       expect(getAccountStatus).toHaveBeenCalledWith({
         subscriptionProviderId: 'openai-codex',
         accountSlotId: 'primary',
-      })
-    );
-    const settled = listAccounts.mock.calls.length;
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-    expect(listAccounts.mock.calls.length).toBe(settled);
-    expect(within(codex).queryByRole('button', { name: 'Start login' })).not.toBeInTheDocument();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      const settled = listAccounts.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_500);
+      });
+      expect(listAccounts.mock.calls.length).toBe(settled);
+      expect(within(codex).queryByRole('button', { name: 'Start login' })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps quota refresh and login reachable while secondary account controls stay collapsed', async () => {

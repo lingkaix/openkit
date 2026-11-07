@@ -1,6 +1,6 @@
 import type { KnowledgeClient, KnowledgeNode } from '@openkit/knowledge-ui';
 import { KnowledgeBrowser } from '@openkit/knowledge-ui';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -187,7 +187,17 @@ describe('KnowledgeBrowser editing', () => {
 
     await user.click(screen.getByRole('button', { name: 'Save' }));
 
+    expect(await screen.findByText('Updated body.')).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: 'Page body' })).not.toBeInTheDocument();
     expect(saveText).toHaveBeenCalledWith('page-1', 'Updated body.', 'rev-1');
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByRole('textbox', { name: 'Page body' })).toHaveValue('Updated body.');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Updated body.')).toBeVisible();
+    expect(screen.queryByRole('textbox', { name: 'Page body' })).not.toBeInTheDocument();
+    expect(saveText).toHaveBeenLastCalledWith('page-1', 'Updated body.', 'rev-2');
   });
 
   it('shows the current version when save reports a version conflict', async () => {
@@ -213,33 +223,109 @@ describe('KnowledgeBrowser editing', () => {
 describe('KnowledgeBrowser import', () => {
   it('passes the chosen File object to importFile', async () => {
     const user = userEvent.setup();
+    const list = vi.fn(async () => ({ nodes: [], nextCursor: null }));
     const importFile = vi.fn(async () => knowledgeNode({ id: 'imported', title: 'Imported' }));
-    render(<KnowledgeBrowser client={knowledgeClient({ importFile })} parentId={null} />);
+    render(<KnowledgeBrowser client={knowledgeClient({ list, importFile })} parentId={null} />);
 
     const input = await screen.findByLabelText('Import file');
+    await waitFor(() => expect(list).toHaveBeenCalled());
     expect(input).toBeInstanceOf(HTMLInputElement);
     const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
     await user.upload(input as HTMLInputElement, file);
 
     expect(importFile).toHaveBeenCalledWith(null, file);
+    const pages = screen.getByRole('list', { name: 'Pages' });
+    expect(await within(pages).findByRole('button', { name: 'Imported' })).toBeVisible();
   });
 });
+
+describe('KnowledgeBrowser folders and search pages', () => {
+  it('opens a folder and returns to the parent with Back', async () => {
+    const user = userEvent.setup();
+    const folder = knowledgeNode({ id: 'folder-1', title: 'Policies', kind: 'folder' });
+    const child = knowledgeNode({
+      id: 'child-1',
+      title: 'Leave policy',
+      parentId: 'folder-1',
+    });
+    const rootPage = knowledgeNode({ id: 'page-1', title: 'Home note' });
+    const list = vi.fn(async (parentId: string | null) =>
+      parentId === 'folder-1'
+        ? { nodes: [child], nextCursor: null }
+        : { nodes: [folder, rootPage], nextCursor: null }
+    );
+    render(<KnowledgeBrowser client={knowledgeClient({ list })} parentId={null} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Policies' }));
+
+    expect(await screen.findByRole('button', { name: 'Leave policy' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Home note' })).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith('folder-1');
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+
+    expect(await screen.findByRole('button', { name: 'Home note' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Leave policy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+  });
+
+  it('appends earlier search snippets without listing the folder again', async () => {
+    const user = userEvent.setup();
+    const first = knowledgeNode({ id: 'alpha', title: 'Alpha policy' });
+    const older = knowledgeNode({ id: 'beta', title: 'Beta policy' });
+    const list = vi.fn(async () => ({ nodes: [], nextCursor: null }));
+    const search = vi.fn(async (query: string, cursor?: string) => {
+      if (cursor === 'cursor-2') {
+        return { nodes: [{ node: older, snippet: 'Older snippet' }], nextCursor: null };
+      }
+      if (query === 'policy') {
+        return { nodes: [{ node: first, snippet: 'First snippet' }], nextCursor: 'cursor-2' };
+      }
+      return { nodes: [], nextCursor: null };
+    });
+    render(<KnowledgeBrowser client={knowledgeClient({ list, search })} parentId={null} />);
+
+    const field = await screen.findByRole('textbox', { name: 'Search' });
+    await user.type(field, 'policy{Enter}');
+    expect(await screen.findByText('First snippet')).toBeVisible();
+    const listCalls = list.mock.calls.length;
+
+    await user.click(await screen.findByRole('button', { name: 'Load earlier' }));
+
+    expect(await screen.findByText('Older snippet')).toBeVisible();
+    expect(screen.getByText('First snippet')).toBeVisible();
+    expect(search).toHaveBeenCalledWith('policy', 'cursor-2');
+    expect(list.mock.calls.length).toBe(listCalls);
+  });
+});
+
+/**
+ * Installs the phone breakpoint and returns a restore function.
+ *
+ * @returns Restores the previous `matchMedia`.
+ */
+function installPhoneMatchMedia(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = (query: string): MediaQueryList =>
+    ({
+      matches: query === '(max-width: 799px)',
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      dispatchEvent: () => false,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+    }) as MediaQueryList;
+  return () => {
+    window.matchMedia = original;
+  };
+}
 
 describe('KnowledgeBrowser phone preview', () => {
   it('keeps the host extension in the preview when the phone list is hidden', async () => {
     const user = userEvent.setup();
-    const original = window.matchMedia;
-    window.matchMedia = (query: string): MediaQueryList =>
-      ({
-        matches: query === '(max-width: 799px)',
-        media: query,
-        onchange: null,
-        addEventListener: () => undefined,
-        removeEventListener: () => undefined,
-        dispatchEvent: () => false,
-        addListener: () => undefined,
-        removeListener: () => undefined,
-      }) as MediaQueryList;
+    const restore = installPhoneMatchMedia();
     const page = knowledgeNode({ id: 'page-1', title: 'Alpha note' });
     const read = vi.fn(async () => ({ node: page, body: 'Alpha note body.', version: 'rev-1' }));
     const list = async () => ({ nodes: [page], nextCursor: null });
@@ -260,7 +346,53 @@ describe('KnowledgeBrowser phone preview', () => {
       expect(within(preview).queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
       expect(within(preview).queryByText('Alpha note body.')).not.toBeInTheDocument();
     } finally {
-      window.matchMedia = original;
+      restore();
+    }
+  });
+
+  it('shows and hides Search from the phone disclosure', async () => {
+    const user = userEvent.setup();
+    const restore = installPhoneMatchMedia();
+    try {
+      render(<KnowledgeBrowser client={knowledgeClient()} parentId={null} />);
+      const toggle = await screen.findByRole('button', { name: 'Search' });
+      await waitFor(() =>
+        expect(screen.queryByRole('textbox', { name: 'Search' })).not.toBeInTheDocument()
+      );
+
+      await user.click(toggle);
+      expect(await screen.findByRole('textbox', { name: 'Search' })).toBeVisible();
+
+      await user.click(screen.getByRole('button', { name: 'Search' }));
+      await waitFor(() =>
+        expect(screen.queryByRole('textbox', { name: 'Search' })).not.toBeInTheDocument()
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('returns from the phone reading pane with Back', async () => {
+    const user = userEvent.setup();
+    const restore = installPhoneMatchMedia();
+    const page = knowledgeNode({ id: 'page-1', title: 'Alpha note' });
+    const read = vi.fn(async () => ({ node: page, body: 'Alpha note body.', version: 'rev-1' }));
+    const list = async () => ({ nodes: [page], nextCursor: null });
+    try {
+      render(<KnowledgeBrowser client={knowledgeClient({ list, read })} parentId={null} />);
+      await screen.findByRole('button', { name: 'Search' });
+      await user.click(await screen.findByRole('button', { name: 'Alpha note' }));
+      const preview = await screen.findByRole('article', { name: 'Preview' });
+      expect(within(preview).getByText('Alpha note body.')).toBeVisible();
+
+      await user.click(screen.getByRole('button', { name: 'Back' }));
+
+      await waitFor(() =>
+        expect(screen.queryByRole('article', { name: 'Preview' })).not.toBeInTheDocument()
+      );
+      expect(screen.getByRole('button', { name: 'Alpha note' })).toBeVisible();
+    } finally {
+      restore();
     }
   });
 });

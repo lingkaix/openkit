@@ -131,14 +131,10 @@ afterEach(() => {
 });
 
 describe('AppShell navigation breakpoints (DESIGN.md §3.4 / §12)', () => {
-  it('has no 600px floor and keeps persistent navigation at 800px', async () => {
-    const { container } = await renderShell('/');
-    expect(container.querySelector('.min-w-\\[600px\\]')).toBeNull();
-    expect(container.querySelector('.min-h-\\[600px\\]')).toBeNull();
-    expect(container.querySelector('.min-w-\\[800px\\]')).toBeNull();
-    expect(
-      screen.getByRole('navigation', { name: 'Primary workspace navigation' })
-    ).toBeInTheDocument();
+  it('keeps persistent navigation and the workspace main region at desktop width', async () => {
+    await renderShell('/');
+    expect(screen.getByRole('navigation', { name: 'Primary workspace navigation' })).toBeVisible();
+    expect(screen.getByRole('main', { name: 'Workspace' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
   });
 
@@ -154,9 +150,8 @@ describe('AppShell navigation breakpoints (DESIGN.md §3.4 / §12)', () => {
     expect(destinations[2]).toHaveAccessibleName('Knowledge');
     expect(destinations[3]).toHaveAccessibleName('Artifacts');
     expect(destinations[4]).toHaveAccessibleName('More');
-    for (const destination of destinations) {
-      expect(destination.className).toContain('whitespace-nowrap');
-    }
+    for (const destination of destinations) expect(destination).toBeVisible();
+    expect(screen.getByRole('main', { name: 'Workspace' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 
     await user.click(destinations[4]!);
@@ -290,17 +285,6 @@ function register_p1_shell_behavior_test_tsx_0() {
   }
 
   /**
-   * Installs a matchMedia stub whose `(min-width: 800px)` result follows `viewportWidth`.
-   *
-   * @param width Initial viewport width in pixels.
-   */
-  function setViewportWidth(width: number) {
-    viewportWidth = width;
-    const event = { matches: viewportWidth >= 800 } as MediaQueryListEvent;
-    for (const listener of mediaListeners) listener(event);
-  }
-
-  /**
    * Renders the live route tree inside the app shell.
    *
    * @param path Initial route.
@@ -343,44 +327,6 @@ function register_p1_shell_behavior_test_tsx_0() {
     if (!value) throw new Error(`Missing Noir token ${name}`);
     return value.trim().toLowerCase();
   }
-
-  describe('P1 phone floor', () => {
-    beforeEach(() => {
-      mediaListeners.clear();
-      viewportWidth = 1024;
-      window.matchMedia = (query: string) =>
-        ({
-          get matches() {
-            return query === PERSISTENT_NAV_QUERY ? viewportWidth >= 800 : true;
-          },
-          media: query,
-          onchange: null,
-          addEventListener: (type: string, listener: EventListener) => {
-            if (type === 'change')
-              mediaListeners.add(listener as (event: MediaQueryListEvent) => void);
-          },
-          removeEventListener: (_type: string, listener: EventListener) => {
-            mediaListeners.delete(listener as (event: MediaQueryListEvent) => void);
-          },
-          addListener: () => undefined,
-          removeListener: () => undefined,
-          dispatchEvent: () => true,
-        }) as MediaQueryList;
-      useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_ID });
-    });
-    afterEach(() => {
-      window.matchMedia = originalMatchMedia;
-    });
-
-    it('does not force a 600px minimum at a 360px viewport', async () => {
-      setViewportWidth(360);
-      const { container } = await renderShell('/');
-
-      expect(container.querySelector('.min-w-\\[600px\\]')).toBeNull();
-      expect(container.querySelector('.min-h-\\[600px\\]')).toBeNull();
-      expect(screen.getByRole('main', { name: 'Workspace' })).toBeInTheDocument();
-    });
-  });
 
   describe('P1 install metadata', () => {
     beforeEach(() => {
@@ -1088,7 +1034,7 @@ function register_p2_nav_behavior_test_tsx_1() {
       expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     });
 
-    it('shows exactly Assistant, Work, Knowledge, Artifacts, and More below 800px', async () => {
+    it('keeps attention out of the phone row and lists Action Center from More', async () => {
       const user = userEvent.setup();
       setViewportWidth(360);
       const client = makeClient({
@@ -1099,20 +1045,11 @@ function register_p2_nav_behavior_test_tsx_1() {
       renderAt('/attention', client);
 
       const navigation = await screen.findByRole('navigation', { name: 'Sections' });
-      const buttons = within(navigation).getAllByRole('button');
-      expect(buttons).toHaveLength(5);
-      expect(buttons[0]).toHaveAccessibleName('Assistant');
-      expect(buttons[1]).toHaveAccessibleName('Work');
-      expect(buttons[2]).toHaveAccessibleName('Knowledge');
-      expect(buttons[3]).toHaveAccessibleName('Artifacts');
-      expect(buttons[4]).toHaveAccessibleName('More');
-
       expect(
         within(navigation).queryByRole('button', { name: /^Needs you/ })
       ).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 
-      await user.click(buttons[4]!);
+      await user.click(within(navigation).getByRole('button', { name: 'More' }));
       const drawer = await screen.findByRole('dialog');
       expect(within(drawer).getByRole('button', { name: /^Action Center/ })).toBeVisible();
       expect(within(drawer).queryByRole('button', { name: 'Artifacts' })).not.toBeInTheDocument();

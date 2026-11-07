@@ -127,10 +127,20 @@ describe('app shell — routing', () => {
     expect(Object.keys(SURFACE_ELEMENTS).sort()).toEqual([...SURFACES.map((s) => s.id)].sort());
   });
 
-  it.each(concretePaths)('resolves the $id route under the shell', async ({ path }) => {
+  it.each(concretePaths)('resolves the $id route under the shell', async ({ id, path }) => {
     await renderAt(path);
-    // The shell renders a navigation landmark for every routed surface.
-    expect(screen.getByRole('navigation')).toBeInTheDocument();
+    const main = screen.getByRole('main', { name: 'Workspace' });
+    // NotFound stays mounted under the shell, so navigation alone cannot see a missed route.
+    expect(within(main).queryByRole('heading', { name: 'Not found' })).not.toBeInTheDocument();
+    expect(within(main).queryByText(/doesn't exist/i)).not.toBeInTheDocument();
+    await waitFor(() => {
+      const rendered =
+        within(main).queryAllByRole('heading').length > 0 ||
+        within(main).queryAllByRole('status').length > 0 ||
+        within(main).queryAllByRole('alert').length > 0 ||
+        (main.textContent?.trim().length ?? 0) > 0;
+      expect(rendered, `${id} at ${path} did not render a screen`).toBe(true);
+    });
   });
 
   it('renders a not-found page for an unknown route', async () => {
