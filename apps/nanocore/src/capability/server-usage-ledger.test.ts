@@ -1,14 +1,16 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { CapabilityCallSchema, ServerUsageRecordSchema } from '@openkit/protocol';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import {
   digestLlmSystemPrompt,
   persistLlmCapabilityCallSystemPromptDigest,
 } from '../llm/system-prompt-digest.js';
 import {
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
@@ -542,6 +544,272 @@ it('keeps Server prompt-digest eligibility and missing-row refusal on the native
     ).rejects.toThrow();
     expect(listServerCapabilityCalls(coreDb)).toHaveLength(4);
   } finally {
+    await shutdownControlStoreWorkerClient();
+    closeTestCoreDb(coreDb);
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it('retains earlier Core measurement commits when a later measurement fails and closes out the Server call as usage_record_failed', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-partial-usage-closeout-'));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    await openNativeServerLedger(coreDb);
+    const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000911' };
+    const input = {
+      ...serverInput(coreDb),
+      requestId: null,
+      auditLineage,
+    };
+    const call = await startCapabilityCall(input);
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite.exec(`CREATE TRIGGER refuse_second_server_usage BEFORE INSERT ON usage_records
+      WHEN NEW.source = 'output-fault'
+      BEGIN SELECT RAISE(ABORT, 'injected second Server usage failure'); END`);
+    coreDb.sqlite.pragma('query_only = ON');
+
+    await expect(
+      recordUsage({
+        workspaceDb: coreDb,
+        call,
+        auditLineage,
+        records: [
+          { category: 'llm', unit: 'tokens', quantity: 5, source: 'input-committed' },
+          { category: 'llm', unit: 'tokens', quantity: 9, source: 'output-fault' },
+        ],
+      })
+    ).rejects.toThrow();
+
+    expect(listServerUsageRecords(coreDb)).toEqual([
+      expect.objectContaining({
+        capabilityCallId: call.id,
+        owner: { kind: 'server' },
+        quantity: 5,
+        source: 'input-committed',
+        responsibleUserId: input.authorityActor!.id,
+      }),
+    ]);
+    expect(listServerCapabilityCalls(coreDb)).toEqual([
+      expect.objectContaining({
+        id: call.id,
+        owner: { kind: 'server' },
+        status: 'failed',
+        errorCode: 'usage_record_failed',
+      }),
+    ]);
+    expect(
+      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
+    ).toEqual([
+      expect.objectContaining({
+        capabilityCallId: call.id,
+        actor: input.authorityActor,
+        requestId: auditLineage.commandRequestId,
+        outcome: 'failed',
+        errorCode: 'usage_record_failed',
+      }),
+    ]);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    closeTestCoreDb(coreDb);
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it('preserves Server delivered answers across finish replay and refuses unsupported admission-audit formats before mutating Core', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-finish-delivery-replay-'));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    await openNativeServerLedger(coreDb);
+    const input = serverInput(coreDb);
+    const call = await startCapabilityCall(input);
+    await writeGatewayRouteLineage({
+      workspaceDb: coreDb,
+      call,
+      logicalModelId: 'server-tier',
+      entry: {
+        kind: 'attempt',
+        routeMemberId: 'primary',
+        providerProfileId: 'provider_test',
+        providerModel: 'server-model',
+        selectionReason: 'configured',
+        attemptOrder: 0,
+        retryIndex: 0,
+        outputBegan: true,
+        terminalResult: 'succeeded',
+      },
+    });
+
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite
+      .prepare(
+        "UPDATE audit_events SET schema_version = 2 WHERE capability_call_id = ? AND action = 'capability.admit'"
+      )
+      .run(call.id);
+    coreDb.sqlite.pragma('query_only = ON');
+
+    await expect(
+      finishCapabilityCall({
+        workspaceDb: coreDb,
+        callId: call.id,
+        status: 'succeeded',
+        deliveredKnowledgeAnswer: 'Refused Server answer',
+        now: new Date('2026-10-18T00:00:01.000Z'),
+      })
+    ).rejects.toThrow(TypeError);
+    expect(listServerCapabilityCalls(coreDb)).toEqual([
+      expect.objectContaining({ id: call.id, status: 'running', completedAt: null }),
+    ]);
+    expect(() => listServerAuditEvents(coreDb)).toThrow(TypeError);
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT * FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish'"
+        )
+        .all(call.id)
+    ).toEqual([]);
+
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite
+      .prepare(
+        "UPDATE audit_events SET schema_version = 1 WHERE capability_call_id = ? AND action = 'capability.admit'"
+      )
+      .run(call.id);
+    coreDb.sqlite.pragma('query_only = ON');
+
+    const completedAt = new Date('2026-10-18T00:00:02.000Z');
+    await finishCapabilityCall({
+      workspaceDb: coreDb,
+      callId: call.id,
+      status: 'succeeded',
+      deliveredKnowledgeAnswer: 'Exact Server delivered answer',
+      now: completedAt,
+    });
+    const [settled] = listServerCapabilityCalls(coreDb);
+    expect(settled).toMatchObject({
+      id: call.id,
+      owner: { kind: 'server' },
+      status: 'succeeded',
+      errorCode: null,
+      completedAt: completedAt.toISOString(),
+      extensions: {
+        'openkit.gateway/routeLineage': {
+          logicalModelId: 'server-tier',
+          entries: [expect.objectContaining({ routeMemberId: 'primary' })],
+        },
+        'openkit.knowledge/delivery': {
+          answer: 'Exact Server delivered answer',
+        },
+      },
+    });
+    const finishAudits = listServerAuditEvents(coreDb).filter(
+      (row) => row.action === 'capability.finish'
+    );
+    expect(finishAudits).toHaveLength(1);
+
+    await finishCapabilityCall({
+      workspaceDb: coreDb,
+      callId: call.id,
+      status: 'failed',
+      errorCode: 'late_server_replay',
+      deliveredKnowledgeAnswer: 'Ignored Server replay answer',
+      now: new Date('2026-10-18T00:00:03.000Z'),
+    });
+    expect(listServerCapabilityCalls(coreDb)).toEqual([settled]);
+    expect(
+      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
+    ).toEqual(finishAudits);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    closeTestCoreDb(coreDb);
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it('never diagnoses usage_record_failed or retries Server usage when its worker ACK is unknown', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-usage-unknown-ack-'));
+  const coreDb = openCoreDb(dataRoot);
+  let emitSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let postSpy: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    applyMigrations(coreDb);
+    await openNativeServerLedger(coreDb);
+    const call = await startCapabilityCall(serverInput(coreDb));
+
+    const emit = Worker.prototype.emit;
+    let droppedAck = false;
+    emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event: string | symbol,
+      ...args: unknown[]
+    ) {
+      const reply = args[0] as { id?: number; status?: string; operation?: string } | undefined;
+      if (
+        !droppedAck &&
+        event === 'message' &&
+        reply?.operation === 'capability' &&
+        reply.status === 'ok'
+      ) {
+        droppedAck = true;
+        return emit.call(this, 'message', {
+          version: 99,
+          id: reply.id ?? 1,
+          status: 'ok',
+          operation: 'capability',
+          result: null,
+        });
+      }
+      return emit.apply(this, [event, ...args]);
+    });
+    postSpy = vi.spyOn(Worker.prototype, 'postMessage');
+
+    const outcome = await recordUsage({
+      workspaceDb: coreDb,
+      call,
+      records: [
+        { category: 'llm', unit: 'tokens', quantity: 4, source: 'first-stage' },
+        { category: 'llm', unit: 'tokens', quantity: 6, source: 'second-stage' },
+      ],
+    }).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error })
+    );
+
+    expect(droppedAck).toBe(true);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected unknown Server usage ACK rejection.');
+    expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+    expect(outcome.error).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+
+    const capabilityPosts = postSpy.mock.calls.filter(
+      ([request]) =>
+        typeof request === 'object' &&
+        request !== null &&
+        (request as { operation?: string }).operation === 'capability'
+    );
+    expect(capabilityPosts).toHaveLength(1);
+    expect(listServerUsageRecords(coreDb)).toEqual([
+      expect.objectContaining({
+        capabilityCallId: call.id,
+        quantity: 4,
+        source: 'first-stage',
+      }),
+    ]);
+    expect(listServerCapabilityCalls(coreDb)).toEqual([
+      expect.objectContaining({
+        id: call.id,
+        status: 'running',
+        errorCode: null,
+        completedAt: null,
+      }),
+    ]);
+    expect(
+      listServerAuditEvents(coreDb).filter((row) => row.action === 'capability.finish')
+    ).toEqual([]);
+  } finally {
+    emitSpy?.mockRestore();
+    postSpy?.mockRestore();
     await shutdownControlStoreWorkerClient();
     closeTestCoreDb(coreDb);
     rmSync(dataRoot, { recursive: true, force: true });
