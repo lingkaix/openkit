@@ -3013,8 +3013,10 @@ describe('Recovery and search', () => {
     );
     const returnedRow = rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary);
     expectWorkerActionUnavailable(returnedRow);
-    const staleRetry = workerActionButtons(returnedRow)[0];
-    if (staleRetry) await user.click(staleRetry);
+    // A disabled React Aria button still receives user-event pointerdown, and the
+    // press never completes because a disabled control does not emit click. That
+    // sticks usePress and swallows the next real press. The disabled control is
+    // the user-visible refusal.
     expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1);
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, INTERRUPTED_WORKER)).toEqual([
       frozenACall,
@@ -4021,7 +4023,9 @@ describe('Recovery and search', () => {
       listThreadItems.mock.calls.length,
       listConversationNavigation.mock.calls.length,
     ];
-    await user.click(screen.getByRole('button', { name: scenario.title }));
+    // Discovery has not authorized a workspace, so the hit cannot be pressed.
+    // Clicking it anyway sticks React Aria's press state and swallows the later press.
+    expect(screen.getByRole('button', { name: scenario.title })).toBeDisabled();
     expect(pathname).toBe('/chat');
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE.id);
     expect([
