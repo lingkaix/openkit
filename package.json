@@ -56,14 +56,14 @@
     "@openkit/app-api-schemas": "workspace:*",
     "@openkit/core-client": "workspace:*",
     "@openkit/protocol": "workspace:*",
-    "esbuild": "0.27.7",
+    "esbuild": "0.28.2",
     "jsonc-parser": "^3.3.1",
-    "lefthook": "^2.1.5",
+    "lefthook": "^2.2.2",
     "lint-staged": "^16.4.0",
-    "turbo": "^2.3.3",
+    "turbo": "^2.11.10",
     "typescript": "^5.9.3",
-    "undici": "^7.28.0",
-    "zod": "4.6.5"
+    "undici": "^7.30.2",
+    "zod": "4.6.7"
   },
   "keywords": [
     "monorepo",
@@ -74,12 +74,22 @@
     "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,md,yml,yaml}": "biome check --no-errors-on-unmatched"
   },
   "dependencies": {
-    "yaml": "^2.8.3"
+    "yaml": "^2.9.1"
   },
   "pnpm": {
     "overrides": {
       "@a2ui/react>zod": "3.25.76",
-      "@a2ui/web_core>zod": "3.25.76"
+      "@a2ui/web_core>zod": "3.25.76",
+      "dompurify": "^3.4.17",
+      "seroval": "^1.7.10",
+      "undici@7": "^7.30.2",
+      "@modelcontextprotocol/sdk@1": "^1.32.2",
+      "@modelcontextprotocol/client@2": "^2.4.0",
+      "fflate@0.8": "^0.8.3",
+      "undici@8": "^8.12.4",
+      "react": "19.2.7",
+      "react-dom": "19.2.7",
+      "axe-core": "4.12.1"
     }
   }
 }

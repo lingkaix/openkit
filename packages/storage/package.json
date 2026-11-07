@@ -18,9 +18,9 @@
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
-    "@vitest/coverage-v8": "4.1.4",
-    "vitest": "^4.1.4"
+    "@types/node": "^25.9.9",
+    "@vitest/coverage-v8": "4.1.12",
+    "vitest": "^4.1.12"
   },
   "description": "Process-agnostic byte storage with a bounded local backend",
   "dependencies": {
