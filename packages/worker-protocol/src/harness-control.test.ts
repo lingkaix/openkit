@@ -130,6 +130,50 @@ describe('private Harness command bodies', () => {
         runtimeEnvironment: { 'BAD-NAME': 'value' },
       }).success
     ).toBe(false);
+    const maxEntries = Object.fromEntries(
+      Array.from({ length: 128 }, (_, index) => [`VAR_${index}`, 'v'])
+    );
+    expect(
+      HarnessCommandBodySchemas['session.open'].safeParse({
+        ...sessionOpen,
+        runtimeEnvironment: { ...maxEntries, VAR_0: 'x'.repeat(64 * 1024) },
+      }).success
+    ).toBe(true);
+    for (const invalidEnv of [
+      { EMPTY: '' },
+      { NUL_BYTE: 'a\0b' },
+      { TOO_LONG: 'x'.repeat(64 * 1024 + 1) },
+      { ...maxEntries, VAR_128: 'v' },
+    ]) {
+      expect(
+        HarnessCommandBodySchemas['session.open'].safeParse({
+          ...sessionOpen,
+          runtimeEnvironment: invalidEnv,
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('rejects unparseable turn.start deadlines and negative turnSequence', () => {
+    for (const schema of [
+      HarnessCommandBodySchemas['turn.start'],
+      HarnessQueuedCommandBodySchemas['turn.start'],
+    ]) {
+      const candidate =
+        schema === HarnessQueuedCommandBodySchemas['turn.start']
+          ? (() => {
+              const {
+                capabilityToken: _c,
+                inferenceToken: _i,
+                workerControlToken: _w,
+                ...queued
+              } = turnStart;
+              return queued;
+            })()
+          : turnStart;
+      expect(schema.safeParse({ ...candidate, deadline: 'not-a-timestamp' }).success).toBe(false);
+      expect(schema.safeParse({ ...candidate, turnSequence: -1 }).success).toBe(false);
+    }
   });
 
   it('rejects retired and extra session.open fields', () => {
@@ -241,8 +285,26 @@ describe('private Harness results', () => {
       workspaceGitBaseline: { commit: 'a'.repeat(40), tree: 'b'.repeat(40) },
     };
     expect(isHarnessResultBodyValid('session.open', { disposition: 'succeeded', body })).toBe(true);
+    const sha256Baseline = { commit: 'a'.repeat(64), tree: 'b'.repeat(64) };
+    expect(
+      isHarnessResultBodyValid('session.open', {
+        disposition: 'succeeded',
+        body: { ...body, workspaceGitBaseline: sha256Baseline },
+      })
+    ).toBe(true);
+    expect(
+      parseHarnessResultBody('session.open', {
+        disposition: 'succeeded',
+        body: {
+          ...body,
+          workspaceGitBaseline: { ...sha256Baseline, note: 'ignored' },
+        },
+      })
+    ).toEqual({ ...body, workspaceGitBaseline: sha256Baseline });
     for (const report of [
       { commit: 'invalid', tree: 'b'.repeat(40) },
+      { commit: 'a'.repeat(50), tree: 'b'.repeat(40) },
+      { commit: 'A'.repeat(40), tree: 'b'.repeat(40) },
       { commit: 'a'.repeat(40) },
       { commit: 'a'.repeat(40), tree: 'b'.repeat(40), hostPath: '/host' },
     ])
@@ -356,6 +418,37 @@ describe('private Harness results', () => {
         disposition: 'refused',
       })
     ).toBe(false);
+    const materializationFailure = {
+      reason: 'git_fetch_failed' as const,
+      stage: 'workspace_materialization' as const,
+    };
+    expect(
+      isHarnessResultBodyValid('session.open', {
+        body: { reasonCode: 'dependency_failed', startupFailure: materializationFailure },
+        disposition: 'refused',
+      })
+    ).toBe(true);
+    expect(
+      parseHarnessResultBody('session.open', {
+        body: {
+          reasonCode: 'dependency_failed',
+          startupFailure: { ...materializationFailure, note: 'ignored' },
+        },
+        disposition: 'refused',
+      })
+    ).toEqual({ reasonCode: 'dependency_failed', startupFailure: materializationFailure });
+    expect(
+      isHarnessResultBodyValid('session.open', {
+        body: { reasonCode: 'busy', startupFailure: materializationFailure },
+        disposition: 'refused',
+      })
+    ).toBe(false);
+    expect(() =>
+      parseHarnessResultBody('session.open', {
+        body: { reasonCode: 'busy', startupFailure: materializationFailure },
+        disposition: 'refused',
+      })
+    ).toThrow('Harness startup failure is invalid for this operation.');
     expect(
       isHarnessResultBodyValid('turn.start', {
         body: { reasonCode: 'ask_user' },

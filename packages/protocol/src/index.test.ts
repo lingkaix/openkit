@@ -8,31 +8,45 @@ import {
   ApprovalStatusSchema,
   ArchiveThreadRequestSchema,
   ArtifactSchema,
+  AssistantHandoffSchema,
   allocateEntityId,
   CancelTurnRequestSchema,
   CreateThreadRequestSchema,
+  CreateWorkspaceRequestSchema,
   ForwardCompatibleSseEventEnvelopeSchema,
   GetArtifactResponseSchema,
+  GetThreadRequestSchema,
   GetThreadResponseSchema,
   InterruptTurnRequestSchema,
   ItemDeltaKindSchema,
   ItemSchema,
   ItemStatusSchema,
+  KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION,
+  KnowledgeMaintenanceOutcomeSchema,
+  KnowledgeNotebookAdmissionSchema,
+  KnowledgeNotebookCommitMetadataSchema,
   KnowledgeNotebookPageSchema,
+  ListArtifactsRequestSchema,
   ListArtifactsResponseSchema,
   ListThreadItemsResponseSchema,
+  ListThreadsRequestSchema,
   ListThreadsResponseSchema,
+  ListWorkspacesResponseSchema,
+  MAX_ARTIFACT_FILE_BYTES,
   MetaResponseSchema,
   PROTOCOL_VERSION,
   ProductSseEventEnvelopeSchema,
   ProductTurnSchema,
   RespondToApprovalRequestSchema,
+  responsibleUserIdForActor,
   ServerEventSchema,
+  ServerUsageRecordSchema,
   SseEventEnvelopeSchema,
   SseEventNameSchema,
   StopReasonSchema,
   SubmitTurnInputRequestSchema,
   ThreadSchema,
+  TurnFileInputsSchema,
   TurnReadProjectionSchema,
   TurnSchema,
   TurnStatusSchema,
@@ -41,6 +55,7 @@ import {
   UsageRecordSchema,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
+  workspaceIdForOwner,
 } from './index.js';
 
 describe('canonical enums', () => {
@@ -1833,5 +1848,287 @@ describe('protocol schemas', () => {
     });
 
     expect(parsed.id).toBe('ar_00000000-0000-7f52-a2ff-8f9bfabc26a1');
+  });
+
+  it('derives responsibleUserIdForActor across user and non-human actors', () => {
+    const userId = 'usr_00000000-0000-7e68-be9b-ac7521cb7be0';
+    expect(responsibleUserIdForActor({ kind: 'user', id: userId })).toBe(userId);
+    expect(
+      responsibleUserIdForActor({
+        kind: 'agent',
+        id: 'agent_1',
+        responsibleUserId: userId,
+      })
+    ).toBe(userId);
+    expect(
+      responsibleUserIdForActor({
+        kind: 'system',
+        id: 'scheduler',
+        responsibleUserId: null,
+      })
+    ).toBeNull();
+  });
+
+  it('resolves workspaceIdForOwner for absent or workspace owners and refuses server owners', () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    expect(workspaceIdForOwner(undefined)).toBeUndefined();
+    expect(workspaceIdForOwner({ kind: 'workspace', workspaceId })).toBe(workspaceId);
+    expect(() => workspaceIdForOwner({ kind: 'server' })).toThrow(
+      'Workspace-owned work is required.'
+    );
+  });
+
+  it('enforces TurnFileInputs combined byte limit and filename length bounds', () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const half = MAX_ARTIFACT_FILE_BYTES / 2;
+    const validFiles = [
+      {
+        name: 'part-1.bin',
+        mediaType: 'application/octet-stream',
+        sizeBytes: half,
+        contentDigest: digest,
+      },
+      {
+        name: 'part-2.bin',
+        mediaType: 'application/octet-stream',
+        sizeBytes: half,
+        contentDigest: digest,
+      },
+    ];
+    expect(TurnFileInputsSchema.parse(validFiles)).toEqual(validFiles);
+    expect(
+      TurnFileInputsSchema.safeParse([validFiles[0], { ...validFiles[1], sizeBytes: half + 1 }])
+        .success
+    ).toBe(false);
+    for (const name of ['', 'a'.repeat(1025)]) {
+      expect(
+        TurnFileInputsSchema.safeParse([{ ...validFiles[0], name, sizeBytes: 1 }]).success
+      ).toBe(false);
+    }
+  });
+
+  it('strips unknown internalExecution limit hints while enforcing positive Turn thresholds', () => {
+    const baseTurn = {
+      id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      owner: { kind: 'workspace' as const, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
+      items: [],
+      status: 'running' as const,
+      error: null,
+      configVersion: null,
+      startedAt: '2026-04-15T00:00:00Z',
+      completedAt: null,
+      durationMs: null,
+    };
+    const internalExecution = {
+      roleId: 'knowledge-manager',
+      logicalModelId: 'tier-fast',
+      profileId: null,
+      limits: {
+        maxModelTurns: 4,
+        maxToolCalls: 8,
+        deadlineMs: 30_000,
+      },
+      contextStrategy: 'rolling' as const,
+      threshold: 4096,
+      knowledge: {
+        purpose: 'maintenance' as const,
+        ownerScope: { kind: 'server' as const },
+        baseRevision: 'rev_1',
+        trigger: 'schedule' as const,
+        instructions: 'Consolidate notes.',
+        sourceRange: [
+          {
+            threadId: baseTurn.threadId,
+            turnId: baseTurn.id,
+            firstItemId: 'it_00000000-0000-7087-9ee5-fdce2705f2fa',
+            lastItemId: 'it_00000000-0000-7087-9ee5-fdce2705f2fa',
+          },
+        ],
+      },
+    };
+    const parsedTurn = TurnSchema.parse({
+      ...baseTurn,
+      internalExecution: {
+        ...internalExecution,
+        limits: { ...internalExecution.limits, extraLimitHint: 1 },
+      },
+    });
+    expect(parsedTurn.internalExecution).toEqual(internalExecution);
+    expect(
+      TurnSchema.safeParse({
+        ...baseTurn,
+        internalExecution: { ...internalExecution, threshold: 0 },
+      }).success
+    ).toBe(false);
+  });
+
+  it('enforces AssistantHandoff task and goal bounds and strictness', () => {
+    const targetWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    expect(
+      AssistantHandoffSchema.parse({
+        kind: 'task',
+        targetWorkspaceId,
+        input: 'Implement feature',
+        agentId: 'coder',
+      })
+    ).toMatchObject({ kind: 'task', targetWorkspaceId });
+    expect(
+      AssistantHandoffSchema.parse({
+        kind: 'goal',
+        targetWorkspaceId,
+        intent: 'Ship release',
+      })
+    ).toMatchObject({ kind: 'goal', targetWorkspaceId });
+    for (const invalid of [
+      { kind: 'task', targetWorkspaceId, input: '' },
+      { kind: 'task', targetWorkspaceId, input: 'x'.repeat(65_537) },
+      { kind: 'task', targetWorkspaceId, input: 'ok', extra: true },
+      { kind: 'goal', targetWorkspaceId, intent: '' },
+      { kind: 'goal', targetWorkspaceId, intent: 'x'.repeat(65_537) },
+      { kind: 'goal', targetWorkspaceId, intent: 'ok', agentId: 'coder' },
+    ]) {
+      expect(AssistantHandoffSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('accepts ServerUsageRecordSchema without a workspace anchor and rejects workspaceId', () => {
+    const serverUsage = {
+      id: 'use_00000000-0000-7dfc-a3f3-1245e26431d9',
+      owner: { kind: 'server' as const },
+      responsibleUserId: null,
+      threadId: null,
+      turnId: null,
+      unit: 'tokens' as const,
+      quantity: 120,
+      recordedAt: '2026-07-19T00:00:00Z',
+    };
+    expect(ServerUsageRecordSchema.parse(serverUsage)).toMatchObject(serverUsage);
+    expect(
+      ServerUsageRecordSchema.safeParse({
+        ...serverUsage,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      }).success
+    ).toBe(false);
+    expect(
+      ServerUsageRecordSchema.safeParse({
+        ...serverUsage,
+        owner: { kind: 'server', extra: true },
+      }).success
+    ).toBe(false);
+  });
+
+  it('strips schemaVersion and enforces 4096-byte UTF-8 summary bounds on KnowledgeNotebookCommitMetadataSchema', () => {
+    const digest = `sha256:${'c'.repeat(64)}`;
+    const producer = {
+      kind: 'user' as const,
+      id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+    };
+    const metadataCore = {
+      summary: 'x'.repeat(4096),
+      changeRequest: { requestId: 'req_1', inputDigest: digest },
+      producer,
+      authority: {
+        kind: 'delegated' as const,
+        settingReference: 'setting_1',
+        settingDigest: digest,
+      },
+      sourceReferences: ['openkit:page/server/kb_0190f4c8-0000-7000-8000-000000000001/index'],
+    };
+    expect(
+      KnowledgeNotebookCommitMetadataSchema.parse({
+        schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION,
+        ...metadataCore,
+      })
+    ).toEqual(metadataCore);
+    for (const invalidSummary of ['x'.repeat(4097), '\u00e9'.repeat(2049)]) {
+      expect(
+        KnowledgeNotebookCommitMetadataSchema.safeParse({
+          ...metadataCore,
+          summary: invalidSummary,
+        }).success
+      ).toBe(false);
+    }
+    expect(
+      KnowledgeNotebookCommitMetadataSchema.safeParse({
+        ...metadataCore,
+        schemaVersion: 'unsupported-v2',
+      }).success
+    ).toBe(false);
+  });
+
+  it('enforces strict fields on KnowledgeNotebookAdmissionSchema and KnowledgeMaintenanceOutcomeSchema', () => {
+    const digest = `sha256:${'c'.repeat(64)}`;
+    const producer = {
+      kind: 'user' as const,
+      id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+    };
+    const admission = {
+      ownerScope: {
+        kind: 'workspace' as const,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      },
+      requestId: '0190f4c8-0000-7000-8000-000000000201',
+      inputDigest: digest,
+      baseRevision: null,
+      candidateRevision: 'commit_abc',
+      producer,
+      authority: { kind: 'direct' as const, instructionReference: 'turn_1' },
+      sourceReferences: ['ref_1'],
+    };
+    expect(KnowledgeNotebookAdmissionSchema.parse(admission)).toEqual(admission);
+    expect(KnowledgeNotebookAdmissionSchema.safeParse({ ...admission, extra: true }).success).toBe(
+      false
+    );
+
+    const outcome = {
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
+      outcome: 'review-required' as const,
+      notebookRevision: 'rev_base',
+      candidateRevision: 'rev_cand',
+      proposalId: 'kr_00000000-0000-7000-8000-000000000001',
+      summary: 'Proposed 1 page update.',
+    };
+    expect(KnowledgeMaintenanceOutcomeSchema.parse(outcome)).toEqual(outcome);
+    expect(KnowledgeMaintenanceOutcomeSchema.safeParse({ ...outcome, extra: true }).success).toBe(
+      false
+    );
+  });
+
+  it('enforces strict fields on CreateWorkspaceRequestSchema', () => {
+    expect(
+      CreateWorkspaceRequestSchema.parse({
+        requestId: '0190f4c8-0000-7000-8000-000000000201',
+        name: 'Workspace',
+      }).name
+    ).toBe('Workspace');
+    expect(
+      CreateWorkspaceRequestSchema.safeParse({
+        requestId: '0190f4c8-0000-7000-8000-000000000201',
+        name: 'Workspace',
+        extra: true,
+      }).success
+    ).toBe(false);
+  });
+
+  it('enforces pagination limit and cursor bounds on list and thread read requests', () => {
+    expect(ListWorkspacesResponseSchema.parse({ items: [] }).items).toEqual([]);
+    expect(
+      GetThreadRequestSchema.parse({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        includeTurns: true,
+      }).includeTurns
+    ).toBe(true);
+
+    for (const schema of [ListArtifactsRequestSchema, ListThreadsRequestSchema]) {
+      expect(schema.parse({ limit: 1, cursor: 'c_1' }).limit).toBe(1);
+      expect(schema.parse({ limit: 100 }).limit).toBe(100);
+      for (const bad of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { cursor: '' }]) {
+        expect(schema.safeParse(bad).success).toBe(false);
+      }
+    }
   });
 });

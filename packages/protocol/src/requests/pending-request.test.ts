@@ -24,6 +24,17 @@ describe('pending request additive command content', () => {
     };
     expect(AnswerUserInputRequestSchema.parse(answer)).not.toHaveProperty('futureHint');
     expect(WithdrawPendingRequestSchema.parse(withdraw)).not.toHaveProperty('futureHint');
+    const outcome = {
+      requestId: 'pending',
+      workspaceId: 'ws_00000000-0000-70c6-8ed9-fd7af910ecca',
+      threadId: 'th_00000000-0000-73eb-9a38-397e2c3d8bd1',
+      state: 'resolved' as const,
+      resolution: 'answered' as const,
+      ending: null,
+    };
+    expect(
+      PendingRequestOutcomeSchema.parse({ ...outcome, futureHint: 'untrusted canary' })
+    ).toEqual(outcome);
     expect(
       PendingRequestOutcomeSchema.safeParse({
         requestId: 'pending',

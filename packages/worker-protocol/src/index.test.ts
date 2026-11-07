@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   buildWorkerCanonicalTerminalEventRecord,
+  CaptureCoverageBindingSchema,
   WorkerCanonicalEventRecordReaderSchema,
   WorkerCanonicalEventRecordEmissionSchema as WorkerCanonicalEventRecordSchema,
   WorkerCanonicalTerminalEventDataReaderSchema,
@@ -688,6 +689,45 @@ describe('worker protocol schemas', () => {
         body: { message: null, status: 'starting' },
       })
     ).toThrow();
+    for (const schema of [
+      WorkerControlHeartbeatRequestSchema,
+      WorkerControlHeartbeatRequestReaderSchema,
+    ]) {
+      expect(
+        schema.safeParse({
+          ...request,
+          body: { ...request.body, status: 'running' },
+        }).success
+      ).toBe(false);
+      expect(
+        schema.safeParse({
+          ...request,
+          sequence: 1,
+        }).success
+      ).toBe(false);
+      expect(
+        schema.safeParse({
+          ...request,
+          sequence: 1,
+          body: { ...request.body, status: 'running' },
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('enforces strict scope and value pairs on CaptureCoverageBindingSchema', () => {
+    for (const scope of ['server', 'workspace', 'task'] as const) {
+      for (const value of ['off', 'on'] as const) {
+        expect(CaptureCoverageBindingSchema.parse({ scope, value })).toEqual({ scope, value });
+      }
+    }
+    for (const invalid of [
+      { scope: 'thread', value: 'on' },
+      { scope: 'workspace', value: 'partial' },
+      { scope: 'workspace', value: 'on', extra: true },
+    ]) {
+      expect(CaptureCoverageBindingSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it('keeps the reconnect key outside the canonical heartbeat envelope', () => {
@@ -1388,6 +1428,85 @@ describe('RET-2 native observation grammar', () => {
       };
       expect(WorkerObservationDataSchema.safeParse(candidate).success).toBe(true);
       expect(WorkerObservationDataReaderSchema.parse(candidate)).toEqual(candidate);
+    }
+  });
+
+  it('refuses non-native expected content that uses the native boundary or octet-stream media type', () => {
+    const value = native();
+    const assistantCandidate = {
+      ...value,
+      fact: {
+        kind: 'assistant' as const,
+        runtimeOriginRef: 'origin_1',
+        phase: 'completed' as const,
+        messageRef: 'msg_1',
+        representation: 'snapshot' as const,
+      },
+    };
+    for (const badContent of [
+      { ...value.content, boundary: 'native-content-v1', mediaType: 'text/plain' },
+      { ...value.content, boundary: 'assistant.text', mediaType: 'application/octet-stream' },
+    ]) {
+      expect(
+        WorkerObservationDataSchema.safeParse({ ...assistantCandidate, content: badContent })
+          .success
+      ).toBe(false);
+    }
+  });
+
+  it('refuses retained or unavailable content on disabled native capture and structural facts', () => {
+    const value = native();
+    const disabledNative = {
+      ...value,
+      fact: {
+        ...value.fact,
+        coverage: 'off' as const,
+        native: {
+          ...value.fact.native,
+          range: null,
+          retainedBytes: 0,
+          observedBytes: null,
+          omittedBytes: null,
+        },
+      },
+    };
+    for (const content of [
+      { state: 'not-applicable' },
+      { state: 'unavailable', reason: 'unsupported' },
+    ]) {
+      expect(WorkerObservationDataSchema.safeParse({ ...disabledNative, content }).success).toBe(
+        false
+      );
+    }
+
+    expect(
+      WorkerObservationDataSchema.safeParse({
+        ...value,
+        fact: { kind: 'origin', runtimeOriginRef: 'origin_1', phase: 'started' },
+        content: { state: 'unavailable', reason: 'unsupported' },
+      }).success
+    ).toBe(false);
+  });
+
+  it('refuses forbidden control keys on native observation sources and byte ranges', () => {
+    const value = native();
+    for (const forbiddenNative of [
+      { codec: 'native-content-v1' },
+      { schemaVersion: 1 },
+      { nativeLogMaxBytes: 1024 },
+      { requiredFeatures: ['worker.runtime-provenance.v1'] },
+      { range: { ...value.fact.native.range, kind: 'bytes' } },
+      { range: { ...value.fact.native.range, coordinateSpace: 'file' } },
+      { range: { ...value.fact.native.range, requiredFeatures: ['x'] } },
+    ]) {
+      for (const schema of [WorkerObservationDataSchema, WorkerObservationDataReaderSchema]) {
+        expect(
+          schema.safeParse({
+            ...value,
+            fact: { ...value.fact, native: { ...value.fact.native, ...forbiddenNative } },
+          }).success
+        ).toBe(false);
+      }
     }
   });
 });

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ArtifactReferenceSchema,
   allocateEntityId,
+  MaterialReferenceSchema,
   PageReferenceSchema,
   parseReferenceScope,
   ReferenceScopeIdSchema,
   RetrievalTraceReferenceSchema,
   ScopeQualifiedReferenceSchema,
+  TurnInputReferenceSchema,
 } from '../index.js';
 
 const knowledgeBaseId = 'kb_0190f4c8-0000-7000-8000-000000000001';
@@ -193,4 +196,22 @@ it('resolves exact file scopes without treating versions or input ordinals as ne
       }).success
     ).toBe(false);
   }
+  const artifactRef = { scopeId: `artifact/workspace/${workspaceId}`, objectId: artifactId };
+  const materialRef = { scopeId: `material/workspace/${workspaceId}`, objectId: materialId };
+  const turnInputRef = { scopeId: inputScope, objectId: '0' };
+  expect(ArtifactReferenceSchema.parse(artifactRef)).toEqual(artifactRef);
+  expect(ArtifactReferenceSchema.safeParse(materialRef).success).toBe(false);
+  expect(ArtifactReferenceSchema.safeParse({ ...artifactRef, objectId: materialId }).success).toBe(
+    false
+  );
+  expect(MaterialReferenceSchema.parse(materialRef)).toEqual(materialRef);
+  expect(MaterialReferenceSchema.safeParse(artifactRef).success).toBe(false);
+  expect(MaterialReferenceSchema.safeParse({ ...materialRef, objectId: artifactId }).success).toBe(
+    false
+  );
+  expect(TurnInputReferenceSchema.parse(turnInputRef)).toEqual(turnInputRef);
+  expect(TurnInputReferenceSchema.safeParse(artifactRef).success).toBe(false);
+  expect(TurnInputReferenceSchema.safeParse({ ...turnInputRef, objectId: '-1' }).success).toBe(
+    false
+  );
 });

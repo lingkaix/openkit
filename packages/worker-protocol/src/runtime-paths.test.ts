@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { workerThreadRuntimeRoot, workerTurnCapturePaths } from './index.js';
+import {
+  workerObservationSourceRelativePath,
+  workerSessionInputPaths,
+  workerThreadRuntimeRoot,
+  workerTurnCapturePaths,
+} from './index.js';
 
 describe('Thread and runtime capture paths', () => {
   it('preserves exact identities and the native collector-relative structure', () => {
@@ -78,5 +83,40 @@ describe('Thread and runtime capture paths', () => {
     expect(() =>
       workerTurnCapturePaths('th_01890f3e-0000-7000-8000-000000000001', 'codex', value)
     ).toThrow();
+  });
+
+  it('derives AgentSession input paths only for canonical AgentSession identities', () => {
+    const id = 'as_01890f3e-0000-7000-8000-000000000001';
+    expect(workerSessionInputPaths(id)).toEqual({
+      root: `/openkit/sessions/${id}`,
+      packagePath: `/openkit/sessions/${id}/config/package.json`,
+      contextRoot: `/openkit/sessions/${id}/context`,
+      supplyRoot: `/openkit/sessions/${id}/supply/inputs`,
+      packageRelativePath: `${id}/config/package.json`,
+      contextRelativePath: `${id}/context`,
+      supplyRelativePath: `${id}/supply/inputs`,
+    });
+
+    for (const invalid of [
+      undefined,
+      '',
+      'as_01890f3e-0000-5000-8000-000000000001',
+      'ws_01890f3e-0000-7000-8000-000000000001',
+      'th_01890f3e-0000-7000-8000-000000000001',
+      '../as_01890f3e-0000-7000-8000-000000000001',
+      `${id}/extra`,
+    ]) {
+      expect(() => workerSessionInputPaths(invalid)).toThrow(
+        'Worker inputs require a canonical AgentSession identity.'
+      );
+    }
+  });
+
+  it('derives observation source relative paths only from non-negative integer sequences', () => {
+    expect(workerObservationSourceRelativePath(0)).toBe('runtime/observations/0.jsonl');
+    expect(workerObservationSourceRelativePath(42)).toBe('runtime/observations/42.jsonl');
+    for (const invalid of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => workerObservationSourceRelativePath(invalid)).toThrow();
+    }
   });
 });
