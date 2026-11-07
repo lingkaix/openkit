@@ -43,6 +43,7 @@ function pageLinks(path: string, body: string): readonly { target: string; resol
       if (token.type !== 'link_open') continue;
       const href = token.attrGet('href');
       if (
+        typeof href !== 'string' ||
         !href ||
         href.startsWith('#') ||
         href.startsWith('//') ||
