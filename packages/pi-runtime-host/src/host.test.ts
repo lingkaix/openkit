@@ -1779,10 +1779,14 @@ export default function (pi) {
   pi.on('agent_end', () => {
     if (!armed) return;
     armed = false;
-    setTimeout(() => {
+    void (async () => {
+      for (let i = 0; i < 500 && !existsSync(release); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (!existsSync(release)) return;
       ${fire}
       appendFileSync(probe, 'triggered\\n');
-    }, 50);
+    })();
   });`;
     await installExtension(
       f.directories,
@@ -1838,11 +1842,12 @@ export default function (pi) {
     'fences a native run an Extension starts while no Turn is active',
     async () => {
       for (const trigger of ['sendMessage', 'sendUserMessage'] as const) {
-        const { effect, f, probe } = await extensionRunFixture(trigger, 'idle');
+        const { effect, f, probe, release } = await extensionRunFixture(trigger, 'idle');
         const host = f.start();
         await f.open(host);
         const first = await turn(host, 'turn-1', 'establish');
         expect(first.outcome.status).toBe('completed');
+        await writeFile(release, '1');
         await waitFor(() => probeLines(probe).includes('triggered'));
         expect(await host.request({ op: 'inspect' })).toMatchObject({
           ok: true,
