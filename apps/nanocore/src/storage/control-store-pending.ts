@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
-import { advanceGoalForThread } from '../runtime/goal-owner.js';
+import { advanceGoalForThread } from '../runtime/goal-native.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
