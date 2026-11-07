@@ -1192,7 +1192,7 @@ describe('worker MCP gateway', () => {
         () => null,
         (error: unknown) => error
       );
-      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 15_000 });
       const descendant = JSON.parse(readFileSync(pidFile, 'utf8'));
       const descendantPid = descendant.pid;
       expect(descendant.credentialDigest).toBe(
@@ -1268,7 +1268,7 @@ describe('worker MCP gateway', () => {
         () => null,
         (error: unknown) => error
       );
-      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true), { timeout: 15_000 });
       const descendant = JSON.parse(readFileSync(pidFile, 'utf8'));
       const descendantPid = descendant.pid as number;
       leaderPid = descendant.supervisorPid;

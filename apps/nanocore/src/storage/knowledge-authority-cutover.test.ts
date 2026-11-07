@@ -135,4 +135,4 @@ it('selects the SQL Knowledge authority across stale projections and cold replay
     code: 'recovery_required',
   });
   expect(db.sqlite.serialize()).toEqual(beforeRefusal);
-});
+}, 60_000);

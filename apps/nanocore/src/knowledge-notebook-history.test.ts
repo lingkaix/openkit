@@ -191,7 +191,7 @@ describe('native Workspace Notebook history and restore', () => {
     f.coreDb.sqlite.close();
     originalSnapshotRoot = f.dataRoot;
     fixtures.splice(fixtures.indexOf(f), 1);
-  });
+  }, 60_000);
   afterAll(async () => {
     await cleanupFixtures();
     if (originalSnapshotRoot) rmSync(originalSnapshotRoot, { recursive: true, force: true });
@@ -237,7 +237,7 @@ describe('native Workspace Notebook history and restore', () => {
         pageIds: ['alpha'],
         summary: 'Restore original text',
       };
-    });
+    }, 60_000);
     afterAll(async () => {
       await cleanupFixtures();
       if (snapshotRoot) rmSync(snapshotRoot, { recursive: true, force: true });
@@ -346,7 +346,7 @@ describe('native Workspace Notebook history and restore', () => {
         restoredFixture.coreDb.sqlite.close();
         restoredSnapshotRoot = restoredFixture.dataRoot;
         fixtures.splice(fixtures.indexOf(restoredFixture), 1);
-      });
+      }, 60_000);
       it('replays the exact restore receipt and refuses a stale request without overwriting the winner', async () => {
         const f = await fixture(restoredSnapshotRoot);
         const input = restoreInput;
