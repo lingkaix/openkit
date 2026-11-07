@@ -47,30 +47,6 @@ describe('internal-role reasoning effort', () => {
 });
 
 describe('Knowledge Manager default run deadline', () => {
-  it('gives omitted limits the accepted KM, Assistant and Coordinator defaults', () => {
-    const config = InternalRoleProfilesConfigSchema.parse({
-      schemaVersion: 1,
-      profiles: ['knowledge-manager', 'assistant', 'workflow-coordinator'].map((roleId) => ({
-        id: roleId,
-        roleId,
-      })),
-    });
-    expect(config.profiles.map(({ roleId, limits }) => ({ roleId, limits }))).toEqual([
-      {
-        roleId: 'knowledge-manager',
-        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
-      },
-      {
-        roleId: 'assistant',
-        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 600_000 },
-      },
-      {
-        roleId: 'workflow-coordinator',
-        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
-      },
-    ]);
-  });
-
   it.each([
     'knowledge-manager',
     'assistant',

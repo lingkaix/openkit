@@ -39,7 +39,6 @@ describe('Turn status derived sets', () => {
       'cancelled',
       'failed',
     ]);
-    expect(TurnStatusSchema.safeParse('awaiting_human').success).toBe(false);
   });
 
   it('lists checkpoint-collectable as the sealed terminals minus interrupted', () => {

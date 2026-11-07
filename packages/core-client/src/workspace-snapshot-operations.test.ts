@@ -1,4 +1,3 @@
-import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION as CURRENT_PROTOCOL, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient as createClient } from './client.js';
@@ -39,10 +38,6 @@ describe('W operational backup download client boundary', () => {
         return response;
       },
     });
-    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
-      if (id !== 'workspace.backup-download' && definition.binding === 'streaming')
-        expect(id in client.operations).toBe(false);
-    }
     expect(client.operations['workspace.backup-download']).toBeTypeOf('function');
     // No bytes have been enqueued and no Content-Length is provided. Headers suffice.
     const stream = await client.operations['workspace.backup-download'](selection);

@@ -1,5 +1,5 @@
 import type { AutomationRecord } from '@openkit/app-api-schemas';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { PROTOCOL_VERSION, ProductSseEventEnvelopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { parseWorkspaceSharingError } from './app.js';
 import { type CoreClient, createCoreClient } from './client.js';
@@ -1507,7 +1507,7 @@ describe('createCoreClient', () => {
     // @ts-expect-error AgentSession events are internal and cannot inhabit the ordinary SSE type.
     const internalOnlyEvent: SseEventEnvelope = agentSessionEvent(1);
 
-    expect(internalOnlyEvent.data.type).toBe('agent-session-updated');
+    expect(ProductSseEventEnvelopeSchema.safeParse(internalOnlyEvent).success).toBe(false);
   });
 
   it('exposes composed sub-clients without deprecated flat aliases', () => {
