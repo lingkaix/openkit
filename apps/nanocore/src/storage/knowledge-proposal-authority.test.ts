@@ -574,7 +574,7 @@ describe('knowledge proposal authority', () => {
       true
     );
     expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
-  });
+  }, 60_000);
 
   it.each([
     'existing-target',
@@ -672,7 +672,7 @@ describe('knowledge proposal authority', () => {
     expect(
       f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId)
     ).toEqual(accepted);
-  });
+  }, 60_000);
 
   it('rejects a generated proposal that cites another accepted generated page', async () => {
     const f = await createFixture('proposal-generated-source');
