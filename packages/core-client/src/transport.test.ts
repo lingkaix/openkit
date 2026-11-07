@@ -70,6 +70,39 @@ describe('JSON mutation transport', () => {
     fetcher.mockRejectedValueOnce(networkFailure);
     await expect(transport[operation]('/command', input, schema)).rejects.toBe(networkFailure);
   });
+
+  it('preserves today incomplete bootstrap refusal and leaves other JSON messages unstated', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const transport = createClientTransport({
+      baseUrl: 'https://core.test/',
+      fetch: async (input, init) =>
+        new URL(String(input)).pathname === '/api/meta'
+          ? Response.json({
+              protocolVersion: PROTOCOL_VERSION,
+              capabilities: [],
+              eventFamilies: [],
+            })
+          : fetcher(input, init),
+    });
+    const schema = z.object({ value: z.string() });
+    fetcher.mockResolvedValueOnce(
+      Response.json(
+        { code: 'FORBIDDEN', message: 'Server bootstrap is incomplete.' },
+        { status: 403 }
+      )
+    );
+    await expect(transport.postJson('/api/auth/sign-up/email', {}, schema)).rejects.toMatchObject({
+      message: 'Server bootstrap is incomplete.',
+      status: 403,
+    });
+    fetcher.mockResolvedValueOnce(
+      Response.json({ message: 'Sign up is disabled.' }, { status: 403 })
+    );
+    await expect(transport.postJson('/api/auth/sign-up/email', {}, schema)).rejects.toMatchObject({
+      message: 'HTTP 403',
+      status: 403,
+    });
+  });
 });
 
 describe('contract identity admission before effects', () => {

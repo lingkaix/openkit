@@ -12,6 +12,7 @@ import {
 } from './access-token.js';
 import {
   createOpenKitAccessTokenRecord,
+  isAccessTokenExpiryStrictlyFuture,
   type OpenKitAccessTokenIssueResult,
 } from './access-token-store.js';
 
@@ -63,7 +64,7 @@ export interface ConsumeServerBootstrapTokenInput {
 /** Server bootstrap consume result. */
 export type ConsumeServerBootstrapTokenResult =
   | ({ status: 'consumed' } & OpenKitAccessTokenIssueResult)
-  | { status: 'invalid' | 'unavailable' };
+  | { status: 'admin_expiry' | 'invalid' | 'unavailable' };
 
 /** Fixed v1 bootstrap fields retain inert annotations across consumption; lifetime and hash checks stay native. */
 const BootstrapSettingV1Schema = z
@@ -179,6 +180,10 @@ export async function consumeServerBootstrapToken(
   input: ConsumeServerBootstrapTokenInput
 ): Promise<ConsumeServerBootstrapTokenResult> {
   const now = input.now ?? new Date();
+  // Refuse a current or past administrator expiry before password hashing or any write.
+  if (!isAccessTokenExpiryStrictlyFuture(input.tokenExpiresAt, now)) {
+    return { status: 'admin_expiry' };
+  }
   const setting = readBootstrapSetting(coreDb);
   if (countUsers(coreDb) > 0) {
     return { status: 'unavailable' };
@@ -207,6 +212,9 @@ export async function consumeServerBootstrapToken(
       !verifyOpenKitAccessTokenSecret(input.token, current.tokenHash)
     ) {
       return { status: 'invalid' };
+    }
+    if (!isAccessTokenExpiryStrictlyFuture(input.tokenExpiresAt, consumeNow)) {
+      return { status: 'admin_expiry' };
     }
     // Clear delivery material before database writes so cleanup failure cannot discard an issued credential.
     try {
