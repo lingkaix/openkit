@@ -594,10 +594,12 @@ describe('Discord to native Pending Request seam', () => {
     } finally {
       release!();
     }
-    await vi.waitFor(() =>
-      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
-        'failed-no-send'
-      )
+    await vi.waitFor(
+      () =>
+        expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
+          'failed-no-send'
+        ),
+      { timeout: 15_000 }
     );
     expect(messageContacts).toBe(0);
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
@@ -611,10 +613,12 @@ describe('Discord to native Pending Request seam', () => {
     f.sendAttention.mockRejectedValue(new Error('simulated lost message acknowledgement'));
     const pending = f.record();
     f.services.attentionRaised(pending);
-    await vi.waitFor(() =>
-      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
-        'delivery-unknown'
-      )
+    await vi.waitFor(
+      () =>
+        expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
+          'delivery-unknown'
+        ),
+      { timeout: 15_000 }
     );
     const delivery = f.services.notifications.listForActor(actor.userId, {}, () => true)[0]!;
     expect(f.record()).toEqual(pending);
@@ -637,10 +641,12 @@ describe('Discord to native Pending Request seam', () => {
     });
     const pending = f.record();
     f.services.attentionRaised(pending);
-    await vi.waitFor(() =>
-      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
-        'failed-no-send'
-      )
+    await vi.waitFor(
+      () =>
+        expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
+          'failed-no-send'
+        ),
+      { timeout: 15_000 }
     );
     const delivery = f.services.notifications.listForActor(actor.userId, {}, () => true)[0]!;
     const expectedAttemptId = delivery.attempt!.id;

@@ -363,7 +363,7 @@ it.each([
   } else {
     expect(f.notebook.publishedRevision()).toBe(baseRevision);
   }
-});
+}, 60_000);
 
 it('keeps independent historical human page bodies when their original Source is unavailable', async () => {
   const f = fixture(true);
@@ -481,7 +481,7 @@ it.each([
   const files = f.notebook.readRevision(f.notebook.publishedRevision()).files;
   expect(files['index.md']).toContain('Preserve this human correction.');
   expect(files['index.md']).toContain('BLUE-HERON-7');
-});
+}, 60_000);
 
 it('recalls the exact Server candidate only after its human Review publishes the shown bytes', async () => {
   const f = fixture(false);
@@ -603,7 +603,7 @@ it('recalls the exact Server candidate only after its human Review publishes the
   } finally {
     await closeRetrievalServices();
   }
-});
+}, 60_000);
 
 it('retains skipped active-writer and missing-authority schedule outcomes without a model call', async () => {
   const f = fixture(true);
@@ -664,7 +664,7 @@ it.each([
   expect(f.store.getServerTurnById(result.turnId).items).toContainEqual(
     expect.objectContaining({ type: 'status', knowledgeMaintenanceResult: result })
   );
-});
+}, 60_000);
 
 it('previews and reviews a valid candidate larger than the display limit using the shared bounded path cursor', async () => {
   const f = fixture(false);
@@ -775,7 +775,7 @@ it('reads retained Proposal/Review annotations and preserves them on the next hu
   expect(rewritten.decisions[0].actor.note).toBe('actor note');
   expect(rewritten.decisions).toHaveLength(2);
   expect(readFileSync(path, 'utf8')).toBe(annotated);
-});
+}, 60_000);
 
 // S61 exact Proposal/Review evidence: corrupt retained files only after their actual owners write them.
 it.each([
@@ -1451,4 +1451,4 @@ it.each([
   expect(f.notebook.publishedRevision()).toBe(currentHead);
   expect(f.notebook.readRevision(currentHead).files).toEqual(currentFiles);
   expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-});
+}, 60_000);

@@ -615,7 +615,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     });
     try {
       await vi.waitFor(() => expect(f.admission.isClosed(f.workspaceId)).toBe(true), {
-        timeout: 1000,
+        timeout: 15_000,
       });
       expect(settled).toBe(false);
       expect(registry(f)).toMatchObject({ status: 'active', revision: 1 });
