@@ -561,7 +561,10 @@ function register_p1_shell_behavior_test_tsx_0() {
           within(banner as HTMLElement).getByRole('button', { name: 'Try again' })
         ).toHaveClass('min-h-11', 'min-w-11');
       } finally {
-        delete (navigator as { onLine?: boolean }).onLine;
+        Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+        act(() => {
+          window.dispatchEvent(new Event('online'));
+        });
       }
     });
 
@@ -579,7 +582,11 @@ function register_p1_shell_behavior_test_tsx_0() {
         expect(await screen.findByText('Offline')).toBeInTheDocument();
         expect(screen.getByText('Last opened on this device.')).toBeInTheDocument();
       } finally {
-        delete (navigator as { onLine?: boolean }).onLine;
+        online = true;
+        Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+        act(() => {
+          window.dispatchEvent(new Event('online'));
+        });
       }
     });
   });
