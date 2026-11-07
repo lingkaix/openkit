@@ -41,6 +41,7 @@ import {
 } from './knowledge-operation-definitions.js';
 import { KNOWLEDGE_PACKAGE_OPERATION_DEFINITIONS } from './knowledge-package-operations.js';
 import { LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS } from './light-app-definitions.js';
+import { LOCAL_AI_OPERATION_DEFINITIONS } from './local-ai-operations.js';
 import { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
 import { MEMORY_OPERATION_DEFINITIONS } from './memory.js';
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
@@ -86,6 +87,7 @@ export {
   KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
 } from './knowledge-operation-definitions.js';
+export { LOCAL_AI_OPERATION_DEFINITIONS } from './local-ai-operations.js';
 export type {
   NativeOperationDefinition,
   OperationCrossing,
@@ -141,6 +143,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   CHANNEL_OPERATION_DEFINITIONS,
   RUNTIME_CONFIG_OPERATION_DEFINITIONS,
   PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
+  LOCAL_AI_OPERATION_DEFINITIONS,
   VAULT_OPERATION_DEFINITIONS,
   APP_SEARCH_OPERATION_DEFINITIONS,
   ENVIRONMENT_OPERATION_DEFINITIONS,

@@ -142,9 +142,13 @@ async function createSpeechFixture(): Promise<SpeechFixture> {
       },
     ],
     transcription: {
-      id: 'voice',
-      providerProfileId: 'speech',
-      providerModel: 'whisper-1',
+      routes: [
+        {
+          id: 'voice',
+          providerProfileId: 'speech',
+          providerModel: 'whisper-1',
+        },
+      ],
     },
     requiredFeatures: [],
   };
@@ -248,7 +252,6 @@ async function collectHit(
     body: Buffer.concat(chunks),
   });
   const status = upstream.status;
-  upstream.status = 200;
   response.writeHead(status, { 'content-type': 'application/json' });
   response.end(JSON.stringify({ text: TRANSCRIPT, usage: { seconds: 1.25 }, duration: 9 }));
 }
@@ -617,7 +620,7 @@ it('transcribes one clip through the generic JSON route and records measured usa
     const body = await response.json();
     expect(response.status, JSON.stringify(body)).toBe(502);
     expect(body).toMatchObject({ code: 'transcription_failed' });
-    expect(fixture.hits).toHaveLength(rejected.hits + 1);
+    expect(fixture.hits).toHaveLength(rejected.hits + 4);
     const rows = ledger(fixture);
     expect(rows.calls).toHaveLength(rejected.calls + 1);
     const call = rows.calls.at(-1);

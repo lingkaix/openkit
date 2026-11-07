@@ -314,6 +314,20 @@ function makeClient(
         redeemRequestId: '00000000-0000-4000-8000-000000000001',
         outcome: 'reset',
       }),
+      'local-ai.status': vi.fn().mockResolvedValue({
+        backends: [
+          {
+            backendId: 'sherpa-onnx-asr',
+            enabled: false,
+            selectedModelId: null,
+            phase: 'disabled',
+            bytesReceived: 0,
+            bytesTotal: null,
+            license: 'Apache-2.0. SenseVoice and punctuation models, plus the sherpa-onnx runtime.',
+            downloadBytes: 240_544_786,
+          },
+        ],
+      }),
       ...overrides.operations,
     },
   } as unknown as CoreClient;

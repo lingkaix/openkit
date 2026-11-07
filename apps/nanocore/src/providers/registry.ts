@@ -35,6 +35,8 @@ export interface ProviderRegistrySummary {
   modelDetails: NonNullable<ProviderRegistryEntry['modelDetails']>;
   /** Provider readiness state, when configured. */
   readiness?: ProviderProfile['readiness'];
+  /** Supervised local backend binding, when this profile is one of the built-ins. */
+  localBackend?: { backendId: 'sherpa-onnx-asr' | 'llama-cpp' | 'apple-native' };
 }
 
 /** Existing consuming operation facts for the linked Vault Audit, never credential authority. */
@@ -153,6 +155,8 @@ export class ProviderRegistry {
       if (profile.readiness) {
         summary.readiness = profile.readiness;
       }
+      const localBackend = profile.extensions?.openkit?.localBackend;
+      if (localBackend) summary.localBackend = { backendId: localBackend.backendId };
 
       return summary;
     });

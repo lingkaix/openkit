@@ -24,12 +24,26 @@ const ProviderSubscriptionAccountExtensionSchema = z
   })
   .strict();
 
+/** Built-in supervised local backends. Ordinary `kind: local` profiles omit this binding. */
+export const LocalBackendIdSchema = z.enum(['sherpa-onnx-asr', 'llama-cpp', 'apple-native']);
+
+/** Managed-process binding. The route's providerModel is the model identity. */
+export const LocalBackendBindingSchema = z
+  .object({
+    backendId: LocalBackendIdSchema,
+  })
+  .strict();
+
+/** Supervised local backend id. */
+export type LocalBackendId = z.infer<typeof LocalBackendIdSchema>;
+
 /**
  * Strict OpenKit-owned provider extension namespace schema.
  */
 export const OpenKitProviderExtensionSchema = z
   .object({
     subscriptionAccount: ProviderSubscriptionAccountExtensionSchema.optional(),
+    localBackend: LocalBackendBindingSchema.optional(),
   })
   .strict();
 
@@ -213,6 +227,24 @@ function addProviderProfileCrossFieldIssues(
         code: 'custom',
         message: `modelMetadata key is not in the provider model list: ${modelId}.`,
         path: ['modelMetadata', modelId],
+      });
+    }
+  }
+
+  const localBackend = profile.extensions?.openkit?.localBackend;
+  if (localBackend) {
+    if (profile.kind !== 'local') {
+      context.addIssue({
+        code: 'custom',
+        message: 'localBackend requires a local provider.',
+        path: ['extensions', 'openkit', 'localBackend'],
+      });
+    }
+    if (profile.secretRef !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'localBackend profiles must not declare secretRef.',
+        path: ['secretRef'],
       });
     }
   }

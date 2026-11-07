@@ -33,6 +33,27 @@ export const GatewayLogicalModelSchema = z
   .strip()
   .superRefine((value, ctx) => addDuplicateIdIssues(value.routes, ctx, ['routes']));
 
+/** Ordered speech route. A stored single member is read as a one-element chain. */
+export const GatewayTranscriptionSchema = z
+  .object({
+    routing: GatewayRoutingSchema.optional(),
+    routes: z.array(GatewayRouteMemberSchema).min(1),
+  })
+  .strip()
+  .superRefine((value, ctx) => addDuplicateIdIssues(value.routes, ctx, ['routes']));
+
+/** Authored transcription chain. */
+export type GatewayTranscription = z.infer<typeof GatewayTranscriptionSchema>;
+
+/** Reads the historical single-member transcription value as a one-element chain. */
+function normalizeTranscription(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (!Object.hasOwn(value, 'routes') && Object.hasOwn(value, 'providerProfileId')) {
+    return { routes: [value] };
+  }
+  return value;
+}
+
 /** Server-scoped Gateway reader; descriptive additions are discarded. */
 export const GatewayConfigSchema = z
   .object({
@@ -40,8 +61,8 @@ export const GatewayConfigSchema = z
     enabled: z.boolean().default(true),
     defaultLogicalModelId: z.string().min(1).optional(),
     logicalModels: z.array(GatewayLogicalModelSchema).default([]),
-    /** One optional speech route. It is not a logical chat model. */
-    transcription: GatewayRouteMemberSchema.optional(),
+    /** Ordered speech route. It is not a logical chat model. */
+    transcription: z.preprocess(normalizeTranscription, GatewayTranscriptionSchema.optional()),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })

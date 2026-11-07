@@ -1217,7 +1217,7 @@ describe('runtime config loading and reload planning', () => {
     ).toBe(true);
     expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
     expect(manager.current().version).toBe(2);
-    expect(manager.current().gatewayConfig.transcription?.providerModel).toBe(
+    expect(manager.current().gatewayConfig.transcription?.routes[0]?.providerModel).toBe(
       'handwritten/whisper-1'
     );
   });

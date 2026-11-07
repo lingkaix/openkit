@@ -83,9 +83,13 @@ describe('scoped runtime config schemas', () => {
       },
     });
     expect(parsed.transcription).toEqual({
-      id: 'voice',
-      providerProfileId: 'speech',
-      providerModel: 'whisper-1',
+      routes: [
+        {
+          id: 'voice',
+          providerProfileId: 'speech',
+          providerModel: 'whisper-1',
+        },
+      ],
     });
     expect(GatewayConfigSchema.parse({ schemaVersion: 1 }).transcription).toBeUndefined();
   });

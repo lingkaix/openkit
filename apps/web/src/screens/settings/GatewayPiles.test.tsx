@@ -434,6 +434,18 @@ function makeClient(
       'vault.provider-api-key-set': vi
         .fn()
         .mockResolvedValue({ providerId: 'provider_anthropic', configured: true }),
+      'local-ai.status': vi.fn().mockResolvedValue({
+        backends: [
+          {
+            backendId: 'sherpa-onnx-asr',
+            enabled: false,
+            selectedModelId: null,
+            phase: 'disabled',
+            bytesReceived: 0,
+            bytesTotal: null,
+          },
+        ],
+      }),
       ...overrides.operations,
     },
   } as unknown as CoreClient;

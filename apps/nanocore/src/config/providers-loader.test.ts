@@ -10,15 +10,19 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { AuthoredProviderProfileSchema, ProviderProfileSchema } from '@openkit/config-schema';
+import {
+  AuthoredProviderProfileSchema,
+  type ProviderProfile,
+  ProviderProfileSchema,
+} from '@openkit/config-schema';
 import { isEntityId, RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import {
   assertConfiguredModelsHaveKnownContext,
   resolveEffectiveModelMetadata,
   resolveLogicalModelCatalog,
 } from '../llm/logical-models.js';
+import { LOCAL_LLM_PROFILE_ID, LOCAL_SPEECH_PROFILE_ID } from '../local-ai/profiles.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { parseJsoncObject } from './jsonc.js';
@@ -182,7 +186,11 @@ describe('loadProviderProfiles', () => {
         .sort()
     ).toEqual(EXPECTED_V003_PROVIDER_TEMPLATES.map((template) => template.fileName).sort());
     expect([...profilesById.keys()].sort()).toEqual(
-      EXPECTED_V003_PROVIDER_TEMPLATES.map((template) => template.id).sort()
+      [
+        ...EXPECTED_V003_PROVIDER_TEMPLATES.map((template) => template.id),
+        'openkit-local-llm',
+        'openkit-local-speech',
+      ].sort()
     );
 
     for (const template of EXPECTED_V003_PROVIDER_TEMPLATES) {
@@ -229,7 +237,9 @@ describe('loadProviderProfiles', () => {
     );
     expect(String(exampleParsed.secretRef).startsWith('vault://')).toBe(true);
     const references = [
-      ...result.profiles.map((profile) => profile.secretRef),
+      ...result.profiles.flatMap((profile) =>
+        profile.secretRef === undefined ? [] : [profile.secretRef]
+      ),
       exampleParsed.secretRef,
     ];
     expect(new Set(references).size).toBe(references.length);
@@ -288,7 +298,7 @@ describe('loadProviderProfiles', () => {
     const result = loadProviderProfiles(dataRoot);
 
     expect(result.diagnostics).toEqual([]);
-    expect(result.profiles).toEqual([
+    expect(authoredProfiles(result.profiles)).toEqual([
       expect.objectContaining({
         baseUrl: 'https://api.openai.com/v1',
         defaultModel: 'gpt-5.1',
@@ -338,7 +348,7 @@ describe('loadProviderProfiles', () => {
     const result = loadProviderProfiles(dataRoot);
 
     expect.soft(result.diagnostics).toEqual([]);
-    expect(result.profiles).toEqual([
+    expect(authoredProfiles(result.profiles)).toEqual([
       {
         displayName: profile.displayName,
         extensions: {
@@ -376,7 +386,7 @@ describe('loadProviderProfiles', () => {
 
     const result = loadProviderProfiles(dataRoot);
 
-    expect(result.profiles).toEqual([]);
+    expect(authoredProfiles(result.profiles)).toEqual([]);
     expect(result.diagnostics).toEqual([
       expect.objectContaining({
         code: 'provider.invalid_profile',
@@ -405,7 +415,7 @@ describe('loadProviderProfiles', () => {
 
     const result = loadProviderProfiles(dataRoot);
 
-    expect(result.profiles).toEqual([]);
+    expect(authoredProfiles(result.profiles)).toEqual([]);
     expect(result.diagnostics).toEqual([
       expect.objectContaining({
         code: 'provider.invalid_profile',
@@ -478,3 +488,10 @@ describe('loadProviderProfiles', () => {
     ]);
   });
 });
+
+/** File profiles stay first. Built-in local profiles are composed after them. */
+function authoredProfiles(profiles: readonly ProviderProfile[]): ProviderProfile[] {
+  return profiles.filter(
+    (profile) => profile.id !== LOCAL_SPEECH_PROFILE_ID && profile.id !== LOCAL_LLM_PROFILE_ID
+  );
+}

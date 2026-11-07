@@ -47,7 +47,7 @@ export interface GatewaySelection {
  * @returns Ordered selection facts, including exclusions without invented attempts.
  */
 export function planLogicalModel(
-  model: ResolvedLogicalModel,
+  model: Pick<ResolvedLogicalModel, 'autoFailover' | 'routes'>,
   requiredCapabilities: readonly string[],
   eligible: (route: ResolvedLogicalModelRoute, required: readonly string[]) => boolean
 ): readonly GatewaySelection[] {
@@ -61,7 +61,7 @@ export function planLogicalModel(
 
 /** Keeps asynchronous credential evidence in authored order without inspecting skipped members. */
 export async function planLogicalModelAsync(
-  model: ResolvedLogicalModel,
+  model: Pick<ResolvedLogicalModel, 'autoFailover' | 'routes'>,
   requiredCapabilities: readonly string[],
   eligible: (
     route: ResolvedLogicalModelRoute,
@@ -88,7 +88,7 @@ export async function planLogicalModelAsync(
 
 /** Sole selection-reason owner for synchronous metadata and awaited dispatch preparation. */
 function logicalModelSelection(
-  model: ResolvedLogicalModel,
+  model: Pick<ResolvedLogicalModel, 'autoFailover' | 'routes'>,
   route: ResolvedLogicalModelRoute,
   index: number,
   eligible: boolean

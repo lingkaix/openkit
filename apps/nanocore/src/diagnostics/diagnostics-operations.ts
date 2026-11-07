@@ -112,11 +112,16 @@ export function createDiagnosticsOperationImplementations(
           ...(transcription.configured
             ? {
                 transcription: {
-                  id: transcription.member.id,
-                  providerProfileId: transcription.member.providerProfileId,
-                  providerModel: transcription.member.providerModel,
-                  available: transcription.available,
-                  unavailableReason: transcription.unavailableReason,
+                  autoFailover: transcription.autoFailover,
+                  routes: transcription.routes.map((route) => ({
+                    id: route.id,
+                    providerProfileId: route.providerProfileId,
+                    providerModel: route.providerModel,
+                    available: route.available,
+                    unavailableReason: route.unavailableReason as NonNullable<
+                      AppDiagnosticsResponse['gateway']['models'][number]['routes']
+                    >[number]['unavailableReason'],
+                  })),
                 },
               }
             : {}),

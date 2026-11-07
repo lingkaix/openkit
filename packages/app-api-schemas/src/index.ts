@@ -43,6 +43,7 @@ export * from './knowledge-proposal-preview.js';
 export * from './knowledge-schema.js';
 export * from './light-app-definitions.js';
 export * from './light-apps.js';
+export * from './local-ai-operations.js';
 export * from './material.js';
 export { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
 export * from './memory.js';

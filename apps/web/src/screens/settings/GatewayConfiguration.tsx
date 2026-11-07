@@ -57,6 +57,10 @@ const ROUTE_REASON_CLASS: Record<string, string> = {
   subscription_account_integrity_unavailable: 'slot/Vault check',
   gateway_disabled: 'Gateway disabled',
   provider_base_url_missing: 'missing base URL',
+  local_backend_disabled: 'local backend disabled',
+  local_model_not_downloaded: 'local model not downloaded',
+  local_backend_starting: 'local backend starting',
+  local_backend_unhealthy: 'local backend unhealthy',
 };
 
 /** User-facing member availability from the admin resolver projection. */
@@ -822,9 +826,6 @@ function GatewayEditor({
   const [base, setBase] = useState<FileRead | null>(null);
   const [draft, setDraft] = useState('');
   const [autoFailover, setAutoFailover] = useState(true);
-  const [routeId, setRouteId] = useState('');
-  const [providerProfileId, setProviderProfileId] = useState('');
-  const [providerModel, setProviderModel] = useState('');
   const [persisted, setPersisted] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
   useEffect(() => {
@@ -854,14 +855,28 @@ function GatewayEditor({
         setDraft(JSON.stringify(projectSafeValue(model.routes), null, 2));
         setAutoFailover(model.routing?.autoFailover ?? true);
       } else {
-        const route = source.transcription as
-          | { id?: unknown; providerProfileId?: unknown; providerModel?: unknown }
+        const authored = source.transcription as
+          | {
+              routes?: unknown;
+              routing?: { autoFailover?: boolean };
+              id?: unknown;
+              providerProfileId?: unknown;
+              providerModel?: unknown;
+            }
           | undefined;
-        setRouteId(typeof route?.id === 'string' ? route.id : '');
-        setProviderProfileId(
-          typeof route?.providerProfileId === 'string' ? route.providerProfileId : ''
-        );
-        setProviderModel(typeof route?.providerModel === 'string' ? route.providerModel : '');
+        const routes = Array.isArray(authored?.routes)
+          ? authored.routes
+          : authored && typeof authored.providerProfileId === 'string'
+            ? [
+                {
+                  id: authored.id,
+                  providerProfileId: authored.providerProfileId,
+                  providerModel: authored.providerModel,
+                },
+              ]
+            : [];
+        setDraft(JSON.stringify(projectSafeValue(routes), null, 2));
+        setAutoFailover(authored?.routing?.autoFailover ?? true);
       }
       setBase(read.data);
     } catch {
@@ -880,11 +895,8 @@ function GatewayEditor({
       if (!base?.file.revision) throw new Error('Source revision unavailable.');
       const source = parseObject(base.content);
       const errors: ParseError[] = [];
-      const value: unknown =
-        target.type === 'transcription'
-          ? undefined
-          : parse(draft, errors, { allowTrailingComma: true });
-      if (target.type !== 'transcription' && errors.length) throw new Error('Invalid JSON.');
+      const value: unknown = parse(draft, errors, { allowTrailingComma: true });
+      if (errors.length) throw new Error('Invalid JSON.');
       const options = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
       let content = base.content;
       if (target.type === 'metadata') {
@@ -914,15 +926,13 @@ function GatewayEditor({
           )
         );
       } else {
-        const blank = !routeId && !providerProfileId && !providerModel;
-        if (!blank && (!routeId || !providerProfileId || !providerModel))
-          throw new Error('Transcription route needs an id, provider profile, and model.');
+        if (!Array.isArray(value)) throw new Error('Routes must be an ordered array.');
         content = applyEdits(
           content,
           modify(
             content,
             ['transcription'],
-            blank ? undefined : { id: routeId, providerProfileId, providerModel },
+            value.length === 0 ? undefined : { routes: value, routing: { autoFailover } },
             options
           )
         );
@@ -997,7 +1007,7 @@ function GatewayEditor({
       {base ? (
         <>
           <p className="text-sm text-fg-muted">Read revision: {base.file.revision}</p>
-          {target.type === 'routing' ? (
+          {target.type === 'routing' || target.type === 'transcription' ? (
             <RouteChainEditor
               draft={draft}
               onChange={(value) => {
@@ -1007,59 +1017,21 @@ function GatewayEditor({
               disabled={disconnected || save.isPending}
             />
           ) : null}
-          {target.type === 'transcription' ? (
-            <div className="flex flex-col gap-2">
-              <TextField
-                label="Route id"
-                value={routeId}
-                onChange={(value) => {
-                  setRouteId(value);
-                  save.reset();
-                }}
-                isDisabled={disconnected || save.isPending}
-              />
-              <TextField
-                label="Provider profile"
-                value={providerProfileId}
-                onChange={(value) => {
-                  setProviderProfileId(value);
-                  save.reset();
-                }}
-                isDisabled={disconnected || save.isPending}
-              />
-              <TextField
-                label="Provider model"
-                value={providerModel}
-                onChange={(value) => {
-                  setProviderModel(value);
-                  save.reset();
-                }}
-                isDisabled={disconnected || save.isPending}
-              />
-              <p className="text-xs text-fg-muted">
-                Leave all three empty to remove the transcription route.
-              </p>
-            </div>
-          ) : null}
-          {target.type === 'transcription' ? null : (
-            <details {...(target.type === 'metadata' ? { open: true } : {})}>
-              <summary className="cursor-pointer text-sm text-fg">
-                {target.type === 'metadata' ? 'Extension source' : 'Route source'}
-              </summary>
-              <JsonDraft
-                label={
-                  target.type === 'metadata' ? 'Extension metadata JSON' : 'Ordered routes JSON'
-                }
-                value={draft}
-                onChange={(value) => {
-                  setDraft(value);
-                  save.reset();
-                }}
-                disabled={disconnected || save.isPending}
-              />
-            </details>
-          )}
-          {target.type === 'routing' ? (
+          <details {...(target.type === 'metadata' ? { open: true } : {})}>
+            <summary className="cursor-pointer text-sm text-fg">
+              {target.type === 'metadata' ? 'Extension source' : 'Route source'}
+            </summary>
+            <JsonDraft
+              label={target.type === 'metadata' ? 'Extension metadata JSON' : 'Ordered routes JSON'}
+              value={draft}
+              onChange={(value) => {
+                setDraft(value);
+                save.reset();
+              }}
+              disabled={disconnected || save.isPending}
+            />
+          </details>
+          {target.type === 'routing' || target.type === 'transcription' ? (
             <Switch
               className="min-h-11"
               isSelected={autoFailover}
@@ -1095,7 +1067,7 @@ function GatewayEditor({
               {target.type === 'metadata'
                 ? 'Save extension'
                 : target.type === 'transcription'
-                  ? 'Save transcription route'
+                  ? 'Save transcription chain'
                   : 'Save routes'}
             </Button>
             <Button
@@ -1347,6 +1319,115 @@ function LogicalModelCard({
 
 type GatewayEdit = Parameters<typeof GatewayEditor>[0]['target'];
 
+/** Speech enable stays on the Gateway page. The small-LLM card arrives with that runtime. */
+export function LocalSpeechCard({
+  client,
+  disconnected,
+  onChanged,
+}: {
+  client: CoreClient;
+  disconnected: boolean;
+  onChanged: () => void;
+}) {
+  const status = useQuery({
+    queryKey: [...settingsKeys.aiInterface, 'local-ai'],
+    queryFn: () => client.operations['local-ai.status']({}),
+    retry: false,
+  });
+  const [accepted, setAccepted] = useState(false);
+  const refresh = () => {
+    onChanged();
+    void status.refetch();
+  };
+  const enable = useMutation({
+    mutationFn: () =>
+      client.operations['local-ai.enable']({
+        backendId: 'sherpa-onnx-asr',
+        acceptLicense: true,
+      }),
+    onSuccess: refresh,
+  });
+  const disable = useMutation({
+    mutationFn: () => client.operations['local-ai.disable']({ backendId: 'sherpa-onnx-asr' }),
+    onSuccess: refresh,
+  });
+  const speech = status.data?.backends.find((backend) => backend.backendId === 'sherpa-onnx-asr');
+  const busy = enable.isPending || disable.isPending;
+  return (
+    <Card className="flex min-w-0 flex-col gap-2">
+      <h3 className="text-base font-bold text-fg-strong">Local speech</h3>
+      {status.isLoading ? <Skeleton lines={2} /> : null}
+      {status.isError ? (
+        <ErrorBanner
+          message={failureMessage(status.error, 'Local speech status')}
+          onRetry={() => status.refetch()}
+        />
+      ) : null}
+      {speech ? (
+        <>
+          <p className="text-sm text-fg">
+            {speech.phase}
+            {speech.selectedModelId ? ` · ${speech.selectedModelId}` : ''}
+          </p>
+          {speech.license ? <p className="text-sm text-fg-muted">{speech.license}</p> : null}
+          {speech.downloadBytes !== undefined ? (
+            <p className="text-sm text-fg-muted">
+              Download size: {speech.downloadBytes.toLocaleString('en-US')} bytes
+            </p>
+          ) : null}
+          {speech.phase === 'downloading' && speech.bytesTotal ? (
+            <p className="text-sm text-fg-muted">
+              {speech.bytesReceived.toLocaleString('en-US')} /{' '}
+              {speech.bytesTotal.toLocaleString('en-US')} bytes
+            </p>
+          ) : null}
+          {speech.message ? <p className="text-sm text-fg-muted">{speech.message}</p> : null}
+          {speech.enabled ? (
+            <Button
+              className="min-h-11 w-fit"
+              variant="outline"
+              isDisabled={disconnected || busy}
+              onPress={() => disable.mutate()}
+            >
+              Disable local speech
+            </Button>
+          ) : (
+            <>
+              <Switch
+                className="min-h-11"
+                isSelected={accepted}
+                onChange={setAccepted}
+                isDisabled={disconnected || busy}
+              >
+                I accept the model license
+              </Switch>
+              <Button
+                className="min-h-11 w-fit"
+                isDisabled={disconnected || busy || !accepted}
+                onPress={() => enable.mutate()}
+              >
+                Enable local speech
+              </Button>
+            </>
+          )}
+        </>
+      ) : null}
+      {enable.isError ? (
+        <ErrorBanner
+          message={failureMessage(enable.error, 'Enable local speech')}
+          onRetry={() => enable.mutate()}
+        />
+      ) : null}
+      {disable.isError ? (
+        <ErrorBanner
+          message={failureMessage(disable.error, 'Disable local speech')}
+          onRetry={() => disable.mutate()}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
 /** Logical-model route cards. Saving a route does not reload the runtime. */
 export function GatewayConfiguration({
   client,
@@ -1386,7 +1467,7 @@ export function GatewayConfiguration({
     editing?.type === 'metadata'
       ? `Edit metadata ${editing.key} / ${editing.model}`
       : editing?.type === 'transcription'
-        ? 'Edit transcription route'
+        ? 'Edit transcription chain'
         : 'Edit route';
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-in-use">
@@ -1400,13 +1481,17 @@ export function GatewayConfiguration({
         <h3 className="text-base font-bold text-fg-strong">Voice transcription</h3>
         {diagnostics.gateway.transcription ? (
           <>
-            <p className="text-sm text-fg">
-              {diagnostics.gateway.transcription.providerProfileId} /{' '}
-              {diagnostics.gateway.transcription.providerModel}
-            </p>
             <p className="text-sm text-fg-muted">
-              {routeAvailabilityText(diagnostics.gateway.transcription)}
+              Automatic failover: {diagnostics.gateway.transcription.autoFailover ? 'on' : 'off'}
             </p>
+            <ol className="flex flex-col gap-2">
+              {diagnostics.gateway.transcription.routes.map((route, index) => (
+                <li key={route.id} className="text-sm text-fg">
+                  {memberPlace(index)}: {route.providerProfileId} / {route.providerModel}
+                  <span className="text-fg-muted"> — {routeAvailabilityText(route)}</span>
+                </li>
+              ))}
+            </ol>
           </>
         ) : (
           <p className="text-sm text-fg-muted">No transcription route.</p>
@@ -1417,9 +1502,10 @@ export function GatewayConfiguration({
           isDisabled={disconnected}
           onPress={() => setEditing({ type: 'transcription' })}
         >
-          Edit transcription route
+          Edit transcription chain
         </Button>
       </Card>
+      <LocalSpeechCard client={client} disconnected={disconnected} onChanged={onChanged} />
       {cards.length === 0 ? (
         <EmptyState
           icon="connect"

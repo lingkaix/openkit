@@ -10,6 +10,7 @@ import modelsDevCatalog from '@openkit/models-dev-catalog/snapshots/2026-10-01/a
 };
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from '@openkit/protocol';
 import type { ProviderProfile } from '../config/providers-loader.js';
+import { type LocalBackendId, probeLocalSupply } from '../local-ai/supply.js';
 import {
   gatewayCapabilitiesForProfile,
   isProviderProfileDispatchable,
@@ -172,10 +173,12 @@ export function resolveLogicalModelCatalog(
             ? 'provider_model_delisted'
             : !isProviderProfileDispatchable(profile)
               ? 'provider_not_dispatchable'
-              : credentialUnavailableReason(
-                  profile,
-                  subscriptionAccounts,
-                  providerCredentialConfigured
+              : afterLocalSupply(localSupplyReason(profile, route.providerModel), () =>
+                  credentialUnavailableReason(
+                    profile,
+                    subscriptionAccounts,
+                    providerCredentialConfigured
+                  )
                 );
       return { ...route, available: unavailableReason === null, unavailableReason };
     });
@@ -500,7 +503,7 @@ export function hasCompleteCostRates(
   return mergeAdapterCostRates(inherited, effective).complete;
 }
 
-/** Closed transcription supply reasons. Chat routes do not emit the last two. */
+/** Closed transcription supply reasons. */
 export type TranscriptionUnavailableReason =
   | 'provider_profile_absent'
   | 'provider_model_delisted'
@@ -511,16 +514,19 @@ export type TranscriptionUnavailableReason =
   | 'subscription_account_logged_out'
   | 'subscription_account_integrity_unavailable'
   | 'gateway_disabled'
-  | 'provider_base_url_missing';
+  | 'provider_base_url_missing'
+  | 'local_backend_disabled'
+  | 'local_model_not_downloaded'
+  | 'local_backend_starting'
+  | 'local_backend_unhealthy';
 
-/** Resolved transcription member. Absent when the Gateway file does not declare one. */
+/** Resolved transcription chain. Absent when the Gateway file does not declare one. */
 export type ResolvedTranscriptionRoute =
   | { readonly configured: false }
   | {
       readonly configured: true;
-      readonly available: boolean;
-      readonly member: NonNullable<GatewayConfig['transcription']>;
-      readonly unavailableReason: TranscriptionUnavailableReason | null;
+      readonly autoFailover: boolean;
+      readonly routes: readonly ResolvedLogicalModelRoute[];
     };
 
 /**
@@ -537,10 +543,11 @@ export function assertConfiguredModelsHaveKnownContext(
   providers: ProviderRegistry,
   gateway?: Pick<GatewayConfig, 'logicalModels' | 'transcription'>
 ): void {
-  const exempt = transcriptionOnlyModelKey(gateway);
+  const exempt = transcriptionOnlyModelKeys(gateway);
   for (const profile of providers.list()) {
+    if (profile.extensions?.openkit?.localBackend?.backendId === 'sherpa-onnx-asr') continue;
     for (const modelId of profile.models) {
-      if (exempt === `${profile.id}\0${modelId}`) continue;
+      if (exempt.has(`${profile.id}\0${modelId}`)) continue;
       if (!hasKnownContext(resolveEffectiveModelMetadata(profile, modelId))) {
         throw new Error(
           `Provider ${profile.id} model ${modelId} has no known positive context limit.`
@@ -570,15 +577,35 @@ export function resolveTranscriptionRoute(
   providerCredentialConfigured?: ProviderCredentialConfigured,
   checkCredentials = true
 ): ResolvedTranscriptionRoute {
-  const member = config.transcription;
-  if (!member) return { configured: false };
-  if (!config.enabled) {
-    return {
-      configured: true,
-      available: false,
+  const transcription = config.transcription;
+  if (!transcription) return { configured: false };
+  const autoFailover = transcription.routing?.autoFailover ?? true;
+  const routes = transcription.routes.map((member) =>
+    resolveTranscriptionMember(
       member,
-      unavailableReason: 'gateway_disabled',
-    };
+      config.enabled,
+      providers,
+      subscriptionAccounts,
+      providerCredentialConfigured,
+      checkCredentials
+    )
+  );
+  return { configured: true, autoFailover, routes };
+}
+
+/** Resolves one speech member. Local supply is checked before credentials and base URL. */
+function resolveTranscriptionMember(
+  member: { id: string; providerProfileId: string; providerModel: string },
+  gatewayEnabled: boolean,
+  providers: ProviderRegistry,
+  subscriptionAccounts:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined,
+  providerCredentialConfigured: ProviderCredentialConfigured | undefined,
+  checkCredentials: boolean
+): ResolvedLogicalModelRoute {
+  if (!gatewayEnabled) {
+    return { ...member, available: false, unavailableReason: 'gateway_disabled' };
   }
   const profile = providers.get(member.providerProfileId);
   const unavailableReason: TranscriptionUnavailableReason | null =
@@ -588,33 +615,50 @@ export function resolveTranscriptionRoute(
         ? 'provider_model_delisted'
         : !isProviderProfileDispatchable(profile)
           ? 'provider_not_dispatchable'
-          : profile.baseUrl
-            ? checkCredentials
-              ? credentialReason(profile, subscriptionAccounts, providerCredentialConfigured)
-              : null
-            : 'provider_base_url_missing';
-  return {
-    configured: true,
-    available: unavailableReason === null,
-    member,
-    unavailableReason,
-  };
+          : afterLocalSupply(localSupplyReason(profile, member.providerModel), () =>
+              profile.baseUrl
+                ? checkCredentials
+                  ? credentialReason(profile, subscriptionAccounts, providerCredentialConfigured)
+                  : null
+                : 'provider_base_url_missing'
+            );
+  return { ...member, available: unavailableReason === null, unavailableReason };
 }
 
-/** Returns the provider/model pair exempt from the context limit, if any. */
-function transcriptionOnlyModelKey(
+/** Returns provider/model pairs that appear only on the transcription chain. */
+function transcriptionOnlyModelKeys(
   gateway: Pick<GatewayConfig, 'logicalModels' | 'transcription'> | undefined
-): string | null {
-  const member = gateway?.transcription;
-  if (!member) return null;
-  const usedByChat = gateway.logicalModels.some((model) =>
-    model.routes.some(
-      (route) =>
-        route.providerProfileId === member.providerProfileId &&
-        route.providerModel === member.providerModel
-    )
-  );
-  return usedByChat ? null : `${member.providerProfileId}\0${member.providerModel}`;
+): Set<string> {
+  const chat = new Set<string>();
+  for (const model of gateway?.logicalModels ?? []) {
+    for (const route of model.routes)
+      chat.add(`${route.providerProfileId}\0${route.providerModel}`);
+  }
+  const exempt = new Set<string>();
+  for (const route of gateway?.transcription?.routes ?? []) {
+    const key = `${route.providerProfileId}\0${route.providerModel}`;
+    if (!chat.has(key)) exempt.add(key);
+  }
+  return exempt;
+}
+
+/** Local backends answer before credential and base-URL checks. Undefined means this is not one. */
+function localSupplyReason(
+  profile: ProviderProfile,
+  providerModel: string
+): TranscriptionUnavailableReason | null | undefined {
+  const backendId = profile.extensions?.openkit?.localBackend?.backendId;
+  if (!backendId) return undefined;
+  const supply = probeLocalSupply(backendId as LocalBackendId, providerModel);
+  return supply.available ? null : supply.reason;
+}
+
+/** Keeps a local decision, including available, from falling through to credential and base-URL checks. */
+function afterLocalSupply<Reason extends string>(
+  local: Reason | null | undefined,
+  otherwise: () => Reason | null
+): Reason | null {
+  return local === undefined ? otherwise() : local;
 }
 
 /** Maps the existing credential presence result onto the closed reason set. */

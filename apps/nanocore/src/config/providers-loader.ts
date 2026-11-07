@@ -8,6 +8,7 @@ import {
 } from '@openkit/config-schema';
 import { readRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
+import { builtinLocalProfiles } from '../local-ai/profiles.js';
 import { parseJsoncObject } from './jsonc.js';
 import { extendProviderModelMetadata, loadModelCatalog } from './model-catalog.js';
 import { type UnknownConfigKey, unknownConfigKeys } from './unknown-config-keys.js';
@@ -69,7 +70,7 @@ export function loadProviderProfiles(
   const duplicateIds = new Set<string>();
 
   if (!existsSync(providersRoot)) {
-    return result;
+    return composeBuiltinLocalProfiles(result);
   }
 
   for (const fileName of readdirSync(providersRoot).sort()) {
@@ -136,6 +137,15 @@ export function loadProviderProfiles(
     result.profiles.push(extendProviderModelMetadata(profile, modelCatalog));
   }
 
+  return composeBuiltinLocalProfiles(result);
+}
+
+/** Adds the inert built-in profiles when those ids were not loaded from disk. */
+function composeBuiltinLocalProfiles(result: ProviderProfileLoadResult): ProviderProfileLoadResult {
+  const present = new Set(result.profiles.map((profile) => profile.id));
+  for (const profile of builtinLocalProfiles()) {
+    if (!present.has(profile.id)) result.profiles.push(profile);
+  }
   return result;
 }
 

@@ -38,6 +38,7 @@ import {
   GatewayConfiguration,
   GuidedSubscriptionSetup,
   KeyProviderCard,
+  LocalSpeechCard,
   ProfileRemoval,
   ProviderHeader,
   usedByLabels,
@@ -495,6 +496,13 @@ function GatewayNotSetUp({
       <h2 id="gateway-not-set-up" className="text-lg font-bold text-fg-strong">
         Not set up
       </h2>
+      {diagnostics && !showDetails ? (
+        <LocalSpeechCard
+          client={client}
+          disconnected={disconnected}
+          onChanged={onProfilesChanged}
+        />
+      ) : null}
       {showDetails ? (
         <>
           {waiting ? null : (

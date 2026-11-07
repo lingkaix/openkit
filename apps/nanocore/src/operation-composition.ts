@@ -47,6 +47,7 @@ import type { FsStore } from './lib/store.js';
 import { createLightAppDefinitionOperationImplementations } from './light-app-definition-operations.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
+import { createLocalAiOperationImplementations } from './local-ai/operations.js';
 import { createMaterialOperationImplementations } from './material-operation-implementations.js';
 import { createMemoryOperationImplementations } from './memory-operations.js';
 import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
@@ -297,6 +298,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createGoalOperationImplementations(dependencies),
     createTaskConversationOperationImplementations(dependencies),
     createComposerOperationImplementations(dependencies),
+    createLocalAiOperationImplementations(),
     createPendingRequestOperationImplementations({
       ...dependencies.pendingRequestServices!,
       store: dependencies.store!,

@@ -127,6 +127,7 @@ import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { createLocalAiSupervisor } from './local-ai/supervisor.js';
 import {
   createConversationService,
   createTaskStartOperation,
@@ -647,6 +648,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       'Recurring schedules require the application Core database and Workspace mutation fence.'
     );
   if (dataRoot) {
+    createLocalAiSupervisor({ dataRoot });
     restoreWorkspaceDeletionMutationAdmission({
       dataRoot,
       workspaceMutationAdmission,
@@ -1485,8 +1487,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       });
     }
 
-    return resolveProviderProfileToLLMConfig(profile, (secretRef) =>
-      providerCredentialResolver(secretRef, context)
+    return resolveProviderProfileToLLMConfig(
+      profile,
+      (secretRef) => providerCredentialResolver(secretRef, context),
+      model
     );
   }
 

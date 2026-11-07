@@ -391,6 +391,19 @@ export function loadRuntimeConfig(
     undefined,
     quarantinedWorkspaceIds
   );
+  for (const model of gatewayConfig.logicalModels) {
+    for (const route of model.routes) {
+      const profile = providerLoadResult.providerRegistry.get(route.providerProfileId);
+      if (profile?.extensions?.openkit?.localBackend?.backendId === 'sherpa-onnx-asr') {
+        gatewayDiagnostics.push({
+          code: 'gateway.speech_model_as_chat',
+          message: `Logical model ${model.id} names speech model ${route.providerModel}.`,
+          severity: 'error',
+          source: 'DATA_ROOT/config/gateway.jsonc',
+        });
+      }
+    }
+  }
   try {
     assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry, gatewayConfig);
   } catch (error) {

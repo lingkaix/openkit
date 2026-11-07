@@ -3,6 +3,7 @@ import {
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
 import type { ProviderProfile } from '../config/providers-loader.js';
+import { probeLocalSupply } from '../local-ai/supply.js';
 import {
   gatewayCapabilitiesForProfile,
   isProviderProfileDispatchable,
@@ -49,7 +50,8 @@ export interface ResolvedLLMProviderConfig {
  */
 export async function resolveProviderProfileToLLMConfig(
   profile: ProviderProfile,
-  credentialResolver?: ProviderCredentialResolver
+  credentialResolver?: ProviderCredentialResolver,
+  modelId?: string
 ): Promise<ResolvedLLMProviderConfig> {
   if (!isProviderProfileDispatchable(profile)) {
     throw new Error(`LLM provider is not dispatchable: ${profile.id}`);
@@ -64,18 +66,25 @@ export async function resolveProviderProfileToLLMConfig(
     profile.secretRef === undefined &&
     profile.baseUrl === undefined;
   const apiKey = await resolveProviderSecretRef(profile, credentialResolver);
+  const localBackend = profile.extensions?.openkit?.localBackend;
+  const liveBaseUrl =
+    localBackend && modelId ? probeLocalSupply(localBackend.backendId, modelId).baseUrl : null;
 
   return {
     adapterId: isSubscriptionProfile ? subscriptionProviderId : readProviderAdapterId(profile),
     apiKey,
-    baseUrl: profile.baseUrl ?? null,
+    baseUrl: liveBaseUrl ?? profile.baseUrl ?? null,
     displayName: profile.displayName,
     gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
     id: profile.id,
     models: [...profile.models],
     ...(profile.modelMetadata ? { modelMetadata: profile.modelMetadata } : {}),
     ...(profile.vendor ? { vendor: profile.vendor } : {}),
-    requiresApiKey: isSubscriptionProfile ? false : providerRequiresCredentials(profile),
+    requiresApiKey: localBackend
+      ? false
+      : isSubscriptionProfile
+        ? false
+        : providerRequiresCredentials(profile),
     ...(isSubscriptionProfile ? { accountSlotId, subscriptionProviderId } : {}),
   };
 }

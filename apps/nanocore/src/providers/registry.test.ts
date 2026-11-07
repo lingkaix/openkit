@@ -284,7 +284,9 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
       for (let read = 0; read < 2; read += 1) {
         const result = loadProviderProfiles(dataRoot);
         expect(result.diagnostics).toEqual([]);
-        expect(result.profiles).toEqual([{ ...logical, kind: 'llm-gateway' }]);
+        expect(
+          result.profiles.filter((profile) => !profile.id.startsWith('openkit-local-'))
+        ).toEqual([{ ...logical, kind: 'llm-gateway' }]);
         const registry = new ProviderRegistry(result.profiles);
         expect(registry.get('gateway')?.kind).toBe('llm-gateway');
         expect(await registry.hasResolvableCredentials('gateway')).toBe(false);

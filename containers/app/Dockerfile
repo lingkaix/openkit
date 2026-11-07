@@ -84,6 +84,7 @@ RUN apt-get update \
     caddy \
     ca-certificates \
     curl \
+    ffmpeg \
     git \
     libsqlite3-0 \
     openssh-client \

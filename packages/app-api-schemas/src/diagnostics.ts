@@ -87,6 +87,10 @@ export const RouteUnavailableReasonSchema = z.enum([
   'subscription_account_integrity_unavailable',
   'gateway_disabled',
   'provider_base_url_missing',
+  'local_backend_disabled',
+  'local_model_not_downloaded',
+  'local_backend_starting',
+  'local_backend_unhealthy',
 ]);
 
 /** Ordered route availability; reading this projection performs no upstream request. */
@@ -139,6 +143,12 @@ export const ProviderRegistryEntrySchema = z
         status: z.string().min(1),
         message: z.string().nullable().optional(),
         checkedAt: z.string().nullable().optional(),
+      })
+      .strict()
+      .optional(),
+    localBackend: z
+      .object({
+        backendId: z.enum(['sherpa-onnx-asr', 'llama-cpp', 'apple-native']),
       })
       .strict()
       .optional(),
@@ -435,7 +445,13 @@ function appDiagnosticsResponseSchema<T extends z.ZodType>(build: T) {
             .strict()
         ),
         usage: GatewayUsageSnapshotSchema.optional(),
-        transcription: LogicalModelRouteDiagnosticSchema.optional(),
+        transcription: z
+          .object({
+            autoFailover: z.boolean(),
+            routes: z.array(LogicalModelRouteDiagnosticSchema),
+          })
+          .strict()
+          .optional(),
       }),
       providers: ProvidersDiagnosticsSchema,
       capabilities: MetaResponseSchema.shape.capabilities,

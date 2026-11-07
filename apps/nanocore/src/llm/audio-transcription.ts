@@ -1,6 +1,26 @@
 import { COMPOSER_TRANSCRIBE_MAX_AUDIO_BYTES } from '@openkit/app-api-schemas';
+import { bindLocalSpeechAbort } from '../local-ai/supply.js';
 import { OperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { classifyPiAiFailure, type PiAiFailure } from './pi-ai-failure.js';
+
+/** A contacted or uncontacted transcription attempt, with Gateway failure evidence. */
+export class TranscriptionRequestError extends Error {
+  readonly failure: PiAiFailure;
+  readonly received: boolean;
+  readonly seconds?: number;
+
+  constructor(
+    failure: PiAiFailure,
+    options: { received: boolean; seconds?: number; cause?: unknown }
+  ) {
+    super('Transcription attempt failed.', { cause: options.cause });
+    this.name = 'TranscriptionRequestError';
+    this.failure = failure;
+    this.received = options.received;
+    if (options.seconds !== undefined) this.seconds = options.seconds;
+  }
+}
 
 /** Fixed prompt. It discourages invented words when the clip is silence. */
 export const TRANSCRIPTION_PROMPT = 'Transcribe only what the speaker says. Do not add words.';
@@ -59,9 +79,9 @@ function transcriptionFile(mimeType: 'audio/webm' | 'audio/webm;codecs=opus' | '
  *
  * The platform encoder sets the multipart boundary. No temp file is created.
  *
- * @param input Resolved provider, clip, and optional language tag.
- * @returns Transcript text only when the response is accepted. Reported seconds are returned for any received response that states a valid measurement, including a rejected response. The raw body is not returned.
- * @throws OperationError when the provider is not contacted. A received rejection is returned so the caller can record usage before its fixed public failure.
+ * @param input Resolved provider, clip, caller signal, and the fetch signal.
+ * @returns Transcript text when the response is accepted. Reported seconds stay on a thrown failure when a response was received.
+ * @throws TranscriptionRequestError carrying classified failure evidence. OperationError when the provider cannot be contacted for a local reason.
  */
 export async function postAudioTranscription(input: {
   readonly provider: ResolvedLLMProviderConfig;
@@ -70,7 +90,8 @@ export async function postAudioTranscription(input: {
   readonly mimeType: 'audio/webm' | 'audio/webm;codecs=opus' | 'audio/mp4';
   readonly language?: string;
   readonly signal: AbortSignal;
-}): Promise<{ text?: string; seconds?: number }> {
+  readonly callerSignal?: AbortSignal;
+}): Promise<{ text: string; seconds?: number }> {
   if (!input.provider.baseUrl) {
     throw new OperationError(
       'provider_base_url_missing',
@@ -97,30 +118,72 @@ export async function postAudioTranscription(input: {
   if (input.language) form.append('language', input.language);
   const headers = new Headers();
   if (input.provider.apiKey) headers.set('authorization', `Bearer ${input.provider.apiKey}`);
-  let response: Response;
+  const disposeSpeechAbort = bindLocalSpeechAbort(input.provider.baseUrl, input.signal);
   try {
-    response = await fetch(transcriptionRequestUrl(input.provider.baseUrl), {
-      method: 'POST',
-      headers,
-      body: form,
-      signal: input.signal,
-    });
-  } catch (error) {
-    if (input.signal.aborted) {
-      throw new OperationError('transcription_aborted', 'Transcription was cancelled.', 400, {
+    let response: Response;
+    try {
+      response = await fetch(transcriptionRequestUrl(input.provider.baseUrl), {
+        method: 'POST',
+        headers,
+        body: form,
+        signal: input.signal,
+      });
+    } catch (error) {
+      if (
+        input.callerSignal?.aborted ||
+        (input.signal.aborted && input.callerSignal === undefined)
+      ) {
+        throw new TranscriptionRequestError(
+          { kind: 'cancelled', settled: false },
+          { received: false, cause: error }
+        );
+      }
+      if (input.signal.aborted) {
+        throw new TranscriptionRequestError(
+          { kind: 'provider_unavailable', settled: false },
+          { received: false, cause: error }
+        );
+      }
+      throw new TranscriptionRequestError(classifyTransportFailure(error), {
+        received: false,
         cause: error,
       });
     }
-    throw new OperationError('transcription_failed', 'Transcription failed.', 502, {
-      cause: error,
-    });
+    const retryAfter = response.headers.get('retry-after') ?? undefined;
+    const payload = await readTranscriptionResponse(response).catch(() => null);
+    const seconds = payload === null ? undefined : reportedSeconds(payload);
+    const text = payload !== null && typeof payload.text === 'string' ? payload.text : undefined;
+    if (!response.ok || text === undefined) {
+      const failure = classifyPiAiFailure({
+        ...(payload && typeof payload === 'object' ? payload : {}),
+        status: response.status,
+        headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+      }) ?? { kind: 'unknown' as const, settled: true, status: response.status };
+      throw new TranscriptionRequestError(failure, {
+        received: true,
+        ...(seconds === undefined ? {} : { seconds }),
+        cause: payload,
+      });
+    }
+    return seconds === undefined ? { text } : { text, seconds };
+  } finally {
+    disposeSpeechAbort();
   }
-  const payload = await readTranscriptionResponse(response).catch(() => null);
-  const seconds = payload === null ? undefined : reportedSeconds(payload);
-  const text =
-    response.ok && payload !== null && typeof payload.text === 'string' ? payload.text : undefined;
-  if (text === undefined) return seconds === undefined ? {} : { seconds };
-  return seconds === undefined ? { text } : { text, seconds };
+}
+
+/** Uses the existing classifier, including a fetch cause that carries the connect-refusal code. */
+function classifyTransportFailure(error: unknown): PiAiFailure {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  let fallback: PiAiFailure | undefined;
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const failure = classifyPiAiFailure(current);
+    if (failure?.settled) return failure;
+    fallback ??= failure;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return fallback ?? { kind: 'provider_unavailable', settled: false };
 }
 
 /** Reads a bounded response and drops the bytes when they are not JSON. */

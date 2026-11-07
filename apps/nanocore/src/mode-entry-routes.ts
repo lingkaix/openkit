@@ -2798,6 +2798,11 @@ export function createConversationService({
       providerSubscriptionAccountManager,
       providerCredentialConfigured
     );
+    const transcriptionAvailable =
+      transcription.configured &&
+      transcription.routes.some(
+        (route, index) => route.available && (transcription.autoFailover || index === 0)
+      );
     return ConversationTargetCatalogSchema.parse({
       workspaceId,
       threadId: requestedThreadId,
@@ -2806,8 +2811,10 @@ export function createConversationService({
       ...(transcription.configured
         ? {
             transcription: {
-              available: transcription.available,
-              unavailableReason: transcription.unavailableReason,
+              available: transcriptionAvailable,
+              unavailableReason: transcriptionAvailable
+                ? null
+                : (transcription.routes[0]?.unavailableReason ?? 'provider_not_dispatchable'),
             },
           }
         : {}),

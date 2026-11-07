@@ -66,6 +66,7 @@ import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { closeActiveLocalAiSupervisor } from './local-ai/supervisor.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
@@ -963,7 +964,11 @@ function shutdown(signal: NodeJS.Signals): void {
   let listenerCloseFailed = false;
   shutdownCompletion = closeWithDeadline({
     close: (onClosed) => {
-      void Promise.allSettled([maintenanceStopped, executionsStopped])
+      void closeActiveLocalAiSupervisor()
+        .catch((error) => {
+          console.error('Local AI shutdown failed.', error);
+        })
+        .then(() => Promise.allSettled([maintenanceStopped, executionsStopped]))
         .then((results) => {
           for (const result of results)
             if (result.status === 'rejected')
