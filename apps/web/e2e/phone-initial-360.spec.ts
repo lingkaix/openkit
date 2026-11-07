@@ -116,13 +116,18 @@ test('opens navigation, Knowledge, Gateway, and the private Assistant at 360', a
     await expect(page.getByRole('heading', { name: 'Assistant', exact: true })).toBeVisible();
     await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
     await expect(page.getByRole('button', { name: /Conversation agent$/ })).toHaveCount(0);
-    await expect(page.getByText('The Assistant is not available.', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
+    await expect(page.getByText('The Assistant is not available.', { exact: true })).toHaveCount(0);
     const client = createCoreClient({ baseUrl: stack.coreUrl });
     const targets = await client.operations['conversation.targets']({
       workspaceId: personal!.id,
       threadId: assistant.id,
     });
+    expect(
+      targets.targets.find(
+        (target) => target.kind === 'assistant' && target.availability === 'available'
+      ),
+      'The isolated stack must offer an available Assistant target.'
+    ).toBeTruthy();
     const worker = targets.targets.find(
       (target) => target.kind === 'new-task-worker' && target.availability === 'available'
     );

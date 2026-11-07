@@ -84,14 +84,19 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   // The accepted Assistant composer offers no Worker target and never falls back to one.
   await expect(page.getByRole('button', { name: /Conversation agent$/ })).toHaveCount(0);
-  await expect(page.getByText('The Assistant is not available.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Send message$/ })).toBeDisabled();
+  await expect(page.getByText('The Assistant is not available.', { exact: true })).toHaveCount(0);
   // The browser can no longer address the private Thread as Worker work, so the same public
   // operation proves the refused undisclosed handoff directly against the isolated server.
   const targets = await client.operations['conversation.targets']({
     workspaceId: assistantWorkspaceId,
     threadId: assistant.id,
   });
+  expect(
+    targets.targets.find(
+      (target) => target.kind === 'assistant' && target.availability === 'available'
+    ),
+    'The isolated stack must offer an available Assistant target.'
+  ).toBeTruthy();
   const worker = targets.targets.find(
     (target) => target.kind === 'new-task-worker' && target.availability === 'available'
   );

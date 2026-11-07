@@ -6,6 +6,7 @@ import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
 } from '../../../../tests/support/demo-data.mjs';
+import { seedSimulatorInferenceConfig } from './simulator-inference.js';
 
 /**
  * Writes the explicit Demo Workspace fixture used by local-mode Web e2e tests.
@@ -19,61 +20,6 @@ export async function seedDemoWorkspaceDataRoot(dataRoot: string): Promise<void>
   await seedSimulatorInferenceConfig(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
   await seedSimulatorAgent(dataRoot);
-}
-
-/**
- * Installs the secret-free provider profile and logical Gateway route resolved by the simulator Agent fixture.
- *
- * @param dataRoot NanoCore data root to seed.
- * @returns Resolves after the provider profile and Gateway route are durable.
- * @throws When the config directory, provider profile, or Gateway route cannot be written.
- */
-async function seedSimulatorInferenceConfig(dataRoot: string): Promise<void> {
-  const providersRoot = join(dataRoot, 'config', 'providers');
-  await mkdir(providersRoot, { recursive: true });
-  await writeFile(
-    join(providersRoot, 'agent-openrouter.provider.jsonc'),
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        id: 'agent-openrouter',
-        displayName: 'Agent OpenRouter test local',
-        kind: 'local',
-        defaultModel: 'openai/gpt-5.2',
-        models: ['openai/gpt-5.2'],
-      },
-      null,
-      2
-    )}\n`
-  );
-  await writeFile(
-    join(dataRoot, 'config', 'gateway.jsonc'),
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        enabled: true,
-        defaultLogicalModelId: 'reasoning',
-        logicalModels: [
-          {
-            id: 'reasoning',
-            displayName: 'Reasoning',
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
-            routes: [
-              {
-                id: 'simulator',
-                providerProfileId: 'agent-openrouter',
-                providerModel: 'openai/gpt-5.2',
-              },
-            ],
-          },
-        ],
-        requiredFeatures: [],
-        extensions: {},
-      },
-      null,
-      2
-    )}\n`
-  );
 }
 
 /**
