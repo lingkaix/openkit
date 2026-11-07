@@ -175,6 +175,8 @@ export function AccessTokensScreen() {
 
       {listed.isLoading ? (
         <Skeleton lines={4} />
+      ) : listed.isError && isServerModeOnly(listed.error) ? (
+        <EmptyState icon="key" title="Access tokens are used only when OpenKit runs as a server." />
       ) : listed.isError && denied ? (
         <EmptyState
           icon="key"
@@ -294,4 +296,9 @@ function parseWorkspaceIds(scope: OpenKitAccessTokenScope, value: string): strin
 
 function isAccessDenied(error: unknown): boolean {
   return error instanceof ApiCallError && (error.status === 401 || error.status === 403);
+}
+
+/** Local mode refuses token administration with this exact code. */
+function isServerModeOnly(error: unknown): boolean {
+  return error instanceof ApiCallError && error.code === 'access_token_admin_server_mode_required';
 }

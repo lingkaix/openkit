@@ -7,6 +7,7 @@ import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -68,6 +69,11 @@ const STATUS_POLL_MS = 2_000;
 /** Checks whether a failed list read is a typed access denial. */
 function isAdminDenied(error: unknown): boolean {
   return error instanceof ApiCallError && (error.status === 401 || error.status === 403);
+}
+
+/** A locked deployment Vault refuses account slots with this exact code. */
+function isProviderVaultLocked(error: unknown): boolean {
+  return error instanceof ApiCallError && error.code === 'provider_subscription_vault_locked';
 }
 
 /**
@@ -304,14 +310,31 @@ export function AiInterfaceScreen() {
         <>
           {accountLists.map((query, index) =>
             query.isError ? (
-              <ErrorBanner
-                key={inventory.data!.providers[index]!.subscriptionProviderId}
-                message={dependencyMessage(
-                  query.error,
-                  `${inventory.data!.providers[index]!.displayName} account slots`
-                )}
-                onRetry={() => void query.refetch()}
-              />
+              isProviderVaultLocked(query.error) ? (
+                <Card key={inventory.data!.providers[index]!.subscriptionProviderId}>
+                  <section
+                    aria-label={`${inventory.data!.providers[index]!.displayName} account slots`}
+                    className="flex flex-col gap-2"
+                  >
+                    <p className="text-sm text-fg">Vault is locked.</p>
+                    <Link
+                      to="/settings/vault-admin"
+                      className="inline-flex min-h-11 items-center text-sm font-bold text-accent hover:underline focus-visible:outline focus-visible:outline-focus"
+                    >
+                      Vault
+                    </Link>
+                  </section>
+                </Card>
+              ) : (
+                <ErrorBanner
+                  key={inventory.data!.providers[index]!.subscriptionProviderId}
+                  message={dependencyMessage(
+                    query.error,
+                    `${inventory.data!.providers[index]!.displayName} account slots`
+                  )}
+                  onRetry={() => void query.refetch()}
+                />
+              )
             ) : query.isLoading ? (
               <Skeleton key={inventory.data!.providers[index]!.subscriptionProviderId} lines={3} />
             ) : null

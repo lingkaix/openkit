@@ -147,4 +147,22 @@ describe('Access tokens administration', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(listOpenKitAccessTokens).toHaveBeenCalledTimes(2));
   });
+
+  it('explains that access tokens exist only in server mode', async () => {
+    renderScreen(
+      makeClient({
+        'token.list': vi.fn().mockRejectedValue(
+          new ApiCallError(404, 'Access-token administration is only available in server mode.', {
+            code: 'access_token_admin_server_mode_required',
+          })
+        ),
+      })
+    );
+
+    expect(
+      await screen.findByText('Access tokens are used only when OpenKit runs as a server.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load access tokens.")).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Issue token' })).not.toBeInTheDocument();
+  });
 });

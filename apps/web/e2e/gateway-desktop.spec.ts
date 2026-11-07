@@ -83,10 +83,8 @@ test('opens Gateway from desktop Settings and edits the seeded route', async ({ 
   const direct = page.getByRole('region', { name: 'OpenAI', exact: true });
   await expect(direct.getByRole('textbox', { name: 'Provider API key' })).toBeVisible();
   await expect(direct.getByRole('button', { name: 'Save or Replace API key' })).toBeDisabled();
-  await expect(
-    page.getByText("Couldn't load OpenAI Codex account slots.", { exact: true })
-  ).toBeVisible();
-  await expect(page.getByText("Couldn't load xAI account slots.", { exact: true })).toBeVisible();
+  await expect(page.getByText('Vault is locked.', { exact: true })).toHaveCount(2);
+  await expect(page.getByRole('link', { name: 'Vault', exact: true })).toHaveCount(2);
   await expect(page.getByText('Nothing waiting to be set up', { exact: true })).toBeVisible();
   await expect(
     page.getByRole('heading', { name: 'Add subscription Provider', exact: true })
