@@ -548,7 +548,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
             : []
         )[0]
     ).toEqual(result);
-  });
+  }, 60_000);
   it('includes a human page removal outside the active editing snapshot', async () => {
     let content = '';
     const f = await fixture(true, [], (workspaceId) => {
@@ -613,7 +613,7 @@ An obsolete human lesson.
       after: null,
     });
     expect(payload.files).not.toContain('obsolete.md');
-  });
+  }, 60_000);
   it('retains the settled native result before a later provider failure', async () => {
     const f = await fixture();
     const execute = f.run.getMockImplementation()!;

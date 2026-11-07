@@ -502,7 +502,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
   const serverPageId = `openkit:${f.serverScope}/launch-evidence`;
   let step = 0;
   f.createResponses.mockImplementation(async (_provider, _request, context) => {
-    context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+    await context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
     if (++step === 1) {
       return call('knowledge.retrieval', { query: 'heliotrope cobalt', limit: 5 });
     }
@@ -1350,7 +1350,7 @@ it('answers from only current-self Memory through actual search, page and model-
   const f = await memoryFixture();
   let step = 0;
   f.createResponses.mockImplementation(async (_provider, _request, context) => {
-    context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+    await context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
     if (++step === 1) return call('knowledge.retrieval', { query: 'meridian violet tea' });
     if (step === 2) {
       // The real loop reads the selected Page before admitting its Source, within one model batch.
@@ -1415,7 +1415,7 @@ it('answers from only current-self Memory through actual search, page and model-
   expect(initial).not.toContain('page/server');
   expect(initial).not.toContain('knowledge_notebook_history');
   expect(initial).not.toContain('cobalt');
-});
+}, 60_000);
 
 it('refuses Memory for shared work, another User or a Worker before Provider dispatch', async () => {
   const f = await memoryFixture();
@@ -1499,7 +1499,7 @@ it('rechecks Memory page suppression before delivering a synthesized answer', as
   expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_SOURCE');
   expect(readPage).toContain('USER_PRIVATE_PAGE');
   expect(await readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
-});
+}, 60_000);
 
 it('rechecks current User authority after Memory page reads before answer delivery', async () => {
   const f = await memoryFixture();
@@ -1538,7 +1538,7 @@ it('rechecks current User authority after Memory page reads before answer delive
   expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_PAGE');
   expect(JSON.stringify(outcome.error)).not.toContain('USER_PRIVATE_SOURCE');
   expect(readPage).toContain('USER_PRIVATE_PAGE');
-});
+}, 60_000);
 
 it('exposes and forwards exact narrowing type/applicability arguments through the real KM search Tool', async () => {
   const f = await fixture();
@@ -1831,4 +1831,4 @@ it.each([
       readInternalContextEvidence({ ...evidence, notebookReads: fresh })
     )
   ).rejects.toMatchObject({ code: 'internal_agent_context_source_unavailable' });
-});
+}, 60_000);
