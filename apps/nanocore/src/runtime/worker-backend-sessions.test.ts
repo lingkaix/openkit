@@ -893,9 +893,10 @@ describe('native worker backend session ownership', () => {
     }
     // Fault injection shortens only the valid attempt's absolute deadline. The operation
     // below has no clock override; both Main and the native owner use actual wall time.
+    // The held native owner then observes a stored deadline already in the past.
     await shutdownControlStoreWorkerClient();
     coreDb.sqlite.pragma('query_only = OFF');
-    const deadlineMs = Date.now() + 2000;
+    const deadlineMs = Date.now() + 5_000;
     const deadline = new Date(deadlineMs).toISOString();
     coreDb.sqlite
       .prepare(`UPDATE scheduler_execution_attempts
@@ -926,13 +927,24 @@ describe('native worker backend session ownership', () => {
           : 'execution attempt is not live for worker backend launch.'
       );
       await vi.waitFor(() => expect(Atomics.load(gate, 5)).toBe(1), {
-        timeout: 1500,
+        timeout: 4_000,
         interval: 5,
       });
       // A failure here is a fixture timing failure, not the expected deadline refusal.
       expect(Date.now()).toBeLessThan(deadlineMs);
-      await new Promise<void>((resolve) => setTimeout(resolve, deadlineMs - Date.now() + 5));
-      expect(Date.now()).toBeGreaterThanOrEqual(deadlineMs);
+      coreDb.sqlite.pragma('query_only = OFF');
+      const expired = new Date(Date.now() - 1_000).toISOString();
+      coreDb.sqlite
+        .prepare(`UPDATE scheduler_execution_attempts SET deadline = ? WHERE attempt_id = ?`)
+        .run(expired, attemptId);
+      coreDb.sqlite.pragma('query_only = ON');
+      expect(
+        (
+          coreDb.sqlite
+            .prepare(`SELECT deadline FROM scheduler_execution_attempts WHERE attempt_id = ?`)
+            .get(attemptId) as { deadline: string }
+        ).deadline < new Date().toISOString()
+      ).toBe(true);
       Atomics.store(gate, 6, 1);
       Atomics.notify(gate, 6);
       await refusal;

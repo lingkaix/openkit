@@ -417,6 +417,45 @@ describe('public Gateway decision Audit call linkage', () => {
   }
 });
 
+/**
+ * Steps faked gateway backoff one second at a time.
+ * Synchronous advances avoid waiting on the next delay. setImmediate still delivers native replies.
+ * The lone 120s deadline timer is left in place so the pre-commit budget does not expire.
+ */
+async function settleFakedBackoff<T>(pending: Promise<T>): Promise<T> {
+  const outcome = pending.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error })
+  );
+  let settled = false;
+  void outcome.finally(() => {
+    settled = true;
+  });
+  let advanced = 0;
+  let maxTimers = 0;
+  const wallDeadline = performance.now() + 8_000;
+  while (!settled && performance.now() < wallDeadline && advanced < 20) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (settled) break;
+    maxTimers = Math.max(maxTimers, vi.getTimerCount());
+    if (vi.getTimerCount() < 2) continue;
+    vi.advanceTimersByTime(1_000);
+    advanced += 1;
+  }
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  if (!settled)
+    throw new Error(
+      `Gateway backoff did not settle under fake timers. timers=${vi.getTimerCount()} max=${maxTimers} advanced=${advanced}`
+    );
+  const result = await outcome;
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 describe('public durable logical Gateway lineage', () => {
   it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
     const f = await fixture(true);
@@ -672,7 +711,6 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('same-member retry keeps one call and deduplicates identical usage references', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
     const f = await fixture();
     f.primary.setResponses([
       Object.assign(
@@ -681,10 +719,10 @@ describe('public durable logical Gateway lineage', () => {
       ),
       fauxAssistantMessage('retry served'),
     ]);
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     try {
-      const pending = f.post('responses');
-      await vi.runAllTimersAsync();
-      expect((await pending).status).toBe(200);
+      const response = await settleFakedBackoff(f.post('responses'));
+      expect(response.status).toBe(200);
       const { calls } = f.read();
       expect(calls).toHaveLength(1);
       const entries = calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries;
@@ -732,7 +770,6 @@ describe('public durable logical Gateway lineage', () => {
   });
   it('identical backend usage collapses to one measurement cited by both retry entries', async () => {
     const f = await fixture();
-    vi.useFakeTimers({ toFake: ['Date'] });
     const dispatch = vi
       .spyOn(f.dispatcher, 'createResponses')
       .mockImplementation(async (_provider, request, context) => {
@@ -748,10 +785,10 @@ describe('public durable logical Gateway lineage', () => {
           usage: { total_tokens: 42 },
         };
       });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     try {
-      const pending = f.post('responses');
-      await vi.runAllTimersAsync();
-      expect((await pending).status).toBe(200);
+      const response = await settleFakedBackoff(f.post('responses'));
+      expect(response.status).toBe(200);
       const { calls, usage } = f.read();
       expect(calls).toHaveLength(1);
       expect(usage).toHaveLength(1);

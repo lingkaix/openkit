@@ -28,6 +28,45 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
+/**
+ * Steps faked gateway backoff one second at a time.
+ * Synchronous advances avoid waiting on the next delay. setImmediate still delivers native replies.
+ * The lone 120s deadline timer is left in place so the pre-commit budget does not expire.
+ */
+async function settleFakedBackoff<T>(pending: Promise<T>): Promise<T> {
+  const outcome = pending.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error })
+  );
+  let settled = false;
+  void outcome.finally(() => {
+    settled = true;
+  });
+  let advanced = 0;
+  let maxTimers = 0;
+  const wallDeadline = performance.now() + 8_000;
+  while (!settled && performance.now() < wallDeadline && advanced < 20) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (settled) break;
+    maxTimers = Math.max(maxTimers, vi.getTimerCount());
+    if (vi.getTimerCount() < 2) continue;
+    vi.advanceTimersByTime(1_000);
+    advanced += 1;
+  }
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  if (!settled)
+    throw new Error(
+      `Gateway backoff did not settle under fake timers. timers=${vi.getTimerCount()} max=${maxTimers} advanced=${advanced}`
+    );
+  const result = await outcome;
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 /** Compares canonical forwarding across native and simple faux entries, including the disabled simple form. */
 function forwardedEffort(options: Record<string, unknown>) {
   return (
@@ -755,10 +794,10 @@ describe('Gateway reasoning effort admission and fitting', () => {
         return fauxAssistantMessage('retry served');
       },
     ]);
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const pending = f.post('responses', 'medium', false, false, true, toolAware);
-    await vi.runAllTimersAsync();
-    const response = await pending;
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const response = await settleFakedBackoff(
+      f.post('responses', 'medium', false, false, true, toolAware)
+    );
     expect(response.status, await response.text()).toBe(200);
     expect(f.received).toEqual([
       { member: 'primary', effort: 'high' },

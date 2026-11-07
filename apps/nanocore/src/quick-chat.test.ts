@@ -3575,6 +3575,60 @@ describe('Ordinary Assistant admission defaults', () => {
   });
 });
 
+/**
+ * Steps faked gateway backoff one second at a time.
+ * Synchronous advances avoid waiting on the next delay. setImmediate still delivers native replies.
+ * Long deadline timers stay put so the pre-commit budget does not expire and admission can reach the provider.
+ */
+async function settleFakedBackoff<T>(pending: Promise<T>): Promise<T> {
+  const outcome = pending.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error })
+  );
+  let settled = false;
+  void outcome.finally(() => {
+    settled = true;
+  });
+  // Assistant admission arms a 600s timer before the provider is called. Advancing the clock
+  // then skips that call, so only a short gateway backoff delay moves time.
+  const delays: number[] = [];
+  const fakedSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    delays.push(delay ?? 0);
+    return fakedSetTimeout(handler, delay as number, ...(args as []));
+  }) as typeof setTimeout;
+  let advanced = 0;
+  const wallDeadline = performance.now() + 8_000;
+  try {
+    while (!settled && performance.now() < wallDeadline && advanced < 20) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      if (settled) break;
+      const short = delays.findIndex((delay) => delay <= 10_000);
+      if (short < 0) continue;
+      vi.advanceTimersByTime(1_000);
+      for (let index = 0; index < delays.length; index += 1) delays[index] -= 1_000;
+      for (let index = delays.length - 1; index >= 0; index -= 1) {
+        if (delays[index]! <= 0) delays.splice(index, 1);
+      }
+      advanced += 1;
+    }
+  } finally {
+    globalThis.setTimeout = fakedSetTimeout;
+  }
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  if (!settled)
+    throw new Error(
+      `Gateway backoff did not settle under fake timers. timers=${vi.getTimerCount()} advanced=${advanced}`
+    );
+  const result = await outcome;
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 describe('Assistant execution deadline', () => {
   it('keeps the execution deadline across same-member retry and failover', async () => {
     const options = createQuickChatProviderOptions();
@@ -3603,13 +3657,10 @@ describe('Assistant execution deadline', () => {
       ]),
       llmGatewayDispatcher: { createResponses: dispatch } as never,
     });
-    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     try {
       const before = Date.now();
-      const pending = fixture.submit('Explain a short concept.');
-      await admitted.promise;
-      await vi.runAllTimersAsync();
-      const response = await pending;
+      const response = await settleFakedBackoff(fixture.submit('Explain a short concept.'));
       expect(response.status, await response.clone().text()).toBe(200);
       expect(dispatch.mock.calls.map(([provider]) => provider.id)).toEqual([
         'ollama',

@@ -575,6 +575,45 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(body.data).toEqual([expect.objectContaining({ id: 'reasoning' })]);
   });
 
+  /**
+   * Steps faked gateway backoff one second at a time.
+   * Synchronous advances avoid waiting on the next delay. setImmediate still delivers native replies.
+   * The lone 120s deadline timer is left in place so the pre-commit budget does not expire.
+   */
+  async function settleFakedBackoff<T>(pending: Promise<T>): Promise<T> {
+    const outcome = pending.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error })
+    );
+    let settled = false;
+    void outcome.finally(() => {
+      settled = true;
+    });
+    let advanced = 0;
+    let maxTimers = 0;
+    const wallDeadline = performance.now() + 8_000;
+    while (!settled && performance.now() < wallDeadline && advanced < 20) {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      if (settled) break;
+      maxTimers = Math.max(maxTimers, vi.getTimerCount());
+      if (vi.getTimerCount() < 2) continue;
+      vi.advanceTimersByTime(1_000);
+      advanced += 1;
+    }
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (!settled)
+      throw new Error(
+        `Gateway backoff did not settle under fake timers. timers=${vi.getTimerCount()} max=${maxTimers} advanced=${advanced}`
+      );
+    const result = await outcome;
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
   it('projects JSON provider failures with stable generic OpenKit errors', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
     onTestFinished(async () => {
@@ -600,14 +639,22 @@ describe('OpenAI-compatible agent gateway', () => {
       store: fixtureStore,
     });
 
-    const res = await app.request('/v1/chat/completions', {
-      method: 'POST',
-      body: JSON.stringify({
-        model: 'openai/gpt-5.1',
-        messages: [{ role: 'user', content: 'Hello' }],
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof app.request>>;
+    try {
+      res = await settleFakedBackoff(
+        app.request('/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'openai/gpt-5.1',
+            messages: [{ role: 'user', content: 'Hello' }],
+          }),
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({
@@ -645,14 +692,22 @@ describe('OpenAI-compatible agent gateway', () => {
       store: fixtureStore,
     });
 
-    const res = await app.request('/v1/chat/completions', {
-      method: 'POST',
-      body: JSON.stringify({
-        model: 'openai/gpt-5.1',
-        messages: [{ role: 'user', content: 'Hello' }],
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof app.request>>;
+    try {
+      res = await settleFakedBackoff(
+        app.request('/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'openai/gpt-5.1',
+            messages: [{ role: 'user', content: 'Hello' }],
+          }),
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({
@@ -796,14 +851,22 @@ describe('OpenAI-compatible agent gateway', () => {
       store: fixtureStore,
     });
 
-    const res = await app.request('/v1/chat/completions', {
-      method: 'POST',
-      body: JSON.stringify({
-        model: 'reasoning',
-        messages: [{ role: 'user', content: 'Hello' }],
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof app.request>>;
+    try {
+      res = await settleFakedBackoff(
+        app.request('/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'reasoning',
+            messages: [{ role: 'user', content: 'Hello' }],
+          }),
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
 
     if (autoFailover === false) {
       expect(res.status).toBe(429);

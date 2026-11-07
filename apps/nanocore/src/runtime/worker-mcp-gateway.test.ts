@@ -829,7 +829,8 @@ describe('worker MCP gateway', () => {
 
   it('cancels an in-flight stdio call and fences its session', async () => {
     const gateway = createDefaultWorkerMcpGateway();
-    const server = stdioTestServer(2_000);
+    const callLog = join(mkdtempSync(join(tmpdir(), 'mcp-inflight-')), 'calls.log');
+    const server = stdioTestServer(2_000, callLog);
     const cancellation = new AbortController();
 
     try {
@@ -841,7 +842,12 @@ describe('worker MCP gateway', () => {
         toolName: 'echo',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await vi.waitFor(
+        () => {
+          expect(readFileSync(callLog, 'utf8')).toContain('timeout');
+        },
+        { timeout: 5_000 }
+      );
       cancellation.abort();
       await expect(call).rejects.toMatchObject({
         cancelled: true,
@@ -1947,7 +1953,7 @@ async function waitForProcessExit(pid: number): Promise<boolean> {
 }
 
 /** Resolves one stdio fixture server with a caller-selected request bound. */
-function stdioTestServer(timeoutMs: number) {
+function stdioTestServer(timeoutMs: number, callLog?: string) {
   return resolveWorkspaceMcpServer({
     catalog: {
       schemaVersion: 1,
@@ -1961,7 +1967,10 @@ function stdioTestServer(timeoutMs: number) {
           schemaPolicy: 'tracking',
           timeoutMs,
           transport: {
-            args: [fileURLToPath(new URL('../test-support/mcp-stdio-stub.mjs', import.meta.url))],
+            args: [
+              fileURLToPath(new URL('../test-support/mcp-stdio-stub.mjs', import.meta.url)),
+              ...(callLog === undefined ? [] : [callLog]),
+            ],
             command: process.execPath,
             environment: {},
             kind: 'stdio',

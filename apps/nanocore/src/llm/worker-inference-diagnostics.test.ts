@@ -304,6 +304,45 @@ async function fixture(
   };
 }
 
+/**
+ * Steps faked gateway backoff one second at a time.
+ * Synchronous advances avoid waiting on the next delay. setImmediate still delivers native replies.
+ * The lone 120s deadline timer is left in place so the pre-commit budget does not expire.
+ */
+async function settleFakedBackoff<T>(pending: Promise<T>): Promise<T> {
+  const outcome = pending.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error })
+  );
+  let settled = false;
+  void outcome.finally(() => {
+    settled = true;
+  });
+  let advanced = 0;
+  let maxTimers = 0;
+  const wallDeadline = performance.now() + 8_000;
+  while (!settled && performance.now() < wallDeadline && advanced < 20) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (settled) break;
+    maxTimers = Math.max(maxTimers, vi.getTimerCount());
+    if (vi.getTimerCount() < 2) continue;
+    vi.advanceTimersByTime(1_000);
+    advanced += 1;
+  }
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  if (!settled)
+    throw new Error(
+      `Gateway backoff did not settle under fake timers. timers=${vi.getTimerCount()} max=${maxTimers} advanced=${advanced}`
+    );
+  const result = await outcome;
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 /** Supplies real SSE output before an injected reader failure, without a Provider effect. */
 function failedStream(error: unknown, endpoint = 'responses') {
   let emitted = false;
@@ -1296,8 +1335,9 @@ it('clears observed rejection before a retry with no HTTP evidence', async () =>
         failure: { kind: 'unknown', settled: false },
       });
     });
-  // Real native handoffs and the original retry backoff share the unchanged test deadline.
-  const response = await f.post(false);
+  // Native handoffs stay on the real event loop. Only the gateway backoff timers are faked.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+  const response = await settleFakedBackoff(f.post(false));
   expect(response.status).toBe(400);
   expect(f.dispatch).toHaveBeenCalledTimes(2);
   expect(warn).toHaveBeenCalledTimes(1);
@@ -1338,8 +1378,9 @@ it('logs only the final exhausted attempt with its observed upstream status', as
       failure: { kind: 'provider_unavailable', settled: true, status: 503 },
     })
   );
-  // Real native handoffs and the original retry backoffs share the unchanged test deadline.
-  const response = await f.post(false);
+  // Native handoffs stay on the real event loop. Only the gateway backoff timers are faked.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+  const response = await settleFakedBackoff(f.post(false));
   expect(response.status).toBe(503);
   expect(await response.json()).toMatchObject({
     error: { code: 'gateway_logical_model_unavailable', cause: 'provider_unavailable' },

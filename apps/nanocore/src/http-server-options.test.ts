@@ -11,6 +11,7 @@ it('keeps HTTP and HTTPS idle close well beyond even clients following the adver
   for (const create of [createServer, createHttpsServer]) {
     const server = create(NANOCORE_HTTP_SERVER_OPTIONS);
     // Direct Chromium connections can remain reusable for five minutes without following a hint.
+    expect(server.keepAliveTimeout).toBe(300_000);
     expect(
       server.keepAliveTimeout + server.keepAliveTimeoutBuffer - 300_000
     ).toBeGreaterThanOrEqual(30_000);
@@ -28,30 +29,34 @@ it('keeps private cleartext and TLS HTTP/2 sessions free of idle-close timers', 
 });
 
 it('responds on a reused socket written during a stall longer than the old idle margin', async () => {
+  // Production listeners keep a 300s hint. A 1s idle timer is too short for Node's client to
+  // pool the socket, so this instance uses 2s: the stall still overruns that timer by more than
+  // the old 1s buffer without waiting out the production hint.
+  const keepAliveTimeout = 2_000;
+  const stallMs = 3_200;
   const blockState = new Int32Array(new SharedArrayBuffer(4));
   let requests = 0;
-  let blockTimer: ReturnType<typeof setTimeout> | undefined;
   let blockImmediate: ReturnType<typeof setImmediate> | undefined;
   let blockedMs = 0;
   const server = serve({
     createServer,
     hostname: '127.0.0.1',
     port: 0,
-    serverOptions: NANOCORE_HTTP_SERVER_OPTIONS,
+    serverOptions: { ...NANOCORE_HTTP_SERVER_OPTIONS, keepAliveTimeout },
     fetch: (_request, { outgoing }) => {
       requests += 1;
       if (requests === 1) {
         outgoing.once('finish', () => {
           // The check phase reproduces the expired idle timer winning over unread socket data.
-          blockTimer = setTimeout(() => {
-            blockImmediate = setImmediate(() => {
-              const start = performance.now();
-              Atomics.store(blockState, 0, 1);
-              Atomics.wait(blockState, 0, 1, 3_000);
-              blockedMs = performance.now() - start;
-              Atomics.store(blockState, 0, 2);
-            });
-          }, 3_500);
+          blockImmediate = setImmediate(() => {
+            const start = performance.now();
+            Atomics.store(blockState, 0, 1);
+            Atomics.notify(blockState, 0);
+            Atomics.wait(blockState, 0, 1, stallMs);
+            blockedMs = performance.now() - start;
+            Atomics.store(blockState, 0, 2);
+            Atomics.notify(blockState, 0);
+          });
         });
       }
       return new Response('ok');
@@ -82,7 +87,11 @@ it('responds on a reused socket written during a stall longer than the old idle 
             res.on('end', () => {
               responses.push({ status: res.statusCode, body, reused: req.reusedSocket });
               if (second) finish();
-              else setTimeout(() => request(true), 3_800);
+              else setTimeout(() => {
+                // The socket is pooled before this thread waits for the stall, then writes during it.
+                Atomics.wait(blockState, 0, 0);
+                request(true);
+              }, 50);
             });
           });
           req.once('finish', () => {
@@ -105,15 +114,14 @@ it('responds on a reused socket written during a stall longer than the old idle 
     );
     const [result] = await once(worker, 'message');
     expect(result.writtenDuringBlock).toBe(true);
-    expect(blockedMs).toBeGreaterThanOrEqual(3_000);
+    expect(blockedMs).toBeGreaterThanOrEqual(1_000);
     expect(result.responses).toEqual([
       { status: 200, body: 'ok', reused: false },
       { status: 200, body: 'ok', reused: true },
     ]);
     expect(requests).toBe(2);
-    expect(result.advertisedKeepAlive).toBe('timeout=300');
+    expect(result.advertisedKeepAlive).toBe(`timeout=${Math.floor(keepAliveTimeout / 1000)}`);
   } finally {
-    clearTimeout(blockTimer);
     clearImmediate(blockImmediate);
     await worker?.terminate();
     server.closeAllConnections();

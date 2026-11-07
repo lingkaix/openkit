@@ -2786,11 +2786,50 @@ const workerCauseCases = [
   { name: 'request-terminal context', kind: 'context_overflow', status: 400, attempts: 1 },
 ] as const;
 
+/**
+ * Steps faked gateway backoff one second at a time.
+ * Synchronous advances avoid waiting on the next delay. setImmediate still delivers native replies.
+ * The lone 120s deadline timer is left in place so the pre-commit budget does not expire.
+ */
+async function settleFakedBackoff<T>(pending: Promise<T>): Promise<T> {
+  const outcome = pending.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error })
+  );
+  let settled = false;
+  void outcome.finally(() => {
+    settled = true;
+  });
+  let advanced = 0;
+  let maxTimers = 0;
+  const wallDeadline = performance.now() + 8_000;
+  while (!settled && performance.now() < wallDeadline && advanced < 20) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (settled) break;
+    maxTimers = Math.max(maxTimers, vi.getTimerCount());
+    if (vi.getTimerCount() < 2) continue;
+    vi.advanceTimersByTime(1_000);
+    advanced += 1;
+  }
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  if (!settled)
+    throw new Error(
+      `Gateway backoff did not settle under fake timers. timers=${vi.getTimerCount()} max=${maxTimers} advanced=${advanced}`
+    );
+  const result = await outcome;
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 describe('Round 2 worker exhaustion cause', () => {
   for (const endpoint of ['responses', 'chat/completions'] as const) {
     for (const stream of [false, true]) {
       it.each(workerCauseCases)(`${endpoint} stream=${stream}: $name`, async (scenario) => {
-        // Native writer replies can arrive after a fake-timer drain has finished.
+        // Date stays fake for fixture setup. Retry delays are faked on the request itself.
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
           const disabled = 'disabled' in scenario;
@@ -2815,6 +2854,8 @@ describe('Round 2 worker exhaustion cause', () => {
                 ? 'createChatCompletionStream'
                 : 'createChatCompletion';
           const dispatch = vi.spyOn(fixture.dispatcher, method).mockRejectedValue(failure);
+          if (scenario.attempts > 1)
+            vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
           const pending = fixture.app.request(`/api/worker-inference/v1/${endpoint}`, {
             method: 'POST',
             headers: {
@@ -2829,7 +2870,8 @@ describe('Round 2 worker exhaustion cause', () => {
                 : { messages: [{ role: 'user', content: 'Hello' }] }),
             }),
           });
-          const response = await pending;
+          const response =
+            scenario.attempts > 1 ? await settleFakedBackoff(pending) : await pending;
           expect(response.status).toBe(disabled || terminal ? scenario.status : 503);
           expect(response.headers.get('content-type')).toContain('application/json');
           expect(await response.json()).toEqual({

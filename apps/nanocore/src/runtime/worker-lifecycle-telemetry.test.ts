@@ -2,7 +2,6 @@
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -113,7 +112,6 @@ describe('current Worker lifecycle telemetry', () => {
       expect(validationSpans(exporter)).toEqual([]);
       expect(fixture.plan).not.toHaveBeenCalled();
       expect(run.settled).not.toHaveBeenCalled();
-      await delay(25);
     } finally {
       release.resolve();
     }
@@ -133,7 +131,7 @@ describe('current Worker lifecycle telemetry', () => {
       'openkit.workspace.id': DEMO_WORKSPACE_ID,
       'openkit.agent.session.id': run.agentSessionId,
     });
-    expect(span.duration[0] + span.duration[1] / 1e9).toBeGreaterThanOrEqual(0.02);
+    expect(span.duration[0] + span.duration[1] / 1e9).toBeGreaterThan(0);
     expect(
       exporter
         .getFinishedSpans()

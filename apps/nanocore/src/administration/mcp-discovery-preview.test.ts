@@ -849,9 +849,12 @@ it.each([
   };
   cleanup.push(release);
   let settled = false;
+  const timeoutMs = withdrawal === 'deadline' ? 1_000 : input.timeoutMs;
+  const startedAt = performance.now();
   const outcome = f
     .call('administration.mcp-discovery-preview', {
       ...input,
+      timeoutMs,
       credentialBindings: [
         {
           slot: 'authorization',
@@ -921,8 +924,12 @@ it.each([
         f.vaultUnlockState.backend().resolve({ referenceId: String(reference.referenceId) })
       ).toThrow();
     } else {
-      // The real whole-operation timeout started before the held terminal ACK; wait past it.
-      await new Promise<void>((resolve) => setTimeout(resolve, input.timeoutMs + 20));
+      // The real whole-operation timeout started before the held terminal ACK; wait only for what remains.
+      const remaining = timeoutMs + 30 - (performance.now() - startedAt);
+      if (remaining > 0)
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, remaining);
+        });
     }
     expect(settled).toBe(false);
     release();

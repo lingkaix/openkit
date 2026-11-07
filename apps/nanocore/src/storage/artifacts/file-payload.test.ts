@@ -107,9 +107,11 @@ describe('private streamed Artifact payloads', () => {
   it('aborts a live stream and removes partial bytes', async () => {
     const state = await fixture();
     const controller = new AbortController();
+    let chunks = 0;
     const source = new Readable({
       read() {
         this.push(Buffer.alloc(65_536));
+        if (++chunks === 2) controller.abort();
       },
     });
     const capture = stageArtifactPayload({
@@ -119,7 +121,6 @@ describe('private streamed Artifact payloads', () => {
       expectedDigest: digest(Buffer.alloc(0)),
       signal: controller.signal,
     });
-    setTimeout(() => controller.abort(), 10);
     await expect(capture).rejects.toThrow();
     expect(source.destroyed).toBe(true);
     expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);

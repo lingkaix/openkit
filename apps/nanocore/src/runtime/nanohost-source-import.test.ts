@@ -71,6 +71,10 @@ it('streams a large original through the fixed route without eager buffering and
   const expected = `sha256:${oracle.digest('hex')}`;
   let produced = 0;
   let closed = false;
+  let markFirstYield!: () => void;
+  const firstYield = new Promise<void>((resolve) => {
+    markFirstYield = resolve;
+  });
   const source: NanoHostFileImportSource = {
     async *open(signal) {
       try {
@@ -78,6 +82,7 @@ it('streams a large original through the fixed route without eager buffering and
           signal.throwIfAborted();
           const bytes = Buffer.alloc(Math.min(65_536, total - produced), 120);
           produced += bytes.length;
+          markFirstYield();
           yield bytes;
         }
       } finally {
@@ -94,7 +99,11 @@ it('streams a large original through the fixed route without eager buffering and
   expect(headers['x-openkit-byte-length']).toBe(String(total));
   expect(headers['x-openkit-sha256']).toBe(expected);
   // The peer's H2 receive window prevents the producer from materializing the complete original.
-  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await firstYield;
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+  expect(produced).toBeGreaterThan(0);
   expect(produced).toBeLessThan(total);
   const actual = createHash('sha256');
   let received = 0;

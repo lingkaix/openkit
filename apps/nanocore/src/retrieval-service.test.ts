@@ -14,10 +14,11 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type RetrievalDocument,
@@ -167,6 +168,18 @@ describe.skipIf(process.platform !== 'linux')('NanoCore retrieval service superv
       writeFileSync(join(fixture.sourcesRoot, 'source'), bytes);
       await service.start();
       const controller = new AbortController();
+      const originalWrite = Socket.prototype.write;
+      const write = vi.spyOn(Socket.prototype, 'write').mockImplementation(function (
+        this: Socket,
+        chunk: string | Uint8Array,
+        encoding?: BufferEncoding | ((error?: Error | null) => void),
+        cb?: (error?: Error | null) => void
+      ) {
+        const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+        const result = originalWrite.call(this, chunk, encoding as never, cb as never);
+        if (text.includes('"op":"digest-windows"')) controller.abort();
+        return result;
+      });
       const scan = service.digestWindows(
         {
           path: 'source',
@@ -178,11 +191,10 @@ describe.skipIf(process.platform !== 'linux')('NanoCore retrieval service superv
         },
         controller.signal
       );
-      const timer = setTimeout(() => controller.abort(), 20);
       try {
         await expect(scan).rejects.toMatchObject({ uncertain: false });
       } finally {
-        clearTimeout(timer);
+        write.mockRestore();
       }
       await expect(service.health()).resolves.toBeUndefined();
     },
