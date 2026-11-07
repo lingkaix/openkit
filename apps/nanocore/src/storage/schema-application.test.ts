@@ -2123,12 +2123,15 @@ it('exhausts two Core readset conflicts without schema publication or successor 
   const rearm = schemaFreshness.holdPost!;
   schemaFreshness.holdPost = (value, forward) => {
     const held = rearm(value, forward);
-    if (
-      isControlWorkerRequest(value) &&
-      value.database === schemaFreshness.database &&
-      value.operation === 'products'
-    )
-      successorPosted();
+    if (isControlWorkerRequest(value) && value.database === schemaFreshness.database) {
+      if (value.operation === 'products') successorPosted();
+      if (value.operation === 'schema-application' && successorSettled) {
+        // The successor still follows the first refusal. Let it settle before the second
+        // capture so its commit cannot replace the intended Core conflict before forecast.
+        void successorSettled.then(() => forward());
+        return true;
+      }
+    }
     return held;
   };
   // onTestFinished runs in reverse registration order. This releases the held forecast
