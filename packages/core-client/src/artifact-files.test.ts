@@ -316,6 +316,42 @@ describe('Artifact binary client bindings', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it('rejects oversized commitVersion encoded metadata before upload and preserves API refusals', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = createCoreClient({ baseUrl: 'http://127.0.0.1', fetch: fetcher });
+    const commitInput = {
+      ...metadata,
+      artifactId,
+      threadId: allocateEntityId('th'),
+      expectedArtifactVersion: 1,
+      summary: 'updated version',
+    };
+    expect(() =>
+      client.artifactFiles.commitVersion({ ...commitInput, summary: '界'.repeat(3000) }, bytes)
+    ).toThrow(ProtocolValidationError);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    const refusingClient = createCoreClient({
+      baseUrl: 'http://127.0.0.1',
+      fetch: async () =>
+        Response.json(
+          {
+            protocolVersion: CURRENT_PROTOCOL,
+            code: 'artifact_version_conflict',
+            message: 'Artifact version conflict.',
+          },
+          { status: 409 }
+        ),
+    });
+    await expect(
+      refusingClient.artifactFiles.commitVersion(commitInput, bytes)
+    ).rejects.toMatchObject({
+      name: ApiCallError.name,
+      status: 409,
+      code: 'artifact_version_conflict',
+    });
+  });
+
   it('validates the accepted import response instead of inventing a usable version', async () => {
     const client = createCoreClient({
       baseUrl: 'http://127.0.0.1',

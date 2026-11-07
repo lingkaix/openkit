@@ -1,7 +1,12 @@
+import { MAX_CONVERSATION_FILE_METADATA_BYTES } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { createConversationFileClient } from './conversation-files.js';
-import type { ClientTransport } from './transport.js';
+import {
+  type ClientTransport,
+  createConversationFileClient,
+  createCoreClient,
+  ProtocolValidationError,
+} from './index.js';
 
 const workspaceId = allocateEntityId('ws');
 const threadId = allocateEntityId('th');
@@ -63,5 +68,54 @@ describe('conversation original transport', () => {
     expect(() => client.submit(input, [])).toThrow('inventory');
     expect(() => client.submit(input, [new Blob(['a'])])).toThrow('inventory');
     expect(postStream).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty fileInputs list and oversized serialized metadata before transfer', () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = createCoreClient({ baseUrl: 'http://127.0.0.1', fetch: fetcher });
+    const baseInput = {
+      workspaceId,
+      threadId,
+      input: 'non-empty prompt',
+      requestId: 'same-request',
+      targetRef: 'internal-role:assistant',
+      artifactRefs: [],
+    };
+
+    expect(() =>
+      client.conversationFiles.submit({ ...baseInput, fileInputs: [] }, [])
+    ).toThrowError(
+      expect.objectContaining({
+        name: ProtocolValidationError.name,
+        path: ['fileInputs'],
+        code: 'invalid_payload',
+      })
+    );
+
+    const file = new Blob(['ab']);
+    expect(() =>
+      client.conversationFiles.submit(
+        {
+          ...baseInput,
+          input: 'x'.repeat(MAX_CONVERSATION_FILE_METADATA_BYTES),
+          fileInputs: [
+            {
+              name: 'input.txt',
+              mediaType: 'text/plain',
+              sizeBytes: file.size,
+              contentDigest: `sha256:${'a'.repeat(64)}`,
+            },
+          ],
+        },
+        [file]
+      )
+    ).toThrowError(
+      expect.objectContaining({
+        name: ProtocolValidationError.name,
+        path: ['fileInputs'],
+        code: 'invalid_payload',
+      })
+    );
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
