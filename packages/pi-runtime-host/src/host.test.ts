@@ -1527,15 +1527,17 @@ describe('Pi runtime host cancellation and identity', () => {
         : { text: `answer-${n}` }
     );
     const probe = join(f.directories.root, 'input-probe.jsonl');
+    const release = join(f.directories.root, 'input-release');
     await installExtension(
       f.directories,
-      `import { appendFileSync } from 'node:fs';
+      `import { appendFileSync, existsSync } from 'node:fs';
 const probe = ${JSON.stringify(probe)};
+const release = ${JSON.stringify(release)};
 export default function (pi) {
   pi.on('input', async (event) => {
     if (!event.text.includes('slow')) return undefined;
     appendFileSync(probe, 'start\\n');
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    while (!existsSync(release)) await new Promise((resolve) => setTimeout(resolve, 10));
     appendFileSync(probe, 'end\\n');
     return undefined;
   });
@@ -1554,6 +1556,7 @@ export default function (pi) {
       });
     };
     const hookEnded = async () => {
+      await writeFile(release, '1');
       await waitFor(() => {
         try {
           return readFileSync(probe, 'utf8').includes('end');
@@ -1561,8 +1564,6 @@ export default function (pi) {
           return false;
         }
       });
-      // Give a run that escaped cancellation time to reach the provider and the tool.
-      await new Promise((resolve) => setTimeout(resolve, 500));
     };
     return { effect, f, hookEnded, hookStarted };
   }
@@ -1577,18 +1578,20 @@ export default function (pi) {
       expect(first.outcome.status).toBe('completed');
       await host.request({ op: 'turn', prompt: 'slow work', turnId: 'turn-2' });
       await hookStarted();
-      const interrupted = await host.request({ op: 'interrupt', turnId: 'turn-2' });
+      const interrupting = host.request({ op: 'interrupt', turnId: 'turn-2' });
+      await host.request({ op: 'inspect' });
+      await hookEnded();
+      const interrupted = await interrupting;
       expect(interrupted).toMatchObject({ ok: true, result: { outcome: 'interrupted' } });
       const settled = await host.settled('turn-2');
       expect(settled.outcome.status).toBe('interrupted');
       expect(settled.nativeHandle).toEqual(first.nativeHandle);
-      await hookEnded();
-      expect(f.inference.requests).toHaveLength(1);
-      expect(existsSync(effect)).toBe(false);
       expect(await host.request({ op: 'inspect' })).toMatchObject({
         ok: true,
         result: { nativeHandle: first.nativeHandle, state: 'idle' },
       });
+      expect(f.inference.requests).toHaveLength(1);
+      expect(existsSync(effect)).toBe(false);
     },
     TIMEOUT
   );
@@ -1603,16 +1606,19 @@ export default function (pi) {
         await host.request({ op: 'turn', prompt: 'slow work', turnId: 'turn-1' });
         await hookStarted();
         if (stop === 'close') {
-          expect(await host.request({ op: 'close' })).toMatchObject({
+          const closing = host.request({ op: 'close' });
+          await host.request({ op: 'inspect' });
+          await hookEnded().catch(() => undefined);
+          expect(await closing).toMatchObject({
             ok: true,
             result: { state: 'closed' },
           });
           expect(await host.exited).toBe(0);
         } else {
           host.endChannel();
+          await hookEnded().catch(() => undefined);
           expect(await host.exited).toBe(1);
         }
-        await hookEnded().catch(() => undefined);
         expect(f.inference.requests).toHaveLength(0);
         expect(existsSync(effect)).toBe(false);
       }
@@ -1627,14 +1633,15 @@ export default function (pi) {
         n === 1 ? { promptTokens: 5_000, text: 'answer-1' } : { text: `summary-or-answer-${n}` }
       );
       const probe = join(f.directories.root, 'input-probe.jsonl');
+      const release = join(f.directories.root, 'compaction-release');
       await installExtension(
         f.directories,
-        `import { appendFileSync } from 'node:fs';
+        `import { appendFileSync, existsSync } from 'node:fs';
 export default function (pi) {
   pi.on('input', async (event) => {
     if (!event.text.includes('slow')) return undefined;
     appendFileSync(${JSON.stringify(probe)}, 'start\\n');
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    while (!existsSync(${JSON.stringify(release)})) await new Promise((resolve) => setTimeout(resolve, 10));
     appendFileSync(${JSON.stringify(probe)}, 'end\\n');
     return undefined;
   });
@@ -1658,7 +1665,10 @@ export default function (pi) {
       ).toMatchObject({ ok: true });
       await host.request({ op: 'turn', prompt: 'slow work', turnId: 'turn-2' });
       await waitFor(() => probeLines(probe).includes('start'));
-      expect(await host.request({ op: 'interrupt', turnId: 'turn-2' })).toMatchObject({
+      const interrupting = host.request({ op: 'interrupt', turnId: 'turn-2' });
+      await host.request({ op: 'inspect' });
+      await writeFile(release, '1');
+      expect(await interrupting).toMatchObject({
         ok: true,
         result: { outcome: 'interrupted' },
       });
@@ -1667,7 +1677,10 @@ export default function (pi) {
       expect(settled.compactionEntryIds).toEqual([]);
       expect(settled.nativeHandle).toEqual(first.nativeHandle);
       await waitFor(() => probeLines(probe).includes('end'));
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(await host.request({ op: 'inspect' })).toMatchObject({
+        ok: true,
+        result: { nativeHandle: first.nativeHandle, state: 'idle' },
+      });
       expect(f.inference.requests).toHaveLength(1);
       const { path } = JSON.parse((first.nativeHandle as { handle: string }).handle) as {
         path: string;
@@ -1689,14 +1702,15 @@ export default function (pi) {
           : { text: `answer-${n}` }
       );
       const probe = join(f.directories.root, 'tool-probe.jsonl');
+      const release = join(f.directories.root, 'tool-release');
       await installExtension(
         f.directories,
-        `import { appendFileSync } from 'node:fs';
+        `import { appendFileSync, existsSync } from 'node:fs';
 export default function (pi) {
   pi.on('tool_call', async (event) => {
     if (event.toolName !== 'bash') return undefined;
     appendFileSync(${JSON.stringify(probe)}, 'start\\n');
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    while (!existsSync(${JSON.stringify(release)})) await new Promise((resolve) => setTimeout(resolve, 10));
     appendFileSync(${JSON.stringify(probe)}, 'end\\n');
     return undefined;
   });
@@ -1710,7 +1724,10 @@ export default function (pi) {
       expect(first.outcome.status).toBe('completed');
       await host.request({ op: 'turn', prompt: 'use the tool', turnId: 'turn-2' });
       await waitFor(() => probeLines(probe).includes('start'));
-      expect(await host.request({ op: 'interrupt', turnId: 'turn-2' })).toMatchObject({
+      const interrupting = host.request({ op: 'interrupt', turnId: 'turn-2' });
+      await host.request({ op: 'inspect' });
+      await writeFile(release, '1');
+      expect(await interrupting).toMatchObject({
         ok: true,
         result: { outcome: 'interrupted' },
       });
@@ -1718,7 +1735,10 @@ export default function (pi) {
       expect(settled.outcome.status).toBe('interrupted');
       expect(settled.nativeHandle).toEqual(first.nativeHandle);
       await waitFor(() => probeLines(probe).includes('end'));
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(await host.request({ op: 'inspect' })).toMatchObject({
+        ok: true,
+        result: { nativeHandle: first.nativeHandle, state: 'idle' },
+      });
       expect(existsSync(join(f.directories.workingDirectory, 'tool-effect'))).toBe(false);
       expect(f.inference.requests).toHaveLength(2);
     },
@@ -1740,6 +1760,7 @@ export default function (pi) {
         : { text: `answer-${n}` }
     );
     const probe = join(f.directories.root, 'run-probe.jsonl');
+    const release = join(f.directories.root, 'run-release');
     const fire =
       trigger === 'sendMessage'
         ? `pi.sendMessage({ customType: 'probe', content: 'Continue the requested work.', display: false }, { triggerTurn: true });`
@@ -1749,10 +1770,9 @@ export default function (pi) {
         ? `pi.on('input', async (event) => {
     if (!event.text.includes('slow')) return undefined;
     appendFileSync(probe, 'start\\n');
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    while (!existsSync(release)) await new Promise((resolve) => setTimeout(resolve, 10));
     ${fire}
     appendFileSync(probe, 'triggered\\n');
-    await new Promise((resolve) => setTimeout(resolve, 200));
     return undefined;
   });`
         : `let armed = true;
@@ -1762,33 +1782,37 @@ export default function (pi) {
     setTimeout(() => {
       ${fire}
       appendFileSync(probe, 'triggered\\n');
-    }, 300);
+    }, 50);
   });`;
     await installExtension(
       f.directories,
-      `import { appendFileSync } from 'node:fs';
+      `import { appendFileSync, existsSync } from 'node:fs';
 const probe = ${JSON.stringify(probe)};
+const release = ${JSON.stringify(release)};
 export default function (pi) {
   ${hook}
 }
 `
     );
     f.capability.bound = true;
-    return { effect: join(f.directories.workingDirectory, 'extension-effect'), f, probe };
+    return { effect: join(f.directories.workingDirectory, 'extension-effect'), f, probe, release };
   }
 
   it(
     'fences a native run an Extension starts after an interrupt',
     async () => {
       for (const trigger of ['sendMessage', 'sendUserMessage'] as const) {
-        const { effect, f, probe } = await extensionRunFixture(trigger, 'input');
+        const { effect, f, probe, release } = await extensionRunFixture(trigger, 'input');
         const host = f.start();
         await f.open(host);
         const first = await turn(host, 'turn-1', 'establish');
         expect(first.outcome.status).toBe('completed');
         await host.request({ op: 'turn', prompt: 'slow work', turnId: 'turn-2' });
         await waitFor(() => probeLines(probe).includes('start'));
-        expect(await host.request({ op: 'interrupt', turnId: 'turn-2' })).toMatchObject({
+        const interrupting = host.request({ op: 'interrupt', turnId: 'turn-2' });
+        await host.request({ op: 'inspect' });
+        await writeFile(release, '1');
+        expect(await interrupting).toMatchObject({
           ok: true,
           result: { outcome: 'interrupted' },
         });
@@ -1796,8 +1820,10 @@ export default function (pi) {
         expect(settled.outcome.status).toBe('interrupted');
         expect(settled.nativeHandle).toEqual(first.nativeHandle);
         await waitFor(() => probeLines(probe).includes('triggered'));
-        // Give an escaped run time to reach the provider and the tool.
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(await host.request({ op: 'inspect' })).toMatchObject({
+          ok: true,
+          result: { nativeHandle: first.nativeHandle, state: 'idle' },
+        });
         expect(f.inference.requests, trigger).toHaveLength(1);
         expect(existsSync(effect), trigger).toBe(false);
         expect(
@@ -1818,7 +1844,10 @@ export default function (pi) {
         const first = await turn(host, 'turn-1', 'establish');
         expect(first.outcome.status).toBe('completed');
         await waitFor(() => probeLines(probe).includes('triggered'));
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(await host.request({ op: 'inspect' })).toMatchObject({
+          ok: true,
+          result: { nativeHandle: first.nativeHandle, state: 'idle' },
+        });
         expect(f.inference.requests, trigger).toHaveLength(1);
         expect(existsSync(effect), trigger).toBe(false);
         expect(host.events.filter((event) => event.event === 'turn_settled')).toHaveLength(1);

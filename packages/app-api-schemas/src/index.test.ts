@@ -255,23 +255,11 @@ describe('app api schema package boundary', () => {
   });
 
   it('exports the closed provider-subscription identifier schema from the package root', () => {
-    const schema = Reflect.get(appApiSchemas, 'SubscriptionProviderIdSchema');
+    const schema = appApiSchemas.SubscriptionProviderIdSchema;
 
-    expect(schema).toBeDefined();
     expect(schema.parse('openai-codex')).toBe('openai-codex');
     expect(schema.parse('xai')).toBe('xai');
     expect(schema.safeParse('anthropic').success).toBe(false);
-  });
-
-  it('delegates supplied create slot syntax to the account owner and refuses non-string slots', () => {
-    const create = appApiSchemas.CreateProviderSubscriptionAccountRequestSchema;
-    // Provider Subscription Accounts480: supplied strings reach native slot-error classification.
-    for (const accountSlotId of ['work', '', 'Bad Slot', 'x'.repeat(65)]) {
-      expect.soft(create.parse({ accountSlotId })).toEqual({ accountSlotId });
-    }
-    for (const accountSlotId of [undefined, null, 42, false, [], {}]) {
-      expect.soft(create.safeParse({ accountSlotId }).success).toBe(false);
-    }
   });
 });
 
@@ -3946,29 +3934,10 @@ describe('app api schemas', () => {
   });
 
   it('accepts only strict provider-subscription operation requests', () => {
-    const createSchema = Reflect.get(
-      appApiSchemas,
-      'CreateProviderSubscriptionAccountRequestSchema'
-    ) as typeof AppDiagnosticsResponseSchema | undefined;
-    const updateSchema = Reflect.get(
-      appApiSchemas,
-      'UpdateProviderSubscriptionAccountRequestSchema'
-    ) as typeof AppDiagnosticsResponseSchema | undefined;
-    const startLoginSchema = Reflect.get(
-      appApiSchemas,
-      'StartProviderSubscriptionAccountLoginRequestSchema'
-    ) as typeof AppDiagnosticsResponseSchema | undefined;
-    const cancelLoginSchema = Reflect.get(
-      appApiSchemas,
-      'CancelProviderSubscriptionAccountLoginRequestSchema'
-    ) as typeof AppDiagnosticsResponseSchema | undefined;
-
-    for (const schema of [createSchema, updateSchema, startLoginSchema, cancelLoginSchema]) {
-      expect.soft(schema).toBeDefined();
-    }
-    if (!createSchema || !updateSchema || !startLoginSchema || !cancelLoginSchema) {
-      return;
-    }
+    const createSchema = appApiSchemas.CreateProviderSubscriptionAccountRequestSchema;
+    const updateSchema = appApiSchemas.UpdateProviderSubscriptionAccountRequestSchema;
+    const startLoginSchema = appApiSchemas.StartProviderSubscriptionAccountLoginRequestSchema;
+    const cancelLoginSchema = appApiSchemas.CancelProviderSubscriptionAccountLoginRequestSchema;
 
     expect(createSchema.parse({ accountSlotId: 'work', displayName: 'Work' })).toEqual({
       accountSlotId: 'work',
@@ -3995,7 +3964,12 @@ describe('app api schemas', () => {
     ]) {
       expect(cancelLoginSchema.safeParse(request).success).toBe(false);
     }
-    expect(createSchema.parse({ accountSlotId: '../work' })).toEqual({ accountSlotId: '../work' });
+    for (const accountSlotId of ['work', '../work', '', 'Bad Slot', 'x'.repeat(65)]) {
+      expect(createSchema.parse({ accountSlotId })).toEqual({ accountSlotId });
+    }
+    for (const accountSlotId of [undefined, null, 42, false, [], {}]) {
+      expect(createSchema.safeParse({ accountSlotId }).success).toBe(false);
+    }
     expect(createSchema.safeParse({ accountSlotId: 'work', accessToken: 'secret' }).success).toBe(
       false
     );
@@ -4003,23 +3977,9 @@ describe('app api schemas', () => {
   });
 
   it('accepts strict provider inventory and sanitized account status branches', () => {
-    const providersSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionsResponseSchema') as
-      | typeof AppDiagnosticsResponseSchema
-      | undefined;
-    const accountsSchema = Reflect.get(
-      appApiSchemas,
-      'ProviderSubscriptionAccountsResponseSchema'
-    ) as typeof AppDiagnosticsResponseSchema | undefined;
-    const accountSchema = Reflect.get(appApiSchemas, 'ProviderSubscriptionAccountSchema') as
-      | typeof AppDiagnosticsResponseSchema
-      | undefined;
-
-    for (const schema of [providersSchema, accountsSchema, accountSchema]) {
-      expect.soft(schema).toBeDefined();
-    }
-    if (!providersSchema || !accountsSchema || !accountSchema) {
-      return;
-    }
+    const providersSchema = appApiSchemas.ProviderSubscriptionsResponseSchema;
+    const accountsSchema = appApiSchemas.ProviderSubscriptionAccountsResponseSchema;
+    const accountSchema = appApiSchemas.ProviderSubscriptionAccountSchema;
 
     const providers = {
       providers: [
