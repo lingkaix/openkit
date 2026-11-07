@@ -2306,4 +2306,18 @@ describe('Round 2 Gateway dependency recovery', () => {
     expect(client.operations['runtime.file-delete']).not.toHaveBeenCalled();
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
+
+  it('moves focus to guided subscription setup from Set up', async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    const client = makeClient({
+      operations: { 'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+    });
+    renderScreen(client);
+    const setup = await screen.findByRole('button', { name: 'Set up xAI' });
+    await user.click(setup);
+    expect(document.getElementById('guided-subscription-setup')).toHaveFocus();
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
 });

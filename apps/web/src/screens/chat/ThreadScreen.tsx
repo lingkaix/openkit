@@ -64,10 +64,12 @@ function SidePanel({
   workspaceId,
   threadId,
   onClose,
+  focusTurnId,
 }: {
   workspaceId: string | null;
   threadId: string;
   onClose: () => void;
+  focusTurnId?: { turnId: string; token: number } | null;
 }) {
   const items = useThreadItems(workspaceId, threadId);
   const list = items.data ?? [];
@@ -75,9 +77,23 @@ function SidePanel({
   const artifacts = artifactIndex(list);
   const itemKey = (item: ThreadItem) =>
     `${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`;
+  const stepsPresent = detailGroups.some((group) => group.turnId === focusTurnId?.turnId);
+  useEffect(() => {
+    if (!focusTurnId || !stepsPresent) return;
+    const target = document.getElementById(`turn-steps-${focusTurnId.turnId}`);
+    if (!(target instanceof HTMLElement)) return;
+    target.scrollIntoView({ block: 'nearest' });
+    target.focus({ preventScroll: true });
+  }, [focusTurnId, stepsPresent]);
   return (
     <aside
       aria-label="Details"
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
+        event.preventDefault();
+        onClose();
+      }}
       className="absolute inset-y-0 right-0 z-10 w-full shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none"
     >
       <div className="flex items-center justify-between gap-2">
@@ -99,7 +115,8 @@ function SidePanel({
         <div
           key={group.turnId}
           id={`turn-steps-${group.turnId}`}
-          className="mt-3 flex flex-col gap-2"
+          tabIndex={-1}
+          className="mt-3 flex flex-col gap-2 outline-none focus:ring-2 focus:ring-focus"
         >
           {group.items.map((item) => (
             <ItemView key={itemKey(item)} item={item} />
@@ -284,6 +301,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     if (!persistentNav) setShowRail(false);
   }, [persistentNav]);
   const railToggle = useRef<HTMLButtonElement>(null);
+  const renameButtonRef = useRef<HTMLButtonElement>(null);
+  const [stepsFocus, setStepsFocus] = useState<{ turnId: string; token: number } | null>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
   const [renameDrafts, setRenameDrafts] = useState<
@@ -366,6 +385,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             ) : null}
             <h1 className="min-w-0 truncate text-sm font-bold text-fg-strong">{title}</h1>
             <Button
+              ref={renameButtonRef}
               size="sm"
               variant="quiet"
               aria-label="Rename thread"
@@ -474,6 +494,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   onPress={() => {
                     rename.reset();
                     setRenameDrafts((drafts) => drafts.filter((draft) => draft !== renameDraft));
+                    renameButtonRef.current?.focus();
                   }}
                 >
                   Cancel
@@ -542,11 +563,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
               onShowSteps={(turnId) => {
                 setShowRail(true);
-                window.setTimeout(() => {
-                  document.getElementById(`turn-steps-${turnId}`)?.scrollIntoView({
-                    block: 'nearest',
-                  });
-                }, 0);
+                setStepsFocus((current) => ({ turnId, token: (current?.token ?? 0) + 1 }));
               }}
             />
             {feedbackTurn ? (
@@ -684,8 +701,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
         <SidePanel
           workspaceId={workspaceId}
           threadId={threadId}
+          focusTurnId={stepsFocus}
           onClose={() => {
             setShowRail(false);
+            setStepsFocus(null);
             railToggle.current?.focus();
           }}
         />

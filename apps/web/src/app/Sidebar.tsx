@@ -1,5 +1,5 @@
 import { useMutationState, useQueries } from '@tanstack/react-query';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button, CountBadge, Icon, type IconName, Menu, NavRow } from '../primitives';
 import {
@@ -299,12 +299,27 @@ export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
 
 /** Brand-row Search command that opens the existing search overlay. */
 function BrandSearch() {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
   const [open, setOpen] = useState(false);
+
+  function close() {
+    restoreFocus.current = true;
+    setOpen(false);
+  }
+
+  useEffect(() => {
+    if (open || !restoreFocus.current) return;
+    restoreFocus.current = false;
+    triggerRef.current?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key !== 'Escape') return;
+      restoreFocus.current = true;
+      setOpen(false);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -313,6 +328,7 @@ function BrandSearch() {
   return (
     <div>
       <Button
+        ref={triggerRef}
         variant="quiet"
         aria-expanded={open}
         aria-label="Search"
@@ -327,7 +343,7 @@ function BrandSearch() {
           aria-label="Search"
           className="absolute inset-x-0 top-full z-20 mt-1 rounded-ok-lg border border-border bg-elevated p-3 shadow-ok-menu"
         >
-          <AppSearch onClose={() => setOpen(false)} />
+          <AppSearch onClose={close} />
         </section>
       ) : null}
     </div>

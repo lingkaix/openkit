@@ -2405,4 +2405,38 @@ function register_ArtifactPreview_test_tsx_0() {
     });
   });
 }
+it('returns focus to Import when the import card is cancelled', async () => {
+  const user = userEvent.setup();
+  renderApp('/artifacts', makeClient());
+  await user.click(await screen.findByRole('button', { name: 'Import' }));
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Import' })).toHaveFocus());
+});
+
+it('returns focus to the artifact row when Back closes the phone preview', async () => {
+  const user = userEvent.setup();
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes('max-width'),
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  try {
+    renderApp('/artifacts', makeClient());
+    const row = await screen.findByRole('button', { name: /Weekly competitor summary/ });
+    await user.click(row);
+    await user.click(await screen.findByRole('button', { name: 'Back' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Weekly competitor summary/ })).toHaveFocus()
+    );
+  } finally {
+    window.matchMedia = originalMatchMedia;
+  }
+});
+
 register_ArtifactPreview_test_tsx_0();

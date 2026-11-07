@@ -2634,6 +2634,18 @@ describe('thread lifecycle and attribution (S7)', () => {
     expect(updateThread).toHaveBeenCalledTimes(2);
   });
 
+  it('returns focus to Rename thread when the rename bar is cancelled', async () => {
+    const user = userEvent.setup();
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient()
+    );
+    const rename = await screen.findByRole('button', { name: 'Rename thread' });
+    await user.click(rename);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(rename).toHaveFocus();
+  });
+
   it('does not project an archive until Core returns the archived thread', async () => {
     const user = userEvent.setup();
     const archiveResult = createDeferred<typeof THREAD>();

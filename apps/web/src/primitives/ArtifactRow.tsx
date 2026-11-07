@@ -1,3 +1,4 @@
+import type { Ref } from 'react';
 import { Icon, type IconName } from './Icon';
 
 export interface ArtifactRowProps {
@@ -13,6 +14,8 @@ export interface ArtifactRowProps {
   time?: string;
   /** Row click opens the artifact back in the main flow. */
   onOpen?: () => void;
+  /** Button reference used to restore focus when a preview closes. */
+  buttonRef?: Ref<HTMLButtonElement>;
 }
 
 /**
@@ -28,6 +31,7 @@ export function ArtifactRow({
   removed,
   time,
   onOpen,
+  buttonRef,
 }: ArtifactRowProps) {
   const content = (
     <>
@@ -46,6 +50,7 @@ export function ArtifactRow({
   if (onOpen) {
     return (
       <button
+        ref={buttonRef}
         type="button"
         onClick={onOpen}
         className="flex w-full items-center gap-3 rounded-ok px-2 py-1.5 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"

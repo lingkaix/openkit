@@ -816,3 +816,16 @@ function register_ConversationGoalGroups_test_tsx_0() {
   });
 }
 register_ConversationGoalGroups_test_tsx_0();
+
+it('returns focus to Search when Escape closes the search overlay', async () => {
+  const user = userEvent.setup();
+  renderAssistantNavigation(vi.fn());
+  const trigger = await screen.findByRole('button', { name: 'Search' });
+  await user.click(trigger);
+  const field = screen.getByRole('searchbox', { name: 'Search' });
+  field.focus();
+  expect(screen.getByRole('region', { name: 'Search' })).toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('region', { name: 'Search' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});

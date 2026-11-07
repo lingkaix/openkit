@@ -468,7 +468,7 @@ export function GuidedSubscriptionSetup({
   });
   const frozen = request !== null;
   return (
-    <div id="guided-subscription-setup">
+    <div id="guided-subscription-setup" tabIndex={-1} className="outline-none">
       <Card className="flex min-w-0 flex-col gap-3" aria-label="Guided subscription setup">
         <h3 className="text-sm font-bold text-fg-strong">Add subscription Provider</h3>
         <Select

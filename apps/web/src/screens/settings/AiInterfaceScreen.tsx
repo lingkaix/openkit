@@ -520,11 +520,12 @@ function GatewayNotSetUp({
                   className="min-h-11"
                   variant="outline"
                   aria-label={`Set up ${provider.displayName}`}
-                  onPress={() =>
-                    document.getElementById('guided-subscription-setup')?.scrollIntoView({
-                      block: 'start',
-                    })
-                  }
+                  onPress={() => {
+                    const target = document.getElementById('guided-subscription-setup');
+                    if (!(target instanceof HTMLElement)) return;
+                    target.scrollIntoView({ block: 'start' });
+                    target.focus({ preventScroll: true });
+                  }}
                 >
                   Set up
                 </Button>

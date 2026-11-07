@@ -164,6 +164,10 @@ export function ArtifactsScreen() {
   const { connected } = useConnection();
   const disconnected = !connected;
   const phone = usePhoneLayout();
+  const importButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreImportFocus = useRef(false);
+  const artifactButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const restoreArtifactId = useRef<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [title, setTitle] = useState('');
   const [mediaType, setMediaType] = useState('');
@@ -281,7 +285,22 @@ export function ArtifactsScreen() {
     setThreadId('');
   }, [selectedId]);
 
+  useEffect(() => {
+    if (importing || !restoreImportFocus.current) return;
+    restoreImportFocus.current = false;
+    importButtonRef.current?.focus();
+  }, [importing]);
+
+  useEffect(() => {
+    const id = restoreArtifactId.current;
+    if (!id || selectedId || !phone) return;
+    const button = artifactButtonRefs.current.get(id);
+    restoreArtifactId.current = null;
+    button?.focus();
+  }, [phone, selectedId]);
+
   function resetImportForm() {
+    restoreImportFocus.current = true;
     setImporting(false);
     setTitle('');
     setMediaType('');
@@ -382,6 +401,7 @@ export function ArtifactsScreen() {
 
   function closePreview() {
     if (!workspaceId) return;
+    if (phone && selectedId) restoreArtifactId.current = selectedId;
     navigate(`/artifacts?${new URLSearchParams({ workspaceId }).toString()}`);
   }
 
@@ -526,6 +546,7 @@ export function ArtifactsScreen() {
             </Button>
             {importing ? null : (
               <Button
+                ref={importButtonRef}
                 size="sm"
                 className="min-h-11"
                 isDisabled={importActionBlocked}
@@ -677,6 +698,10 @@ export function ArtifactsScreen() {
                           <ArtifactRow
                             name={item.title}
                             time={formatUpdatedAt(item.updatedAt)}
+                            buttonRef={(node) => {
+                              if (node) artifactButtonRefs.current.set(item.id, node);
+                              else artifactButtonRefs.current.delete(item.id);
+                            }}
                             onOpen={() => openArtifact(item.id)}
                           />
                         </div>

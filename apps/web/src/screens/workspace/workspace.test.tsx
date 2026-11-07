@@ -3455,6 +3455,37 @@ describe('Knowledge (board 14)', () => {
     expect(await screen.findByText(/No notebook pages yet/i)).toBeInTheDocument();
   });
 
+  it('returns focus to Add knowledge when the new page form is cancelled', async () => {
+    const user = userEvent.setup();
+    renderApp('/knowledge', makeClient());
+    const add = await screen.findByRole('button', { name: 'Add knowledge' });
+    await user.click(add);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(add).toHaveFocus();
+  });
+
+  it('returns focus to Edit when page editing is cancelled', async () => {
+    const user = userEvent.setup();
+    renderApp(
+      '/knowledge',
+      makeClient({
+        core: {
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+            notebookRevision: 'notebook-fixture-revision',
+            pages: [KNOWLEDGE_LIST_PAGE],
+          }),
+        },
+      })
+    );
+    const edit = await screen.findByRole('button', {
+      name: 'Edit Write in English; keep answers concise',
+    });
+    await user.click(edit);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(edit).toHaveFocus();
+  });
+
   it('creates a knowledge entry from the add form', async () => {
     const user = userEvent.setup();
     const createKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY);

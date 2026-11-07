@@ -738,4 +738,28 @@ describe('P4 timeline disclosure', () => {
       expect(screen.queryByRole('button', { name: 'Load earlier' })).not.toBeInTheDocument()
     );
   });
+
+  it('moves focus into Details for Show steps and restores the toggle on Escape', async () => {
+    const user = userEvent.setup();
+    installScrollSpy();
+    renderAt(
+      THREAD_PATH,
+      makeClient({
+        navigation: [navigationRow(THREAD_ID, 'Ship the notes', 'chat')],
+        threadItems: vi.fn().mockResolvedValue({
+          items: [userMessage(), assistantMessage(), toolCall(TOOL_ITEM_ID, TOOL_TITLE)],
+          nextCursor: null,
+        }),
+        dashboard: vi.fn().mockResolvedValue(threadDashboard()),
+      })
+    );
+    const showSteps = await screen.findByRole('button', { name: 'Show steps' });
+    await user.click(showSteps);
+    const steps = document.getElementById(`turn-steps-${TURN_ID}`);
+    expect(steps).not.toBeNull();
+    await waitFor(() => expect(steps).toHaveFocus());
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show Details' })).toHaveFocus();
+  });
 });

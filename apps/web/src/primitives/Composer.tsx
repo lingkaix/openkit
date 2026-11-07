@@ -234,7 +234,24 @@ export function Composer({
   const onVoiceBusy = useCallback((busy: boolean) => setVoiceBusy(busy), []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const restoreMessageFocus = useRef(false);
+  const confirmingFileHandoff = useRef(false);
   const disabled = Boolean(disabledReason) || isSubmitting || pending || fileHandoff !== null;
+
+  function dismissFileHandoff() {
+    if (confirmingFileHandoff.current) {
+      confirmingFileHandoff.current = false;
+      return;
+    }
+    restoreMessageFocus.current = true;
+    setFileHandoff(null);
+  }
+
+  useEffect(() => {
+    if (fileHandoff !== null || !restoreMessageFocus.current) return;
+    restoreMessageFocus.current = false;
+    textareaRef.current?.focus();
+  }, [fileHandoff]);
   const selectedTarget = targetCatalog?.targets.find((target) => target.targetRef === targetRef);
   const selectedModel = selectedTarget?.logicalModels.find((model) => model.id === logicalModelId);
   const effortLevels = selectedModel?.capabilities.includes('reasoning')
@@ -416,6 +433,7 @@ export function Composer({
   /** One existing work handoff confirmation admits only the exact displayed brief and selected files. */
   function confirmFileHandoff() {
     if (!fileHandoff) return;
+    confirmingFileHandoff.current = true;
     const accepted = fileHandoff;
     const draft: ComposerDraft = { ...accepted.draft, fileHandoffConfirmed: true };
     confirmedFileHandoff.current = { draft, workspaceId: accepted.workspaceId };
@@ -645,7 +663,7 @@ export function Composer({
       <ModalOverlay
         isOpen={fileHandoff !== null}
         onOpenChange={(open) => {
-          if (!open) setFileHandoff(null);
+          if (!open) dismissFileHandoff();
         }}
         isDismissable
         className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-6"
@@ -672,7 +690,7 @@ export function Composer({
             </ul>
             <div className="flex justify-end gap-2">
               <AriaButton
-                onPress={() => setFileHandoff(null)}
+                onPress={dismissFileHandoff}
                 className="rounded-ok border border-border px-3 py-2"
               >
                 Cancel

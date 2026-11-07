@@ -1,7 +1,7 @@
 import { createRequestId } from '@openkit/core-client';
 import { KnowledgeBrowser } from '@openkit/knowledge-ui';
 import { type QueryClient, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link } from 'react-aria-components';
 import { useConnection } from '../../app/core-client';
 import {
@@ -269,14 +269,21 @@ export function KnowledgeScreen() {
   const selectedSourceReady =
     selectedSourceAvailable && (!addDraft.sourceReference || !sourcesCatalog.isFetching);
 
+  const addKnowledgeRef = useRef<HTMLButtonElement>(null);
+  const editButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+
   function resetForm(targetId: string) {
+    const restoreAdd = targetId === workspaceId && addDraft.adding;
     clearAddDraft(targetId);
     if (create.variables?.workspaceId === targetId) create.reset();
+    if (restoreAdd) addKnowledgeRef.current?.focus();
   }
 
   function settleEdit(targetId: string) {
+    const pageId = targetId === workspaceId ? editing?.id : undefined;
     clearEditDraft(targetId);
     if (update.variables?.workspaceId === targetId) update.reset();
+    if (pageId) editButtonRefs.current.get(pageId)?.focus();
   }
 
   /** Create one page, or replay the exact Workspace-bound command after unknown failure. */
@@ -466,6 +473,7 @@ export function KnowledgeScreen() {
           subtitle="What OpenKit saves and supplies to agents. Everything here is explicit — you can edit or remove any of it."
           actions={
             <Button
+              ref={addKnowledgeRef}
               size="sm"
               isDisabled={entryWriteBlocked}
               onPress={() => {
@@ -615,6 +623,10 @@ export function KnowledgeScreen() {
                       </p>
                       <div className="flex shrink-0 gap-2">
                         <Button
+                          ref={(node) => {
+                            if (node) editButtonRefs.current.set(page.id, node);
+                            else editButtonRefs.current.delete(page.id);
+                          }}
                           size="sm"
                           variant="quiet"
                           aria-label={`Edit ${display.title}`}
