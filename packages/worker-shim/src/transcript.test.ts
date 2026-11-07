@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkerTranscriptRecordSchema } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { type WorkerLineage, WorkerTranscriptWriter } from './transcript.js';
+import { type WorkerLineage, WorkerTranscriptWriter } from './index.js';
+import type { RuntimeObservation } from './runtime-capture.js';
 
 const appendControl = vi.hoisted(() => ({
   completed: [] as string[],
@@ -323,6 +325,180 @@ describe('WorkerTranscriptWriter', () => {
       appendControl.holdNext = false;
       appendControl.release = null;
       process.off('unhandledRejection', observeUnhandled);
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses ordinary events after writeTerminalOutcome seals the transcript without writing to disk', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-sealed-'));
+    try {
+      const writer = new WorkerTranscriptWriter({ lineage, sessionDir });
+      expect(writer.eventTranscriptSealed).toBe(false);
+
+      await writer.writeTerminalOutcome({ status: 'completed', stopReason: 'completed' });
+      expect(writer.eventTranscriptSealed).toBe(true);
+      expect(writer.liveEventsIncomplete).toBe(false);
+
+      await expect(writer.writeAndAppendEvent({ type: 'worker.ready' })).rejects.toThrow(
+        'Worker transcript events are sealed after the terminal outcome.'
+      );
+      expect(writer.liveEventsIncomplete).toBe(false);
+      expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(1);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains the first stopLiveEvents reason and marks liveEventsIncomplete when sealed writes are attempted', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-stopped-'));
+    try {
+      const appendEvent = vi.fn(async () => undefined);
+      const writer = new WorkerTranscriptWriter({ appendEvent, lineage, sessionDir });
+      const firstReason = new Error('first cancellation reason');
+      const secondReason = new Error('second cancellation reason');
+
+      writer.stopLiveEvents(firstReason);
+      writer.stopLiveEvents(secondReason);
+      expect(writer.eventTranscriptSealed).toBe(true);
+      expect(writer.liveEventsIncomplete).toBe(false);
+
+      await expect(writer.writeAndAppendEvent({ type: 'worker.ready' })).rejects.toBe(firstReason);
+      expect(writer.liveEventsIncomplete).toBe(true);
+      await expect(
+        writer.writeObservation({
+          content: { state: 'off' },
+          fact: {
+            coverage: 'off',
+            family: 'primary-content',
+            kind: 'coverage',
+            runtimeOriginRef: null,
+          },
+          observationId: 'obs_stopped',
+          observedAt: '2026-10-21T00:00:00.000Z',
+          sourceRef: 'source_stopped',
+          sourceSequence: 0,
+        })
+      ).rejects.toBe(firstReason);
+      expect(appendEvent).not.toHaveBeenCalled();
+      expect(existsSync(join(sessionDir, 'events.jsonl'))).toBe(false);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses runtime observations when live control is absent or after terminal sealing', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-obs-control-'));
+    const observation: RuntimeObservation = {
+      content: { state: 'off' },
+      fact: {
+        coverage: 'off',
+        family: 'primary-content',
+        kind: 'coverage',
+        runtimeOriginRef: null,
+      },
+      observationId: 'obs_no_live',
+      observedAt: '2026-10-21T00:00:00.000Z',
+      sourceRef: 'source_no_live',
+      sourceSequence: 0,
+    };
+    try {
+      const withoutLive = new WorkerTranscriptWriter({ lineage, sessionDir });
+      await expect(withoutLive.writeObservation(observation)).rejects.toThrow(
+        'Runtime observations require unsealed live worker control.'
+      );
+      expect(existsSync(join(sessionDir, 'events.jsonl'))).toBe(false);
+
+      const withLive = new WorkerTranscriptWriter({
+        appendEvent: async () => undefined,
+        lineage,
+        sessionDir,
+      });
+      await withLive.writeTerminalOutcome({ status: 'completed', stopReason: 'completed' });
+      await expect(withLive.writeObservation(observation)).rejects.toThrow(
+        'Runtime observations require unsealed live worker control.'
+      );
+      expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(1);
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses un-admitted or descriptor-mismatched observation bodies before advancing sequence or writing files', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-obs-mismatch-'));
+    const body = Buffer.from('admitted observation payload');
+    const sha256 = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+    const appendEvent = vi.fn(async () => undefined);
+    const writer = new WorkerTranscriptWriter({ appendEvent, lineage, sessionDir });
+    const baseFact: RuntimeObservation['fact'] = {
+      kind: 'assistant',
+      messageRef: 'msg_1',
+      phase: 'completed',
+      representation: 'snapshot',
+      runtimeOriginRef: null,
+    };
+
+    try {
+      await expect(
+        writer.writeObservation(
+          {
+            content: { state: 'off' },
+            fact: baseFact,
+            observationId: 'obs_unadmitted',
+            observedAt: '2026-10-21T00:00:00.000Z',
+            sourceRef: 'source_mismatch',
+            sourceSequence: 0,
+          },
+          body
+        )
+      ).rejects.toThrow('Runtime observation body was not admitted.');
+
+      for (const invalidContent of [
+        {
+          boundary: 'runtime.assistant.text' as const,
+          bytes: body.byteLength + 1,
+          chunkCount: 1,
+          mediaType: 'text/plain',
+          sha256,
+          state: 'expected' as const,
+        },
+        {
+          boundary: 'runtime.assistant.text' as const,
+          bytes: body.byteLength,
+          chunkCount: 1,
+          mediaType: 'text/plain',
+          sha256: `sha256:${'0'.repeat(64)}`,
+          state: 'expected' as const,
+        },
+        {
+          boundary: 'runtime.assistant.text' as const,
+          bytes: body.byteLength,
+          chunkCount: 2,
+          mediaType: 'text/plain',
+          sha256,
+          state: 'expected' as const,
+        },
+      ]) {
+        await expect(
+          writer.writeObservation(
+            {
+              content: invalidContent,
+              fact: baseFact,
+              observationId: 'obs_mismatch',
+              observedAt: '2026-10-21T00:00:00.000Z',
+              sourceRef: 'source_mismatch',
+              sourceSequence: 0,
+            },
+            body
+          )
+        ).rejects.toThrow('Runtime observation body does not match its descriptor.');
+      }
+
+      expect(appendEvent).not.toHaveBeenCalled();
+      expect(existsSync(join(sessionDir, 'events.jsonl'))).toBe(false);
+
+      const validRecord = await writer.writeAndAppendEvent({ type: 'worker.ready' });
+      expect(validRecord.sequence).toBe(0);
+    } finally {
       rmSync(sessionDir, { recursive: true, force: true });
     }
   });

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { expect, it, vi } from 'vitest';
-import { LIFECYCLE_DEFAULTS } from './lifecycle-deadline.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './index.js';
 
 vi.mock('node:fs', () => ({ readFileSync: vi.fn(() => 'max 100000\n') }));
 vi.mock('node:os', () => ({ availableParallelism: vi.fn(() => 4) }));
@@ -55,4 +55,32 @@ it.each([
   '100000 100000 extra',
 ])('serializes native startup for malformed cpu.max %j', async (quota) => {
   expect(await startupDefault(8, quota)).toBe(1);
+});
+
+it('reserves the cleanup tail from workRemainingMs and clamps an oversized tail to the budget', () => {
+  let now = 1_000;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  try {
+    const deadline = new LifecycleDeadline(100, 30);
+    expect(deadline.remainingMs()).toBe(100);
+    expect(deadline.remainingMs(40)).toBe(40);
+    expect(deadline.workRemainingMs()).toBe(70);
+    expect(deadline.workRemainingMs(50)).toBe(50);
+
+    now = 1_075;
+    expect(deadline.remainingMs()).toBe(25);
+    expect(deadline.remainingMs(10)).toBe(10);
+    expect(deadline.workRemainingMs()).toBe(0);
+    expect(deadline.workRemainingMs(10)).toBe(0);
+
+    now = 1_150;
+    expect(deadline.remainingMs()).toBe(0);
+    expect(deadline.workRemainingMs()).toBe(0);
+
+    const oversizedTail = new LifecycleDeadline(80, 200);
+    expect(oversizedTail.remainingMs()).toBe(80);
+    expect(oversizedTail.workRemainingMs()).toBe(0);
+  } finally {
+    clock.mockRestore();
+  }
 });

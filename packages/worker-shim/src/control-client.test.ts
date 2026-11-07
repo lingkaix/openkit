@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
+import { WorkerControlClient, WorkerControlError, type WorkerControlFetch } from './index.js';
 
 const lineage: WorkerLineage = {
   agentSessionId: 'as_00000000-0000-750f-a81e-1cbfbea96819',
@@ -747,5 +747,135 @@ describe('WorkerControlClient', () => {
       ])
     ).resolves.toEqual([{}, { accepted: true }]);
     expect(reconnectAttempts).toBe(1);
+  });
+
+  it('aborts an in-flight request when the supervisor signal fires and removes its listener', async () => {
+    const controller = new AbortController();
+    const abortReason = new Error('supervisor cancelled in-flight request');
+    let fetchSignal: AbortSignal | undefined;
+    let notifyEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      notifyEntered = resolve;
+    });
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      fetch: async (_url, init) => {
+        fetchSignal = init.signal;
+        notifyEntered();
+        return new Promise(() => undefined);
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+
+    const pending = client.recordArtifactNotice(notice, controller.signal);
+    await entered;
+    controller.abort(abortReason);
+
+    await expect(pending).rejects.toBe(abortReason);
+    expect(fetchSignal?.aborted).toBe(true);
+    expect(fetchSignal?.reason).toBe(abortReason);
+  });
+
+  it('drops a queued heartbeat aborted before its turn without advancing sequence or poisoning the queue', async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted!: () => void;
+    const waitFirstStarted = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const sequences: number[] = [];
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      fetch: async (_url, init) => {
+        const body = JSON.parse(init.body) as { sequence: number };
+        sequences.push(body.sequence);
+        if (sequences.length === 1) {
+          firstStarted();
+          await firstGate;
+        }
+        return { ok: true, status: 200, text: async () => '{"accepted":true}' };
+      },
+      lineage,
+      token: 'token_control_1',
+    });
+
+    const first = client.recordHeartbeat({ status: 'starting' });
+    await waitFirstStarted;
+
+    const secondController = new AbortController();
+    const abortReason = new Error('queued heartbeat cancelled');
+    const second = client.recordHeartbeat({ status: 'running' }, secondController.signal);
+    secondController.abort(abortReason);
+    releaseFirst();
+
+    await expect(first).resolves.toEqual({ accepted: true });
+    await expect(second).rejects.toBe(abortReason);
+    await expect(client.recordHeartbeat({ status: 'completed' })).resolves.toEqual({
+      accepted: true,
+    });
+    expect(sequences).toEqual([0, 1]);
+  });
+
+  it('stops retrying retryable failures after disablePostLaunchRecovery is called', async () => {
+    const { fetch, requests } = createFetchFixture([
+      {
+        body: { code: 'worker_control_reconnect_required', message: 'Reconnect required.' },
+        ok: false,
+        status: 503,
+      },
+      { body: { accepted: true }, ok: true, status: 200 },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+    client.enablePostLaunchRecovery();
+    client.disablePostLaunchRecovery();
+
+    await expect(client.recordArtifactNotice(notice)).rejects.toMatchObject({
+      code: 'worker_control_reconnect_required',
+      status: 503,
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('normalizes non-JSON and code-less error responses into bounded WorkerControlError codes', async () => {
+    const { fetch, requests } = createFetchFixture([
+      { ok: false, status: 502, text: '<html>Bad Gateway</html>' },
+      { body: { code: '   ', message: 'Upstream gateway error.' }, ok: false, status: 500 },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control///',
+      fetch,
+      lineage,
+      token: 'token_control_1',
+    });
+
+    await expect(client.recordArtifactNotice(notice)).rejects.toEqual(
+      expect.objectContaining({
+        cause: undefined,
+        code: 'worker_control_http_502',
+        name: 'WorkerControlError',
+        status: 502,
+      })
+    );
+    await expect(client.recordArtifactNotice(notice)).rejects.toEqual(
+      expect.objectContaining({
+        cause: 'Upstream gateway error.',
+        code: 'http_500',
+        name: 'WorkerControlError',
+        status: 500,
+      })
+    );
+    expect(requests.map((request) => request.url)).toEqual([
+      '/worker-control/artifacts',
+      '/worker-control/artifacts',
+    ]);
+    expect(new WorkerControlError('custom_code', 400, null)).toBeInstanceOf(Error);
   });
 });
