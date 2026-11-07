@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   CHANNEL_FRAME_MAX_BYTES,
@@ -6,6 +8,7 @@ import {
   encodeFrame,
   HostRequestSchema,
 } from './channel.ts';
+import { HOST_BIN, HostProcess } from './test-support/host-process.ts';
 
 const credential = 'A'.repeat(43);
 const open = {
@@ -124,5 +127,31 @@ describe('encodeFrame', () => {
     expect(() =>
       encodeFrame({ event: 'extension_error', message: 'x'.repeat(CHANNEL_FRAME_MAX_BYTES) }, [])
     ).toThrow();
+  });
+});
+
+describe('openkit-pi-runtime-host binary boundary', () => {
+  it('refuses CLI arguments with exit code 64', () => {
+    const result = spawnSync(process.execPath, ['--no-warnings', HOST_BIN, '--unexpected'], {
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(64);
+    expect(result.stderr).toBe('Pi runtime host accepts no arguments.\n');
+  });
+
+  it('replies with a bounded invalid_request error when a request line exceeds CHANNEL_REQUEST_MAX_BYTES', async () => {
+    const host = HostProcess.start({ ...process.env });
+    try {
+      host.writeRaw(`${'a'.repeat(CHANNEL_REQUEST_MAX_BYTES + 1)}\n`);
+      await host.waitUntil(() => host.orphanResponses.length === 1);
+      expect(host.orphanResponses[0]).toEqual({
+        error: { code: 'invalid_request', message: 'Request exceeded its bound.' },
+        id: null,
+        ok: false,
+      });
+    } finally {
+      host.kill();
+      await host.exited;
+    }
   });
 });

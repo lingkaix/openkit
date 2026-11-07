@@ -4191,10 +4191,19 @@ describe('W4 round-five proof regressions', () => {
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let enteredInterrupt!: () => void;
+    const interruptEntered = new Promise<void>((resolve) => {
+      enteredInterrupt = resolve;
+    });
+    let primaryEnded!: () => void;
+    const collectionDone = new Promise<void>((resolve) => {
+      primaryEnded = resolve;
+    });
     const adapter = createOpenCodeAdapter({
       loadClient: () =>
         transformingModule({
           interrupt: async () => {
+            enteredInterrupt();
             await held;
             return { interrupted: false };
           },
@@ -4202,9 +4211,24 @@ describe('W4 round-five proof regressions', () => {
     });
     const session = await adapter.openSession(openInput(layout, creds));
     sessions.push(session);
-    const turn = await session.startTurn(turnInput(layout, creds, 'delayed', 'model'));
+    const input = turnInput(layout, creds, 'delayed', 'model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        emit: async (record) => {
+          if (
+            record.fact.kind === 'coverage' &&
+            record.fact.family === 'primary-content' &&
+            record.fact.coverage === 'ended'
+          ) {
+            primaryEnded();
+          }
+        },
+      },
+    });
     const interruption = turn.interrupt();
-    await delay(800);
+    await Promise.all([interruptEntered, collectionDone]);
     await expect(session.startTurn(turnInput(layout, creds, 'competing', 'model'))).rejects.toThrow(
       /active Turn/
     );

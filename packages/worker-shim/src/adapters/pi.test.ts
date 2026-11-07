@@ -1969,7 +1969,7 @@ describe('Pi controlled channel faults', () => {
     const delayed = await peer('delayed-duplicate');
     const later = await delayed.session.startTurn(turnInput(delayed.dirs));
     expect(await later.settled).toMatchObject({ status: 'completed' });
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await waitFor(() => delayed.session.childState() === 'unknown');
     expect((await delayed.session.nativeHandle()).state).toBe('unknown');
     expect(delayed.session.childState()).toBe('unknown');
     await expect(delayed.session.close()).rejects.toThrow('Pi host close was not proved.');

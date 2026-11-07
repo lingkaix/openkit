@@ -82,7 +82,15 @@ try {
   if (scenario.startsWith('idle-')) await observed;
   const unproved = scenario.endsWith('-unproved');
   const originalStop = internals.stopProcess.bind(session);
-  if (unproved) internals.stopProcess = async () => false;
+  let resolveEnteredStop!: () => void;
+  const enteredStop = new Promise<void>((resolve) => {
+    resolveEnteredStop = resolve;
+  });
+  internals.stopProcess = async (...args: Parameters<typeof originalStop>) => {
+    resolveEnteredStop();
+    if (unproved) return false;
+    return originalStop(...args);
+  };
   const stoppedHost =
     scenario.startsWith('close') ||
     scenario.startsWith('content') ||
@@ -103,7 +111,10 @@ try {
       () => 'fulfilled',
       () => 'rejected'
     );
-    await delay(10_500);
+    await enteredStop;
+    if (unproved) {
+      assert.equal(await checkedClose, 'rejected');
+    }
     assert.equal(
       outcome,
       unproved ? 'rejected' : 'pending',

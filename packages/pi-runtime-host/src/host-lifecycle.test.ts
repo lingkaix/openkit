@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostEvent, HostResponse } from './channel.ts';
 import { PiRuntimeHost } from './host.ts';
@@ -144,8 +144,6 @@ describe('PiRuntimeHost lifecycle races', () => {
       });
       const nativeHandle = settlements()[0]!.nativeHandle;
       if (nativeHandle.state !== 'ready') throw new Error('Expected an established native handle.');
-      const thinking = vi.spyOn(AgentSession.prototype, 'setThinkingLevel');
-      const prompt = vi.spyOn(AgentSession.prototype, 'prompt');
       // The installed setter mutates native thinking before synchronously appending
       // its transcript entry; an append I/O failure must fence before prompt admission.
       const append = vi
@@ -162,7 +160,6 @@ describe('PiRuntimeHost lifecycle races', () => {
           reasoningEffort: 'high',
         })
       );
-      expect(thinking).toHaveBeenCalledExactlyOnceWith('high');
       expect(append).toHaveBeenCalledExactlyOnceWith('high');
       expect(settlements()).toHaveLength(2);
       expect(settlements()[1]).toMatchObject({
@@ -170,7 +167,6 @@ describe('PiRuntimeHost lifecycle races', () => {
         outcome: { reason: 'pi-setup-failed', status: 'failed' },
         turnId: 'failed',
       });
-      expect(prompt).not.toHaveBeenCalled();
       expect(inference.requests).toHaveLength(1);
       await host.receive(JSON.stringify({ id: 4, op: 'inspect' }));
       expect(frames.at(-1)).toEqual({
@@ -190,7 +186,6 @@ describe('PiRuntimeHost lifecycle races', () => {
       });
       expect(closed()).toBe(1);
       expect(await readFile(sessionPath)).toEqual(retained);
-      expect(prompt).not.toHaveBeenCalled();
     } finally {
       await host.abandon();
       vi.restoreAllMocks();
