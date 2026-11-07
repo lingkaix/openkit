@@ -140,43 +140,48 @@ describe('addressed retained Item required semantics', () => {
     ['Item revision', 'future-item-authority-v1'],
     ['addressed event', ['future-item-authority-v1']],
     ['addressed event', 'future-item-authority-v1'],
-  ] as const)('refuses %s for requiredFeatures=%j before acknowledging another reference', async (operation, requiredFeatures) => {
-    const f = await fixture();
-    // Contract Evolution: descriptive additions and an empty required-feature list remain readable.
-    const descriptive = {
-      ...writeRetainedV1(f.item),
-      operatorNote: { purpose: 'descriptive only' },
-      requiredFeatures: [],
-    };
-    await appendRetainedItem(f, descriptive);
-    expect(readNativeProductEntries(f.scope, f.turn.id, 'item').at(-1)!.value).toEqual(descriptive);
-    const candidate = { ...f.item, text: 'Descriptive revision acknowledged' };
-    await expect(f.store.createItem(candidate)).resolves.toEqual({
-      ...candidate,
-      operatorNote: descriptive.operatorNote,
-      requiredFeatures: [],
-    });
-    await expect(publishEvent(f, candidate)).resolves.toMatchObject({
-      event: 'item.completed',
-      data: { itemId: candidate.id },
-    });
+  ] as const)(
+    'refuses %s for requiredFeatures=%j before acknowledging another reference',
+    async (operation, requiredFeatures) => {
+      const f = await fixture();
+      // Contract Evolution: descriptive additions and an empty required-feature list remain readable.
+      const descriptive = {
+        ...writeRetainedV1(f.item),
+        operatorNote: { purpose: 'descriptive only' },
+        requiredFeatures: [],
+      };
+      await appendRetainedItem(f, descriptive);
+      expect(readNativeProductEntries(f.scope, f.turn.id, 'item').at(-1)!.value).toEqual(
+        descriptive
+      );
+      const candidate = { ...f.item, text: 'Descriptive revision acknowledged' };
+      await expect(f.store.createItem(candidate)).resolves.toEqual({
+        ...candidate,
+        operatorNote: descriptive.operatorNote,
+        requiredFeatures: [],
+      });
+      await expect(publishEvent(f, candidate)).resolves.toMatchObject({
+        event: 'item.completed',
+        data: { itemId: candidate.id },
+      });
 
-    // Fault injection starts only after both public publication controls have acknowledged success.
-    await appendRetainedItem(f, { ...writeRetainedV1(candidate), requiredFeatures });
-    const before = committedCut(f);
-    // The established complete-history reader supplies an independent refusal control.
-    expect(() => readNativeProductEntries(f.scope, f.turn.id, 'item')).toThrow();
+      // Fault injection starts only after both public publication controls have acknowledged success.
+      await appendRetainedItem(f, { ...writeRetainedV1(candidate), requiredFeatures });
+      const before = committedCut(f);
+      // The established complete-history reader supplies an independent refusal control.
+      expect(() => readNativeProductEntries(f.scope, f.turn.id, 'item')).toThrow();
 
-    const attempt =
-      operation === 'Item revision'
-        ? f.store.createItem({ ...candidate, text: 'Must not be acknowledged' })
-        : publishEvent(f, candidate);
-    const [outcome] = await Promise.allSettled([attempt]);
-    // Contract Evolution, Closed Core, Open Extension: unsupported required semantics fail closed.
-    expect.soft(outcome!.status).toBe('rejected');
-    // Durable Execution, Commit Rule: refusal creates no Item/event reference or Turn revision.
-    expect(committedCut(f)).toEqual(before);
-  });
+      const attempt =
+        operation === 'Item revision'
+          ? f.store.createItem({ ...candidate, text: 'Must not be acknowledged' })
+          : publishEvent(f, candidate);
+      const [outcome] = await Promise.allSettled([attempt]);
+      // Contract Evolution, Closed Core, Open Extension: unsupported required semantics fail closed.
+      expect.soft(outcome!.status).toBe('rejected');
+      // Durable Execution, Commit Rule: refusal creates no Item/event reference or Turn revision.
+      expect(committedCut(f)).toEqual(before);
+    }
+  );
 });
 
 /** Reads only connection state; a borrowed wrapper has no ownership of these settings or SQL. */
@@ -248,40 +253,39 @@ describe('borrowed native product reader binding', () => {
     }
   });
 
-  it.each([
-    'path',
-    'owner',
-    'closed connection',
-  ] as const)('refuses a mismatched %s without acquiring another connection or touching the supplied owner', async (mismatch) => {
-    const f = await fixture();
-    const sibling = await f.store.createWorkspace('Another actual Workspace owner');
-    const siblingScope = nativeProductScope(f.root, {
-      kind: 'workspace',
-      workspaceId: sibling.id,
-    });
-    const sqlite = openWorkspaceDb(f.root, f.workspace.id).sqlite;
-    const cut = committedCut(f);
-    const state = connectionState(sqlite);
-    const path = mismatch === 'path' ? siblingScope.path : f.scope.path;
-    const owner = mismatch === 'owner' ? siblingScope.owner : f.scope.owner;
-    if (mismatch === 'closed connection') sqlite.close();
-    const readers = observation.readers.length;
-    try {
-      // A returning constructor must not leak a newly opened reader in the baseline case.
-      expect
-        .soft(() => {
-          const unexpected = openControlStoreProductReadHandle(path, owner, sqlite);
-          unexpected.close();
-        })
-        .toThrow();
-      expect(observation.readers).toHaveLength(readers);
-      if (mismatch === 'closed connection') expect(sqlite.open).toBe(false);
-      else expect(connectionState(sqlite)).toEqual(state);
-      expect(committedCut(f)).toEqual(cut);
-    } finally {
-      if (sqlite.open) sqlite.close();
+  it.each(['path', 'owner', 'closed connection'] as const)(
+    'refuses a mismatched %s without acquiring another connection or touching the supplied owner',
+    async (mismatch) => {
+      const f = await fixture();
+      const sibling = await f.store.createWorkspace('Another actual Workspace owner');
+      const siblingScope = nativeProductScope(f.root, {
+        kind: 'workspace',
+        workspaceId: sibling.id,
+      });
+      const sqlite = openWorkspaceDb(f.root, f.workspace.id).sqlite;
+      const cut = committedCut(f);
+      const state = connectionState(sqlite);
+      const path = mismatch === 'path' ? siblingScope.path : f.scope.path;
+      const owner = mismatch === 'owner' ? siblingScope.owner : f.scope.owner;
+      if (mismatch === 'closed connection') sqlite.close();
+      const readers = observation.readers.length;
+      try {
+        // A returning constructor must not leak a newly opened reader in the baseline case.
+        expect
+          .soft(() => {
+            const unexpected = openControlStoreProductReadHandle(path, owner, sqlite);
+            unexpected.close();
+          })
+          .toThrow();
+        expect(observation.readers).toHaveLength(readers);
+        if (mismatch === 'closed connection') expect(sqlite.open).toBe(false);
+        else expect(connectionState(sqlite)).toEqual(state);
+        expect(committedCut(f)).toEqual(cut);
+      } finally {
+        if (sqlite.open) sqlite.close();
+      }
     }
-  });
+  );
 });
 
 describe('retained native metadata reader lifetime', () => {

@@ -672,290 +672,289 @@ function admittedWorker(
 }
 
 /** Callback tests hold the outside worker effect after actual native admission publication. */
-it.each([
-  'fresh',
-  'selected-current',
-] as const)('binds the exact %s AgentSession before outside worker entry and acknowledgement', async (kind) => {
-  const coreDb = await createCoreDb();
-  const workspaceDb = createWorkspaceDb(coreDb);
-  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-  const sessionId =
-    kind === 'selected-current'
-      ? 'as_00000000-0000-754f-9277-4058a2a883d1'
-      : 'as_00000000-0000-7df9-8dd9-3222dd5f7145';
-  const at = '2026-10-06T00:00:00.000Z';
-  if (kind === 'selected-current')
-    await store.createAgentSession({
-      id: sessionId,
-      sessionCompatibilityKey: 'sha256:fixture',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      agentId: createTestAgentSetup().manifest.id,
-      status: 'idle',
-      message: null,
-      createdAt: at,
-      updatedAt: at,
-    });
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const running = runWorkerTurnLoop({
-    coreDb,
-    store,
-    workspaceDb,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    threadId: 'th_00000000-0000-7000-8000-000000000001',
-    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-    requestId: 'req_held',
-    requestInputHash: 'sha256:held',
-    reviewRequired: false,
-    prepare: () => preparedWorkerTurn(false),
-    reservedTurnId: 'tu_00000000-0000-7dd2-9b14-67b4800ebb85',
-    reserveTurn: () => ({ turnId: 'tu_00000000-0000-7dd2-9b14-67b4800ebb85' }),
-    startWorker: admittedWorker(
-      coreDb,
-      store,
-      'req_held',
-      sessionId,
-      'usr_00000000-0000-7000-8000-000000000001',
-      undefined,
-      {
-        observe: () => {
-          expect(
-            getWorkerCheckpoint(
-              workspaceDb,
-              'ws_00000000-0000-7000-8000-000000000001',
-              'th_00000000-0000-7000-8000-000000000001',
-              'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
-            )
-          ).toMatchObject({
-            stage: 'running_worker',
-            workerSessionId: sessionId,
-            stopReason: null,
-          });
-        },
-        execute: async () => {
-          entered.resolve();
-          await release.promise;
-        },
-      }
-    ),
-    awaitWorker: () => ({ stopReason: 'aborted' }),
-  });
-  try {
-    await Promise.race([entered.promise, running]);
-    expect(
-      getWorkerCheckpoint(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
-      )
-    ).toMatchObject({
-      stage: 'running_worker',
-      workerSessionId: sessionId,
-    });
-    release.resolve();
-    await running;
-    expect(
-      getWorkerCheckpoint(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
-      )
-    ).toMatchObject({
-      stage: 'aborted',
-      stopReason: 'aborted',
-      workerSessionId: sessionId,
-    });
-  } finally {
-    release.resolve();
-    await running.catch(() => {});
-    await shutdownControlStoreWorkerClient();
-    workspaceDb.sqlite.close();
-    coreDb.sqlite.close();
-  }
-});
-
-it.each([
-  'authority-denial',
-  'restart-cleanup',
-  'incomplete-lease',
-] as const)('preserves admitted interruption through %s and reopened classification without a second launch', async (failure) => {
-  const coreDb = await createCoreDb();
-  const workspaceDb = createWorkspaceDb(coreDb);
-  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-  const error = new TurnStartValidationError(
-    'workspace_access_denied',
-    'Workspace access denied.',
-    403
-  );
-  let launches = 0;
-  const sessionId = 'as_00000000-0000-74bb-aa9a-de1be4d761f4';
-  try {
-    await expect(
-      runWorkerTurnLoop({
-        coreDb,
-        store,
-        workspaceDb,
+it.each(['fresh', 'selected-current'] as const)(
+  'binds the exact %s AgentSession before outside worker entry and acknowledgement',
+  async (kind) => {
+    const coreDb = await createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const sessionId =
+      kind === 'selected-current'
+        ? 'as_00000000-0000-754f-9277-4058a2a883d1'
+        : 'as_00000000-0000-7df9-8dd9-3222dd5f7145';
+    const at = '2026-10-06T00:00:00.000Z';
+    if (kind === 'selected-current')
+      await store.createAgentSession({
+        id: sessionId,
+        sessionCompatibilityKey: 'sha256:fixture',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        requestId: 'req_interrupted',
-        requestInputHash: 'sha256:interrupted',
-        reviewRequired: false,
-        prepare: () => preparedWorkerTurn(false),
-        reservedTurnId: 'tu_00000000-0000-725e-ab73-6634f596ac13',
-        reserveTurn: () => ({ turnId: 'tu_00000000-0000-725e-ab73-6634f596ac13' }),
-        startWorker: admittedWorker(
+        agentId: createTestAgentSetup().manifest.id,
+        status: 'idle',
+        message: null,
+        createdAt: at,
+        updatedAt: at,
+      });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const running = runWorkerTurnLoop({
+      coreDb,
+      store,
+      workspaceDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      requestId: 'req_held',
+      requestInputHash: 'sha256:held',
+      reviewRequired: false,
+      prepare: () => preparedWorkerTurn(false),
+      reservedTurnId: 'tu_00000000-0000-7dd2-9b14-67b4800ebb85',
+      reserveTurn: () => ({ turnId: 'tu_00000000-0000-7dd2-9b14-67b4800ebb85' }),
+      startWorker: admittedWorker(
+        coreDb,
+        store,
+        'req_held',
+        sessionId,
+        'usr_00000000-0000-7000-8000-000000000001',
+        undefined,
+        {
+          observe: () => {
+            expect(
+              getWorkerCheckpoint(
+                workspaceDb,
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001',
+                'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
+              )
+            ).toMatchObject({
+              stage: 'running_worker',
+              workerSessionId: sessionId,
+              stopReason: null,
+            });
+          },
+          execute: async () => {
+            entered.resolve();
+            await release.promise;
+          },
+        }
+      ),
+      awaitWorker: () => ({ stopReason: 'aborted' }),
+    });
+    try {
+      await Promise.race([entered.promise, running]);
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
+        )
+      ).toMatchObject({
+        stage: 'running_worker',
+        workerSessionId: sessionId,
+      });
+      release.resolve();
+      await running;
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7dd2-9b14-67b4800ebb85'
+        )
+      ).toMatchObject({
+        stage: 'aborted',
+        stopReason: 'aborted',
+        workerSessionId: sessionId,
+      });
+    } finally {
+      release.resolve();
+      await running.catch(() => {});
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  }
+);
+
+it.each(['authority-denial', 'restart-cleanup', 'incomplete-lease'] as const)(
+  'preserves admitted interruption through %s and reopened classification without a second launch',
+  async (failure) => {
+    const coreDb = await createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const error = new TurnStartValidationError(
+      'workspace_access_denied',
+      'Workspace access denied.',
+      403
+    );
+    let launches = 0;
+    const sessionId = 'as_00000000-0000-74bb-aa9a-de1be4d761f4';
+    try {
+      await expect(
+        runWorkerTurnLoop({
           coreDb,
           store,
-          'req_interrupted',
-          sessionId,
-          'usr_00000000-0000-7000-8000-000000000001',
-          undefined,
-          {
-            interruptedRecovery: true,
-            execute: async (turnId) => {
-              launches++;
-              const at = new Date().toISOString();
-              const [attempt] = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                threadId: 'th_00000000-0000-7000-8000-000000000001',
-                turnId,
-              });
-              attempts.markSchedulerExecutionAttemptClosing(coreDb, {
-                attemptId: attempt!.attemptId,
-                cause: 'authority-revoked',
-              });
-              await terminalizeGovernedWorkerTurn({
-                store,
-                turnId,
-                agentSessionId: sessionId,
-                requestId: 'req_interrupted',
-                completedAt: at,
-                outcome: 'interrupted',
-                errorCode: 'worker_governance_restart_recovery',
-                message: 'Worker execution was interrupted during scheduler recovery.',
-              });
-              throw error;
-            },
-          }
-        ),
-        awaitWorker: () => ({ stopReason: 'completed' }),
-      })
-    ).rejects.toBe(error);
-    const checkpoint = getWorkerCheckpoint(
-      workspaceDb,
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'tu_00000000-0000-725e-ab73-6634f596ac13'
-    )!;
-    expect(checkpoint).toMatchObject({
-      stage: 'running_worker',
-      stopReason: null,
-      workerSessionId: sessionId,
-    });
-    const [original] = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, checkpoint);
-    const lineage = {
-      ...checkpoint,
-      agentSessionId: sessionId,
-      packageSnapshotId: original!.inputRef!,
-    };
-    expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
-    if (failure !== 'authority-denial') {
-      const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
-      await runNanoHostAttemptRecoveryMaintenance(coreDb, {
-        store,
-        executionBackend: runtime.turnExecutor.executionBackend!,
-        // The outside peer acknowledges deletion of only its modeled allocation.
-        cleanupBackendSession: async (identity) => {
-          expect(identity).toMatchObject({
-            agentSessionId: sessionId,
-            packageSnapshotId: original!.inputRef,
-          });
-        },
-        reconcileExecutions: async () => {},
-        prepareBackendCleanup: () => false,
-        restoreBackendSession: async () => {},
-        reconcileAcceptedFinalStatus: async () => {
-          throw new Error('No final was reported.');
-        },
-        projectRecoveredTurn: async (subject) => {
-          const turn = store.getTurnById(subject.turnId);
-          if (turn.status !== 'interrupted') throw new Error('Original interruption is missing.');
-          return { status: turn.status };
-        },
-      });
-      const closed = attempts.requireSchedulerExecutionAttempt(coreDb, original!.attemptId);
-      expect(closed).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
-      await endWorkerTurnJournalRelease(store, workspaceDb, checkpoint.turnId, closed.fenceRef!);
-      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
-    }
-    if (failure === 'incomplete-lease')
-      coreDb.sqlite
-        .prepare('UPDATE scheduler_execution_attempts SET agent_session_id=? WHERE turn_id=?')
-        .run('as_00000000-0000-7099-938c-16baf0c1baa4', checkpoint.turnId);
-    await shutdownControlStoreWorkerClient();
-    workspaceDb.sqlite.close();
-    coreDb.sqlite.close();
-    const reopenedCore = openCoreDb(coreDb.dataRoot);
-    const reopenedWorkspace = openWorkspaceDb(
-      coreDb.dataRoot,
-      'ws_00000000-0000-7000-8000-000000000001'
-    );
-    await openTestNativeWorkspace(reopenedWorkspace);
-    try {
-      const reopenedStore = await createDemoStore({ dataRoot: coreDb.dataRoot });
-      expect(
-        getWorkerCheckpoint(
-          reopenedWorkspace,
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001',
-          checkpoint.turnId
-        )
-      ).toEqual(checkpoint);
-      expect(
-        resolveInterruptedWorkerRetryDecision(
-          reopenedCore,
-          reopenedStore,
-          reopenedWorkspace,
-          checkpoint
-        ).status
-      ).toBe(
-        failure === 'restart-cleanup'
-          ? 'eligible'
-          : failure === 'authority-denial'
-            ? 'stale'
-            : 'recovery-required'
-      );
-      await expect(
-        classifyDirectTaskCheckpointAfterSchedulerRecovery({
-          coreDb: reopenedCore,
-          store: reopenedStore,
-          workspaceDb: reopenedWorkspace,
-          checkpoint,
+          workspaceDb,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          requestId: 'req_interrupted',
+          requestInputHash: 'sha256:interrupted',
+          reviewRequired: false,
+          prepare: () => preparedWorkerTurn(false),
+          reservedTurnId: 'tu_00000000-0000-725e-ab73-6634f596ac13',
+          reserveTurn: () => ({ turnId: 'tu_00000000-0000-725e-ab73-6634f596ac13' }),
+          startWorker: admittedWorker(
+            coreDb,
+            store,
+            'req_interrupted',
+            sessionId,
+            'usr_00000000-0000-7000-8000-000000000001',
+            undefined,
+            {
+              interruptedRecovery: true,
+              execute: async (turnId) => {
+                launches++;
+                const at = new Date().toISOString();
+                const [attempt] = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                  turnId,
+                });
+                attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+                  attemptId: attempt!.attemptId,
+                  cause: 'authority-revoked',
+                });
+                await terminalizeGovernedWorkerTurn({
+                  store,
+                  turnId,
+                  agentSessionId: sessionId,
+                  requestId: 'req_interrupted',
+                  completedAt: at,
+                  outcome: 'interrupted',
+                  errorCode: 'worker_governance_restart_recovery',
+                  message: 'Worker execution was interrupted during scheduler recovery.',
+                });
+                throw error;
+              },
+            }
+          ),
+          awaitWorker: () => ({ stopReason: 'completed' }),
         })
-      ).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(
-        getWorkerCheckpoint(
-          reopenedWorkspace,
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001',
-          checkpoint.turnId
-        )
-      ).toEqual(checkpoint);
-      expect(launches).toBe(1);
-    } finally {
+      ).rejects.toBe(error);
+      const checkpoint = getWorkerCheckpoint(
+        workspaceDb,
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'tu_00000000-0000-725e-ab73-6634f596ac13'
+      )!;
+      expect(checkpoint).toMatchObject({
+        stage: 'running_worker',
+        stopReason: null,
+        workerSessionId: sessionId,
+      });
+      const [original] = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, checkpoint);
+      const lineage = {
+        ...checkpoint,
+        agentSessionId: sessionId,
+        packageSnapshotId: original!.inputRef!,
+      };
+      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
+      if (failure !== 'authority-denial') {
+        const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
+        await runNanoHostAttemptRecoveryMaintenance(coreDb, {
+          store,
+          executionBackend: runtime.turnExecutor.executionBackend!,
+          // The outside peer acknowledges deletion of only its modeled allocation.
+          cleanupBackendSession: async (identity) => {
+            expect(identity).toMatchObject({
+              agentSessionId: sessionId,
+              packageSnapshotId: original!.inputRef,
+            });
+          },
+          reconcileExecutions: async () => {},
+          prepareBackendCleanup: () => false,
+          restoreBackendSession: async () => {},
+          reconcileAcceptedFinalStatus: async () => {
+            throw new Error('No final was reported.');
+          },
+          projectRecoveredTurn: async (subject) => {
+            const turn = store.getTurnById(subject.turnId);
+            if (turn.status !== 'interrupted') throw new Error('Original interruption is missing.');
+            return { status: turn.status };
+          },
+        });
+        const closed = attempts.requireSchedulerExecutionAttempt(coreDb, original!.attemptId);
+        expect(closed).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+        await endWorkerTurnJournalRelease(store, workspaceDb, checkpoint.turnId, closed.fenceRef!);
+        expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
+      }
+      if (failure === 'incomplete-lease')
+        coreDb.sqlite
+          .prepare('UPDATE scheduler_execution_attempts SET agent_session_id=? WHERE turn_id=?')
+          .run('as_00000000-0000-7099-938c-16baf0c1baa4', checkpoint.turnId);
       await shutdownControlStoreWorkerClient();
-      reopenedWorkspace.sqlite.close();
-      reopenedCore.sqlite.close();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      const reopenedCore = openCoreDb(coreDb.dataRoot);
+      const reopenedWorkspace = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      await openTestNativeWorkspace(reopenedWorkspace);
+      try {
+        const reopenedStore = await createDemoStore({ dataRoot: coreDb.dataRoot });
+        expect(
+          getWorkerCheckpoint(
+            reopenedWorkspace,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            checkpoint.turnId
+          )
+        ).toEqual(checkpoint);
+        expect(
+          resolveInterruptedWorkerRetryDecision(
+            reopenedCore,
+            reopenedStore,
+            reopenedWorkspace,
+            checkpoint
+          ).status
+        ).toBe(
+          failure === 'restart-cleanup'
+            ? 'eligible'
+            : failure === 'authority-denial'
+              ? 'stale'
+              : 'recovery-required'
+        );
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb: reopenedCore,
+            store: reopenedStore,
+            workspaceDb: reopenedWorkspace,
+            checkpoint,
+          })
+        ).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(
+          getWorkerCheckpoint(
+            reopenedWorkspace,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            checkpoint.turnId
+          )
+        ).toEqual(checkpoint);
+        expect(launches).toBe(1);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        reopenedWorkspace.sqlite.close();
+        reopenedCore.sqlite.close();
+      }
+    } finally {
+      if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
     }
-  } finally {
-    if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
   }
-});
+);
 
 it('refuses mismatched callback lineage before acknowledgement or executor effects', async () => {
   const coreDb = await createCoreDb();
@@ -1342,216 +1341,165 @@ it.each([
   'changed-admission',
   'cancellation-failed',
   'rollback',
-] as const)('preserves cancelled preparation when %s defeats the no-execution proof', async (kind) => {
-  const coreDb = await createCoreDb();
-  const workspaceDb = createWorkspaceDb(coreDb);
-  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-  const at = '2026-10-06T00:00:00.000Z';
-  let before: ReturnType<typeof getWorkerCheckpoint>;
-  if (kind === 'cancellation-failed')
-    coreDb.sqlite.exec(`CREATE TRIGGER refuse_cancel
+] as const)(
+  'preserves cancelled preparation when %s defeats the no-execution proof',
+  async (kind) => {
+    const coreDb = await createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const at = '2026-10-06T00:00:00.000Z';
+    let before: ReturnType<typeof getWorkerCheckpoint>;
+    if (kind === 'cancellation-failed')
+      coreDb.sqlite.exec(`CREATE TRIGGER refuse_cancel
       BEFORE UPDATE OF status ON scheduler_admission_entries WHEN NEW.status='cancelled'
       BEGIN SELECT RAISE(ABORT, 'Cancellation storage failure'); END`);
-  const input = cancelledLoopInput(coreDb, workspaceDb, store, async () => {
-    if (kind === 'lease') {
-      const row = coreDb.sqlite
-        .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id=?')
-        .get('tu_00000000-0000-7952-9279-bc2b017e274b') as { id: string };
-      coreDb.sqlite
-        .prepare("UPDATE scheduler_admission_entries SET status='queued' WHERE queue_entry_id=?")
-        .run(row.id);
-      recordTestExecutionAttempt(coreDb, {
-        entry: requireSchedulerAdmissionEntry(coreDb, row.id),
-        attemptId: 'attempt_00000000-0000-752d-b6ea-948c6ffce000',
-        agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
-        inputRef: 'aepsnap_refusal',
-        bindingRef: 'attempt-binding:refusal',
-        sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
-        now: () => at,
-      });
-      coreDb.sqlite
-        .prepare("UPDATE scheduler_admission_entries SET status='cancelled' WHERE queue_entry_id=?")
-        .run(row.id);
-    }
-    if (kind === 'turn' || kind === 'global-turn') {
-      const threadId =
-        kind === 'global-turn'
-          ? (await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other owner')).id
-          : 'th_00000000-0000-7000-8000-000000000001';
-      await store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        threadId,
-        'Contradictory execution',
-        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        undefined,
-        { turnId: 'tu_00000000-0000-7952-9279-bc2b017e274b' }
-      );
-    }
-    if (kind === 'session') {
-      coreDb.sqlite
-        .prepare(`INSERT INTO nanohost_runtime_targets (
+    const input = cancelledLoopInput(coreDb, workspaceDb, store, async () => {
+      if (kind === 'lease') {
+        const row = coreDb.sqlite
+          .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id=?')
+          .get('tu_00000000-0000-7952-9279-bc2b017e274b') as { id: string };
+        coreDb.sqlite
+          .prepare("UPDATE scheduler_admission_entries SET status='queued' WHERE queue_entry_id=?")
+          .run(row.id);
+        recordTestExecutionAttempt(coreDb, {
+          entry: requireSchedulerAdmissionEntry(coreDb, row.id),
+          attemptId: 'attempt_00000000-0000-752d-b6ea-948c6ffce000',
+          agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
+          inputRef: 'aepsnap_refusal',
+          bindingRef: 'attempt-binding:refusal',
+          sessionCompatibilityKey: `sha256:${'b'.repeat(64)}`,
+          now: () => at,
+        });
+        coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_admission_entries SET status='cancelled' WHERE queue_entry_id=?"
+          )
+          .run(row.id);
+      }
+      if (kind === 'turn' || kind === 'global-turn') {
+        const threadId =
+          kind === 'global-turn'
+            ? (await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other owner'))
+                .id
+            : 'th_00000000-0000-7000-8000-000000000001';
+        await store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          threadId,
+          'Contradictory execution',
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          undefined,
+          { turnId: 'tu_00000000-0000-7952-9279-bc2b017e274b' }
+        );
+      }
+      if (kind === 'session') {
+        coreDb.sqlite
+          .prepare(`INSERT INTO nanohost_runtime_targets (
         target_id, identity_id, deployment_id, connection_generation, predecessor_fenced,
         ready, fresh_empty, physical_epoch, observed_at, slot_count
       ) VALUES ('nanohost', 'identity', 'deployment', 1, 1, 1, 1, ?, ?, 1)`)
-        .run('e'.repeat(64), at);
-      await createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: '0.153.4',
-        harnessBindingRef: 'harness-binding',
-        harnessCompatibilityKey: 'd'.repeat(64),
-        harnessInstanceId: 'harness',
-        imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: 'e'.repeat(64),
-        sandboxBindingRef: 'sandbox-binding',
-        sandboxCompatibilityKey: 'a'.repeat(64),
-        sandboxIntegrationBindingRef: 'integration-binding',
-        sandboxRuntimeId: 'sandbox',
-        runtimeTargetId: 'nanohost',
-        timestamp: at,
-      });
-      await openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
-        agentSessionRuntimeBindingId: 'as-binding',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        timestamp: at,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      coreDb.sqlite
-        .prepare('UPDATE agent_session_runtime_bindings SET current_turn_id=?')
-        .run('tu_00000000-0000-7952-9279-bc2b017e274b');
-    }
-    if (kind === 'backend')
-      coreDb.sqlite
-        .prepare(`INSERT INTO worker_backend_sessions (
+          .run('e'.repeat(64), at);
+        await createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: '0.153.4',
+          harnessBindingRef: 'harness-binding',
+          harnessCompatibilityKey: 'd'.repeat(64),
+          harnessInstanceId: 'harness',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: 'e'.repeat(64),
+          sandboxBindingRef: 'sandbox-binding',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding',
+          sandboxRuntimeId: 'sandbox',
+          runtimeTargetId: 'nanohost',
+          timestamp: at,
+        });
+        await openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'b'.repeat(64),
+          agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
+          agentSessionRuntimeBindingId: 'as-binding',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          timestamp: at,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        coreDb.sqlite
+          .prepare('UPDATE agent_session_runtime_bindings SET current_turn_id=?')
+          .run('tu_00000000-0000-7952-9279-bc2b017e274b');
+      }
+      if (kind === 'backend')
+        coreDb.sqlite
+          .prepare(`INSERT INTO worker_backend_sessions (
         attempt_id, workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, backend_kind, deployment_id,
         backend_session_id, staging_directory_ref, workspace_handoff_state, state, created_at, updated_at, origin_physical_epoch
         ) VALUES ('lease_refusal', 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'as_00000000-0000-7c9b-868b-c8bf0628ce98', 'aepsnap_refusal', 'openshell', 'deployment',
         'backend', 'staging', 'pending', 'materializing', ?, ?, ?)`)
-        .run(at, at, 'e'.repeat(64));
-    if (kind === 'control')
-      coreDb.sqlite
-        .prepare(`INSERT INTO worker_control_records (
+          .run(at, at, 'e'.repeat(64));
+      if (kind === 'control')
+        coreDb.sqlite
+          .prepare(`INSERT INTO worker_control_records (
         workspace_id, thread_id, turn_id, agent_session_id, package_snapshot_id, request_id, operation, record_key, sequence, record_json, accepted_at
         ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'as_00000000-0000-7c9b-868b-c8bf0628ce98', 'aepsnap_refusal', 'req_refusal', 'observe', 'key', 1, '{}', ?)`)
-        .run(at);
-    if (kind === 'runtime-evidence')
-      workspaceDb.sqlite
-        .prepare(`INSERT INTO runtime_evidence (
+          .run(at);
+      if (kind === 'runtime-evidence')
+        workspaceDb.sqlite
+          .prepare(`INSERT INTO runtime_evidence (
         runtime_evidence_id, workspace_id, thread_id, turn_id, placement, phase, summary, upload_manifest_json, download_manifest_json,
         outcome, evidence_bundle_ids_json, content_digests_json, required_features_json, created_at
         ) VALUES ('rte_refusal', 'ws_00000000-0000-7000-8000-000000000001', 'th_00000000-0000-7000-8000-000000000001', 'tu_00000000-0000-7952-9279-bc2b017e274b', 'local', 'checkpoint', 'Contradiction', '[]', '[]', 'unknown', '[]', '[]', '[]', ?)`)
-        .run(at);
-    if (kind === 'changed-checkpoint') {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite
-        .prepare(
-          "UPDATE worker_turn_checkpoints SET request_input_hash='sha256:changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
-        )
-        .run();
-      await openTestNativeWorkspace(workspaceDb);
-    }
-    if (kind === 'changed-admission')
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_admission_entries SET turn_input='changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
-        )
-        .run();
-    if (kind === 'rollback') {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_removal
-        BEFORE DELETE ON worker_turn_checkpoints BEGIN SELECT RAISE(ABORT, 'Workspace removal failure'); END`);
-      await openTestNativeWorkspace(workspaceDb);
-    }
-    before = getWorkerCheckpoint(
-      workspaceDb,
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'tu_00000000-0000-7952-9279-bc2b017e274b'
-    );
-  });
-  try {
-    if (kind === 'rollback') {
-      const refusal = runWorkerTurnLoop(input);
-      await expect(refusal).rejects.toBeInstanceOf(ControlStoreWorkerError);
-      await expect(refusal).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
-    } else await expect(runWorkerTurnLoop(input)).rejects.toThrow();
-    if (kind === 'lease') {
-      // Retained execution contradicts the cancelled admission's no-execution claim.
-      // Placement plans have no successor relation; keep the exact attempt/admission link.
-      const exists = coreDb.sqlite
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
-        )
-        .get();
-      expect(exists, 'This fault must positively retain execution evidence.').toBeDefined();
-      expect(
+          .run(at);
+      if (kind === 'changed-checkpoint') {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite
+          .prepare(
+            "UPDATE worker_turn_checkpoints SET request_input_hash='sha256:changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
+          )
+          .run();
+        await openTestNativeWorkspace(workspaceDb);
+      }
+      if (kind === 'changed-admission')
         coreDb.sqlite
-          .prepare('SELECT turn_id FROM scheduler_execution_attempts WHERE turn_id = ?')
-          .all('tu_00000000-0000-7952-9279-bc2b017e274b')
-      ).toEqual([{ turn_id: 'tu_00000000-0000-7952-9279-bc2b017e274b' }]);
-    }
-    expect(
-      getWorkerCheckpoint(
+          .prepare(
+            "UPDATE scheduler_admission_entries SET turn_input='changed' WHERE turn_id='tu_00000000-0000-7952-9279-bc2b017e274b'"
+          )
+          .run();
+      if (kind === 'rollback') {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_removal
+        BEFORE DELETE ON worker_turn_checkpoints BEGIN SELECT RAISE(ABORT, 'Workspace removal failure'); END`);
+        await openTestNativeWorkspace(workspaceDb);
+      }
+      before = getWorkerCheckpoint(
         workspaceDb,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'tu_00000000-0000-7952-9279-bc2b017e274b'
-      )
-    ).toEqual(before!);
-    expect(before!).toMatchObject({ stage: 'preparing', workerSessionId: null, stopReason: null });
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT status FROM scheduler_admission_entries WHERE request_id=?')
-        .get('req_refusal')
-    ).toEqual({ status: kind === 'cancellation-failed' ? 'queued' : 'cancelled' });
-    if (kind === 'rollback') {
-      const reopenedCore = openCoreDb(coreDb.dataRoot);
-      const reopenedWorkspace = openWorkspaceDb(
-        coreDb.dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001'
       );
-      await openTestNativeWorkspace(reopenedWorkspace);
-      try {
-        const residual = getWorkerCheckpoint(
-          reopenedWorkspace,
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001',
-          'tu_00000000-0000-7952-9279-bc2b017e274b'
-        );
-        expect(residual).toEqual(before!);
-        await expect(
-          classifyDirectTaskCheckpointAfterSchedulerRecovery({
-            coreDb: reopenedCore,
-            store,
-            workspaceDb: reopenedWorkspace,
-            checkpoint: residual!,
-          })
-        ).rejects.toMatchObject({ code: 'recovery_required' });
-        expect(
-          getWorkerCheckpoint(
-            reopenedWorkspace,
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001',
-            'tu_00000000-0000-7952-9279-bc2b017e274b'
+    });
+    try {
+      if (kind === 'rollback') {
+        const refusal = runWorkerTurnLoop(input);
+        await expect(refusal).rejects.toBeInstanceOf(ControlStoreWorkerError);
+        await expect(refusal).rejects.toMatchObject({
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+      } else await expect(runWorkerTurnLoop(input)).rejects.toThrow();
+      if (kind === 'lease') {
+        // Retained execution contradicts the cancelled admission's no-execution claim.
+        // Placement plans have no successor relation; keep the exact attempt/admission link.
+        const exists = coreDb.sqlite
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_execution_attempts'"
           )
-        ).toEqual(before!);
-      } finally {
-        reopenedWorkspace.sqlite.close();
-        reopenedCore.sqlite.close();
+          .get();
+        expect(exists, 'This fault must positively retain execution evidence.').toBeDefined();
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT turn_id FROM scheduler_execution_attempts WHERE turn_id = ?')
+            .all('tu_00000000-0000-7952-9279-bc2b017e274b')
+        ).toEqual([{ turn_id: 'tu_00000000-0000-7952-9279-bc2b017e274b' }]);
       }
-    }
-    if (!['lease', 'session', 'global-turn', 'turn'].includes(kind)) {
-      await expect(
-        classifyDirectTaskCheckpointAfterSchedulerRecovery({
-          coreDb,
-          store,
-          workspaceDb,
-          checkpoint: before!,
-        })
-      ).rejects.toMatchObject({ code: 'recovery_required' });
       expect(
         getWorkerCheckpoint(
           workspaceDb,
@@ -1560,13 +1508,77 @@ it.each([
           'tu_00000000-0000-7952-9279-bc2b017e274b'
         )
       ).toEqual(before!);
+      expect(before!).toMatchObject({
+        stage: 'preparing',
+        workerSessionId: null,
+        stopReason: null,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_admission_entries WHERE request_id=?')
+          .get('req_refusal')
+      ).toEqual({ status: kind === 'cancellation-failed' ? 'queued' : 'cancelled' });
+      if (kind === 'rollback') {
+        const reopenedCore = openCoreDb(coreDb.dataRoot);
+        const reopenedWorkspace = openWorkspaceDb(
+          coreDb.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        await openTestNativeWorkspace(reopenedWorkspace);
+        try {
+          const residual = getWorkerCheckpoint(
+            reopenedWorkspace,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            'tu_00000000-0000-7952-9279-bc2b017e274b'
+          );
+          expect(residual).toEqual(before!);
+          await expect(
+            classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb: reopenedCore,
+              store,
+              workspaceDb: reopenedWorkspace,
+              checkpoint: residual!,
+            })
+          ).rejects.toMatchObject({ code: 'recovery_required' });
+          expect(
+            getWorkerCheckpoint(
+              reopenedWorkspace,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              'tu_00000000-0000-7952-9279-bc2b017e274b'
+            )
+          ).toEqual(before!);
+        } finally {
+          reopenedWorkspace.sqlite.close();
+          reopenedCore.sqlite.close();
+        }
+      }
+      if (!['lease', 'session', 'global-turn', 'turn'].includes(kind)) {
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store,
+            workspaceDb,
+            checkpoint: before!,
+          })
+        ).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            'tu_00000000-0000-7952-9279-bc2b017e274b'
+          )
+        ).toEqual(before!);
+      }
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
     }
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    workspaceDb.sqlite.close();
-    coreDb.sqlite.close();
   }
-});
+);
 
 it('cancelled request replay cannot prepare or launch again after checkpoint removal, including reopened storage', async () => {
   const coreDb = await createCoreDb();
@@ -1613,67 +1625,67 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
   }
 });
 
-it.each([
-  'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-  'usr_00000000-0000-7000-8000-000000000001',
-])('an unrelated admission with the same request ID does not block or erase this reserved Turn (%s)', async (actorId) => {
-  const coreDb = await createCoreDb();
-  const workspaceDb = createWorkspaceDb(coreDb);
-  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-  try {
-    // Request UUID alone is not command identity: actor and Thread scope remain exact.
-    const unrelated = createSchedulerAdmissionEntry(coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: 'queue_other',
-      requestId: 'req_refusal',
-      turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481',
-      threadId:
-        actorId === 'usr_00000000-0000-7000-8000-000000000001'
-          ? 'th_00000000-0000-78ce-b458-8347d12d1da2'
-          : 'th_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      requestedAgentId: createTestAgentSetup().manifest.id,
-      triggerActor: { kind: 'user', id: actorId },
-      turnInput: serializeStructuredWorkerDelegationRequest(
-        preparedWorkerTurn(false).delegationRequest
-      ),
-    });
-    cancelSchedulerAdmissionEntry(coreDb, {
-      queueEntryId: unrelated.queueEntryId,
-      workspaceId: unrelated.workspaceId,
-    });
-    const other = coreDb.sqlite
-      .prepare(
-        "SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_00000000-0000-7bf1-990f-799cdaa2a481'"
-      )
-      .get();
-    await expect(
-      runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))
-    ).rejects.toThrow();
-    expect(
-      getWorkerCheckpoint(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'tu_00000000-0000-7952-9279-bc2b017e274b'
-      )
-    ).toBeNull();
-    expect(
-      coreDb.sqlite
+it.each(['usr_00000000-0000-73d4-904a-d4c4b905df7c', 'usr_00000000-0000-7000-8000-000000000001'])(
+  'an unrelated admission with the same request ID does not block or erase this reserved Turn (%s)',
+  async (actorId) => {
+    const coreDb = await createCoreDb();
+    const workspaceDb = createWorkspaceDb(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    try {
+      // Request UUID alone is not command identity: actor and Thread scope remain exact.
+      const unrelated = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'queue_other',
+        requestId: 'req_refusal',
+        turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481',
+        threadId:
+          actorId === 'usr_00000000-0000-7000-8000-000000000001'
+            ? 'th_00000000-0000-78ce-b458-8347d12d1da2'
+            : 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        requestedAgentId: createTestAgentSetup().manifest.id,
+        triggerActor: { kind: 'user', id: actorId },
+        turnInput: serializeStructuredWorkerDelegationRequest(
+          preparedWorkerTurn(false).delegationRequest
+        ),
+      });
+      cancelSchedulerAdmissionEntry(coreDb, {
+        queueEntryId: unrelated.queueEntryId,
+        workspaceId: unrelated.workspaceId,
+      });
+      const other = coreDb.sqlite
         .prepare(
           "SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_00000000-0000-7bf1-990f-799cdaa2a481'"
         )
-        .get()
-    ).toEqual(other);
-    expect(
-      coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
-    ).toEqual({ count: 2 });
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    workspaceDb.sqlite.close();
-    coreDb.sqlite.close();
+        .get();
+      await expect(
+        runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))
+      ).rejects.toThrow();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'tu_00000000-0000-7952-9279-bc2b017e274b'
+        )
+      ).toBeNull();
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT * FROM scheduler_admission_entries WHERE turn_id='tu_00000000-0000-7bf1-990f-799cdaa2a481'"
+          )
+          .get()
+      ).toEqual(other);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
+      ).toEqual({ count: 2 });
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
   }
-});
+);
 
 it('process loss after durable cancellation leaves preparation for fail-closed restart inspection', async () => {
   const coreDb = await createCoreDb();

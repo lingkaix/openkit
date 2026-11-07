@@ -76,32 +76,33 @@ describe('current search observations', () => {
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
   });
 
-  it.each([
-    401, 403, 500,
-  ])('hides prior private hits after a current %s and during retry', async (status) => {
-    const { mount, queryClient, search, submit } = searchHarness();
-    mount();
-    await submit();
-    expect(await screen.findByRole('button', { name: 'Private plan' })).toBeEnabled();
-    search.mockRejectedValueOnce(new ApiCallError(status, 'Private failure body'));
-    await act(async () => {
-      await queryClient.refetchQueries({ queryKey: operationsKeys.search(QUERY), exact: true });
-    });
-    expect(await screen.findByText("Couldn't search.")).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
-    expect(screen.queryByText('No search results')).not.toBeInTheDocument();
-    const current = deferred<typeof RESPONSE>();
-    search.mockImplementationOnce(() => current.promise);
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(search).toHaveBeenCalledTimes(3));
-    expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
-    await act(async () => {
-      current.resolve({ items: [{ ...RESPONSE.items[0]!, title: 'Current plan' }] });
-      await current.promise;
-    });
-    expect(await screen.findByRole('button', { name: 'Current plan' })).toBeEnabled();
-    expect(screen.queryByText('Private plan')).not.toBeInTheDocument();
-  });
+  it.each([401, 403, 500])(
+    'hides prior private hits after a current %s and during retry',
+    async (status) => {
+      const { mount, queryClient, search, submit } = searchHarness();
+      mount();
+      await submit();
+      expect(await screen.findByRole('button', { name: 'Private plan' })).toBeEnabled();
+      search.mockRejectedValueOnce(new ApiCallError(status, 'Private failure body'));
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: operationsKeys.search(QUERY), exact: true });
+      });
+      expect(await screen.findByText("Couldn't search.")).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
+      expect(screen.queryByText('No search results')).not.toBeInTheDocument();
+      const current = deferred<typeof RESPONSE>();
+      search.mockImplementationOnce(() => current.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(search).toHaveBeenCalledTimes(3));
+      expect(screen.queryByRole('button', { name: 'Private plan' })).not.toBeInTheDocument();
+      await act(async () => {
+        current.resolve({ items: [{ ...RESPONSE.items[0]!, title: 'Current plan' }] });
+        await current.promise;
+      });
+      expect(await screen.findByRole('button', { name: 'Current plan' })).toBeEnabled();
+      expect(screen.queryByText('Private plan')).not.toBeInTheDocument();
+    }
+  );
 
   it('checks a fresh cached query before showing hits on a later mount', async () => {
     const { mount, search, submit } = searchHarness();

@@ -112,18 +112,18 @@ describe('ecosystem Skill source parsing', () => {
 });
 
 describe('ecosystem Skill YAML header', () => {
-  it.each([
-    '\n',
-    '\r\n',
-  ])('accepts original BOM and %j bytes with descriptive extensions', (newline) => {
-    const raw = `\ufeff---${newline}name: "Release Notes Helper"${newline}description: |${newline}  Prepare exact release notes.${newline}metadata:${newline}  internal: true${newline}  version: 2${newline}  tags: [one, two]${newline}allowed-tools: [untrusted]${newline}---${newline}# Exact body${newline}`;
-    expect(parseEcosystemSkillHeader(raw)).toEqual({
-      name: 'Release Notes Helper',
-      description: 'Prepare exact release notes.\n',
-      internal: true,
-    });
-    expect(raw.startsWith('\ufeff')).toBe(true);
-  });
+  it.each(['\n', '\r\n'])(
+    'accepts original BOM and %j bytes with descriptive extensions',
+    (newline) => {
+      const raw = `\ufeff---${newline}name: "Release Notes Helper"${newline}description: |${newline}  Prepare exact release notes.${newline}metadata:${newline}  internal: true${newline}  version: 2${newline}  tags: [one, two]${newline}allowed-tools: [untrusted]${newline}---${newline}# Exact body${newline}`;
+      expect(parseEcosystemSkillHeader(raw)).toEqual({
+        name: 'Release Notes Helper',
+        description: 'Prepare exact release notes.\n',
+        internal: true,
+      });
+      expect(raw.startsWith('\ufeff')).toBe(true);
+    }
+  );
 
   it('does not interpret truthy descriptive metadata as internal selection or Tool authority', () => {
     expect(

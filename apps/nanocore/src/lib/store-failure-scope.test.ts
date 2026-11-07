@@ -159,116 +159,120 @@ describe('Workspace failure scope isolation', () => {
     expect(readFileSync(refusedPath)).toEqual(retained);
   });
 
-  it.each([
-    'selected-quarantine',
-    'missing-selected-database',
-  ] as const)('refuses an exact known-Workspace receipt when its selected authority is unavailable: %s', async (fault) => {
-    const { dataRoot, store, healthy } = await scopes();
-    const origin = await store.createThread(healthy.id, 'Conversation origin');
-    const receiving = await store.createThread(healthy.id, 'Worker receiver');
-    const requestId = '0190f4c8-0000-7000-8000-000000001628';
-    const turnId = testEntityId('tu', `failure-scope-selected-${fault}`);
-    const inputHash = commandInputHash({ input: 'Inspect without native launch.' });
-    const scope = { workspaceId: healthy.id, threadId: origin.id, actorId: FIXTURE_LOCAL_USER_ID };
-    const createdAt = new Date().toISOString();
-    await store.createTurn(
-      healthy.id,
-      receiving.id,
-      'Inspect without native launch.',
-      { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-      null,
-      {
-        turnId,
-        status: 'pending',
-        executorKind: 'worker',
-        commandReceipt: {
-          key: commandRequestKey('conversation.submit', requestId, scope),
-          command: 'conversation.submit',
-          requestId,
-          scope,
-          inputHash,
-          responseKind: 'turn',
-          createdAt,
-          expiresAt: commandRequestExpiresAt(createdAt),
-        },
-        commandReceiptResponse: {
-          kind: 'turn',
-          id: turnId,
-          conversationMetadata: {
-            targetRef: receiving.id,
-            logicalModelId: null,
-            receivingWorkspaceId: healthy.id,
-            receivingThreadId: receiving.id,
-            downstream: { kind: 'task', turnId },
-            resultKind: 'worker-turn',
-            status: 202,
-          },
-        },
-      }
-    );
-    const db = openWorkspaceDb(dataRoot, healthy.id);
-    try {
-      await upsertWorkerCheckpoint(db, {
+  it.each(['selected-quarantine', 'missing-selected-database'] as const)(
+    'refuses an exact known-Workspace receipt when its selected authority is unavailable: %s',
+    async (fault) => {
+      const { dataRoot, store, healthy } = await scopes();
+      const origin = await store.createThread(healthy.id, 'Conversation origin');
+      const receiving = await store.createThread(healthy.id, 'Worker receiver');
+      const requestId = '0190f4c8-0000-7000-8000-000000001628';
+      const turnId = testEntityId('tu', `failure-scope-selected-${fault}`);
+      const inputHash = commandInputHash({ input: 'Inspect without native launch.' });
+      const scope = {
         workspaceId: healthy.id,
-        threadId: receiving.id,
-        turnId,
-        requestId,
-        requestInputHash: inputHash,
-        stage: 'preparing',
-        iteration: 0,
-        workerSessionId: null,
-      });
-      await terminalizeGovernedWorkerTurn({
-        store,
-        turnId,
-        requestId,
-        agentSessionId: null,
-        outcome: 'failed',
-        errorCode: 'worker_preparation_failed',
-        message: 'Native launch did not start.',
-        completedAt: new Date().toISOString(),
-      });
-      const lineage = {
+        threadId: origin.id,
         actorId: FIXTURE_LOCAL_USER_ID,
-        workspaceId: healthy.id,
-        receivingThreadId: receiving.id,
-        requestId,
-        requestInputHash: inputHash,
-        turnId,
       };
-      const accepted = findExactConversationWorkerOwnerReceipt(store, lineage);
-      expect(accepted).not.toBeNull();
-      expect(store.getTurnById(turnId).status).toBe('failed');
-      expect(store.getTurnById(turnId).agentSessionId ?? null).toBeNull();
-      expect(getWorkerCheckpoint(db, healthy.id, receiving.id, turnId)).toMatchObject({
-        workerSessionId: null,
-      });
-      const canonicalPath = join(dataRoot, 'workspaces', healthy.id, 'db', 'workspace.sqlite');
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.close();
-      if (fault === 'selected-quarantine') {
-        refuseScope(dataRoot, { scope: 'workspace', id: healthy.id, check: 'recovery' });
-        // Core Fault Tolerance: an exact selector does not bypass its own Workspace quarantine.
-        expect(() => findExactConversationWorkerOwnerReceipt(store, lineage)).toThrow(
-          expect.objectContaining({ code: 'recovery_required' })
-        );
-      } else {
-        // Named stopped-owner fault: remove selected canonical authority after a valid receipt.
-        rmSync(canonicalPath);
-        expect(existsSync(canonicalPath)).toBe(false);
-        let recovered: ReturnType<typeof findExactConversationWorkerOwnerReceipt> = null;
-        try {
-          recovered = findExactConversationWorkerOwnerReceipt(store, lineage);
-        } catch (error) {
-          expect(error).toBeInstanceOf(Error);
+      const createdAt = new Date().toISOString();
+      await store.createTurn(
+        healthy.id,
+        receiving.id,
+        'Inspect without native launch.',
+        { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        null,
+        {
+          turnId,
+          status: 'pending',
+          executorKind: 'worker',
+          commandReceipt: {
+            key: commandRequestKey('conversation.submit', requestId, scope),
+            command: 'conversation.submit',
+            requestId,
+            scope,
+            inputHash,
+            responseKind: 'turn',
+            createdAt,
+            expiresAt: commandRequestExpiresAt(createdAt),
+          },
+          commandReceiptResponse: {
+            kind: 'turn',
+            id: turnId,
+            conversationMetadata: {
+              targetRef: receiving.id,
+              logicalModelId: null,
+              receivingWorkspaceId: healthy.id,
+              receivingThreadId: receiving.id,
+              downstream: { kind: 'task', turnId },
+              resultKind: 'worker-turn',
+              status: 202,
+            },
+          },
         }
-        // Missing canonical authority cannot authorize a receipt or create a replacement database.
-        expect(recovered).toBeNull();
-        expect(existsSync(canonicalPath)).toBe(false);
+      );
+      const db = openWorkspaceDb(dataRoot, healthy.id);
+      try {
+        await upsertWorkerCheckpoint(db, {
+          workspaceId: healthy.id,
+          threadId: receiving.id,
+          turnId,
+          requestId,
+          requestInputHash: inputHash,
+          stage: 'preparing',
+          iteration: 0,
+          workerSessionId: null,
+        });
+        await terminalizeGovernedWorkerTurn({
+          store,
+          turnId,
+          requestId,
+          agentSessionId: null,
+          outcome: 'failed',
+          errorCode: 'worker_preparation_failed',
+          message: 'Native launch did not start.',
+          completedAt: new Date().toISOString(),
+        });
+        const lineage = {
+          actorId: FIXTURE_LOCAL_USER_ID,
+          workspaceId: healthy.id,
+          receivingThreadId: receiving.id,
+          requestId,
+          requestInputHash: inputHash,
+          turnId,
+        };
+        const accepted = findExactConversationWorkerOwnerReceipt(store, lineage);
+        expect(accepted).not.toBeNull();
+        expect(store.getTurnById(turnId).status).toBe('failed');
+        expect(store.getTurnById(turnId).agentSessionId ?? null).toBeNull();
+        expect(getWorkerCheckpoint(db, healthy.id, receiving.id, turnId)).toMatchObject({
+          workerSessionId: null,
+        });
+        const canonicalPath = join(dataRoot, 'workspaces', healthy.id, 'db', 'workspace.sqlite');
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.close();
+        if (fault === 'selected-quarantine') {
+          refuseScope(dataRoot, { scope: 'workspace', id: healthy.id, check: 'recovery' });
+          // Core Fault Tolerance: an exact selector does not bypass its own Workspace quarantine.
+          expect(() => findExactConversationWorkerOwnerReceipt(store, lineage)).toThrow(
+            expect.objectContaining({ code: 'recovery_required' })
+          );
+        } else {
+          // Named stopped-owner fault: remove selected canonical authority after a valid receipt.
+          rmSync(canonicalPath);
+          expect(existsSync(canonicalPath)).toBe(false);
+          let recovered: ReturnType<typeof findExactConversationWorkerOwnerReceipt> = null;
+          try {
+            recovered = findExactConversationWorkerOwnerReceipt(store, lineage);
+          } catch (error) {
+            expect(error).toBeInstanceOf(Error);
+          }
+          // Missing canonical authority cannot authorize a receipt or create a replacement database.
+          expect(recovered).toBeNull();
+          expect(existsSync(canonicalPath)).toBe(false);
+        }
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        if (db.sqlite.open) db.sqlite.close();
       }
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      if (db.sqlite.open) db.sqlite.close();
     }
-  });
+  );
 });

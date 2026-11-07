@@ -922,54 +922,53 @@ function register_knowledge_source_link_test_tsx_2() {
       await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
     });
 
-    it.each([
-      'missing',
-      'changed',
-      'denied',
-    ] as const)('blocks a selected Source after a %s catalog refresh', async (outcome) => {
-      const fixture = renderKnowledge();
-      const user = userEvent.setup();
-      await openAddForm(user);
-      await fillEntry(user);
-      await user.click(screen.getByRole('button', { name: /Registered source/i }));
-      await user.click(await screen.findByRole('option', { name: SELECTED_SOURCE.title }));
-      if (outcome === 'denied') {
-        fixture.setSourceRead(
-          async () =>
-            new Response(
-              JSON.stringify({
-                code: 'workspace_access_denied',
-                message: 'Access denied.',
-              }),
-              { status: 403, headers: { 'content-type': 'application/json' } }
-            )
-        );
-      } else {
-        fixture.setSources(
-          outcome === 'missing'
-            ? [SOURCE_A]
-            : [SOURCE_A, { ...SELECTED_SOURCE, contentDigest: `sha256:${'a'.repeat(64)}` }]
-        );
-      }
-      await act(async () => {
-        await fixture.queryClient.invalidateQueries({
-          queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
-        });
-      });
-
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
-      expect(
-        screen.getByText(
-          'The selected source is unavailable. Select a current source before saving.'
-        )
-      ).toBeVisible();
-      expect(fixture.creates).toHaveLength(0);
-      if (outcome !== 'denied') {
+    it.each(['missing', 'changed', 'denied'] as const)(
+      'blocks a selected Source after a %s catalog refresh',
+      async (outcome) => {
+        const fixture = renderKnowledge();
+        const user = userEvent.setup();
+        await openAddForm(user);
+        await fillEntry(user);
         await user.click(screen.getByRole('button', { name: /Registered source/i }));
-        await user.click(await screen.findByRole('option', { name: 'No registered source' }));
-        expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+        await user.click(await screen.findByRole('option', { name: SELECTED_SOURCE.title }));
+        if (outcome === 'denied') {
+          fixture.setSourceRead(
+            async () =>
+              new Response(
+                JSON.stringify({
+                  code: 'workspace_access_denied',
+                  message: 'Access denied.',
+                }),
+                { status: 403, headers: { 'content-type': 'application/json' } }
+              )
+          );
+        } else {
+          fixture.setSources(
+            outcome === 'missing'
+              ? [SOURCE_A]
+              : [SOURCE_A, { ...SELECTED_SOURCE, contentDigest: `sha256:${'a'.repeat(64)}` }]
+          );
+        }
+        await act(async () => {
+          await fixture.queryClient.invalidateQueries({
+            queryKey: workspaceKeys.knowledgeSources(WORKSPACE_A),
+          });
+        });
+
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
+        expect(
+          screen.getByText(
+            'The selected source is unavailable. Select a current source before saving.'
+          )
+        ).toBeVisible();
+        expect(fixture.creates).toHaveLength(0);
+        if (outcome !== 'denied') {
+          await user.click(screen.getByRole('button', { name: /Registered source/i }));
+          await user.click(await screen.findByRole('option', { name: 'No registered source' }));
+          expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+        }
       }
-    });
+    );
 
     it('retries the exact failed Source-bound command after draft and catalog changes', async () => {
       const fixture = renderKnowledge({ failFirstCreate: true });

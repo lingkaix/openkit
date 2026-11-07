@@ -490,20 +490,20 @@ describe('Skill Artifact source admission', () => {
     refuses(state, 'source_unavailable');
   });
 
-  it.each([
-    'draft',
-    'archived',
-  ] as const)('admits an explicitly selected readable %s source without activation', async (status) => {
-    const state = await workSource(await fixture());
-    state.store.getArtifact(state.selection.workspaceId, state.selection.artifactId).status =
-      status;
-    expect(readSkillCandidateArtifact(state).tree).toEqual(tree);
-    expect(
-      existsSync(
-        join(state.dataRoot, 'workspaces', state.selection.workspaceId, 'catalog', 'catalog.json')
-      )
-    ).toBe(false);
-  });
+  it.each(['draft', 'archived'] as const)(
+    'admits an explicitly selected readable %s source without activation',
+    async (status) => {
+      const state = await workSource(await fixture());
+      state.store.getArtifact(state.selection.workspaceId, state.selection.artifactId).status =
+        status;
+      expect(readSkillCandidateArtifact(state).tree).toEqual(tree);
+      expect(
+        existsSync(
+          join(state.dataRoot, 'workspaces', state.selection.workspaceId, 'catalog', 'catalog.json')
+        )
+      ).toBe(false);
+    }
+  );
 });
 
 describe('bounded Skill Artifact JSON and tree', () => {

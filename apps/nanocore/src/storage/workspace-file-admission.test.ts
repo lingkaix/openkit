@@ -168,38 +168,38 @@ function tree(root: string): Record<string, Buffer | string> {
 
 describe('Workspace file admission preservation', () => {
   for (const log of ['items', 'events'] as const) {
-    it.each([
-      'no-newline',
-      'incomplete-fragment',
-    ] as const)(`preserves ${log} %s bytes when later history refuses the scope`, async (fault) => {
-      const f = await fixture();
-      const path = log === 'items' ? f.itemsPath : f.eventsPath;
-      const complete = readFileSync(path);
-      expect(complete.at(-1)).not.toBe(0x0a);
-      if (fault === 'incomplete-fragment') {
-        chmodSync(path, 0o600);
-        writeFileSync(path, Buffer.concat([complete, Buffer.from('{"incomplete":')]));
-        chmodSync(path, 0o444);
+    it.each(['no-newline', 'incomplete-fragment'] as const)(
+      `preserves ${log} %s bytes when later history refuses the scope`,
+      async (fault) => {
+        const f = await fixture();
+        const path = log === 'items' ? f.itemsPath : f.eventsPath;
+        const complete = readFileSync(path);
+        expect(complete.at(-1)).not.toBe(0x0a);
+        if (fault === 'incomplete-fragment') {
+          chmodSync(path, 0o600);
+          writeFileSync(path, Buffer.concat([complete, Buffer.from('{"incomplete":')]));
+          chmodSync(path, 0o444);
+        }
+        const db = openWorkspaceDb(f.root, f.workspace.id);
+        try {
+          // Keep the later Turn's durable reference, so the missing Thread remains detectable authority loss.
+          db.sqlite.pragma('foreign_keys = OFF');
+          db.sqlite.prepare('DELETE FROM control_threads WHERE id=?').run(f.laterThreadId);
+          db.sqlite.pragma('foreign_keys = ON');
+        } finally {
+          db.sqlite.close();
+        }
+        const before = tree(f.workspaceRoot);
+        expect(() => FsStore.validateFileAuthority(f.root)).not.toThrow();
+        const reopened = new FsStore({ dataRoot: f.root });
+        expect(() => reopened.getWorkspace(f.workspace.id)).toThrow(
+          expect.objectContaining({ code: 'recovery_required' })
+        );
+        expect(reopened.getWorkspace(f.healthy.id)).toEqual(f.healthy);
+        await reopened.createThread(f.healthy.id, 'Still writable');
+        expect(tree(f.workspaceRoot)).toEqual(before);
       }
-      const db = openWorkspaceDb(f.root, f.workspace.id);
-      try {
-        // Keep the later Turn's durable reference, so the missing Thread remains detectable authority loss.
-        db.sqlite.pragma('foreign_keys = OFF');
-        db.sqlite.prepare('DELETE FROM control_threads WHERE id=?').run(f.laterThreadId);
-        db.sqlite.pragma('foreign_keys = ON');
-      } finally {
-        db.sqlite.close();
-      }
-      const before = tree(f.workspaceRoot);
-      expect(() => FsStore.validateFileAuthority(f.root)).not.toThrow();
-      const reopened = new FsStore({ dataRoot: f.root });
-      expect(() => reopened.getWorkspace(f.workspace.id)).toThrow(
-        expect.objectContaining({ code: 'recovery_required' })
-      );
-      expect(reopened.getWorkspace(f.healthy.id)).toEqual(f.healthy);
-      await reopened.createThread(f.healthy.id, 'Still writable');
-      expect(tree(f.workspaceRoot)).toEqual(before);
-    });
+    );
   }
 
   it('does not normalize file tails before a later approval SQL-reader refusal', async () => {
@@ -218,55 +218,53 @@ describe('Workspace file admission preservation', () => {
     expect(tree(f.workspaceRoot)).toEqual(before);
   });
 
-  it.each([
-    'server',
-    'workspace',
-    'missing',
-    'unsupported',
-  ] as const)('keeps the required refusal boundary for %s Item ownership', async (kind) => {
-    const f = await fixture();
-    const raw = JSON.parse(readFileSync(f.itemsPath, 'utf8').trimEnd());
-    if (kind === 'missing') delete raw.owner;
-    else
-      raw.owner =
-        kind === 'server'
-          ? { kind: 'server' }
-          : kind === 'workspace'
-            ? { kind: 'workspace', workspaceId: f.healthy.id }
-            : { kind: 'user', userId: actor.id };
-    const foreign = kind === 'server' || kind === 'workspace';
-    if (foreign) {
-      expect(WorkOwnerSchema.safeParse(raw.owner).success).toBe(true);
-      expect(() => readRetainedV1(raw, ItemSchema.parse)).not.toThrow();
-    }
-    const content = await publishImmutableProductJson(
-      f.scope.contentMount,
-      f.scope.owner,
-      join(f.workspaceRoot, 'runtime', 'staging'),
-      raw
-    );
-    const db = openWorkspaceDb(f.root, f.workspace.id);
-    try {
-      db.sqlite
-        .prepare(
-          "UPDATE control_product_entries SET content_json=? WHERE kind='item' AND turn_id=? AND sequence=1"
-        )
-        .run(JSON.stringify(content), f.turn.id);
-    } finally {
-      db.sqlite.close();
-    }
-    const before = tree(f.workspaceRoot);
-    if (foreign) {
-      expect(() => FsStore.validateFileAuthority(f.root)).toThrow(WorkOwnershipViolationError);
-      expect(() => new FsStore({ dataRoot: f.root })).toThrow(WorkOwnershipViolationError);
-    } else {
-      expect(() => FsStore.validateFileAuthority(f.root)).not.toThrow();
-      const reopened = new FsStore({ dataRoot: f.root });
-      expect(() => reopened.getWorkspace(f.workspace.id)).toThrow(
-        expect.objectContaining({ code: 'recovery_required' })
+  it.each(['server', 'workspace', 'missing', 'unsupported'] as const)(
+    'keeps the required refusal boundary for %s Item ownership',
+    async (kind) => {
+      const f = await fixture();
+      const raw = JSON.parse(readFileSync(f.itemsPath, 'utf8').trimEnd());
+      if (kind === 'missing') delete raw.owner;
+      else
+        raw.owner =
+          kind === 'server'
+            ? { kind: 'server' }
+            : kind === 'workspace'
+              ? { kind: 'workspace', workspaceId: f.healthy.id }
+              : { kind: 'user', userId: actor.id };
+      const foreign = kind === 'server' || kind === 'workspace';
+      if (foreign) {
+        expect(WorkOwnerSchema.safeParse(raw.owner).success).toBe(true);
+        expect(() => readRetainedV1(raw, ItemSchema.parse)).not.toThrow();
+      }
+      const content = await publishImmutableProductJson(
+        f.scope.contentMount,
+        f.scope.owner,
+        join(f.workspaceRoot, 'runtime', 'staging'),
+        raw
       );
-      expect(reopened.getWorkspace(f.healthy.id)).toEqual(f.healthy);
+      const db = openWorkspaceDb(f.root, f.workspace.id);
+      try {
+        db.sqlite
+          .prepare(
+            "UPDATE control_product_entries SET content_json=? WHERE kind='item' AND turn_id=? AND sequence=1"
+          )
+          .run(JSON.stringify(content), f.turn.id);
+      } finally {
+        db.sqlite.close();
+      }
+      const before = tree(f.workspaceRoot);
+      if (foreign) {
+        expect(() => FsStore.validateFileAuthority(f.root)).toThrow(WorkOwnershipViolationError);
+        expect(() => new FsStore({ dataRoot: f.root })).toThrow(WorkOwnershipViolationError);
+      } else {
+        expect(() => FsStore.validateFileAuthority(f.root)).not.toThrow();
+        const reopened = new FsStore({ dataRoot: f.root });
+        expect(() => reopened.getWorkspace(f.workspace.id)).toThrow(
+          expect.objectContaining({ code: 'recovery_required' })
+        );
+        expect(reopened.getWorkspace(f.healthy.id)).toEqual(f.healthy);
+      }
+      expect(tree(f.workspaceRoot)).toEqual(before);
     }
-    expect(tree(f.workspaceRoot)).toEqual(before);
-  });
+  );
 });

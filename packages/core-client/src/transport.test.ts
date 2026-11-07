@@ -165,34 +165,33 @@ describe('contract identity admission before effects', () => {
     expect(failure).toMatchObject({ code: expect.any(String) });
   });
 
-  it.each([
-    'invalid',
-    'unavailable',
-    'network-failure',
-  ] as const)('refuses %s metadata before dispatching JSON work', async (state) => {
-    const effects: string[] = [];
-    const transport = createClientTransport({
-      baseUrl: 'https://core.test',
-      fetch: async (input) => {
-        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        if (path === '/api/meta') {
-          if (state === 'network-failure') throw new Error('Metadata unavailable.');
-          return state === 'invalid'
-            ? Response.json({ protocolVersion: PROTOCOL_VERSION })
-            : new Response(null, { status: 503 });
-        }
-        effects.push(path);
-        return Response.json({ value: 'accepted' });
-      },
-    });
-    const result = transport.postJson('/effect', {}, z.object({ value: z.string() }));
-    const failure: unknown = await result.then(
-      () => null,
-      (error: unknown) => error
-    );
-    expect.soft(effects).toEqual([]);
-    expect(failure).toBeInstanceOf(state === 'invalid' ? ProtocolValidationError : Error);
-  });
+  it.each(['invalid', 'unavailable', 'network-failure'] as const)(
+    'refuses %s metadata before dispatching JSON work',
+    async (state) => {
+      const effects: string[] = [];
+      const transport = createClientTransport({
+        baseUrl: 'https://core.test',
+        fetch: async (input) => {
+          const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          if (path === '/api/meta') {
+            if (state === 'network-failure') throw new Error('Metadata unavailable.');
+            return state === 'invalid'
+              ? Response.json({ protocolVersion: PROTOCOL_VERSION })
+              : new Response(null, { status: 503 });
+          }
+          effects.push(path);
+          return Response.json({ value: 'accepted' });
+        },
+      });
+      const result = transport.postJson('/effect', {}, z.object({ value: z.string() }));
+      const failure: unknown = await result.then(
+        () => null,
+        (error: unknown) => error
+      );
+      expect.soft(effects).toEqual([]);
+      expect(failure).toBeInstanceOf(state === 'invalid' ? ProtocolValidationError : Error);
+    }
+  );
 
   it('admits current identity with the configured request policy before JSON work', async () => {
     const requests: Array<{ path: string; request: Request }> = [];

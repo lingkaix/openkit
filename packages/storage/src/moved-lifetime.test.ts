@@ -213,53 +213,52 @@ describe('durable private file lifetime', () => {
     }
   });
 
-  it.each([
-    'short',
-    'long',
-    'digest',
-  ] as const)('refuses %s source metadata and removes its incomplete private tree', async (fault) => {
-    const root = await temporaryRoot();
-    const bytes = Buffer.from([0, 255, 128, 1]);
-    const capacity = reservation();
-    await expect(
-      capture(root, {
-        source: Readable.from([bytes]),
-        expectedByteLength: bytes.length + (fault === 'short' ? 1 : fault === 'long' ? -1 : 0),
-        expectedDigest: digest(fault === 'digest' ? Buffer.from('other') : bytes),
-        reservation: capacity,
-      })
-    ).rejects.toMatchObject({
-      code: fault === 'digest' ? 'source_digest_mismatch' : 'invalid_request',
-    });
-    expect(capacity.assertAvailable).not.toHaveBeenCalled();
-    expect(await readdir(root)).toEqual([]);
-  });
+  it.each(['short', 'long', 'digest'] as const)(
+    'refuses %s source metadata and removes its incomplete private tree',
+    async (fault) => {
+      const root = await temporaryRoot();
+      const bytes = Buffer.from([0, 255, 128, 1]);
+      const capacity = reservation();
+      await expect(
+        capture(root, {
+          source: Readable.from([bytes]),
+          expectedByteLength: bytes.length + (fault === 'short' ? 1 : fault === 'long' ? -1 : 0),
+          expectedDigest: digest(fault === 'digest' ? Buffer.from('other') : bytes),
+          reservation: capacity,
+        })
+      ).rejects.toMatchObject({
+        code: fault === 'digest' ? 'source_digest_mismatch' : 'invalid_request',
+      });
+      expect(capacity.assertAvailable).not.toHaveBeenCalled();
+      expect(await readdir(root)).toEqual([]);
+    }
+  );
 
-  it.each([
-    'inspection',
-    'submission',
-  ] as const)('preserves the caller refusal from %s before accepting file bytes', async (fault) => {
-    const root = await temporaryRoot();
-    const bytes = Buffer.from('bounded');
-    const capacity = reservation();
-    const refusal = new Error(`Selected ${fault} refusal.`);
-    const refuse = () => {
-      throw refusal;
-    };
-    await expect(
-      capture(root, {
-        source: Readable.from([bytes]),
-        expectedByteLength: bytes.length,
-        expectedDigest: digest(bytes),
-        reservation: capacity,
-        ...(fault === 'inspection'
-          ? { inspectChunk: refuse }
-          : { submission: { consume: refuse } }),
-      })
-    ).rejects.toBe(refusal);
-    expect(capacity.recordWritten).not.toHaveBeenCalled();
-    expect(await readdir(root)).toEqual([]);
-  });
+  it.each(['inspection', 'submission'] as const)(
+    'preserves the caller refusal from %s before accepting file bytes',
+    async (fault) => {
+      const root = await temporaryRoot();
+      const bytes = Buffer.from('bounded');
+      const capacity = reservation();
+      const refusal = new Error(`Selected ${fault} refusal.`);
+      const refuse = () => {
+        throw refusal;
+      };
+      await expect(
+        capture(root, {
+          source: Readable.from([bytes]),
+          expectedByteLength: bytes.length,
+          expectedDigest: digest(bytes),
+          reservation: capacity,
+          ...(fault === 'inspection'
+            ? { inspectChunk: refuse }
+            : { submission: { consume: refuse } }),
+        })
+      ).rejects.toBe(refusal);
+      expect(capacity.recordWritten).not.toHaveBeenCalled();
+      expect(await readdir(root)).toEqual([]);
+    }
+  );
 
   it('refuses a zero-progress descriptor without charging unwritten bytes', async () => {
     const root = await temporaryRoot();
@@ -530,56 +529,56 @@ describe('private media input lifetime', () => {
     expect(await readdir(root)).toEqual([]);
   });
 
-  it.each([
-    'already aborted',
-    'pending read',
-  ] as const)('cancels a %s source without waiting for its uncooperative iterator', async (timing) => {
-    const root = await temporaryRoot();
-    const capacity = mediaCapacity(root);
-    const reading = gate();
-    const controller = new AbortController();
-    const cancelled = new Error('Caller cancelled.');
-    let returned = 0;
-    const source = {
-      ...mediaSource(Buffer.from('undelivered')),
-      open() {
-        return {
-          [Symbol.asyncIterator]() {
-            return {
-              next() {
-                reading.release();
-                return new Promise<IteratorResult<Uint8Array>>(() => {});
-              },
-              return() {
-                returned++;
-                return new Promise<IteratorResult<Uint8Array>>(() => {});
-              },
-            };
-          },
-        };
-      },
-    };
-    if (timing === 'already aborted') controller.abort(cancelled);
-    const consumer = vi.fn(async () => undefined);
-    const work = withStagedMediaSource(
-      source,
-      root,
-      capacity.reserve,
-      controller.signal,
-      'media-',
-      consumer,
-      MediaFailure
-    );
-    const rejected = expect(work).rejects.toBe(cancelled);
-    if (timing === 'pending read') {
-      await reading.promise;
-      controller.abort(cancelled);
+  it.each(['already aborted', 'pending read'] as const)(
+    'cancels a %s source without waiting for its uncooperative iterator',
+    async (timing) => {
+      const root = await temporaryRoot();
+      const capacity = mediaCapacity(root);
+      const reading = gate();
+      const controller = new AbortController();
+      const cancelled = new Error('Caller cancelled.');
+      let returned = 0;
+      const source = {
+        ...mediaSource(Buffer.from('undelivered')),
+        open() {
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                next() {
+                  reading.release();
+                  return new Promise<IteratorResult<Uint8Array>>(() => {});
+                },
+                return() {
+                  returned++;
+                  return new Promise<IteratorResult<Uint8Array>>(() => {});
+                },
+              };
+            },
+          };
+        },
+      };
+      if (timing === 'already aborted') controller.abort(cancelled);
+      const consumer = vi.fn(async () => undefined);
+      const work = withStagedMediaSource(
+        source,
+        root,
+        capacity.reserve,
+        controller.signal,
+        'media-',
+        consumer,
+        MediaFailure
+      );
+      const rejected = expect(work).rejects.toBe(cancelled);
+      if (timing === 'pending read') {
+        await reading.promise;
+        controller.abort(cancelled);
+      }
+      await rejected;
+      expect(returned).toBe(1);
+      expect(consumer).not.toHaveBeenCalled();
+      await capacity.assertRemoved();
     }
-    await rejected;
-    expect(returned).toBe(1);
-    expect(consumer).not.toHaveBeenCalled();
-    await capacity.assertRemoved();
-  });
+  );
 
   it('retains its reservation and partial bytes when private cleanup cannot be proved', async () => {
     const root = await temporaryRoot();
@@ -692,99 +691,97 @@ describe('current retrieval representation copy', () => {
     expect(unchanged).toBe(true);
   });
 
-  it.each([
-    'oversized chunk',
-    'excess length',
-    'short source',
-    'wrong digest',
-  ] as const)('refuses a %s and leaves cleanup of private bytes with its caller', async (fault) => {
-    const root = await temporaryRoot();
-    const path = join(root, 'representation');
-    const bytes = fault === 'oversized chunk' ? Buffer.alloc(65_537) : Buffer.from('complete');
-    const size = bytes.length + (fault === 'short source' ? 1 : fault === 'excess length' ? -1 : 0);
-    let closed = false;
-    faults.opened = (openedPath, handle) => {
-      if (openedPath !== path) return;
-      const close = handle.close.bind(handle);
-      vi.spyOn(handle, 'close').mockImplementation(async () => {
-        await close();
-        closed = true;
-      });
-    };
-    const capacity = { recordWritten: vi.fn<(bytes: number) => void>() };
-    const input = {
-      source: {
-        projection: {
-          representationDigest: digest(fault === 'wrong digest' ? Buffer.from('other') : bytes),
+  it.each(['oversized chunk', 'excess length', 'short source', 'wrong digest'] as const)(
+    'refuses a %s and leaves cleanup of private bytes with its caller',
+    async (fault) => {
+      const root = await temporaryRoot();
+      const path = join(root, 'representation');
+      const bytes = fault === 'oversized chunk' ? Buffer.alloc(65_537) : Buffer.from('complete');
+      const size =
+        bytes.length + (fault === 'short source' ? 1 : fault === 'excess length' ? -1 : 0);
+      let closed = false;
+      faults.opened = (openedPath, handle) => {
+        if (openedPath !== path) return;
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, 'close').mockImplementation(async () => {
+          await close();
+          closed = true;
+        });
+      };
+      const capacity = { recordWritten: vi.fn<(bytes: number) => void>() };
+      const input = {
+        source: {
+          projection: {
+            representationDigest: digest(fault === 'wrong digest' ? Buffer.from('other') : bytes),
+          },
         },
-      },
-      assertCurrent: vi.fn(),
-    };
-    const current = {
-      async *openRepresentation() {
-        yield bytes;
-      },
-      assertUnchanged: vi.fn(),
-    };
-    await expect(
-      writeVerifiedRepresentation(input, current, path, size, capacity)
-    ).rejects.toThrow();
-    expect(closed).toBe(true);
-    expect(await readFile(path)).toEqual(
-      fault === 'oversized chunk' || fault === 'excess length' ? Buffer.alloc(0) : bytes
-    );
-    if (fault === 'oversized chunk' || fault === 'excess length')
-      expect(capacity.recordWritten).not.toHaveBeenCalled();
-    else expect(capacity.recordWritten).toHaveBeenCalledWith(bytes.length);
-    await removePrivateTreeStrict(root);
-  });
+        assertCurrent: vi.fn(),
+      };
+      const current = {
+        async *openRepresentation() {
+          yield bytes;
+        },
+        assertUnchanged: vi.fn(),
+      };
+      await expect(
+        writeVerifiedRepresentation(input, current, path, size, capacity)
+      ).rejects.toThrow();
+      expect(closed).toBe(true);
+      expect(await readFile(path)).toEqual(
+        fault === 'oversized chunk' || fault === 'excess length' ? Buffer.alloc(0) : bytes
+      );
+      if (fault === 'oversized chunk' || fault === 'excess length')
+        expect(capacity.recordWritten).not.toHaveBeenCalled();
+      else expect(capacity.recordWritten).toHaveBeenCalledWith(bytes.length);
+      await removePrivateTreeStrict(root);
+    }
+  );
 
-  it.each([
-    'cancelled',
-    'current refusal',
-    'unchanged refusal',
-  ] as const)('closes private output and preserves the original %s', async (fault) => {
-    const root = await temporaryRoot();
-    const path = join(root, 'representation');
-    const bytes = Buffer.from('current');
-    const refusal = new Error(`Selected ${fault}.`);
-    const controller = new AbortController();
-    if (fault === 'cancelled') controller.abort(refusal);
-    const capacity = { recordWritten: vi.fn<(bytes: number) => void>() };
-    let closed = false;
-    faults.opened = (openedPath, handle) => {
-      if (openedPath !== path) return;
-      const close = handle.close.bind(handle);
-      vi.spyOn(handle, 'close').mockImplementation(async () => {
-        await close();
-        closed = true;
-      });
-    };
-    await expect(
-      writeVerifiedRepresentation(
-        {
-          source: { projection: { representationDigest: digest(bytes) } },
-          signal: controller.signal,
-          assertCurrent() {
-            if (fault === 'current refusal') throw refusal;
+  it.each(['cancelled', 'current refusal', 'unchanged refusal'] as const)(
+    'closes private output and preserves the original %s',
+    async (fault) => {
+      const root = await temporaryRoot();
+      const path = join(root, 'representation');
+      const bytes = Buffer.from('current');
+      const refusal = new Error(`Selected ${fault}.`);
+      const controller = new AbortController();
+      if (fault === 'cancelled') controller.abort(refusal);
+      const capacity = { recordWritten: vi.fn<(bytes: number) => void>() };
+      let closed = false;
+      faults.opened = (openedPath, handle) => {
+        if (openedPath !== path) return;
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, 'close').mockImplementation(async () => {
+          await close();
+          closed = true;
+        });
+      };
+      await expect(
+        writeVerifiedRepresentation(
+          {
+            source: { projection: { representationDigest: digest(bytes) } },
+            signal: controller.signal,
+            assertCurrent() {
+              if (fault === 'current refusal') throw refusal;
+            },
           },
-        },
-        {
-          async *openRepresentation() {
-            yield bytes;
+          {
+            async *openRepresentation() {
+              yield bytes;
+            },
+            assertUnchanged() {
+              if (fault === 'unchanged refusal') throw refusal;
+            },
           },
-          assertUnchanged() {
-            if (fault === 'unchanged refusal') throw refusal;
-          },
-        },
-        path,
-        bytes.length,
-        capacity
-      )
-    ).rejects.toBe(refusal);
-    expect(closed).toBe(true);
-    expect(await readFile(path)).toEqual(fault === 'unchanged refusal' ? bytes : Buffer.alloc(0));
-  });
+          path,
+          bytes.length,
+          capacity
+        )
+      ).rejects.toBe(refusal);
+      expect(closed).toBe(true);
+      expect(await readFile(path)).toEqual(fault === 'unchanged refusal' ? bytes : Buffer.alloc(0));
+    }
+  );
 });
 
 describe('derived tree measurement and strict cleanup', () => {
@@ -797,20 +794,20 @@ describe('derived tree measurement and strict cleanup', () => {
     expect(await measureDerivedTreeBytes(root, 4, RetrievalFailure)).toBeGreaterThan(4);
   });
 
-  it.each([
-    'file',
-    'directory',
-  ] as const)('refuses a derived %s symlink without changing its target', async (kind) => {
-    const root = await temporaryRoot();
-    const outside = await temporaryRoot();
-    const sentinel = join(outside, 'sentinel');
-    await writeFile(sentinel, 'retained original');
-    await symlink(kind === 'file' ? sentinel : outside, join(root, 'link'));
-    await expect(measureDerivedTreeBytes(root, 100, RetrievalFailure)).rejects.toMatchObject({
-      code: 'unavailable',
-    });
-    expect(await readFile(sentinel, 'utf8')).toBe('retained original');
-  });
+  it.each(['file', 'directory'] as const)(
+    'refuses a derived %s symlink without changing its target',
+    async (kind) => {
+      const root = await temporaryRoot();
+      const outside = await temporaryRoot();
+      const sentinel = join(outside, 'sentinel');
+      await writeFile(sentinel, 'retained original');
+      await symlink(kind === 'file' ? sentinel : outside, join(root, 'link'));
+      await expect(measureDerivedTreeBytes(root, 100, RetrievalFailure)).rejects.toMatchObject({
+        code: 'unavailable',
+      });
+      expect(await readFile(sentinel, 'utf8')).toBe('retained original');
+    }
+  );
 
   it('removes the selected private tree and preserves absent-path cleanup failure', async () => {
     const root = await temporaryRoot();

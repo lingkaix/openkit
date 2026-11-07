@@ -40,27 +40,27 @@ describe('MCP credential presentation admission', () => {
     );
   });
 
-  it.each([
-    'raw',
-    'bearer',
-  ] as const)('preserves recognized %s presentation in canonical and effective bindings', (presentation) => {
-    const credential = { ...binding, presentation };
-    const canonical = McpBindingRecordSchema.parse({
-      allowedTools: ['echo'],
-      credentialBindings: [credential],
-      enabled: true,
-      entryId: 'echo',
-      packageDataKey: 'mcp_echo',
-      revision: 1,
-      schemaPolicy: 'tracking',
-    });
-    const effective = parseWorkspaceMcpServerCatalog({
-      schemaVersion: 1,
-      servers: [{ ...server, credentialBindings: [credential] }],
-    });
-    expect(canonical.credentialBindings).toEqual([credential]);
-    expect(effective.servers[0]!.credentialBindings).toEqual([credential]);
-  });
+  it.each(['raw', 'bearer'] as const)(
+    'preserves recognized %s presentation in canonical and effective bindings',
+    (presentation) => {
+      const credential = { ...binding, presentation };
+      const canonical = McpBindingRecordSchema.parse({
+        allowedTools: ['echo'],
+        credentialBindings: [credential],
+        enabled: true,
+        entryId: 'echo',
+        packageDataKey: 'mcp_echo',
+        revision: 1,
+        schemaPolicy: 'tracking',
+      });
+      const effective = parseWorkspaceMcpServerCatalog({
+        schemaVersion: 1,
+        servers: [{ ...server, credentialBindings: [credential] }],
+      });
+      expect(canonical.credentialBindings).toEqual([credential]);
+      expect(effective.servers[0]!.credentialBindings).toEqual([credential]);
+    }
+  );
 
   it('rejects an unknown presentation in canonical and effective readers', () => {
     const credential = { ...binding, presentation: 'basic' };

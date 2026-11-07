@@ -42,24 +42,23 @@ describe('retained default Knowledge Base identity', () => {
       content: '{"schemaVersion":1,"workspace":{"name":"Research"}}',
     },
     { scope: { kind: 'server' }, path: 'config/server.jsonc', content: '{"schemaVersion":1}' },
-  ] as const)('allocates once for $scope.kind and preserves the retained binding across fresh readers', ({
-    scope,
-    path,
-    content,
-  }) => {
-    const dataRoot = temporaryDataRoot();
-    const target = join(dataRoot, path);
-    mkdirSync(join(target, '..'), { recursive: true });
-    writeFileSync(target, `// Retain this authored comment.\n${content}\n`);
-    const input = { dataRoot, scope };
-    const id = initializeDefaultKnowledgeBaseId(input);
-    expect(isEntityId('kb', id)).toBe(true);
-    const retained = readFileSync(target, 'utf8');
-    expect(retained).toContain('// Retain this authored comment.');
-    expect(readDefaultKnowledgeBaseId({ dataRoot, scope: { ...scope } })).toBe(id);
-    expect(initializeDefaultKnowledgeBaseId(input)).toBe(id);
-    expect(readFileSync(target, 'utf8')).toBe(retained);
-  });
+  ] as const)(
+    'allocates once for $scope.kind and preserves the retained binding across fresh readers',
+    ({ scope, path, content }) => {
+      const dataRoot = temporaryDataRoot();
+      const target = join(dataRoot, path);
+      mkdirSync(join(target, '..'), { recursive: true });
+      writeFileSync(target, `// Retain this authored comment.\n${content}\n`);
+      const input = { dataRoot, scope };
+      const id = initializeDefaultKnowledgeBaseId(input);
+      expect(isEntityId('kb', id)).toBe(true);
+      const retained = readFileSync(target, 'utf8');
+      expect(retained).toContain('// Retain this authored comment.');
+      expect(readDefaultKnowledgeBaseId({ dataRoot, scope: { ...scope } })).toBe(id);
+      expect(initializeDefaultKnowledgeBaseId(input)).toBe(id);
+      expect(readFileSync(target, 'utf8')).toBe(retained);
+    }
+  );
 
   it.each([
     {
@@ -83,41 +82,41 @@ describe('retained default Knowledge Base identity', () => {
       kind: 'server',
       content: '{"schemaVersion":1}',
     },
-  ] as const)('refuses removal or replacement of the $kind binding through ordinary configuration editing', async ({
-    scope,
-    path,
-    id,
-    kind,
-    content,
-  }) => {
-    const dataRoot = temporaryDataRoot();
-    const target = join(dataRoot, path);
-    mkdirSync(join(target, '..'), { recursive: true });
-    writeFileSync(target, content);
-    const retainedId = initializeDefaultKnowledgeBaseId({ dataRoot, scope });
-    const retained = readFileSync(target, 'utf8');
-    const manager = createRuntimeConfigManager({ dataRoot });
-    const service = new RuntimeConfigFileService({
-      dataRoot,
-      workspaceIds: [workspaceId],
-      userId,
-      runtimeConfigManager: manager,
-      readRuntimeConfigStatus: () => manager.status(),
-    });
-    const expectedRevision = service.readFile(id).file.revision;
-    const replacement = retained.replaceAll(retainedId, 'kb_0190f4c8-0000-7000-8000-0000000000ff');
-    for (const draft of [replacement, content]) {
-      await expect(
-        service.updateFile({ id, kind, content: draft, expectedRevision })
-      ).rejects.toThrow(
-        'Default Knowledge Base identity is assigned at creation and cannot be edited.'
+  ] as const)(
+    'refuses removal or replacement of the $kind binding through ordinary configuration editing',
+    async ({ scope, path, id, kind, content }) => {
+      const dataRoot = temporaryDataRoot();
+      const target = join(dataRoot, path);
+      mkdirSync(join(target, '..'), { recursive: true });
+      writeFileSync(target, content);
+      const retainedId = initializeDefaultKnowledgeBaseId({ dataRoot, scope });
+      const retained = readFileSync(target, 'utf8');
+      const manager = createRuntimeConfigManager({ dataRoot });
+      const service = new RuntimeConfigFileService({
+        dataRoot,
+        workspaceIds: [workspaceId],
+        userId,
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      const expectedRevision = service.readFile(id).file.revision;
+      const replacement = retained.replaceAll(
+        retainedId,
+        'kb_0190f4c8-0000-7000-8000-0000000000ff'
       );
-      expect(readFileSync(target, 'utf8')).toBe(retained);
+      for (const draft of [replacement, content]) {
+        await expect(
+          service.updateFile({ id, kind, content: draft, expectedRevision })
+        ).rejects.toThrow(
+          'Default Knowledge Base identity is assigned at creation and cannot be edited.'
+        );
+        expect(readFileSync(target, 'utf8')).toBe(retained);
+      }
+      expect(
+        (await service.updateFile({ id, kind, content: retained, expectedRevision })).file.exists
+      ).toBe(true);
     }
-    expect(
-      (await service.updateFile({ id, kind, content: retained, expectedRevision })).file.exists
-    ).toBe(true);
-  });
+  );
 
   it('retains the reminted import binding through unpublished staging and publication', () => {
     const dataRoot = temporaryDataRoot();
@@ -166,18 +165,21 @@ describe('retained default Knowledge Base identity', () => {
     'kb_0190f4c8-0000-5000-8000-000000000001',
     'ws_0190f4c8-0000-7000-8000-000000000001',
     'malformed',
-  ])('refuses invalid retained identity %s without rewriting its owner', (defaultKnowledgeBaseId) => {
-    const dataRoot = temporaryDataRoot();
-    mkdirSync(join(dataRoot, 'config'), { recursive: true });
-    const target = join(dataRoot, 'config', 'server.jsonc');
-    const source = JSON.stringify({
-      schemaVersion: RETAINED_FORMAT_VERSION,
-      defaultKnowledgeBaseId,
-    });
-    writeFileSync(target, source);
-    const input = { dataRoot, scope: { kind: 'server' } as KnowledgeOwnerScope };
-    expect(() => readDefaultKnowledgeBaseId(input)).toThrow('recovery required');
-    expect(() => initializeDefaultKnowledgeBaseId(input)).toThrow('recovery required');
-    expect(readFileSync(target, 'utf8')).toBe(source);
-  });
+  ])(
+    'refuses invalid retained identity %s without rewriting its owner',
+    (defaultKnowledgeBaseId) => {
+      const dataRoot = temporaryDataRoot();
+      mkdirSync(join(dataRoot, 'config'), { recursive: true });
+      const target = join(dataRoot, 'config', 'server.jsonc');
+      const source = JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        defaultKnowledgeBaseId,
+      });
+      writeFileSync(target, source);
+      const input = { dataRoot, scope: { kind: 'server' } as KnowledgeOwnerScope };
+      expect(() => readDefaultKnowledgeBaseId(input)).toThrow('recovery required');
+      expect(() => initializeDefaultKnowledgeBaseId(input)).toThrow('recovery required');
+      expect(readFileSync(target, 'utf8')).toBe(source);
+    }
+  );
 });

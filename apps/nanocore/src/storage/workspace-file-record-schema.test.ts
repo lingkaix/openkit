@@ -357,156 +357,153 @@ describe('workspace canonical record schemas', () => {
     await expectLocalWorkspaceRefusal(f.dataRoot, f.workspaceId);
   });
 
-  it.each([
-    'invalid kind',
-    'missing capturedAt',
-    'null original digest',
-    'foreign scope',
-  ])('rejects a knowledge source with %s', async (violation) => {
-    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const userId = ensureLocalUser(coreDb);
-    onTestFinished(() => coreDb.sqlite.close());
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-    const content = 'Original schema fixture evidence.';
-    const source = await captureWorkspaceSourceFixture({
-      dataRoot,
-      store,
-      coreDb,
-      userId,
-      content,
-      source: {
-        id: 'ks_00000000-0000-7f61-8145-5542ffc8eec0',
-        workspaceId: workspace.id,
-        kind: 'upload',
-        title: 'Invalid source schema',
-        uri: null,
-        contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-        originatingThreadId: null,
-        originatingTurnId: null,
-        originatingFileId: null,
-        capturedAt: TIMESTAMP,
-        createdAt: TIMESTAMP,
-        updatedAt: TIMESTAMP,
-      },
-    });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-    try {
-      const selection = readWorkspaceNotebookSelection({
-        workspaceDb,
-        workspaceRoot,
-        knowledgeBaseId: readDefaultKnowledgeBaseId({
-          dataRoot,
-          scope: { kind: 'workspace', workspaceId: workspace.id },
-        }),
-      });
-      const notebook = selection.notebook;
-      const baseRevision = selection.head.notebookCommit;
-      const pointer = notebook.readSourcePointers(baseRevision)[source.id]!;
-      const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
-      if (!parsed.ok) throw new Error('Healthy Source fixture must have valid frontmatter.');
-      const invalid =
-        violation === 'invalid kind'
-          ? updateOkfFrontmatter({
-              path: `sources/${source.id}.md`,
-              content: pointer,
-              updates: { sourceKind: 'not-a-source-kind' },
-            })
-          : violation === 'missing capturedAt'
-            ? pointer.replace(/^capturedAt:.*\n/m, '')
-            : updateOkfFrontmatter({
-                path: `sources/${source.id}.md`,
-                content: pointer,
-                updates:
-                  violation === 'foreign scope'
-                    ? {
-                        scope: {
-                          kind: 'workspace',
-                          workspaceId: testEntityId('ws', 'foreign-source-owner'),
-                        },
-                      }
-                    : {
-                        contentRef: {
-                          ...(parsed.document.frontmatter.contentRef as Record<string, unknown>),
-                          contentDigest: null,
-                        },
-                      },
-              });
-      expect(invalid).not.toBe(pointer);
-      // Explicit test-owned retained-field corruption, not a governed Source edit.
-      const candidateRevision = notebook.prepareSourcePointers({
-        baseRevision,
-        changes: { [source.id]: invalid },
-        metadata: notebook.inspectRevision(baseRevision).metadata,
-      });
-      const nextHead = await prepareWorkspaceKnowledgeSelection({
-        db: workspaceDb,
-        workspaceRoot,
-        notebook,
-        knowledgeBaseId: selection.head.knowledgeBaseId,
-        notebookCommit: candidateRevision,
-        schemaText: selection.scopeSchemaText,
-      });
-      await store.commitWorkspaceKnowledge({
-        workspaceDb,
-        expectedHead: selection.head,
-        nextHead,
-        audits: [],
-        revalidatePublication: () => {
-          const current = readWorkspaceNotebookSelection({
-            workspaceDb,
-            workspaceRoot,
-            knowledgeBaseId: selection.head.knowledgeBaseId,
-          });
-          if (!isDeepStrictEqual(current.head, selection.head))
-            throw new Error('Fixture Workspace Knowledge head changed.');
+  it.each(['invalid kind', 'missing capturedAt', 'null original digest', 'foreign scope'])(
+    'rejects a knowledge source with %s',
+    async (violation) => {
+      const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const userId = ensureLocalUser(coreDb);
+      onTestFinished(() => coreDb.sqlite.close());
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+      const content = 'Original schema fixture evidence.';
+      const source = await captureWorkspaceSourceFixture({
+        dataRoot,
+        store,
+        coreDb,
+        userId,
+        content,
+        source: {
+          id: 'ks_00000000-0000-7f61-8145-5542ffc8eec0',
+          workspaceId: workspace.id,
+          kind: 'upload',
+          title: 'Invalid source schema',
+          uri: null,
+          contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+          originatingThreadId: null,
+          originatingTurnId: null,
+          originatingFileId: null,
+          capturedAt: TIMESTAMP,
+          createdAt: TIMESTAMP,
+          updatedAt: TIMESTAMP,
         },
       });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        const selection = readWorkspaceNotebookSelection({
+          workspaceDb,
+          workspaceRoot,
+          knowledgeBaseId: readDefaultKnowledgeBaseId({
+            dataRoot,
+            scope: { kind: 'workspace', workspaceId: workspace.id },
+          }),
+        });
+        const notebook = selection.notebook;
+        const baseRevision = selection.head.notebookCommit;
+        const pointer = notebook.readSourcePointers(baseRevision)[source.id]!;
+        const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
+        if (!parsed.ok) throw new Error('Healthy Source fixture must have valid frontmatter.');
+        const invalid =
+          violation === 'invalid kind'
+            ? updateOkfFrontmatter({
+                path: `sources/${source.id}.md`,
+                content: pointer,
+                updates: { sourceKind: 'not-a-source-kind' },
+              })
+            : violation === 'missing capturedAt'
+              ? pointer.replace(/^capturedAt:.*\n/m, '')
+              : updateOkfFrontmatter({
+                  path: `sources/${source.id}.md`,
+                  content: pointer,
+                  updates:
+                    violation === 'foreign scope'
+                      ? {
+                          scope: {
+                            kind: 'workspace',
+                            workspaceId: testEntityId('ws', 'foreign-source-owner'),
+                          },
+                        }
+                      : {
+                          contentRef: {
+                            ...(parsed.document.frontmatter.contentRef as Record<string, unknown>),
+                            contentDigest: null,
+                          },
+                        },
+                });
+        expect(invalid).not.toBe(pointer);
+        // Explicit test-owned retained-field corruption, not a governed Source edit.
+        const candidateRevision = notebook.prepareSourcePointers({
+          baseRevision,
+          changes: { [source.id]: invalid },
+          metadata: notebook.inspectRevision(baseRevision).metadata,
+        });
+        const nextHead = await prepareWorkspaceKnowledgeSelection({
+          db: workspaceDb,
+          workspaceRoot,
+          notebook,
+          knowledgeBaseId: selection.head.knowledgeBaseId,
+          notebookCommit: candidateRevision,
+          schemaText: selection.scopeSchemaText,
+        });
+        await store.commitWorkspaceKnowledge({
+          workspaceDb,
+          expectedHead: selection.head,
+          nextHead,
+          audits: [],
+          revalidatePublication: () => {
+            const current = readWorkspaceNotebookSelection({
+              workspaceDb,
+              workspaceRoot,
+              knowledgeBaseId: selection.head.knowledgeBaseId,
+            });
+            if (!isDeepStrictEqual(current.head, selection.head))
+              throw new Error('Fixture Workspace Knowledge head changed.');
+          },
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
 
-    if (violation === 'foreign scope') {
-      expect(() => new FsStore({ dataRoot })).toThrow();
-    } else {
+      if (violation === 'foreign scope') {
+        expect(() => new FsStore({ dataRoot })).toThrow();
+      } else {
+        await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+      }
+    }
+  );
+
+  it.each(['environmentPackageSnapshotId', 'sessionCompatibilityKey', 'policySnapshotId'])(
+    'rejects an AgentSession missing required %s',
+    async (field) => {
+      const { dataRoot, store, workspace, thread } = await createCanonicalRecordFixture();
+      const session = await store.createAgentSession({
+        id: 'as_00000000-0000-78b0-aef0-27ad15cf38f1',
+        agentId: 'agent_codex_host',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      });
+      await shutdownControlStoreWorkerClient();
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        const row = db.sqlite
+          .prepare('SELECT record_json FROM control_agent_sessions WHERE id=?')
+          .get(session.id) as { record_json: string };
+        const record = JSON.parse(row.record_json) as Record<string, unknown>;
+        delete record[field];
+        db.sqlite
+          .prepare('UPDATE control_agent_sessions SET record_json=? WHERE id=?')
+          .run(JSON.stringify(record), session.id);
+      } finally {
+        db.sqlite.close();
+      }
+
       await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     }
-  });
-
-  it.each([
-    'environmentPackageSnapshotId',
-    'sessionCompatibilityKey',
-    'policySnapshotId',
-  ])('rejects an AgentSession missing required %s', async (field) => {
-    const { dataRoot, store, workspace, thread } = await createCanonicalRecordFixture();
-    const session = await store.createAgentSession({
-      id: 'as_00000000-0000-78b0-aef0-27ad15cf38f1',
-      agentId: 'agent_codex_host',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      status: 'busy',
-      message: null,
-      createdAt: TIMESTAMP,
-      updatedAt: TIMESTAMP,
-    });
-    await shutdownControlStoreWorkerClient();
-    const db = openWorkspaceDb(dataRoot, workspace.id);
-    try {
-      const row = db.sqlite
-        .prepare('SELECT record_json FROM control_agent_sessions WHERE id=?')
-        .get(session.id) as { record_json: string };
-      const record = JSON.parse(row.record_json) as Record<string, unknown>;
-      delete record[field];
-      db.sqlite
-        .prepare('UPDATE control_agent_sessions SET record_json=? WHERE id=?')
-        .run(JSON.stringify(record), session.id);
-    } finally {
-      db.sqlite.close();
-    }
-
-    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
-  });
+  );
 
   it('stores only a scalar environment package snapshot reference in an AgentSession', async () => {
     const { dataRoot, store, workspace, thread } = await createCanonicalRecordFixture();

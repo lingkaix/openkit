@@ -180,60 +180,60 @@ afterEach(async () => {
 });
 
 describe('stopped-server recovery native commit boundary', () => {
-  it.each([
-    'fresh-server',
-    'workspace',
-    'unbound-server',
-  ] as const)('refuses the unsupported no-initialization open shape %s before native effects', async (shape) => {
-    const f = fixture();
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const path = shape === 'workspace' ? workspaceDbPath(f.root, workspaceId) : coreDbPath(f.root);
-    if (shape === 'workspace') {
-      const workspace = createTestWorkspaceDb(f.root, workspaceId);
-      try {
-        applyScopedMigrations(workspace, undefined, 'pre-knowledge');
-      } finally {
-        workspace.sqlite.close();
+  it.each(['fresh-server', 'workspace', 'unbound-server'] as const)(
+    'refuses the unsupported no-initialization open shape %s before native effects',
+    async (shape) => {
+      const f = fixture();
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const path =
+        shape === 'workspace' ? workspaceDbPath(f.root, workspaceId) : coreDbPath(f.root);
+      if (shape === 'workspace') {
+        const workspace = createTestWorkspaceDb(f.root, workspaceId);
+        try {
+          applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+        } finally {
+          workspace.sqlite.close();
+        }
       }
-    }
-    const coreDigest = createHash('sha256')
-      .update(readFileSync(coreDbPath(f.root)))
-      .digest('hex');
-    const scopeDigest = createHash('sha256').update(readFileSync(path)).digest('hex');
-    const command =
-      shape === 'workspace'
-        ? {
-            database: `workspace:${path}`,
-            path,
-            dataRoot: f.root,
-            create: false,
-            productOwner: { kind: 'workspace' as const, workspaceId },
-          }
-        : {
-            database: `core:${path}`,
-            path,
-            ...(shape === 'unbound-server' ? {} : { dataRoot: f.root }),
-            create: shape === 'fresh-server',
-            productOwner: { kind: 'server' as const },
-          };
-
-    // The approved omission applies only to existing exact-root server scopes; its guard is native.
-    // Existing native open failures conservatively retain unknown outcome classification.
-    await expect(getControlStoreWorkerClient().open(command)).rejects.toMatchObject({
-      code: 'precondition',
-      commit: 'unknown',
-    });
-    expect(interception.workers.length).toBeGreaterThan(0);
-    expect(Atomics.load(f.gate, 2)).toBe(0);
-    expect(recoveryCounts(f.root)).toEqual({ tokens: 0, audits: 0 });
-    expect(
-      createHash('sha256')
+      const coreDigest = createHash('sha256')
         .update(readFileSync(coreDbPath(f.root)))
-        .digest('hex')
-    ).toBe(coreDigest);
-    expect(existsSync(path)).toBe(true);
-    expect(createHash('sha256').update(readFileSync(path)).digest('hex')).toBe(scopeDigest);
-  });
+        .digest('hex');
+      const scopeDigest = createHash('sha256').update(readFileSync(path)).digest('hex');
+      const command =
+        shape === 'workspace'
+          ? {
+              database: `workspace:${path}`,
+              path,
+              dataRoot: f.root,
+              create: false,
+              productOwner: { kind: 'workspace' as const, workspaceId },
+            }
+          : {
+              database: `core:${path}`,
+              path,
+              ...(shape === 'unbound-server' ? {} : { dataRoot: f.root }),
+              create: shape === 'fresh-server',
+              productOwner: { kind: 'server' as const },
+            };
+
+      // The approved omission applies only to existing exact-root server scopes; its guard is native.
+      // Existing native open failures conservatively retain unknown outcome classification.
+      await expect(getControlStoreWorkerClient().open(command)).rejects.toMatchObject({
+        code: 'precondition',
+        commit: 'unknown',
+      });
+      expect(interception.workers.length).toBeGreaterThan(0);
+      expect(Atomics.load(f.gate, 2)).toBe(0);
+      expect(recoveryCounts(f.root)).toEqual({ tokens: 0, audits: 0 });
+      expect(
+        createHash('sha256')
+          .update(readFileSync(coreDbPath(f.root)))
+          .digest('hex')
+      ).toBe(coreDigest);
+      expect(existsSync(path)).toBe(true);
+      expect(createHash('sha256').update(readFileSync(path)).digest('hex')).toBe(scopeDigest);
+    }
+  );
 
   it('commits without a Main Token or Audit writer and closes both handles before locked stdout', async () => {
     const f = fixture();
@@ -450,59 +450,59 @@ describe('stopped-server recovery native commit boundary', () => {
     expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
   });
 
-  it.each([
-    'after-commit',
-    'close',
-  ] as const)('preserves the committed attempt after native acknowledgement loss at %s until an explicit retry', async (point) => {
-    const f = fixture(point);
-    let outputCount = 0;
-    let settled = false;
-    const options = {
-      now: () => NOW,
-      write: () => {
-        outputCount++;
-      },
-    };
-    const result = Promise.resolve()
-      .then(() => runOpenKitOperatorCli(f.args, options))
-      .then(
-        (value) => {
-          settled = true;
-          return { value };
+  it.each(['after-commit', 'close'] as const)(
+    'preserves the committed attempt after native acknowledgement loss at %s until an explicit retry',
+    async (point) => {
+      const f = fixture(point);
+      let outputCount = 0;
+      let settled = false;
+      const options = {
+        now: () => NOW,
+        write: () => {
+          outputCount++;
         },
-        (error: unknown) => {
-          settled = true;
-          return { error };
-        }
-      );
-    await waitForHold(f.gate, () => settled);
-    expect(Atomics.load(f.gate, 0)).toBe(1);
-    expect(settled).toBe(false);
-    expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
-    expect(outputCount).toBe(0);
-    expectRootLocked(f.root);
-    const envelopeDigest = createHash('sha256').update(readFileSync(f.outputPath)).digest('hex');
-    const worker = interception.workers[0]!;
-    let exited = false;
-    worker.once('exit', () => {
-      exited = true;
-    });
-    await worker.terminate();
-    expect(await result).toHaveProperty('error');
-    expect(exited).toBe(true);
-    expect(outputCount).toBe(0);
-    expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
-    expect(existsSync(dataRootLockPath(f.root))).toBe(false);
+      };
+      const result = Promise.resolve()
+        .then(() => runOpenKitOperatorCli(f.args, options))
+        .then(
+          (value) => {
+            settled = true;
+            return { value };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          }
+        );
+      await waitForHold(f.gate, () => settled);
+      expect(Atomics.load(f.gate, 0)).toBe(1);
+      expect(settled).toBe(false);
+      expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
+      expect(outputCount).toBe(0);
+      expectRootLocked(f.root);
+      const envelopeDigest = createHash('sha256').update(readFileSync(f.outputPath)).digest('hex');
+      const worker = interception.workers[0]!;
+      let exited = false;
+      worker.once('exit', () => {
+        exited = true;
+      });
+      await worker.terminate();
+      expect(await result).toHaveProperty('error');
+      expect(exited).toBe(true);
+      expect(outputCount).toBe(0);
+      expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
+      expect(existsSync(dataRootLockPath(f.root))).toBe(false);
 
-    // Recovery uses the existing exact file/Token/Audit inspection; no automatic RPC replay.
-    release(f.gate);
-    interception.point = 'none';
-    const resumed = await runOpenKitOperatorCli(f.args, options);
-    expect(resumed).toMatchObject({ status: 'completed' });
-    expect(createHash('sha256').update(readFileSync(f.outputPath)).digest('hex')).toBe(
-      envelopeDigest
-    );
-    expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
-    expect(outputCount).toBe(1);
-  });
+      // Recovery uses the existing exact file/Token/Audit inspection; no automatic RPC replay.
+      release(f.gate);
+      interception.point = 'none';
+      const resumed = await runOpenKitOperatorCli(f.args, options);
+      expect(resumed).toMatchObject({ status: 'completed' });
+      expect(createHash('sha256').update(readFileSync(f.outputPath)).digest('hex')).toBe(
+        envelopeDigest
+      );
+      expect(recoveryCounts(f.root)).toEqual({ tokens: 1, audits: 1 });
+      expect(outputCount).toBe(1);
+    }
+  );
 });

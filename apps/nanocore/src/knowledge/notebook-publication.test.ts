@@ -584,46 +584,46 @@ Exact retained candidate.\r\n`;
     expect((await f.publish()).outcome).toBe('published');
   });
 
-  it.each([
-    'receipt',
-    'completion',
-  ] as const)('refuses a previously published request with missing %s evidence', async (missing) => {
-    const f = await fixture();
-    const first = await f.publish();
-    if (missing === 'receipt')
-      f.workspaceDb.sqlite
-        .prepare('DELETE FROM idempotency_requests WHERE request_id = ?')
-        .run(f.request.requestId);
-    else
-      f.workspaceDb.sqlite
-        .prepare('DELETE FROM audit_events WHERE action = ? AND request_id = ?')
-        .run('knowledge.notebook.update', f.request.requestId);
-    await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(currentFixtureRevision(f)).toBe(first.notebookRevision);
-  });
+  it.each(['receipt', 'completion'] as const)(
+    'refuses a previously published request with missing %s evidence',
+    async (missing) => {
+      const f = await fixture();
+      const first = await f.publish();
+      if (missing === 'receipt')
+        f.workspaceDb.sqlite
+          .prepare('DELETE FROM idempotency_requests WHERE request_id = ?')
+          .run(f.request.requestId);
+      else
+        f.workspaceDb.sqlite
+          .prepare('DELETE FROM audit_events WHERE action = ? AND request_id = ?')
+          .run('knowledge.notebook.update', f.request.requestId);
+      await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(currentFixtureRevision(f)).toBe(first.notebookRevision);
+    }
+  );
 
-  it.each([
-    'receipt',
-    'completion',
-  ] as const)('rolls back the native tuple after an actual %s write fault', async (fault) => {
-    const f = await fixture();
-    f.workspaceDb.sqlite.exec(
-      fault === 'receipt'
-        ? "CREATE TRIGGER reject_completion BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'test receipt fault'); END"
-        : "CREATE TRIGGER reject_completion BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.update' BEGIN SELECT RAISE(ABORT, 'test completion fault'); END"
-    );
-    await expect(f.publish()).rejects.toThrow();
-    expect(currentFixtureRevision(f)).toBe(f.initial);
-    expect(
-      f.workspaceDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get()
-    ).toEqual({ count: f.retainedCounts.audit });
-    expect(
-      f.workspaceDb.sqlite.prepare('SELECT count(*) AS count FROM idempotency_requests').get()
-    ).toEqual({ count: f.retainedCounts.receipts });
-    f.workspaceDb.sqlite.exec('DROP TRIGGER reject_completion');
-    const result = await f.publish();
-    expect(currentFixtureRevision(f)).toBe(result.notebookRevision);
-  });
+  it.each(['receipt', 'completion'] as const)(
+    'rolls back the native tuple after an actual %s write fault',
+    async (fault) => {
+      const f = await fixture();
+      f.workspaceDb.sqlite.exec(
+        fault === 'receipt'
+          ? "CREATE TRIGGER reject_completion BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'test receipt fault'); END"
+          : "CREATE TRIGGER reject_completion BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.update' BEGIN SELECT RAISE(ABORT, 'test completion fault'); END"
+      );
+      await expect(f.publish()).rejects.toThrow();
+      expect(currentFixtureRevision(f)).toBe(f.initial);
+      expect(
+        f.workspaceDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get()
+      ).toEqual({ count: f.retainedCounts.audit });
+      expect(
+        f.workspaceDb.sqlite.prepare('SELECT count(*) AS count FROM idempotency_requests').get()
+      ).toEqual({ count: f.retainedCounts.receipts });
+      f.workspaceDb.sqlite.exec('DROP TRIGGER reject_completion');
+      const result = await f.publish();
+      expect(currentFixtureRevision(f)).toBe(result.notebookRevision);
+    }
+  );
 
   it('rechecks current admission before candidate reads and immediately before publication', async () => {
     const f = await fixture();
@@ -642,29 +642,28 @@ Exact retained candidate.\r\n`;
     ).toEqual({ count: f.retainedCounts.audit });
   });
 
-  it.each([
-    'authority',
-    'sourceReferences',
-    'baseRevision',
-  ] as const)('rejects Audit %s facts that contradict the exact published commit', async (field) => {
-    const f = await fixture();
-    const first = await f.publish();
-    const rows = f.workspaceDb.sqlite
-      .prepare(
-        'SELECT audit_event_id AS id, notebook_admission_json AS admission FROM audit_events WHERE request_id = ?'
-      )
-      .all(f.request.requestId) as { id: string; admission: string }[];
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      const value = JSON.parse(row.admission);
-      if (field === 'authority') value.authority.instructionReference = 'invented instruction';
-      if (field === 'sourceReferences') value.sourceReferences = ['source:invented'];
-      if (field === 'baseRevision') value.baseRevision = '0'.repeat(40);
-      f.workspaceDb.sqlite
-        .prepare('UPDATE audit_events SET notebook_admission_json = ? WHERE audit_event_id = ?')
-        .run(JSON.stringify(value), row.id);
+  it.each(['authority', 'sourceReferences', 'baseRevision'] as const)(
+    'rejects Audit %s facts that contradict the exact published commit',
+    async (field) => {
+      const f = await fixture();
+      const first = await f.publish();
+      const rows = f.workspaceDb.sqlite
+        .prepare(
+          'SELECT audit_event_id AS id, notebook_admission_json AS admission FROM audit_events WHERE request_id = ?'
+        )
+        .all(f.request.requestId) as { id: string; admission: string }[];
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        const value = JSON.parse(row.admission);
+        if (field === 'authority') value.authority.instructionReference = 'invented instruction';
+        if (field === 'sourceReferences') value.sourceReferences = ['source:invented'];
+        if (field === 'baseRevision') value.baseRevision = '0'.repeat(40);
+        f.workspaceDb.sqlite
+          .prepare('UPDATE audit_events SET notebook_admission_json = ? WHERE audit_event_id = ?')
+          .run(JSON.stringify(value), row.id);
+      }
+      await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(currentFixtureRevision(f)).toBe(first.notebookRevision);
     }
-    await expect(f.publish()).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(currentFixtureRevision(f)).toBe(first.notebookRevision);
-  });
+  );
 });

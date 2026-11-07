@@ -302,83 +302,83 @@ describe('Item-confirmed self Memory forget', () => {
     expect(existsSync(root)).toBe(false);
   });
 
-  it.each([
-    'grant',
-    'apply',
-  ] as const)('rechecks canonical Source corruption before %s and withholds the captured preview without repair', async (stage) => {
-    const f = await fixture(true);
-    const prepared = await prepareMemoryForget(f.writer, f.request);
-    if (stage === 'apply') await f.decide(prepared.pendingRequestId);
-    const baseRevision = f.notebook.publishedRevision();
-    const pointer = f.notebook.readSourcePointers(baseRevision)[f.source!.id]!;
-    // Damage the captured Source object without making the confirmation's fixed base stale.
-    const malformed = updateOkfFrontmatter({
-      path: `sources/${f.source!.id}.md`,
-      content: pointer,
-      updates: { schema_version: 'unsupported-source-version' },
-    });
-    const repositoryPath = join(
-      f.writer.coreDb.dataRoot,
-      'users',
-      f.writer.actor.userId,
-      'memory',
-      'notebook.git'
-    );
-    const objectId = execFileSync(
-      'git',
-      ['--git-dir', repositoryPath, 'rev-parse', `${baseRevision}:sources/${f.source!.id}.md`],
-      { encoding: 'utf8' }
-    ).trim();
-    const objectPath = join(repositoryPath, 'objects', objectId.slice(0, 2), objectId.slice(2));
-    const changed = Buffer.from(malformed);
-    const corruptObject = deflateSync(
-      Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed])
-    );
-    chmodSync(objectPath, 0o600);
-    writeFileSync(objectPath, corruptObject);
-    await expect(readUserKnowledgeSource(f.writer, f.source!.id, 'human')).rejects.toThrowError(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
-    const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
-    expect(
-      projectApprovalEffect({
-        record,
-        store: f.writer.store,
-        coreDb: f.writer.coreDb,
-        actor: f.writer.actor,
-      }).status
-    ).toBe('unavailable');
-    if (stage === 'grant')
-      await expect(f.decide(prepared.pendingRequestId)).rejects.toMatchObject({
-        code: 'approval_preview_unavailable',
+  it.each(['grant', 'apply'] as const)(
+    'rechecks canonical Source corruption before %s and withholds the captured preview without repair',
+    async (stage) => {
+      const f = await fixture(true);
+      const prepared = await prepareMemoryForget(f.writer, f.request);
+      if (stage === 'apply') await f.decide(prepared.pendingRequestId);
+      const baseRevision = f.notebook.publishedRevision();
+      const pointer = f.notebook.readSourcePointers(baseRevision)[f.source!.id]!;
+      // Damage the captured Source object without making the confirmation's fixed base stale.
+      const malformed = updateOkfFrontmatter({
+        path: `sources/${f.source!.id}.md`,
+        content: pointer,
+        updates: { schema_version: 'unsupported-source-version' },
       });
-    else
-      await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
-        code: 'grant_conflict',
-      });
-    if (stage === 'grant') {
-      expect(() =>
-        checkMemoryForgetIntent(
-          f.writer.workspaceDb.sqlite,
-          record,
-          f.writer.actor,
-          f.writer.coreDb,
-          f.writer.store
-        )
-      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-      await expect(prepareMemoryForget(f.writer, f.request)).rejects.toThrowError(
+      const repositoryPath = join(
+        f.writer.coreDb.dataRoot,
+        'users',
+        f.writer.actor.userId,
+        'memory',
+        'notebook.git'
+      );
+      const objectId = execFileSync(
+        'git',
+        ['--git-dir', repositoryPath, 'rev-parse', `${baseRevision}:sources/${f.source!.id}.md`],
+        { encoding: 'utf8' }
+      ).trim();
+      const objectPath = join(repositoryPath, 'objects', objectId.slice(0, 2), objectId.slice(2));
+      const changed = Buffer.from(malformed);
+      const corruptObject = deflateSync(
+        Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed])
+      );
+      chmodSync(objectPath, 0o600);
+      writeFileSync(objectPath, corruptObject);
+      await expect(readUserKnowledgeSource(f.writer, f.source!.id, 'human')).rejects.toThrowError(
         expect.objectContaining({ code: 'recovery_required' })
       );
+      const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
+      expect(
+        projectApprovalEffect({
+          record,
+          store: f.writer.store,
+          coreDb: f.writer.coreDb,
+          actor: f.writer.actor,
+        }).status
+      ).toBe('unavailable');
+      if (stage === 'grant')
+        await expect(f.decide(prepared.pendingRequestId)).rejects.toMatchObject({
+          code: 'approval_preview_unavailable',
+        });
+      else
+        await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
+          code: 'grant_conflict',
+        });
+      if (stage === 'grant') {
+        expect(() =>
+          checkMemoryForgetIntent(
+            f.writer.workspaceDb.sqlite,
+            record,
+            f.writer.actor,
+            f.writer.coreDb,
+            f.writer.store
+          )
+        ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+        await expect(prepareMemoryForget(f.writer, f.request)).rejects.toThrowError(
+          expect.objectContaining({ code: 'recovery_required' })
+        );
+      }
+      expect(f.notebook.publishedRevision()).toBe(baseRevision);
+      expect(readFileSync(objectPath)).toEqual(corruptObject);
+      expect(
+        readMemorySuppressions(
+          join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'memory'),
+          f.writer.actor.userId
+        )
+      ).toEqual([]);
     }
-    expect(f.notebook.publishedRevision()).toBe(baseRevision);
-    expect(readFileSync(objectPath)).toEqual(corruptObject);
-    expect(
-      readMemorySuppressions(
-        join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'memory'),
-        f.writer.actor.userId
-      )
-    ).toEqual([]);
-  });
+  );
 
   it('refuses corrupt Sources before preparation and never opens a replacement User database for a retained preview', async () => {
     const f = await fixture(true);

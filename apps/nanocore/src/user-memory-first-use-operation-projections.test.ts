@@ -284,64 +284,64 @@ describe('first private User Memory query', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'UserDb',
-    'Notebook',
-    'Notebook Git',
-    'Scope schema',
-    'UserDb and Notebook',
-  ] as const)('does not replace an established lost %s with empty Memory', async (lost) => {
-    const f = await fixture();
-    const userDb = openUserDb(f.dataRoot, f.userId);
-    applyScopedMigrations(userDb);
-    const revision = initializeScopedNotebook({
-      coreDb: f.coreDb,
-      userDb,
-      actor: f.actor,
-      target: { kind: 'user' },
-      initialization: { requestId: randomUUID(), instructionReference: 'test:established-memory' },
-    });
-    userDb.sqlite.close();
-    const root = userMemoryRoot(f.dataRoot, f.userId);
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({
-      dataRoot: f.dataRoot,
-      scope: { kind: 'user', userId: f.userId },
-    });
-    const missing = {
-      UserDb: [userDbPath(f.dataRoot, f.userId)],
-      Notebook: [root],
-      'Notebook Git': [join(root, 'notebook.git')],
-      'Scope schema': [join(root, 'schema', 'scope-schema.yaml')],
-      'UserDb and Notebook': [userDbPath(f.dataRoot, f.userId), root],
-    }[lost];
-    for (const path of missing) rmSync(path, { recursive: true });
-    if (lost === 'Notebook Git' || lost === 'Scope schema') expect(existsSync(root)).toBe(true);
-    for (const operation of ['memory.list', 'memory.search', 'memory.ask'] as const) {
-      const input =
-        operation === 'memory.list'
-          ? {}
-          : operation === 'memory.search'
-            ? { query: 'saved preference' }
-            : { question: 'My saved preference?' };
-      await expect(
-        f.invoke(
-          operation,
-          operation === 'memory.list' ? input : { workspaceId: f.workspace.id, ...input },
-          f.context
-        )
-      ).rejects.toMatchObject({ code: 'recovery_required', status: 503 });
-      for (const path of missing) expect(existsSync(path)).toBe(false);
-    }
-    expect(
-      readDefaultKnowledgeBaseId({
+  it.each(['UserDb', 'Notebook', 'Notebook Git', 'Scope schema', 'UserDb and Notebook'] as const)(
+    'does not replace an established lost %s with empty Memory',
+    async (lost) => {
+      const f = await fixture();
+      const userDb = openUserDb(f.dataRoot, f.userId);
+      applyScopedMigrations(userDb);
+      const revision = initializeScopedNotebook({
+        coreDb: f.coreDb,
+        userDb,
+        actor: f.actor,
+        target: { kind: 'user' },
+        initialization: {
+          requestId: randomUUID(),
+          instructionReference: 'test:established-memory',
+        },
+      });
+      userDb.sqlite.close();
+      const root = userMemoryRoot(f.dataRoot, f.userId);
+      const knowledgeBaseId = readDefaultKnowledgeBaseId({
         dataRoot: f.dataRoot,
         scope: { kind: 'user', userId: f.userId },
-      })
-    ).toBe(knowledgeBaseId);
-    if (lost === 'UserDb' || lost === 'Scope schema')
+      });
+      const missing = {
+        UserDb: [userDbPath(f.dataRoot, f.userId)],
+        Notebook: [root],
+        'Notebook Git': [join(root, 'notebook.git')],
+        'Scope schema': [join(root, 'schema', 'scope-schema.yaml')],
+        'UserDb and Notebook': [userDbPath(f.dataRoot, f.userId), root],
+      }[lost];
+      for (const path of missing) rmSync(path, { recursive: true });
+      if (lost === 'Notebook Git' || lost === 'Scope schema') expect(existsSync(root)).toBe(true);
+      for (const operation of ['memory.list', 'memory.search', 'memory.ask'] as const) {
+        const input =
+          operation === 'memory.list'
+            ? {}
+            : operation === 'memory.search'
+              ? { query: 'saved preference' }
+              : { question: 'My saved preference?' };
+        await expect(
+          f.invoke(
+            operation,
+            operation === 'memory.list' ? input : { workspaceId: f.workspace.id, ...input },
+            f.context
+          )
+        ).rejects.toMatchObject({ code: 'recovery_required', status: 503 });
+        for (const path of missing) expect(existsSync(path)).toBe(false);
+      }
       expect(
-        new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') }).publishedRevision()
-      ).toBe(revision);
-    expect(run).not.toHaveBeenCalled();
-  });
+        readDefaultKnowledgeBaseId({
+          dataRoot: f.dataRoot,
+          scope: { kind: 'user', userId: f.userId },
+        })
+      ).toBe(knowledgeBaseId);
+      if (lost === 'UserDb' || lost === 'Scope schema')
+        expect(
+          new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') }).publishedRevision()
+        ).toBe(revision);
+      expect(run).not.toHaveBeenCalled();
+    }
+  );
 });

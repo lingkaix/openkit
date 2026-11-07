@@ -83,18 +83,18 @@ async function confirmDisable() {
 }
 
 describe('Web admin recovery and user disable', () => {
-  it.each([
-    'workspace-access-recovery',
-    'disable-user',
-  ])('registers %s under Settings Administration', (id) => {
-    expect(surfaceById(id)).toMatchObject({
-      path: `/settings/${id}`,
-      tier: 'A',
-      nav: 'settings-admin',
-    });
-    expect(surfacesInGroup('settings-admin').map(({ id }) => id)).toContain(id);
-    expect(SURFACE_ELEMENTS[id]).toBeTruthy();
-  });
+  it.each(['workspace-access-recovery', 'disable-user'])(
+    'registers %s under Settings Administration',
+    (id) => {
+      expect(surfaceById(id)).toMatchObject({
+        path: `/settings/${id}`,
+        tier: 'A',
+        nav: 'settings-admin',
+      });
+      expect(surfacesInGroup('settings-admin').map(({ id }) => id)).toContain(id);
+      expect(SURFACE_ELEMENTS[id]).toBeTruthy();
+    }
+  );
 
   it('loads only on request and recovers with the loaded revision and generated request ID', async () => {
     const client = makeClient();
@@ -288,61 +288,62 @@ describe('Web admin recovery and user disable', () => {
     });
   });
 
-  it.each([
-    'workspace.access-recovery-read',
-    'workspace.access-recover',
-    'user.disable',
-  ] as const)('denies %s and never replays on Retry', async (method) => {
-    const client = makeClient();
-    const { container } = renderScreen(
-      client,
-      method === 'user.disable' ? 'disable-user' : 'workspace-access-recovery'
-    );
-    vi.mocked(client.operations[method]).mockRejectedValueOnce(new ApiCallError(401, POISON));
-    if (method === 'user.disable') await confirmDisable();
-    else if (method === 'workspace.access-recover') {
-      await loadRecovery();
-      await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
-    } else {
-      await userEvent.type(
-        await screen.findByLabelText('Workspace ID'),
-        'ws_00000000-0000-7981-ab18-24cc470147b4'
+  it.each(['workspace.access-recovery-read', 'workspace.access-recover', 'user.disable'] as const)(
+    'denies %s and never replays on Retry',
+    async (method) => {
+      const client = makeClient();
+      const { container } = renderScreen(
+        client,
+        method === 'user.disable' ? 'disable-user' : 'workspace-access-recovery'
       );
-      await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
+      vi.mocked(client.operations[method]).mockRejectedValueOnce(new ApiCallError(401, POISON));
+      if (method === 'user.disable') await confirmDisable();
+      else if (method === 'workspace.access-recover') {
+        await loadRecovery();
+        await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
+      } else {
+        await userEvent.type(
+          await screen.findByLabelText('Workspace ID'),
+          'ws_00000000-0000-7981-ab18-24cc470147b4'
+        );
+        await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
+      }
+      await screen.findByText('Access denied');
+      expect(container.innerHTML).not.toContain(POISON);
+      expect(
+        screen.queryByText('usr_00000000-0000-7011-88df-c2b1e8466b6f')
+      ).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await screen.findByLabelText(method === 'user.disable' ? 'User ID' : 'Workspace ID');
+      expect(client.operations[method]).toHaveBeenCalledTimes(1);
     }
-    await screen.findByText('Access denied');
-    expect(container.innerHTML).not.toContain(POISON);
-    expect(screen.queryByText('usr_00000000-0000-7011-88df-c2b1e8466b6f')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await screen.findByLabelText(method === 'user.disable' ? 'User ID' : 'Workspace ID');
-    expect(client.operations[method]).toHaveBeenCalledTimes(1);
-  });
+  );
 
-  it.each([
-    'workspace.access-recover',
-    'user.disable',
-  ] as const)('resets %s errors without replaying or retaining confirmation', async (method) => {
-    const client = makeClient();
-    vi.mocked(client.operations[method]).mockRejectedValueOnce(new Error(POISON));
-    const { container } = renderScreen(
-      client,
-      method === 'user.disable' ? 'disable-user' : 'workspace-access-recovery'
-    );
-    if (method === 'user.disable') await confirmDisable();
-    else {
-      await loadRecovery();
-      await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
+  it.each(['workspace.access-recover', 'user.disable'] as const)(
+    'resets %s errors without replaying or retaining confirmation',
+    async (method) => {
+      const client = makeClient();
+      vi.mocked(client.operations[method]).mockRejectedValueOnce(new Error(POISON));
+      const { container } = renderScreen(
+        client,
+        method === 'user.disable' ? 'disable-user' : 'workspace-access-recovery'
+      );
+      if (method === 'user.disable') await confirmDisable();
+      else {
+        await loadRecovery();
+        await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
+      }
+      await screen.findByRole('alert');
+      expect(container.innerHTML).not.toContain(POISON);
+      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(client.operations[method]).toHaveBeenCalledTimes(1);
+      expect(
+        screen.getByRole('button', {
+          name: method === 'user.disable' ? 'Disable user' : 'Add myself as member',
+        })
+      ).toBeDisabled();
     }
-    await screen.findByRole('alert');
-    expect(container.innerHTML).not.toContain(POISON);
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(client.operations[method]).toHaveBeenCalledTimes(1);
-    expect(
-      screen.getByRole('button', {
-        name: method === 'user.disable' ? 'Disable user' : 'Add myself as member',
-      })
-    ).toBeDisabled();
-  });
+  );
   it('requires a fresh revision after conflict and a new request ID for another explicit recovery', async () => {
     const client = makeClient();
     vi.mocked(client.operations['workspace.access-recover']).mockRejectedValueOnce(
@@ -368,53 +369,55 @@ describe('Web admin recovery and user disable', () => {
     expect(secondRequest.requestId).not.toBe(firstRequest.requestId);
   });
 
-  it.each([
-    'workspace-access-recovery',
-    'disable-user',
-  ])('recovers a safe probe error on %s', async (id) => {
-    const client = makeClient();
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new Error(POISON));
-    const { container } = renderScreen(client, id);
-    await screen.findByRole('alert');
-    expect(container.innerHTML).not.toContain(POISON);
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await screen.findByLabelText(id === 'disable-user' ? 'User ID' : 'Workspace ID');
-    expect(client.operations['user.disable']).not.toHaveBeenCalled();
-    expect(client.operations['workspace.access-recover']).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    'workspace.access-recovery-read',
-    'workspace.access-recover',
-    'user.disable',
-  ] as const)('blocks all target edits and overlapping actions while %s is pending', async (method) => {
-    const client = makeClient();
-    let finish = () => {};
-    vi.mocked(client.operations[method]).mockImplementationOnce(
-      () =>
-        new Promise<never>((resolve) => {
-          finish = () => resolve((method === 'user.disable' ? DISABLED : RECOVERY) as never);
-        })
-    );
-    renderScreen(client, method === 'user.disable' ? 'disable-user' : 'workspace-access-recovery');
-    if (method === 'user.disable') await confirmDisable();
-    else if (method === 'workspace.access-recover') {
-      await loadRecovery();
-      await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
-    } else {
-      await userEvent.type(
-        await screen.findByLabelText('Workspace ID'),
-        'ws_00000000-0000-7981-ab18-24cc470147b4'
-      );
-      await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
+  it.each(['workspace-access-recovery', 'disable-user'])(
+    'recovers a safe probe error on %s',
+    async (id) => {
+      const client = makeClient();
+      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new Error(POISON));
+      const { container } = renderScreen(client, id);
+      await screen.findByRole('alert');
+      expect(container.innerHTML).not.toContain(POISON);
+      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await screen.findByLabelText(id === 'disable-user' ? 'User ID' : 'Workspace ID');
+      expect(client.operations['user.disable']).not.toHaveBeenCalled();
+      expect(client.operations['workspace.access-recover']).not.toHaveBeenCalled();
     }
-    await screen.findByRole('status');
-    for (const input of screen.getAllByRole('textbox')) expect(input).toBeDisabled();
-    for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
-    await act(async () => finish());
-    await screen.findByText(
-      method === 'user.disable' ? 'disabled' : 'usr_00000000-0000-7011-88df-c2b1e8466b6f'
-    );
-    expect(client.operations[method]).toHaveBeenCalledTimes(1);
-  });
+  );
+
+  it.each(['workspace.access-recovery-read', 'workspace.access-recover', 'user.disable'] as const)(
+    'blocks all target edits and overlapping actions while %s is pending',
+    async (method) => {
+      const client = makeClient();
+      let finish = () => {};
+      vi.mocked(client.operations[method]).mockImplementationOnce(
+        () =>
+          new Promise<never>((resolve) => {
+            finish = () => resolve((method === 'user.disable' ? DISABLED : RECOVERY) as never);
+          })
+      );
+      renderScreen(
+        client,
+        method === 'user.disable' ? 'disable-user' : 'workspace-access-recovery'
+      );
+      if (method === 'user.disable') await confirmDisable();
+      else if (method === 'workspace.access-recover') {
+        await loadRecovery();
+        await userEvent.click(screen.getByRole('button', { name: 'Add myself as member' }));
+      } else {
+        await userEvent.type(
+          await screen.findByLabelText('Workspace ID'),
+          'ws_00000000-0000-7981-ab18-24cc470147b4'
+        );
+        await userEvent.click(screen.getByRole('button', { name: 'Load recovery state' }));
+      }
+      await screen.findByRole('status');
+      for (const input of screen.getAllByRole('textbox')) expect(input).toBeDisabled();
+      for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
+      await act(async () => finish());
+      await screen.findByText(
+        method === 'user.disable' ? 'disabled' : 'usr_00000000-0000-7011-88df-c2b1e8466b6f'
+      );
+      expect(client.operations[method]).toHaveBeenCalledTimes(1);
+    }
+  );
 });

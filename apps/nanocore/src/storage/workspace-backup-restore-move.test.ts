@@ -614,128 +614,125 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
 });
 
 describe('D0-2 closed operator preconditions', () => {
-  it.each([
-    '--acknowledge-target-fenced',
-    '--acknowledge-copies-retired',
-  ])('WM 415: omitted %s refuses invalid-arguments without a source mutation', async (omitted) => {
-    const f = await fixture();
-    const before = rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_workspaces');
-    await refuses(
-      f,
-      [
-        'reactivate',
-        '--data-root',
-        f.dataRoot,
-        '--workspace-id',
-        workspaceId,
-        '--backup-id',
-        f.backupId,
-        '--expected-revision',
-        '1',
-        '--acknowledge-target-fenced',
-        '--acknowledge-copies-retired',
-      ].filter((value) => value !== omitted),
-      'invalid-arguments'
-    );
-    expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_workspaces')).toEqual(before);
-  }, 120_000);
+  it.each(['--acknowledge-target-fenced', '--acknowledge-copies-retired'])(
+    'WM 415: omitted %s refuses invalid-arguments without a source mutation',
+    async (omitted) => {
+      const f = await fixture();
+      const before = rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_workspaces');
+      await refuses(
+        f,
+        [
+          'reactivate',
+          '--data-root',
+          f.dataRoot,
+          '--workspace-id',
+          workspaceId,
+          '--backup-id',
+          f.backupId,
+          '--expected-revision',
+          '1',
+          '--acknowledge-target-fenced',
+          '--acknowledge-copies-retired',
+        ].filter((value) => value !== omitted),
+        'invalid-arguments'
+      );
+      expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_workspaces')).toEqual(before);
+    },
+    120_000
+  );
 
-  it.each([
-    'restore',
-    'move-out',
-    'move-in',
-    'finish',
-    'abandon',
-    'reactivate',
-  ] as const)('D0 root exclusion: a second command holder makes %s refuse root-locked', async (command) => {
-    const f = await fixture();
-    const base = ['--data-root', f.dataRoot];
-    const selection = ['--workspace-id', workspaceId, '--backup-id', f.backupId];
-    const argv =
-      command === 'restore'
-        ? [
-            command,
-            ...base,
-            '--workspace-id',
-            workspaceId,
-            '--bundle-root',
-            f.bundleRoot,
-            '--request-id',
-            randomUUID(),
-          ]
-        : command === 'move-in'
+  it.each(['restore', 'move-out', 'move-in', 'finish', 'abandon', 'reactivate'] as const)(
+    'D0 root exclusion: a second command holder makes %s refuse root-locked',
+    async (command) => {
+      const f = await fixture();
+      const base = ['--data-root', f.dataRoot];
+      const selection = ['--workspace-id', workspaceId, '--backup-id', f.backupId];
+      const argv =
+        command === 'restore'
           ? [
               command,
               ...base,
+              '--workspace-id',
+              workspaceId,
               '--bundle-root',
               f.bundleRoot,
               '--request-id',
               randomUUID(),
-              '--target-owner-id',
-              f.ownerId,
             ]
-          : command === 'move-out'
-            ? moveArgs(f, 1)
-            : command === 'reactivate'
-              ? [
-                  command,
-                  ...base,
-                  ...selection,
-                  '--expected-revision',
-                  '1',
-                  '--acknowledge-target-fenced',
-                  '--acknowledge-copies-retired',
-                ]
-              : [command, ...base, ...selection];
-    const lock = acquireDataRootLock(f.dataRoot, { bootId: 'second-offline-command' });
-    try {
-      await refuses(f, argv, 'root-locked');
-    } finally {
-      lock.release();
-    }
-  }, 120_000);
-
-  it.each([
-    'capture',
-    'verify',
-    'restore',
-    'move-in',
-  ] as const)('D0 release ruling: %s without an installed identity refuses release-mismatch, never a source-build fallback', async (command) => {
-    const f = await fixture();
-    rmSync(f.releaseIdentityPath);
-    const before = retainedBytes(f.root);
-    const argv =
-      command === 'capture'
-        ? f.captureArgs
-        : command === 'verify'
-          ? ['verify', '--bundle-root', f.bundleRoot]
-          : command === 'restore'
+          : command === 'move-in'
             ? [
-                'restore',
-                '--data-root',
-                f.dataRoot,
-                '--workspace-id',
-                workspaceId,
-                '--bundle-root',
-                f.bundleRoot,
-                '--request-id',
-                randomUUID(),
-              ]
-            : [
-                'move-in',
-                '--data-root',
-                f.dataRoot,
+                command,
+                ...base,
                 '--bundle-root',
                 f.bundleRoot,
                 '--request-id',
                 randomUUID(),
                 '--target-owner-id',
                 f.ownerId,
-              ];
-    await refuses(f, argv, 'release-mismatch');
-    expect(existsSync(f.bundleRoot)).toBe(false);
-    expect(retainedBytes(f.root)).toEqual(before);
-  }, 120_000);
+              ]
+            : command === 'move-out'
+              ? moveArgs(f, 1)
+              : command === 'reactivate'
+                ? [
+                    command,
+                    ...base,
+                    ...selection,
+                    '--expected-revision',
+                    '1',
+                    '--acknowledge-target-fenced',
+                    '--acknowledge-copies-retired',
+                  ]
+                : [command, ...base, ...selection];
+      const lock = acquireDataRootLock(f.dataRoot, { bootId: 'second-offline-command' });
+      try {
+        await refuses(f, argv, 'root-locked');
+      } finally {
+        lock.release();
+      }
+    },
+    120_000
+  );
+
+  it.each(['capture', 'verify', 'restore', 'move-in'] as const)(
+    'D0 release ruling: %s without an installed identity refuses release-mismatch, never a source-build fallback',
+    async (command) => {
+      const f = await fixture();
+      rmSync(f.releaseIdentityPath);
+      const before = retainedBytes(f.root);
+      const argv =
+        command === 'capture'
+          ? f.captureArgs
+          : command === 'verify'
+            ? ['verify', '--bundle-root', f.bundleRoot]
+            : command === 'restore'
+              ? [
+                  'restore',
+                  '--data-root',
+                  f.dataRoot,
+                  '--workspace-id',
+                  workspaceId,
+                  '--bundle-root',
+                  f.bundleRoot,
+                  '--request-id',
+                  randomUUID(),
+                ]
+              : [
+                  'move-in',
+                  '--data-root',
+                  f.dataRoot,
+                  '--bundle-root',
+                  f.bundleRoot,
+                  '--request-id',
+                  randomUUID(),
+                  '--target-owner-id',
+                  f.ownerId,
+                ];
+      await refuses(f, argv, 'release-mismatch');
+      expect(existsSync(f.bundleRoot)).toBe(false);
+      expect(retainedBytes(f.root)).toEqual(before);
+    },
+    120_000
+  );
 
   it('D0 12:49Z release ruling: a present untagged identity captures version source and its exact commit', async () => {
     const f = await fixture();

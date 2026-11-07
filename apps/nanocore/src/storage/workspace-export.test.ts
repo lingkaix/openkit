@@ -466,20 +466,20 @@ describe('workspace export verifier', () => {
     expect(verified.checkedFiles).toEqual(['records/workspace-record.json']);
   });
 
-  it.each([
-    false,
-    true,
-  ])('rejects exact inventory annotations with covering digest %s', (coversAddition) => {
-    const root = writeExportTree();
-    const path = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
-    const manifest = JSON.parse(readFileSync(path, 'utf8'));
-    verifyWorkspaceExportTree({ exportRoot: root });
-    manifest.contentInventory[0].annotation = 'inert';
-    if (coversAddition)
-      manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
-    writeFileSync(path, JSON.stringify(manifest));
-    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow(/Unrecognized key/);
-  });
+  it.each([false, true])(
+    'rejects exact inventory annotations with covering digest %s',
+    (coversAddition) => {
+      const root = writeExportTree();
+      const path = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      verifyWorkspaceExportTree({ exportRoot: root });
+      manifest.contentInventory[0].annotation = 'inert';
+      if (coversAddition)
+        manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow(/Unrecognized key/);
+    }
+  );
 
   it('verifies the original serialized inventory ordering before projecting known fields', () => {
     const root = writeExportTree();

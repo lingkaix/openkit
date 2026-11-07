@@ -152,35 +152,36 @@ describe('explicit MCP discovery preview', () => {
     expect(view.cache.getMutationCache().getAll()).toHaveLength(0);
   });
 
-  it.each([
-    401, 403, 409, 503,
-  ])('reports safe %i failure, drops prior data and never retries automatically', async (status) => {
-    const preview = vi
-      .fn()
-      .mockResolvedValueOnce(observation)
-      .mockRejectedValue(new ApiCallError(status, 'ghp_fake_error_canary'));
-    const view = setup(preview);
-    await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
-    await screen.findByText('Read one record.');
-    await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
-    await waitFor(() => expect(view.failure).toHaveBeenCalledWith(status));
-    expect(screen.queryByText('Read one record.')).not.toBeInTheDocument();
-    expect(screen.getByText(/Reload current configuration/)).toBeVisible();
-    if (status > 403)
-      expect(
-        screen.getByText(
-          /Reload current configuration only reads configuration and does not prove cleanup/
-        )
-      ).toBeVisible();
-    if (status > 403)
-      expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
-    expect(preview).toHaveBeenCalledTimes(2);
-    const states = view.cache
-      .getMutationCache()
-      .getAll()
-      .map((item) => item.state);
-    expect(JSON.stringify(states)).not.toContain('ghp_fake_error_canary');
-  });
+  it.each([401, 403, 409, 503])(
+    'reports safe %i failure, drops prior data and never retries automatically',
+    async (status) => {
+      const preview = vi
+        .fn()
+        .mockResolvedValueOnce(observation)
+        .mockRejectedValue(new ApiCallError(status, 'ghp_fake_error_canary'));
+      const view = setup(preview);
+      await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
+      await screen.findByText('Read one record.');
+      await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
+      await waitFor(() => expect(view.failure).toHaveBeenCalledWith(status));
+      expect(screen.queryByText('Read one record.')).not.toBeInTheDocument();
+      expect(screen.getByText(/Reload current configuration/)).toBeVisible();
+      if (status > 403)
+        expect(
+          screen.getByText(
+            /Reload current configuration only reads configuration and does not prove cleanup/
+          )
+        ).toBeVisible();
+      if (status > 403)
+        expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
+      expect(preview).toHaveBeenCalledTimes(2);
+      const states = view.cache
+        .getMutationCache()
+        .getAll()
+        .map((item) => item.state);
+      expect(JSON.stringify(states)).not.toContain('ghp_fake_error_canary');
+    }
+  );
 
   it('rejects recognizable credential-shaped results before mutation data admission', async () => {
     const view = setup(

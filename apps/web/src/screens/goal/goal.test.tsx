@@ -331,58 +331,57 @@ describe('Artifact Review S14', () => {
     { label: /^redo$/i, decision: 'redo' as const, feedback: 'Rebuild from the recorded base.' },
     { label: /^reject$/i, decision: 'rejected' as const, feedback: undefined },
     { label: /^defer$/i, decision: 'deferred' as const, feedback: undefined },
-  ])('submits the exact version-keyed $decision decision', async ({
-    label,
-    decision,
-    feedback,
-  }) => {
-    const user = userEvent.setup();
-    const submitArtifactReviewDecision = vi.fn().mockResolvedValue({
-      reviewId: PROPOSAL_REVIEW.reviewId,
-      artifactId: PROPOSAL_REVIEW.artifactId,
-      artifactVersion: PROPOSAL_REVIEW.artifactVersion,
-      decision,
-      followUpTurnId:
-        decision === 'needs_refinement' || decision === 'redo'
-          ? 'tu_00000000-0000-72d1-b818-434d696c7933'
-          : null,
-    });
-    const client = makeClient({
-      operations: {
-        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
-        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-        'artifact.review.decide': submitArtifactReviewDecision,
-      },
-    });
-    renderApp(
-      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
-      client
-    );
-
-    const action = await screen.findByRole('button', { name: label });
-    if (feedback) {
-      const feedbackField = screen.getByRole('textbox', { name: /review feedback/i });
-      expect(action).toBeDisabled();
-      await user.type(feedbackField, '   ');
-      expect(action).toBeDisabled();
-      await user.clear(feedbackField);
-      await user.type(feedbackField, feedback);
-      expect(action).toBeEnabled();
-    }
-    await user.click(action);
-
-    await waitFor(() =>
-      expect(submitArtifactReviewDecision).toHaveBeenCalledWith({
-        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  ])(
+    'submits the exact version-keyed $decision decision',
+    async ({ label, decision, feedback }) => {
+      const user = userEvent.setup();
+      const submitArtifactReviewDecision = vi.fn().mockResolvedValue({
+        reviewId: PROPOSAL_REVIEW.reviewId,
         artifactId: PROPOSAL_REVIEW.artifactId,
         artifactVersion: PROPOSAL_REVIEW.artifactVersion,
-        requestId: expect.any(String),
-        ...(feedback ? { decision, feedback } : { decision }),
-      })
-    );
-    expect(client.operations['turn.start']).not.toHaveBeenCalled();
-    expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
-  });
+        decision,
+        followUpTurnId:
+          decision === 'needs_refinement' || decision === 'redo'
+            ? 'tu_00000000-0000-72d1-b818-434d696c7933'
+            : null,
+      });
+      const client = makeClient({
+        operations: {
+          'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+          'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+          'artifact.review.decide': submitArtifactReviewDecision,
+        },
+      });
+      renderApp(
+        '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd',
+        client
+      );
+
+      const action = await screen.findByRole('button', { name: label });
+      if (feedback) {
+        const feedbackField = screen.getByRole('textbox', { name: /review feedback/i });
+        expect(action).toBeDisabled();
+        await user.type(feedbackField, '   ');
+        expect(action).toBeDisabled();
+        await user.clear(feedbackField);
+        await user.type(feedbackField, feedback);
+        expect(action).toBeEnabled();
+      }
+      await user.click(action);
+
+      await waitFor(() =>
+        expect(submitArtifactReviewDecision).toHaveBeenCalledWith({
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          artifactId: PROPOSAL_REVIEW.artifactId,
+          artifactVersion: PROPOSAL_REVIEW.artifactVersion,
+          requestId: expect.any(String),
+          ...(feedback ? { decision, feedback } : { decision }),
+        })
+      );
+      expect(client.operations['turn.start']).not.toHaveBeenCalled();
+      expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
+    }
+  );
 
   it('keeps the review pending and preserves both sides after a typed apply conflict', async () => {
     const user = userEvent.setup();

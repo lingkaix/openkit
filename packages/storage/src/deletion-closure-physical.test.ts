@@ -152,30 +152,30 @@ describe('retained deletion closure physical construction', () => {
     expect(lstatSync(target).mode & 0o777).toBe(0o755);
   });
 
-  it.each([
-    'text',
-    'binary',
-  ] as const)('writes exact %s bytes privately, syncs and closes before acknowledging the parent', (kind) => {
-    const parent = fixture();
-    const path = join(parent, 'nested', 'record');
-    const value = kind === 'text' ? 'retained \u2603\n' : bytes;
-    writeRetainedPrivateFile(path, value);
-    expect(readFileSync(path)).toEqual(Buffer.from(value));
-    expect(lstatSync(path).mode & 0o777).toBe(0o600);
-    expect(lstatSync(dirname(path)).mode & 0o777).toBe(0o700);
-    expect(
-      physical.events.filter((event) => event.path === path || event.operation === 'sync')
-    ).toEqual([
-      { operation: 'sync', path },
-      { operation: 'close', path },
-      { operation: 'chmod', path },
-      { operation: 'sync', path: dirname(path) },
-    ]);
-    expect(() => writeRetainedPrivateFile(path, 'replacement')).toThrow(
-      expect.objectContaining({ code: 'EEXIST' })
-    );
-    expect(readFileSync(path)).toEqual(Buffer.from(value));
-  });
+  it.each(['text', 'binary'] as const)(
+    'writes exact %s bytes privately, syncs and closes before acknowledging the parent',
+    (kind) => {
+      const parent = fixture();
+      const path = join(parent, 'nested', 'record');
+      const value = kind === 'text' ? 'retained \u2603\n' : bytes;
+      writeRetainedPrivateFile(path, value);
+      expect(readFileSync(path)).toEqual(Buffer.from(value));
+      expect(lstatSync(path).mode & 0o777).toBe(0o600);
+      expect(lstatSync(dirname(path)).mode & 0o777).toBe(0o700);
+      expect(
+        physical.events.filter((event) => event.path === path || event.operation === 'sync')
+      ).toEqual([
+        { operation: 'sync', path },
+        { operation: 'close', path },
+        { operation: 'chmod', path },
+        { operation: 'sync', path: dirname(path) },
+      ]);
+      expect(() => writeRetainedPrivateFile(path, 'replacement')).toThrow(
+        expect.objectContaining({ code: 'EEXIST' })
+      );
+      expect(readFileSync(path)).toEqual(Buffer.from(value));
+    }
+  );
 
   it('copies nested and empty evidence directories with exact bytes and private output modes', () => {
     const parent = fixture();
@@ -222,27 +222,27 @@ describe('retained deletion closure physical construction', () => {
     expect(existsSync(target)).toBe(false);
   });
 
-  it.each([
-    'link',
-    'fifo',
-  ] as const)('refuses a retained %s member and preserves external bytes', (kind) => {
-    const parent = fixture();
-    const source = join(parent, 'source');
-    const target = join(parent, 'target');
-    mkdirSync(source);
-    const outside = join(parent, 'outside');
-    writeFileSync(outside, bytes);
-    const member = join(source, 'unsupported');
-    if (kind === 'link') symlinkSync(outside, member);
-    else execFileSync('mkfifo', [member]);
-    expect(() => copyRetainedEvidenceTree(source, target)).toThrow(
-      kind === 'link'
-        ? 'Retained evidence cannot contain symbolic links.'
-        : 'Retained evidence must contain only regular files and directories.'
-    );
-    expect(readFileSync(outside)).toEqual(bytes);
-    expect(readdirSync(target)).toEqual([]);
-  });
+  it.each(['link', 'fifo'] as const)(
+    'refuses a retained %s member and preserves external bytes',
+    (kind) => {
+      const parent = fixture();
+      const source = join(parent, 'source');
+      const target = join(parent, 'target');
+      mkdirSync(source);
+      const outside = join(parent, 'outside');
+      writeFileSync(outside, bytes);
+      const member = join(source, 'unsupported');
+      if (kind === 'link') symlinkSync(outside, member);
+      else execFileSync('mkfifo', [member]);
+      expect(() => copyRetainedEvidenceTree(source, target)).toThrow(
+        kind === 'link'
+          ? 'Retained evidence cannot contain symbolic links.'
+          : 'Retained evidence must contain only regular files and directories.'
+      );
+      expect(readFileSync(outside)).toEqual(bytes);
+      expect(readdirSync(target)).toEqual([]);
+    }
+  );
 
   it('leaves real partial output for its caller to clean and closes the failed writer', () => {
     const parent = fixture();
@@ -274,26 +274,26 @@ describe('retained deletion closure physical construction', () => {
     ]);
   });
 
-  it.each([
-    'write',
-    'sync',
-  ] as const)('retains original close-failure precedence after a %s failure', (stage) => {
-    const parent = fixture();
-    const path = join(parent, 'record');
-    const failure = new Error(`injected ${stage} failure`);
-    const closeFailure = new Error('injected retained close failure');
-    physical.failurePath = path;
-    if (stage === 'write') physical.writeFailure = failure;
-    else physical.syncFailure = failure;
-    physical.closeFailure = closeFailure;
-    expect(() => writeRetainedPrivateFile(path, bytes)).toThrow(closeFailure);
-    expect(physical.closed).toHaveLength(1);
-    expect(
-      physical.events.some(
-        ({ operation, path: selected }) => operation === 'sync' && selected === parent
-      )
-    ).toBe(false);
-  });
+  it.each(['write', 'sync'] as const)(
+    'retains original close-failure precedence after a %s failure',
+    (stage) => {
+      const parent = fixture();
+      const path = join(parent, 'record');
+      const failure = new Error(`injected ${stage} failure`);
+      const closeFailure = new Error('injected retained close failure');
+      physical.failurePath = path;
+      if (stage === 'write') physical.writeFailure = failure;
+      else physical.syncFailure = failure;
+      physical.closeFailure = closeFailure;
+      expect(() => writeRetainedPrivateFile(path, bytes)).toThrow(closeFailure);
+      expect(physical.closed).toHaveLength(1);
+      expect(
+        physical.events.some(
+          ({ operation, path: selected }) => operation === 'sync' && selected === parent
+        )
+      ).toBe(false);
+    }
+  );
 
   it('synchronizes the selected directory and closes it when synchronization fails', () => {
     const parent = fixture();

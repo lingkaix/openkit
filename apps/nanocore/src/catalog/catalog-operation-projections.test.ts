@@ -729,60 +729,60 @@ function mutations(workspaceId: string) {
   };
 }
 
-it.each([
-  'readiness',
-  'readonly',
-] as const)('refuses every B5 mutation on HTTP and remote MCP %s admission without catalog or health effects', async (reason) => {
-  let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b5' });
-  const f = await fixture(() => readiness, 'server');
-  const token = createOpenKitAccessTokenRecord(f.coreDb, {
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    scope: reason === 'readonly' ? 'workspace-readonly' : 'workspace',
-    workspaceIds: [f.workspace.id],
-    expiresAt: '2099-01-01T00:00:00.000Z',
-  });
-  const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
-  const refresh = vi.spyOn(f.store, 'refreshAgentHealth');
-  const inputs = mutations(f.workspace.id);
-  const definitions = { ...AGENT_OPERATION_DEFINITIONS, ...CATALOG_OPERATION_DEFINITIONS };
-  expect(
-    Object.entries(definitions)
-      .filter(([, definition]) => definition.mutating)
-      .map(([id]) => id)
-      .sort()
-  ).toEqual(Object.keys(inputs).sort());
-  if (reason === 'readiness') readiness = { ...readiness, acceptingProductWork: false };
-  try {
-    for (const [operation, input] of Object.entries(inputs)) {
-      expect(
-        definitions[operation as keyof typeof definitions].inputSchema.safeParse(input).success,
-        operation
-      ).toBe(true);
-      const id = operation as OperationId;
-      const expected = {
-        code: reason === 'readiness' ? 'product_work_unavailable' : 'workspace_access_denied',
-        status: reason === 'readiness' ? 503 : 403,
-      };
-      const http = await call(f, id, input, token.secret);
-      expect(http.status, operation).toBe(expected.status);
-      expect(await http.json()).toMatchObject({ code: expected.code });
-      const remote = await mcp(f, id, input, token.secret);
-      expect(remote.isError, operation).toBe(true);
-      expect(JSON.parse(remote.content[0].text)).toMatchObject(expected);
-      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
-      expect(f.store.listCommandRequests()).toEqual([]);
-      expect(refresh).not.toHaveBeenCalled();
+it.each(['readiness', 'readonly'] as const)(
+  'refuses every B5 mutation on HTTP and remote MCP %s admission without catalog or health effects',
+  async (reason) => {
+    let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b5' });
+    const f = await fixture(() => readiness, 'server');
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      scope: reason === 'readonly' ? 'workspace-readonly' : 'workspace',
+      workspaceIds: [f.workspace.id],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+    const refresh = vi.spyOn(f.store, 'refreshAgentHealth');
+    const inputs = mutations(f.workspace.id);
+    const definitions = { ...AGENT_OPERATION_DEFINITIONS, ...CATALOG_OPERATION_DEFINITIONS };
+    expect(
+      Object.entries(definitions)
+        .filter(([, definition]) => definition.mutating)
+        .map(([id]) => id)
+        .sort()
+    ).toEqual(Object.keys(inputs).sort());
+    if (reason === 'readiness') readiness = { ...readiness, acceptingProductWork: false };
+    try {
+      for (const [operation, input] of Object.entries(inputs)) {
+        expect(
+          definitions[operation as keyof typeof definitions].inputSchema.safeParse(input).success,
+          operation
+        ).toBe(true);
+        const id = operation as OperationId;
+        const expected = {
+          code: reason === 'readiness' ? 'product_work_unavailable' : 'workspace_access_denied',
+          status: reason === 'readiness' ? 503 : 403,
+        };
+        const http = await call(f, id, input, token.secret);
+        expect(http.status, operation).toBe(expected.status);
+        expect(await http.json()).toMatchObject({ code: expected.code });
+        const remote = await mcp(f, id, input, token.secret);
+        expect(remote.isError, operation).toBe(true);
+        expect(JSON.parse(remote.content[0].text)).toMatchObject(expected);
+        expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
+        expect(f.store.listCommandRequests()).toEqual([]);
+        expect(refresh).not.toHaveBeenCalled();
+      }
+      const read = await mcp(f, 'worker.list', { workspaceId: f.workspace.id }, token.secret);
+      expect(read.isError).not.toBe(true);
+      expect(JSON.parse(read.content[0].text)).toEqual({ items: [], workspaceId: f.workspace.id });
+    } finally {
+      vi.restoreAllMocks();
+      f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(f.dataRoot, { force: true, recursive: true });
     }
-    const read = await mcp(f, 'worker.list', { workspaceId: f.workspace.id }, token.secret);
-    expect(read.isError).not.toBe(true);
-    expect(JSON.parse(read.content[0].text)).toEqual({ items: [], workspaceId: f.workspace.id });
-  } finally {
-    vi.restoreAllMocks();
-    f.coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(f.dataRoot, { force: true, recursive: true });
   }
-});
+);
 
 it('preserves missing-record classifications and lets unexpected family failures reach the HTTP handler unchanged', async () => {
   const f = await fixture();

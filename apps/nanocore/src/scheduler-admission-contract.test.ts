@@ -38,24 +38,24 @@ function database() {
 }
 
 describe('route B exact admission (Durable Scheduler Design: Admission And Launch)', () => {
-  it.each([
-    'same-handle',
-    'reload',
-  ] as const)('replays the same command through %s without another admission or Turn', (mode) => {
-    let db = database();
-    try {
-      const original = createSchedulerAdmissionEntry(db, command());
-      if (mode === 'reload') {
-        const root = db.dataRoot;
+  it.each(['same-handle', 'reload'] as const)(
+    'replays the same command through %s without another admission or Turn',
+    (mode) => {
+      let db = database();
+      try {
+        const original = createSchedulerAdmissionEntry(db, command());
+        if (mode === 'reload') {
+          const root = db.dataRoot;
+          db.sqlite.close();
+          db = openCoreDb(root);
+        }
+        expect(createSchedulerAdmissionEntry(db, command())).toEqual(original);
+        expect(listQueuedSchedulerAdmissionEntries(db)).toEqual([original]);
+      } finally {
         db.sqlite.close();
-        db = openCoreDb(root);
       }
-      expect(createSchedulerAdmissionEntry(db, command())).toEqual(original);
-      expect(listQueuedSchedulerAdmissionEntries(db)).toEqual([original]);
-    } finally {
-      db.sqlite.close();
     }
-  });
+  );
 
   it.each([
     { name: 'instruction bytes', change: { turnInput: command().turnInput.trim() } },

@@ -174,51 +174,53 @@ async function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
 }
 
 describe('Generative operation cutover', () => {
-  it.each(
-    cases
-  )('retires the authorized former binding for %s', async (_id, method, path, body) => {
-    const f = await fixture();
-    try {
-      const response = await f.app.request(`${base}${path}`, {
-        method,
-        headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
-        ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
-      });
-      expect(response.status).toBe(404);
-      expect(response.headers.get('content-type')).toContain('text/plain');
-      expect(await response.text()).toBe('404 Not Found');
-    } finally {
-      f.coreDb.sqlite.close();
-    }
-  });
-  it.each(
-    cases
-  )('reaches the same native outcome through %s', async (id, _method, _path, body, selectors, status) => {
-    const f = await fixture();
-    try {
-      const response = await f.app.request(`/api/app/operations/${id}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
-        body: JSON.stringify({
-          ...body,
-          ...selectors,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        }),
-      });
-      expect(response.status).toBe(status);
-      const result = await response.json();
-      if (status >= 400)
-        expect(result).toMatchObject({
-          code: status === 503 ? 'unavailable' : 'not_found',
-          protocolVersion: expect.any(String),
+  it.each(cases)(
+    'retires the authorized former binding for %s',
+    async (_id, method, path, body) => {
+      const f = await fixture();
+      try {
+        const response = await f.app.request(`${base}${path}`, {
+          method,
+          headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+          ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
         });
-      else if (id === 'kernel.apps.list')
-        expect(result).toMatchObject({ totalItems: 0, items: [] });
-      else expect(result).toMatchObject({ title: schema.title, lifecycle: 'active' });
-    } finally {
-      f.coreDb.sqlite.close();
+        expect(response.status).toBe(404);
+        expect(response.headers.get('content-type')).toContain('text/plain');
+        expect(await response.text()).toBe('404 Not Found');
+      } finally {
+        f.coreDb.sqlite.close();
+      }
     }
-  });
+  );
+  it.each(cases)(
+    'reaches the same native outcome through %s',
+    async (id, _method, _path, body, selectors, status) => {
+      const f = await fixture();
+      try {
+        const response = await f.app.request(`/api/app/operations/${id}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+          body: JSON.stringify({
+            ...body,
+            ...selectors,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          }),
+        });
+        expect(response.status).toBe(status);
+        const result = await response.json();
+        if (status >= 400)
+          expect(result).toMatchObject({
+            code: status === 503 ? 'unavailable' : 'not_found',
+            protocolVersion: expect.any(String),
+          });
+        else if (id === 'kernel.apps.list')
+          expect(result).toMatchObject({ totalItems: 0, items: [] });
+        else expect(result).toMatchObject({ title: schema.title, lifecycle: 'active' });
+      } finally {
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
 });
 
 it('keeps native revisions, replay and atomic batch outcomes through the typed client and derived CLI', async () => {

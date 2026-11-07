@@ -173,55 +173,55 @@ describe('QP-2c Knowledge operation authority', () => {
   it.each([
     { operation: 'review.apply', decision: 'rejected' },
     { operation: 'knowledge.write', decision: 'accepted' },
-  ] as const)('keeps a retained candidate unchanged when $operation is denied before a $decision decision', async ({
-    operation,
-    decision,
-  }) => {
-    const f = await fixture();
-    const baseRevision = f.initializeUser();
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git'),
-    });
-    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-    const context = {
-      ...f,
-      runtimeConfigManager,
-      revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-        readUserMemoryNotebookAdmission({ ...f, runtimeConfigManager }, files, paths),
-    };
-    const proposal = await createUserMemoryProposal(
-      context,
-      {
-        requestId: randomUUID(),
-        baseRevision,
-        changes: [
-          {
-            path: 'index.md',
-            content: `${notebook.readRevision(baseRevision).files['index.md']}\nPending navigation change.\n`,
-          },
-        ],
-        summary: 'Review this navigation change',
-      },
-      { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.userId },
-      []
-    );
-    const selected = readUserMemoryProposal(context, proposal.id);
-    expect(selected.reviews).toEqual([]);
-    // Core Knowledge Proposal Review: a retained candidate grants neither a human decision nor publication.
-    removeOperationGrants(operation);
-    await expect(
-      decideUserMemoryProposal(context, {
-        requestId: randomUUID(),
-        proposalId: proposal.id,
-        proposalDigest: selected.proposalDigest,
-        baseRevision: proposal.baseRevision,
-        candidateRevision: proposal.candidateRevision,
-        decision,
-      })
-    ).rejects.toThrow();
-    expect(notebook.publishedRevision()).toBe(baseRevision);
-    expect(readUserMemoryProposal(context, proposal.id)).toEqual(selected);
-  });
+  ] as const)(
+    'keeps a retained candidate unchanged when $operation is denied before a $decision decision',
+    async ({ operation, decision }) => {
+      const f = await fixture();
+      const baseRevision = f.initializeUser();
+      const notebook = new KnowledgeNotebook({
+        repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git'),
+      });
+      const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+      const context = {
+        ...f,
+        runtimeConfigManager,
+        revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
+          readUserMemoryNotebookAdmission({ ...f, runtimeConfigManager }, files, paths),
+      };
+      const proposal = await createUserMemoryProposal(
+        context,
+        {
+          requestId: randomUUID(),
+          baseRevision,
+          changes: [
+            {
+              path: 'index.md',
+              content: `${notebook.readRevision(baseRevision).files['index.md']}\nPending navigation change.\n`,
+            },
+          ],
+          summary: 'Review this navigation change',
+        },
+        { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.userId },
+        []
+      );
+      const selected = readUserMemoryProposal(context, proposal.id);
+      expect(selected.reviews).toEqual([]);
+      // Core Knowledge Proposal Review: a retained candidate grants neither a human decision nor publication.
+      removeOperationGrants(operation);
+      await expect(
+        decideUserMemoryProposal(context, {
+          requestId: randomUUID(),
+          proposalId: proposal.id,
+          proposalDigest: selected.proposalDigest,
+          baseRevision: proposal.baseRevision,
+          candidateRevision: proposal.candidateRevision,
+          decision,
+        })
+      ).rejects.toThrow();
+      expect(notebook.publishedRevision()).toBe(baseRevision);
+      expect(readUserMemoryProposal(context, proposal.id)).toEqual(selected);
+    }
+  );
 
   it('refuses an unknown scoped target even for an administrator with an existing User target', async () => {
     const f = await fixture();
@@ -235,48 +235,47 @@ describe('QP-2c Knowledge operation authority', () => {
     ).toThrow();
   });
 
-  it.each([
-    'self',
-    'administrator-inspection',
-    'server',
-  ] as const)('refuses a pinned %s read when the current Knowledge read association is absent', async (target) => {
-    const f = await fixture();
-    if (target === 'server') f.initializeServer();
-    else f.initializeUser();
-    const input = {
-      coreDb: f.coreDb,
-      actor: target === 'self' ? f.actor : f.administrator,
-      target:
-        target === 'self'
-          ? ({ kind: 'user' } as const)
-          : target === 'server'
-            ? ({ kind: 'server' } as const)
-            : ({ kind: 'user-inspection', userId: f.userId } as const),
-    };
-    const pinned = pinScopedNotebook(input);
-    expect(pinned.ownerScope).toEqual(
-      target === 'server' ? { kind: 'server' } : { kind: 'user', userId: f.userId }
-    );
-    expect(pinned.read().revision).toBe(pinned.notebookRevision);
-    // Core Policy: every governed read uses current authority; a pin grants no later access.
-    removeOperationGrants('knowledge.read');
-    expect(() => pinned.read()).toThrow();
-  });
+  it.each(['self', 'administrator-inspection', 'server'] as const)(
+    'refuses a pinned %s read when the current Knowledge read association is absent',
+    async (target) => {
+      const f = await fixture();
+      if (target === 'server') f.initializeServer();
+      else f.initializeUser();
+      const input = {
+        coreDb: f.coreDb,
+        actor: target === 'self' ? f.actor : f.administrator,
+        target:
+          target === 'self'
+            ? ({ kind: 'user' } as const)
+            : target === 'server'
+              ? ({ kind: 'server' } as const)
+              : ({ kind: 'user-inspection', userId: f.userId } as const),
+      };
+      const pinned = pinScopedNotebook(input);
+      expect(pinned.ownerScope).toEqual(
+        target === 'server' ? { kind: 'server' } : { kind: 'user', userId: f.userId }
+      );
+      expect(pinned.read().revision).toBe(pinned.notebookRevision);
+      // Core Policy: every governed read uses current authority; a pin grants no later access.
+      removeOperationGrants('knowledge.read');
+      expect(() => pinned.read()).toThrow();
+    }
+  );
 
-  it.each([
-    'user',
-    'server',
-  ] as const)('refuses fresh %s notebook effects when the Knowledge write association is absent', async (target) => {
-    const f = await fixture();
-    removeOperationGrants('knowledge.write');
-    // Core Policy Personal Conversation And Scoped Learning requires governed Memory/Knowledge mutation.
-    expect(target === 'user' ? f.initializeUser : f.initializeServer).toThrow();
-    const root =
-      target === 'user'
-        ? join(f.dataRoot, 'users', f.userId, 'memory')
-        : join(f.dataRoot, 'server', 'knowledge');
-    expect(existsSync(root)).toBe(false);
-  });
+  it.each(['user', 'server'] as const)(
+    'refuses fresh %s notebook effects when the Knowledge write association is absent',
+    async (target) => {
+      const f = await fixture();
+      removeOperationGrants('knowledge.write');
+      // Core Policy Personal Conversation And Scoped Learning requires governed Memory/Knowledge mutation.
+      expect(target === 'user' ? f.initializeUser : f.initializeServer).toThrow();
+      const root =
+        target === 'user'
+          ? join(f.dataRoot, 'users', f.userId, 'memory')
+          : join(f.dataRoot, 'server', 'knowledge');
+      expect(existsSync(root)).toBe(false);
+    }
+  );
 
   it('refuses Server Source metadata after a Knowledge read denial despite a usable administrator credential', async () => {
     const f = await fixture();

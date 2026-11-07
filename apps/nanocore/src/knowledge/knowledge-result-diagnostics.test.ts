@@ -10,63 +10,63 @@ import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 // The real KM loop must retain safe owner feedback even when the optional process sink fails.
-it.each([
-  false,
-  true,
-])('exposes a safe notebook Tool failure when the log sink throws=%s', async (sinkThrows) => {
-  const f = await fixture();
-  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
-    .notebookCommit;
-  const contentMarker = 'UNPUBLISHED-CONTENT-MARKER';
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
-    if (sinkThrows) throw new Error('Optional diagnostic sink unavailable.');
-  });
-  onTestFinished(() => warn.mockRestore());
-  let step = 0;
-  let feedback = '';
-  f.createResponses.mockImplementation(async () => {
-    if (++step === 1)
-      return call('knowledge.notebook.update', { summary: contentMarker + 'x'.repeat(4096) });
-    feedback = latestToolOutput(f);
-    // Feedback has reached the next actual model request; no final-answer round trip is needed.
-    throw new Error('The deterministic feedback probe is complete.');
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      { workspaceId: DEMO_WORKSPACE_ID },
-      {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          instruction: 'Inspect the admitted notebook.',
-        }),
-      }
-    )
-  );
-  expect(response.status).toBe(200);
-  expect(feedback).toContain('invalid_request');
-  expect(feedback).not.toContain('The Tool failed without a safe result.');
-  expect(feedback).not.toContain(contentMarker);
-  expect(feedback).not.toContain(f.dataRoot);
-  const diagnostics = warn.mock.calls.flatMap((args) =>
-    args.filter((arg) => typeof arg === 'string').map((arg) => JSON.parse(arg))
-  );
-  expect(diagnostics).toContainEqual(
-    expect.objectContaining({
-      code: 'knowledge_notebook_tool_failed',
-      operation: 'knowledge.notebook.update',
-      exceptionClass: 'NotebookError',
-      errorCode: 'invalid_request',
-    })
-  );
-  expect(JSON.stringify(diagnostics)).not.toContain(contentMarker);
-  expect(JSON.stringify(diagnostics)).not.toContain(f.dataRoot);
-  expect(JSON.stringify(diagnostics)).not.toContain('stack');
-  expect(
-    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
-  ).toBe(before);
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
-});
+it.each([false, true])(
+  'exposes a safe notebook Tool failure when the log sink throws=%s',
+  async (sinkThrows) => {
+    const f = await fixture();
+    const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+      .notebookCommit;
+    const contentMarker = 'UNPUBLISHED-CONTENT-MARKER';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+      if (sinkThrows) throw new Error('Optional diagnostic sink unavailable.');
+    });
+    onTestFinished(() => warn.mockRestore());
+    let step = 0;
+    let feedback = '';
+    f.createResponses.mockImplementation(async () => {
+      if (++step === 1)
+        return call('knowledge.notebook.update', { summary: contentMarker + 'x'.repeat(4096) });
+      feedback = latestToolOutput(f);
+      // Feedback has reached the next actual model request; no final-answer round trip is needed.
+      throw new Error('The deterministic feedback probe is complete.');
+    });
+    const response = await f.app.request(
+      ...operationRequest(
+        'knowledge.maintain',
+        { workspaceId: DEMO_WORKSPACE_ID },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            instruction: 'Inspect the admitted notebook.',
+          }),
+        }
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(feedback).toContain('invalid_request');
+    expect(feedback).not.toContain('The Tool failed without a safe result.');
+    expect(feedback).not.toContain(contentMarker);
+    expect(feedback).not.toContain(f.dataRoot);
+    const diagnostics = warn.mock.calls.flatMap((args) =>
+      args.filter((arg) => typeof arg === 'string').map((arg) => JSON.parse(arg))
+    );
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'knowledge_notebook_tool_failed',
+        operation: 'knowledge.notebook.update',
+        exceptionClass: 'NotebookError',
+        errorCode: 'invalid_request',
+      })
+    );
+    expect(JSON.stringify(diagnostics)).not.toContain(contentMarker);
+    expect(JSON.stringify(diagnostics)).not.toContain(f.dataRoot);
+    expect(JSON.stringify(diagnostics)).not.toContain('stack');
+    expect(
+      readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+    ).toBe(before);
+    expect(f.createResponses).toHaveBeenCalledTimes(2);
+  }
+);
 
 it('keeps exception text and paths out of model and process failure diagnostics', async () => {
   const f = await fixture();

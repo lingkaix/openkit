@@ -60,22 +60,21 @@ describe('workspace config schema', () => {
     expect(parsed.workspace.assistant).toEqual(assistant);
   });
 
-  it.each([
-    undefined,
-    {},
-    { resources: { skillIds: [] } },
-  ])('admits empty or omitted Assistant resource selection: %j', (assistant) => {
-    const parsed = WorkspaceConfigSchema.parse({
-      schemaVersion: RETAINED_FORMAT_VERSION,
-      workspace: { name: 'No selected Skills', ...(assistant ? { assistant } : {}) },
-    });
+  it.each([undefined, {}, { resources: { skillIds: [] } }])(
+    'admits empty or omitted Assistant resource selection: %j',
+    (assistant) => {
+      const parsed = WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        workspace: { name: 'No selected Skills', ...(assistant ? { assistant } : {}) },
+      });
 
-    expect(parsed.workspace.assistant).toMatchObject({
-      repositoryInspection: { enabled: true, excludedPaths: [] },
-    });
-    expect(parsed.workspace.assistant).toMatchObject(assistant ?? {});
-    expect(parsed.workspace.assistant).not.toHaveProperty('resources.skillIds.0');
-  });
+      expect(parsed.workspace.assistant).toMatchObject({
+        repositoryInspection: { enabled: true, excludedPaths: [] },
+      });
+      expect(parsed.workspace.assistant).toMatchObject(assistant ?? {});
+      expect(parsed.workspace.assistant).not.toHaveProperty('resources.skillIds.0');
+    }
+  );
 
   it.each([
     { skillIds: ['skill-review', 'skill-review'] },

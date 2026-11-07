@@ -467,61 +467,63 @@ describe('Discord trusted capture origin', () => {
     ).toEqual({ count: 1 });
   });
 
-  it.each([
-    'approval',
-    'user-input',
-  ] as const)('stamps exact admitted %s origin before native dispatch', async (kind) => {
-    const f = fixture();
-    await f.pair();
-    f.view({ kind });
-    const disclosure = await f.disclose();
-    const binding = f.channel.binding(actor)!;
-    const input = f.envelope(
-      kind === 'approval' ? 'deny' : 'answer',
-      {
-        ...f.target,
-        disclosure,
-        ...(kind === 'user-input' ? { answers: '{"color":["blue"]}' } : {}),
-      },
-      { user: { id: discordUserId, core_user_id: 'forged-core-user' } }
-    );
-    let retained: Record<string, unknown> | undefined;
-    f.invoke.mockImplementationOnce(async (_operation, command, responder) => {
-      retained = f.sqlite
-        .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
-        .get(input.id) as Record<string, unknown>;
-      expect(retained).toMatchObject({
-        event_id: input.id,
-        request_id: (command as { requestId: string }).requestId,
-        state: 'dispatching',
-        discord_user_id: discordUserId,
-        core_user_id: responder.userId,
-        binding_revision: binding.revision,
-        operation_id: kind === 'approval' ? 'approval.respond' : 'question.answer',
-        workspace_id: workspaceId,
-        thread_id: threadId,
-        pending_request_id: 'ap_discord',
-        turn_id: turnId,
+  it.each(['approval', 'user-input'] as const)(
+    'stamps exact admitted %s origin before native dispatch',
+    async (kind) => {
+      const f = fixture();
+      await f.pair();
+      f.view({ kind });
+      const disclosure = await f.disclose();
+      const binding = f.channel.binding(actor)!;
+      const input = f.envelope(
+        kind === 'approval' ? 'deny' : 'answer',
+        {
+          ...f.target,
+          disclosure,
+          ...(kind === 'user-input' ? { answers: '{"color":["blue"]}' } : {}),
+        },
+        { user: { id: discordUserId, core_user_id: 'forged-core-user' } }
+      );
+      let retained: Record<string, unknown> | undefined;
+      f.invoke.mockImplementationOnce(async (_operation, command, responder) => {
+        retained = f.sqlite
+          .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+          .get(input.id) as Record<string, unknown>;
+        expect(retained).toMatchObject({
+          event_id: input.id,
+          request_id: (command as { requestId: string }).requestId,
+          state: 'dispatching',
+          discord_user_id: discordUserId,
+          core_user_id: responder.userId,
+          binding_revision: binding.revision,
+          operation_id: kind === 'approval' ? 'approval.respond' : 'question.answer',
+          workspace_id: workspaceId,
+          thread_id: threadId,
+          pending_request_id: 'ap_discord',
+          turn_id: turnId,
+        });
+        return { status: 'resolved' };
       });
-      return { status: 'resolved' };
-    });
-    expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain('accepted');
-    expect(retained).toBeDefined();
-    expect(JSON.stringify(retained)).not.toContain(disclosure);
-    expect(JSON.stringify(retained)).not.toContain('blue');
-    expect(f.invoke).toHaveBeenCalledTimes(1);
-    const settled = f.sqlite
-      .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
-      .get(input.id);
-    f.restart();
-    expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain(
-      'already handled'
-    );
-    expect(
-      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
-    ).toEqual(settled);
-    expect(f.invoke).toHaveBeenCalledTimes(1);
-  });
+      expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain(
+        'accepted'
+      );
+      expect(retained).toBeDefined();
+      expect(JSON.stringify(retained)).not.toContain(disclosure);
+      expect(JSON.stringify(retained)).not.toContain('blue');
+      expect(f.invoke).toHaveBeenCalledTimes(1);
+      const settled = f.sqlite
+        .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+        .get(input.id);
+      f.restart();
+      expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain(
+        'already handled'
+      );
+      expect(
+        f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+      ).toEqual(settled);
+      expect(f.invoke).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('preserves admitted origin after unknown dispatch, restart, revocation and re-pairing', async () => {
     const f = fixture();

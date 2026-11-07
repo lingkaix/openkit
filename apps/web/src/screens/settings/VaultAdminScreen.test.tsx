@@ -132,97 +132,97 @@ describe('Vault backend administration', () => {
     expectSafeCaches(queryClient);
   });
 
-  it.each([
-    'unlock',
-    'lock',
-    'refetch',
-  ] as const)('hides prior status on %s denial and recovers without replay', async (action) => {
-    const client = makeClient();
-    if (action === 'lock')
-      vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
-        ...STATUS,
-        state: 'available',
-      });
-    const { container, queryClient } = renderScreen(client);
-    await screen.findByText('Vault is locked.');
-    if (action === 'refetch') {
-      vi.mocked(client.operations['vault.status']).mockRejectedValueOnce(
-        new ApiCallError(401, POISON)
-      );
-      await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'vault-admin'] }));
-    } else if (action === 'unlock') {
-      vi.mocked(client.operations['vault.unlock']).mockRejectedValueOnce(
-        new ApiCallError(403, KEY)
-      );
-      await unlock();
-    } else {
-      vi.mocked(client.operations['vault.lock']).mockRejectedValueOnce(
-        new ApiCallError(403, POISON)
-      );
-      await userEvent.click(screen.getByRole('button', { name: 'Lock' }));
+  it.each(['unlock', 'lock', 'refetch'] as const)(
+    'hides prior status on %s denial and recovers without replay',
+    async (action) => {
+      const client = makeClient();
+      if (action === 'lock')
+        vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
+          ...STATUS,
+          state: 'available',
+        });
+      const { container, queryClient } = renderScreen(client);
+      await screen.findByText('Vault is locked.');
+      if (action === 'refetch') {
+        vi.mocked(client.operations['vault.status']).mockRejectedValueOnce(
+          new ApiCallError(401, POISON)
+        );
+        await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'vault-admin'] }));
+      } else if (action === 'unlock') {
+        vi.mocked(client.operations['vault.unlock']).mockRejectedValueOnce(
+          new ApiCallError(403, KEY)
+        );
+        await unlock();
+      } else {
+        vi.mocked(client.operations['vault.lock']).mockRejectedValueOnce(
+          new ApiCallError(403, POISON)
+        );
+        await userEvent.click(screen.getByRole('button', { name: 'Lock' }));
+      }
+      await screen.findByText('Access denied');
+      expect(screen.queryByText('Vault is locked.')).not.toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(KEY);
+      expect(container.innerHTML).not.toContain(POISON);
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await screen.findByText('Vault is locked.');
+      expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
+      expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(action === 'unlock' ? 1 : 0);
+      expect(client.operations['vault.lock']).toHaveBeenCalledTimes(action === 'lock' ? 1 : 0);
+      expectSafeCaches(queryClient);
     }
-    await screen.findByText('Access denied');
-    expect(screen.queryByText('Vault is locked.')).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(KEY);
-    expect(container.innerHTML).not.toContain(POISON);
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await screen.findByText('Vault is locked.');
-    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
-    expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(action === 'unlock' ? 1 : 0);
-    expect(client.operations['vault.lock']).toHaveBeenCalledTimes(action === 'lock' ? 1 : 0);
-    expectSafeCaches(queryClient);
-  });
+  );
 
-  it.each([
-    400, 429, 500,
-  ])('clears failed unlock input and safely retries a %s error without resubmitting', async (status) => {
-    const client = makeClient();
-    vi.mocked(client.operations['vault.unlock']).mockRejectedValueOnce(
-      new ApiCallError(status, `${POISON} ${KEY}`)
-    );
-    const { container, queryClient } = renderScreen(client);
-    await unlock();
-    await screen.findByRole('alert');
-    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(KEY);
-    expect(container.innerHTML).not.toContain(POISON);
-    expectSafeCaches(queryClient);
-    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
-    expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(1);
-    expect(client.operations['vault.lock']).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Unlock' })).toBeEnabled();
-  });
+  it.each([400, 429, 500])(
+    'clears failed unlock input and safely retries a %s error without resubmitting',
+    async (status) => {
+      const client = makeClient();
+      vi.mocked(client.operations['vault.unlock']).mockRejectedValueOnce(
+        new ApiCallError(status, `${POISON} ${KEY}`)
+      );
+      const { container, queryClient } = renderScreen(client);
+      await unlock();
+      await screen.findByRole('alert');
+      expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(KEY);
+      expect(container.innerHTML).not.toContain(POISON);
+      expectSafeCaches(queryClient);
+      await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+      expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(1);
+      expect(client.operations['vault.lock']).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Unlock' })).toBeEnabled();
+    }
+  );
 
-  it.each([
-    'unlock',
-    'lock',
-  ] as const)('blocks edits and overlapping actions while %s is pending', async (action) => {
-    const client = makeClient();
-    const method = action === 'unlock' ? 'vault.unlock' : 'vault.lock';
-    if (action === 'lock')
-      vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
-        ...STATUS,
-        state: 'available',
-      });
-    let finish = () => {};
-    vi.mocked(client.operations[method]).mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finish = () => resolve(STATUS);
-        })
-    );
-    const { queryClient } = renderScreen(client);
-    if (action === 'unlock') await unlock();
-    else await userEvent.click(await screen.findByRole('button', { name: 'Lock' }));
-    expect(await screen.findByRole('status')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
-    for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
-    expectSafeCaches(queryClient);
-    await act(async () => finish());
-    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
-    expect(client.operations[method]).toHaveBeenCalledTimes(1);
-  });
+  it.each(['unlock', 'lock'] as const)(
+    'blocks edits and overlapping actions while %s is pending',
+    async (action) => {
+      const client = makeClient();
+      const method = action === 'unlock' ? 'vault.unlock' : 'vault.lock';
+      if (action === 'lock')
+        vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
+          ...STATUS,
+          state: 'available',
+        });
+      let finish = () => {};
+      vi.mocked(client.operations[method]).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve(STATUS);
+          })
+      );
+      const { queryClient } = renderScreen(client);
+      if (action === 'unlock') await unlock();
+      else await userEvent.click(await screen.findByRole('button', { name: 'Lock' }));
+      expect(await screen.findByRole('status')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Master key (base64)')).not.toBeInTheDocument();
+      for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
+      expectSafeCaches(queryClient);
+      await act(async () => finish());
+      await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+      expect(client.operations[method]).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('rechecks status after a failed lock without repeating it', async () => {
     const client = makeClient();

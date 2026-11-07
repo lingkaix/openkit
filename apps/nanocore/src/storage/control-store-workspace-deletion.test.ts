@@ -390,36 +390,37 @@ describe('native Core Workspace deletion tuple', () => {
     expect(retained(f.path, f.workspaceId)).toEqual(committed);
   }, 30_000);
 
-  it.each([
-    'audit',
-    'receipt',
-  ] as const)('rolls back every SQL tuple member when the late native %s insert fails', async (point) => {
-    const f = await fixture();
-    await f.client.workspaceDeletion(f.database, f.begin, f.freeze);
-    const before = f.snapshot();
-    const fault = new Database(f.path, { fileMustExist: true });
-    try {
-      fault.exec(
-        point === 'audit'
-          ? `CREATE TRIGGER deletion_late_failure BEFORE INSERT ON audit_events WHEN NEW.action = 'workspace.delete' BEGIN SELECT RAISE(ABORT, 'injected late deletion audit'); END`
-          : `CREATE TRIGGER deletion_late_failure BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = 'workspace.delete' BEGIN SELECT RAISE(ABORT, 'injected late deletion receipt'); END`
-      );
-    } finally {
-      fault.close();
-    }
-    await expect(
-      f.client.workspaceDeletion(f.database, f.complete, f.freeze)
-    ).rejects.toMatchObject({ commit: 'not-committed' });
-    expect(f.snapshot()).toEqual(before);
-    const repair = new Database(f.path, { fileMustExist: true });
-    try {
-      repair.exec('DROP TRIGGER deletion_late_failure');
-    } finally {
-      repair.close();
-    }
-    await f.client.workspaceDeletion(f.database, f.complete, f.freeze);
-    expectComplete(f);
-  }, 30_000);
+  it.each(['audit', 'receipt'] as const)(
+    'rolls back every SQL tuple member when the late native %s insert fails',
+    async (point) => {
+      const f = await fixture();
+      await f.client.workspaceDeletion(f.database, f.begin, f.freeze);
+      const before = f.snapshot();
+      const fault = new Database(f.path, { fileMustExist: true });
+      try {
+        fault.exec(
+          point === 'audit'
+            ? `CREATE TRIGGER deletion_late_failure BEFORE INSERT ON audit_events WHEN NEW.action = 'workspace.delete' BEGIN SELECT RAISE(ABORT, 'injected late deletion audit'); END`
+            : `CREATE TRIGGER deletion_late_failure BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = 'workspace.delete' BEGIN SELECT RAISE(ABORT, 'injected late deletion receipt'); END`
+        );
+      } finally {
+        fault.close();
+      }
+      await expect(
+        f.client.workspaceDeletion(f.database, f.complete, f.freeze)
+      ).rejects.toMatchObject({ commit: 'not-committed' });
+      expect(f.snapshot()).toEqual(before);
+      const repair = new Database(f.path, { fileMustExist: true });
+      try {
+        repair.exec('DROP TRIGGER deletion_late_failure');
+      } finally {
+        repair.close();
+      }
+      await f.client.workspaceDeletion(f.database, f.complete, f.freeze);
+      expectComplete(f);
+    },
+    30_000
+  );
 
   it('reports unknown after the actual terminal COMMIT loses its reply and preserves the exact cold tuple without automatic replay', async () => {
     const f = await fixture(true);
@@ -514,93 +515,94 @@ describe('native Core Workspace deletion tuple', () => {
 
 /** Revocation remains a per-effect native authority check even while the original freeze stays current. */
 describe('native Core Workspace deletion current administrator credential', () => {
-  it.each([
-    'begin',
-    'complete',
-  ] as const)('refuses %s after the distinct administrator bearer is revoked during the existing Core hold', async (stage) => {
-    const f = await fixture();
-    const { createBetterAuth } = await import('../auth/better-auth.js');
-    const { createOpenKitAccessTokenRecord, revokeOpenKitAccessTokenRecord } = await import(
-      '../auth/access-token-store.js'
-    );
-    const { isCurrentDeploymentAdministrator, isWorkspaceOperationAuthorized } = await import(
-      '../auth/operation-authorizer.js'
-    );
-    const { isCanonicalUserActive } = await import('../auth/user-lifecycle.js');
-    const owner = openCoreDb(f.root);
-    try {
-      const auth = createBetterAuth(owner, { env: {} });
-      const { user } = await auth.api.signUpEmail({
-        body: {
-          name: 'Deletion administrator',
-          email: `${randomUUID()}@example.invalid`,
-          password: randomUUID(),
-        },
-      });
-      expect(user.id).not.toBe(f.actorId);
-      const issued = createOpenKitAccessTokenRecord(owner, {
-        ownerUserId: user.id,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
-      });
-      const actor = {
-        kind: 'token' as const,
-        userId: user.id,
-        tokenId: issued.tokenId,
-        tokenScope: 'server-admin' as const,
-      };
-      expect(isCurrentDeploymentAdministrator(f.coreDb, actor)).toBe(true);
-      expect(
-        isWorkspaceOperationAuthorized(f.coreDb, actor, f.workspaceId, {
-          mutating: true,
-          policyOperation: 'workspace.lifecycle',
-        })
-      ).toBe(true);
-      if (stage === 'complete') await f.client.workspaceDeletion(f.database, f.begin, f.freeze);
-      const command =
-        stage === 'begin'
-          ? { ...f.begin, actor }
-          : { ...f.complete, actor, initiatingUserId: user.id };
-      const before = f.snapshot();
-      const resume = await f.client.pauseForDataRootBackup(f.database);
-      const { Worker } = await import('node:worker_threads');
-      const posted = vi.spyOn(Worker.prototype, 'postMessage');
-      let pending: Promise<unknown> | undefined;
+  it.each(['begin', 'complete'] as const)(
+    'refuses %s after the distinct administrator bearer is revoked during the existing Core hold',
+    async (stage) => {
+      const f = await fixture();
+      const { createBetterAuth } = await import('../auth/better-auth.js');
+      const { createOpenKitAccessTokenRecord, revokeOpenKitAccessTokenRecord } = await import(
+        '../auth/access-token-store.js'
+      );
+      const { isCurrentDeploymentAdministrator, isWorkspaceOperationAuthorized } = await import(
+        '../auth/operation-authorizer.js'
+      );
+      const { isCanonicalUserActive } = await import('../auth/user-lifecycle.js');
+      const owner = openCoreDb(f.root);
       try {
-        let settled = false;
-        pending = f.client.workspaceDeletion(f.database, command, f.freeze).then(
-          (value) => {
-            settled = true;
-            return value;
+        const auth = createBetterAuth(owner, { env: {} });
+        const { user } = await auth.api.signUpEmail({
+          body: {
+            name: 'Deletion administrator',
+            email: `${randomUUID()}@example.invalid`,
+            password: randomUUID(),
           },
-          (error: unknown) => {
-            settled = true;
-            return error;
-          }
-        );
-        await nextTurn();
-        expect(settled).toBe(false);
-        expect(posted).not.toHaveBeenCalled();
-        expect(f.snapshot()).toEqual(before);
-        expect(revokeOpenKitAccessTokenRecord(owner, issued.tokenId)?.status).toBe('revoked');
-        expect(isCurrentDeploymentAdministrator(f.coreDb, actor)).toBe(false);
-        expect(isCanonicalUserActive(f.coreDb, f.actorId)).toBe(true);
-        expect(f.admission.ownsFreeze(f.workspaceId, f.freeze)).toBe(true);
-        resume();
-        const outcome = await pending;
-        // Establish the actual native crossing before the refusal oracle, including on the wire-only red candidate.
-        expect(posted).toHaveBeenCalled();
-        expect(outcome).toMatchObject({ commit: 'not-committed' });
-        expect(f.snapshot()).toEqual(before);
-        expect(f.admission.ownsFreeze(f.workspaceId, f.freeze)).toBe(true);
+        });
+        expect(user.id).not.toBe(f.actorId);
+        const issued = createOpenKitAccessTokenRecord(owner, {
+          ownerUserId: user.id,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        const actor = {
+          kind: 'token' as const,
+          userId: user.id,
+          tokenId: issued.tokenId,
+          tokenScope: 'server-admin' as const,
+        };
+        expect(isCurrentDeploymentAdministrator(f.coreDb, actor)).toBe(true);
+        expect(
+          isWorkspaceOperationAuthorized(f.coreDb, actor, f.workspaceId, {
+            mutating: true,
+            policyOperation: 'workspace.lifecycle',
+          })
+        ).toBe(true);
+        if (stage === 'complete') await f.client.workspaceDeletion(f.database, f.begin, f.freeze);
+        const command =
+          stage === 'begin'
+            ? { ...f.begin, actor }
+            : { ...f.complete, actor, initiatingUserId: user.id };
+        const before = f.snapshot();
+        const resume = await f.client.pauseForDataRootBackup(f.database);
+        const { Worker } = await import('node:worker_threads');
+        const posted = vi.spyOn(Worker.prototype, 'postMessage');
+        let pending: Promise<unknown> | undefined;
+        try {
+          let settled = false;
+          pending = f.client.workspaceDeletion(f.database, command, f.freeze).then(
+            (value) => {
+              settled = true;
+              return value;
+            },
+            (error: unknown) => {
+              settled = true;
+              return error;
+            }
+          );
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(posted).not.toHaveBeenCalled();
+          expect(f.snapshot()).toEqual(before);
+          expect(revokeOpenKitAccessTokenRecord(owner, issued.tokenId)?.status).toBe('revoked');
+          expect(isCurrentDeploymentAdministrator(f.coreDb, actor)).toBe(false);
+          expect(isCanonicalUserActive(f.coreDb, f.actorId)).toBe(true);
+          expect(f.admission.ownsFreeze(f.workspaceId, f.freeze)).toBe(true);
+          resume();
+          const outcome = await pending;
+          // Establish the actual native crossing before the refusal oracle, including on the wire-only red candidate.
+          expect(posted).toHaveBeenCalled();
+          expect(outcome).toMatchObject({ commit: 'not-committed' });
+          expect(f.snapshot()).toEqual(before);
+          expect(f.admission.ownsFreeze(f.workspaceId, f.freeze)).toBe(true);
+        } finally {
+          resume();
+          if (pending) await pending;
+          posted.mockRestore();
+        }
       } finally {
-        resume();
-        if (pending) await pending;
-        posted.mockRestore();
+        owner.sqlite.close();
       }
-    } finally {
-      owner.sqlite.close();
-    }
-  }, 30_000);
+    },
+    30_000
+  );
 });

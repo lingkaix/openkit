@@ -180,39 +180,39 @@ it('keeps the original missing-directory inventory when native creation fails', 
   expect(existsSync(join(f.workspace, 'new'))).toBe(false);
 });
 
-it.each([
-  'measurement',
-  'accounting',
-] as const)('records completed bytes before a later %s failure', (kind) => {
-  const f = fixture();
-  const target = join(f.workspace, 'new/one');
-  const error = new Error('Injected post-copy failure');
-  if (kind === 'measurement') {
-    fault.measure = target;
-    fault.error = error;
-  } else
-    f.capacity.recordWritten = function (count: number) {
-      expect(this).toBe(f.capacity);
-      this.recorded.push(count);
-      throw error;
-    };
-  expect(() =>
-    installKnowledgePackageFilesSync(
-      f.workspace,
-      new Map([['new/one', f.source]]),
-      f.copied,
-      f.directories,
-      f.capacity
-    )
-  ).toThrow(error);
-  expect(f.copied).toEqual([target]);
-  expect(readFileSync(target)).toEqual(bytes);
-  expect(f.capacity.recorded).toEqual(kind === 'measurement' ? [] : [bytes.length]);
-  fault.measure = undefined;
-  removeKnowledgePackageFilesSync(f.copied, f.directories);
-  expect(existsSync(join(f.workspace, 'new'))).toBe(false);
-  expect(f.capacity.release).not.toHaveBeenCalled();
-});
+it.each(['measurement', 'accounting'] as const)(
+  'records completed bytes before a later %s failure',
+  (kind) => {
+    const f = fixture();
+    const target = join(f.workspace, 'new/one');
+    const error = new Error('Injected post-copy failure');
+    if (kind === 'measurement') {
+      fault.measure = target;
+      fault.error = error;
+    } else
+      f.capacity.recordWritten = function (count: number) {
+        expect(this).toBe(f.capacity);
+        this.recorded.push(count);
+        throw error;
+      };
+    expect(() =>
+      installKnowledgePackageFilesSync(
+        f.workspace,
+        new Map([['new/one', f.source]]),
+        f.copied,
+        f.directories,
+        f.capacity
+      )
+    ).toThrow(error);
+    expect(f.copied).toEqual([target]);
+    expect(readFileSync(target)).toEqual(bytes);
+    expect(f.capacity.recorded).toEqual(kind === 'measurement' ? [] : [bytes.length]);
+    fault.measure = undefined;
+    removeKnowledgePackageFilesSync(f.copied, f.directories);
+    expect(existsSync(join(f.workspace, 'new'))).toBe(false);
+    expect(f.capacity.release).not.toHaveBeenCalled();
+  }
+);
 
 it('removes files then deepest selected directories without removing existing parents or siblings', () => {
   const f = fixture();

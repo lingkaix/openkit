@@ -963,64 +963,64 @@ describe('Workspace changes', () => {
     expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
   });
 
-  it.each([
-    false,
-    true,
-  ])('shows ordinary personal Workspace changes with exact scoped reads and no hidden mutation (selected=%s)', async (selected) => {
-    if (selected) useWorkspaceStore.setState({ currentWorkspaceId: PERSONAL_WORKSPACE.id });
-    const client = makeClient();
-    vi.mocked(client.operations['workspace.list'])
-      .mockReset()
-      .mockResolvedValue({
-        items: [
-          {
-            workspace: PERSONAL_WORKSPACE,
-            membershipStatus: 'active',
-            accessCause: 'membership',
-            isOwner: true,
-            membershipRevision: 1,
-            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            registryRevision: 1,
-          },
-        ],
-      });
-    const reads = [
-      'sync.review-list',
-      'sync.input-snapshot-list',
-      'sync.materialization-list',
-      'sync.backend-handle-list',
-      'sync.output-manifest-list',
-      'sync.change-set-list',
-      'sync.staged-review-list',
-      'sync.apply-plan-list',
-      'sync.apply-result-list',
-      'sync.reconciliation-list',
-      'sync.quarantine-list',
-    ] as const;
-    for (const operation of reads)
-      vi.mocked(client.operations[operation]).mockResolvedValue({ items: [] });
-    renderApp('/workspace-changes', client);
+  it.each([false, true])(
+    'shows ordinary personal Workspace changes with exact scoped reads and no hidden mutation (selected=%s)',
+    async (selected) => {
+      if (selected) useWorkspaceStore.setState({ currentWorkspaceId: PERSONAL_WORKSPACE.id });
+      const client = makeClient();
+      vi.mocked(client.operations['workspace.list'])
+        .mockReset()
+        .mockResolvedValue({
+          items: [
+            {
+              workspace: PERSONAL_WORKSPACE,
+              membershipStatus: 'active',
+              accessCause: 'membership',
+              isOwner: true,
+              membershipRevision: 1,
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              registryRevision: 1,
+            },
+          ],
+        });
+      const reads = [
+        'sync.review-list',
+        'sync.input-snapshot-list',
+        'sync.materialization-list',
+        'sync.backend-handle-list',
+        'sync.output-manifest-list',
+        'sync.change-set-list',
+        'sync.staged-review-list',
+        'sync.apply-plan-list',
+        'sync.apply-result-list',
+        'sync.reconciliation-list',
+        'sync.quarantine-list',
+      ] as const;
+      for (const operation of reads)
+        vi.mocked(client.operations[operation]).mockResolvedValue({ items: [] });
+      renderApp('/workspace-changes', client);
 
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'Workspace changes' })
-    ).toBeInTheDocument();
-    expect(screen.getByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Workspace changes' })).toBeInTheDocument();
-    expect(await screen.findByText('No reviews', { exact: true })).toBeInTheDocument();
-    expect(screen.getByRole('main', { name: 'Workspace' })).not.toHaveTextContent(
-      /workspace changes is unavailable/i
-    );
-    for (const operation of reads)
-      expect(vi.mocked(client.operations[operation]).mock.calls, operation).toEqual([
-        [{ workspaceId: PERSONAL_WORKSPACE.id }],
-      ]);
-    expect(syncCalls(client)).toMatchObject({
-      getReview: [],
-      submitDecision: [],
-      getResult: [],
-      submitRecovery: [],
-    });
-  });
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Workspace changes' })
+      ).toBeInTheDocument();
+      expect(screen.getByText(PERSONAL_WORKSPACE.name, { exact: true })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Workspace changes' })).toBeInTheDocument();
+      expect(await screen.findByText('No reviews', { exact: true })).toBeInTheDocument();
+      expect(screen.getByRole('main', { name: 'Workspace' })).not.toHaveTextContent(
+        /workspace changes is unavailable/i
+      );
+      for (const operation of reads)
+        expect(vi.mocked(client.operations[operation]).mock.calls, operation).toEqual([
+          [{ workspaceId: PERSONAL_WORKSPACE.id }],
+        ]);
+      expect(syncCalls(client)).toMatchObject({
+        getReview: [],
+        submitDecision: [],
+        getResult: [],
+        submitRecovery: [],
+      });
+    }
+  );
 
   it('binds mutation, pending, and error state to the selected workspaceId', async () => {
     const user = userEvent.setup();
@@ -1395,65 +1395,62 @@ describe('Workspace changes', () => {
       stateLabel: 'Unrecoverable',
       otherStateLabels: ['Recovered', 'Quarantined'],
     },
-  ])('presents exact $button recovery effects including teardown and retained evidence', async ({
-    button,
-    decision,
-    result,
-    stateLabel,
-    otherStateLabels,
-  }) => {
-    const user = userEvent.setup();
-    const listWorkspaceReconciliationRecords = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [RECOVERY_RECORD] })
-      .mockResolvedValue({ items: [result] });
-    const submitWorkspaceRecoveryDecision = vi.fn().mockResolvedValue({
-      reconciliationRecord: result,
-    });
-    const client = makeClient({
-      'sync.reconciliation-list': listWorkspaceReconciliationRecords,
-      'sync.recovery-decide': submitWorkspaceRecoveryDecision,
-    });
-    renderApp('/workspace-changes', client);
+  ])(
+    'presents exact $button recovery effects including teardown and retained evidence',
+    async ({ button, decision, result, stateLabel, otherStateLabels }) => {
+      const user = userEvent.setup();
+      const listWorkspaceReconciliationRecords = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [RECOVERY_RECORD] })
+        .mockResolvedValue({ items: [result] });
+      const submitWorkspaceRecoveryDecision = vi.fn().mockResolvedValue({
+        reconciliationRecord: result,
+      });
+      const client = makeClient({
+        'sync.reconciliation-list': listWorkspaceReconciliationRecords,
+        'sync.recovery-decide': submitWorkspaceRecoveryDecision,
+      });
+      renderApp('/workspace-changes', client);
 
-    const recovery = await screen.findByRole('region', { name: 'Recovery' });
-    expect(result.stateBefore).toBe('requires-human');
-    expectAssociatedRecoveryDecisionPreview(
-      recovery,
-      `${button} ${RECOVERY_RECORD.id}`,
-      stateLabel,
-      otherStateLabels
-    );
-    expect(submitWorkspaceRecoveryDecision).not.toHaveBeenCalled();
-    await user.click(
-      within(recovery).getByRole('button', { name: `${button} ${RECOVERY_RECORD.id}` })
-    );
-
-    if (decision === 'abandon') {
+      const recovery = await screen.findByRole('region', { name: 'Recovery' });
+      expect(result.stateBefore).toBe('requires-human');
+      expectAssociatedRecoveryDecisionPreview(
+        recovery,
+        `${button} ${RECOVERY_RECORD.id}`,
+        stateLabel,
+        otherStateLabels
+      );
       expect(submitWorkspaceRecoveryDecision).not.toHaveBeenCalled();
-      const dialog = await screen.findByRole('dialog');
-      expect(dialog).toHaveTextContent(/unrecoverable/i);
-      await user.click(within(dialog).getByRole('button', { name: /abandon|confirm/i }));
-    }
+      await user.click(
+        within(recovery).getByRole('button', { name: `${button} ${RECOVERY_RECORD.id}` })
+      );
 
-    await waitFor(() => expect(submitWorkspaceRecoveryDecision).toHaveBeenCalledTimes(1));
-    const requestId = submitWorkspaceRecoveryDecision.mock.calls[0]?.[0].requestId;
-    expect(requestId).toEqual(expect.any(String));
-    expect(submitWorkspaceRecoveryDecision.mock.calls).toEqual([
-      [
-        {
-          workspaceId: WORKSPACE.id,
-          reconciliationRecordId: RECOVERY_RECORD.id,
-          decision,
-          requestId,
-        },
-      ],
-    ]);
-    await waitFor(() => expect(listWorkspaceReconciliationRecords).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText(stateLabel, { exact: true })).toBeInTheDocument();
-    expect(within(recovery).getByText(/teardown[ -]backend/i)).toBeInTheDocument();
-    expect(within(recovery).getByText(EVIDENCE_BUNDLE_ID)).toBeInTheDocument();
-    expect(within(recovery).getByText(OUTPUT_MANIFEST.id)).toBeInTheDocument();
-    expectNoRecoveryDecisionActions(recovery);
-  });
+      if (decision === 'abandon') {
+        expect(submitWorkspaceRecoveryDecision).not.toHaveBeenCalled();
+        const dialog = await screen.findByRole('dialog');
+        expect(dialog).toHaveTextContent(/unrecoverable/i);
+        await user.click(within(dialog).getByRole('button', { name: /abandon|confirm/i }));
+      }
+
+      await waitFor(() => expect(submitWorkspaceRecoveryDecision).toHaveBeenCalledTimes(1));
+      const requestId = submitWorkspaceRecoveryDecision.mock.calls[0]?.[0].requestId;
+      expect(requestId).toEqual(expect.any(String));
+      expect(submitWorkspaceRecoveryDecision.mock.calls).toEqual([
+        [
+          {
+            workspaceId: WORKSPACE.id,
+            reconciliationRecordId: RECOVERY_RECORD.id,
+            decision,
+            requestId,
+          },
+        ],
+      ]);
+      await waitFor(() => expect(listWorkspaceReconciliationRecords).toHaveBeenCalledTimes(2));
+      expect(await screen.findByText(stateLabel, { exact: true })).toBeInTheDocument();
+      expect(within(recovery).getByText(/teardown[ -]backend/i)).toBeInTheDocument();
+      expect(within(recovery).getByText(EVIDENCE_BUNDLE_ID)).toBeInTheDocument();
+      expect(within(recovery).getByText(OUTPUT_MANIFEST.id)).toBeInTheDocument();
+      expectNoRecoveryDecisionActions(recovery);
+    }
+  );
 });

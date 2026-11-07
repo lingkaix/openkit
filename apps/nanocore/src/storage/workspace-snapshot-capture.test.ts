@@ -728,127 +728,138 @@ describe('C-a snapshot authoritative blockers', () => {
     'capability-call',
     'recurring-occurrence',
     'recovery-admission',
-  ] as const)('fails closed on an unsupported %s scalar state before accepting a capture pin', async (family) => {
-    const f = await fixture();
-    let source = f.source;
-    const unsupported = 'unsupported-fixture-state';
-    const db = openWorkspaceDb(f.dataRoot, workspaceId);
-    databaseHandles.push(db);
-    if (family === 'turn' || family === 'capability-call') {
-      const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Retained header owner', {
-        kind: 'user',
-        id: f.ownerId,
-      });
-      if (family === 'capability-call') {
-        const callId = allocateEntityId('cap');
-        await startCapabilityCall({
-          workspaceDb: db,
+  ] as const)(
+    'fails closed on an unsupported %s scalar state before accepting a capture pin',
+    async (family) => {
+      const f = await fixture();
+      let source = f.source;
+      const unsupported = 'unsupported-fixture-state';
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      databaseHandles.push(db);
+      if (family === 'turn' || family === 'capability-call') {
+        const turn = await f.store.createTurn(
           workspaceId,
-          threadId: turn.threadId,
-          turnId: turn.id,
-          callId,
-          authorityActor: { kind: 'user', id: f.ownerId },
-          family: 'llm',
-          operation: 'responses.create',
-          capabilityId: 'llm.responses',
-          requestId: randomUUID(),
-          redactionClass: 'metadata-only',
+          DEMO_THREAD_ID,
+          'Retained header owner',
+          {
+            kind: 'user',
+            id: f.ownerId,
+          }
+        );
+        if (family === 'capability-call') {
+          const callId = allocateEntityId('cap');
+          await startCapabilityCall({
+            workspaceDb: db,
+            workspaceId,
+            threadId: turn.threadId,
+            turnId: turn.id,
+            callId,
+            authorityActor: { kind: 'user', id: f.ownerId },
+            family: 'llm',
+            operation: 'responses.create',
+            capabilityId: 'llm.responses',
+            requestId: randomUUID(),
+            redactionClass: 'metadata-only',
+          });
+          db.sqlite
+            .prepare('UPDATE capability_calls SET status=? WHERE call_id=?')
+            .run(unsupported, callId);
+        }
+        await f.store.completeTurn(turn.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
         });
-        db.sqlite
-          .prepare('UPDATE capability_calls SET status=? WHERE call_id=?')
-          .run(unsupported, callId);
-      }
-      await f.store.completeTurn(turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
-      if (family === 'turn') {
+        if (family === 'turn') {
+          db.sqlite.pragma('ignore_check_constraints = ON');
+          try {
+            db.sqlite
+              .prepare('UPDATE control_turns SET status=? WHERE id=?')
+              .run(unsupported, turn.id);
+          } finally {
+            db.sqlite.pragma('ignore_check_constraints = OFF');
+          }
+        }
+      } else if (family === 'agent-session') {
+        const session = await f.store.createAgentSession({
+          id: allocateEntityId('as'),
+          workspaceId,
+          threadId: DEMO_THREAD_ID,
+          agentId: 'agent_codex_host',
+          status: 'closed',
+          message: 'Closed retained owner.',
+          createdAt: '2026-10-27T00:00:00.000Z',
+          updatedAt: '2026-10-27T00:00:00.000Z',
+        });
         db.sqlite.pragma('ignore_check_constraints = ON');
         try {
           db.sqlite
-            .prepare('UPDATE control_turns SET status=? WHERE id=?')
-            .run(unsupported, turn.id);
+            .prepare('UPDATE control_agent_sessions SET status=? WHERE id=?')
+            .run(unsupported, session.id);
         } finally {
           db.sqlite.pragma('ignore_check_constraints = OFF');
         }
+      } else if (family === 'recurring-occurrence') {
+        const now = '2026-10-27T01:00:00.000Z';
+        const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
+        const schedule = await schedules.createAutomation(f.ownerId, {
+          workspaceId,
+          threadId: DEMO_THREAD_ID,
+          name: 'Owned occurrence header',
+          intervalSeconds: 60,
+          prompt: 'Queued only.',
+        });
+        await schedules.updateAutomation(f.ownerId, schedule.id, {
+          expectedRevision: schedule.revision,
+          status: 'active',
+          scheduledAt: now,
+        });
+        const occurrences = await schedules.collectScanCandidates(now);
+        expect(occurrences).toHaveLength(1);
+        f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
+        try {
+          f.coreDb.sqlite
+            .prepare('UPDATE recurring_occurrences SET state=? WHERE id=?')
+            .run(unsupported, occurrences[0]!.id);
+        } finally {
+          f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
+        }
+      } else {
+        await shutdownControlStoreWorkerClient();
+        const move = await createWorkspaceBackup({
+          ...f.input(),
+          source: { kind: 'stopped-data-root', dataRoot: f.dataRoot },
+          bundleRoot: join(f.root, 'stopped-move'),
+          purpose: 'move',
+        });
+        expect(move.disposition).toBe('prepared');
+        endRecoveryAdmission(f.coreDb, move.manifest.backupId, 'abandoned');
+        abandonCapture(db, workspaceId, move.manifest.backupId);
+        // A fresh Store reads the stopped capture's retained Core scalar authority.
+        source = {
+          ...f.source,
+          store: new FsStore({ dataRoot: f.dataRoot }),
+          mutationAdmission: new WorkspaceMutationAdmission(),
+        };
+        expect(readBlockers({ ...source, workspaceId })).toEqual([]);
+        f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
+        try {
+          f.coreDb.sqlite
+            .prepare('UPDATE workspace_recovery_admissions SET state=? WHERE admission_id=?')
+            .run(unsupported, move.manifest.backupId);
+        } finally {
+          f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
+        }
       }
-    } else if (family === 'agent-session') {
-      const session = await f.store.createAgentSession({
-        id: allocateEntityId('as'),
-        workspaceId,
-        threadId: DEMO_THREAD_ID,
-        agentId: 'agent_codex_host',
-        status: 'closed',
-        message: 'Closed retained owner.',
-        createdAt: '2026-10-27T00:00:00.000Z',
-        updatedAt: '2026-10-27T00:00:00.000Z',
-      });
-      db.sqlite.pragma('ignore_check_constraints = ON');
-      try {
-        db.sqlite
-          .prepare('UPDATE control_agent_sessions SET status=? WHERE id=?')
-          .run(unsupported, session.id);
-      } finally {
-        db.sqlite.pragma('ignore_check_constraints = OFF');
-      }
-    } else if (family === 'recurring-occurrence') {
-      const now = '2026-10-27T01:00:00.000Z';
-      const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
-      const schedule = await schedules.createAutomation(f.ownerId, {
-        workspaceId,
-        threadId: DEMO_THREAD_ID,
-        name: 'Owned occurrence header',
-        intervalSeconds: 60,
-        prompt: 'Queued only.',
-      });
-      await schedules.updateAutomation(f.ownerId, schedule.id, {
-        expectedRevision: schedule.revision,
-        status: 'active',
-        scheduledAt: now,
-      });
-      const occurrences = await schedules.collectScanCandidates(now);
-      expect(occurrences).toHaveLength(1);
-      f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
-      try {
-        f.coreDb.sqlite
-          .prepare('UPDATE recurring_occurrences SET state=? WHERE id=?')
-          .run(unsupported, occurrences[0]!.id);
-      } finally {
-        f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
-      }
-    } else {
-      await shutdownControlStoreWorkerClient();
-      const move = await createWorkspaceBackup({
-        ...f.input(),
-        source: { kind: 'stopped-data-root', dataRoot: f.dataRoot },
-        bundleRoot: join(f.root, 'stopped-move'),
-        purpose: 'move',
-      });
-      expect(move.disposition).toBe('prepared');
-      endRecoveryAdmission(f.coreDb, move.manifest.backupId, 'abandoned');
-      abandonCapture(db, workspaceId, move.manifest.backupId);
-      // A fresh Store reads the stopped capture's retained Core scalar authority.
-      source = {
-        ...f.source,
-        store: new FsStore({ dataRoot: f.dataRoot }),
-        mutationAdmission: new WorkspaceMutationAdmission(),
-      };
-      expect(readBlockers({ ...source, workspaceId })).toEqual([]);
-      f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
-      try {
-        f.coreDb.sqlite
-          .prepare('UPDATE workspace_recovery_admissions SET state=? WHERE admission_id=?')
-          .run(unsupported, move.manifest.backupId);
-      } finally {
-        f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
-      }
-    }
-    expect(readBlockers({ ...source, workspaceId })).toEqual(expect.arrayContaining([unavailable]));
-    await refusal(
-      { ...f, store: source.store, mutationAdmission: source.mutationAdmission },
-      { ...f.input(), source }
-    );
-  }, 120_000);
+      expect(readBlockers({ ...source, workspaceId })).toEqual(
+        expect.arrayContaining([unavailable])
+      );
+      await refusal(
+        { ...f, store: source.store, mutationAdmission: source.mutationAdmission },
+        { ...f.input(), source }
+      );
+    },
+    120_000
+  );
 
   it('rejects malformed closed Turn history during private-cut validation before sealing', async () => {
     const f = await fixture();
@@ -1071,200 +1082,202 @@ describe('C-a snapshot authoritative blockers', () => {
 });
 
 describe('C-a manual recovery closure after restart', () => {
-  it.each([
-    'manual-active-capture',
-    'prepared-MOVE',
-  ] as const)('reconstructs %s exclusion before Core recurrence while a healthy sibling remains usable', async (kind) => {
-    const f = await fixture();
-    const sibling = await f.store.createWorkspace('Healthy recurring sibling');
-    recordWorkspaceOwnerMembership({
-      coreDb: f.coreDb,
-      workspaceId: sibling.id,
-      ownerUserId: f.ownerId,
-    });
-    const siblingThread = await f.store.createThread(sibling.id, 'Sibling recurring destination');
-    const retainedSession = await f.store.createAgentSession({
-      id: allocateEntityId('as'),
-      workspaceId,
-      threadId: DEMO_THREAD_ID,
-      agentId: 'agent_codex_host',
-      status: 'closed',
-      message: 'Retained before manual capture quarantine.',
-      createdAt: '2026-10-27T00:00:00.000Z',
-      updatedAt: '2026-10-27T00:00:00.000Z',
-    });
-    const beforeTime = '2026-10-27T00:00:00.000Z';
-    const due = '2099-01-01T00:00:00.000Z';
-    const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => beforeTime);
-    const target = await schedules.createAutomation(f.ownerId, {
-      workspaceId,
-      threadId: DEMO_THREAD_ID,
-      name: 'Manual recovery target recurrence',
-      intervalSeconds: 60,
-      prompt: 'Do not mutate quarantined target.',
-    });
-    const targetActive = await schedules.updateAutomation(f.ownerId, target.id, {
-      expectedRevision: target.revision,
-      status: 'active',
-      scheduledAt: due,
-    });
-    const healthy = await schedules.createAutomation(f.ownerId, {
-      workspaceId: sibling.id,
-      threadId: siblingThread.id,
-      name: 'Healthy sibling recurrence',
-      intervalSeconds: 60,
-      prompt: 'Healthy sibling may progress.',
-    });
-    await schedules.updateAutomation(f.ownerId, healthy.id, {
-      expectedRevision: healthy.revision,
-      status: 'active',
-      scheduledAt: due,
-    });
-    const input = { ...f.input(), purpose: 'move' as const };
-    if (kind === 'prepared-MOVE') {
-      const captured = await createWorkspaceBackup(input);
-      expect(captured.disposition).toBe('prepared');
-      expect(readRecoveryAdmission(f.coreDb, input.backupId)).toMatchObject({
-        state: 'prepared',
-        purpose: 'move',
+  it.each(['manual-active-capture', 'prepared-MOVE'] as const)(
+    'reconstructs %s exclusion before Core recurrence while a healthy sibling remains usable',
+    async (kind) => {
+      const f = await fixture();
+      const sibling = await f.store.createWorkspace('Healthy recurring sibling');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
       });
-    } else {
-      const db = openWorkspaceDb(f.dataRoot, workspaceId);
-      try {
-        protectCapture(db, workspaceId, input.backupId);
-      } finally {
-        db.sqlite.close();
-      }
-    }
-    const beforeAdmission = readRecoveryAdmission(f.coreDb, input.backupId);
-    const inspectDb = bindWorkspaceSqlite(
-      new Database(workspaceDbPath(f.dataRoot, workspaceId), {
-        readonly: true,
-        fileMustExist: true,
-      }),
-      f.dataRoot,
-      workspaceId
-    );
-    const beforePin = inspectCapture(inspectDb, workspaceId, input.backupId);
-    inspectDb.sqlite.close();
-    expect(beforePin).toMatchObject({ state: 'active' });
-    await shutdownControlStoreWorkerClient();
-    f.coreDb.sqlite.close();
-    const coreDb = openCoreDb(f.dataRoot);
-    databaseHandles.push(coreDb);
-    const mutationAdmission = new WorkspaceMutationAdmission();
-    const store = new FsStore({ dataRoot: f.dataRoot });
-    store.setWorkspaceMutationAdmission(mutationAdmission);
-    // Existing recovery census owns quarantine and the reconstructed process-local gate.
-    (
-      restoreWorkspaceRecoveryAdmission as (
-        core: typeof coreDb,
-        gate?: WorkspaceMutationAdmission
-      ) => void
-    )(coreDb, mutationAdmission);
-    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-    expect(scopeAdmissionFailures(f.dataRoot)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ scope: 'workspace', id: workspaceId, check: 'recovery' }),
-      ])
-    );
-    expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
-    expect(mutationAdmission.enter(workspaceId)).toBeNull();
-    expect(isScopeAdmitted(f.dataRoot, 'workspace', sibling.id)).toBe(true);
-    expect(mutationAdmission.isClosed(sibling.id)).toBe(false);
-    const targetCoreRows = () =>
-      Object.fromEntries(
-        Object.entries(databaseRows(coreDb.sqlite.name, f.root)).map(([table, rows]) => [
-          table,
-          rows.filter((row) => {
-            const value = row as Record<string, unknown>;
-            return value.workspace_id === workspaceId || value.workspaceId === workspaceId;
-          }),
-        ])
-      );
-    const beforeRows = targetCoreRows();
-    const beforeSource = tree(f.workspaceRoot);
-    const post = vi.spyOn(Worker.prototype, 'postMessage');
-    const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
-    const client = getControlStoreWorkerClient();
-    const coldOpenAndCheckpoint = async (selectedWorkspaceId: string) => {
-      const scope = nativeProductScope(f.dataRoot, {
-        kind: 'workspace',
-        workspaceId: selectedWorkspaceId,
-      });
-      const selectedDatabase = `workspace:${scope.path}`;
-      await client.open({
-        database: selectedDatabase,
-        path: scope.path,
-        dataRoot: f.dataRoot,
-        create: false,
-        initialize: 'workspace',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
-      // This command is attempted only if the real cold open acknowledged.
-      return client.checkpoint(selectedDatabase);
-    };
-    await expect(coldOpenAndCheckpoint(workspaceId)).rejects.toMatchObject({
-      code: 'workspace_frozen',
-    });
-    await expect(
-      store.updateAgentSession(retainedSession.id, { message: 'Must not settle through capture.' })
-    ).rejects.toThrow();
-    expect(
-      post.mock.calls.filter(
-        ([message]) =>
-          message !== null && typeof message === 'object' && message.database === database
-      )
-    ).toHaveLength(0);
-    expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-    await expect(coldOpenAndCheckpoint(sibling.id)).resolves.toBeDefined();
-    const siblingDatabase = `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`;
-    const siblingOperations = post.mock.calls.flatMap(([message]) =>
-      message !== null && typeof message === 'object' && message.database === siblingDatabase
-        ? [message.operation]
-        : []
-    );
-    expect(siblingOperations).toContain('open');
-    expect(siblingOperations).toContain('checkpoint');
-    expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-    const restartedSchedules = new AutomationStore(coreDb, mutationAdmission, () => due);
-    await expect(
-      restartedSchedules.createAutomation(f.ownerId, {
+      const siblingThread = await f.store.createThread(sibling.id, 'Sibling recurring destination');
+      const retainedSession = await f.store.createAgentSession({
+        id: allocateEntityId('as'),
         workspaceId,
         threadId: DEMO_THREAD_ID,
-        name: 'Must remain refused',
+        agentId: 'agent_codex_host',
+        status: 'closed',
+        message: 'Retained before manual capture quarantine.',
+        createdAt: '2026-10-27T00:00:00.000Z',
+        updatedAt: '2026-10-27T00:00:00.000Z',
+      });
+      const beforeTime = '2026-10-27T00:00:00.000Z';
+      const due = '2099-01-01T00:00:00.000Z';
+      const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => beforeTime);
+      const target = await schedules.createAutomation(f.ownerId, {
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        name: 'Manual recovery target recurrence',
         intervalSeconds: 60,
-        prompt: 'No restart bypass.',
-      })
-    ).rejects.toThrow(/fenced/);
-    await expect(
-      restartedSchedules.updateAutomation(f.ownerId, target.id, {
-        expectedRevision: targetActive.revision,
-        status: 'paused',
-      })
-    ).rejects.toThrow(/fenced/);
-    const candidates = await restartedSchedules.collectScanCandidates(due);
-    expect(candidates.map((candidate) => candidate.scheduleId)).toEqual([healthy.id]);
-    expect(targetCoreRows()).toEqual(beforeRows);
-    expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-    expect(readRecoveryAdmission(coreDb, input.backupId)).toEqual(beforeAdmission);
-    const retainedDb = bindWorkspaceSqlite(
-      new Database(workspaceDbPath(f.dataRoot, workspaceId), {
-        readonly: true,
-        fileMustExist: true,
-      }),
-      f.dataRoot,
-      workspaceId
-    );
-    databaseHandles.push(retainedDb);
-    expect(inspectCapture(retainedDb, workspaceId, input.backupId)).toEqual(beforePin);
-    expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
-    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-    const siblingRelease = mutationAdmission.enter(sibling.id);
-    expect(siblingRelease).not.toBeNull();
-    siblingRelease!();
-  });
+        prompt: 'Do not mutate quarantined target.',
+      });
+      const targetActive = await schedules.updateAutomation(f.ownerId, target.id, {
+        expectedRevision: target.revision,
+        status: 'active',
+        scheduledAt: due,
+      });
+      const healthy = await schedules.createAutomation(f.ownerId, {
+        workspaceId: sibling.id,
+        threadId: siblingThread.id,
+        name: 'Healthy sibling recurrence',
+        intervalSeconds: 60,
+        prompt: 'Healthy sibling may progress.',
+      });
+      await schedules.updateAutomation(f.ownerId, healthy.id, {
+        expectedRevision: healthy.revision,
+        status: 'active',
+        scheduledAt: due,
+      });
+      const input = { ...f.input(), purpose: 'move' as const };
+      if (kind === 'prepared-MOVE') {
+        const captured = await createWorkspaceBackup(input);
+        expect(captured.disposition).toBe('prepared');
+        expect(readRecoveryAdmission(f.coreDb, input.backupId)).toMatchObject({
+          state: 'prepared',
+          purpose: 'move',
+        });
+      } else {
+        const db = openWorkspaceDb(f.dataRoot, workspaceId);
+        try {
+          protectCapture(db, workspaceId, input.backupId);
+        } finally {
+          db.sqlite.close();
+        }
+      }
+      const beforeAdmission = readRecoveryAdmission(f.coreDb, input.backupId);
+      const inspectDb = bindWorkspaceSqlite(
+        new Database(workspaceDbPath(f.dataRoot, workspaceId), {
+          readonly: true,
+          fileMustExist: true,
+        }),
+        f.dataRoot,
+        workspaceId
+      );
+      const beforePin = inspectCapture(inspectDb, workspaceId, input.backupId);
+      inspectDb.sqlite.close();
+      expect(beforePin).toMatchObject({ state: 'active' });
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      const coreDb = openCoreDb(f.dataRoot);
+      databaseHandles.push(coreDb);
+      const mutationAdmission = new WorkspaceMutationAdmission();
+      const store = new FsStore({ dataRoot: f.dataRoot });
+      store.setWorkspaceMutationAdmission(mutationAdmission);
+      // Existing recovery census owns quarantine and the reconstructed process-local gate.
+      (
+        restoreWorkspaceRecoveryAdmission as (
+          core: typeof coreDb,
+          gate?: WorkspaceMutationAdmission
+        ) => void
+      )(coreDb, mutationAdmission);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(scopeAdmissionFailures(f.dataRoot)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ scope: 'workspace', id: workspaceId, check: 'recovery' }),
+        ])
+      );
+      expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(mutationAdmission.enter(workspaceId)).toBeNull();
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', sibling.id)).toBe(true);
+      expect(mutationAdmission.isClosed(sibling.id)).toBe(false);
+      const targetCoreRows = () =>
+        Object.fromEntries(
+          Object.entries(databaseRows(coreDb.sqlite.name, f.root)).map(([table, rows]) => [
+            table,
+            rows.filter((row) => {
+              const value = row as Record<string, unknown>;
+              return value.workspace_id === workspaceId || value.workspaceId === workspaceId;
+            }),
+          ])
+        );
+      const beforeRows = targetCoreRows();
+      const beforeSource = tree(f.workspaceRoot);
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+      const client = getControlStoreWorkerClient();
+      const coldOpenAndCheckpoint = async (selectedWorkspaceId: string) => {
+        const scope = nativeProductScope(f.dataRoot, {
+          kind: 'workspace',
+          workspaceId: selectedWorkspaceId,
+        });
+        const selectedDatabase = `workspace:${scope.path}`;
+        await client.open({
+          database: selectedDatabase,
+          path: scope.path,
+          dataRoot: f.dataRoot,
+          create: false,
+          initialize: 'workspace',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        });
+        // This command is attempted only if the real cold open acknowledged.
+        return client.checkpoint(selectedDatabase);
+      };
+      await expect(coldOpenAndCheckpoint(workspaceId)).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      await expect(
+        store.updateAgentSession(retainedSession.id, {
+          message: 'Must not settle through capture.',
+        })
+      ).rejects.toThrow();
+      expect(
+        post.mock.calls.filter(
+          ([message]) =>
+            message !== null && typeof message === 'object' && message.database === database
+        )
+      ).toHaveLength(0);
+      expect(tree(f.workspaceRoot)).toEqual(beforeSource);
+      await expect(coldOpenAndCheckpoint(sibling.id)).resolves.toBeDefined();
+      const siblingDatabase = `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`;
+      const siblingOperations = post.mock.calls.flatMap(([message]) =>
+        message !== null && typeof message === 'object' && message.database === siblingDatabase
+          ? [message.operation]
+          : []
+      );
+      expect(siblingOperations).toContain('open');
+      expect(siblingOperations).toContain('checkpoint');
+      expect(tree(f.workspaceRoot)).toEqual(beforeSource);
+      const restartedSchedules = new AutomationStore(coreDb, mutationAdmission, () => due);
+      await expect(
+        restartedSchedules.createAutomation(f.ownerId, {
+          workspaceId,
+          threadId: DEMO_THREAD_ID,
+          name: 'Must remain refused',
+          intervalSeconds: 60,
+          prompt: 'No restart bypass.',
+        })
+      ).rejects.toThrow(/fenced/);
+      await expect(
+        restartedSchedules.updateAutomation(f.ownerId, target.id, {
+          expectedRevision: targetActive.revision,
+          status: 'paused',
+        })
+      ).rejects.toThrow(/fenced/);
+      const candidates = await restartedSchedules.collectScanCandidates(due);
+      expect(candidates.map((candidate) => candidate.scheduleId)).toEqual([healthy.id]);
+      expect(targetCoreRows()).toEqual(beforeRows);
+      expect(tree(f.workspaceRoot)).toEqual(beforeSource);
+      expect(readRecoveryAdmission(coreDb, input.backupId)).toEqual(beforeAdmission);
+      const retainedDb = bindWorkspaceSqlite(
+        new Database(workspaceDbPath(f.dataRoot, workspaceId), {
+          readonly: true,
+          fileMustExist: true,
+        }),
+        f.dataRoot,
+        workspaceId
+      );
+      databaseHandles.push(retainedDb);
+      expect(inspectCapture(retainedDb, workspaceId, input.backupId)).toEqual(beforePin);
+      expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      const siblingRelease = mutationAdmission.enter(sibling.id);
+      expect(siblingRelease).not.toBeNull();
+      siblingRelease!();
+    }
+  );
 });
 
 describe('C-a additional owner families', () => {
@@ -1529,138 +1542,138 @@ describe('C-a additional owner families', () => {
 });
 
 describe('C-a frozen scheduler pre-post ordering', () => {
-  it.each([
-    'revoked-authority',
-    'publication-pending',
-  ] as const)('skips %s without Core denial or Workspace preparation until an explicit unfrozen pass', async (kind) => {
-    const f = await fixture();
-    const agentId = 'agent_frozen_dispatch_fixture';
-    const turnInput = 'Queued work must remain untouched during target capture.';
-    const turn = await f.store.createTurn(
-      workspaceId,
-      DEMO_THREAD_ID,
-      turnInput,
-      { kind: 'user', id: f.ownerId },
-      null,
-      { status: 'pending', agentId }
-    );
-    const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
-    const entry = createSchedulerAdmissionEntry(f.coreDb, {
-      queueEntryId: randomUUID(),
-      requestId: randomUUID(),
-      backendId: executor.id,
-      workspaceId,
-      threadId: DEMO_THREAD_ID,
-      turnId: turn.id,
-      turnInput,
-      requestedAgentId: agentId,
-      triggerActor: { kind: 'user', id: f.ownerId },
-    });
-    if (kind === 'revoked-authority') {
-      const disabled = f.coreDb.sqlite.transaction(() =>
-        disableCanonicalUser(f.coreDb, f.ownerId)
-      )();
-      expect(disabled).toMatchObject({
-        changed: true,
-        user: { userId: f.ownerId, status: 'disabled' },
+  it.each(['revoked-authority', 'publication-pending'] as const)(
+    'skips %s without Core denial or Workspace preparation until an explicit unfrozen pass',
+    async (kind) => {
+      const f = await fixture();
+      const agentId = 'agent_frozen_dispatch_fixture';
+      const turnInput = 'Queued work must remain untouched during target capture.';
+      const turn = await f.store.createTurn(
+        workspaceId,
+        DEMO_THREAD_ID,
+        turnInput,
+        { kind: 'user', id: f.ownerId },
+        null,
+        { status: 'pending', agentId }
+      );
+      const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
+      const entry = createSchedulerAdmissionEntry(f.coreDb, {
+        queueEntryId: randomUUID(),
+        requestId: randomUUID(),
+        backendId: executor.id,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        turnId: turn.id,
+        turnInput,
+        requestedAgentId: agentId,
+        triggerActor: { kind: 'user', id: f.ownerId },
       });
-    }
-    f.store.setWorkspaceMutationAdmission(f.mutationAdmission);
-    const claims = getSchedulerPreparationClaims(f.coreDb);
-    expect(claims.size).toBe(0);
-    const claim = vi.spyOn(claims, 'set');
-    const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
-    const beforeWorkspace = tree(f.workspaceRoot);
-    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    const deny = vi.spyOn(schedulerPublication, 'publishSchedulerAdmission');
-    const open = vi.spyOn(databaseOwner, 'openWorkspaceDb');
-    const read = vi.spyOn(databaseOwner, 'openWorkspaceReadDb');
-    const migrate = vi.spyOn(migrationOwner, 'applyScopedMigrations');
-    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
-    const start = vi.spyOn(executor, 'startTurn');
-    const backend = (['submit', 'inspect', 'cancel', 'release'] as const).map((method) =>
-      vi.spyOn(executor, method)
-    );
-    const input = {
-      agentManifests: [],
-      coreDb: f.coreDb,
-      store: f.store,
-      turnExecutor: executor,
-      executionBackend: executor.executionBackend,
-      providerRegistry: new ProviderRegistry([]),
-      gatewayConfig: createTestGatewayConfig(),
-      callerQueueEntryId: entry.queueEntryId,
-      maxDispatches: 1,
-    };
-    const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
-    expect(frozen.status).toBe('frozen');
-    if (frozen.status !== 'frozen') throw new Error('Fixture did not acquire its target freeze.');
-    try {
-      const skipped = await runSchedulerDispatchLoop(input);
-      expect(skipped.startedTurns).toEqual([]);
-      expect(skipped.terminalResult.status).toBe('queued');
+      if (kind === 'revoked-authority') {
+        const disabled = f.coreDb.sqlite.transaction(() =>
+          disableCanonicalUser(f.coreDb, f.ownerId)
+        )();
+        expect(disabled).toMatchObject({
+          changed: true,
+          user: { userId: f.ownerId, status: 'disabled' },
+        });
+      }
+      f.store.setWorkspaceMutationAdmission(f.mutationAdmission);
+      const claims = getSchedulerPreparationClaims(f.coreDb);
+      expect(claims.size).toBe(0);
+      const claim = vi.spyOn(claims, 'set');
+      const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
+      const beforeWorkspace = tree(f.workspaceRoot);
+      const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      const deny = vi.spyOn(schedulerPublication, 'publishSchedulerAdmission');
+      const open = vi.spyOn(databaseOwner, 'openWorkspaceDb');
+      const read = vi.spyOn(databaseOwner, 'openWorkspaceReadDb');
+      const migrate = vi.spyOn(migrationOwner, 'applyScopedMigrations');
+      const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+      const start = vi.spyOn(executor, 'startTurn');
+      const backend = (['submit', 'inspect', 'cancel', 'release'] as const).map((method) =>
+        vi.spyOn(executor, method)
+      );
+      const input = {
+        agentManifests: [],
+        coreDb: f.coreDb,
+        store: f.store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        providerRegistry: new ProviderRegistry([]),
+        gatewayConfig: createTestGatewayConfig(),
+        callerQueueEntryId: entry.queueEntryId,
+        maxDispatches: 1,
+      };
+      const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+      expect(frozen.status).toBe('frozen');
+      if (frozen.status !== 'frozen') throw new Error('Fixture did not acquire its target freeze.');
+      try {
+        const skipped = await runSchedulerDispatchLoop(input);
+        expect(skipped.startedTurns).toEqual([]);
+        expect(skipped.terminalResult.status).toBe('queued');
+        expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId)).toEqual(entry);
+        expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
+        expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
+        expect(tree(f.workspaceRoot)).toEqual(beforeWorkspace);
+        expect(deny).not.toHaveBeenCalled();
+        expect(open).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
+        expect(migrate).not.toHaveBeenCalled();
+        expect(prepare).not.toHaveBeenCalled();
+        expect(start).not.toHaveBeenCalled();
+        for (const effect of backend) expect(effect).not.toHaveBeenCalled();
+        expect(claims.size).toBe(0);
+        expect(claim).not.toHaveBeenCalled();
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      } finally {
+        frozen.release();
+      }
+      // Freeze does not schedule a retry. Only this explicit later pass may observe
+      // the real revocation or inspect the receipt-free publication boundary.
       expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId)).toEqual(entry);
-      expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
-      expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
-      expect(tree(f.workspaceRoot)).toEqual(beforeWorkspace);
-      expect(deny).not.toHaveBeenCalled();
-      expect(open).not.toHaveBeenCalled();
-      expect(read).not.toHaveBeenCalled();
-      expect(migrate).not.toHaveBeenCalled();
+      const resumed = await runSchedulerDispatchLoop(input);
+      expect(resumed.startedTurns).toEqual([]);
+      if (kind === 'revoked-authority') {
+        expect(resumed.terminalResult).toMatchObject({
+          status: 'denied',
+          entry: {
+            queueEntryId: entry.queueEntryId,
+            status: 'denied',
+            denialReason: 'authority-denied',
+          },
+        });
+        expect(deny).toHaveBeenCalledExactlyOnceWith(f.coreDb, {
+          mode: 'deny',
+          queueEntryId: entry.queueEntryId,
+          denialReason: 'authority-denied',
+        });
+        expect(open).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
+        expect(migrate).not.toHaveBeenCalled();
+      } else {
+        expect(resumed.terminalResult).toEqual({
+          status: 'queued',
+          reason: 'entry-publication-pending',
+        });
+        expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId)).toEqual(entry);
+        expect(deny).not.toHaveBeenCalled();
+        expect(read).toHaveBeenCalled();
+        expect(open).not.toHaveBeenCalled();
+        expect(migrate).not.toHaveBeenCalled();
+        expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
+        expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
+        expect(tree(f.workspaceRoot)).toEqual(beforeWorkspace);
+      }
       expect(prepare).not.toHaveBeenCalled();
       expect(start).not.toHaveBeenCalled();
       for (const effect of backend) expect(effect).not.toHaveBeenCalled();
       expect(claims.size).toBe(0);
-      expect(claim).not.toHaveBeenCalled();
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-    } finally {
-      frozen.release();
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      const released = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+      expect(released.status).toBe('frozen');
+      if (released.status === 'frozen') released.release();
     }
-    // Freeze does not schedule a retry. Only this explicit later pass may observe
-    // the real revocation or inspect the receipt-free publication boundary.
-    expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId)).toEqual(entry);
-    const resumed = await runSchedulerDispatchLoop(input);
-    expect(resumed.startedTurns).toEqual([]);
-    if (kind === 'revoked-authority') {
-      expect(resumed.terminalResult).toMatchObject({
-        status: 'denied',
-        entry: {
-          queueEntryId: entry.queueEntryId,
-          status: 'denied',
-          denialReason: 'authority-denied',
-        },
-      });
-      expect(deny).toHaveBeenCalledExactlyOnceWith(f.coreDb, {
-        mode: 'deny',
-        queueEntryId: entry.queueEntryId,
-        denialReason: 'authority-denied',
-      });
-      expect(open).not.toHaveBeenCalled();
-      expect(read).not.toHaveBeenCalled();
-      expect(migrate).not.toHaveBeenCalled();
-    } else {
-      expect(resumed.terminalResult).toEqual({
-        status: 'queued',
-        reason: 'entry-publication-pending',
-      });
-      expect(requireSchedulerAdmissionEntry(f.coreDb, entry.queueEntryId)).toEqual(entry);
-      expect(deny).not.toHaveBeenCalled();
-      expect(read).toHaveBeenCalled();
-      expect(open).not.toHaveBeenCalled();
-      expect(migrate).not.toHaveBeenCalled();
-      expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
-      expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
-      expect(tree(f.workspaceRoot)).toEqual(beforeWorkspace);
-    }
-    expect(prepare).not.toHaveBeenCalled();
-    expect(start).not.toHaveBeenCalled();
-    for (const effect of backend) expect(effect).not.toHaveBeenCalled();
-    expect(claims.size).toBe(0);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-    const released = f.mutationAdmission.tryFreeze(workspaceId, () => []);
-    expect(released.status).toBe('frozen');
-    if (released.status === 'frozen') released.release();
-  });
+  );
 });
 
 describe('C-a observational cross-Workspace scheduler probes', () => {
@@ -2157,38 +2170,38 @@ describe('C-a nonwaiting native holds', () => {
     expect(checkpointPosts(database)).toHaveLength(1);
   }, 120_000);
 
-  it.each([
-    'target',
-    'global',
-  ] as const)('refuses a competing %s hold and allows a sibling native ACK', async (kind) => {
-    const f = await fixture();
-    const sibling = await f.store.createWorkspace('Healthy sibling');
-    const client = getControlStoreWorkerClient();
-    const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
-    const release = await client.pauseForDataRootBackup(kind === 'target' ? database : undefined);
-    try {
-      expect(client.tryPauseForWorkspaceCapture(database)).toBeNull();
-      if (kind === 'target') {
-        const changed = await f.store.createThread(
-          sibling.id,
-          'Sibling acknowledged during target hold'
-        );
-        expect(f.store.getThread(kind === 'target' ? sibling.id : workspaceId, changed.id)).toEqual(
-          changed
-        );
+  it.each(['target', 'global'] as const)(
+    'refuses a competing %s hold and allows a sibling native ACK',
+    async (kind) => {
+      const f = await fixture();
+      const sibling = await f.store.createWorkspace('Healthy sibling');
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+      const release = await client.pauseForDataRootBackup(kind === 'target' ? database : undefined);
+      try {
+        expect(client.tryPauseForWorkspaceCapture(database)).toBeNull();
+        if (kind === 'target') {
+          const changed = await f.store.createThread(
+            sibling.id,
+            'Sibling acknowledged during target hold'
+          );
+          expect(
+            f.store.getThread(kind === 'target' ? sibling.id : workspaceId, changed.id)
+          ).toEqual(changed);
+        }
+      } finally {
+        release();
       }
-    } finally {
-      release();
+      const admitted = client.tryPauseForWorkspaceCapture(database);
+      expect(admitted).not.toBeNull();
+      const resume = await admitted!;
+      resume();
+      resume();
+      const changed = await f.store.createThread(workspaceId, 'Target acknowledged after release');
+      expect(f.store.getThread(workspaceId, changed.id)).toEqual(changed);
+      f.coreDb.sqlite.close();
     }
-    const admitted = client.tryPauseForWorkspaceCapture(database);
-    expect(admitted).not.toBeNull();
-    const resume = await admitted!;
-    resume();
-    resume();
-    const changed = await f.store.createThread(workspaceId, 'Target acknowledged after release');
-    expect(f.store.getThread(workspaceId, changed.id)).toEqual(changed);
-    f.coreDb.sqlite.close();
-  });
+  );
 });
 
 /** Composes the ordinary public lifecycle operation with real authority, request and registry owners. */
@@ -2452,34 +2465,83 @@ describe('C-a capture and existing deletion ownership', () => {
     expect(afterClose).toEqual(beforeClose);
   }, 120_000);
 
-  it.each([
-    'capture-first',
-    'publisher-before-freeze',
-  ] as const)('refuses ordinary deletion at %s without stealing the capture fence', async (order) => {
-    const f = await fixture();
-    const deletion = deletionOperations(f);
-    const sibling = await f.store.createWorkspace('Sibling remains admitted during lifecycle race');
-    recordWorkspaceOwnerMembership({
-      coreDb: f.coreDb,
-      workspaceId: sibling.id,
-      ownerUserId: f.ownerId,
-    });
-    expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
-    let deleting: Promise<{ error?: unknown; result?: unknown }> | undefined;
-    if (order === 'publisher-before-freeze') {
-      // A live ordinary mutation lease makes lifecycle freeze refuse without waiting.
-      const releasePublisher = f.mutationAdmission.enter(workspaceId);
-      try {
-        expect(releasePublisher).not.toBeNull();
-        const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
-        const beforeSource = tree(f.workspaceRoot);
-        const sourceInode = lstatSync(f.workspaceRoot).ino;
-        const refusal = await deletion
-          .invoke('workspace.delete', deletion.request, deletion.context)
-          .then(
-            (result) => ({ result, error: undefined }),
-            (error: unknown) => ({ error, result: undefined })
+  it.each(['capture-first', 'publisher-before-freeze'] as const)(
+    'refuses ordinary deletion at %s without stealing the capture fence',
+    async (order) => {
+      const f = await fixture();
+      const deletion = deletionOperations(f);
+      const sibling = await f.store.createWorkspace(
+        'Sibling remains admitted during lifecycle race'
+      );
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
+      });
+      expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
+      let deleting: Promise<{ error?: unknown; result?: unknown }> | undefined;
+      if (order === 'publisher-before-freeze') {
+        // A live ordinary mutation lease makes lifecycle freeze refuse without waiting.
+        const releasePublisher = f.mutationAdmission.enter(workspaceId);
+        try {
+          expect(releasePublisher).not.toBeNull();
+          const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
+          const beforeSource = tree(f.workspaceRoot);
+          const sourceInode = lstatSync(f.workspaceRoot).ino;
+          const refusal = await deletion
+            .invoke('workspace.delete', deletion.request, deletion.context)
+            .then(
+              (result) => ({ result, error: undefined }),
+              (error: unknown) => ({ error, result: undefined })
+            );
+          expect(refusal.error).toMatchObject({
+            code: 'workspace_frozen',
+            status: 409,
+            details: { workspaceId, operation: 'delete', retryable: true },
+          });
+          expect(refusal.result).toBeUndefined();
+          expect(deletion.cleanup).not.toHaveBeenCalled();
+          expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
+          expect(getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId)).toEqual(
+            deletion.registry
           );
+          expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
+          expect(lstatSync(f.workspaceRoot).ino).toBe(sourceInode);
+          expect(tree(f.workspaceRoot)).toEqual(beforeSource);
+          expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+        } finally {
+          releasePublisher?.();
+        }
+      }
+      let resume!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      const copy = holdCapturePhase('db-backup', async () => {
+        enter();
+        await barrier;
+      });
+      const capturing = createWorkspaceBackup(f.input());
+      let captured: Awaited<typeof capturing> | undefined;
+      let captureFailure: unknown;
+      try {
+        await Promise.race([
+          entered,
+          capturing.then(() => {
+            throw new Error('Capture did not reach its native copy boundary.');
+          }),
+        ]);
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        if (!deleting)
+          deleting = deletion.invoke('workspace.delete', deletion.request, deletion.context).then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error })
+          );
+        const refusal = await deleting;
         expect(refusal.error).toMatchObject({
           code: 'workspace_frozen',
           status: 409,
@@ -2489,84 +2551,40 @@ describe('C-a capture and existing deletion ownership', () => {
         expect(deletion.cleanup).not.toHaveBeenCalled();
         expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
         expect(getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId)).toEqual(deletion.registry);
-        expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
-        expect(lstatSync(f.workspaceRoot).ino).toBe(sourceInode);
-        expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-      } finally {
-        releasePublisher?.();
-      }
-    }
-    let resume!: () => void;
-    const barrier = new Promise<void>((resolve) => {
-      resume = resolve;
-    });
-    let enter!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      enter = resolve;
-    });
-    const copy = holdCapturePhase('db-backup', async () => {
-      enter();
-      await barrier;
-    });
-    const capturing = createWorkspaceBackup(f.input());
-    let captured: Awaited<typeof capturing> | undefined;
-    let captureFailure: unknown;
-    try {
-      await Promise.race([
-        entered,
-        capturing.then(() => {
-          throw new Error('Capture did not reach its native copy boundary.');
-        }),
-      ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-      if (!deleting)
-        deleting = deletion.invoke('workspace.delete', deletion.request, deletion.context).then(
-          (result) => ({ result }),
-          (error: unknown) => ({ error })
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+        const siblingThread = await deletion.invoke(
+          'thread.create',
+          {
+            workspaceId: sibling.id,
+            name: 'Sibling native acknowledgement',
+            visibility: 'workspace',
+            requestId: randomUUID(),
+          },
+          deletion.context
         );
-      const refusal = await deleting;
-      expect(refusal.error).toMatchObject({
-        code: 'workspace_frozen',
-        status: 409,
-        details: { workspaceId, operation: 'delete', retryable: true },
-      });
-      expect(refusal.result).toBeUndefined();
-      expect(deletion.cleanup).not.toHaveBeenCalled();
+        expect(f.store.getThread(sibling.id, siblingThread.id).name).toBe(
+          'Sibling native acknowledgement'
+        );
+      } finally {
+        resume();
+        copy.mockRestore();
+        await capturing.then(
+          (result) => {
+            captured = result;
+          },
+          (error: unknown) => {
+            captureFailure = error;
+          }
+        );
+      }
+      expect(captureFailure).toBeUndefined();
+      expect(captured?.disposition).toBe('sealed');
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
       expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
-      expect(getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId)).toEqual(deletion.registry);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-      expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
-      const siblingThread = await deletion.invoke(
-        'thread.create',
-        {
-          workspaceId: sibling.id,
-          name: 'Sibling native acknowledgement',
-          visibility: 'workspace',
-          requestId: randomUUID(),
-        },
-        deletion.context
-      );
-      expect(f.store.getThread(sibling.id, siblingThread.id).name).toBe(
-        'Sibling native acknowledgement'
-      );
-    } finally {
-      resume();
-      copy.mockRestore();
-      await capturing.then(
-        (result) => {
-          captured = result;
-        },
-        (error: unknown) => {
-          captureFailure = error;
-        }
-      );
-    }
-    expect(captureFailure).toBeUndefined();
-    expect(captured?.disposition).toBe('sealed');
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-    expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
-  }, 120_000);
+    },
+    120_000
+  );
 
   it('blocks capture from an unfinished requested deletion after reopen without accepting a second request', async () => {
     const f = await fixture();
@@ -3130,51 +3148,52 @@ describe('C-b original-byte acquisition protection', () => {
 });
 
 describe('C-a independent sealed generations', () => {
-  it.each([
-    'closed-writer',
-    'restart',
-  ] as const)('creates a brand-new capture after %s without a warming mutation', async (kind) => {
-    const f = await fixture();
-    let source = f.source;
-    if (kind === 'closed-writer') {
-      await getControlStoreWorkerClient().close(
-        `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
+  it.each(['closed-writer', 'restart'] as const)(
+    'creates a brand-new capture after %s without a warming mutation',
+    async (kind) => {
+      const f = await fixture();
+      let source = f.source;
+      if (kind === 'closed-writer') {
+        await getControlStoreWorkerClient().close(
+          `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
+        );
+      } else {
+        await shutdownControlStoreWorkerClient();
+        f.coreDb.sqlite.close();
+        const coreDb = openCoreDb(f.dataRoot);
+        databaseHandles.push(coreDb);
+        source = {
+          ...f.source,
+          coreDb,
+          store: new FsStore({ dataRoot: f.dataRoot }),
+          mutationAdmission: new WorkspaceMutationAdmission(),
+        };
+      }
+      // Neither branch performs a product mutation or native open to warm the source.
+      const input = { ...f.input(), source };
+      const db = bindWorkspaceSqlite(
+        new Database(workspaceDbPath(f.dataRoot, workspaceId), {
+          readonly: true,
+          fileMustExist: true,
+        }),
+        f.dataRoot,
+        workspaceId
       );
-    } else {
-      await shutdownControlStoreWorkerClient();
-      f.coreDb.sqlite.close();
-      const coreDb = openCoreDb(f.dataRoot);
-      databaseHandles.push(coreDb);
-      source = {
-        ...f.source,
-        coreDb,
-        store: new FsStore({ dataRoot: f.dataRoot }),
-        mutationAdmission: new WorkspaceMutationAdmission(),
-      };
-    }
-    // Neither branch performs a product mutation or native open to warm the source.
-    const input = { ...f.input(), source };
-    const db = bindWorkspaceSqlite(
-      new Database(workspaceDbPath(f.dataRoot, workspaceId), {
-        readonly: true,
-        fileMustExist: true,
-      }),
-      f.dataRoot,
-      workspaceId
-    );
-    databaseHandles.push(db);
-    expect(inspectCapture(db, workspaceId, input.backupId)).toBeNull();
-    expect(readBlockers({ ...source, workspaceId })).toEqual([]);
-    const captured = await createWorkspaceBackup(input);
-    expect(captured.disposition).toBe('sealed');
-    expect(captured.manifest.backupId).toBe(input.backupId);
-    expect(captured.manifest.capture.consistency).toBe('workspace-consistent');
-    expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({ state: 'finished' });
-    expect(source.mutationAdmission.isClosed(workspaceId)).toBe(false);
-    await f.read(input.backupId, async (bundle) =>
-      expect(bundle.manifestDigest).toBe(captured.report.manifestDigest)
-    );
-  }, 120_000);
+      databaseHandles.push(db);
+      expect(inspectCapture(db, workspaceId, input.backupId)).toBeNull();
+      expect(readBlockers({ ...source, workspaceId })).toEqual([]);
+      const captured = await createWorkspaceBackup(input);
+      expect(captured.disposition).toBe('sealed');
+      expect(captured.manifest.backupId).toBe(input.backupId);
+      expect(captured.manifest.capture.consistency).toBe('workspace-consistent');
+      expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({ state: 'finished' });
+      expect(source.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      await f.read(input.backupId, async (bundle) =>
+        expect(bundle.manifestDigest).toBe(captured.report.manifestDigest)
+      );
+    },
+    120_000
+  );
 
   it('retains MOVE admission closure after the active capture pin commits but its acknowledgement is lost', async () => {
     const f = await fixture();
@@ -3420,228 +3439,351 @@ describe('C-a independent sealed generations', () => {
     }
   }, 120_000);
 
-  it.each([
-    'capture-worker-loss',
-    'native-drain-rejection',
-  ] as const)('retains capture ownership through %s while a real posted target ACK still drains', async (failure) => {
-    const f = await fixture();
-    const sibling = await f.store.createWorkspace('Drain-loss sibling');
-    recordWorkspaceOwnerMembership({
-      coreDb: f.coreDb,
-      workspaceId: sibling.id,
-      ownerUserId: f.ownerId,
-    });
-    await f.store.createThread(sibling.id, 'Initialize real sibling native ACK');
-    const client = getControlStoreWorkerClient();
-    const targetDatabase = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
-    const siblingDatabase = `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`;
-    const post = vi.spyOn(Worker.prototype, 'postMessage');
-    let forwardAck: (() => void) | undefined;
-    let ackForwarded = false;
-    let nativeFailed = false;
-    let nativeWorker: Worker | undefined;
-    let arrived!: () => void;
-    const ackArrived = new Promise<void>((resolve) => {
-      arrived = resolve;
-    });
-    captureWorkerProbe.onNativeMessage = (worker, value) => {
-      if (!value || typeof value !== 'object' || !('id' in value)) return false;
-      const request = post.mock.calls.find(
-        ([message]) =>
-          message && message.operation === 'checkpoint' && message.database === targetDatabase
-      )?.[0];
-      if (!request || value.id !== request.id || forwardAck) return false;
-      nativeWorker = worker;
-      forwardAck = () => {
-        if (ackForwarded) return;
-        ackForwarded = true;
-        captureWorkerProbe.onNativeMessage = undefined;
-        worker.emit('message', value);
+  it.each(['capture-worker-loss', 'native-drain-rejection'] as const)(
+    'retains capture ownership through %s while a real posted target ACK still drains',
+    async (failure) => {
+      const f = await fixture();
+      const sibling = await f.store.createWorkspace('Drain-loss sibling');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
+      });
+      await f.store.createThread(sibling.id, 'Initialize real sibling native ACK');
+      const client = getControlStoreWorkerClient();
+      const targetDatabase = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+      const siblingDatabase = `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`;
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      let forwardAck: (() => void) | undefined;
+      let ackForwarded = false;
+      let nativeFailed = false;
+      let nativeWorker: Worker | undefined;
+      let arrived!: () => void;
+      const ackArrived = new Promise<void>((resolve) => {
+        arrived = resolve;
+      });
+      captureWorkerProbe.onNativeMessage = (worker, value) => {
+        if (!value || typeof value !== 'object' || !('id' in value)) return false;
+        const request = post.mock.calls.find(
+          ([message]) =>
+            message && message.operation === 'checkpoint' && message.database === targetDatabase
+        )?.[0];
+        if (!request || value.id !== request.id || forwardAck) return false;
+        nativeWorker = worker;
+        forwardAck = () => {
+          if (ackForwarded) return;
+          ackForwarded = true;
+          captureWorkerProbe.onNativeMessage = undefined;
+          worker.emit('message', value);
+        };
+        arrived();
+        return true;
       };
-      arrived();
-      return true;
-    };
-    const pendingAck = client.checkpoint(targetDatabase).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    await ackArrived;
-    const releaseOrder: string[] = [];
-    const tryPause = client.tryPauseForWorkspaceCapture.bind(client);
-    const hold = vi.spyOn(client, 'tryPauseForWorkspaceCapture').mockImplementation((...args) => {
-      const acquired = tryPause(...args);
-      return (
-        acquired?.then((release) => () => {
-          expect(ackForwarded || nativeFailed).toBe(true);
-          releaseOrder.push('hold');
-          release();
-        }) ?? null
+      const pendingAck = client.checkpoint(targetDatabase).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
       );
-    });
-    const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
-    const gate = vi.spyOn(f.mutationAdmission, 'tryFreeze').mockImplementation((...args) => {
-      const result = tryFreeze(...args);
-      if (result.status !== 'frozen') return result;
-      return {
-        ...result,
-        release: () => {
-          expect(ackForwarded || nativeFailed).toBe(true);
-          releaseOrder.push('gate');
-          result.release();
-        },
+      await ackArrived;
+      const releaseOrder: string[] = [];
+      const tryPause = client.tryPauseForWorkspaceCapture.bind(client);
+      const hold = vi.spyOn(client, 'tryPauseForWorkspaceCapture').mockImplementation((...args) => {
+        const acquired = tryPause(...args);
+        return (
+          acquired?.then((release) => () => {
+            expect(ackForwarded || nativeFailed).toBe(true);
+            releaseOrder.push('hold');
+            release();
+          }) ?? null
+        );
+      });
+      const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
+      const gate = vi.spyOn(f.mutationAdmission, 'tryFreeze').mockImplementation((...args) => {
+        const result = tryFreeze(...args);
+        if (result.status !== 'frozen') return result;
+        return {
+          ...result,
+          release: () => {
+            expect(ackForwarded || nativeFailed).toBe(true);
+            releaseOrder.push('gate');
+            result.release();
+          },
+        };
+      });
+      let worker: Worker | undefined;
+      let entered!: () => void;
+      const draining = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      captureWorkerProbe.onPhase = (selected, message) => {
+        if (message.phase === 'drain') {
+          worker = selected;
+          entered();
+        }
+        return false;
       };
-    });
-    let worker: Worker | undefined;
-    let entered!: () => void;
-    const draining = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    captureWorkerProbe.onPhase = (selected, message) => {
-      if (message.phase === 'drain') {
-        worker = selected;
-        entered();
-      }
-      return false;
-    };
-    let settled = false;
-    const input = f.input();
-    const capturing = createWorkspaceBackup(input).then(
-      (result) => {
-        settled = true;
-        return { result };
-      },
-      (error: unknown) => {
-        settled = true;
-        return { error };
-      }
-    );
-    try {
-      await Promise.race([
-        draining,
-        capturing.then((outcome) => {
-          if ('error' in outcome) throw outcome.error;
-          throw new Error('Capture did not reach real target ACK drain.');
-        }),
-      ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-      if (failure === 'capture-worker-loss') {
-        await worker!.terminate();
-        await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
-        expect(settled).toBe(false);
+      let settled = false;
+      const input = f.input();
+      const capturing = createWorkspaceBackup(input).then(
+        (result) => {
+          settled = true;
+          return { result };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { error };
+        }
+      );
+      try {
+        await Promise.race([
+          draining,
+          capturing.then((outcome) => {
+            if ('error' in outcome) throw outcome.error;
+            throw new Error('Capture did not reach real target ACK drain.');
+          }),
+        ]);
         expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-        expect(releaseOrder).toEqual([]);
-        forwardAck!();
-        expect(await pendingAck).toHaveProperty('result');
-      } else {
-        nativeWorker!.prependOnceListener('exit', () => {
-          nativeFailed = true;
-        });
-        await nativeWorker!.terminate();
+        if (failure === 'capture-worker-loss') {
+          await worker!.terminate();
+          await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
+          expect(settled).toBe(false);
+          expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+          expect(releaseOrder).toEqual([]);
+          forwardAck!();
+          expect(await pendingAck).toHaveProperty('result');
+        } else {
+          nativeWorker!.prependOnceListener('exit', () => {
+            nativeFailed = true;
+          });
+          await nativeWorker!.terminate();
+          captureWorkerProbe.onNativeMessage = undefined;
+          expect(await pendingAck).toMatchObject({ error: expect.any(Error) });
+          await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
+        }
+        expect(await capturing).toMatchObject({ error: expect.any(Error) });
+        if (failure === 'capture-worker-loss') expect(releaseOrder).toEqual(['hold', 'gate']);
+        else {
+          expect(releaseOrder.at(-1)).toBe('gate');
+          expect(releaseOrder.filter((value) => value === 'gate')).toHaveLength(1);
+          expect(releaseOrder.filter((value) => value === 'hold').length).toBeLessThanOrEqual(1);
+        }
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+        expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+      } finally {
+        captureWorkerProbe.onPhase = undefined;
+        if (!nativeFailed) forwardAck?.();
         captureWorkerProbe.onNativeMessage = undefined;
-        expect(await pendingAck).toMatchObject({ error: expect.any(Error) });
-        await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
+        await pendingAck;
+        await capturing;
+        hold.mockRestore();
+        gate.mockRestore();
+        post.mockRestore();
       }
-      expect(await capturing).toMatchObject({ error: expect.any(Error) });
-      if (failure === 'capture-worker-loss') expect(releaseOrder).toEqual(['hold', 'gate']);
-      else {
-        expect(releaseOrder.at(-1)).toBe('gate');
-        expect(releaseOrder.filter((value) => value === 'gate')).toHaveLength(1);
-        expect(releaseOrder.filter((value) => value === 'hold').length).toBeLessThanOrEqual(1);
+      const reacquired = client.tryPauseForWorkspaceCapture(targetDatabase);
+      expect(reacquired).not.toBeNull();
+      if (failure === 'capture-worker-loss') {
+        await expect(reacquired).resolves.toBeTypeOf('function');
+        (await reacquired!)();
+        await expect(client.checkpoint(targetDatabase)).resolves.toBeDefined();
+      } else {
+        // The original native owner refuses a failed host before installing a new hold.
+        await expect(reacquired).rejects.toMatchObject({
+          code: 'unavailable',
+          commit: 'not-committed',
+        });
+      }
+      const siblingInput = f.input();
+      const afterLoss = createWorkspaceBackup({
+        ...siblingInput,
+        workspaceId: sibling.id,
+        bundleRoot: join(
+          f.dataRoot,
+          'server',
+          'backups',
+          'workspaces',
+          sibling.id,
+          siblingInput.backupId
+        ),
+      });
+      await expect(
+        afterLoss,
+        'A healthy sibling capture must acquire the released request slot.'
+      ).resolves.toMatchObject({ disposition: 'sealed' });
+    },
+    120_000
+  );
+
+  it.each(['cut', 'pool', 'finish', 'cleanup'] as const)(
+    'keeps worker loss at %s truthful without losing source, predecessor or admission ownership',
+    async (phase) => {
+      const f = await fixture();
+      const previousInput = f.input();
+      const previous = await createWorkspaceBackup(previousInput);
+      const previousBytes = tree(previousInput.bundleRoot);
+      const sibling = await f.store.createWorkspace('Capture slot sibling');
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: sibling.id,
+        ownerUserId: f.ownerId,
+      });
+      await f.store.createThread(sibling.id, 'Real native sibling admission');
+      const input = f.input();
+      const beforeSource = tree(f.workspaceRoot);
+      const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      let retrySibling: Parameters<typeof createWorkspaceBackup>[0] | undefined;
+      let capturedWorker: Worker | undefined;
+      const late = phase === 'finish' || phase === 'cleanup';
+      let publishedGeneration: ReturnType<typeof tree> | undefined;
+      let publishedDigest: string | undefined;
+      let publishedDecision: ReturnType<typeof inspectCapture> | undefined;
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      captureWorkerProbe.onPhase = (worker, message) => {
+        if (message.phase !== phase) return false;
+        capturedWorker = worker;
+        enter();
+        return true;
+      };
+      const capturing = createWorkspaceBackup(input).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+      try {
+        await Promise.race([
+          entered,
+          capturing.then(() => {
+            throw new Error('Capture did not reach the selected real worker boundary.');
+          }),
+        ]);
+        expect(capturedWorker).toBeDefined();
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(phase === 'cut');
+        if (phase === 'cut') {
+          const siblingInput = f.input();
+          retrySibling = {
+            ...siblingInput,
+            workspaceId: sibling.id,
+            bundleRoot: join(
+              f.dataRoot,
+              'server',
+              'backups',
+              'workspaces',
+              sibling.id,
+              siblingInput.backupId
+            ),
+          };
+          const siblingCapture = createWorkspaceBackup(retrySibling).then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error })
+          );
+          const ack = getControlStoreWorkerClient().checkpoint(
+            `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
+          );
+          expect(
+            await Promise.race([
+              siblingCapture,
+              ack.then(() => ({ waitingForOccupiedCapture: true })),
+            ])
+          ).toMatchObject({ error: { code: 'capacity-exceeded' } });
+          await expect(ack).resolves.toBeDefined();
+          expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
+          expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+          const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
+          try {
+            expect(inspectCapture(siblingDb, sibling.id, siblingInput.backupId)).toBeNull();
+          } finally {
+            siblingDb.sqlite.close();
+          }
+          expect(
+            existsSync(
+              join(
+                f.dataRoot,
+                'server',
+                'backups',
+                'workspaces',
+                sibling.id,
+                siblingInput.backupId,
+                'seal.json'
+              )
+            )
+          ).toBe(false);
+        }
+        if (late) {
+          const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
+            backupId: string;
+            manifestDigest: string;
+          };
+          expect(seal.backupId).toBe(input.backupId);
+          publishedDigest = seal.manifestDigest;
+          expect(publishedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+          publishedGeneration = tree(input.bundleRoot);
+          const db = openWorkspaceDb(f.dataRoot, workspaceId);
+          try {
+            publishedDecision = inspectCapture(db, workspaceId, input.backupId);
+            expect(publishedDecision).toMatchObject({
+              state: phase === 'cleanup' ? 'finished' : 'active',
+            });
+          } finally {
+            db.sqlite.close();
+          }
+          await expect(
+            getControlStoreWorkerClient().checkpoint(
+              `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
+            )
+          ).resolves.toBeDefined();
+          expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
+        }
+        await capturedWorker!.terminate();
+        expect(await capturing).toMatchObject({ error: expect.any(Error) });
+      } finally {
+        captureWorkerProbe.onPhase = undefined;
+        if (capturedWorker && capturedWorker.threadId !== -1) await capturedWorker.terminate();
+        await capturing;
+      }
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(late);
+      if (late) {
+        expect(tree(input.bundleRoot)).toEqual(publishedGeneration);
+        await f.read(input.backupId, async (bundle) =>
+          expect(bundle.manifestDigest).toBe(publishedDigest)
+        );
+      }
+      expect(tree(previousInput.bundleRoot)).toEqual(previousBytes);
+      const afterSource = tree(f.workspaceRoot);
+      for (const path of [
+        '/db/workspace.sqlite',
+        '/db/workspace.sqlite-wal',
+        '/db/workspace.sqlite-shm',
+      ]) {
+        delete beforeSource[path];
+        delete afterSource[path];
+      }
+      expect(afterSource).toEqual(beforeSource);
+      const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+        const capture = row as { capture_id: string; workspace_id: string };
+        return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+      });
+      expect(afterRows).toEqual(beforeRows);
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      try {
+        const retained = inspectCapture(db, workspaceId, input.backupId);
+        expect(retained).toMatchObject({
+          state: phase === 'cleanup' ? 'finished' : 'active',
+        });
+        if (late) expect(retained).toEqual(publishedDecision);
+      } finally {
+        db.sqlite.close();
       }
       expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-    } finally {
-      captureWorkerProbe.onPhase = undefined;
-      if (!nativeFailed) forwardAck?.();
-      captureWorkerProbe.onNativeMessage = undefined;
-      await pendingAck;
-      await capturing;
-      hold.mockRestore();
-      gate.mockRestore();
-      post.mockRestore();
-    }
-    const reacquired = client.tryPauseForWorkspaceCapture(targetDatabase);
-    expect(reacquired).not.toBeNull();
-    if (failure === 'capture-worker-loss') {
-      await expect(reacquired).resolves.toBeTypeOf('function');
-      (await reacquired!)();
-      await expect(client.checkpoint(targetDatabase)).resolves.toBeDefined();
-    } else {
-      // The original native owner refuses a failed host before installing a new hold.
-      await expect(reacquired).rejects.toMatchObject({
-        code: 'unavailable',
-        commit: 'not-committed',
-      });
-    }
-    const siblingInput = f.input();
-    const afterLoss = createWorkspaceBackup({
-      ...siblingInput,
-      workspaceId: sibling.id,
-      bundleRoot: join(
-        f.dataRoot,
-        'server',
-        'backups',
-        'workspaces',
-        sibling.id,
-        siblingInput.backupId
-      ),
-    });
-    await expect(
-      afterLoss,
-      'A healthy sibling capture must acquire the released request slot.'
-    ).resolves.toMatchObject({ disposition: 'sealed' });
-  }, 120_000);
-
-  it.each([
-    'cut',
-    'pool',
-    'finish',
-    'cleanup',
-  ] as const)('keeps worker loss at %s truthful without losing source, predecessor or admission ownership', async (phase) => {
-    const f = await fixture();
-    const previousInput = f.input();
-    const previous = await createWorkspaceBackup(previousInput);
-    const previousBytes = tree(previousInput.bundleRoot);
-    const sibling = await f.store.createWorkspace('Capture slot sibling');
-    recordWorkspaceOwnerMembership({
-      coreDb: f.coreDb,
-      workspaceId: sibling.id,
-      ownerUserId: f.ownerId,
-    });
-    await f.store.createThread(sibling.id, 'Real native sibling admission');
-    const input = f.input();
-    const beforeSource = tree(f.workspaceRoot);
-    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    let retrySibling: Parameters<typeof createWorkspaceBackup>[0] | undefined;
-    let capturedWorker: Worker | undefined;
-    const late = phase === 'finish' || phase === 'cleanup';
-    let publishedGeneration: ReturnType<typeof tree> | undefined;
-    let publishedDigest: string | undefined;
-    let publishedDecision: ReturnType<typeof inspectCapture> | undefined;
-    let enter!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      enter = resolve;
-    });
-    captureWorkerProbe.onPhase = (worker, message) => {
-      if (message.phase !== phase) return false;
-      capturedWorker = worker;
-      enter();
-      return true;
-    };
-    const capturing = createWorkspaceBackup(input).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    try {
-      await Promise.race([
-        entered,
-        capturing.then(() => {
-          throw new Error('Capture did not reach the selected real worker boundary.');
-        }),
-      ]);
-      expect(capturedWorker).toBeDefined();
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(phase === 'cut');
-      if (phase === 'cut') {
+      const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+        `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
+      );
+      expect(hold).not.toBeNull();
+      (await hold!)();
+      await f.read(previous.manifest.backupId, async (bundle) =>
+        expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
+      );
+      if (late) {
         const siblingInput = f.input();
         retrySibling = {
           ...siblingInput,
@@ -3655,136 +3797,13 @@ describe('C-a independent sealed generations', () => {
             siblingInput.backupId
           ),
         };
-        const siblingCapture = createWorkspaceBackup(retrySibling).then(
-          (result) => ({ result }),
-          (error: unknown) => ({ error })
-        );
-        const ack = getControlStoreWorkerClient().checkpoint(
-          `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
-        );
-        expect(
-          await Promise.race([
-            siblingCapture,
-            ack.then(() => ({ waitingForOccupiedCapture: true })),
-          ])
-        ).toMatchObject({ error: { code: 'capacity-exceeded' } });
-        await expect(ack).resolves.toBeDefined();
-        expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-        const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
-        try {
-          expect(inspectCapture(siblingDb, sibling.id, siblingInput.backupId)).toBeNull();
-        } finally {
-          siblingDb.sqlite.close();
-        }
-        expect(
-          existsSync(
-            join(
-              f.dataRoot,
-              'server',
-              'backups',
-              'workspaces',
-              sibling.id,
-              siblingInput.backupId,
-              'seal.json'
-            )
-          )
-        ).toBe(false);
       }
-      if (late) {
-        const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
-          backupId: string;
-          manifestDigest: string;
-        };
-        expect(seal.backupId).toBe(input.backupId);
-        publishedDigest = seal.manifestDigest;
-        expect(publishedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
-        publishedGeneration = tree(input.bundleRoot);
-        const db = openWorkspaceDb(f.dataRoot, workspaceId);
-        try {
-          publishedDecision = inspectCapture(db, workspaceId, input.backupId);
-          expect(publishedDecision).toMatchObject({
-            state: phase === 'cleanup' ? 'finished' : 'active',
-          });
-        } finally {
-          db.sqlite.close();
-        }
-        await expect(
-          getControlStoreWorkerClient().checkpoint(
-            `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
-          )
-        ).resolves.toBeDefined();
-        expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
-      }
-      await capturedWorker!.terminate();
-      expect(await capturing).toMatchObject({ error: expect.any(Error) });
-    } finally {
-      captureWorkerProbe.onPhase = undefined;
-      if (capturedWorker && capturedWorker.threadId !== -1) await capturedWorker.terminate();
-      await capturing;
-    }
-    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(late);
-    if (late) {
-      expect(tree(input.bundleRoot)).toEqual(publishedGeneration);
-      await f.read(input.backupId, async (bundle) =>
-        expect(bundle.manifestDigest).toBe(publishedDigest)
-      );
-    }
-    expect(tree(previousInput.bundleRoot)).toEqual(previousBytes);
-    const afterSource = tree(f.workspaceRoot);
-    for (const path of [
-      '/db/workspace.sqlite',
-      '/db/workspace.sqlite-wal',
-      '/db/workspace.sqlite-shm',
-    ]) {
-      delete beforeSource[path];
-      delete afterSource[path];
-    }
-    expect(afterSource).toEqual(beforeSource);
-    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
-      const capture = row as { capture_id: string; workspace_id: string };
-      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
-    });
-    expect(afterRows).toEqual(beforeRows);
-    const db = openWorkspaceDb(f.dataRoot, workspaceId);
-    try {
-      const retained = inspectCapture(db, workspaceId, input.backupId);
-      expect(retained).toMatchObject({
-        state: phase === 'cleanup' ? 'finished' : 'active',
-      });
-      if (late) expect(retained).toEqual(publishedDecision);
-    } finally {
-      db.sqlite.close();
-    }
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-    const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
-    );
-    expect(hold).not.toBeNull();
-    (await hold!)();
-    await f.read(previous.manifest.backupId, async (bundle) =>
-      expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
-    );
-    if (late) {
-      const siblingInput = f.input();
-      retrySibling = {
-        ...siblingInput,
-        workspaceId: sibling.id,
-        bundleRoot: join(
-          f.dataRoot,
-          'server',
-          'backups',
-          'workspaces',
-          sibling.id,
-          siblingInput.backupId
-        ),
-      };
-    }
-    // Worker death releases the single slot; only this explicit later call retries the refused request.
-    if (retrySibling)
-      expect((await createWorkspaceBackup(retrySibling)).disposition).toBe('sealed');
-  }, 120_000);
+      // Worker death releases the single slot; only this explicit later call retries the refused request.
+      if (retrySibling)
+        expect((await createWorkspaceBackup(retrySibling)).disposition).toBe('sealed');
+    },
+    120_000
+  );
 
   it('takes an independent mutable cut before payload hashing and synchronization leave the freeze', async () => {
     const f = await fixture();
@@ -4307,57 +4326,57 @@ describe('C-a independent sealed generations', () => {
     f.coreDb.sqlite.close();
   });
 
-  it.each([
-    'missing',
-    'corrupt',
-    'linked',
-    'substituted',
-  ] as const)('refuses a %s local digest object before invoking its reader', async (fault) => {
-    const f = await fixture();
-    const authoredPath = join(f.workspaceRoot, 'files', 'substitution.bin');
-    if (fault === 'substituted') {
-      mkdirSync(dirname(authoredPath), { recursive: true });
-      writeFileSync(authoredPath, Buffer.alloc(64, 0x41), { mode: 0o600 });
-    }
-    const captured = await createWorkspaceBackup(f.input());
-    const entry =
-      fault === 'substituted'
-        ? captured.manifest.inventory.find((item) => item.path === 'files/substitution.bin')!
-        : captured.manifest.inventory[0]!;
-    const backupRoot = join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId);
-    const object = Object.entries(tree(backupRoot)).find(([, hash]) => hash === entry.sha256)?.[0];
-    expect(object).toBeDefined();
-    const path = join(backupRoot, object!);
-    if (fault === 'substituted') {
-      writeFileSync(authoredPath, Buffer.alloc(64, 0x42));
-      const donor = await createWorkspaceBackup(f.input());
-      expect(donor.disposition).toBe('sealed');
-      const other = donor.manifest.inventory.find((item) => item.path === entry.path)!;
-      expect(other.bytes).toBe(entry.bytes);
-      expect(other.sha256).not.toBe(entry.sha256);
-      const replacement = Object.entries(tree(backupRoot)).find(
-        ([, hash]) => hash === other.sha256
-      )?.[0];
-      expect(replacement).toBeDefined();
-      const mode = lstatSync(path).mode & 0o777;
-      chmodSync(path, 0o600);
-      writeFileSync(path, readFileSync(join(backupRoot, replacement!)));
-      chmodSync(path, mode);
-    } else if (fault === 'corrupt') {
-      chmodSync(path, 0o600);
-      writeFileSync(path, 'Corrupt retained object');
-    } else {
-      rmSync(path);
-      if (fault === 'linked') {
-        const outside = join(f.root, 'replacement-object');
-        writeFileSync(outside, 'Outside substitute');
-        symlinkSync(outside, path);
+  it.each(['missing', 'corrupt', 'linked', 'substituted'] as const)(
+    'refuses a %s local digest object before invoking its reader',
+    async (fault) => {
+      const f = await fixture();
+      const authoredPath = join(f.workspaceRoot, 'files', 'substitution.bin');
+      if (fault === 'substituted') {
+        mkdirSync(dirname(authoredPath), { recursive: true });
+        writeFileSync(authoredPath, Buffer.alloc(64, 0x41), { mode: 0o600 });
       }
+      const captured = await createWorkspaceBackup(f.input());
+      const entry =
+        fault === 'substituted'
+          ? captured.manifest.inventory.find((item) => item.path === 'files/substitution.bin')!
+          : captured.manifest.inventory[0]!;
+      const backupRoot = join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId);
+      const object = Object.entries(tree(backupRoot)).find(
+        ([, hash]) => hash === entry.sha256
+      )?.[0];
+      expect(object).toBeDefined();
+      const path = join(backupRoot, object!);
+      if (fault === 'substituted') {
+        writeFileSync(authoredPath, Buffer.alloc(64, 0x42));
+        const donor = await createWorkspaceBackup(f.input());
+        expect(donor.disposition).toBe('sealed');
+        const other = donor.manifest.inventory.find((item) => item.path === entry.path)!;
+        expect(other.bytes).toBe(entry.bytes);
+        expect(other.sha256).not.toBe(entry.sha256);
+        const replacement = Object.entries(tree(backupRoot)).find(
+          ([, hash]) => hash === other.sha256
+        )?.[0];
+        expect(replacement).toBeDefined();
+        const mode = lstatSync(path).mode & 0o777;
+        chmodSync(path, 0o600);
+        writeFileSync(path, readFileSync(join(backupRoot, replacement!)));
+        chmodSync(path, mode);
+      } else if (fault === 'corrupt') {
+        chmodSync(path, 0o600);
+        writeFileSync(path, 'Corrupt retained object');
+      } else {
+        rmSync(path);
+        if (fault === 'linked') {
+          const outside = join(f.root, 'replacement-object');
+          writeFileSync(outside, 'Outside substitute');
+          symlinkSync(outside, path);
+        }
+      }
+      const consume = vi.fn(async () => undefined);
+      await expect(f.read(captured.manifest.backupId, consume)).rejects.toThrow();
+      expect(consume).not.toHaveBeenCalled();
     }
-    const consume = vi.fn(async () => undefined);
-    await expect(f.read(captured.manifest.backupId, consume)).rejects.toThrow();
-    expect(consume).not.toHaveBeenCalled();
-  });
+  );
 
   it('replays one capture identity after reopen and refuses changed purpose', async () => {
     const f = await fixture();
@@ -4513,57 +4532,57 @@ describe('C-a independent sealed generations', () => {
     );
   }, 120_000);
 
-  it.each([
-    'authority',
-    'capacity',
-  ] as const)('refuses initial %s before freezing or accepting a capture', async (fault) => {
-    const f = await fixture();
-    const sibling = await f.store.createWorkspace('Preflight refusal sibling');
-    const input = f.input();
-    const before = tree(f.workspaceRoot);
-    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    const freeze = vi.spyOn(f.mutationAdmission, 'tryFreeze');
-    const pending = createWorkspaceBackup({
-      ...input,
-      ...(fault === 'capacity'
-        ? {
-            admission: new FileStorageAdmission(
-              f.root,
-              () => 0n,
-              () => 0n
-            ),
-          }
-        : {}),
-      source: {
-        ...input.source,
-        ...(fault === 'authority'
+  it.each(['authority', 'capacity'] as const)(
+    'refuses initial %s before freezing or accepting a capture',
+    async (fault) => {
+      const f = await fixture();
+      const sibling = await f.store.createWorkspace('Preflight refusal sibling');
+      const input = f.input();
+      const before = tree(f.workspaceRoot);
+      const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      const freeze = vi.spyOn(f.mutationAdmission, 'tryFreeze');
+      const pending = createWorkspaceBackup({
+        ...input,
+        ...(fault === 'capacity'
           ? {
-              currentAuthority: () => {
-                throw new Error('Initial current authority denied.');
-              },
+              admission: new FileStorageAdmission(
+                f.root,
+                () => 0n,
+                () => 0n
+              ),
             }
           : {}),
-      },
-    });
-    if (fault === 'authority')
-      await expect(pending).rejects.toThrow('Initial current authority denied.');
-    else await expect(pending).rejects.toMatchObject({ code: 'capacity-exceeded' });
-    expect(freeze).not.toHaveBeenCalled();
-    expect(tree(f.workspaceRoot)).toEqual(before);
-    expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
-    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-    const db = openWorkspaceDb(f.dataRoot, workspaceId);
-    try {
-      expect(inspectCapture(db, workspaceId, input.backupId)).toBeNull();
-    } finally {
-      db.sqlite.close();
+        source: {
+          ...input.source,
+          ...(fault === 'authority'
+            ? {
+                currentAuthority: () => {
+                  throw new Error('Initial current authority denied.');
+                },
+              }
+            : {}),
+        },
+      });
+      if (fault === 'authority')
+        await expect(pending).rejects.toThrow('Initial current authority denied.');
+      else await expect(pending).rejects.toMatchObject({ code: 'capacity-exceeded' });
+      expect(freeze).not.toHaveBeenCalled();
+      expect(tree(f.workspaceRoot)).toEqual(before);
+      expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      try {
+        expect(inspectCapture(db, workspaceId, input.backupId)).toBeNull();
+      } finally {
+        db.sqlite.close();
+      }
+      expect((await f.store.createThread(sibling.id, 'Sibling remains admitted')).owner).toEqual({
+        kind: 'workspace',
+        workspaceId: sibling.id,
+      });
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
     }
-    expect((await f.store.createThread(sibling.id, 'Sibling remains admitted')).owner).toEqual({
-      kind: 'workspace',
-      workspaceId: sibling.id,
-    });
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-  });
+  );
 
   it('rechecks current authority after awaited database preparation before sealing', async () => {
     const f = await fixture();
@@ -4754,111 +4773,114 @@ describe('C-a independent sealed generations', () => {
     );
   });
 
-  it.each([
-    'before-commit',
-    'lost-ack',
-  ] as const)('preserves truthful manual completion and the predecessor at %s after seal publication', async (cut) => {
-    const f = await fixture();
-    const previous = await createWorkspaceBackup(f.input());
-    const input = f.input();
-    const beforeSource = tree(f.workspaceRoot);
-    const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    let calls = 0;
-    let publishedDigest: string | undefined;
-    const completion = captureRecordBoundary(input.backupId, 'finish', cut, (message) => {
-      calls += 1;
-      expect(message.workspaceId).toBe(workspaceId);
-      expect(message.captureId).toBe(input.backupId);
-      const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
-        backupId: string;
-        manifestDigest: string;
-      };
-      expect(seal.backupId).toBe(input.backupId);
-      publishedDigest = seal.manifestDigest;
-      if (cut === 'lost-ack') {
-        const db = openWorkspaceDb(f.dataRoot, workspaceId);
-        try {
-          expect(inspectCapture(db, workspaceId, input.backupId)?.state).toBe('finished');
-        } finally {
-          db.sqlite.close();
+  it.each(['before-commit', 'lost-ack'] as const)(
+    'preserves truthful manual completion and the predecessor at %s after seal publication',
+    async (cut) => {
+      const f = await fixture();
+      const previous = await createWorkspaceBackup(f.input());
+      const input = f.input();
+      const beforeSource = tree(f.workspaceRoot);
+      const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      let calls = 0;
+      let publishedDigest: string | undefined;
+      const completion = captureRecordBoundary(input.backupId, 'finish', cut, (message) => {
+        calls += 1;
+        expect(message.workspaceId).toBe(workspaceId);
+        expect(message.captureId).toBe(input.backupId);
+        const seal = JSON.parse(readFileSync(join(input.bundleRoot, 'seal.json'), 'utf8')) as {
+          backupId: string;
+          manifestDigest: string;
+        };
+        expect(seal.backupId).toBe(input.backupId);
+        publishedDigest = seal.manifestDigest;
+        if (cut === 'lost-ack') {
+          const db = openWorkspaceDb(f.dataRoot, workspaceId);
+          try {
+            expect(inspectCapture(db, workspaceId, input.backupId)?.state).toBe('finished');
+          } finally {
+            db.sqlite.close();
+          }
         }
-      }
-    });
-    try {
-      await expect(createWorkspaceBackup(input)).rejects.toThrow();
-    } finally {
-      completion.mockRestore();
-    }
-    expect(calls).toBe(1);
-    expect(publishedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
-    const afterSource = tree(f.workspaceRoot);
-    for (const path of [
-      '/db/workspace.sqlite',
-      '/db/workspace.sqlite-wal',
-      '/db/workspace.sqlite-shm',
-    ]) {
-      delete beforeSource[path];
-      delete afterSource[path];
-    }
-    expect(afterSource).toEqual(beforeSource);
-    const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
-      const capture = row as { capture_id: string; workspace_id: string };
-      return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
-    });
-    expect(afterRows).toEqual(beforeRows);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-    const held = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-      `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
-    );
-    expect(held).not.toBeNull();
-    const release = await held!;
-    release();
-    release();
-    await shutdownControlStoreWorkerClient();
-    const reopenedCore = openCoreDb(f.dataRoot);
-    databaseHandles.push(reopenedCore);
-    const reopenedStore = new FsStore({ dataRoot: f.dataRoot });
-    const reopenedInput = {
-      ...input,
-      source: { ...input.source, coreDb: reopenedCore, store: reopenedStore },
-    };
-    const db = openWorkspaceDb(f.dataRoot, workspaceId);
-    try {
-      const retained = inspectCapture(db, workspaceId, input.backupId);
-      expect(retained).toMatchObject({
-        captureId: input.backupId,
-        workspaceId,
-        state: cut === 'lost-ack' ? 'finished' : 'active',
       });
-      await f.read(previous.manifest.backupId, async (bundle) =>
-        expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
-      );
-      if (cut === 'lost-ack') {
-        await f.read(input.backupId, async (bundle) =>
-          expect(bundle.manifestDigest).toBe(publishedDigest)
-        );
-        const before = tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId));
-        const replay = await createWorkspaceBackup(reopenedInput);
-        expect(replay.disposition).toBe('sealed');
-        expect(replay.report.manifestDigest).toBe(publishedDigest);
-        expect(tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId))).toEqual(
-          before
-        );
-      } else {
-        // Manual ownership requires explicit recovery; retry is not permission to synthesize its finish.
-        await expect(createWorkspaceBackup(reopenedInput)).rejects.toThrow();
-        expect(readBlockers({ coreDb: reopenedCore, store: reopenedStore, workspaceId })).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ kind: 'snapshot', reference: { backupId: input.backupId } }),
-          ])
-        );
+      try {
+        await expect(createWorkspaceBackup(input)).rejects.toThrow();
+      } finally {
+        completion.mockRestore();
       }
-      expect(inspectCapture(db, workspaceId, input.backupId)).toEqual(retained);
-    } finally {
-      db.sqlite.close();
+      expect(calls).toBe(1);
+      expect(publishedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+      const afterSource = tree(f.workspaceRoot);
+      for (const path of [
+        '/db/workspace.sqlite',
+        '/db/workspace.sqlite-wal',
+        '/db/workspace.sqlite-shm',
+      ]) {
+        delete beforeSource[path];
+        delete afterSource[path];
+      }
+      expect(afterSource).toEqual(beforeSource);
+      const afterRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
+      afterRows.workspace_capture_records = afterRows.workspace_capture_records!.filter((row) => {
+        const capture = row as { capture_id: string; workspace_id: string };
+        return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
+      });
+      expect(afterRows).toEqual(beforeRows);
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      const held = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+        `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
+      );
+      expect(held).not.toBeNull();
+      const release = await held!;
+      release();
+      release();
+      await shutdownControlStoreWorkerClient();
+      const reopenedCore = openCoreDb(f.dataRoot);
+      databaseHandles.push(reopenedCore);
+      const reopenedStore = new FsStore({ dataRoot: f.dataRoot });
+      const reopenedInput = {
+        ...input,
+        source: { ...input.source, coreDb: reopenedCore, store: reopenedStore },
+      };
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      try {
+        const retained = inspectCapture(db, workspaceId, input.backupId);
+        expect(retained).toMatchObject({
+          captureId: input.backupId,
+          workspaceId,
+          state: cut === 'lost-ack' ? 'finished' : 'active',
+        });
+        await f.read(previous.manifest.backupId, async (bundle) =>
+          expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
+        );
+        if (cut === 'lost-ack') {
+          await f.read(input.backupId, async (bundle) =>
+            expect(bundle.manifestDigest).toBe(publishedDigest)
+          );
+          const before = tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId));
+          const replay = await createWorkspaceBackup(reopenedInput);
+          expect(replay.disposition).toBe('sealed');
+          expect(replay.report.manifestDigest).toBe(publishedDigest);
+          expect(tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId))).toEqual(
+            before
+          );
+        } else {
+          // Manual ownership requires explicit recovery; retry is not permission to synthesize its finish.
+          await expect(createWorkspaceBackup(reopenedInput)).rejects.toThrow();
+          expect(readBlockers({ coreDb: reopenedCore, store: reopenedStore, workspaceId })).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                kind: 'snapshot',
+                reference: { backupId: input.backupId },
+              }),
+            ])
+          );
+        }
+        expect(inspectCapture(db, workspaceId, input.backupId)).toEqual(retained);
+      } finally {
+        db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('excludes a real mutable Notebook publication during capture and preserves its selected head', async () => {
     const f = await fixture();

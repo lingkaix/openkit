@@ -600,58 +600,61 @@ describe('public durable logical Gateway lineage', () => {
   it.each([
     { requestedEffort: 'medium', effectiveEffort: 'high' },
     { requestedEffort: 'medium', effectiveEffortReason: 'model_without_reasoning' },
-  ])('audit.read projects route explanation without Provider identity, effort facts or raw extensions: %j', async (effortFacts) => {
-    const f = await fixture();
-    f.primary.setResponses([fauxAssistantMessage('served')]);
-    try {
-      expect((await f.post('responses')).status).toBe(200);
-      const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
+  ])(
+    'audit.read projects route explanation without Provider identity, effort facts or raw extensions: %j',
+    async (effortFacts) => {
+      const f = await fixture();
+      f.primary.setResponses([fauxAssistantMessage('served')]);
       try {
-        const row = db.sqlite.prepare('SELECT extensions_json FROM capability_calls').get() as {
-          extensions_json: string;
-        };
-        const extensions = JSON.parse(row.extensions_json);
-        Object.assign(extensions['openkit.gateway/routeLineage'].entries[0], effortFacts);
-        db.sqlite.prepare('UPDATE capability_calls SET extensions_json = ?').run(
-          JSON.stringify({
-            ...extensions,
-            'future.example/evidence': { label: 'canonical-only-marker' },
-          })
+        expect((await f.post('responses')).status).toBe(200);
+        const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
+        try {
+          const row = db.sqlite.prepare('SELECT extensions_json FROM capability_calls').get() as {
+            extensions_json: string;
+          };
+          const extensions = JSON.parse(row.extensions_json);
+          Object.assign(extensions['openkit.gateway/routeLineage'].entries[0], effortFacts);
+          db.sqlite.prepare('UPDATE capability_calls SET extensions_json = ?').run(
+            JSON.stringify({
+              ...extensions,
+              'future.example/evidence': { label: 'canonical-only-marker' },
+            })
+          );
+        } finally {
+          db.sqlite.close();
+        }
+        expect(
+          f.read().calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries[0]
+        ).toMatchObject(effortFacts);
+        const response = await f.app.request(
+          ...operationRequest('usage.read', { workspaceId: f.workspaceId }, {})
         );
+        expect(response.status, await response.clone().text()).toBe(200);
+        const projection = await response.json();
+        expect(projection.capabilityCalls[0]?.routeLineage).toMatchObject({
+          logicalModelId: 'tier',
+          entries: [{ kind: 'attempt', routeMemberId: 'primary', released: true }],
+        });
+        expect(projection.capabilityCalls[0]).not.toHaveProperty('extensions');
+        expect(JSON.stringify(projection)).not.toContain('future.example/evidence');
+        expect(JSON.stringify(projection)).not.toContain('canonical-only-marker');
+        const serialized = JSON.stringify(projection.capabilityCalls[0]?.routeLineage);
+        for (const forbidden of [
+          'providerProfileId',
+          'providerModel',
+          'accountSlotId',
+          'usageRecordIds',
+          'invalid_api_key',
+          'requestedEffort',
+          'effectiveEffort',
+          'effectiveEffortReason',
+        ])
+          expect(serialized).not.toContain(forbidden);
       } finally {
-        db.sqlite.close();
+        await f.close();
       }
-      expect(
-        f.read().calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries[0]
-      ).toMatchObject(effortFacts);
-      const response = await f.app.request(
-        ...operationRequest('usage.read', { workspaceId: f.workspaceId }, {})
-      );
-      expect(response.status, await response.clone().text()).toBe(200);
-      const projection = await response.json();
-      expect(projection.capabilityCalls[0]?.routeLineage).toMatchObject({
-        logicalModelId: 'tier',
-        entries: [{ kind: 'attempt', routeMemberId: 'primary', released: true }],
-      });
-      expect(projection.capabilityCalls[0]).not.toHaveProperty('extensions');
-      expect(JSON.stringify(projection)).not.toContain('future.example/evidence');
-      expect(JSON.stringify(projection)).not.toContain('canonical-only-marker');
-      const serialized = JSON.stringify(projection.capabilityCalls[0]?.routeLineage);
-      for (const forbidden of [
-        'providerProfileId',
-        'providerModel',
-        'accountSlotId',
-        'usageRecordIds',
-        'invalid_api_key',
-        'requestedEffort',
-        'effectiveEffort',
-        'effectiveEffortReason',
-      ])
-        expect(serialized).not.toContain(forbidden);
-    } finally {
-      await f.close();
     }
-  });
+  );
   it('usage.read omits another user private Thread for a readonly member while preserving administrator eligibility', async () => {
     const f = await fixture();
     const memberApp = createApp({

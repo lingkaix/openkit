@@ -724,61 +724,29 @@ describe('Thread-local Turn admission and capture', () => {
     });
   });
 
-  it.each([
-    'completed',
-    'failed',
-  ] as const)('keeps a sibling running when one Thread reaches %s and closes', async (status) => {
-    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    const sessions = [fixtureId('as', 'sibling-a'), fixtureId('as', 'sibling-b')];
-    try {
-      for (const id of sessions)
-        expect(await f.open(id, { threadId: fixtureId('th', id) })).toMatchObject({
-          disposition: 'succeeded',
-        });
-      f.fake.script.push({ kind: 'hold' }, { kind: status === 'failed' ? 'fail' : 'hold' });
-      for (const id of sessions) {
-        f.writePackage(id, fixtureId('tu', `turn-${id}`), { threadId: fixtureId('th', id) });
-        expect(
-          await f.send('turn.start', {
-            ...f.startBody(id, fixtureId('tu', `turn-${id}`)),
-            threadId: fixtureId('th', id),
-          })
-        ).toMatchObject({ disposition: 'succeeded' });
-      }
-      if (status === 'completed') f.fake.residents[1]!.finish();
-      await f.settle(fixtureId('as', 'sibling-b'));
-      const sealed = readFileSync(
-        join(
-          f.capturePath(
-            fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`),
-            fixtureId('th', fixtureId('as', 'sibling-b'))
-          ),
-          'events.jsonl'
-        )
-      );
-      expect(f.integration.finalStatuses).toMatchObject([
-        {
-          body: { status },
-          lineage: { turnId: fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`) },
-        },
-      ]);
-      expect(await f.send('session.close', f.selector(fixtureId('as', 'sibling-b')))).toMatchObject(
-        {
-          disposition: 'succeeded',
+  it.each(['completed', 'failed'] as const)(
+    'keeps a sibling running when one Thread reaches %s and closes',
+    async (status) => {
+      const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+      const sessions = [fixtureId('as', 'sibling-a'), fixtureId('as', 'sibling-b')];
+      try {
+        for (const id of sessions)
+          expect(await f.open(id, { threadId: fixtureId('th', id) })).toMatchObject({
+            disposition: 'succeeded',
+          });
+        f.fake.script.push({ kind: 'hold' }, { kind: status === 'failed' ? 'fail' : 'hold' });
+        for (const id of sessions) {
+          f.writePackage(id, fixtureId('tu', `turn-${id}`), { threadId: fixtureId('th', id) });
+          expect(
+            await f.send('turn.start', {
+              ...f.startBody(id, fixtureId('tu', `turn-${id}`)),
+              threadId: fixtureId('th', id),
+            })
+          ).toMatchObject({ disposition: 'succeeded' });
         }
-      );
-      expect(
-        await f.send('session.inspect', f.selector(fixtureId('as', 'sibling-a')))
-      ).toMatchObject({
-        body: { state: 'active', cleanupState: 'clean' },
-      });
-      expect(f.fake.residents[0]!.closed).toBe(false);
-      expect(f.fake.residents[0]!.interrupts).toBe(0);
-      expect(f.integration.calls).not.toContain(`clear:${fixtureId('as', 'sibling-a')}`);
-      f.fake.residents[0]!.finish();
-      await f.settle(fixtureId('as', 'sibling-a'));
-      expect(
-        readFileSync(
+        if (status === 'completed') f.fake.residents[1]!.finish();
+        await f.settle(fixtureId('as', 'sibling-b'));
+        const sealed = readFileSync(
           join(
             f.capturePath(
               fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`),
@@ -786,34 +754,66 @@ describe('Thread-local Turn admission and capture', () => {
             ),
             'events.jsonl'
           )
-        )
-      ).toEqual(sealed);
-      const first = readFileSync(
-        join(
-          f.capturePath(
-            fixtureId('tu', `turn-${fixtureId('as', 'sibling-a')}`),
-            fixtureId('th', fixtureId('as', 'sibling-a'))
-          ),
-          'events.jsonl'
-        ),
-        'utf8'
-      );
-      expect(first).not.toContain(fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`));
-      expect(sealed.toString('utf8')).not.toContain(
-        fixtureId('tu', `turn-${fixtureId('as', 'sibling-a')}`)
-      );
-    } finally {
-      for (const id of sessions) {
-        await f.send('turn.interrupt', {
-          ...f.selector(id),
-          turnId: fixtureId('tu', `turn-${id}`),
-          leaseId: `lease-${fixtureId('tu', `turn-${id}`)}`,
-          purpose: 'interrupt',
+        );
+        expect(f.integration.finalStatuses).toMatchObject([
+          {
+            body: { status },
+            lineage: { turnId: fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`) },
+          },
+        ]);
+        expect(
+          await f.send('session.close', f.selector(fixtureId('as', 'sibling-b')))
+        ).toMatchObject({
+          disposition: 'succeeded',
         });
-        await f.send('session.close', f.selector(id));
+        expect(
+          await f.send('session.inspect', f.selector(fixtureId('as', 'sibling-a')))
+        ).toMatchObject({
+          body: { state: 'active', cleanupState: 'clean' },
+        });
+        expect(f.fake.residents[0]!.closed).toBe(false);
+        expect(f.fake.residents[0]!.interrupts).toBe(0);
+        expect(f.integration.calls).not.toContain(`clear:${fixtureId('as', 'sibling-a')}`);
+        f.fake.residents[0]!.finish();
+        await f.settle(fixtureId('as', 'sibling-a'));
+        expect(
+          readFileSync(
+            join(
+              f.capturePath(
+                fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`),
+                fixtureId('th', fixtureId('as', 'sibling-b'))
+              ),
+              'events.jsonl'
+            )
+          )
+        ).toEqual(sealed);
+        const first = readFileSync(
+          join(
+            f.capturePath(
+              fixtureId('tu', `turn-${fixtureId('as', 'sibling-a')}`),
+              fixtureId('th', fixtureId('as', 'sibling-a'))
+            ),
+            'events.jsonl'
+          ),
+          'utf8'
+        );
+        expect(first).not.toContain(fixtureId('tu', `turn-${fixtureId('as', 'sibling-b')}`));
+        expect(sealed.toString('utf8')).not.toContain(
+          fixtureId('tu', `turn-${fixtureId('as', 'sibling-a')}`)
+        );
+      } finally {
+        for (const id of sessions) {
+          await f.send('turn.interrupt', {
+            ...f.selector(id),
+            turnId: fixtureId('tu', `turn-${id}`),
+            leaseId: `lease-${fixtureId('tu', `turn-${id}`)}`,
+            purpose: 'interrupt',
+          });
+          await f.send('session.close', f.selector(id));
+        }
       }
     }
-  });
+  );
 
   it('reserves the configured bound before asynchronous preparation and releases only the named Turn', async () => {
     const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
@@ -1073,65 +1073,62 @@ describe('session.open workspace initialization', () => {
     expect(readdirSync(path)).toEqual([]);
     expect(fixture.fake.residents).toHaveLength(1);
   });
-  it.each([
-    'scope',
-    'root',
-    'slots',
-    'slot-path',
-    'supply',
-  ])('refuses incompatible initial %s before native open', async (part) => {
-    const fixture = harnessFixture();
-    fixture.writePackage('as_00000000-0000-725f-a6dd-f089e553a939', 'initial');
-    const path = join(
-      fixture.sandboxRoot,
-      'sessions',
-      'as_00000000-0000-725f-a6dd-f089e553a939',
-      'config',
-      'package.json'
-    );
-    const manifest = JSON.parse(readFileSync(path, 'utf8'));
-    if (part === 'scope') manifest.scope.threadId = 'foreign';
-    if (part === 'root') delete manifest.workspace.root;
-    if (part === 'slots') delete manifest.extensions.openkit.sessionWorkspace.layout.slots;
-    if (part === 'slot-path')
-      manifest.extensions.openkit.sessionWorkspace.layout.slots[0].path = 42;
-    if (part === 'supply')
-      manifest.supply = {
-        skills: [
-          {
-            id: 'missing',
-            materialization: {
-              kind: 'filesystem-copy',
-              targetPath: join(fixture.root, 'missing-skill'),
+  it.each(['scope', 'root', 'slots', 'slot-path', 'supply'])(
+    'refuses incompatible initial %s before native open',
+    async (part) => {
+      const fixture = harnessFixture();
+      fixture.writePackage('as_00000000-0000-725f-a6dd-f089e553a939', 'initial');
+      const path = join(
+        fixture.sandboxRoot,
+        'sessions',
+        'as_00000000-0000-725f-a6dd-f089e553a939',
+        'config',
+        'package.json'
+      );
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      if (part === 'scope') manifest.scope.threadId = 'foreign';
+      if (part === 'root') delete manifest.workspace.root;
+      if (part === 'slots') delete manifest.extensions.openkit.sessionWorkspace.layout.slots;
+      if (part === 'slot-path')
+        manifest.extensions.openkit.sessionWorkspace.layout.slots[0].path = 42;
+      if (part === 'supply')
+        manifest.supply = {
+          skills: [
+            {
+              id: 'missing',
+              materialization: {
+                kind: 'filesystem-copy',
+                targetPath: join(fixture.root, 'missing-skill'),
+              },
             },
-          },
-        ],
-      };
-    writeFileSync(path, JSON.stringify(manifest));
-    const invariantError = (
-      {
-        root: 'Initial workspace root is unavailable',
-        slots: 'Initial workspace slots are unavailable',
-        'slot-path': 'Initial workspace slot is invalid',
-      } as Record<string, string>
-    )[part];
-    if (invariantError)
-      await expect(
-        initializeSessionWorkspace(
-          path,
-          join(fixture.sandboxRoot, 'sessions', 'as_00000000-0000-725f-a6dd-f089e553a939'),
-          {
-            agentSessionId: 'as_00000000-0000-725f-a6dd-f089e553a939',
-            threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
-            workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
-          }
-        )
-      ).rejects.toThrow(invariantError);
-    const result = await fixture.open('as_00000000-0000-725f-a6dd-f089e553a939');
-    expect(result.disposition).toBe('refused');
-    expect(result.body).toMatchObject({ startupFailure: { stage: 'workspace_materialization' } });
-    expect(fixture.fake.residents).toHaveLength(0);
-  });
+          ],
+        };
+      writeFileSync(path, JSON.stringify(manifest));
+      const invariantError = (
+        {
+          root: 'Initial workspace root is unavailable',
+          slots: 'Initial workspace slots are unavailable',
+          'slot-path': 'Initial workspace slot is invalid',
+        } as Record<string, string>
+      )[part];
+      if (invariantError)
+        await expect(
+          initializeSessionWorkspace(
+            path,
+            join(fixture.sandboxRoot, 'sessions', 'as_00000000-0000-725f-a6dd-f089e553a939'),
+            {
+              agentSessionId: 'as_00000000-0000-725f-a6dd-f089e553a939',
+              threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+              workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+            }
+          )
+        ).rejects.toThrow(invariantError);
+      const result = await fixture.open('as_00000000-0000-725f-a6dd-f089e553a939');
+      expect(result.disposition).toBe('refused');
+      expect(result.body).toMatchObject({ startupFailure: { stage: 'workspace_materialization' } });
+      expect(fixture.fake.residents).toHaveLength(0);
+    }
+  );
   it('returns a workspace materialization fetch refusal before native open', async () => {
     const fixture = harnessFixture();
     fixture.writePackage('as_00000000-0000-77a5-af82-67954d86486f', 'initial');
@@ -1331,64 +1328,64 @@ describe('Worker Harness loop', () => {
     ]);
   });
 
-  it.each([
-    'collected',
-    'text',
-  ] as const)('refuses an abandoned %s command without parsing or handling it', async (phase) => {
-    const clock = controlSchedulingTime();
-    const controller = new AbortController();
-    const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
-    let requestSignal: AbortSignal;
-    /** Resolves on the actual exchange abort, even when the transport supplies a complete body. */
-    const abandoned = () =>
-      new Promise<void>((resolve) =>
-        requestSignal.addEventListener('abort', () => resolve(), { once: true })
-      );
-    const text = vi.fn(async () => {
-      if (phase === 'text') await abandoned();
-      return JSON.stringify({
-        ...command('harness.drain', 0, {}),
-        harnessInstanceId: 'harness-one',
+  it.each(['collected', 'text'] as const)(
+    'refuses an abandoned %s command without parsing or handling it',
+    async (phase) => {
+      const clock = controlSchedulingTime();
+      const controller = new AbortController();
+      const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
+      let requestSignal: AbortSignal;
+      /** Resolves on the actual exchange abort, even when the transport supplies a complete body. */
+      const abandoned = () =>
+        new Promise<void>((resolve) =>
+          requestSignal.addEventListener('abort', () => resolve(), { once: true })
+        );
+      const text = vi.fn(async () => {
+        if (phase === 'text') await abandoned();
+        return JSON.stringify({
+          ...command('harness.drain', 0, {}),
+          harnessInstanceId: 'harness-one',
+        });
       });
-    });
-    const requests: Array<{
-      path: string;
-      body: string;
-      method: string;
-      headers: Record<string, string>;
-    }> = [];
-    loopFixture.client = {
-      ready: Promise.resolve(),
-      close: async () => undefined,
-      harnessControlFetch: async (path, init) => {
-        requests.push({ path, body: init.body, method: init.method, headers: init.headers });
-        if (requests.length !== 1) return { ok: false, status: 404, text: async () => '' };
-        requestSignal = init.signal!;
-        if (phase === 'collected') await abandoned();
-        return { ok: true, status: 200, text };
-      },
-    } as SandboxIntegrationClient;
-    const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
-    try {
-      // Both response phases share the original allowance; expiry still abandons collected bytes.
-      await clock.advance(300_000);
-      await clock.advance(250);
-      expect(await run).toBeInstanceOf(Error);
-    } finally {
-      controller.abort(new Error('fixture-complete'));
-      await run;
-      clock.restore();
+      const requests: Array<{
+        path: string;
+        body: string;
+        method: string;
+        headers: Record<string, string>;
+      }> = [];
+      loopFixture.client = {
+        ready: Promise.resolve(),
+        close: async () => undefined,
+        harnessControlFetch: async (path, init) => {
+          requests.push({ path, body: init.body, method: init.method, headers: init.headers });
+          if (requests.length !== 1) return { ok: false, status: 404, text: async () => '' };
+          requestSignal = init.signal!;
+          if (phase === 'collected') await abandoned();
+          return { ok: true, status: 200, text };
+        },
+      } as SandboxIntegrationClient;
+      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      try {
+        // Both response phases share the original allowance; expiry still abandons collected bytes.
+        await clock.advance(300_000);
+        await clock.advance(250);
+        expect(await run).toBeInstanceOf(Error);
+      } finally {
+        controller.abort(new Error('fixture-complete'));
+        await run;
+        clock.restore();
+      }
+      expect(handle).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toEqual({
+        path: '/worker-control/harness/poll',
+        body: '{"schemaVersion":2,"harnesses":[]}',
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      });
+      if (phase === 'collected') expect(text).not.toHaveBeenCalled();
     }
-    expect(handle).not.toHaveBeenCalled();
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toEqual({
-      path: '/worker-control/harness/poll',
-      body: '{"schemaVersion":2,"harnesses":[]}',
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-    });
-    if (phase === 'collected') expect(text).not.toHaveBeenCalled();
-  });
+  );
 
   it('retries a retryable poll and resends the identical result after a retryable refusal', async () => {
     const controller = new AbortController();
@@ -1435,71 +1432,71 @@ describe('Worker Harness loop', () => {
     });
   });
 
-  it.each([
-    'poll',
-    'result',
-  ] as const)('collects a slow %s body beyond one second within the original allowance', async (phase) => {
-    const clock = controlSchedulingTime();
-    const controller = new AbortController();
-    const bodyEntered = observation();
-    const releaseBody = observation();
-    const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
-    const selected = {
-      ...command(
-        'turn.start',
-        0,
-        harnessFixture().startBody(fixtureId('as', 'slow-body'), fixtureId('tu', 'slow-body'))
-      ),
-      harnessInstanceId: 'harness-one',
-      // A descriptive envelope extension increases DATA size without changing the command.
-      note: 'x'.repeat(128 * 1024),
-    };
-    const wire = JSON.stringify(selected);
-    let pollCount = 0;
-    let resultCount = 0;
-    let bodySignal: AbortSignal | undefined;
-    loopFixture.client = {
-      ready: Promise.resolve(),
-      close: async () => undefined,
-      harnessControlFetch: async (path, init) => {
-        const isPoll = path.endsWith('/poll');
-        if (isPoll && ++pollCount > 1) return { ok: false, status: 404, text: async () => '' };
-        if (!isPoll) resultCount += 1;
-        const slow = phase === (isPoll ? 'poll' : 'result');
-        return {
-          ok: true,
-          status: isPoll ? 200 : 204,
-          text: async () => {
-            if (slow) {
-              bodySignal = init.signal;
-              bodyEntered.resolve();
-              await releaseBody.promise;
-            }
-            return isPoll ? wire : '';
-          },
-        };
-      },
-    } as SandboxIntegrationClient;
-    const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
-    try {
-      await bodyEntered.promise;
-      await clock.advance(1_250);
-      expect(
-        bodySignal?.aborted,
-        'body collection must retain the original request allowance'
-      ).toBe(false);
-      releaseBody.resolve();
-      expect(await run).toBeInstanceOf(Error);
-      expect(handle).toHaveBeenCalledTimes(1);
-      expect(resultCount).toBe(1);
-      expect(pollCount).toBe(2);
-    } finally {
-      controller.abort(new Error('fixture-complete'));
-      releaseBody.resolve();
-      await run;
-      clock.restore();
+  it.each(['poll', 'result'] as const)(
+    'collects a slow %s body beyond one second within the original allowance',
+    async (phase) => {
+      const clock = controlSchedulingTime();
+      const controller = new AbortController();
+      const bodyEntered = observation();
+      const releaseBody = observation();
+      const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
+      const selected = {
+        ...command(
+          'turn.start',
+          0,
+          harnessFixture().startBody(fixtureId('as', 'slow-body'), fixtureId('tu', 'slow-body'))
+        ),
+        harnessInstanceId: 'harness-one',
+        // A descriptive envelope extension increases DATA size without changing the command.
+        note: 'x'.repeat(128 * 1024),
+      };
+      const wire = JSON.stringify(selected);
+      let pollCount = 0;
+      let resultCount = 0;
+      let bodySignal: AbortSignal | undefined;
+      loopFixture.client = {
+        ready: Promise.resolve(),
+        close: async () => undefined,
+        harnessControlFetch: async (path, init) => {
+          const isPoll = path.endsWith('/poll');
+          if (isPoll && ++pollCount > 1) return { ok: false, status: 404, text: async () => '' };
+          if (!isPoll) resultCount += 1;
+          const slow = phase === (isPoll ? 'poll' : 'result');
+          return {
+            ok: true,
+            status: isPoll ? 200 : 204,
+            text: async () => {
+              if (slow) {
+                bodySignal = init.signal;
+                bodyEntered.resolve();
+                await releaseBody.promise;
+              }
+              return isPoll ? wire : '';
+            },
+          };
+        },
+      } as SandboxIntegrationClient;
+      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      try {
+        await bodyEntered.promise;
+        await clock.advance(1_250);
+        expect(
+          bodySignal?.aborted,
+          'body collection must retain the original request allowance'
+        ).toBe(false);
+        releaseBody.resolve();
+        expect(await run).toBeInstanceOf(Error);
+        expect(handle).toHaveBeenCalledTimes(1);
+        expect(resultCount).toBe(1);
+        expect(pollCount).toBe(2);
+      } finally {
+        controller.abort(new Error('fixture-complete'));
+        releaseBody.resolve();
+        await run;
+        clock.restore();
+      }
     }
-  });
+  );
 
   it('reports live nextSequence only after result acknowledgement and never polls during execution or result retry', async () => {
     const clock = controlSchedulingTime();
@@ -1613,72 +1610,78 @@ describe('Worker Harness loop', () => {
       },
     };
 
-    it.each([
-      'poll',
-      'result',
-    ] as const)('keeps delayed %s headers alive and preserves immutable serial acknowledgement', async (phase) => {
-      const clock = controlSchedulingTime();
-      const controller = new AbortController();
-      const entered = observation();
-      const releaseHeaders = observation();
-      const retryEntered = observation();
-      const releaseAcknowledgement = observation();
-      const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
-      const polls: unknown[] = [];
-      const results: string[] = [];
-      let requestSignal: AbortSignal | undefined;
-      loopFixture.client = {
-        ready: Promise.resolve(),
-        close: async () => undefined,
-        harnessControlFetch: async (path, init) => {
-          const isPoll = path.endsWith('/poll');
-          if (isPoll) {
-            polls.push(JSON.parse(init.body));
-            if (polls.length > 1) return { ok: false, status: 404, text: async () => '' };
-          } else results.push(init.body);
-          if (phase === (isPoll ? 'poll' : 'result') && (isPoll || results.length === 1)) {
-            requestSignal = init.signal;
-            entered.resolve();
-            await releaseHeaders.promise;
-          }
-          if (isPoll) return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
-          if (results.length === 1) return { ok: false, status: 503, text: async () => '' };
-          retryEntered.resolve();
-          await releaseAcknowledgement.promise;
-          return { ok: true, status: 204, text: async () => '' };
-        },
-      } as SandboxIntegrationClient;
-      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
-      try {
-        await entered.promise;
-        await clock.advance(1_500);
-        expect(requestSignal?.aborted, 'delivery is still inside the original allowance').toBe(
-          false
+    it.each(['poll', 'result'] as const)(
+      'keeps delayed %s headers alive and preserves immutable serial acknowledgement',
+      async (phase) => {
+        const clock = controlSchedulingTime();
+        const controller = new AbortController();
+        const entered = observation();
+        const releaseHeaders = observation();
+        const retryEntered = observation();
+        const releaseAcknowledgement = observation();
+        const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
+        const polls: unknown[] = [];
+        const results: string[] = [];
+        let requestSignal: AbortSignal | undefined;
+        loopFixture.client = {
+          ready: Promise.resolve(),
+          close: async () => undefined,
+          harnessControlFetch: async (path, init) => {
+            const isPoll = path.endsWith('/poll');
+            if (isPoll) {
+              polls.push(JSON.parse(init.body));
+              if (polls.length > 1) return { ok: false, status: 404, text: async () => '' };
+            } else results.push(init.body);
+            if (phase === (isPoll ? 'poll' : 'result') && (isPoll || results.length === 1)) {
+              requestSignal = init.signal;
+              entered.resolve();
+              await releaseHeaders.promise;
+            }
+            if (isPoll)
+              return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
+            if (results.length === 1) return { ok: false, status: 503, text: async () => '' };
+            retryEntered.resolve();
+            await releaseAcknowledgement.promise;
+            return { ok: true, status: 204, text: async () => '' };
+          },
+        } as SandboxIntegrationClient;
+        const run = runWorkerHarness({ signal: controller.signal }).catch(
+          (error: unknown) => error
         );
-        expect(polls).toHaveLength(1);
-        expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
-        releaseHeaders.resolve();
-        await clock.advance(250);
-        await retryEntered.promise;
-        expect(polls).toHaveLength(1);
-        expect(handle).toHaveBeenCalledExactlyOnceWith(selected);
-        expect(results).toHaveLength(2);
-        expect(results[1]).toBe(results[0]);
-        expect(JSON.parse(results[0]!)).toEqual(settled);
-        releaseAcknowledgement.resolve();
-        expect(await run).toEqual(new Error('Harness poll failed with HTTP 404.'));
-        expect(polls).toEqual([
-          { schemaVersion: 2, harnesses: [] },
-          { schemaVersion: 2, harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }] },
-        ]);
-      } finally {
-        controller.abort(new Error('fixture-complete'));
-        releaseHeaders.resolve();
-        releaseAcknowledgement.resolve();
-        await run;
-        clock.restore();
+        try {
+          await entered.promise;
+          await clock.advance(1_500);
+          expect(requestSignal?.aborted, 'delivery is still inside the original allowance').toBe(
+            false
+          );
+          expect(polls).toHaveLength(1);
+          expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
+          releaseHeaders.resolve();
+          await clock.advance(250);
+          await retryEntered.promise;
+          expect(polls).toHaveLength(1);
+          expect(handle).toHaveBeenCalledExactlyOnceWith(selected);
+          expect(results).toHaveLength(2);
+          expect(results[1]).toBe(results[0]);
+          expect(JSON.parse(results[0]!)).toEqual(settled);
+          releaseAcknowledgement.resolve();
+          expect(await run).toEqual(new Error('Harness poll failed with HTTP 404.'));
+          expect(polls).toEqual([
+            { schemaVersion: 2, harnesses: [] },
+            {
+              schemaVersion: 2,
+              harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }],
+            },
+          ]);
+        } finally {
+          controller.abort(new Error('fixture-complete'));
+          releaseHeaders.resolve();
+          releaseAcknowledgement.resolve();
+          await run;
+          clock.restore();
+        }
       }
-    });
+    );
 
     it.each([
       ['poll', 'headers'],
@@ -1745,90 +1748,90 @@ describe('Worker Harness loop', () => {
       }
     });
 
-    it.each([
-      'poll',
-      'result',
-    ] as const)('expires %s at the original allowance across retry, headers and late body', async (phase) => {
-      const clock = controlSchedulingTime();
-      const controller = new AbortController();
-      const firstRequest = observation();
-      const retryEntered = observation();
-      const releaseHeaders = observation();
-      const bodyEntered = observation();
-      const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
-      const close = vi.fn(async () => undefined);
-      const requests: string[] = [];
-      let time = 0;
-      let attempts = 0;
-      let requestSignal: AbortSignal | undefined;
-      let finished = false;
-      vi.spyOn(performance, 'now').mockImplementation(() => time);
-      loopFixture.client = {
-        ready: Promise.resolve(),
-        close,
-        harnessControlFetch: async (path, init) => {
-          requests.push(path);
-          const isPoll = path.endsWith('/poll');
-          if (phase !== (isPoll ? 'poll' : 'result'))
-            return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
-          attempts += 1;
-          if (attempts === 1) {
-            time = 299_000;
-            firstRequest.resolve();
-            return { ok: false, status: 503, text: async () => '' };
-          }
-          requestSignal = init.signal;
-          retryEntered.resolve();
-          await releaseHeaders.promise;
-          return {
-            ok: true,
-            status: isPoll ? 200 : 204,
-            text: async () => {
-              const aborted = new Promise<void>((resolve) =>
-                requestSignal!.addEventListener('abort', () => resolve(), { once: true })
-              );
-              bodyEntered.resolve();
-              await aborted;
-              return isPoll ? JSON.stringify(selected) : '';
-            },
-          };
-        },
-      } as SandboxIntegrationClient;
-      const run = runWorkerHarness({ signal: controller.signal })
-        .catch((error: unknown) => error)
-        .finally(() => {
-          finished = true;
-        });
-      try {
-        await firstRequest.promise;
-        await clock.advance(0);
-        time = 299_250;
-        await clock.advance(250);
-        await retryEntered.promise;
-        time = 299_500;
-        await clock.advance(250);
-        releaseHeaders.resolve();
-        await bodyEntered.promise;
-        time = 299_999;
-        await clock.advance(499);
-        expect(finished).toBe(false);
-        expect(requestSignal?.aborted).toBe(false);
-        time = 300_000;
-        await clock.advance(1);
-        expect(requestSignal?.aborted).toBe(true);
-        expect(finished).toBe(true);
-        expect(await run).toBeInstanceOf(Error);
-        expect(attempts).toBe(2);
-        expect(requests).toHaveLength(phase === 'poll' ? 2 : 3);
-        expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
-        expect(close).toHaveBeenCalledTimes(1);
-      } finally {
-        controller.abort(new Error('fixture-complete'));
-        releaseHeaders.resolve();
-        await run;
-        clock.restore();
+    it.each(['poll', 'result'] as const)(
+      'expires %s at the original allowance across retry, headers and late body',
+      async (phase) => {
+        const clock = controlSchedulingTime();
+        const controller = new AbortController();
+        const firstRequest = observation();
+        const retryEntered = observation();
+        const releaseHeaders = observation();
+        const bodyEntered = observation();
+        const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
+        const close = vi.fn(async () => undefined);
+        const requests: string[] = [];
+        let time = 0;
+        let attempts = 0;
+        let requestSignal: AbortSignal | undefined;
+        let finished = false;
+        vi.spyOn(performance, 'now').mockImplementation(() => time);
+        loopFixture.client = {
+          ready: Promise.resolve(),
+          close,
+          harnessControlFetch: async (path, init) => {
+            requests.push(path);
+            const isPoll = path.endsWith('/poll');
+            if (phase !== (isPoll ? 'poll' : 'result'))
+              return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
+            attempts += 1;
+            if (attempts === 1) {
+              time = 299_000;
+              firstRequest.resolve();
+              return { ok: false, status: 503, text: async () => '' };
+            }
+            requestSignal = init.signal;
+            retryEntered.resolve();
+            await releaseHeaders.promise;
+            return {
+              ok: true,
+              status: isPoll ? 200 : 204,
+              text: async () => {
+                const aborted = new Promise<void>((resolve) =>
+                  requestSignal!.addEventListener('abort', () => resolve(), { once: true })
+                );
+                bodyEntered.resolve();
+                await aborted;
+                return isPoll ? JSON.stringify(selected) : '';
+              },
+            };
+          },
+        } as SandboxIntegrationClient;
+        const run = runWorkerHarness({ signal: controller.signal })
+          .catch((error: unknown) => error)
+          .finally(() => {
+            finished = true;
+          });
+        try {
+          await firstRequest.promise;
+          await clock.advance(0);
+          time = 299_250;
+          await clock.advance(250);
+          await retryEntered.promise;
+          time = 299_500;
+          await clock.advance(250);
+          releaseHeaders.resolve();
+          await bodyEntered.promise;
+          time = 299_999;
+          await clock.advance(499);
+          expect(finished).toBe(false);
+          expect(requestSignal?.aborted).toBe(false);
+          time = 300_000;
+          await clock.advance(1);
+          expect(requestSignal?.aborted).toBe(true);
+          expect(finished).toBe(true);
+          expect(await run).toBeInstanceOf(Error);
+          expect(attempts).toBe(2);
+          expect(requests).toHaveLength(phase === 'poll' ? 2 : 3);
+          expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
+          expect(close).toHaveBeenCalledTimes(1);
+        } finally {
+          controller.abort(new Error('fixture-complete'));
+          releaseHeaders.resolve();
+          await run;
+          clock.restore();
+        }
       }
-    });
+    );
   });
 
   it('ends on a nonretryable status and when the monotonic outage budget is spent', async () => {
@@ -2290,188 +2293,188 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(integration.finalStatuses.map((status) => status.body.status)).toEqual(['completed']);
   });
 
-  it.each([
-    'completed',
-    'drain-failed',
-  ] as const)('joins an in-flight heartbeat before %s final status and sends none while its accepted response is delayed', async (outcome) => {
-    const clock = controlSchedulingTime();
-    const integration = fakeIntegration();
-    const fetch = integration.client.workerControlFetch;
-    const draining = observation();
-    const releaseDrain = observation();
-    const heartbeatEntered = observation();
-    const releaseHeartbeat = observation();
-    const terminalWritten = observation();
-    const finalEntered = observation();
-    const releaseFinal = observation();
-    const cleared = observation();
-    let heartbeatPending = false;
-    let authorityLive = true;
-    let heartbeatAttempts = 0;
-    let rejectedHeartbeats = 0;
-    const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
-    const terminalSpy = vi
-      .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
-      .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
-        const record = await writeTerminal.call(this, input);
-        terminalWritten.resolve();
-        return record;
+  it.each(['completed', 'drain-failed'] as const)(
+    'joins an in-flight heartbeat before %s final status and sends none while its accepted response is delayed',
+    async (outcome) => {
+      const clock = controlSchedulingTime();
+      const integration = fakeIntegration();
+      const fetch = integration.client.workerControlFetch;
+      const draining = observation();
+      const releaseDrain = observation();
+      const heartbeatEntered = observation();
+      const releaseHeartbeat = observation();
+      const terminalWritten = observation();
+      const finalEntered = observation();
+      const releaseFinal = observation();
+      const cleared = observation();
+      let heartbeatPending = false;
+      let authorityLive = true;
+      let heartbeatAttempts = 0;
+      let rejectedHeartbeats = 0;
+      const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+      const terminalSpy = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+          const record = await writeTerminal.call(this, input);
+          terminalWritten.resolve();
+          return record;
+        });
+      const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
+      vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+        clear(id);
+        cleared.resolve();
       });
-    const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
-    vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
-      clear(id);
-      cleared.resolve();
-    });
-    vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
-      draining.resolve();
-      await releaseDrain.promise;
-      if (outcome === 'drain-failed') throw new Error('Integration drain failed.');
-      return 0;
-    });
-    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
-      if (url.endsWith('/heartbeat')) {
-        heartbeatAttempts += 1;
-        if (JSON.parse(init.body).sequence > 0) {
-          heartbeatPending = true;
-          heartbeatEntered.resolve();
-          await releaseHeartbeat.promise;
-          heartbeatPending = false;
+      vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
+        draining.resolve();
+        await releaseDrain.promise;
+        if (outcome === 'drain-failed') throw new Error('Integration drain failed.');
+        return 0;
+      });
+      vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+        if (url.endsWith('/heartbeat')) {
+          heartbeatAttempts += 1;
+          if (JSON.parse(init.body).sequence > 0) {
+            heartbeatPending = true;
+            heartbeatEntered.resolve();
+            await releaseHeartbeat.promise;
+            heartbeatPending = false;
+          }
+          if (!authorityLive) {
+            rejectedHeartbeats += 1;
+            return {
+              ok: false,
+              status: 403,
+              text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+            };
+          }
         }
-        if (!authorityLive) {
-          rejectedHeartbeats += 1;
-          return {
-            ok: false,
-            status: 403,
-            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
-          };
+        const response = await fetch(url, init);
+        if (url.endsWith('/final-status')) {
+          // Core revokes authority at acceptance, before physical cleanup or response delivery.
+          authorityLive = false;
+          finalEntered.resolve();
+          await releaseFinal.promise;
         }
+        return response;
+      }) satisfies WorkerControlFetch);
+      const f = harnessFixture({ integration });
+      try {
+        await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        );
+        await draining.promise;
+        await clock.advance(1000);
+        await heartbeatEntered.promise;
+        releaseDrain.resolve();
+        await terminalWritten.promise;
+        await clock.advance(0);
+        expect(heartbeatPending).toBe(true);
+        expect.soft(integration.finalStatuses).toHaveLength(0);
+        releaseHeartbeat.resolve();
+        await finalEntered.promise;
+        const before = heartbeatAttempts;
+        await clock.advance(3200);
+        expect.soft(heartbeatAttempts).toBe(before);
+        expect.soft(rejectedHeartbeats).toBe(0);
+        expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+      } finally {
+        releaseDrain.resolve();
+        releaseHeartbeat.resolve();
+        releaseFinal.resolve();
+        await cleared.promise;
+        terminalSpy.mockRestore();
+        clock.restore();
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
       }
-      const response = await fetch(url, init);
-      if (url.endsWith('/final-status')) {
-        // Core revokes authority at acceptance, before physical cleanup or response delivery.
-        authorityLive = false;
-        finalEntered.resolve();
-        await releaseFinal.promise;
-      }
-      return response;
-    }) satisfies WorkerControlFetch);
-    const f = harnessFixture({ integration });
-    try {
-      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      await f.start(
-        'as_00000000-0000-75b0-a387-3019b80ed6d1',
-        'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      );
-      await draining.promise;
-      await clock.advance(1000);
-      await heartbeatEntered.promise;
-      releaseDrain.resolve();
-      await terminalWritten.promise;
-      await clock.advance(0);
-      expect(heartbeatPending).toBe(true);
-      expect.soft(integration.finalStatuses).toHaveLength(0);
-      releaseHeartbeat.resolve();
-      await finalEntered.promise;
-      const before = heartbeatAttempts;
-      await clock.advance(3200);
-      expect.soft(heartbeatAttempts).toBe(before);
-      expect.soft(rejectedHeartbeats).toBe(0);
-      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
-    } finally {
-      releaseDrain.resolve();
-      releaseHeartbeat.resolve();
-      releaseFinal.resolve();
-      await cleared.promise;
-      terminalSpy.mockRestore();
-      clock.restore();
-      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      expect(integration.finalStatuses.map((status) => status.body.status)).toEqual([
+        outcome === 'completed' ? 'completed' : 'failed',
+      ]);
     }
-    expect(integration.finalStatuses.map((status) => status.body.status)).toEqual([
-      outcome === 'completed' ? 'completed' : 'failed',
-    ]);
-  });
+  );
 
-  it.each([
-    'interrupt',
-    'authority-loss',
-  ] as const)('keeps valid heartbeats live while queued and cancels on %s without native launch', async (cancellation) => {
-    const admission = new NativeStartupAdmission(1);
-    const release = observation();
-    const occupied = admission.run(() => release.promise);
-    const queued = observation();
-    const integration = fakeIntegration();
-    const fetch = integration.client.workerControlFetch;
-    const statuses: string[] = [];
-    let authorityLost = false;
-    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
-      if (url.endsWith('/heartbeat')) {
-        const heartbeat = WorkerControlHeartbeatRequestSchema.parse(JSON.parse(init.body));
-        statuses.push(heartbeat.body.status);
-        if (authorityLost)
-          return {
-            ok: false,
-            status: 403,
-            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
-          };
-      }
-      return fetch(url, init);
-    }) satisfies WorkerControlFetch);
-    const f = harnessFixture({ integration });
-    const open = f.fake.adapter.openSession;
-    const launch = vi.fn();
-    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
-      const binding = await open(input);
-      return {
-        ...binding,
-        startTurn: (turnInput) => {
-          queued.resolve();
-          return admission.run(async () => {
-            launch();
-            return binding.startTurn(turnInput);
-          }, turnInput.signal);
-        },
-      };
-    });
-    await f.open('as_00000000-0000-7ee5-ae44-934f49fb40cd');
-    const clock = controlSchedulingTime();
-    const start = f.start(
-      'as_00000000-0000-7ee5-ae44-934f49fb40cd',
-      'tu_00000000-0000-79c3-b36e-c4ac583134e4'
-    );
-    try {
-      await queued.promise;
-      expect(statuses).toEqual(['starting']);
-      await clock.advance(3_000);
-      expect(statuses).toEqual(['starting', 'running', 'running', 'running']);
-      expect(launch).not.toHaveBeenCalled();
-      if (cancellation === 'interrupt') {
-        expect(
-          await f.send('turn.interrupt', {
-            ...f.selector('as_00000000-0000-7ee5-ae44-934f49fb40cd'),
-            turnId: 'tu_00000000-0000-79c3-b36e-c4ac583134e4',
-            leaseId: 'lease-tu_00000000-0000-79c3-b36e-c4ac583134e4',
-            purpose: 'interrupt',
-          })
-        ).toMatchObject({ disposition: 'succeeded', body: { state: 'interrupted' } });
-      } else {
-        authorityLost = true;
-        await clock.advance(1_000);
-      }
-      expect(await start).toMatchObject({
-        disposition: 'refused',
-        body: { reasonCode: 'dependency_failed' },
+  it.each(['interrupt', 'authority-loss'] as const)(
+    'keeps valid heartbeats live while queued and cancels on %s without native launch',
+    async (cancellation) => {
+      const admission = new NativeStartupAdmission(1);
+      const release = observation();
+      const occupied = admission.run(() => release.promise);
+      const queued = observation();
+      const integration = fakeIntegration();
+      const fetch = integration.client.workerControlFetch;
+      const statuses: string[] = [];
+      let authorityLost = false;
+      vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+        if (url.endsWith('/heartbeat')) {
+          const heartbeat = WorkerControlHeartbeatRequestSchema.parse(JSON.parse(init.body));
+          statuses.push(heartbeat.body.status);
+          if (authorityLost)
+            return {
+              ok: false,
+              status: 403,
+              text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+            };
+        }
+        return fetch(url, init);
+      }) satisfies WorkerControlFetch);
+      const f = harnessFixture({ integration });
+      const open = f.fake.adapter.openSession;
+      const launch = vi.fn();
+      vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+        const binding = await open(input);
+        return {
+          ...binding,
+          startTurn: (turnInput) => {
+            queued.resolve();
+            return admission.run(async () => {
+              launch();
+              return binding.startTurn(turnInput);
+            }, turnInput.signal);
+          },
+        };
       });
-      if (cancellation === 'interrupt')
-        expect(integration.finalStatuses.at(-1)?.body.status).toBe('interrupted');
-      else expect(integration.finalStatuses).toHaveLength(0);
-    } finally {
-      release.resolve();
-      await occupied;
-      await start;
-      clock.restore();
+      await f.open('as_00000000-0000-7ee5-ae44-934f49fb40cd');
+      const clock = controlSchedulingTime();
+      const start = f.start(
+        'as_00000000-0000-7ee5-ae44-934f49fb40cd',
+        'tu_00000000-0000-79c3-b36e-c4ac583134e4'
+      );
+      try {
+        await queued.promise;
+        expect(statuses).toEqual(['starting']);
+        await clock.advance(3_000);
+        expect(statuses).toEqual(['starting', 'running', 'running', 'running']);
+        expect(launch).not.toHaveBeenCalled();
+        if (cancellation === 'interrupt') {
+          expect(
+            await f.send('turn.interrupt', {
+              ...f.selector('as_00000000-0000-7ee5-ae44-934f49fb40cd'),
+              turnId: 'tu_00000000-0000-79c3-b36e-c4ac583134e4',
+              leaseId: 'lease-tu_00000000-0000-79c3-b36e-c4ac583134e4',
+              purpose: 'interrupt',
+            })
+          ).toMatchObject({ disposition: 'succeeded', body: { state: 'interrupted' } });
+        } else {
+          authorityLost = true;
+          await clock.advance(1_000);
+        }
+        expect(await start).toMatchObject({
+          disposition: 'refused',
+          body: { reasonCode: 'dependency_failed' },
+        });
+        if (cancellation === 'interrupt')
+          expect(integration.finalStatuses.at(-1)?.body.status).toBe('interrupted');
+        else expect(integration.finalStatuses).toHaveLength(0);
+      } finally {
+        release.resolve();
+        await occupied;
+        await start;
+        clock.restore();
+      }
+      expect(launch).not.toHaveBeenCalled();
     }
-    expect(launch).not.toHaveBeenCalled();
-  });
+  );
 
   it('preserves an admitted preparation failure when interruption arrives before its rejection', async () => {
     const f = harnessFixture();
@@ -2511,105 +2514,104 @@ describe('Worker Harness resident AgentSessions', () => {
     });
   });
 
-  it.each([
-    'settlement',
-    'drain',
-    'terminal',
-  ] as const)('keeps advancing lease heartbeats through a quiet Turn and delayed %s acceptance', async (stage) => {
-    const clock = controlSchedulingTime();
-    const integration = fakeIntegration();
-    const fetch = integration.client.workerControlFetch;
-    const heartbeats: number[] = [];
-    let lastAcceptedAt = Date.now();
-    let authorityLive = true;
-    const started = observation();
-    const firstEvent = observation();
-    const blocked = observation();
-    const release = observation();
-    const cleared = observation();
-    const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
-    vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
-      clear(id);
-      cleared.resolve();
-    });
-    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
-      const body = JSON.parse(init.body);
-      if (url.endsWith('/heartbeat')) {
-        if (!authorityLive || Date.now() - lastAcceptedAt > 2500) {
-          authorityLive = false;
-          return {
-            ok: false,
-            status: 403,
-            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
-          };
+  it.each(['settlement', 'drain', 'terminal'] as const)(
+    'keeps advancing lease heartbeats through a quiet Turn and delayed %s acceptance',
+    async (stage) => {
+      const clock = controlSchedulingTime();
+      const integration = fakeIntegration();
+      const fetch = integration.client.workerControlFetch;
+      const heartbeats: number[] = [];
+      let lastAcceptedAt = Date.now();
+      let authorityLive = true;
+      const started = observation();
+      const firstEvent = observation();
+      const blocked = observation();
+      const release = observation();
+      const cleared = observation();
+      const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
+      vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+        clear(id);
+        cleared.resolve();
+      });
+      vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+        const body = JSON.parse(init.body);
+        if (url.endsWith('/heartbeat')) {
+          if (!authorityLive || Date.now() - lastAcceptedAt > 2500) {
+            authorityLive = false;
+            return {
+              ok: false,
+              status: 403,
+              text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+            };
+          }
+          expect(body.sequence).toBe(heartbeats.length);
+          heartbeats.push(body.sequence);
+          lastAcceptedAt = Date.now();
         }
-        expect(body.sequence).toBe(heartbeats.length);
-        heartbeats.push(body.sequence);
-        lastAcceptedAt = Date.now();
-      }
-      if (body.record?.event.data.status === 'turn.started') started.resolve();
-      if (body.record?.event.data.status === 'running') firstEvent.resolve();
-      if (stage === 'settlement' && body.record?.event.data.status === 'turn.settled') {
-        blocked.resolve();
-        await release.promise;
-      }
-      const result = await fetch(url, init);
-      if (url.endsWith('/final-status')) authorityLive = false;
-      return result;
-    }) satisfies WorkerControlFetch);
-    const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
-    const terminalSpy = vi
-      .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
-      .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
-        const record = await writeTerminal.call(this, input);
-        if (stage === 'terminal') {
+        if (body.record?.event.data.status === 'turn.started') started.resolve();
+        if (body.record?.event.data.status === 'running') firstEvent.resolve();
+        if (stage === 'settlement' && body.record?.event.data.status === 'turn.settled') {
           blocked.resolve();
           await release.promise;
         }
-        return record;
-      });
-    if (stage === 'drain')
-      vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
-        blocked.resolve();
-        await release.promise;
-        return 0;
-      });
-    const f = harnessFixture({ integration });
-    f.fake.script.push({ kind: 'hold' });
-    try {
-      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      await f.start(
-        'as_00000000-0000-75b0-a387-3019b80ed6d1',
-        'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      );
-      await started.promise;
-      await clock.advance(1000);
-      await firstEvent.promise;
-      await clock.advance(0);
-      expect(heartbeats.length).toBeGreaterThanOrEqual(2);
-      // Normal completion preserves live lease authority through each delayed publication barrier.
-      f.fake.residents[0]!.finish('Completed quiet native work.');
-      await blocked.promise;
-      const before = heartbeats.length;
-      // Controlled scheduling crosses the same injected deadline without relying on CI wall time.
-      await clock.advance(3200);
-      expect(authorityLive).toBe(true);
-      expect(heartbeats.length).toBeGreaterThanOrEqual(before + 3);
-      expect(integration.finalStatuses).toHaveLength(0);
-    } finally {
-      release.resolve();
-      f.fake.residents[0]?.finish();
-      await cleared.promise;
-      const accepted = heartbeats.length;
-      await clock.advance(1100);
-      expect(heartbeats).toHaveLength(accepted);
-      terminalSpy.mockRestore();
-      clock.restore();
-      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        const result = await fetch(url, init);
+        if (url.endsWith('/final-status')) authorityLive = false;
+        return result;
+      }) satisfies WorkerControlFetch);
+      const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+      const terminalSpy = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+          const record = await writeTerminal.call(this, input);
+          if (stage === 'terminal') {
+            blocked.resolve();
+            await release.promise;
+          }
+          return record;
+        });
+      if (stage === 'drain')
+        vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
+          blocked.resolve();
+          await release.promise;
+          return 0;
+        });
+      const f = harnessFixture({ integration });
+      f.fake.script.push({ kind: 'hold' });
+      try {
+        await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        );
+        await started.promise;
+        await clock.advance(1000);
+        await firstEvent.promise;
+        await clock.advance(0);
+        expect(heartbeats.length).toBeGreaterThanOrEqual(2);
+        // Normal completion preserves live lease authority through each delayed publication barrier.
+        f.fake.residents[0]!.finish('Completed quiet native work.');
+        await blocked.promise;
+        const before = heartbeats.length;
+        // Controlled scheduling crosses the same injected deadline without relying on CI wall time.
+        await clock.advance(3200);
+        expect(authorityLive).toBe(true);
+        expect(heartbeats.length).toBeGreaterThanOrEqual(before + 3);
+        expect(integration.finalStatuses).toHaveLength(0);
+      } finally {
+        release.resolve();
+        f.fake.residents[0]?.finish();
+        await cleared.promise;
+        const accepted = heartbeats.length;
+        await clock.advance(1100);
+        expect(heartbeats).toHaveLength(accepted);
+        terminalSpy.mockRestore();
+        clock.restore();
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      }
+      expect(integration.finalStatuses.at(-1)?.body.status).toBe('completed');
+      expect(f.fake.residents[0]?.interrupts).toBe(0);
     }
-    expect(integration.finalStatuses.at(-1)?.body.status).toBe('completed');
-    expect(f.fake.residents[0]?.interrupts).toBe(0);
-  });
+  );
 
   it('keeps lease heartbeats independent of an unanswered event through timeout and retry during quiet native work', async () => {
     const clock = controlSchedulingTime();
@@ -2847,262 +2849,263 @@ describe('Worker Harness resident AgentSessions', () => {
     }
   });
 
-  it.each([
-    'accepted',
-    'authority-lost',
-  ] as const)('drains a delayed live event before failing-drain publication when delivery is %s', async (delivery) => {
-    const clock = controlSchedulingTime();
-    const integration = fakeIntegration();
-    const fetch = integration.client.workerControlFetch;
-    const draining = observation();
-    const failDrain = observation();
-    const eventEntered = observation();
-    const releaseEvent = observation();
-    const terminalWritten = observation();
-    const cleared = observation();
-    const acceptedEvents: number[] = [];
-    const finalSequences: number[] = [];
-    const publicationOrder: boolean[] = [];
-    const heartbeats: number[] = [];
-    let lastAcceptedAt = Date.now();
-    let eventPending = false;
-    const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
-    const terminalSpy = vi
-      .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
-      .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
-        const record = await writeTerminal.call(this, input);
-        terminalWritten.resolve();
-        return record;
-      });
-    const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
-    vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
-      clear(id);
-      cleared.resolve();
-    });
-    vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
-      draining.resolve();
-      await failDrain.promise;
-      throw new Error('Integration drain failed.');
-    });
-    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
-      const body = JSON.parse(init.body);
-      if (url.endsWith('/heartbeat')) {
-        expect(Date.now() - lastAcceptedAt).toBeLessThan(2500);
-        expect(body.sequence).toBe(heartbeats.length);
-        heartbeats.push(body.sequence);
-        lastAcceptedAt = Date.now();
-      }
-      if (url.endsWith('/events/append')) {
-        if (body.record.event.data.status === 'running') {
-          eventPending = true;
-          eventEntered.resolve();
-          await releaseEvent.promise;
-          eventPending = false;
-          if (delivery === 'authority-lost')
-            return {
-              ok: false,
-              status: 403,
-              text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
-            };
-        }
-        acceptedEvents.push(body.record.sequence);
-      }
-      if (url.endsWith('/final-status')) {
-        finalSequences.push(body.sequence);
-        publicationOrder.push(
-          !eventPending &&
-            acceptedEvents.length === body.sequence &&
-            acceptedEvents.every((sequence, index) => sequence === index)
-        );
-      }
-      return fetch(url, init);
-    }) satisfies WorkerControlFetch);
-    const f = harnessFixture({ integration });
-    try {
-      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      await f.start(
-        'as_00000000-0000-75b0-a387-3019b80ed6d1',
-        'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      );
-      await draining.promise;
-      await clock.advance(1000);
-      await eventEntered.promise;
-      failDrain.resolve();
-      await terminalWritten.promise;
-      await clock.advance(0);
-      expect(eventPending).toBe(true);
-      expect(finalSequences).toHaveLength(0);
-      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
-      const before = heartbeats.length;
-      await clock.advance(3200);
-      expect(heartbeats.length).toBeGreaterThanOrEqual(before + 3);
-      expect(finalSequences).toHaveLength(0);
-    } finally {
-      failDrain.resolve();
-      releaseEvent.resolve();
-      await cleared.promise;
-      terminalSpy.mockRestore();
-      clock.restore();
-      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    }
-    const terminal = readFileSync(
-      join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
-      'utf8'
-    )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-      .at(-1);
-    expect(terminal.event).toMatchObject({
-      type: 'turn.failed',
-      data: { status: 'failed', diagnostics: { native: 'Integration drain failed.' } },
-    });
-    expect(finalSequences).toEqual(delivery === 'accepted' ? [terminal.sequence] : []);
-    expect(publicationOrder).toEqual(delivery === 'accepted' ? [true] : []);
-  });
-
-  it.each([
-    'readiness',
-    'heartbeat',
-    'final-status',
-  ] as const)('joins the unsettled %s request before clearing Turn routes', async (kind) => {
-    const clock = controlSchedulingTime();
-    const integration = fakeIntegration();
-    const fetch = integration.client.workerControlFetch;
-    const started = observation();
-    const eventEntered = observation();
-    const rejectEvent = observation();
-    const requestEntered = observation();
-    const requestAborted = observation();
-    const releaseJoin = observation();
-    const terminalWritten = observation();
-    const cleared = observation();
-    let heartbeatCalls = 0;
-    let requestSettled = false;
-    let terminalStarted = false;
-    const recordHeartbeat = WorkerControlClient.prototype.recordHeartbeat;
-    const recordFinalStatus = WorkerControlClient.prototype.recordFinalStatus;
-    const heartbeatSpy = vi
-      .spyOn(WorkerControlClient.prototype, 'recordHeartbeat')
-      .mockImplementation(async function (this: WorkerControlClient, input, signal) {
-        const joining =
-          kind !== 'final-status' && ++heartbeatCalls === (kind === 'readiness' ? 1 : 3);
-        try {
-          return await recordHeartbeat.call(this, input, signal);
-        } finally {
-          if (joining) {
-            requestAborted.resolve();
-            await releaseJoin.promise;
-            requestSettled = true;
-          }
-        }
-      });
-    const finalSpy = vi
-      .spyOn(WorkerControlClient.prototype, 'recordFinalStatus')
-      .mockImplementation(async function (this: WorkerControlClient, input, signal) {
-        try {
-          return await recordFinalStatus.call(this, input, signal);
-        } finally {
-          if (kind === 'final-status') {
-            requestAborted.resolve();
-            await releaseJoin.promise;
-            requestSettled = true;
-          }
-        }
-      });
-    const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
-    const terminalSpy = vi
-      .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
-      .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
-        terminalStarted = true;
-        const record = await writeTerminal.call(this, input);
-        terminalWritten.resolve();
-        return record;
-      });
-    const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
-    vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
-      clear(id);
-      cleared.resolve();
-    });
-    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
-      const body = JSON.parse(init.body);
-      if (body.record?.event.data.status === 'turn.started') started.resolve();
-      if (kind === 'heartbeat' && body.record?.event.data.status === 'running') {
-        eventEntered.resolve();
-        await rejectEvent.promise;
-        return {
-          ok: false,
-          status: 403,
-          text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
-        };
-      }
-      if (kind === 'final-status' && url.endsWith('/final-status')) {
-        requestEntered.resolve();
-        return {
-          ok: false,
-          status: 403,
-          text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
-        };
-      }
-      if (
-        (kind === 'readiness' && url.endsWith('/heartbeat') && body.sequence === 0) ||
-        (kind === 'heartbeat' && url.endsWith('/heartbeat') && body.sequence === 2)
-      ) {
-        requestEntered.resolve();
-        return new Promise<never>((_resolve, reject) => {
-          init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+  it.each(['accepted', 'authority-lost'] as const)(
+    'drains a delayed live event before failing-drain publication when delivery is %s',
+    async (delivery) => {
+      const clock = controlSchedulingTime();
+      const integration = fakeIntegration();
+      const fetch = integration.client.workerControlFetch;
+      const draining = observation();
+      const failDrain = observation();
+      const eventEntered = observation();
+      const releaseEvent = observation();
+      const terminalWritten = observation();
+      const cleared = observation();
+      const acceptedEvents: number[] = [];
+      const finalSequences: number[] = [];
+      const publicationOrder: boolean[] = [];
+      const heartbeats: number[] = [];
+      let lastAcceptedAt = Date.now();
+      let eventPending = false;
+      const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+      const terminalSpy = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+          const record = await writeTerminal.call(this, input);
+          terminalWritten.resolve();
+          return record;
         });
-      }
-      return fetch(url, init);
-    }) satisfies WorkerControlFetch);
-    const f = harnessFixture({ integration });
-    if (kind === 'heartbeat') f.fake.script.push({ kind: 'hold' });
-    let start: ReturnType<typeof f.start> | undefined;
-    try {
-      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      start = f.start(
-        'as_00000000-0000-75b0-a387-3019b80ed6d1',
-        'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      );
-      if (kind === 'readiness') {
-        await requestEntered.promise;
-        await clock.advance(10_000);
-      } else if (kind === 'heartbeat') {
-        await start;
-        await started.promise;
+      const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
+      vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+        clear(id);
+        cleared.resolve();
+      });
+      vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
+        draining.resolve();
+        await failDrain.promise;
+        throw new Error('Integration drain failed.');
+      });
+      vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+        const body = JSON.parse(init.body);
+        if (url.endsWith('/heartbeat')) {
+          expect(Date.now() - lastAcceptedAt).toBeLessThan(2500);
+          expect(body.sequence).toBe(heartbeats.length);
+          heartbeats.push(body.sequence);
+          lastAcceptedAt = Date.now();
+        }
+        if (url.endsWith('/events/append')) {
+          if (body.record.event.data.status === 'running') {
+            eventPending = true;
+            eventEntered.resolve();
+            await releaseEvent.promise;
+            eventPending = false;
+            if (delivery === 'authority-lost')
+              return {
+                ok: false,
+                status: 403,
+                text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+              };
+          }
+          acceptedEvents.push(body.record.sequence);
+        }
+        if (url.endsWith('/final-status')) {
+          finalSequences.push(body.sequence);
+          publicationOrder.push(
+            !eventPending &&
+              acceptedEvents.length === body.sequence &&
+              acceptedEvents.every((sequence, index) => sequence === index)
+          );
+        }
+        return fetch(url, init);
+      }) satisfies WorkerControlFetch);
+      const f = harnessFixture({ integration });
+      try {
+        await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        );
+        await draining.promise;
         await clock.advance(1000);
         await eventEntered.promise;
-        await clock.advance(1000);
-        await requestEntered.promise;
-        rejectEvent.resolve();
-      } else {
-        await start;
-        await started.promise;
-        await requestEntered.promise;
-        await clock.advance(1000);
-      }
-      await requestAborted.promise;
-      await clock.advance(0);
-      if (kind === 'readiness') expect(terminalStarted).toBe(false);
-      else {
+        failDrain.resolve();
         await terminalWritten.promise;
         await clock.advance(0);
+        expect(eventPending).toBe(true);
+        expect(finalSequences).toHaveLength(0);
+        expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+        const before = heartbeats.length;
+        await clock.advance(3200);
+        expect(heartbeats.length).toBeGreaterThanOrEqual(before + 3);
+        expect(finalSequences).toHaveLength(0);
+      } finally {
+        failDrain.resolve();
+        releaseEvent.resolve();
+        await cleared.promise;
+        terminalSpy.mockRestore();
+        clock.restore();
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
       }
-      expect(requestSettled).toBe(false);
-      expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
-    } finally {
-      rejectEvent.resolve();
-      releaseJoin.resolve();
-      await cleared.promise;
-      await start;
-      heartbeatSpy.mockRestore();
-      finalSpy.mockRestore();
-      terminalSpy.mockRestore();
-      clock.restore();
-      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      const terminal = readFileSync(
+        join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+        'utf8'
+      )
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .at(-1);
+      expect(terminal.event).toMatchObject({
+        type: 'turn.failed',
+        data: { status: 'failed', diagnostics: { native: 'Integration drain failed.' } },
+      });
+      expect(finalSequences).toEqual(delivery === 'accepted' ? [terminal.sequence] : []);
+      expect(publicationOrder).toEqual(delivery === 'accepted' ? [true] : []);
     }
-    expect(requestSettled).toBe(true);
-  });
+  );
+
+  it.each(['readiness', 'heartbeat', 'final-status'] as const)(
+    'joins the unsettled %s request before clearing Turn routes',
+    async (kind) => {
+      const clock = controlSchedulingTime();
+      const integration = fakeIntegration();
+      const fetch = integration.client.workerControlFetch;
+      const started = observation();
+      const eventEntered = observation();
+      const rejectEvent = observation();
+      const requestEntered = observation();
+      const requestAborted = observation();
+      const releaseJoin = observation();
+      const terminalWritten = observation();
+      const cleared = observation();
+      let heartbeatCalls = 0;
+      let requestSettled = false;
+      let terminalStarted = false;
+      const recordHeartbeat = WorkerControlClient.prototype.recordHeartbeat;
+      const recordFinalStatus = WorkerControlClient.prototype.recordFinalStatus;
+      const heartbeatSpy = vi
+        .spyOn(WorkerControlClient.prototype, 'recordHeartbeat')
+        .mockImplementation(async function (this: WorkerControlClient, input, signal) {
+          const joining =
+            kind !== 'final-status' && ++heartbeatCalls === (kind === 'readiness' ? 1 : 3);
+          try {
+            return await recordHeartbeat.call(this, input, signal);
+          } finally {
+            if (joining) {
+              requestAborted.resolve();
+              await releaseJoin.promise;
+              requestSettled = true;
+            }
+          }
+        });
+      const finalSpy = vi
+        .spyOn(WorkerControlClient.prototype, 'recordFinalStatus')
+        .mockImplementation(async function (this: WorkerControlClient, input, signal) {
+          try {
+            return await recordFinalStatus.call(this, input, signal);
+          } finally {
+            if (kind === 'final-status') {
+              requestAborted.resolve();
+              await releaseJoin.promise;
+              requestSettled = true;
+            }
+          }
+        });
+      const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+      const terminalSpy = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+          terminalStarted = true;
+          const record = await writeTerminal.call(this, input);
+          terminalWritten.resolve();
+          return record;
+        });
+      const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
+      vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+        clear(id);
+        cleared.resolve();
+      });
+      vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+        const body = JSON.parse(init.body);
+        if (body.record?.event.data.status === 'turn.started') started.resolve();
+        if (kind === 'heartbeat' && body.record?.event.data.status === 'running') {
+          eventEntered.resolve();
+          await rejectEvent.promise;
+          return {
+            ok: false,
+            status: 403,
+            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+          };
+        }
+        if (kind === 'final-status' && url.endsWith('/final-status')) {
+          requestEntered.resolve();
+          return {
+            ok: false,
+            status: 403,
+            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+          };
+        }
+        if (
+          (kind === 'readiness' && url.endsWith('/heartbeat') && body.sequence === 0) ||
+          (kind === 'heartbeat' && url.endsWith('/heartbeat') && body.sequence === 2)
+        ) {
+          requestEntered.resolve();
+          return new Promise<never>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            });
+          });
+        }
+        return fetch(url, init);
+      }) satisfies WorkerControlFetch);
+      const f = harnessFixture({ integration });
+      if (kind === 'heartbeat') f.fake.script.push({ kind: 'hold' });
+      let start: ReturnType<typeof f.start> | undefined;
+      try {
+        await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        start = f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        );
+        if (kind === 'readiness') {
+          await requestEntered.promise;
+          await clock.advance(10_000);
+        } else if (kind === 'heartbeat') {
+          await start;
+          await started.promise;
+          await clock.advance(1000);
+          await eventEntered.promise;
+          await clock.advance(1000);
+          await requestEntered.promise;
+          rejectEvent.resolve();
+        } else {
+          await start;
+          await started.promise;
+          await requestEntered.promise;
+          await clock.advance(1000);
+        }
+        await requestAborted.promise;
+        await clock.advance(0);
+        if (kind === 'readiness') expect(terminalStarted).toBe(false);
+        else {
+          await terminalWritten.promise;
+          await clock.advance(0);
+        }
+        expect(requestSettled).toBe(false);
+        expect(integration.calls).not.toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+      } finally {
+        rejectEvent.resolve();
+        releaseJoin.resolve();
+        await cleared.promise;
+        await start;
+        heartbeatSpy.mockRestore();
+        finalSpy.mockRestore();
+        terminalSpy.mockRestore();
+        clock.restore();
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      }
+      expect(requestSettled).toBe(true);
+    }
+  );
 
   it('does not cancel live heartbeat append during the successful Turn barrier', async () => {
     const integration = fakeIntegration();
@@ -3233,29 +3236,29 @@ describe('Worker Harness resident AgentSessions', () => {
     }
   });
 
-  it.each([
-    'completed',
-    'failed',
-  ] as const)('keeps native %s when interrupt races settlement', async (status) => {
-    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    f.fake.script.push({ kind: 'interrupt-race', status });
-    expect(
-      await f.start(
-        'as_00000000-0000-75b0-a387-3019b80ed6d1',
-        'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      )
-    ).toMatchObject({ disposition: 'succeeded' });
-    expect(
-      await f.send('turn.interrupt', {
-        ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
-        leaseId: 'lease-tu_00000000-0000-7e49-8268-e35715b55d0c',
-        purpose: 'interrupt',
-        turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
-      })
-    ).toMatchObject({ disposition: 'succeeded' });
-    expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status } });
-  });
+  it.each(['completed', 'failed'] as const)(
+    'keeps native %s when interrupt races settlement',
+    async (status) => {
+      const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      f.fake.script.push({ kind: 'interrupt-race', status });
+      expect(
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        )
+      ).toMatchObject({ disposition: 'succeeded' });
+      expect(
+        await f.send('turn.interrupt', {
+          ...f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+          leaseId: 'lease-tu_00000000-0000-7e49-8268-e35715b55d0c',
+          purpose: 'interrupt',
+          turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+        })
+      ).toMatchObject({ disposition: 'succeeded' });
+      expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status } });
+    }
+  );
 
   it('refuses an interrupt whose native stop was not proved', async () => {
     const f = harnessFixture();
@@ -3864,44 +3867,44 @@ describe('Worker Harness resident AgentSessions', () => {
     });
   });
 
-  it.each([
-    'missing_file',
-    'invalid_json',
-  ] as const)('reports a value-free startup failure for the package: %s', async (reason) => {
-    const f = harnessFixture();
-    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    f.writePackage(
-      'as_00000000-0000-75b0-a387-3019b80ed6d1',
-      'tu_00000000-0000-7e49-8268-e35715b55d0c'
-    );
-    if (reason === 'missing_file') {
-      rmSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'));
-    } else {
-      writeFileSync(
-        f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'),
-        '{ secret-canary-that-must-not-escape'
-      );
-    }
-    const result = await f.send(
-      'turn.start',
-      f.startBody(
+  it.each(['missing_file', 'invalid_json'] as const)(
+    'reports a value-free startup failure for the package: %s',
+    async (reason) => {
+      const f = harnessFixture();
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      f.writePackage(
         'as_00000000-0000-75b0-a387-3019b80ed6d1',
         'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      )
-    );
-    expect(result).toMatchObject({
-      body: {
-        reasonCode: 'dependency_failed',
-        startupFailure: { reason, stage: 'package_validation' },
-      },
-      disposition: 'refused',
-    });
-    expect(Object.keys(result.body).sort()).toEqual(['reasonCode', 'startupFailure']);
-    expect(JSON.stringify(result)).not.toContain('secret-canary');
-    expect(JSON.stringify(result)).not.toContain(f.root);
-    expect(f.fake.residents[0]?.turns).toHaveLength(0);
-    expect(existsSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
-  });
+      );
+      if (reason === 'missing_file') {
+        rmSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'));
+      } else {
+        writeFileSync(
+          f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'),
+          '{ secret-canary-that-must-not-escape'
+        );
+      }
+      const result = await f.send(
+        'turn.start',
+        f.startBody(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        )
+      );
+      expect(result).toMatchObject({
+        body: {
+          reasonCode: 'dependency_failed',
+          startupFailure: { reason, stage: 'package_validation' },
+        },
+        disposition: 'refused',
+      });
+      expect(Object.keys(result.body).sort()).toEqual(['reasonCode', 'startupFailure']);
+      expect(JSON.stringify(result)).not.toContain('secret-canary');
+      expect(JSON.stringify(result)).not.toContain(f.root);
+      expect(f.fake.residents[0]?.turns).toHaveLength(0);
+      expect(existsSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'))).toBe(false);
+    }
+  );
 
   it('refuses a Turn whose runtime environment declaration differs from the session', async () => {
     const f = harnessFixture();
@@ -3988,38 +3991,38 @@ describe('Worker Harness resident AgentSessions', () => {
     );
   });
 
-  it.each([
-    'completed',
-    'failed',
-  ] as const)('publishes %s terminal evidence despite a throwing timeline snapshot', async (status) => {
-    const snapshot = vi.spyOn(TurnTimeline.prototype, 'seal').mockImplementation(() => {
-      throw new Error('snapshot fault');
-    });
-    const f = harnessFixture();
-    if (status === 'failed') f.fake.script.push({ kind: 'fail' });
-    try {
-      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      await f.start(
-        'as_00000000-0000-75b0-a387-3019b80ed6d1',
-        'tu_00000000-0000-7e49-8268-e35715b55d0c'
-      );
-      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      expect(f.integration.finalStatuses).toHaveLength(1);
-      expect(f.integration.finalStatuses[0]?.body.status).toBe(status);
-      expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
-      expect(snapshot).toHaveBeenCalledTimes(status === 'failed' ? 1 : 0);
-      const events = readFileSync(
-        join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
-        'utf8'
-      )
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      expect(events.at(-1).event.data.status).toBe(status);
-    } finally {
-      snapshot.mockRestore();
+  it.each(['completed', 'failed'] as const)(
+    'publishes %s terminal evidence despite a throwing timeline snapshot',
+    async (status) => {
+      const snapshot = vi.spyOn(TurnTimeline.prototype, 'seal').mockImplementation(() => {
+        throw new Error('snapshot fault');
+      });
+      const f = harnessFixture();
+      if (status === 'failed') f.fake.script.push({ kind: 'fail' });
+      try {
+        await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        await f.start(
+          'as_00000000-0000-75b0-a387-3019b80ed6d1',
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        );
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        expect(f.integration.finalStatuses).toHaveLength(1);
+        expect(f.integration.finalStatuses[0]?.body.status).toBe(status);
+        expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
+        expect(snapshot).toHaveBeenCalledTimes(status === 'failed' ? 1 : 0);
+        const events = readFileSync(
+          join(f.capturePath('tu_00000000-0000-7e49-8268-e35715b55d0c'), 'events.jsonl'),
+          'utf8'
+        )
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(events.at(-1).event.data.status).toBe(status);
+      } finally {
+        snapshot.mockRestore();
+      }
     }
-  });
+  );
 
   it('admits only primitive vocabulary values from changing fact getters', () => {
     const timeline = new TurnTimeline();
@@ -4323,69 +4326,69 @@ describe('Worker Harness resident AgentSessions', () => {
 });
 
 describe('N4b immediate exceptional settlement', () => {
-  it.each([
-    false,
-    true,
-  ])('handles immediate settlement rejection with event writing held %s', async (holdEvent) => {
-    let releaseEvent!: () => void;
-    let eventPending = false;
-    let rejectSettlement!: (error: Error) => void;
-    const eventGate = new Promise<void>((resolve) => {
-      releaseEvent = resolve;
-    });
-    const originalWrite = WorkerTranscriptWriter.prototype.writeAndAppendEvent;
-    const write = vi
-      .spyOn(WorkerTranscriptWriter.prototype, 'writeAndAppendEvent')
-      .mockImplementation(async function (this: WorkerTranscriptWriter, event) {
-        if (holdEvent && event.type === 'worker.ready') {
-          eventPending = true;
-          await eventGate;
-        }
-        return originalWrite.call(this, event);
+  it.each([false, true])(
+    'handles immediate settlement rejection with event writing held %s',
+    async (holdEvent) => {
+      let releaseEvent!: () => void;
+      let eventPending = false;
+      let rejectSettlement!: (error: Error) => void;
+      const eventGate = new Promise<void>((resolve) => {
+        releaseEvent = resolve;
       });
-    const fake = fakeAdapter({ readyAtOpen: true });
-    const originalOpen = fake.adapter.openSession;
-    fake.adapter.openSession = async (input) => {
-      const resident = await originalOpen(input);
-      return {
-        ...resident,
-        async startTurn() {
-          return {
-            settled: holdEvent
-              ? new Promise<WorkerAdapterResult>((_resolve, reject) => {
-                  rejectSettlement = reject;
-                })
-              : Promise.reject<WorkerAdapterResult>(new Error('N4b immediate settlement loss')),
-            async interrupt() {},
-          };
-        },
+      const originalWrite = WorkerTranscriptWriter.prototype.writeAndAppendEvent;
+      const write = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeAndAppendEvent')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, event) {
+          if (holdEvent && event.type === 'worker.ready') {
+            eventPending = true;
+            await eventGate;
+          }
+          return originalWrite.call(this, event);
+        });
+      const fake = fakeAdapter({ readyAtOpen: true });
+      const originalOpen = fake.adapter.openSession;
+      fake.adapter.openSession = async (input) => {
+        const resident = await originalOpen(input);
+        return {
+          ...resident,
+          async startTurn() {
+            return {
+              settled: holdEvent
+                ? new Promise<WorkerAdapterResult>((_resolve, reject) => {
+                    rejectSettlement = reject;
+                  })
+                : Promise.reject<WorkerAdapterResult>(new Error('N4b immediate settlement loss')),
+              async interrupt() {},
+            };
+          },
+        };
       };
-    };
-    const f = harnessFixture({ adapter: fake });
-    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    await f.start(
-      'as_00000000-0000-75b0-a387-3019b80ed6d1',
-      'tu_00000000-0000-7e49-8268-e35715b55d0c'
-    );
-    if (holdEvent) {
-      await vi.waitFor(() => expect(eventPending).toBe(true));
-      rejectSettlement(new Error('N4b settlement loss during event writing'));
-      // Cross a process rejection-reporting turn while the writer is still pending.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(f.integration.finalStatuses).toHaveLength(0);
+      const f = harnessFixture({ adapter: fake });
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.start(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
+      if (holdEvent) {
+        await vi.waitFor(() => expect(eventPending).toBe(true));
+        rejectSettlement(new Error('N4b settlement loss during event writing'));
+        // Cross a process rejection-reporting turn while the writer is still pending.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(f.integration.finalStatuses).toHaveLength(0);
+      }
+      releaseEvent();
+      write.mockRestore();
+      await vi.waitFor(() =>
+        expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status: 'failed' } })
+      );
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      expect(
+        await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
+        disposition: 'succeeded',
+      });
     }
-    releaseEvent();
-    write.mockRestore();
-    await vi.waitFor(() =>
-      expect(f.integration.finalStatuses.at(-1)).toMatchObject({ body: { status: 'failed' } })
-    );
-    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    expect(
-      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
-    ).toMatchObject({
-      disposition: 'succeeded',
-    });
-  });
+  );
 });
 
 /** Mutable JSON fixture at the shim's untrusted package boundary. */
@@ -4633,51 +4636,50 @@ describe('N4b independent route admission probes', () => {
       nativeStarts: f.fake.residents[0]?.turns.length,
     }).toEqual({ disposition: 'refused', nativeStarts: 0 });
   });
-  it.each([
-    'gateway',
-    'backend-local',
-    'direct-external',
-  ] as const)('admits the complete %s mode route', async (mode) => {
-    const f = harnessFixture();
-    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    f.writePackage(
-      'as_00000000-0000-75b0-a387-3019b80ed6d1',
-      'tu_00000000-0000-7e49-8268-e35715b55d0c'
-    );
-    const pkg = JSON.parse(
-      readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
-    );
-    pkg.llm.mode = mode;
-    const route = pkg.llm.routes[0];
-    const authority =
-      mode === 'gateway'
-        ? ['placeholder', 'openai-compatible', 'nanocore-gateway']
-        : mode === 'backend-local'
-          ? ['none', 'backend-local', 'backend-local']
-          : ['environment', 'provider-compatible', 'direct-provider'];
-    route.credentialVisibility = authority[0];
-    route.endpoint = { kind: authority[1], upstream: { kind: authority[2] } };
-    route.modelParameters = {
-      contextWindow: 100,
-      maxOutputTokens: 50,
-      inputModalities: ['text', 'image', 'audio', 'video', 'pdf'],
-      reasoning: true,
-    };
-    writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
-    expect(
-      await f.send(
-        'turn.start',
-        f.startBody(
-          'as_00000000-0000-75b0-a387-3019b80ed6d1',
-          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+  it.each(['gateway', 'backend-local', 'direct-external'] as const)(
+    'admits the complete %s mode route',
+    async (mode) => {
+      const f = harnessFixture();
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      f.writePackage(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      );
+      const pkg = JSON.parse(
+        readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+      );
+      pkg.llm.mode = mode;
+      const route = pkg.llm.routes[0];
+      const authority =
+        mode === 'gateway'
+          ? ['placeholder', 'openai-compatible', 'nanocore-gateway']
+          : mode === 'backend-local'
+            ? ['none', 'backend-local', 'backend-local']
+            : ['environment', 'provider-compatible', 'direct-provider'];
+      route.credentialVisibility = authority[0];
+      route.endpoint = { kind: authority[1], upstream: { kind: authority[2] } };
+      route.modelParameters = {
+        contextWindow: 100,
+        maxOutputTokens: 50,
+        inputModalities: ['text', 'image', 'audio', 'video', 'pdf'],
+        reasoning: true,
+      };
+      writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+      expect(
+        await f.send(
+          'turn.start',
+          f.startBody(
+            'as_00000000-0000-75b0-a387-3019b80ed6d1',
+            'tu_00000000-0000-7e49-8268-e35715b55d0c'
+          )
         )
-      )
-    ).toMatchObject({
-      disposition: 'succeeded',
-    });
-    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes).toEqual([route]);
-  });
+      ).toMatchObject({
+        disposition: 'succeeded',
+      });
+      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes).toEqual([route]);
+    }
+  );
   it.each([
     ['contextWindow', 9007199254740992, 'refused'],
     ['maxOutputTokens', 9007199254740992, 'refused'],
@@ -4780,104 +4782,104 @@ describe('N4b independent route admission probes', () => {
 });
 
 describe('N4c local input cleanup proof', () => {
-  it.each([
-    'reject',
-    'complete',
-  ] as const)('retains occupancy and fences siblings after %s with failed input cleanup', async (outcome) => {
-    const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
-    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-    await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
-      threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
-    });
-    f.fake.script.push({ kind: outcome });
-    f.writePackage(
-      'as_00000000-0000-75b0-a387-3019b80ed6d1',
-      'tu_00000000-0000-7284-ad4a-925c8b639663'
-    );
-    const inputRoot = join(f.sandboxRoot, 'sessions', 'as_00000000-0000-75b0-a387-3019b80ed6d1');
-    const mode = statSync(inputRoot).mode & 0o777;
-    let result: Awaited<ReturnType<typeof f.send>>;
-    let inspection: Awaited<ReturnType<typeof f.send>>;
-    try {
-      // The slots stay writable internally, but their parent cannot unlink them.
-      chmodSync(inputRoot, 0o500);
-      result = await f.send(
-        'turn.start',
-        f.startBody(
-          'as_00000000-0000-75b0-a387-3019b80ed6d1',
-          'tu_00000000-0000-7284-ad4a-925c8b639663'
-        )
+  it.each(['reject', 'complete'] as const)(
+    'retains occupancy and fences siblings after %s with failed input cleanup',
+    async (outcome) => {
+      const f = harnessFixture({ adapter: fakeAdapter({ readyAtOpen: true }) });
+      await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+      await f.open('as_00000000-0000-7f1d-8ec1-f695d6b796c3', {
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      });
+      f.fake.script.push({ kind: outcome });
+      f.writePackage(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7284-ad4a-925c8b639663'
       );
-      await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
-      inspection = await f.send(
-        'session.inspect',
-        f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1')
-      );
-    } finally {
-      chmodSync(inputRoot, mode);
-    }
-    f.writePackage(
-      'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
-      'tu_00000000-0000-7844-bcf4-193003261f58',
-      { threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba' }
-    );
-    const sibling = await f.send('turn.start', {
-      ...f.startBody(
+      const inputRoot = join(f.sandboxRoot, 'sessions', 'as_00000000-0000-75b0-a387-3019b80ed6d1');
+      const mode = statSync(inputRoot).mode & 0o777;
+      let result: Awaited<ReturnType<typeof f.send>>;
+      let inspection: Awaited<ReturnType<typeof f.send>>;
+      try {
+        // The slots stay writable internally, but their parent cannot unlink them.
+        chmodSync(inputRoot, 0o500);
+        result = await f.send(
+          'turn.start',
+          f.startBody(
+            'as_00000000-0000-75b0-a387-3019b80ed6d1',
+            'tu_00000000-0000-7284-ad4a-925c8b639663'
+          )
+        );
+        await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+        inspection = await f.send(
+          'session.inspect',
+          f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1')
+        );
+      } finally {
+        chmodSync(inputRoot, mode);
+      }
+      f.writePackage(
         'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
-        'tu_00000000-0000-7844-bcf4-193003261f58'
-      ),
-      threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
-    });
-    await f.settle('as_00000000-0000-7f1d-8ec1-f695d6b796c3');
-    const newSession = await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572', {
-      threadId: 'th_00000000-0000-7aec-9e8c-32361ee0a8f2',
-    });
-    const drain = await f.send('harness.drain', {});
-    expect(result).toMatchObject(
-      outcome === 'reject'
-        ? {
-            disposition: 'refused',
-            body: {
-              reasonCode: 'dependency_failed',
-              startupFailure: { stage: 'native_spawn', reason: 'failed' },
-            },
-          }
-        : { disposition: 'succeeded' }
-    );
-    expect(f.fake.residents[0]?.turns).toHaveLength(outcome === 'reject' ? 0 : 1);
-    expect({
-      inspection,
-      sibling,
-      activeTurns: drain.body.activeTurns,
-      nativeSiblingStarts: f.fake.residents[1]?.turns.length,
-    }).toMatchObject({
-      inspection: {
-        body: {
-          state: 'failed',
-          cleanupState: 'unknown',
-          childState: 'running',
-          nativeHandleState: 'ready',
-          nativeHandleDigest: sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+        'tu_00000000-0000-7844-bcf4-193003261f58',
+        { threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba' }
+      );
+      const sibling = await f.send('turn.start', {
+        ...f.startBody(
+          'as_00000000-0000-7f1d-8ec1-f695d6b796c3',
+          'tu_00000000-0000-7844-bcf4-193003261f58'
+        ),
+        threadId: 'th_00000000-0000-779e-b7fd-63d275d430ba',
+      });
+      await f.settle('as_00000000-0000-7f1d-8ec1-f695d6b796c3');
+      const newSession = await f.open('as_00000000-0000-7f6a-bdd8-7ee572509572', {
+        threadId: 'th_00000000-0000-7aec-9e8c-32361ee0a8f2',
+      });
+      const drain = await f.send('harness.drain', {});
+      expect(result).toMatchObject(
+        outcome === 'reject'
+          ? {
+              disposition: 'refused',
+              body: {
+                reasonCode: 'dependency_failed',
+                startupFailure: { stage: 'native_spawn', reason: 'failed' },
+              },
+            }
+          : { disposition: 'succeeded' }
+      );
+      expect(f.fake.residents[0]?.turns).toHaveLength(outcome === 'reject' ? 0 : 1);
+      expect({
+        inspection,
+        sibling,
+        activeTurns: drain.body.activeTurns,
+        nativeSiblingStarts: f.fake.residents[1]?.turns.length,
+      }).toMatchObject({
+        inspection: {
+          body: {
+            state: 'failed',
+            cleanupState: 'unknown',
+            childState: 'running',
+            nativeHandleState: 'ready',
+            nativeHandleDigest: sha256('reference-as_00000000-0000-75b0-a387-3019b80ed6d1'),
+          },
         },
-      },
-      sibling: { disposition: 'refused', body: { reasonCode: 'busy' } },
-      activeTurns: 1,
-      nativeSiblingStarts: 0,
-    });
-    expect(
-      f.integration.finalStatuses.find(
-        (status) => status.lineage.turnId === 'tu_00000000-0000-7284-ad4a-925c8b639663'
-      )
-    ).toMatchObject({ body: { status: outcome === 'reject' ? 'failed' : 'completed' } });
-    expect(newSession).toMatchObject({ disposition: 'refused', body: { reasonCode: 'busy' } });
-    expect(f.integration.calls).toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
-    expect(
-      await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
-    ).toMatchObject({
-      disposition: 'refused',
-      body: { reasonCode: 'cleanup_required' },
-    });
-  });
+        sibling: { disposition: 'refused', body: { reasonCode: 'busy' } },
+        activeTurns: 1,
+        nativeSiblingStarts: 0,
+      });
+      expect(
+        f.integration.finalStatuses.find(
+          (status) => status.lineage.turnId === 'tu_00000000-0000-7284-ad4a-925c8b639663'
+        )
+      ).toMatchObject({ body: { status: outcome === 'reject' ? 'failed' : 'completed' } });
+      expect(newSession).toMatchObject({ disposition: 'refused', body: { reasonCode: 'busy' } });
+      expect(f.integration.calls).toContain('clear:as_00000000-0000-75b0-a387-3019b80ed6d1');
+      expect(
+        await f.send('session.close', f.selector('as_00000000-0000-75b0-a387-3019b80ed6d1'))
+      ).toMatchObject({
+        disposition: 'refused',
+        body: { reasonCode: 'cleanup_required' },
+      });
+    }
+  );
 });
 
 describe('shared lifecycle evidence and deadlines', () => {
@@ -5179,97 +5181,99 @@ describe('as_00000000-0000-7365-a591-c8020c856a67 public native environment', ()
     GIT_SSL_CAINFO: '/etc/openshell-tls/ca-bundle.pem',
   };
 
-  it.each([
-    {},
-    { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' },
-  ])('preserves every managed proxy/TLS bootstrap value with public map %j', async (nativeEnvironment) => {
-    const f = harnessFixture({
-      environment: { ...managedBootstrap, UNRELATED_HOST_SETTING: 'host-only' },
-    });
-    expect(
-      await f.open('as_00000000-0000-7e6b-9e5f-56743ec556be', { nativeEnvironment })
-    ).toMatchObject({
-      disposition: 'succeeded',
-    });
-    const environment = f.fake.residents[0]!.input.environment;
-    for (const [name, value] of Object.entries(managedBootstrap))
-      expect.soft(environment[name], name).toBe(value);
-    expect(environment).toMatchObject(nativeEnvironment);
-    expect(environment).not.toHaveProperty('UNRELATED_HOST_SETTING');
-  });
-
-  it.each(
-    Object.keys(managedBootstrap)
-  )('refuses public and runtime-env override of managed bootstrap %s before child creation', async (name) => {
-    for (const extra of [
-      { nativeEnvironment: { [name]: 'untrusted' } },
-      { runtimeEnvironment: { [name]: 'untrusted' } },
-    ]) {
-      const f = harnessFixture({ environment: managedBootstrap });
-      expect(await f.open('as_00000000-0000-79fc-bd0a-8bf48c7b5215', extra)).toMatchObject({
-        disposition: 'refused',
-        body: { reasonCode: 'unsupported' },
+  it.each([{}, { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' }])(
+    'preserves every managed proxy/TLS bootstrap value with public map %j',
+    async (nativeEnvironment) => {
+      const f = harnessFixture({
+        environment: { ...managedBootstrap, UNRELATED_HOST_SETTING: 'host-only' },
       });
-      expect(f.fake.residents).toHaveLength(0);
-      expect(f.integration.loopbacks.size).toBe(0);
+      expect(
+        await f.open('as_00000000-0000-7e6b-9e5f-56743ec556be', { nativeEnvironment })
+      ).toMatchObject({
+        disposition: 'succeeded',
+      });
+      const environment = f.fake.residents[0]!.input.environment;
+      for (const [name, value] of Object.entries(managedBootstrap))
+        expect.soft(environment[name], name).toBe(value);
+      expect(environment).toMatchObject(nativeEnvironment);
+      expect(environment).not.toHaveProperty('UNRELATED_HOST_SETTING');
     }
-  });
+  );
+
+  it.each(Object.keys(managedBootstrap))(
+    'refuses public and runtime-env override of managed bootstrap %s before child creation',
+    async (name) => {
+      for (const extra of [
+        { nativeEnvironment: { [name]: 'untrusted' } },
+        { runtimeEnvironment: { [name]: 'untrusted' } },
+      ]) {
+        const f = harnessFixture({ environment: managedBootstrap });
+        expect(await f.open('as_00000000-0000-79fc-bd0a-8bf48c7b5215', extra)).toMatchObject({
+          disposition: 'refused',
+          body: { reasonCode: 'unsupported' },
+        });
+        expect(f.fake.residents).toHaveLength(0);
+        expect(f.integration.loopbacks.size).toBe(0);
+      }
+    }
+  );
 
   it.each([
     { nativeEnvironment: { HOME: '/user' } },
     { nativeEnvironment: { OPENKIT_ROUTE: 'user' } },
     { nativeEnvironment: { SETTING: 'public' }, runtimeEnvironment: { SETTING: 'credential' } },
-  ])('refuses protected or credential-colliding public delivery before child creation: %j', async (extra) => {
-    const f = harnessFixture();
-    expect(await f.open('as_00000000-0000-7446-a6b2-77ec480a07fc', extra)).toMatchObject({
-      disposition: 'refused',
-    });
-    expect(f.fake.residents).toHaveLength(0);
-  });
+  ])(
+    'refuses protected or credential-colliding public delivery before child creation: %j',
+    async (extra) => {
+      const f = harnessFixture();
+      expect(await f.open('as_00000000-0000-7446-a6b2-77ec480a07fc', extra)).toMatchObject({
+        disposition: 'refused',
+      });
+      expect(f.fake.residents).toHaveLength(0);
+    }
+  );
 
-  it.each([
-    'missing',
-    'different',
-    'extra',
-    'omitted-package',
-  ] as const)('refuses %s session/AEP public delivery before native work', async (variant) => {
-    const f = harnessFixture();
-    await f.open(
-      'as_00000000-0000-7446-a6b2-77ec480a07fc',
-      variant === 'missing' ? {} : { nativeEnvironment: { SETTING: 'session' } }
-    );
-    f.writePackage(
-      'as_00000000-0000-7446-a6b2-77ec480a07fc',
-      'tu_00000000-0000-7982-9f56-89708739a5cb'
-    );
-    const pkg = JSON.parse(
-      readFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), 'utf8')
-    );
-    if (variant !== 'omitted-package')
-      pkg.runtime.environment = {
-        imageDigest: `sha256:${'a'.repeat(64)}`,
-        defaultsDigest: `sha256:${'b'.repeat(64)}`,
-        values:
-          variant === 'different'
-            ? { SETTING: 'changed' }
-            : variant === 'extra'
-              ? { SETTING: 'session', EXTRA: '' }
-              : { SETTING: 'session' },
-      };
-    writeFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), JSON.stringify(pkg));
-    expect(
-      await f.send(
-        'turn.start',
-        f.startBody(
-          'as_00000000-0000-7446-a6b2-77ec480a07fc',
-          'tu_00000000-0000-7982-9f56-89708739a5cb'
+  it.each(['missing', 'different', 'extra', 'omitted-package'] as const)(
+    'refuses %s session/AEP public delivery before native work',
+    async (variant) => {
+      const f = harnessFixture();
+      await f.open(
+        'as_00000000-0000-7446-a6b2-77ec480a07fc',
+        variant === 'missing' ? {} : { nativeEnvironment: { SETTING: 'session' } }
+      );
+      f.writePackage(
+        'as_00000000-0000-7446-a6b2-77ec480a07fc',
+        'tu_00000000-0000-7982-9f56-89708739a5cb'
+      );
+      const pkg = JSON.parse(
+        readFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), 'utf8')
+      );
+      if (variant !== 'omitted-package')
+        pkg.runtime.environment = {
+          imageDigest: `sha256:${'a'.repeat(64)}`,
+          defaultsDigest: `sha256:${'b'.repeat(64)}`,
+          values:
+            variant === 'different'
+              ? { SETTING: 'changed' }
+              : variant === 'extra'
+                ? { SETTING: 'session', EXTRA: '' }
+                : { SETTING: 'session' },
+        };
+      writeFileSync(f.packagePath('as_00000000-0000-7446-a6b2-77ec480a07fc'), JSON.stringify(pkg));
+      expect(
+        await f.send(
+          'turn.start',
+          f.startBody(
+            'as_00000000-0000-7446-a6b2-77ec480a07fc',
+            'tu_00000000-0000-7982-9f56-89708739a5cb'
+          )
         )
-      )
-    ).toMatchObject({
-      disposition: 'refused',
-    });
-    expect(f.fake.residents[0]?.turns).toHaveLength(0);
-  });
+      ).toMatchObject({
+        disposition: 'refused',
+      });
+      expect(f.fake.residents[0]?.turns).toHaveLength(0);
+    }
+  );
 
   it('checks exact values on every Turn and never mutates an already resident map', async () => {
     const f = harnessFixture();
@@ -5378,29 +5382,29 @@ it('projects canonical effort and empty advertised levels while parsing a per-Tu
   expect(f.fake.residents[0]?.turns[0]?.allowedLlmRoutes[0]?.reasoningEffortLevels).toEqual([]);
 });
 
-it.each([
-  'turn',
-  'route',
-])('rejects an unknown %s effort before native Turn effects', async (where) => {
-  const f = harnessFixture();
-  await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
-  f.writePackage(
-    'as_00000000-0000-75b0-a387-3019b80ed6d1',
-    'tu_00000000-0000-7e49-8268-e35715b55d0c'
-  );
-  const pkg = JSON.parse(
-    readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
-  );
-  if (where === 'turn') pkg.llm.reasoningEffort = 'ultra';
-  else pkg.llm.routes[0].reasoningEffortLevels = ['ultra'];
-  writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
-  await f.send(
-    'turn.start',
-    f.startBody(
+it.each(['turn', 'route'])(
+  'rejects an unknown %s effort before native Turn effects',
+  async (where) => {
+    const f = harnessFixture();
+    await f.open('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    f.writePackage(
       'as_00000000-0000-75b0-a387-3019b80ed6d1',
       'tu_00000000-0000-7e49-8268-e35715b55d0c'
-    )
-  );
-  await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
-  expect(f.fake.residents[0]?.turns).toHaveLength(0);
-});
+    );
+    const pkg = JSON.parse(
+      readFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), 'utf8')
+    );
+    if (where === 'turn') pkg.llm.reasoningEffort = 'ultra';
+    else pkg.llm.routes[0].reasoningEffortLevels = ['ultra'];
+    writeFileSync(f.packagePath('as_00000000-0000-75b0-a387-3019b80ed6d1'), JSON.stringify(pkg));
+    await f.send(
+      'turn.start',
+      f.startBody(
+        'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        'tu_00000000-0000-7e49-8268-e35715b55d0c'
+      )
+    );
+    await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
+    expect(f.fake.residents[0]?.turns).toHaveLength(0);
+  }
+);

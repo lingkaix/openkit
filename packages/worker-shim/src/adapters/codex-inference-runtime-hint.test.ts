@@ -176,25 +176,28 @@ describe('worker inference runtime hints', () => {
     ).toThrow('Worker inference runtime hint is invalid.');
   });
 
-  it.each([
-    'body',
-    'header',
-  ])('rejects %s metadata above the unchanged 16 KiB bound', (location) => {
-    const fixture = createCodexRuntimeHintFixture();
-    const encoded = JSON.stringify(fixture.turnMetadata);
-    // Legal JSON whitespace makes the input oversized without a parse error masking the bound.
-    const oversized = encoded + ' '.repeat(16 * 1024 + 1 - encoded.length);
-    if (location === 'body') {
-      fixture.clientMetadata['x-codex-turn-metadata'] = oversized;
-    } else {
-      // Headers trim surrounding whitespace, so place it inside the JSON object.
-      fixture.headers.set('x-codex-turn-metadata', `{${' '.repeat(16 * 1024)}${encoded.slice(1)}`);
-    }
+  it.each(['body', 'header'])(
+    'rejects %s metadata above the unchanged 16 KiB bound',
+    (location) => {
+      const fixture = createCodexRuntimeHintFixture();
+      const encoded = JSON.stringify(fixture.turnMetadata);
+      // Legal JSON whitespace makes the input oversized without a parse error masking the bound.
+      const oversized = encoded + ' '.repeat(16 * 1024 + 1 - encoded.length);
+      if (location === 'body') {
+        fixture.clientMetadata['x-codex-turn-metadata'] = oversized;
+      } else {
+        // Headers trim surrounding whitespace, so place it inside the JSON object.
+        fixture.headers.set(
+          'x-codex-turn-metadata',
+          `{${' '.repeat(16 * 1024)}${encoded.slice(1)}`
+        );
+      }
 
-    expect(() =>
-      readCodexInferenceRuntimeHint(fixture.headers, { client_metadata: fixture.clientMetadata })
-    ).toThrow('Worker inference runtime hint is invalid.');
-  });
+      expect(() =>
+        readCodexInferenceRuntimeHint(fixture.headers, { client_metadata: fixture.clientMetadata })
+      ).toThrow('Worker inference runtime hint is invalid.');
+    }
+  );
 
   it('rejects malformed or conflicting Codex compatibility projections', () => {
     const malformed = createCodexRuntimeHintFixture();

@@ -54,21 +54,17 @@ describe('Fixed-base notebook publication contract', () => {
     }
   });
 
-  it.each([
-    '../outside.md',
-    '/outside.md',
-    'a\\b.md',
-    '.git/config.md',
-    'a.md.md',
-    'A.md',
-  ])('refuses unsafe bundle paths: %s', (path) => {
-    expect(
-      UpdateKnowledgeNotebookRequestSchema.safeParse({
-        ...request(),
-        changes: [{ path, content: 'No' }],
-      }).success
-    ).toBe(false);
-  });
+  it.each(['../outside.md', '/outside.md', 'a\\b.md', '.git/config.md', 'a.md.md', 'A.md'])(
+    'refuses unsafe bundle paths: %s',
+    (path) => {
+      expect(
+        UpdateKnowledgeNotebookRequestSchema.safeParse({
+          ...request(),
+          changes: [{ path, content: 'No' }],
+        }).success
+      ).toBe(false);
+    }
+  );
 
   it('requires a fixed base and refuses authority fields or duplicate changed paths', () => {
     const value = request();

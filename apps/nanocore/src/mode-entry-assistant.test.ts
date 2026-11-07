@@ -721,37 +721,37 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
-  it.each([
-    'missing',
-    'invalid',
-  ] as const)('refuses %s required admission before Provider dispatch through the real command', async (condition) => {
-    const f = await assistantWiringFixture();
-    const assemble = assistantCommandOwners.assembleAssistantCommandRun;
-    // Corrupt only the trusted producer/consumer handoff; admission validation and dispatch stay real.
-    vi.spyOn(assistantCommandOwners, 'assembleAssistantCommandRun').mockImplementation(
-      (input) =>
-        ({
-          ...assemble(input),
-          assistantSkillAdmission:
-            condition === 'missing'
-              ? undefined
-              : { catalogRevision: null, skills: [], name: 'forbidden metadata' },
-        }) as unknown as ReturnType<typeof assemble>
-    );
-    try {
-      const response = await f.submit();
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(f.dispatchCount()).toBe(0);
-      expect(f.environments()).toEqual([]);
-      expect(
-        f.store
-          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-          .filter((item) => item.type === 'assistant-message')
-      ).toEqual([]);
-    } finally {
-      await f.close();
+  it.each(['missing', 'invalid'] as const)(
+    'refuses %s required admission before Provider dispatch through the real command',
+    async (condition) => {
+      const f = await assistantWiringFixture();
+      const assemble = assistantCommandOwners.assembleAssistantCommandRun;
+      // Corrupt only the trusted producer/consumer handoff; admission validation and dispatch stay real.
+      vi.spyOn(assistantCommandOwners, 'assembleAssistantCommandRun').mockImplementation(
+        (input) =>
+          ({
+            ...assemble(input),
+            assistantSkillAdmission:
+              condition === 'missing'
+                ? undefined
+                : { catalogRevision: null, skills: [], name: 'forbidden metadata' },
+          }) as unknown as ReturnType<typeof assemble>
+      );
+      try {
+        const response = await f.submit();
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(f.dispatchCount()).toBe(0);
+        expect(f.environments()).toEqual([]);
+        expect(
+          f.store
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+            .filter((item) => item.type === 'assistant-message')
+        ).toEqual([]);
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('excludes a concurrent duplicate before it can invoke another Provider', async () => {
     const f = await assistantWiringFixture();
@@ -818,53 +818,59 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
-  it.each([
-    'running',
-    'interrupted',
-  ] as const)('refuses partial or uncertain %s attempt recovery with zero added inference', async (status) => {
-    const f = await assistantWiringFixture();
-    const publish = f.store.completeTurn.bind(f.store);
-    // Refuse the actual answer tuple after inference; retain no successful command receipt.
-    const publication = vi
-      .spyOn(f.store, 'completeTurn')
-      .mockImplementation(async (turnId, patch, terminal) => {
-        if (terminal?.items?.some((item) => item.type === 'assistant-message')) {
-          if (status === 'interrupted')
-            await publish(turnId, {
-              status: 'interrupted',
-              completedAt: new Date().toISOString(),
-            });
-          throw new Error('Modeled loss after inference and before command publication.');
-        }
-        return await publish(turnId, patch, terminal);
-      });
-    try {
-      const first = await f.submit();
-      expect(first.status).toBeGreaterThanOrEqual(400);
-      expect(publication).toHaveBeenCalledOnce();
-      publication.mockRestore();
-      expect(
-        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-      ).toEqual([expect.objectContaining({ status })]);
-      expect(f.store.listCommandRequests().filter((row) => row.requestId === f.requestId)).toEqual(
-        []
-      );
-      const turns = f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
-      const items = f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id);
-      const replay = await f.submit();
-      expect(replay.status, await replay.clone().text()).toBe(409);
-      expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
-      expect(f.dispatchCount()).toBe(1);
-      expect(
-        f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-      ).toEqual(turns);
-      expect(
-        f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-      ).toEqual(items);
-    } finally {
-      await f.close();
+  it.each(['running', 'interrupted'] as const)(
+    'refuses partial or uncertain %s attempt recovery with zero added inference',
+    async (status) => {
+      const f = await assistantWiringFixture();
+      const publish = f.store.completeTurn.bind(f.store);
+      // Refuse the actual answer tuple after inference; retain no successful command receipt.
+      const publication = vi
+        .spyOn(f.store, 'completeTurn')
+        .mockImplementation(async (turnId, patch, terminal) => {
+          if (terminal?.items?.some((item) => item.type === 'assistant-message')) {
+            if (status === 'interrupted')
+              await publish(turnId, {
+                status: 'interrupted',
+                completedAt: new Date().toISOString(),
+              });
+            throw new Error('Modeled loss after inference and before command publication.');
+          }
+          return await publish(turnId, patch, terminal);
+        });
+      try {
+        const first = await f.submit();
+        expect(first.status).toBeGreaterThanOrEqual(400);
+        expect(publication).toHaveBeenCalledOnce();
+        publication.mockRestore();
+        expect(
+          f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+        ).toEqual([expect.objectContaining({ status })]);
+        expect(
+          f.store.listCommandRequests().filter((row) => row.requestId === f.requestId)
+        ).toEqual([]);
+        const turns = f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.thread.id
+        );
+        const items = f.store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          f.thread.id
+        );
+        const replay = await f.submit();
+        expect(replay.status, await replay.clone().text()).toBe(409);
+        expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
+        expect(f.dispatchCount()).toBe(1);
+        expect(
+          f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+        ).toEqual(turns);
+        expect(
+          f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+        ).toEqual(items);
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('requires a new command and Turn for an inference attempt after terminal failure', async () => {
     const f = await assistantWiringFixture();
@@ -913,47 +919,48 @@ describe('#144 real Assistant command wiring', () => {
     { field: 'worker', missing: false },
     { field: 'coordinator', missing: false },
     { field: 'public', missing: false },
-  ])('refuses native trusted-context fault $field (missing=$missing) before content access through the real command', async ({
-    field,
-    missing,
-  }) => {
-    const f = await assistantWiringFixture(true);
-    const changed: Record<string, unknown> = {
-      actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-      workspaceId: testEntityId('ws', 'another-workspace'),
-      threadId: testEntityId('th', 'another-thread'),
-      turnId: testEntityId('tu', 'another-turn'),
-      entryScope: 'untrusted-entry',
-      requestId: '00000000-0000-4000-8000-000000001499',
-      kind: 'unknown',
-      signal: { aborted: false },
-    };
-    const native = observePrivateSkillInvocation({
-      entry: (entry) => {
-        if (missing) delete entry[field];
-        else if (['public', 'worker', 'coordinator'].includes(field)) entry.kind = field;
-        else entry[field] = changed[field];
-      },
-    });
-    const bodyReads = observeSkillBodyReads(f);
-    f.createResponses.mockResolvedValueOnce(selectedSkillCall(f));
-    try {
-      const response = await f.submit();
-      expect(response.status, await response.clone().text()).toBe(200);
-      expect(native.invoked).toHaveBeenCalledOnce();
-      expect(native.dispatched).not.toHaveBeenCalled();
-      expect(bodyReads()).toEqual([]);
-      expect(f.createResponses).toHaveBeenCalledTimes(2);
-      const observations = skillModelObservations(f.createResponses.mock.calls[1]![1]);
-      expect(observations).toHaveLength(1);
-      expect(JSON.parse(observations[0]!)).toEqual({
-        code: 'resource_access_denied',
-        message: 'Skill resource access is denied.',
+  ])(
+    'refuses native trusted-context fault $field (missing=$missing) before content access through the real command',
+    async ({ field, missing }) => {
+      const f = await assistantWiringFixture(true);
+      const changed: Record<string, unknown> = {
+        actor: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+        workspaceId: testEntityId('ws', 'another-workspace'),
+        threadId: testEntityId('th', 'another-thread'),
+        turnId: testEntityId('tu', 'another-turn'),
+        entryScope: 'untrusted-entry',
+        requestId: '00000000-0000-4000-8000-000000001499',
+        kind: 'unknown',
+        signal: { aborted: false },
+      };
+      const native = observePrivateSkillInvocation({
+        entry: (entry) => {
+          if (missing) delete entry[field];
+          else if (['public', 'worker', 'coordinator'].includes(field)) entry.kind = field;
+          else entry[field] = changed[field];
+        },
       });
-    } finally {
-      await f.close();
-    }
-  }, 60_000);
+      const bodyReads = observeSkillBodyReads(f);
+      f.createResponses.mockResolvedValueOnce(selectedSkillCall(f));
+      try {
+        const response = await f.submit();
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(native.invoked).toHaveBeenCalledOnce();
+        expect(native.dispatched).not.toHaveBeenCalled();
+        expect(bodyReads()).toEqual([]);
+        expect(f.createResponses).toHaveBeenCalledTimes(2);
+        const observations = skillModelObservations(f.createResponses.mock.calls[1]![1]);
+        expect(observations).toHaveLength(1);
+        expect(JSON.parse(observations[0]!)).toEqual({
+          code: 'resource_access_denied',
+          message: 'Skill resource access is denied.',
+        });
+      } finally {
+        await f.close();
+      }
+    },
+    60_000
+  );
 
   it('refuses a missing private handler binding before content access through the real command', async () => {
     const f = await assistantWiringFixture(true);
@@ -1006,111 +1013,116 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
-  it.each([
-    'membership',
-    'audience',
-    'removed',
-  ] as const)('refuses current %s loss before content access after model dispatch', async (condition) => {
-    const f = await assistantWiringFixture(true, undefined, condition !== 'removed');
-    const native = observePrivateSkillInvocation({
-      beforeInvocation: () => {
-        if (condition === 'membership')
-          f.coreDb.sqlite
-            .prepare(
-              "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
-            )
-            .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
-        if (condition === 'audience') revokeAssistantMemberAccess(f);
-        if (condition === 'removed') {
-          const catalog = loadWorkspaceResourceCatalog(
-            f.dataRoot,
-            'ws_00000000-0000-7000-8000-000000000001'
-          );
-          catalog.skills.entries[0]!.availability = 'removed';
-          publishWorkspaceResourceCatalog({
-            dataRoot: f.dataRoot,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            catalog,
-            expectedRevision: catalog.revision,
+  it.each(['membership', 'audience', 'removed'] as const)(
+    'refuses current %s loss before content access after model dispatch',
+    async (condition) => {
+      const f = await assistantWiringFixture(true, undefined, condition !== 'removed');
+      const native = observePrivateSkillInvocation({
+        beforeInvocation: () => {
+          if (condition === 'membership')
+            f.coreDb.sqlite
+              .prepare(
+                "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+              )
+              .run('ws_00000000-0000-7000-8000-000000000001', f.actorUserId);
+          if (condition === 'audience') revokeAssistantMemberAccess(f);
+          if (condition === 'removed') {
+            const catalog = loadWorkspaceResourceCatalog(
+              f.dataRoot,
+              'ws_00000000-0000-7000-8000-000000000001'
+            );
+            catalog.skills.entries[0]!.availability = 'removed';
+            publishWorkspaceResourceCatalog({
+              dataRoot: f.dataRoot,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              catalog,
+              expectedRevision: catalog.revision,
+            });
+          }
+        },
+      });
+      const bodyReads = observeSkillBodyReads(f);
+      f.createResponses.mockResolvedValueOnce(selectedSkillCall(f));
+      try {
+        const response = await f.submit();
+        expect(native.invoked).toHaveBeenCalledOnce();
+        expect(bodyReads()).toEqual([]);
+        if (condition === 'membership' || condition === 'audience') {
+          expect(
+            f.coreDb.sqlite
+              .prepare(
+                'SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?'
+              )
+              .get('ws_00000000-0000-7000-8000-000000000001', f.actorUserId)
+          ).toMatchObject({ status: 'removed' });
+          await expect(native.results[0]).rejects.toMatchObject({
+            code: 'workspace_access_denied',
           });
         }
-      },
-    });
-    const bodyReads = observeSkillBodyReads(f);
-    f.createResponses.mockResolvedValueOnce(selectedSkillCall(f));
-    try {
-      const response = await f.submit();
-      expect(native.invoked).toHaveBeenCalledOnce();
-      expect(bodyReads()).toEqual([]);
-      if (condition === 'membership' || condition === 'audience') {
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(f.dispatchCount()).toBe(1);
         expect(
-          f.coreDb.sqlite
-            .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-            .get('ws_00000000-0000-7000-8000-000000000001', f.actorUserId)
-        ).toMatchObject({ status: 'removed' });
-        await expect(native.results[0]).rejects.toMatchObject({ code: 'workspace_access_denied' });
+          f.store
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+            .filter((item) => item.type === 'assistant-message')
+        ).toEqual([]);
+      } finally {
+        await f.close();
       }
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(f.dispatchCount()).toBe(1);
-      expect(
-        f.store
-          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-          .filter((item) => item.type === 'assistant-message')
-      ).toEqual([]);
-    } finally {
-      await f.close();
     }
-  });
+  );
 
-  it.each([
-    'changed bytes',
-    'invalid UTF-8',
-    'oversized text',
-  ] as const)('returns a bounded safe refusal for %s through native invocation', async (condition) => {
-    const bytes =
-      condition === 'invalid UTF-8'
-        ? Buffer.from([0xc3, 0x28])
-        : condition === 'oversized text'
-          ? Buffer.from('x'.repeat(64 * 1024))
-          : undefined;
-    const f = await assistantWiringFixture(true, undefined, false, bytes);
-    const native = observePrivateSkillInvocation();
-    f.createResponses.mockImplementationOnce(async () => {
-      const file = join(
-        skillSnapshotPath(
-          f.dataRoot,
-          'ws_00000000-0000-7000-8000-000000000001',
-          'alpha',
-          f.imported!.version.digest
-        ),
-        'SKILL.md'
-      );
-      if (condition === 'changed bytes') fs.writeFileSync(file, 'private-source-canary');
-      return selectedSkillCall(f, condition === 'changed bytes' ? {} : { path: 'read-target.bin' });
-    });
-    try {
-      const response = await f.submit();
-      expect(response.status, await response.clone().text()).toBe(200);
-      expect(native.invoked).toHaveBeenCalledOnce();
-      expect(native.dispatched).toHaveBeenCalledOnce();
-      const observations = skillModelObservations(f.createResponses.mock.calls[1]![1]);
-      expect(observations).toHaveLength(1);
-      expect(Buffer.byteLength(observations[0]!)).toBeLessThanOrEqual(64 * 1024);
-      const codes = {
-        'changed bytes': 'skill_content_integrity_failed',
-        'invalid UTF-8': 'skill_content_not_text',
-        'oversized text': 'skill_content_too_large',
-      };
-      expect(JSON.parse(observations[0]!)).toMatchObject({
-        code: codes[condition],
-        message: expect.any(String),
+  it.each(['changed bytes', 'invalid UTF-8', 'oversized text'] as const)(
+    'returns a bounded safe refusal for %s through native invocation',
+    async (condition) => {
+      const bytes =
+        condition === 'invalid UTF-8'
+          ? Buffer.from([0xc3, 0x28])
+          : condition === 'oversized text'
+            ? Buffer.from('x'.repeat(64 * 1024))
+            : undefined;
+      const f = await assistantWiringFixture(true, undefined, false, bytes);
+      const native = observePrivateSkillInvocation();
+      f.createResponses.mockImplementationOnce(async () => {
+        const file = join(
+          skillSnapshotPath(
+            f.dataRoot,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'alpha',
+            f.imported!.version.digest
+          ),
+          'SKILL.md'
+        );
+        if (condition === 'changed bytes') fs.writeFileSync(file, 'private-source-canary');
+        return selectedSkillCall(
+          f,
+          condition === 'changed bytes' ? {} : { path: 'read-target.bin' }
+        );
       });
-      expect(observations[0]).not.toContain(f.dataRoot);
-      expect(observations[0]).not.toContain('private-source-canary');
-    } finally {
-      await f.close();
+      try {
+        const response = await f.submit();
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(native.invoked).toHaveBeenCalledOnce();
+        expect(native.dispatched).toHaveBeenCalledOnce();
+        const observations = skillModelObservations(f.createResponses.mock.calls[1]![1]);
+        expect(observations).toHaveLength(1);
+        expect(Buffer.byteLength(observations[0]!)).toBeLessThanOrEqual(64 * 1024);
+        const codes = {
+          'changed bytes': 'skill_content_integrity_failed',
+          'invalid UTF-8': 'skill_content_not_text',
+          'oversized text': 'skill_content_too_large',
+        };
+        expect(JSON.parse(observations[0]!)).toMatchObject({
+          code: codes[condition],
+          message: expect.any(String),
+        });
+        expect(observations[0]).not.toContain(f.dataRoot);
+        expect(observations[0]).not.toContain('private-source-canary');
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('validates logical output in the native engine before a safe model failure is projected', async () => {
     const f = await assistantWiringFixture(true);
@@ -1180,38 +1192,38 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
-  it.each([
-    'successful',
-    'refused',
-  ] as const)('counts each %s native read against the ordinary Tool-touch limit', async (outcome) => {
-    const f = await assistantWiringFixture(true);
-    const native = observePrivateSkillInvocation();
-    const response = selectedSkillCall(
-      f,
-      outcome === 'refused' ? { contentDigest: `sha256:${'0'.repeat(64)}` } : {}
-    );
-    f.createResponses.mockResolvedValueOnce({
-      ...response,
-      output: Array.from({ length: 49 }, (_, index) => ({
-        ...response.output[0]!,
-        call_id: `touch-${index}`,
-      })),
-    });
-    try {
-      const result = await f.submit();
-      expect(result.status).toBeGreaterThanOrEqual(400);
-      expect(native.invoked).toHaveBeenCalledTimes(48);
-      expect(native.dispatched).toHaveBeenCalledTimes(48);
-      expect(f.dispatchCount()).toBe(1);
-      expect(
-        f.store
-          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-          .filter((item) => item.type === 'assistant-message')
-      ).toEqual([]);
-    } finally {
-      await f.close();
+  it.each(['successful', 'refused'] as const)(
+    'counts each %s native read against the ordinary Tool-touch limit',
+    async (outcome) => {
+      const f = await assistantWiringFixture(true);
+      const native = observePrivateSkillInvocation();
+      const response = selectedSkillCall(
+        f,
+        outcome === 'refused' ? { contentDigest: `sha256:${'0'.repeat(64)}` } : {}
+      );
+      f.createResponses.mockResolvedValueOnce({
+        ...response,
+        output: Array.from({ length: 49 }, (_, index) => ({
+          ...response.output[0]!,
+          call_id: `touch-${index}`,
+        })),
+      });
+      try {
+        const result = await f.submit();
+        expect(result.status).toBeGreaterThanOrEqual(400);
+        expect(native.invoked).toHaveBeenCalledTimes(48);
+        expect(native.dispatched).toHaveBeenCalledTimes(48);
+        expect(f.dispatchCount()).toBe(1);
+        expect(
+          f.store
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+            .filter((item) => item.type === 'assistant-message')
+        ).toEqual([]);
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('interrupts an in-flight native read and prevents late output or answer publication', async () => {
     const f = await assistantWiringFixture(true);
@@ -1273,49 +1285,48 @@ describe('#144 real Assistant command wiring', () => {
     }
   });
 
-  it.each([
-    'append refusal',
-    'immutable conflict',
-    'missing coverage',
-  ] as const)('contacts no Provider after canonical environment %s', async (condition) => {
-    const f = await assistantWiringFixture(true);
-    const append = observationOwners.appendWorkObservation;
-    const read = observationOwners.readWorkObservationTurnBinding;
-    if (condition === 'missing coverage')
-      vi.spyOn(observationOwners, 'readWorkObservationTurnBinding').mockImplementation(
-        (...args) => ({ ...read(...args), coverage: null })
-      );
-    else
-      vi.spyOn(observationOwners, 'appendWorkObservation').mockImplementation((db, input) => {
-        if (input.observation.type !== 'env.bound') return append(db, input);
-        if (condition === 'append refusal')
-          throw new Error('Modeled canonical environment write refusal.');
-        append(db, {
-          ...input,
-          observation: {
-            ...input.observation,
-            payload: {
-              ...input.observation.payload,
-              assistantSkillAdmission: { catalogRevision: null, skills: [] },
+  it.each(['append refusal', 'immutable conflict', 'missing coverage'] as const)(
+    'contacts no Provider after canonical environment %s',
+    async (condition) => {
+      const f = await assistantWiringFixture(true);
+      const append = observationOwners.appendWorkObservation;
+      const read = observationOwners.readWorkObservationTurnBinding;
+      if (condition === 'missing coverage')
+        vi.spyOn(observationOwners, 'readWorkObservationTurnBinding').mockImplementation(
+          (...args) => ({ ...read(...args), coverage: null })
+        );
+      else
+        vi.spyOn(observationOwners, 'appendWorkObservation').mockImplementation((db, input) => {
+          if (input.observation.type !== 'env.bound') return append(db, input);
+          if (condition === 'append refusal')
+            throw new Error('Modeled canonical environment write refusal.');
+          append(db, {
+            ...input,
+            observation: {
+              ...input.observation,
+              payload: {
+                ...input.observation.payload,
+                assistantSkillAdmission: { catalogRevision: null, skills: [] },
+              },
             },
-          },
+          });
+          return append(db, input);
         });
-        return append(db, input);
-      });
-    try {
-      const response = await f.submit();
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(f.dispatchCount()).toBe(0);
-      expect(f.environments()).toHaveLength(condition === 'immutable conflict' ? 1 : 0);
-      expect(
-        f.store
-          .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
-          .filter((item) => item.type === 'assistant-message')
-      ).toEqual([]);
-    } finally {
-      await f.close();
+      try {
+        const response = await f.submit();
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(f.dispatchCount()).toBe(0);
+        expect(f.environments()).toHaveLength(condition === 'immutable conflict' ? 1 : 0);
+        expect(
+          f.store
+            .listThreadItems('ws_00000000-0000-7000-8000-000000000001', f.thread.id)
+            .filter((item) => item.type === 'assistant-message')
+        ).toEqual([]);
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('reauthorizes publication after a successful native read and final model response', async () => {
     const f = await assistantWiringFixture(true, undefined, true);

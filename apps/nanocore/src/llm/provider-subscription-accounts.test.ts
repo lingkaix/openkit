@@ -4236,22 +4236,25 @@ describe('ProviderSubscriptionAccountManager', () => {
       expected: VAULT_UNAVAILABLE_ERROR,
       slot: 'logout_unavailable',
     },
-  ] as const)('maps stock Models logout $backendCode failures without changing authority', async (failure) => {
-    const fixture = createFixture();
-    const pair = accountPair(failure.slot);
-    await createStoredPair(fixture, pair, testEntityId('vault', `${failure.slot}_r1`));
-    const revoke = vi.spyOn(fixture.backend(), 'revoke').mockImplementation(() => {
-      throw new VaultBackendError(failure.backendCode, 'Private backend failure.');
-    });
-    const before = authoritySnapshot(fixture);
+  ] as const)(
+    'maps stock Models logout $backendCode failures without changing authority',
+    async (failure) => {
+      const fixture = createFixture();
+      const pair = accountPair(failure.slot);
+      await createStoredPair(fixture, pair, testEntityId('vault', `${failure.slot}_r1`));
+      const revoke = vi.spyOn(fixture.backend(), 'revoke').mockImplementation(() => {
+        throw new VaultBackendError(failure.backendCode, 'Private backend failure.');
+      });
+      const before = authoritySnapshot(fixture);
 
-    await expectAccountError(
-      () => lifecycleOperations(fixture.manager).logout(pair),
-      failure.expected
-    );
-    expect(revoke).toHaveBeenCalledTimes(1);
-    expect(authoritySnapshot(fixture)).toEqual(before);
-  });
+      await expectAccountError(
+        () => lifecycleOperations(fixture.manager).logout(pair),
+        failure.expected
+      );
+      expect(revoke).toHaveBeenCalledTimes(1);
+      expect(authoritySnapshot(fixture)).toEqual(before);
+    }
+  );
 
   it('continues logout from a current credential tombstone without retrying Vault writes', async () => {
     const tombstoneFixture = createFixture();
@@ -4297,342 +4300,342 @@ describe('ProviderSubscriptionAccountManager', () => {
 });
 
 describe('same-credential inference observations', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('records and clears only the exact %s account and version', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = { subscriptionProviderId, accountSlotId: 'observed' };
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-71b0-bf66-b1dd14f78f14'
-    );
-    const presented = (await handle.resolveInferenceAuth())?.presented;
-    expect(presented).toBeDefined();
-    const before = authoritySnapshot(fixture);
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-    });
-    expect(await fixture.manager.getStatus(pair)).toMatchObject({ status: 'logged_in' });
-    expect(authoritySnapshot(fixture)).toEqual(before);
-    await handle.observeInference(presented!, {
-      kind: 'quota_exhausted',
-      settled: true,
-      providerCode: 'insufficient_quota',
-    });
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    await handle.observeInference(presented!, { kind: 'cancelled', settled: false });
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    await handle.observeInference(presented!, undefined);
-    expect(await handle.getObservation()).toEqual({
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    await handle.observeQuota(presented!.version, 'temporarily_unavailable');
-    expect(await handle.getObservation()).toMatchObject({
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    await handle.observeQuota(presented!.version, 'available');
-    expect(await handle.getObservation()).toBeUndefined();
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    await handle.observeInference(presented!, { kind: 'quota_exhausted', settled: true });
-    const restarted = await fixture.createManager().getPairHandle(pair);
-    expect(await restarted.getObservation()).toBeUndefined();
-    await handle.credentials.modify(subscriptionProviderId, async () =>
-      oauthCredential('observed-v2')
-    );
-    expect(await handle.getObservation()).toBeUndefined();
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    await handle.observeInference(presented!, { kind: 'quota_exhausted', settled: true });
-    expect(await handle.getObservation()).toBeUndefined();
-    const replacement = (await handle.resolveInferenceAuth())?.presented;
-    await handle.observeInference(
-      replacement!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    await fixture.manager.logout(pair);
-    expect(await handle.getObservation()).toBeUndefined();
-  });
-
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('suppresses late, cancelled, dependency and entitlement failures for %s', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = { subscriptionProviderId, accountSlotId: 'bounded' };
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-71df-b932-d8881f195c73'
-    );
-    const presented = (await handle.resolveInferenceAuth())?.presented;
-    for (const failure of [
-      { kind: 'auth_rejected', settled: true, status: 403 },
-      { kind: 'auth_rejected', settled: false },
-      { kind: 'unknown', settled: true, status: 403 },
-      { kind: 'provider_unavailable', settled: false },
-      { kind: 'refused', settled: true },
-    ] as const) {
-      await handle.observeInference(presented!, failure, Date.now() + 1000);
+  it.each(['openai-codex', 'xai'] as const)(
+    'records and clears only the exact %s account and version',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = { subscriptionProviderId, accountSlotId: 'observed' };
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-71b0-bf66-b1dd14f78f14'
+      );
+      const presented = (await handle.resolveInferenceAuth())?.presented;
+      expect(presented).toBeDefined();
+      const before = authoritySnapshot(fixture);
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+      });
+      expect(await fixture.manager.getStatus(pair)).toMatchObject({ status: 'logged_in' });
+      expect(authoritySnapshot(fixture)).toEqual(before);
+      await handle.observeInference(presented!, {
+        kind: 'quota_exhausted',
+        settled: true,
+        providerCode: 'insufficient_quota',
+      });
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      await handle.observeInference(presented!, { kind: 'cancelled', settled: false });
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      await handle.observeInference(presented!, undefined);
+      expect(await handle.getObservation()).toEqual({
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      await handle.observeQuota(presented!.version, 'temporarily_unavailable');
+      expect(await handle.getObservation()).toMatchObject({
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      await handle.observeQuota(presented!.version, 'available');
+      expect(await handle.getObservation()).toBeUndefined();
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      await handle.observeInference(presented!, { kind: 'quota_exhausted', settled: true });
+      const restarted = await fixture.createManager().getPairHandle(pair);
+      expect(await restarted.getObservation()).toBeUndefined();
+      await handle.credentials.modify(subscriptionProviderId, async () =>
+        oauthCredential('observed-v2')
+      );
+      expect(await handle.getObservation()).toBeUndefined();
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      await handle.observeInference(presented!, { kind: 'quota_exhausted', settled: true });
+      expect(await handle.getObservation()).toBeUndefined();
+      const replacement = (await handle.resolveInferenceAuth())?.presented;
+      await handle.observeInference(
+        replacement!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      await fixture.manager.logout(pair);
       expect(await handle.getObservation()).toBeUndefined();
     }
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() - 1
-    );
-    expect(await handle.getObservation()).toBeUndefined();
-    const controller = new AbortController();
-    controller.abort();
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000,
-      controller.signal
-    );
-    expect(await handle.getObservation()).toBeUndefined();
-    const read = vi.spyOn(handle.credentials, 'read').mockImplementation(async () => {
-      throw new Error('store unavailable');
-    });
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    read.mockRestore();
-    expect(await handle.getObservation()).toBeUndefined();
-    const other = await createStoredPair(
-      fixture,
-      { subscriptionProviderId, accountSlotId: 'other' },
-      'vault_00000000-0000-758e-b93d-9fe38f0ea41e'
-    );
-    expect(await other.getObservation()).toBeUndefined();
-    await fixture.manager.deleteAccount(pair);
-    expect(await handle.getObservation()).toBeUndefined();
-  });
+  );
+
+  it.each(['openai-codex', 'xai'] as const)(
+    'suppresses late, cancelled, dependency and entitlement failures for %s',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = { subscriptionProviderId, accountSlotId: 'bounded' };
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-71df-b932-d8881f195c73'
+      );
+      const presented = (await handle.resolveInferenceAuth())?.presented;
+      for (const failure of [
+        { kind: 'auth_rejected', settled: true, status: 403 },
+        { kind: 'auth_rejected', settled: false },
+        { kind: 'unknown', settled: true, status: 403 },
+        { kind: 'provider_unavailable', settled: false },
+        { kind: 'refused', settled: true },
+      ] as const) {
+        await handle.observeInference(presented!, failure, Date.now() + 1000);
+        expect(await handle.getObservation()).toBeUndefined();
+      }
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() - 1
+      );
+      expect(await handle.getObservation()).toBeUndefined();
+      const controller = new AbortController();
+      controller.abort();
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000,
+        controller.signal
+      );
+      expect(await handle.getObservation()).toBeUndefined();
+      const read = vi.spyOn(handle.credentials, 'read').mockImplementation(async () => {
+        throw new Error('store unavailable');
+      });
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      read.mockRestore();
+      expect(await handle.getObservation()).toBeUndefined();
+      const other = await createStoredPair(
+        fixture,
+        { subscriptionProviderId, accountSlotId: 'other' },
+        'vault_00000000-0000-758e-b93d-9fe38f0ea41e'
+      );
+      expect(await other.getObservation()).toBeUndefined();
+      await fixture.manager.deleteAccount(pair);
+      expect(await handle.getObservation()).toBeUndefined();
+    }
+  );
 });
 
 describe('inference rejection deadline', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('discards a %s recheck completing after the explicit absolute deadline', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const handle = await createStoredPair(
-      fixture,
-      { subscriptionProviderId, accountSlotId: 'deadline' },
-      'vault_00000000-0000-76c6-8ece-b9022b70274b'
-    );
-    const presented = (await handle.resolveInferenceAuth())?.presented;
-    vi.useFakeTimers();
-    try {
-      const original = handle.credentials.read.bind(handle.credentials);
-      vi.spyOn(handle.credentials, 'read').mockImplementation(async (id) => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        return original(id);
-      });
-      const check = handle.observeInference(
-        presented!,
-        { kind: 'auth_rejected', settled: true, status: 401 },
-        Date.now() + 20
+  it.each(['openai-codex', 'xai'] as const)(
+    'discards a %s recheck completing after the explicit absolute deadline',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const handle = await createStoredPair(
+        fixture,
+        { subscriptionProviderId, accountSlotId: 'deadline' },
+        'vault_00000000-0000-76c6-8ece-b9022b70274b'
       );
-      await vi.advanceTimersByTimeAsync(21);
-      await check;
-      expect(await handle.getObservation()).toBeUndefined();
-      await vi.advanceTimersByTimeAsync(100);
-      expect(await handle.getObservation()).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
+      const presented = (await handle.resolveInferenceAuth())?.presented;
+      vi.useFakeTimers();
+      try {
+        const original = handle.credentials.read.bind(handle.credentials);
+        vi.spyOn(handle.credentials, 'read').mockImplementation(async (id) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return original(id);
+        });
+        const check = handle.observeInference(
+          presented!,
+          { kind: 'auth_rejected', settled: true, status: 401 },
+          Date.now() + 20
+        );
+        await vi.advanceTimersByTimeAsync(21);
+        await check;
+        expect(await handle.getObservation()).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await handle.getObservation()).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 });
 
 describe('subscription-backed synthetic inference observations', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('records real %s quota failure and clears only on accepted access', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = { subscriptionProviderId, accountSlotId: 'inference' };
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-70aa-931b-65de83f63bd8'
-    );
-    const models = handle.models as MutableModels;
-    const stock = models.getProvider(subscriptionProviderId)!;
-    const faux = fauxProvider({
-      provider: subscriptionProviderId,
-      api: subscriptionProviderId === 'openai-codex' ? 'openai-responses' : 'openai-completions',
-      models: [{ id: 'gpt-test' }],
-    });
-    models.setProvider({ ...faux.provider, auth: stock.auth });
-    const provider = {
-      id: 'subscription',
-      adapterId: subscriptionProviderId,
-      subscriptionProviderId,
-      accountSlotId: pair.accountSlotId,
-      backend: 'pi-ai',
-      apiKey: null,
-      requiresApiKey: false,
-      baseUrl: null,
-      displayName: 'Subscription',
-      models: ['gpt-test'],
-      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-    } as ResolvedLLMProviderConfig;
-    const client = new PiAiGatewayClient();
-    const presented = (await handle.resolveInferenceAuth())?.presented;
-    await handle.observeInference(
-      presented!,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    const before = authoritySnapshot(fixture);
-    faux.setResponses([
-      fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'insufficient_quota' }),
-    ]);
-    await expect(
-      client.createChatCompletion(
+  it.each(['openai-codex', 'xai'] as const)(
+    'records real %s quota failure and clears only on accepted access',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = { subscriptionProviderId, accountSlotId: 'inference' };
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-70aa-931b-65de83f63bd8'
+      );
+      const models = handle.models as MutableModels;
+      const stock = models.getProvider(subscriptionProviderId)!;
+      const faux = fauxProvider({
+        provider: subscriptionProviderId,
+        api: subscriptionProviderId === 'openai-codex' ? 'openai-responses' : 'openai-completions',
+        models: [{ id: 'gpt-test' }],
+      });
+      models.setProvider({ ...faux.provider, auth: stock.auth });
+      const provider = {
+        id: 'subscription',
+        adapterId: subscriptionProviderId,
+        subscriptionProviderId,
+        accountSlotId: pair.accountSlotId,
+        backend: 'pi-ai',
+        apiKey: null,
+        requiresApiKey: false,
+        baseUrl: null,
+        displayName: 'Subscription',
+        models: ['gpt-test'],
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      } as ResolvedLLMProviderConfig;
+      const client = new PiAiGatewayClient();
+      const presented = (await handle.resolveInferenceAuth())?.presented;
+      await handle.observeInference(
+        presented!,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      const before = authoritySnapshot(fixture);
+      faux.setResponses([
+        fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'insufficient_quota' }),
+      ]);
+      await expect(
+        client.createChatCompletion(
+          provider,
+          { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+          undefined,
+          {},
+          models
+        )
+      ).rejects.toMatchObject({ failure: { kind: 'quota_exhausted' } });
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      const controller = new AbortController();
+      faux.setResponses([fauxAssistantMessage([fauxText('accepted')])]);
+      await expect(
+        client.createChatCompletion(
+          provider,
+          { model: 'gpt-test', messages: [] },
+          () => controller.abort(),
+          { signal: controller.signal },
+          models
+        )
+      ).rejects.toBeDefined();
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      faux.setResponses([fauxAssistantMessage([fauxText('accepted')])]);
+      const stream = await client.createChatCompletionStream(
         provider,
-        { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+        { model: 'gpt-test', messages: [], stream: true },
         undefined,
         {},
         models
-      )
-    ).rejects.toMatchObject({ failure: { kind: 'quota_exhausted' } });
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    const controller = new AbortController();
-    faux.setResponses([fauxAssistantMessage([fauxText('accepted')])]);
-    await expect(
-      client.createChatCompletion(
-        provider,
-        { model: 'gpt-test', messages: [] },
-        () => controller.abort(),
-        { signal: controller.signal },
-        models
-      )
-    ).rejects.toBeDefined();
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    faux.setResponses([fauxAssistantMessage([fauxText('accepted')])]);
-    const stream = await client.createChatCompletionStream(
-      provider,
-      { model: 'gpt-test', messages: [], stream: true },
-      undefined,
-      {},
-      models
-    );
-    await new Response(stream).text();
-    expect(await handle.getObservation()).toEqual({
-      quotaExhausted: { observedAt: DEFAULT_TIME },
-    });
-    expect(await fixture.manager.getStatus(pair)).toMatchObject({ status: 'logged_in' });
-    expect(authoritySnapshot(fixture)).toEqual(before);
-  });
+      );
+      await new Response(stream).text();
+      expect(await handle.getObservation()).toEqual({
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      expect(await fixture.manager.getStatus(pair)).toMatchObject({ status: 'logged_in' });
+      expect(authoritySnapshot(fixture)).toEqual(before);
+    }
+  );
 });
 
 describe('captured inference rejection and routing', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('checks the actual %s rejected inference snapshot with an explicit deadline', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = { subscriptionProviderId, accountSlotId: 'actual' };
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-788b-b7fb-294f007fb845'
-    );
-    const models = handle.models as MutableModels;
-    const stock = models.getProvider(subscriptionProviderId)!;
-    const faux = fauxProvider({
-      provider: subscriptionProviderId,
-      api: 'openai-completions',
-      models: [{ id: 'gpt-test' }],
-    });
-    models.setProvider({ ...faux.provider, auth: stock.auth });
-    const observed = vi.spyOn(handle, 'observeInference');
-    let bearer: string | undefined;
-    faux.setResponses([
-      (_context, options) => {
-        bearer = options.apiKey;
-        return Object.assign(
-          fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'invalid_token' }),
-          { status: 401 }
-        );
-      },
-    ]);
-    const provider = {
-      id: 'actual',
-      adapterId: subscriptionProviderId,
-      subscriptionProviderId,
-      accountSlotId: pair.accountSlotId,
-      backend: 'pi-ai',
-      apiKey: null,
-      requiresApiKey: false,
-      baseUrl: null,
-      displayName: 'Actual',
-      models: ['gpt-test'],
-      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-    } as ResolvedLLMProviderConfig;
-    await expect(
-      new PiAiGatewayClient().createChatCompletion(
-        provider,
-        { model: 'gpt-test', messages: [] },
-        undefined,
-        {},
-        models
-      )
-    ).rejects.toMatchObject({
-      failure: { kind: 'auth_rejected', settled: true, status: 401 },
-    });
-    expect(observed).toHaveBeenCalledTimes(1);
-    const [presented, failure] = observed.mock.calls[0]!;
-    expect(presented.auth.apiKey).toBe(bearer);
-    // Direct proof checks reuse the captured auth independently of route deadline forwarding.
-    await handle.observeInference(presented, failure, Date.now() + 1000);
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-    });
-    const read = vi
-      .spyOn(handle.credentials, 'read')
-      .mockRejectedValue(new Error('local store failure'));
-    await handle.observeInference(presented, failure, Date.now() + 1000);
-    read.mockRestore();
-    expect(await handle.getObservation()).toMatchObject({
-      accessRejected: { observedAt: DEFAULT_TIME },
-    });
-    // Rotation of identical bytes is nevertheless a new material version.
-    await handle.credentials.modify(subscriptionProviderId, async (current) => current!);
-    expect(await handle.getObservation()).toBeUndefined();
-    await handle.observeInference(presented, failure, Date.now() + 1000);
-    expect(await handle.getObservation()).toBeUndefined();
-  });
+  it.each(['openai-codex', 'xai'] as const)(
+    'checks the actual %s rejected inference snapshot with an explicit deadline',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = { subscriptionProviderId, accountSlotId: 'actual' };
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-788b-b7fb-294f007fb845'
+      );
+      const models = handle.models as MutableModels;
+      const stock = models.getProvider(subscriptionProviderId)!;
+      const faux = fauxProvider({
+        provider: subscriptionProviderId,
+        api: 'openai-completions',
+        models: [{ id: 'gpt-test' }],
+      });
+      models.setProvider({ ...faux.provider, auth: stock.auth });
+      const observed = vi.spyOn(handle, 'observeInference');
+      let bearer: string | undefined;
+      faux.setResponses([
+        (_context, options) => {
+          bearer = options.apiKey;
+          return Object.assign(
+            fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'invalid_token' }),
+            { status: 401 }
+          );
+        },
+      ]);
+      const provider = {
+        id: 'actual',
+        adapterId: subscriptionProviderId,
+        subscriptionProviderId,
+        accountSlotId: pair.accountSlotId,
+        backend: 'pi-ai',
+        apiKey: null,
+        requiresApiKey: false,
+        baseUrl: null,
+        displayName: 'Actual',
+        models: ['gpt-test'],
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      } as ResolvedLLMProviderConfig;
+      await expect(
+        new PiAiGatewayClient().createChatCompletion(
+          provider,
+          { model: 'gpt-test', messages: [] },
+          undefined,
+          {},
+          models
+        )
+      ).rejects.toMatchObject({
+        failure: { kind: 'auth_rejected', settled: true, status: 401 },
+      });
+      expect(observed).toHaveBeenCalledTimes(1);
+      const [presented, failure] = observed.mock.calls[0]!;
+      expect(presented.auth.apiKey).toBe(bearer);
+      // Direct proof checks reuse the captured auth independently of route deadline forwarding.
+      await handle.observeInference(presented, failure, Date.now() + 1000);
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+      });
+      const read = vi
+        .spyOn(handle.credentials, 'read')
+        .mockRejectedValue(new Error('local store failure'));
+      await handle.observeInference(presented, failure, Date.now() + 1000);
+      read.mockRestore();
+      expect(await handle.getObservation()).toMatchObject({
+        accessRejected: { observedAt: DEFAULT_TIME },
+      });
+      // Rotation of identical bytes is nevertheless a new material version.
+      await handle.credentials.modify(subscriptionProviderId, async (current) => current!);
+      expect(await handle.getObservation()).toBeUndefined();
+      await handle.observeInference(presented, failure, Date.now() + 1000);
+      expect(await handle.getObservation()).toBeUndefined();
+    }
+  );
 
   it('preserves authored order and primary eligibility with rejection and exhausted quota', async () => {
     const fixture = createFixture();
@@ -4750,189 +4753,191 @@ describe('pair proof dependency exclusions', () => {
 });
 
 describe('public inference observation read model', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('projects independent %s timestamps without quota reads', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = accountPair('public', subscriptionProviderId);
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-7b65-922a-a84acfa604c4'
-    );
-    const presented = (await handle.resolveInferenceAuth())!.presented!;
-    const app = createApp({
-      coreDb: fixture.coreDb,
-      dataRoot: fixture.dataRoot,
-      providerSubscriptionAccountManager: fixture.manager,
-    });
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockRejectedValue(new Error('Account reads must not fetch quota.'));
-    const before = authoritySnapshot(fixture);
-    const read = async () => {
-      fixture.clock.use(DEFAULT_TIME);
-      const list = await app.request(
-        ...operationRequest('provider-subscription.account-list', {
-          subscriptionProviderId: subscriptionProviderId,
-        })
+  it.each(['openai-codex', 'xai'] as const)(
+    'projects independent %s timestamps without quota reads',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = accountPair('public', subscriptionProviderId);
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-7b65-922a-a84acfa604c4'
       );
-      const detail = await app.request(
-        ...operationRequest('provider-subscription.account-status', {
-          subscriptionProviderId: subscriptionProviderId,
-          accountSlotId: 'public',
-        })
+      const presented = (await handle.resolveInferenceAuth())!.presented!;
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.dataRoot,
+        providerSubscriptionAccountManager: fixture.manager,
+      });
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('Account reads must not fetch quota.'));
+      const before = authoritySnapshot(fixture);
+      const read = async () => {
+        fixture.clock.use(DEFAULT_TIME);
+        const list = await app.request(
+          ...operationRequest('provider-subscription.account-list', {
+            subscriptionProviderId: subscriptionProviderId,
+          })
+        );
+        const detail = await app.request(
+          ...operationRequest('provider-subscription.account-status', {
+            subscriptionProviderId: subscriptionProviderId,
+            accountSlotId: 'public',
+          })
+        );
+        expect(list.status).toBe(200);
+        expect(detail.status).toBe(200);
+        const accounts = (await list.json()).accounts;
+        const account = await detail.json();
+        expect(accounts).toEqual([account]);
+        expect(account.status).toBe('logged_in');
+        return account;
+      };
+      expect(await read()).not.toHaveProperty('inferenceObservation');
+      const accessAt = '2026-10-02T01:00:00.000Z';
+      const quotaAt = '2026-10-02T02:00:00.000Z';
+      fixture.clock.use(accessAt);
+      await handle.observeInference(
+        presented,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
       );
-      expect(list.status).toBe(200);
-      expect(detail.status).toBe(200);
-      const accounts = (await list.json()).accounts;
-      const account = await detail.json();
-      expect(accounts).toEqual([account]);
-      expect(account.status).toBe('logged_in');
-      return account;
-    };
-    expect(await read()).not.toHaveProperty('inferenceObservation');
-    const accessAt = '2026-10-02T01:00:00.000Z';
-    const quotaAt = '2026-10-02T02:00:00.000Z';
-    fixture.clock.use(accessAt);
-    await handle.observeInference(
-      presented,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    fixture.clock.use(quotaAt);
-    await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
-    expect((await read()).inferenceObservation).toEqual({
-      accessRejected: { observedAt: accessAt },
-      quotaExhausted: { observedAt: quotaAt },
-    });
-    await handle.observeInference(presented);
-    expect((await read()).inferenceObservation).toEqual({
-      quotaExhausted: { observedAt: quotaAt },
-    });
-    await handle.observeQuota(presented.version, 'available');
-    expect(await read()).not.toHaveProperty('inferenceObservation');
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(authoritySnapshot(fixture)).toEqual(before);
-  });
+      fixture.clock.use(quotaAt);
+      await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
+      expect((await read()).inferenceObservation).toEqual({
+        accessRejected: { observedAt: accessAt },
+        quotaExhausted: { observedAt: quotaAt },
+      });
+      await handle.observeInference(presented);
+      expect((await read()).inferenceObservation).toEqual({
+        quotaExhausted: { observedAt: quotaAt },
+      });
+      await handle.observeQuota(presented.version, 'available');
+      expect(await read()).not.toHaveProperty('inferenceObservation');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(authoritySnapshot(fixture)).toEqual(before);
+    }
+  );
 
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('clears %s observations only on accepted same-version uncancelled quota', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = accountPair('quota_clear', subscriptionProviderId);
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-7817-beca-2e6ab68aadec'
-    );
-    const presented = (await handle.resolveInferenceAuth())!.presented!;
-    await handle.observeInference(
-      presented,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
-    const both = await handle.getObservation();
-    await handle.observeQuota('predecessor:1', 'available');
-    expect(await handle.getObservation()).toEqual(both);
-    const controller = new AbortController();
-    controller.abort();
-    await handle.observeQuota(presented.version, 'available', true, controller.signal);
-    expect(await handle.getObservation()).toEqual(both);
-    await handle.observeQuota(presented.version, 'temporarily_unavailable');
-    expect(await handle.getObservation()).toEqual(both);
-    await handle.observeQuota(presented.version, 'temporarily_unavailable', true);
-    expect(await handle.getObservation()).toEqual({ quotaExhausted: { observedAt: DEFAULT_TIME } });
-    await handle.observeQuota(presented.version, 'available');
-    expect(await handle.getObservation()).toBeUndefined();
-  });
+  it.each(['openai-codex', 'xai'] as const)(
+    'clears %s observations only on accepted same-version uncancelled quota',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = accountPair('quota_clear', subscriptionProviderId);
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-7817-beca-2e6ab68aadec'
+      );
+      const presented = (await handle.resolveInferenceAuth())!.presented!;
+      await handle.observeInference(
+        presented,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
+      const both = await handle.getObservation();
+      await handle.observeQuota('predecessor:1', 'available');
+      expect(await handle.getObservation()).toEqual(both);
+      const controller = new AbortController();
+      controller.abort();
+      await handle.observeQuota(presented.version, 'available', true, controller.signal);
+      expect(await handle.getObservation()).toEqual(both);
+      await handle.observeQuota(presented.version, 'temporarily_unavailable');
+      expect(await handle.getObservation()).toEqual(both);
+      await handle.observeQuota(presented.version, 'temporarily_unavailable', true);
+      expect(await handle.getObservation()).toEqual({
+        quotaExhausted: { observedAt: DEFAULT_TIME },
+      });
+      await handle.observeQuota(presented.version, 'available');
+      expect(await handle.getObservation()).toBeUndefined();
+    }
+  );
 });
 
 describe('live quota and inference observations', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('keeps live %s quota independent and clears through the real owner', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const pair = accountPair('live_quota', subscriptionProviderId);
-    const handle = await createStoredPair(
-      fixture,
-      pair,
-      'vault_00000000-0000-7698-afb3-d211797cfe6f'
-    );
-    const presented = (await handle.resolveInferenceAuth())!.presented!;
-    await handle.observeInference(
-      presented,
-      { kind: 'auth_rejected', settled: true, status: 401 },
-      Date.now() + 1000
-    );
-    await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
-    const both = await handle.getObservation();
-    const before = authoritySnapshot(fixture);
-    const app = createApp({
-      coreDb: fixture.coreDb,
-      dataRoot: fixture.dataRoot,
-      providerSubscriptionAccountManager: fixture.manager,
-    });
-    const upstream = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response('', { status: 503 }));
-    const failed = await app.request(
-      ...operationRequest('provider-subscription.account-quota', {
-        subscriptionProviderId: subscriptionProviderId,
-        accountSlotId: 'live_quota',
-      })
-    );
-    expect(failed.status).toBe(200);
-    expect(await failed.json()).toEqual({
-      ...pair,
-      availability: 'temporarily_unavailable',
-      observedAt: expect.any(String),
-    });
-    expect(await handle.getObservation()).toEqual(both);
-    if (subscriptionProviderId === 'xai') {
-      upstream
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ userId: 'private-user', subscriptionTier: 'SuperGrok' }))
-        )
+  it.each(['openai-codex', 'xai'] as const)(
+    'keeps live %s quota independent and clears through the real owner',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const pair = accountPair('live_quota', subscriptionProviderId);
+      const handle = await createStoredPair(
+        fixture,
+        pair,
+        'vault_00000000-0000-7698-afb3-d211797cfe6f'
+      );
+      const presented = (await handle.resolveInferenceAuth())!.presented!;
+      await handle.observeInference(
+        presented,
+        { kind: 'auth_rejected', settled: true, status: 401 },
+        Date.now() + 1000
+      );
+      await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
+      const both = await handle.getObservation();
+      const before = authoritySnapshot(fixture);
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.dataRoot,
+        providerSubscriptionAccountManager: fixture.manager,
+      });
+      const upstream = vi
+        .spyOn(globalThis, 'fetch')
         .mockResolvedValueOnce(new Response('', { status: 503 }));
-      const partial = await app.request(
+      const failed = await app.request(
         ...operationRequest('provider-subscription.account-quota', {
           subscriptionProviderId: subscriptionProviderId,
           accountSlotId: 'live_quota',
         })
       );
-      expect((await partial.json()).availability).toBe('temporarily_unavailable');
-      expect(await handle.getObservation()).toEqual({
-        quotaExhausted: { observedAt: DEFAULT_TIME },
+      expect(failed.status).toBe(200);
+      expect(await failed.json()).toEqual({
+        ...pair,
+        availability: 'temporarily_unavailable',
+        observedAt: expect.any(String),
       });
-      upstream
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ userId: 'private-user', subscriptionTier: 'SuperGrok' }))
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ config: { creditUsagePercent: 10 } }))
+      expect(await handle.getObservation()).toEqual(both);
+      if (subscriptionProviderId === 'xai') {
+        upstream
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ userId: 'private-user', subscriptionTier: 'SuperGrok' }))
+          )
+          .mockResolvedValueOnce(new Response('', { status: 503 }));
+        const partial = await app.request(
+          ...operationRequest('provider-subscription.account-quota', {
+            subscriptionProviderId: subscriptionProviderId,
+            accountSlotId: 'live_quota',
+          })
         );
-    } else {
-      upstream.mockResolvedValueOnce(
-        new Response(JSON.stringify({ plan_type: 'pro', rate_limit: null }))
+        expect((await partial.json()).availability).toBe('temporarily_unavailable');
+        expect(await handle.getObservation()).toEqual({
+          quotaExhausted: { observedAt: DEFAULT_TIME },
+        });
+        upstream
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ userId: 'private-user', subscriptionTier: 'SuperGrok' }))
+          )
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ config: { creditUsagePercent: 10 } }))
+          );
+      } else {
+        upstream.mockResolvedValueOnce(
+          new Response(JSON.stringify({ plan_type: 'pro', rate_limit: null }))
+        );
+      }
+      const available = await app.request(
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: subscriptionProviderId,
+          accountSlotId: 'live_quota',
+        })
       );
+      expect(available.status).toBe(200);
+      expect((await available.json()).availability).toBe('available');
+      expect(await handle.getObservation()).toBeUndefined();
+      expect(await fixture.manager.getStatus(pair)).not.toHaveProperty('inferenceObservation');
+      expect(authoritySnapshot(fixture)).toEqual(before);
     }
-    const available = await app.request(
-      ...operationRequest('provider-subscription.account-quota', {
-        subscriptionProviderId: subscriptionProviderId,
-        accountSlotId: 'live_quota',
-      })
-    );
-    expect(available.status).toBe(200);
-    expect((await available.json()).availability).toBe('available');
-    expect(await handle.getObservation()).toBeUndefined();
-    expect(await fixture.manager.getStatus(pair)).not.toHaveProperty('inferenceObservation');
-    expect(authoritySnapshot(fixture)).toEqual(before);
-  });
+  );
 });
 
 /**
@@ -5088,357 +5093,360 @@ describe('inference route same-credential rejection', () => {
   ];
   for (const route of routes)
     for (const subscriptionProviderId of ['openai-codex', 'xai'] as const) {
-      it.each([
-        'proven',
-        'predecessor',
-        'deadline',
-      ] as const)(`${subscriptionProviderId} ${route.worker ? 'Worker' : 'public'} ${route.endpoint} stream=${route.stream} %s preserves outcome and lineage`, async (scenario) => {
-        const f = await createObservedInferenceRouteFixture(subscriptionProviderId, route.worker);
-        const epoch = Date.now();
-        const clock = vi.spyOn(Date, 'now').mockReturnValue(epoch);
-        const observed = vi.spyOn(f.handle, 'observeInference');
-        const fetchSpy = vi
-          .spyOn(globalThis, 'fetch')
-          .mockRejectedValue(new Error('Inference observation must not fetch quota.'));
-        let bearer: string | undefined;
-        const reject = async (_context: unknown, options: StreamOptions | undefined) => {
-          // This controlled native source emits only a framing event before its classified rejection.
-          // Invoke the installed pre-conversion hook so the Worker can prove its complete empty output.
-          if (route.worker) {
-            const model = f.handle.models.getModel(
-              subscriptionProviderId,
-              f.providerModel.replace('openai-codex/', '')
-            )!;
-            await options?.onProviderStreamEvent?.(
-              subscriptionProviderId === 'openai-codex'
-                ? {
-                    type: 'response.created',
-                    response: { id: 'resp_observed_rejection', output: [] },
-                  }
-                : { id: 'chatcmpl_observed_rejection', choices: [] },
-              model
-            );
-          }
-          bearer = options?.apiKey;
-          if (scenario === 'predecessor')
-            await f.handle.credentials.modify(subscriptionProviderId, async (current) => current!);
-          if (scenario === 'deadline') clock.mockReturnValue(epoch + 120001);
-          return Object.assign(
-            fauxAssistantMessage([], {
-              stopReason: 'error',
-              errorMessage: 'invalid_token private-inference-marker',
-            }),
-            { status: 401 }
-          );
-        };
-        const request = async () => {
-          clock.mockReturnValue(epoch);
-          f.faux.setResponses([reject]);
-          const response = await f.app.request(
-            `${route.worker ? '/api/worker-inference' : ''}/v1/${route.endpoint}`,
-            {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                ...(route.worker ? { authorization: `Bearer ${f.token}` } : {}),
-              },
-              body: JSON.stringify({
-                model: 'observed-tier',
-                stream: route.stream,
-                // Keep synthetic input measurements identical across the control and observed calls.
-                prompt_cache_retention: 'none',
-                ...(route.endpoint === 'responses'
-                  ? { input: 'Hello' }
-                  : { messages: [{ role: 'user', content: 'Hello' }] }),
-                ...(!route.worker && subscriptionProviderId !== 'openai-codex'
+      it.each(['proven', 'predecessor', 'deadline'] as const)(
+        `${subscriptionProviderId} ${route.worker ? 'Worker' : 'public'} ${route.endpoint} stream=${route.stream} %s preserves outcome and lineage`,
+        async (scenario) => {
+          const f = await createObservedInferenceRouteFixture(subscriptionProviderId, route.worker);
+          const epoch = Date.now();
+          const clock = vi.spyOn(Date, 'now').mockReturnValue(epoch);
+          const observed = vi.spyOn(f.handle, 'observeInference');
+          const fetchSpy = vi
+            .spyOn(globalThis, 'fetch')
+            .mockRejectedValue(new Error('Inference observation must not fetch quota.'));
+          let bearer: string | undefined;
+          const reject = async (_context: unknown, options: StreamOptions | undefined) => {
+            // This controlled native source emits only a framing event before its classified rejection.
+            // Invoke the installed pre-conversion hook so the Worker can prove its complete empty output.
+            if (route.worker) {
+              const model = f.handle.models.getModel(
+                subscriptionProviderId,
+                f.providerModel.replace('openai-codex/', '')
+              )!;
+              await options?.onProviderStreamEvent?.(
+                subscriptionProviderId === 'openai-codex'
                   ? {
-                      metadata: {
-                        openkit: {
-                          requestId: randomUUID(),
-                          workspaceId: workspaceIdForOwner(f.turn.owner),
-                          threadId: f.turn.threadId,
-                          turnId: f.turn.id,
-                        },
-                      },
+                      type: 'response.created',
+                      response: { id: 'resp_observed_rejection', output: [] },
                     }
-                  : {}),
-              }),
+                  : { id: 'chatcmpl_observed_rejection', choices: [] },
+                model
+              );
             }
-          );
-          return {
-            status: response.status,
-            contentType: response.headers.get('content-type'),
-            body: await response.text(),
+            bearer = options?.apiKey;
+            if (scenario === 'predecessor')
+              await f.handle.credentials.modify(
+                subscriptionProviderId,
+                async (current) => current!
+              );
+            if (scenario === 'deadline') clock.mockReturnValue(epoch + 120001);
+            return Object.assign(
+              fauxAssistantMessage([], {
+                stopReason: 'error',
+                errorMessage: 'invalid_token private-inference-marker',
+              }),
+              { status: 401 }
+            );
           };
-        };
-        // The control changes only observation consumption, retaining real dispatch and route owners.
-        observed.mockResolvedValueOnce(undefined);
-        const control = await request();
-        expect(await f.handle.getObservation()).toBeUndefined();
-        const outcome = await request();
-        expect(outcome).toEqual(control);
-        expect(outcome.body).toMatch(
-          /gateway_logical_model_unavailable|gateway_provider_authentication_failed/
-        );
-        expect(outcome.body).not.toContain('private-inference-marker');
-        expect(observed).toHaveBeenCalledTimes(2);
-        const [presented, failure, deadline] = observed.mock.calls[1]!;
-        expect(presented.auth.apiKey).toBe(bearer);
-        expect(failure).toMatchObject({
-          kind: 'auth_rejected',
-          settled: true,
-          status: 401,
-        });
-        expect(deadline).toBe(epoch + 120000);
-        if (scenario === 'predecessor')
-          expect(await f.handle.getCredentialVersion()).not.toBe(presented.version);
-        if (scenario === 'deadline') expect(Date.now()).toBeGreaterThan(deadline!);
-        const list = await f.app.request(
-          ...operationRequest('provider-subscription.account-list', {
-            subscriptionProviderId: subscriptionProviderId,
-          })
-        );
-        const detail = await f.app.request(
-          ...operationRequest('provider-subscription.account-status', {
-            subscriptionProviderId: subscriptionProviderId,
-            accountSlotId: f.pair.accountSlotId,
-          })
-        );
-        expect(list.status).toBe(200);
-        expect(detail.status).toBe(200);
-        const account = await detail.json();
-        expect((await list.json()).accounts).toEqual([account]);
-        expect(account.status).toBe('logged_in');
-        if (scenario === 'proven')
-          expect(account.inferenceObservation).toEqual({
-            accessRejected: { observedAt: DEFAULT_TIME },
-          });
-        else expect(account).not.toHaveProperty('inferenceObservation');
-        expect(fetchSpy).not.toHaveBeenCalled();
-        const db = openWorkspaceDb(f.fixture.dataRoot, workspaceIdForOwner(f.turn.owner));
-        try {
-          const calls = listWorkspaceCapabilityCalls(db, workspaceIdForOwner(f.turn.owner));
-          // Codex native admission excludes public metadata; Worker scope supplies its durable attribution.
-          if (!route.worker && subscriptionProviderId === 'openai-codex') {
-            expect(calls).toHaveLength(0);
-            return;
-          }
-          expect(calls).toHaveLength(2);
-          const facts = calls.map((call) => ({
-            status: call.status,
-            errorCode: call.errorCode,
-            providerRef: call.providerRef,
-            entries: call.extensions?.['openkit.gateway/routeLineage']?.entries.map(
-              ({ usageRecordIds, ...entry }) => ({
-                ...entry,
-                usageRecords: usageRecordIds?.length ?? 0,
-              })
-            ),
-          }));
-          expect(facts[1]).toEqual(facts[0]);
-          expect(facts[1]).toMatchObject({
-            status: 'failed',
-            providerRef: null,
-            entries: [
+          const request = async () => {
+            clock.mockReturnValue(epoch);
+            f.faux.setResponses([reject]);
+            const response = await f.app.request(
+              `${route.worker ? '/api/worker-inference' : ''}/v1/${route.endpoint}`,
               {
-                kind: 'attempt',
-                routeMemberId: 'authored-primary',
-                providerProfileId: 'observed-provider',
-                providerModel: f.providerModel,
-                selectionReason: 'primary',
-                attemptOrder: 0,
-                retryIndex: 0,
-                terminalResult: 'failed',
-                failureKind: 'auth_rejected',
-              },
-            ],
-          });
-          expect(facts[1]!.entries).toHaveLength(1);
-          expect(JSON.stringify(facts)).not.toMatch(
-            /route_rejection|accessRejected|private-inference-marker/
+                method: 'POST',
+                headers: {
+                  'content-type': 'application/json',
+                  ...(route.worker ? { authorization: `Bearer ${f.token}` } : {}),
+                },
+                body: JSON.stringify({
+                  model: 'observed-tier',
+                  stream: route.stream,
+                  // Keep synthetic input measurements identical across the control and observed calls.
+                  prompt_cache_retention: 'none',
+                  ...(route.endpoint === 'responses'
+                    ? { input: 'Hello' }
+                    : { messages: [{ role: 'user', content: 'Hello' }] }),
+                  ...(!route.worker && subscriptionProviderId !== 'openai-codex'
+                    ? {
+                        metadata: {
+                          openkit: {
+                            requestId: randomUUID(),
+                            workspaceId: workspaceIdForOwner(f.turn.owner),
+                            threadId: f.turn.threadId,
+                            turnId: f.turn.id,
+                          },
+                        },
+                      }
+                    : {}),
+                }),
+              }
+            );
+            return {
+              status: response.status,
+              contentType: response.headers.get('content-type'),
+              body: await response.text(),
+            };
+          };
+          // The control changes only observation consumption, retaining real dispatch and route owners.
+          observed.mockResolvedValueOnce(undefined);
+          const control = await request();
+          expect(await f.handle.getObservation()).toBeUndefined();
+          const outcome = await request();
+          expect(outcome).toEqual(control);
+          expect(outcome.body).toMatch(
+            /gateway_logical_model_unavailable|gateway_provider_authentication_failed/
           );
-        } finally {
-          db.sqlite.close();
+          expect(outcome.body).not.toContain('private-inference-marker');
+          expect(observed).toHaveBeenCalledTimes(2);
+          const [presented, failure, deadline] = observed.mock.calls[1]!;
+          expect(presented.auth.apiKey).toBe(bearer);
+          expect(failure).toMatchObject({
+            kind: 'auth_rejected',
+            settled: true,
+            status: 401,
+          });
+          expect(deadline).toBe(epoch + 120000);
+          if (scenario === 'predecessor')
+            expect(await f.handle.getCredentialVersion()).not.toBe(presented.version);
+          if (scenario === 'deadline') expect(Date.now()).toBeGreaterThan(deadline!);
+          const list = await f.app.request(
+            ...operationRequest('provider-subscription.account-list', {
+              subscriptionProviderId: subscriptionProviderId,
+            })
+          );
+          const detail = await f.app.request(
+            ...operationRequest('provider-subscription.account-status', {
+              subscriptionProviderId: subscriptionProviderId,
+              accountSlotId: f.pair.accountSlotId,
+            })
+          );
+          expect(list.status).toBe(200);
+          expect(detail.status).toBe(200);
+          const account = await detail.json();
+          expect((await list.json()).accounts).toEqual([account]);
+          expect(account.status).toBe('logged_in');
+          if (scenario === 'proven')
+            expect(account.inferenceObservation).toEqual({
+              accessRejected: { observedAt: DEFAULT_TIME },
+            });
+          else expect(account).not.toHaveProperty('inferenceObservation');
+          expect(fetchSpy).not.toHaveBeenCalled();
+          const db = openWorkspaceDb(f.fixture.dataRoot, workspaceIdForOwner(f.turn.owner));
+          try {
+            const calls = listWorkspaceCapabilityCalls(db, workspaceIdForOwner(f.turn.owner));
+            // Codex native admission excludes public metadata; Worker scope supplies its durable attribution.
+            if (!route.worker && subscriptionProviderId === 'openai-codex') {
+              expect(calls).toHaveLength(0);
+              return;
+            }
+            expect(calls).toHaveLength(2);
+            const facts = calls.map((call) => ({
+              status: call.status,
+              errorCode: call.errorCode,
+              providerRef: call.providerRef,
+              entries: call.extensions?.['openkit.gateway/routeLineage']?.entries.map(
+                ({ usageRecordIds, ...entry }) => ({
+                  ...entry,
+                  usageRecords: usageRecordIds?.length ?? 0,
+                })
+              ),
+            }));
+            expect(facts[1]).toEqual(facts[0]);
+            expect(facts[1]).toMatchObject({
+              status: 'failed',
+              providerRef: null,
+              entries: [
+                {
+                  kind: 'attempt',
+                  routeMemberId: 'authored-primary',
+                  providerProfileId: 'observed-provider',
+                  providerModel: f.providerModel,
+                  selectionReason: 'primary',
+                  attemptOrder: 0,
+                  retryIndex: 0,
+                  terminalResult: 'failed',
+                  failureKind: 'auth_rejected',
+                },
+              ],
+            });
+            expect(facts[1]!.entries).toHaveLength(1);
+            expect(JSON.stringify(facts)).not.toMatch(
+              /route_rejection|accessRejected|private-inference-marker/
+            );
+          } finally {
+            db.sqlite.close();
+          }
         }
-      });
+      );
     }
 });
 
 describe('subscription refresh inference ownership', () => {
   // Real credential storage and inference closeout need a local runner budget; provider deadlines stay unchanged.
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('terminates one %s member attempt on its first stock refresh failure', async (subscriptionProviderId) => {
-    const f = await createObservedInferenceRouteFixture(subscriptionProviderId, true);
-    await f.handle.credentials.modify(subscriptionProviderId, async () => ({
-      ...oauthCredential('expired'),
-      expires: Date.now() - 1,
-    }));
-    const oauth = requireProviderOAuth(f.handle, f.pair);
-    const refresh = vi
-      .spyOn(oauth, 'refresh')
-      .mockRejectedValueOnce(new Error('refresh dependency failed'))
-      .mockResolvedValue(oauthCredential('fresh'));
-    const inference = vi.fn(() => fauxAssistantMessage([fauxText('accepted')]));
-    f.faux.setResponses([inference]);
-    const attempt = vi.spyOn(PiAiGatewayClient.prototype, 'createChatCompletion');
-    const response = await f.app.request('/api/worker-inference/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${f.token}` },
-      body: JSON.stringify({
-        model: 'observed-tier',
-        messages: [{ role: 'user', content: 'Hello' }],
-        prompt_cache_retention: 'none',
-      }),
-    });
-    // Stock setup errors have no HTTP/delivery evidence; the existing unknown projection is 400.
-    expect(response.status).toBe(400);
-    expect(attempt).toHaveBeenCalledTimes(1);
-    await expect(attempt.mock.results[0]!.value).rejects.toMatchObject({
-      message: `OAuth refresh failed for ${subscriptionProviderId}: refresh dependency failed`,
-      failure: { kind: 'unknown', settled: false },
-    });
-    expect(refresh).toHaveBeenCalledTimes(1);
-    expect(inference).not.toHaveBeenCalled();
-    expect(await f.handle.getCredentialVersion()).toBe(
-      'vault_00000000-0000-799d-848e-914aef612c73:2'
-    );
-    expect(await f.fixture.manager.getStatus(f.pair)).not.toHaveProperty('inferenceObservation');
-    const db = openWorkspaceDb(f.fixture.dataRoot, workspaceIdForOwner(f.turn.owner));
-    try {
-      const calls = listWorkspaceCapabilityCalls(db, workspaceIdForOwner(f.turn.owner));
-      expect(calls).toHaveLength(1);
-      expect(calls[0]).toMatchObject({ status: 'failed', providerRef: null });
-      expect(calls[0]!.extensions?.['openkit.gateway/routeLineage']?.entries).toEqual([
-        expect.objectContaining({
-          kind: 'attempt',
-          attemptOrder: 0,
-          retryIndex: 0,
-          terminalResult: 'failed',
-          failureKind: 'unknown',
-          routeMemberId: 'authored-primary',
+  it.each(['openai-codex', 'xai'] as const)(
+    'terminates one %s member attempt on its first stock refresh failure',
+    async (subscriptionProviderId) => {
+      const f = await createObservedInferenceRouteFixture(subscriptionProviderId, true);
+      await f.handle.credentials.modify(subscriptionProviderId, async () => ({
+        ...oauthCredential('expired'),
+        expires: Date.now() - 1,
+      }));
+      const oauth = requireProviderOAuth(f.handle, f.pair);
+      const refresh = vi
+        .spyOn(oauth, 'refresh')
+        .mockRejectedValueOnce(new Error('refresh dependency failed'))
+        .mockResolvedValue(oauthCredential('fresh'));
+      const inference = vi.fn(() => fauxAssistantMessage([fauxText('accepted')]));
+      f.faux.setResponses([inference]);
+      const attempt = vi.spyOn(PiAiGatewayClient.prototype, 'createChatCompletion');
+      const response = await f.app.request('/api/worker-inference/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${f.token}` },
+        body: JSON.stringify({
+          model: 'observed-tier',
+          messages: [{ role: 'user', content: 'Hello' }],
+          prompt_cache_retention: 'none',
         }),
-      ]);
-    } finally {
-      db.sqlite.close();
-    }
-  }, 60_000);
-
-  for (const subscriptionProviderId of ['openai-codex', 'xai'] as const)
-    it.each([
-      'auth_rejected',
-      'quota_exhausted',
-    ] as const)(`projects post-refresh ${subscriptionProviderId} %s from the actual bearer`, async (kind) => {
-      // Refresh attribution must finish within the unchanged deadline, independent of real Vault I/O speed.
-      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-      vi.setSystemTime(DEFAULT_TIME);
-      const fixture = createFixture();
-      const pair = accountPair('refresh', subscriptionProviderId);
-      const handle = await createStoredPair(
-        fixture,
-        pair,
-        'vault_00000000-0000-79d6-aa15-2f46423f0a70',
-        {
-          ...oauthCredential('expired'),
-          expires: Date.now() - 1,
-        }
-      );
-      const models = handle.models as MutableModels;
-      const stock = models.getProvider(subscriptionProviderId)!;
-      const fresh = oauthCredential('fresh');
-      const refresh = vi.spyOn(stock.auth.oauth!, 'refresh').mockResolvedValue(fresh);
-      const faux = fauxProvider({
-        provider: subscriptionProviderId,
-        api: 'openai-completions',
-        models: [{ id: 'gpt-test' }],
       });
-      models.setProvider({ ...faux.provider, auth: stock.auth });
-      let bearer: string | undefined;
-      faux.setResponses([
-        (_context, options) => {
-          bearer = options.apiKey;
-          return Object.assign(
-            fauxAssistantMessage([], {
-              stopReason: 'error',
-              errorMessage: kind === 'auth_rejected' ? 'invalid_token' : 'insufficient_quota',
-            }),
-            { status: kind === 'auth_rejected' ? 401 : 429 }
-          );
-        },
-      ]);
-      const provider = {
-        id: 'subscription',
-        adapterId: subscriptionProviderId,
-        subscriptionProviderId,
-        accountSlotId: pair.accountSlotId,
-        backend: 'pi-ai',
-        apiKey: null,
-        requiresApiKey: false,
-        baseUrl: null,
-        displayName: 'Subscription',
-        models: ['gpt-test'],
-        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-      } as ResolvedLLMProviderConfig;
-      const observed = vi.spyOn(handle, 'observeInference');
-      await expect(
-        new PiAiGatewayClient().createChatCompletion(
-          provider,
-          { model: 'gpt-test', messages: [] },
-          undefined,
-          { deadline: Date.now() + 1000 },
-          models
-        )
-      ).rejects.toMatchObject({
-        failure: {
-          kind,
-          settled: true,
-          status: kind === 'auth_rejected' ? 401 : 429,
-        },
+      // Stock setup errors have no HTTP/delivery evidence; the existing unknown projection is 400.
+      expect(response.status).toBe(400);
+      expect(attempt).toHaveBeenCalledTimes(1);
+      await expect(attempt.mock.results[0]!.value).rejects.toMatchObject({
+        message: `OAuth refresh failed for ${subscriptionProviderId}: refresh dependency failed`,
+        failure: { kind: 'unknown', settled: false },
       });
       expect(refresh).toHaveBeenCalledTimes(1);
-      expect(bearer).toBe(fresh.access);
-      expect(await handle.getCredentialVersion()).toBe(
-        'vault_00000000-0000-79d6-aa15-2f46423f0a70:2'
+      expect(inference).not.toHaveBeenCalled();
+      expect(await f.handle.getCredentialVersion()).toBe(
+        'vault_00000000-0000-799d-848e-914aef612c73:2'
       );
-      expect(observed).toHaveBeenCalledTimes(1);
-      expect(observed.mock.calls[0]![0]).toMatchObject({
-        version: 'vault_00000000-0000-79d6-aa15-2f46423f0a70:2',
-        auth: { apiKey: fresh.access },
-      });
-      const app = createApp({
-        coreDb: fixture.coreDb,
-        dataRoot: fixture.dataRoot,
-        providerSubscriptionAccountManager: fixture.manager,
-      });
-      const fetchSpy = vi
-        .spyOn(globalThis, 'fetch')
-        .mockRejectedValue(new Error('No quota request allowed.'));
-      const detail = await app.request(
-        ...operationRequest('provider-subscription.account-status', {
-          subscriptionProviderId: subscriptionProviderId,
-          accountSlotId: 'refresh',
-        })
-      );
-      const list = await app.request(
-        ...operationRequest('provider-subscription.account-list', {
-          subscriptionProviderId: subscriptionProviderId,
-        })
-      );
-      expect(detail.status).toBe(200);
-      expect(list.status).toBe(200);
-      const account = await detail.json();
-      expect((await list.json()).accounts).toEqual([account]);
-      expect(account).toMatchObject({
-        status: 'logged_in',
-        inferenceObservation: {
-          [kind === 'auth_rejected' ? 'accessRejected' : 'quotaExhausted']: {
-            observedAt: DEFAULT_TIME,
+      expect(await f.fixture.manager.getStatus(f.pair)).not.toHaveProperty('inferenceObservation');
+      const db = openWorkspaceDb(f.fixture.dataRoot, workspaceIdForOwner(f.turn.owner));
+      try {
+        const calls = listWorkspaceCapabilityCalls(db, workspaceIdForOwner(f.turn.owner));
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ status: 'failed', providerRef: null });
+        expect(calls[0]!.extensions?.['openkit.gateway/routeLineage']?.entries).toEqual([
+          expect.objectContaining({
+            kind: 'attempt',
+            attemptOrder: 0,
+            retryIndex: 0,
+            terminalResult: 'failed',
+            failureKind: 'unknown',
+            routeMemberId: 'authored-primary',
+          }),
+        ]);
+      } finally {
+        db.sqlite.close();
+      }
+    },
+    60_000
+  );
+
+  for (const subscriptionProviderId of ['openai-codex', 'xai'] as const)
+    it.each(['auth_rejected', 'quota_exhausted'] as const)(
+      `projects post-refresh ${subscriptionProviderId} %s from the actual bearer`,
+      async (kind) => {
+        // Refresh attribution must finish within the unchanged deadline, independent of real Vault I/O speed.
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+        vi.setSystemTime(DEFAULT_TIME);
+        const fixture = createFixture();
+        const pair = accountPair('refresh', subscriptionProviderId);
+        const handle = await createStoredPair(
+          fixture,
+          pair,
+          'vault_00000000-0000-79d6-aa15-2f46423f0a70',
+          {
+            ...oauthCredential('expired'),
+            expires: Date.now() - 1,
+          }
+        );
+        const models = handle.models as MutableModels;
+        const stock = models.getProvider(subscriptionProviderId)!;
+        const fresh = oauthCredential('fresh');
+        const refresh = vi.spyOn(stock.auth.oauth!, 'refresh').mockResolvedValue(fresh);
+        const faux = fauxProvider({
+          provider: subscriptionProviderId,
+          api: 'openai-completions',
+          models: [{ id: 'gpt-test' }],
+        });
+        models.setProvider({ ...faux.provider, auth: stock.auth });
+        let bearer: string | undefined;
+        faux.setResponses([
+          (_context, options) => {
+            bearer = options.apiKey;
+            return Object.assign(
+              fauxAssistantMessage([], {
+                stopReason: 'error',
+                errorMessage: kind === 'auth_rejected' ? 'invalid_token' : 'insufficient_quota',
+              }),
+              { status: kind === 'auth_rejected' ? 401 : 429 }
+            );
           },
-        },
-      });
-      expect(fetchSpy).not.toHaveBeenCalled();
-    });
+        ]);
+        const provider = {
+          id: 'subscription',
+          adapterId: subscriptionProviderId,
+          subscriptionProviderId,
+          accountSlotId: pair.accountSlotId,
+          backend: 'pi-ai',
+          apiKey: null,
+          requiresApiKey: false,
+          baseUrl: null,
+          displayName: 'Subscription',
+          models: ['gpt-test'],
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+        } as ResolvedLLMProviderConfig;
+        const observed = vi.spyOn(handle, 'observeInference');
+        await expect(
+          new PiAiGatewayClient().createChatCompletion(
+            provider,
+            { model: 'gpt-test', messages: [] },
+            undefined,
+            { deadline: Date.now() + 1000 },
+            models
+          )
+        ).rejects.toMatchObject({
+          failure: {
+            kind,
+            settled: true,
+            status: kind === 'auth_rejected' ? 401 : 429,
+          },
+        });
+        expect(refresh).toHaveBeenCalledTimes(1);
+        expect(bearer).toBe(fresh.access);
+        expect(await handle.getCredentialVersion()).toBe(
+          'vault_00000000-0000-79d6-aa15-2f46423f0a70:2'
+        );
+        expect(observed).toHaveBeenCalledTimes(1);
+        expect(observed.mock.calls[0]![0]).toMatchObject({
+          version: 'vault_00000000-0000-79d6-aa15-2f46423f0a70:2',
+          auth: { apiKey: fresh.access },
+        });
+        const app = createApp({
+          coreDb: fixture.coreDb,
+          dataRoot: fixture.dataRoot,
+          providerSubscriptionAccountManager: fixture.manager,
+        });
+        const fetchSpy = vi
+          .spyOn(globalThis, 'fetch')
+          .mockRejectedValue(new Error('No quota request allowed.'));
+        const detail = await app.request(
+          ...operationRequest('provider-subscription.account-status', {
+            subscriptionProviderId: subscriptionProviderId,
+            accountSlotId: 'refresh',
+          })
+        );
+        const list = await app.request(
+          ...operationRequest('provider-subscription.account-list', {
+            subscriptionProviderId: subscriptionProviderId,
+          })
+        );
+        expect(detail.status).toBe(200);
+        expect(list.status).toBe(200);
+        const account = await detail.json();
+        expect((await list.json()).accounts).toEqual([account]);
+        expect(account).toMatchObject({
+          status: 'logged_in',
+          inferenceObservation: {
+            [kind === 'auth_rejected' ? 'accessRejected' : 'quotaExhausted']: {
+              observedAt: DEFAULT_TIME,
+            },
+          },
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+      }
+    );
 });
 
 describe('subscription auth attribution isolation', () => {
@@ -5504,69 +5512,69 @@ describe('subscription auth attribution isolation', () => {
       expect(await handle.getObservation()).toBeUndefined();
     });
 
-    it.each([
-      'auth_rejected',
-      'quota_exhausted',
-    ] as const)(`suppresses ${subscriptionProviderId} %s after identical material is replaced during auth derivation`, async (kind) => {
-      const fixture = createFixture();
-      const pair = accountPair('derivation', subscriptionProviderId);
-      const handle = await createStoredPair(
-        fixture,
-        pair,
-        'vault_00000000-0000-740a-b6b4-6b4c397f0315'
-      );
-      const models = handle.models as MutableModels;
-      const stock = models.getProvider(subscriptionProviderId)!;
-      const original = stock.auth.oauth!.toAuth.bind(stock.auth.oauth!);
-      vi.spyOn(stock.auth.oauth!, 'toAuth').mockImplementation(async (credential) => {
-        const auth = await original(credential);
-        await handle.credentials.modify(subscriptionProviderId, async (current) => current!);
-        return auth;
-      });
-      const getAuth = vi.spyOn(models, 'getAuth');
-      const faux = fauxProvider({
-        provider: subscriptionProviderId,
-        api: 'openai-completions',
-        models: [{ id: 'gpt-test' }],
-      });
-      models.setProvider({ ...faux.provider, auth: stock.auth });
-      faux.setResponses([
-        Object.assign(
-          fauxAssistantMessage([], {
-            stopReason: 'error',
-            errorMessage: kind === 'auth_rejected' ? 'invalid_token' : 'insufficient_quota',
-          }),
-          { status: kind === 'auth_rejected' ? 401 : 429 }
-        ),
-      ]);
-      const provider = {
-        id: 'subscription',
-        adapterId: subscriptionProviderId,
-        subscriptionProviderId,
-        accountSlotId: pair.accountSlotId,
-        backend: 'pi-ai',
-        apiKey: null,
-        requiresApiKey: false,
-        baseUrl: null,
-        displayName: 'Subscription',
-        models: ['gpt-test'],
-        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-      } as ResolvedLLMProviderConfig;
-      await expect(
-        new PiAiGatewayClient().createChatCompletion(
-          provider,
-          { model: 'gpt-test', messages: [] },
-          undefined,
-          { deadline: Date.now() + 1000 },
-          models
-        )
-      ).rejects.toMatchObject({ failure: { kind } });
-      expect(getAuth).toHaveBeenCalledTimes(1);
-      expect(await handle.getCredentialVersion()).toBe(
-        'vault_00000000-0000-740a-b6b4-6b4c397f0315:2'
-      );
-      expect(await fixture.manager.getStatus(pair)).not.toHaveProperty('inferenceObservation');
-    });
+    it.each(['auth_rejected', 'quota_exhausted'] as const)(
+      `suppresses ${subscriptionProviderId} %s after identical material is replaced during auth derivation`,
+      async (kind) => {
+        const fixture = createFixture();
+        const pair = accountPair('derivation', subscriptionProviderId);
+        const handle = await createStoredPair(
+          fixture,
+          pair,
+          'vault_00000000-0000-740a-b6b4-6b4c397f0315'
+        );
+        const models = handle.models as MutableModels;
+        const stock = models.getProvider(subscriptionProviderId)!;
+        const original = stock.auth.oauth!.toAuth.bind(stock.auth.oauth!);
+        vi.spyOn(stock.auth.oauth!, 'toAuth').mockImplementation(async (credential) => {
+          const auth = await original(credential);
+          await handle.credentials.modify(subscriptionProviderId, async (current) => current!);
+          return auth;
+        });
+        const getAuth = vi.spyOn(models, 'getAuth');
+        const faux = fauxProvider({
+          provider: subscriptionProviderId,
+          api: 'openai-completions',
+          models: [{ id: 'gpt-test' }],
+        });
+        models.setProvider({ ...faux.provider, auth: stock.auth });
+        faux.setResponses([
+          Object.assign(
+            fauxAssistantMessage([], {
+              stopReason: 'error',
+              errorMessage: kind === 'auth_rejected' ? 'invalid_token' : 'insufficient_quota',
+            }),
+            { status: kind === 'auth_rejected' ? 401 : 429 }
+          ),
+        ]);
+        const provider = {
+          id: 'subscription',
+          adapterId: subscriptionProviderId,
+          subscriptionProviderId,
+          accountSlotId: pair.accountSlotId,
+          backend: 'pi-ai',
+          apiKey: null,
+          requiresApiKey: false,
+          baseUrl: null,
+          displayName: 'Subscription',
+          models: ['gpt-test'],
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+        } as ResolvedLLMProviderConfig;
+        await expect(
+          new PiAiGatewayClient().createChatCompletion(
+            provider,
+            { model: 'gpt-test', messages: [] },
+            undefined,
+            { deadline: Date.now() + 1000 },
+            models
+          )
+        ).rejects.toMatchObject({ failure: { kind } });
+        expect(getAuth).toHaveBeenCalledTimes(1);
+        expect(await handle.getCredentialVersion()).toBe(
+          'vault_00000000-0000-740a-b6b4-6b4c397f0315:2'
+        );
+        expect(await fixture.manager.getStatus(pair)).not.toHaveProperty('inferenceObservation');
+      }
+    );
   }
 });
 
@@ -5602,44 +5610,44 @@ describe('subscription account publication durability', () => {
     await expect(fixture.createManager().getStatus(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
   });
 
-  it.each([
-    'nonempty',
-    'replaced',
-  ] as const)('preserves %s account-directory residue after a failed unpublished create', async (residue) => {
-    const fixture = createFixture();
-    const pair = accountPair(`failed_${residue}_create`);
-    const directory = accountDirectory(fixture.dataRoot, pair);
-    const preserved = join(fixture.dataRoot, 'preserved-create-attempt');
-    durability.fail = (candidate, isDirectory) => {
-      if (isDirectory || dirname(candidate) !== directory) return false;
-      if (residue === 'nonempty') {
-        writeFileSync(join(directory, 'unknown-artifact'), 'Preserve this foreign artifact.');
-      } else {
-        renameSync(directory, preserved);
-        mkdirSync(directory, { mode: 0o700 });
+  it.each(['nonempty', 'replaced'] as const)(
+    'preserves %s account-directory residue after a failed unpublished create',
+    async (residue) => {
+      const fixture = createFixture();
+      const pair = accountPair(`failed_${residue}_create`);
+      const directory = accountDirectory(fixture.dataRoot, pair);
+      const preserved = join(fixture.dataRoot, 'preserved-create-attempt');
+      durability.fail = (candidate, isDirectory) => {
+        if (isDirectory || dirname(candidate) !== directory) return false;
+        if (residue === 'nonempty') {
+          writeFileSync(join(directory, 'unknown-artifact'), 'Preserve this foreign artifact.');
+        } else {
+          renameSync(directory, preserved);
+          mkdirSync(directory, { mode: 0o700 });
+        }
+        return true;
+      };
+      try {
+        await expect(fixture.manager.createAccount(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
+        durability.fail = undefined;
+        expect(existsSync(directory)).toBe(true);
+        if (residue === 'nonempty') {
+          expect(
+            readFileSync(join(directory, 'unknown-artifact'), 'utf8') ===
+              'Preserve this foreign artifact.'
+          ).toBe(true);
+        } else {
+          expect(readdirSync(directory)).toEqual([]);
+          expect(existsSync(preserved)).toBe(true);
+        }
+        await expect(fixture.createManager().getStatus(pair)).rejects.toMatchObject(
+          PERSISTENCE_ERROR
+        );
+      } finally {
+        durability.fail = undefined;
       }
-      return true;
-    };
-    try {
-      await expect(fixture.manager.createAccount(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
-      durability.fail = undefined;
-      expect(existsSync(directory)).toBe(true);
-      if (residue === 'nonempty') {
-        expect(
-          readFileSync(join(directory, 'unknown-artifact'), 'utf8') ===
-            'Preserve this foreign artifact.'
-        ).toBe(true);
-      } else {
-        expect(readdirSync(directory)).toEqual([]);
-        expect(existsSync(preserved)).toBe(true);
-      }
-      await expect(fixture.createManager().getStatus(pair)).rejects.toMatchObject(
-        PERSISTENCE_ERROR
-      );
-    } finally {
-      durability.fail = undefined;
     }
-  });
+  );
 
   it('preserves published account authority when fresh-create acknowledgement fails', async () => {
     const fixture = createFixture();
@@ -5703,38 +5711,38 @@ describe('subscription account publication durability', () => {
     );
   });
 
-  it.each([
-    'before',
-    'after',
-  ] as const)('rejects success when synchronization fails %s the account rename', async (boundary) => {
-    const fixture = createFixture();
-    const pair = accountPair('durable_slot');
-    await fixture.manager.createAccount({ ...pair, displayName: 'Prior name' });
-    const path = accountPath(fixture.dataRoot, pair);
-    durability.events.length = 0;
-    durability.fail = (candidate, directory) =>
-      boundary === 'before'
-        ? !directory && dirname(candidate) === dirname(path)
-        : directory &&
-          candidate === dirname(path) &&
-          durability.events.some((event) => event.op === 'rename' && event.path === path);
-    try {
-      await expect(
-        fixture.manager.updateAccount(pair, { displayName: 'Replacement name' })
-      ).rejects.toMatchObject(PERSISTENCE_ERROR);
-      durability.fail = undefined;
-      expect(await fixture.createManager().listAccounts(pair.subscriptionProviderId)).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            ...pair,
-            displayName: boundary === 'before' ? 'Prior name' : 'Replacement name',
-          }),
-        ])
-      );
-    } finally {
-      durability.fail = undefined;
+  it.each(['before', 'after'] as const)(
+    'rejects success when synchronization fails %s the account rename',
+    async (boundary) => {
+      const fixture = createFixture();
+      const pair = accountPair('durable_slot');
+      await fixture.manager.createAccount({ ...pair, displayName: 'Prior name' });
+      const path = accountPath(fixture.dataRoot, pair);
+      durability.events.length = 0;
+      durability.fail = (candidate, directory) =>
+        boundary === 'before'
+          ? !directory && dirname(candidate) === dirname(path)
+          : directory &&
+            candidate === dirname(path) &&
+            durability.events.some((event) => event.op === 'rename' && event.path === path);
+      try {
+        await expect(
+          fixture.manager.updateAccount(pair, { displayName: 'Replacement name' })
+        ).rejects.toMatchObject(PERSISTENCE_ERROR);
+        durability.fail = undefined;
+        expect(await fixture.createManager().listAccounts(pair.subscriptionProviderId)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              ...pair,
+              displayName: boundary === 'before' ? 'Prior name' : 'Replacement name',
+            }),
+          ])
+        );
+      } finally {
+        durability.fail = undefined;
+      }
     }
-  });
+  );
 });
 
 describe('uncommitted ancestor account recovery', () => {
@@ -5863,67 +5871,67 @@ describe('subscription account status dependency projection', () => {
     { fault: 'locked', bound: true },
     { fault: 'unavailable', bound: false },
     { fault: 'unavailable', bound: true },
-  ] as const)('projects $fault Vault as unavailable for bound=$bound without changing authority', async ({
-    fault,
-    bound,
-  }) => {
-    const fixture = createFixture();
-    const pair = accountPair(`status_${fault}_${bound}`);
-    ensureLocalUser(fixture.coreDb);
-    if (bound) {
-      await createStoredPair(fixture, pair, testEntityId('vault', pair.accountSlotId));
-    } else {
-      await fixture.manager.createAccount(pair);
-    }
-    const before = authoritySnapshot(fixture);
-    const app = createApp({
-      coreDb: fixture.coreDb,
-      dataRoot: fixture.dataRoot,
-      providerSubscriptionAccountManager: fixture.createManager(),
-    });
-    const invoke = (operation: string) =>
-      app.request(`/api/app/operations/provider-subscription.${operation}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(pair),
-      });
-    const expectedError = fault === 'locked' ? LOCKED_ERROR : VAULT_UNAVAILABLE_ERROR;
-    const inventoryFailure =
-      fault === 'unavailable'
-        ? vi.spyOn(fixture.backend(), 'listReferences').mockImplementation(() => {
-            throw new VaultBackendError('backend-unavailable', 'Private dependency failure.');
-          })
-        : undefined;
-    if (fault === 'locked') fixture.vaultState.lock();
-    try {
-      // The account owner requires a successful read with a retryable status, not a Vault HTTP error.
-      const status = await invoke('account-status');
-      expect.soft(status.status).toBe(200);
-      const projected = await status.json();
-      expect.soft(projected).toMatchObject({
-        ...pair,
-        status: 'unavailable',
-        message: expectedError.message,
-      });
-      expect.soft(projected).not.toHaveProperty('vaultReferenceId');
-      expect.soft(JSON.stringify(projected)).not.toContain('Private dependency failure.');
-      for (const operation of ['account-logout', 'account-delete']) {
-        const mutation = await invoke(operation);
-        expect(mutation.status).toBe(503);
-        expect(await mutation.json()).toMatchObject(expectedError);
+  ] as const)(
+    'projects $fault Vault as unavailable for bound=$bound without changing authority',
+    async ({ fault, bound }) => {
+      const fixture = createFixture();
+      const pair = accountPair(`status_${fault}_${bound}`);
+      ensureLocalUser(fixture.coreDb);
+      if (bound) {
+        await createStoredPair(fixture, pair, testEntityId('vault', pair.accountSlotId));
+      } else {
+        await fixture.manager.createAccount(pair);
       }
-    } finally {
-      inventoryFailure?.mockRestore();
-      if (fault === 'locked') fixture.vaultState.unlock({ masterKey: Buffer.alloc(32, 23) });
+      const before = authoritySnapshot(fixture);
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.dataRoot,
+        providerSubscriptionAccountManager: fixture.createManager(),
+      });
+      const invoke = (operation: string) =>
+        app.request(`/api/app/operations/provider-subscription.${operation}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(pair),
+        });
+      const expectedError = fault === 'locked' ? LOCKED_ERROR : VAULT_UNAVAILABLE_ERROR;
+      const inventoryFailure =
+        fault === 'unavailable'
+          ? vi.spyOn(fixture.backend(), 'listReferences').mockImplementation(() => {
+              throw new VaultBackendError('backend-unavailable', 'Private dependency failure.');
+            })
+          : undefined;
+      if (fault === 'locked') fixture.vaultState.lock();
+      try {
+        // The account owner requires a successful read with a retryable status, not a Vault HTTP error.
+        const status = await invoke('account-status');
+        expect.soft(status.status).toBe(200);
+        const projected = await status.json();
+        expect.soft(projected).toMatchObject({
+          ...pair,
+          status: 'unavailable',
+          message: expectedError.message,
+        });
+        expect.soft(projected).not.toHaveProperty('vaultReferenceId');
+        expect.soft(JSON.stringify(projected)).not.toContain('Private dependency failure.');
+        for (const operation of ['account-logout', 'account-delete']) {
+          const mutation = await invoke(operation);
+          expect(mutation.status).toBe(503);
+          expect(await mutation.json()).toMatchObject(expectedError);
+        }
+      } finally {
+        inventoryFailure?.mockRestore();
+        if (fault === 'locked') fixture.vaultState.unlock({ masterKey: Buffer.alloc(32, 23) });
+      }
+      expect(authoritySnapshot(fixture)).toEqual(before);
+      const recovered = await invoke('account-status');
+      expect(recovered.status).toBe(200);
+      expect(await recovered.json()).toMatchObject({
+        ...pair,
+        status: bound ? 'logged_in' : 'logged_out',
+      });
     }
-    expect(authoritySnapshot(fixture)).toEqual(before);
-    const recovered = await invoke('account-status');
-    expect(recovered.status).toBe(200);
-    expect(await recovered.json()).toMatchObject({
-      ...pair,
-      status: bound ? 'logged_in' : 'logged_out',
-    });
-  });
+  );
 });
 
 describe('Codex settings and manual reset public behavior', () => {

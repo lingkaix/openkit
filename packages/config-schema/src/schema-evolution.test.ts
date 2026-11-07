@@ -135,18 +135,19 @@ describe('schema evolution record envelope', () => {
     ).toThrow('Unregistered required feature: recurring-history-v1');
   });
 
-  it.each([
-    'runtime.evidence.v1',
-    'worker.runtime-provenance.v1',
-    'evidence.bundle.v1',
-  ])('registers the evidence writer feature %s and requires explicit reader support', (feature) => {
-    expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
-    const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
-    expect(() => parseRecordEnvelope(envelope)).toThrow(`Unsupported required feature: ${feature}`);
-    expect(
-      parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
-    ).toEqual([feature]);
-  });
+  it.each(['runtime.evidence.v1', 'worker.runtime-provenance.v1', 'evidence.bundle.v1'])(
+    'registers the evidence writer feature %s and requires explicit reader support',
+    (feature) => {
+      expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
+      const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
+      expect(() => parseRecordEnvelope(envelope)).toThrow(
+        `Unsupported required feature: ${feature}`
+      );
+      expect(
+        parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
+      ).toEqual([feature]);
+    }
+  );
 
   it('keeps the required-feature registry aligned with the accepted spec table', () => {
     const spec = readFileSync(

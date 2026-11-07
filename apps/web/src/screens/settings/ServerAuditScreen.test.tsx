@@ -176,27 +176,27 @@ describe('Server audit administration', () => {
     expect(screen.getByText('No server permission decisions')).toBeInTheDocument();
   });
 
-  it.each([
-    'audit.server-list',
-    'permission.server-list',
-  ] as const)('denies access when %s returns 403, hides records, and retries without credentials', async (method) => {
-    const client = makeClient();
-    vi.mocked(client.operations[method]).mockRejectedValueOnce(
-      new ApiCallError(403, PRIVATE, { code: 'forbidden' })
-    );
-    const { container, queryClient } = renderScreen(client);
-    expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
-    expect(container.querySelector('input')).toBeNull();
-    expect(container.innerHTML).not.toContain(PRIVATE);
-    expect(queryClient.getQueryState(['settings', 'server-audit'])?.error?.message).not.toContain(
-      PRIVATE
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await openRecords();
-    expect(screen.getByText('server.inspect')).toBeInTheDocument();
-    expect(client.operations[method]).toHaveBeenCalledTimes(2);
-  });
+  it.each(['audit.server-list', 'permission.server-list'] as const)(
+    'denies access when %s returns 403, hides records, and retries without credentials',
+    async (method) => {
+      const client = makeClient();
+      vi.mocked(client.operations[method]).mockRejectedValueOnce(
+        new ApiCallError(403, PRIVATE, { code: 'forbidden' })
+      );
+      const { container, queryClient } = renderScreen(client);
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
+      expect(container.querySelector('input')).toBeNull();
+      expect(container.innerHTML).not.toContain(PRIVATE);
+      expect(queryClient.getQueryState(['settings', 'server-audit'])?.error?.message).not.toContain(
+        PRIVATE
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await openRecords();
+      expect(screen.getByText('server.inspect')).toBeInTheDocument();
+      expect(client.operations[method]).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it('hides previously loaded records when a refetch loses session authority', async () => {
     const client = makeClient();
@@ -213,46 +213,47 @@ describe('Server audit administration', () => {
     expect(container.querySelector('input')).toBeNull();
   });
 
-  it.each([
-    401, 403,
-  ])('hides cached rows on remount until current authority is checked, including %s denial', async (status) => {
-    const client = makeClient();
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-    });
-    const first = renderScreen(client, queryClient);
-    await openRecords();
-    expect(screen.getByText('server.inspect')).toBeInTheDocument();
-    first.unmount();
+  it.each([401, 403])(
+    'hides cached rows on remount until current authority is checked, including %s denial',
+    async (status) => {
+      const client = makeClient();
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      });
+      const first = renderScreen(client, queryClient);
+      await openRecords();
+      expect(screen.getByText('server.inspect')).toBeInTheDocument();
+      first.unmount();
 
-    let deny!: () => void;
-    vi.mocked(client.operations['permission.server-list']).mockImplementationOnce(
-      () =>
-        new Promise((_, reject) => {
-          deny = () => reject(new ApiCallError(status, PRIVATE, { code: 'forbidden' }));
-        })
-    );
-    const { container } = renderScreen(client, queryClient);
-    expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
-    expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(client.operations['permission.server-list']).toHaveBeenCalledTimes(2)
-    );
-    deny();
-    expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(PRIVATE);
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await openRecords();
-    expect(screen.getByText('server.inspect')).toBeInTheDocument();
-    for (const method of ['audit.server-list', 'permission.server-list'] as const) {
-      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
-        [{ limit: 50 }],
-        [{ limit: 50 }],
-        [{ limit: 50 }],
-      ]);
+      let deny!: () => void;
+      vi.mocked(client.operations['permission.server-list']).mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            deny = () => reject(new ApiCallError(status, PRIVATE, { code: 'forbidden' }));
+          })
+      );
+      const { container } = renderScreen(client, queryClient);
+      expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
+      expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(client.operations['permission.server-list']).toHaveBeenCalledTimes(2)
+      );
+      deny();
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(PRIVATE);
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await openRecords();
+      expect(screen.getByText('server.inspect')).toBeInTheDocument();
+      for (const method of ['audit.server-list', 'permission.server-list'] as const) {
+        expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
+          [{ limit: 50 }],
+          [{ limit: 50 }],
+          [{ limit: 50 }],
+        ]);
+      }
     }
-  });
+  );
 
   it('discards a previous mount pending read and checks the new session client', async () => {
     const previousClient = makeClient();
@@ -321,64 +322,65 @@ describe('Server audit administration', () => {
     }
   });
 
-  it.each([
-    401, 403, 500,
-  ])('hides prior rows after a failed refresh (%s), then retries only the two safe reads', async (status) => {
-    const client = makeClient();
-    const { container, queryClient } = renderScreen(client);
-    await openRecords();
-    expect(screen.getByText('server.inspect')).toBeInTheDocument();
-    expect(
-      screen.getByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
-    ).toBeVisible();
-    expect(
-      screen.getByRole('link', {
-        name: 'Open the Assistant',
-      })
-    ).toBeVisible();
-    vi.mocked(client.operations['audit.server-list']).mockRejectedValueOnce(
-      new ApiCallError(status, PRIVATE, {
-        code: PRIVATE,
-        details: PRIVATE,
-        cause: new Error(PRIVATE),
-      })
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'Refresh audit' }));
-    if (status === 500) {
-      expect(await screen.findByRole('alert')).toHaveTextContent(
-        "Couldn't load server audit records."
+  it.each([401, 403, 500])(
+    'hides prior rows after a failed refresh (%s), then retries only the two safe reads',
+    async (status) => {
+      const client = makeClient();
+      const { container, queryClient } = renderScreen(client);
+      await openRecords();
+      expect(screen.getByText('server.inspect')).toBeInTheDocument();
+      expect(
+        screen.getByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
+      ).toBeVisible();
+      expect(
+        screen.getByRole('link', {
+          name: 'Open the Assistant',
+        })
+      ).toBeVisible();
+      vi.mocked(client.operations['audit.server-list']).mockRejectedValueOnce(
+        new ApiCallError(status, PRIVATE, {
+          code: PRIVATE,
+          details: PRIVATE,
+          cause: new Error(PRIVATE),
+        })
       );
-    } else {
-      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Refresh audit' }));
+      if (status === 500) {
+        expect(await screen.findByRole('alert')).toHaveTextContent(
+          "Couldn't load server audit records."
+        );
+      } else {
+        expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      }
+      expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('link', {
+          name: 'Open the Assistant',
+        })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(PRIVATE);
+      expect(container.querySelector('input')).toBeNull();
+      const cached = queryClient.getQueryState(['settings', 'server-audit']);
+      expect(cached?.error?.message).not.toContain(PRIVATE);
+      expect(JSON.stringify(cached)).not.toContain(PRIVATE);
+      await userEvent.click(
+        screen.getByRole('button', { name: status === 500 ? 'Try again' : 'Retry' })
+      );
+      await openRecords();
+      expect(screen.getByText('server.inspect')).toBeInTheDocument();
+      for (const method of ['audit.server-list', 'permission.server-list'] as const) {
+        expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
+          [{ limit: 50 }],
+          [{ limit: 50 }],
+          [{ limit: 50 }],
+        ]);
+      }
     }
-    expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('link', {
-        name: 'Open the Assistant',
-      })
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(PRIVATE);
-    expect(container.querySelector('input')).toBeNull();
-    const cached = queryClient.getQueryState(['settings', 'server-audit']);
-    expect(cached?.error?.message).not.toContain(PRIVATE);
-    expect(JSON.stringify(cached)).not.toContain(PRIVATE);
-    await userEvent.click(
-      screen.getByRole('button', { name: status === 500 ? 'Try again' : 'Retry' })
-    );
-    await openRecords();
-    expect(screen.getByText('server.inspect')).toBeInTheDocument();
-    for (const method of ['audit.server-list', 'permission.server-list'] as const) {
-      expect(vi.mocked(client.operations[method]).mock.calls).toEqual([
-        [{ limit: 50 }],
-        [{ limit: 50 }],
-        [{ limit: 50 }],
-      ]);
-    }
-  });
+  );
 
   it('prefers occurredAt, falls back to createdAt, and marks missing time as not recorded', async () => {
     const client = makeClient({

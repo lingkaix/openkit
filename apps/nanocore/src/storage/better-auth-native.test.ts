@@ -234,123 +234,125 @@ describe('configured BetterAuth native writer', () => {
     expect(f.count('session')).toBe(1);
   });
 
-  it.each([
-    false,
-    true,
-  ])('consumes a valid retained reset with missing credential account: %s', async (missing) => {
-    const f = await fixture();
-    const user = await f.signUp();
-    const other = await f.signUp();
-    const retained = retainedAccount(f, user.id);
-    if (missing) f.fixtureSql('DELETE FROM account WHERE user_id = ?').run(user.id);
-    const reset = randomUUID();
-    const identifier = `reset-password:${reset}`;
-    const now = Date.now();
-    for (const [key, value, expiry] of [
-      [identifier, user.id, now + 60_000],
-      ['expired-fixture', user.id, now - 1],
-      ['unrelated-fixture', other.id, now + 60_000],
-    ] as const) {
-      f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
+  it.each([false, true])(
+    'consumes a valid retained reset with missing credential account: %s',
+    async (missing) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const other = await f.signUp();
+      const retained = retainedAccount(f, user.id);
+      if (missing) f.fixtureSql('DELETE FROM account WHERE user_id = ?').run(user.id);
+      const reset = randomUUID();
+      const identifier = `reset-password:${reset}`;
+      const now = Date.now();
+      for (const [key, value, expiry] of [
+        [identifier, user.id, now + 60_000],
+        ['expired-fixture', user.id, now - 1],
+        ['unrelated-fixture', other.id, now + 60_000],
+      ] as const) {
+        f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)`).run(allocateEntityId('verif'), key, value, expiry, now, now);
-    }
-    expect(
-      (await f.request('/reset-password', { token: reset, newPassword: replacementPassword }))
-        .status
-    ).toBe(200);
-    expect(f.db.sqlite.prepare('SELECT identifier FROM verification').all()).toEqual([
-      { identifier: 'unrelated-fixture' },
-    ]);
-    expect(
-      (await f.request('/sign-in/email', { email: user.email, password: replacementPassword }))
-        .status
-    ).toBe(200);
-    expect((await f.request('/sign-in/email', { email: user.email, password })).status).toBe(401);
-    expect((await f.request('/sign-in/email', { email: other.email, password })).status).toBe(200);
-    expect(f.count('account')).toBe(missing ? 2 : 3);
-    if (!missing) {
+      }
       expect(
-        f.db.sqlite.prepare('SELECT password FROM account WHERE id = ?').pluck().get(retained.id)
-      ).toBe('inert-retained-value');
+        (await f.request('/reset-password', { token: reset, newPassword: replacementPassword }))
+          .status
+      ).toBe(200);
+      expect(f.db.sqlite.prepare('SELECT identifier FROM verification').all()).toEqual([
+        { identifier: 'unrelated-fixture' },
+      ]);
+      expect(
+        (await f.request('/sign-in/email', { email: user.email, password: replacementPassword }))
+          .status
+      ).toBe(200);
+      expect((await f.request('/sign-in/email', { email: user.email, password })).status).toBe(401);
+      expect((await f.request('/sign-in/email', { email: other.email, password })).status).toBe(
+        200
+      );
+      expect(f.count('account')).toBe(missing ? 2 : 3);
+      if (!missing) {
+        expect(
+          f.db.sqlite.prepare('SELECT password FROM account WHERE id = ?').pluck().get(retained.id)
+        ).toBe('inert-retained-value');
+      }
     }
-  });
+  );
 
-  it.each([
-    'password',
-    'verification-delete',
-  ] as const)('preserves completed retained-reset stages when %s fails', async (stage) => {
-    const f = await fixture();
-    const user = await f.signUp();
-    const reset = randomUUID();
-    const identifier = `reset-password:${reset}`;
-    const now = Date.now();
-    for (const [key, expiry] of [
-      [identifier, now + 60_000],
-      ['expired-fixture', now - 1],
-    ] as const) {
-      f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
+  it.each(['password', 'verification-delete'] as const)(
+    'preserves completed retained-reset stages when %s fails',
+    async (stage) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const reset = randomUUID();
+      const identifier = `reset-password:${reset}`;
+      const now = Date.now();
+      for (const [key, expiry] of [
+        [identifier, now + 60_000],
+        ['expired-fixture', now - 1],
+      ] as const) {
+        f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?)`).run(
+          allocateEntityId('verif'),
+          key,
+          user.id,
+          expiry,
+          now,
+          now
+        );
+      }
+      f.fixtureSql(
+        stage === 'password'
+          ? `CREATE TRIGGER reject_reset BEFORE UPDATE ON account
+              BEGIN SELECT RAISE(ABORT, 'synthetic password fault'); END`
+          : `CREATE TRIGGER reject_reset BEFORE DELETE ON verification
+              WHEN OLD.identifier LIKE 'reset-password:%'
+              BEGIN SELECT RAISE(ABORT, 'synthetic verification fault'); END`
+      ).run();
+      const response = await f.request('/reset-password', {
+        token: reset,
+        newPassword: replacementPassword,
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.headers.getSetCookie()).toEqual([]);
+      expect(f.db.sqlite.prepare('SELECT identifier FROM verification').all()).toEqual([
+        { identifier },
+      ]);
+      const hash = f.db.sqlite.prepare('SELECT password FROM account').pluck().get() as string;
+      expect(
+        await f.context.password.verify({
+          hash,
+          password: stage === 'password' ? password : replacementPassword,
+        })
+      ).toBe(true);
+      expect(f.count('session')).toBe(1);
+    }
+  );
+
+  it.each(['reset', 'oauth'])(
+    'cleans expired verification state even when %s cannot authenticate',
+    async (route) => {
+      const f = await fixture();
+      const now = Date.now();
+      f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(
         allocateEntityId('verif'),
-        key,
-        user.id,
-        expiry,
+        'expired-fixture',
+        'inert',
+        now - 1,
         now,
         now
       );
+      const response =
+        route === 'reset'
+          ? await f.request('/reset-password', {
+              token: 'absent-fixture',
+              newPassword: replacementPassword,
+            })
+          : await f.request('/callback/absent-provider?state=absent-fixture&code=inert');
+      expect(response.status).toBeGreaterThanOrEqual(300);
+      expect(f.count('verification')).toBe(0);
+      expect(f.count('session')).toBe(0);
     }
-    f.fixtureSql(
-      stage === 'password'
-        ? `CREATE TRIGGER reject_reset BEFORE UPDATE ON account
-              BEGIN SELECT RAISE(ABORT, 'synthetic password fault'); END`
-        : `CREATE TRIGGER reject_reset BEFORE DELETE ON verification
-              WHEN OLD.identifier LIKE 'reset-password:%'
-              BEGIN SELECT RAISE(ABORT, 'synthetic verification fault'); END`
-    ).run();
-    const response = await f.request('/reset-password', {
-      token: reset,
-      newPassword: replacementPassword,
-    });
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(response.headers.getSetCookie()).toEqual([]);
-    expect(f.db.sqlite.prepare('SELECT identifier FROM verification').all()).toEqual([
-      { identifier },
-    ]);
-    const hash = f.db.sqlite.prepare('SELECT password FROM account').pluck().get() as string;
-    expect(
-      await f.context.password.verify({
-        hash,
-        password: stage === 'password' ? password : replacementPassword,
-      })
-    ).toBe(true);
-    expect(f.count('session')).toBe(1);
-  });
-
-  it.each([
-    'reset',
-    'oauth',
-  ])('cleans expired verification state even when %s cannot authenticate', async (route) => {
-    const f = await fixture();
-    const now = Date.now();
-    f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(
-      allocateEntityId('verif'),
-      'expired-fixture',
-      'inert',
-      now - 1,
-      now,
-      now
-    );
-    const response =
-      route === 'reset'
-        ? await f.request('/reset-password', {
-            token: 'absent-fixture',
-            newPassword: replacementPassword,
-          })
-        : await f.request('/callback/absent-provider?state=absent-fixture&code=inert');
-    expect(response.status).toBeGreaterThanOrEqual(300);
-    expect(f.count('verification')).toBe(0);
-    expect(f.count('session')).toBe(0);
-  });
+  );
 
   it('consumes exact retained OAuth state before the unavailable provider refusal', async () => {
     const f = await fixture();
@@ -456,112 +458,108 @@ describe('configured BetterAuth native writer', () => {
     ).toBe(400);
   });
 
-  it.each([
-    'absent',
-    'owner',
-    'last-account',
-    'revoked-session',
-    'stale-session',
-  ] as const)('rechecks unlink authority after native admission waits: %s', async (change) => {
-    const f = await fixture();
-    const user = await f.signUp();
-    const other = await f.signUp();
-    const selected = retainedAccount(f, user.id);
-    arm(f.gate, 3);
-    const { result } = await held(f, () =>
-      f.request(
-        '/unlink-account',
+  it.each(['absent', 'owner', 'last-account', 'revoked-session', 'stale-session'] as const)(
+    'rechecks unlink authority after native admission waits: %s',
+    async (change) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const other = await f.signUp();
+      const selected = retainedAccount(f, user.id);
+      arm(f.gate, 3);
+      const { result } = await held(f, () =>
+        f.request(
+          '/unlink-account',
+          {
+            providerId: 'retained-provider',
+            accountId: selected.accountId,
+          },
+          user.cookie
+        )
+      );
+      try {
+        if (change === 'absent') f.fixtureSql('DELETE FROM account WHERE id = ?').run(selected.id);
+        if (change === 'owner')
+          f.fixtureSql('UPDATE account SET user_id = ? WHERE id = ?').run(other.id, selected.id);
+        if (change === 'last-account')
+          f.fixtureSql("DELETE FROM account WHERE user_id = ? AND provider_id = 'credential'").run(
+            user.id
+          );
+        if (change === 'revoked-session')
+          f.fixtureSql('DELETE FROM session WHERE user_id = ?').run(user.id);
+        if (change === 'stale-session')
+          f.fixtureSql('UPDATE session SET created_at = ? WHERE user_id = ?').run(
+            Date.now() - (f.context.sessionConfig.freshAge + 1) * 1000,
+            user.id
+          );
+      } finally {
+        release(f.gate);
+      }
+      const response = await result;
+      expect(response?.status).toBe(
+        change === 'absent'
+          ? 200
+          : change === 'revoked-session'
+            ? 401
+            : change === 'stale-session'
+              ? 403
+              : 400
+      );
+      if (change !== 'absent') {
+        expect(await response?.json()).toMatchObject({
+          code:
+            change === 'owner'
+              ? 'ACCOUNT_NOT_FOUND'
+              : change === 'last-account'
+                ? 'FAILED_TO_UNLINK_LAST_ACCOUNT'
+                : change === 'revoked-session'
+                  ? 'UNAUTHORIZED'
+                  : 'SESSION_NOT_FRESH',
+        });
+      }
+      expect(
+        f.db.sqlite.prepare('SELECT count(*) FROM account WHERE id = ?').pluck().get(selected.id)
+      ).toBe(change === 'absent' ? 0 : 1);
+    }
+  );
+
+  it.each(['password', 'delete-sessions', 'replacement-session'] as const)(
+    'retains prior password stages when %s fails',
+    async (stage) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      await f.request('/sign-in/email', { email: user.email, password });
+      const event =
+        stage === 'password'
+          ? 'UPDATE ON account'
+          : stage === 'delete-sessions'
+            ? 'DELETE ON session'
+            : 'INSERT ON session';
+      f.fixtureSql(`CREATE TRIGGER reject_password_stage BEFORE ${event}
+        BEGIN SELECT RAISE(ABORT, 'Synthetic password stage failure'); END`).run();
+      const response = await f.request(
+        '/change-password',
         {
-          providerId: 'retained-provider',
-          accountId: selected.accountId,
+          currentPassword: password,
+          newPassword: replacementPassword,
+          revokeOtherSessions: true,
         },
         user.cookie
-      )
-    );
-    try {
-      if (change === 'absent') f.fixtureSql('DELETE FROM account WHERE id = ?').run(selected.id);
-      if (change === 'owner')
-        f.fixtureSql('UPDATE account SET user_id = ? WHERE id = ?').run(other.id, selected.id);
-      if (change === 'last-account')
-        f.fixtureSql("DELETE FROM account WHERE user_id = ? AND provider_id = 'credential'").run(
-          user.id
-        );
-      if (change === 'revoked-session')
-        f.fixtureSql('DELETE FROM session WHERE user_id = ?').run(user.id);
-      if (change === 'stale-session')
-        f.fixtureSql('UPDATE session SET created_at = ? WHERE user_id = ?').run(
-          Date.now() - (f.context.sessionConfig.freshAge + 1) * 1000,
-          user.id
-        );
-    } finally {
-      release(f.gate);
+      );
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(cookies(response).length).toBe(0);
+      const hash = f.db.sqlite
+        .prepare("SELECT password FROM account WHERE user_id = ? AND provider_id = 'credential'")
+        .pluck()
+        .get(user.id) as string;
+      expect(
+        await f.context.password.verify({
+          hash,
+          password: stage === 'password' ? password : replacementPassword,
+        })
+      ).toBe(true);
+      expect(f.count('session')).toBe(stage === 'replacement-session' ? 0 : 2);
     }
-    const response = await result;
-    expect(response?.status).toBe(
-      change === 'absent'
-        ? 200
-        : change === 'revoked-session'
-          ? 401
-          : change === 'stale-session'
-            ? 403
-            : 400
-    );
-    if (change !== 'absent') {
-      expect(await response?.json()).toMatchObject({
-        code:
-          change === 'owner'
-            ? 'ACCOUNT_NOT_FOUND'
-            : change === 'last-account'
-              ? 'FAILED_TO_UNLINK_LAST_ACCOUNT'
-              : change === 'revoked-session'
-                ? 'UNAUTHORIZED'
-                : 'SESSION_NOT_FRESH',
-      });
-    }
-    expect(
-      f.db.sqlite.prepare('SELECT count(*) FROM account WHERE id = ?').pluck().get(selected.id)
-    ).toBe(change === 'absent' ? 0 : 1);
-  });
-
-  it.each([
-    'password',
-    'delete-sessions',
-    'replacement-session',
-  ] as const)('retains prior password stages when %s fails', async (stage) => {
-    const f = await fixture();
-    const user = await f.signUp();
-    await f.request('/sign-in/email', { email: user.email, password });
-    const event =
-      stage === 'password'
-        ? 'UPDATE ON account'
-        : stage === 'delete-sessions'
-          ? 'DELETE ON session'
-          : 'INSERT ON session';
-    f.fixtureSql(`CREATE TRIGGER reject_password_stage BEFORE ${event}
-        BEGIN SELECT RAISE(ABORT, 'Synthetic password stage failure'); END`).run();
-    const response = await f.request(
-      '/change-password',
-      {
-        currentPassword: password,
-        newPassword: replacementPassword,
-        revokeOtherSessions: true,
-      },
-      user.cookie
-    );
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(cookies(response).length).toBe(0);
-    const hash = f.db.sqlite
-      .prepare("SELECT password FROM account WHERE user_id = ? AND provider_id = 'credential'")
-      .pluck()
-      .get(user.id) as string;
-    expect(
-      await f.context.password.verify({
-        hash,
-        password: stage === 'password' ? password : replacementPassword,
-      })
-    ).toBe(true);
-    expect(f.count('session')).toBe(stage === 'replacement-session' ? 0 : 2);
-  });
+  );
 
   it('refuses unconfigured mutation and predicate shapes without a Main fallback', async () => {
     const f = await fixture();
@@ -621,63 +619,62 @@ describe('configured BetterAuth native writer', () => {
     ]).toEqual([1, 1, 1, 0]);
   });
 
-  it.each([
-    'profile',
-    'password',
-    'revoke-one',
-    'revoke-all',
-    'revoke-other',
-  ] as const)('refuses an authenticated effect after its initiating session is revoked during a native wait: %s', async (operation) => {
-    const f = await fixture();
-    const user = await f.signUp();
-    const initiating = f.db.sqlite
-      .prepare('SELECT token FROM session WHERE user_id = ?')
-      .pluck()
-      .get(user.id) as string;
-    await f.request('/sign-in/email', { email: user.email, password });
-    const target = f.db.sqlite
-      .prepare('SELECT token FROM session WHERE user_id = ? AND token != ?')
-      .pluck()
-      .get(user.id, initiating) as string;
-    const path =
-      operation === 'profile'
-        ? '/update-user'
-        : operation === 'password'
-          ? '/change-password'
-          : operation === 'revoke-one'
-            ? '/revoke-session'
-            : operation === 'revoke-all'
-              ? '/revoke-sessions'
-              : '/revoke-other-sessions';
-    const body =
-      operation === 'profile'
-        ? { name: 'Unauthorized profile' }
-        : operation === 'password'
-          ? { currentPassword: password, newPassword: replacementPassword }
-          : operation === 'revoke-one'
-            ? { token: target }
-            : {};
-    arm(f.gate, 3);
-    const { result } = await held(f, () => f.request(path, body, user.cookie));
-    try {
-      // Revoke only the initiating session after SDK admission, before native SQL begins.
-      f.fixtureSql('DELETE FROM session WHERE token = ?').run(initiating);
-    } finally {
-      release(f.gate);
+  it.each(['profile', 'password', 'revoke-one', 'revoke-all', 'revoke-other'] as const)(
+    'refuses an authenticated effect after its initiating session is revoked during a native wait: %s',
+    async (operation) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const initiating = f.db.sqlite
+        .prepare('SELECT token FROM session WHERE user_id = ?')
+        .pluck()
+        .get(user.id) as string;
+      await f.request('/sign-in/email', { email: user.email, password });
+      const target = f.db.sqlite
+        .prepare('SELECT token FROM session WHERE user_id = ? AND token != ?')
+        .pluck()
+        .get(user.id, initiating) as string;
+      const path =
+        operation === 'profile'
+          ? '/update-user'
+          : operation === 'password'
+            ? '/change-password'
+            : operation === 'revoke-one'
+              ? '/revoke-session'
+              : operation === 'revoke-all'
+                ? '/revoke-sessions'
+                : '/revoke-other-sessions';
+      const body =
+        operation === 'profile'
+          ? { name: 'Unauthorized profile' }
+          : operation === 'password'
+            ? { currentPassword: password, newPassword: replacementPassword }
+            : operation === 'revoke-one'
+              ? { token: target }
+              : {};
+      arm(f.gate, 3);
+      const { result } = await held(f, () => f.request(path, body, user.cookie));
+      try {
+        // Revoke only the initiating session after SDK admission, before native SQL begins.
+        f.fixtureSql('DELETE FROM session WHERE token = ?').run(initiating);
+      } finally {
+        release(f.gate);
+      }
+      const response = await result;
+      expect.soft(response?.status).toBeGreaterThanOrEqual(400);
+      expect.soft(response && cookies(response).length).toBe(0);
+      expect
+        .soft(
+          f.db.sqlite.prepare('SELECT display_name FROM users WHERE id = ?').pluck().get(user.id)
+        )
+        .toBe('Synthetic User');
+      expect.soft(f.count('session')).toBe(1);
+      const hash = f.db.sqlite
+        .prepare("SELECT password FROM account WHERE user_id = ? AND provider_id = 'credential'")
+        .pluck()
+        .get(user.id) as string;
+      expect(await f.context.password.verify({ hash, password })).toBe(true);
     }
-    const response = await result;
-    expect.soft(response?.status).toBeGreaterThanOrEqual(400);
-    expect.soft(response && cookies(response).length).toBe(0);
-    expect
-      .soft(f.db.sqlite.prepare('SELECT display_name FROM users WHERE id = ?').pluck().get(user.id))
-      .toBe('Synthetic User');
-    expect.soft(f.count('session')).toBe(1);
-    const hash = f.db.sqlite
-      .prepare("SELECT password FROM account WHERE user_id = ? AND provider_id = 'credential'")
-      .pluck()
-      .get(user.id) as string;
-    expect(await f.context.password.verify({ hash, password })).toBe(true);
-  });
+  );
 
   it('refuses password replacement when the selected account changes owner during a native wait', async () => {
     const f = await fixture();
@@ -711,53 +708,52 @@ describe('configured BetterAuth native writer', () => {
     expect(await f.context.password.verify({ hash, password })).toBe(true);
   });
 
-  it.each([
-    'revoked-session',
-    'competing-password',
-    'empty-password',
-  ] as const)('rechecks actual virtual setPassword authority after the native wait: %s', async (change) => {
-    const f = await fixture();
-    const user = await f.signUp();
-    const existing = f.db.sqlite
-      .prepare('SELECT id, password FROM account WHERE user_id = ?')
-      .get(user.id) as { id: string; password: string };
-    f.fixtureSql('UPDATE account SET password = NULL WHERE id = ?').run(existing.id);
-    arm(f.gate, 3);
-    const { result } = await held(f, () =>
-      f.auth.api.setPassword({
-        headers: new Headers({ cookie: user.cookie }),
-        body: { newPassword: replacementPassword },
-        asResponse: true,
-      })
-    );
-    try {
-      if (change === 'revoked-session')
-        f.fixtureSql('DELETE FROM session WHERE user_id = ?').run(user.id);
-      else
-        f.fixtureSql('UPDATE account SET password = ? WHERE id = ?').run(
-          change === 'competing-password' ? existing.password : '',
-          existing.id
-        );
-    } finally {
-      release(f.gate);
+  it.each(['revoked-session', 'competing-password', 'empty-password'] as const)(
+    'rechecks actual virtual setPassword authority after the native wait: %s',
+    async (change) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const existing = f.db.sqlite
+        .prepare('SELECT id, password FROM account WHERE user_id = ?')
+        .get(user.id) as { id: string; password: string };
+      f.fixtureSql('UPDATE account SET password = NULL WHERE id = ?').run(existing.id);
+      arm(f.gate, 3);
+      const { result } = await held(f, () =>
+        f.auth.api.setPassword({
+          headers: new Headers({ cookie: user.cookie }),
+          body: { newPassword: replacementPassword },
+          asResponse: true,
+        })
+      );
+      try {
+        if (change === 'revoked-session')
+          f.fixtureSql('DELETE FROM session WHERE user_id = ?').run(user.id);
+        else
+          f.fixtureSql('UPDATE account SET password = ? WHERE id = ?').run(
+            change === 'competing-password' ? existing.password : '',
+            existing.id
+          );
+      } finally {
+        release(f.gate);
+      }
+      const response = await result;
+      expect
+        .soft(response?.status)
+        .toBe(change === 'empty-password' ? 200 : change === 'revoked-session' ? 401 : 400);
+      expect.soft(f.count('account')).toBe(change === 'empty-password' ? 2 : 1);
+      if (change === 'empty-password') {
+        const hash = f.db.sqlite
+          .prepare('SELECT password FROM account WHERE user_id = ? AND id != ?')
+          .pluck()
+          .get(user.id, existing.id) as string;
+        expect(await f.context.password.verify({ hash, password: replacementPassword })).toBe(true);
+      } else {
+        expect(await response?.json()).toMatchObject({
+          code: change === 'revoked-session' ? 'UNAUTHORIZED' : 'PASSWORD_ALREADY_SET',
+        });
+      }
     }
-    const response = await result;
-    expect
-      .soft(response?.status)
-      .toBe(change === 'empty-password' ? 200 : change === 'revoked-session' ? 401 : 400);
-    expect.soft(f.count('account')).toBe(change === 'empty-password' ? 2 : 1);
-    if (change === 'empty-password') {
-      const hash = f.db.sqlite
-        .prepare('SELECT password FROM account WHERE user_id = ? AND id != ?')
-        .pluck()
-        .get(user.id, existing.id) as string;
-      expect(await f.context.password.verify({ hash, password: replacementPassword })).toBe(true);
-    } else {
-      expect(await response?.json()).toMatchObject({
-        code: change === 'revoked-session' ? 'UNAUTHORIZED' : 'PASSWORD_ALREADY_SET',
-      });
-    }
-  });
+  );
 
   it('preserves configured SDK profile input above one MiB within the existing pending budget', async () => {
     const f = await fixture();
@@ -822,61 +818,61 @@ describe('configured BetterAuth native writer', () => {
     ).toBe('Later profile');
   });
 
-  it.each([
-    1, 2, 3,
-  ])('withholds signup cookies and result before FULL commit %s', async (ordinal) => {
-    const f = await fixture();
-    arm(f.gate, 1, ordinal);
-    let settled = false;
-    const result = f
-      .request('/sign-up/email', {
+  it.each([1, 2, 3])(
+    'withholds signup cookies and result before FULL commit %s',
+    async (ordinal) => {
+      const f = await fixture();
+      arm(f.gate, 1, ordinal);
+      let settled = false;
+      const result = f
+        .request('/sign-up/email', {
+          email: `${randomUUID()}@example.test`,
+          name: 'Synthetic User',
+          password,
+        })
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        while (Atomics.load(f.gate, 0) === 0 && !settled) await nextTurn();
+        expect(Atomics.load(f.gate, 0)).toBe(1);
+        expect(settled).toBe(false);
+        expect(Atomics.load(f.gate, 5)).toBe(2);
+        expect([f.count('users'), f.count('account'), f.count('session')]).toEqual([
+          Number(ordinal > 1),
+          Number(ordinal > 2),
+          0,
+        ]);
+      } finally {
+        release(f.gate);
+      }
+      const response = await result;
+      expect(response.status).toBe(200);
+      expect(cookies(response).length > 0).toBe(true);
+      expect(f.commits()).toBe(3);
+    }
+  );
+
+  it.each(['users', 'account', 'session'] as const)(
+    'retains only earlier signup commits when %s insertion fails',
+    async (table) => {
+      const f = await fixture();
+      f.fixtureSql(`CREATE TRIGGER reject_signup BEFORE INSERT ON "${table}"
+        BEGIN SELECT RAISE(ABORT, 'Synthetic signup stage failure'); END`).run();
+      const response = await f.request('/sign-up/email', {
         email: `${randomUUID()}@example.test`,
         name: 'Synthetic User',
         password,
-      })
-      .finally(() => {
-        settled = true;
       });
-    try {
-      while (Atomics.load(f.gate, 0) === 0 && !settled) await nextTurn();
-      expect(Atomics.load(f.gate, 0)).toBe(1);
-      expect(settled).toBe(false);
-      expect(Atomics.load(f.gate, 5)).toBe(2);
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(cookies(response).length).toBe(0);
       expect([f.count('users'), f.count('account'), f.count('session')]).toEqual([
-        Number(ordinal > 1),
-        Number(ordinal > 2),
+        Number(table !== 'users'),
+        Number(table === 'session'),
         0,
       ]);
-    } finally {
-      release(f.gate);
     }
-    const response = await result;
-    expect(response.status).toBe(200);
-    expect(cookies(response).length > 0).toBe(true);
-    expect(f.commits()).toBe(3);
-  });
-
-  it.each([
-    'users',
-    'account',
-    'session',
-  ] as const)('retains only earlier signup commits when %s insertion fails', async (table) => {
-    const f = await fixture();
-    f.fixtureSql(`CREATE TRIGGER reject_signup BEFORE INSERT ON "${table}"
-        BEGIN SELECT RAISE(ABORT, 'Synthetic signup stage failure'); END`).run();
-    const response = await f.request('/sign-up/email', {
-      email: `${randomUUID()}@example.test`,
-      name: 'Synthetic User',
-      password,
-    });
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(cookies(response).length).toBe(0);
-    expect([f.count('users'), f.count('account'), f.count('session')]).toEqual([
-      Number(table !== 'users'),
-      Number(table === 'session'),
-      0,
-    ]);
-  });
+  );
 
   it('refuses a new session when its User is disabled during awaited provisioning', async () => {
     const entered = Promise.withResolvers<string>();

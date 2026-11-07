@@ -516,47 +516,48 @@ describe('retained Workspace snapshot SQL formats', () => {
     expect(db.sqlite.prepare(`SELECT * FROM ${table}`).get()).toEqual(before);
   });
 
-  it.each(
-    families
-  )('refuses %s version 2 before JSON decode, authority lookup or replay', (table) => {
-    const { db, capture } = retainedSnapshotChainFixture();
-    if (table === 'workspace_snapshot_collections') {
-      // The older collection is the only proof for this commit after the accepted cursor advances.
-      db.sqlite.prepare('UPDATE workspace_snapshot_cursors SET accepted_commit=?').run(next.tree);
-    }
-    const column =
-      table === 'workspace_snapshot_cursors' ? 'baseline_identity_json' : 'identity_json';
-    db.sqlite.prepare(`UPDATE ${table} SET schema_version=2, ${column}='{invalid'`).run();
-    const before = db.sqlite.prepare(`SELECT * FROM ${table}`).get();
-    if (table === 'workspace_snapshot_cursors') {
-      expect(() => readWorkspaceSnapshotCursor(db, identity)).toThrow(
-        'Unsupported retained record format'
-      );
-      expect(() => readWorkspaceBaselineIdentity(db, identity)).toThrow(
-        'Unsupported retained record format'
-      );
-      expect(() => authorizeWorkspaceBaselineInitialization(db, identity)).toThrow(
-        'Unsupported retained record format'
-      );
-    } else {
-      expect(() => readWorkspaceCollection(db, capture)).toThrow(
-        'Unsupported retained record format'
-      );
+  it.each(families)(
+    'refuses %s version 2 before JSON decode, authority lookup or replay',
+    (table) => {
+      const { db, capture } = retainedSnapshotChainFixture();
+      if (table === 'workspace_snapshot_collections') {
+        // The older collection is the only proof for this commit after the accepted cursor advances.
+        db.sqlite.prepare('UPDATE workspace_snapshot_cursors SET accepted_commit=?').run(next.tree);
+      }
+      const column =
+        table === 'workspace_snapshot_cursors' ? 'baseline_identity_json' : 'identity_json';
+      db.sqlite.prepare(`UPDATE ${table} SET schema_version=2, ${column}='{invalid'`).run();
+      const before = db.sqlite.prepare(`SELECT * FROM ${table}`).get();
+      if (table === 'workspace_snapshot_cursors') {
+        expect(() => readWorkspaceSnapshotCursor(db, identity)).toThrow(
+          'Unsupported retained record format'
+        );
+        expect(() => readWorkspaceBaselineIdentity(db, identity)).toThrow(
+          'Unsupported retained record format'
+        );
+        expect(() => authorizeWorkspaceBaselineInitialization(db, identity)).toThrow(
+          'Unsupported retained record format'
+        );
+      } else {
+        expect(() => readWorkspaceCollection(db, capture)).toThrow(
+          'Unsupported retained record format'
+        );
+        expect(() =>
+          acceptWorkspaceCapture(db, capture, { outcome: 'no_new_head', unstable: false }, null)
+        ).toThrow('Unsupported retained record format');
+      }
       expect(() =>
-        acceptWorkspaceCapture(db, capture, { outcome: 'no_new_head', unstable: false }, null)
+        workspaceSnapshotAcceptedCommitIsKnown(
+          db,
+          identity.workspaceId,
+          identity.workSlot,
+          identity.threadId,
+          base.tree
+        )
       ).toThrow('Unsupported retained record format');
+      expect(db.sqlite.prepare(`SELECT * FROM ${table}`).get()).toEqual(before);
     }
-    expect(() =>
-      workspaceSnapshotAcceptedCommitIsKnown(
-        db,
-        identity.workspaceId,
-        identity.workSlot,
-        identity.threadId,
-        base.tree
-      )
-    ).toThrow('Unsupported retained record format');
-    expect(db.sqlite.prepare(`SELECT * FROM ${table}`).get()).toEqual(before);
-  });
+  );
 });
 
 /** Uses the existing owner fixture; only the real native writer can change its query-only Main handle. */

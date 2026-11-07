@@ -260,15 +260,16 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
       name: 'horizontal rule',
       body: '----\n# Human navigation\n\nKeep every original body byte.\n',
     },
-  ])('adds only the required version block to a fresh body-only root index ($name)', async ({
-    body,
-  }) => {
-    const f = fixture();
-    const revision = await initializeWorkspaceNotebook({ ...f, files: { 'index.md': body } });
-    expect(f.notebook().readRevision(revision).files['index.md']).toBe(
-      `---\nokf_version: "0.2"\n---\n${body}`
-    );
-  });
+  ])(
+    'adds only the required version block to a fresh body-only root index ($name)',
+    async ({ body }) => {
+      const f = fixture();
+      const revision = await initializeWorkspaceNotebook({ ...f, files: { 'index.md': body } });
+      expect(f.notebook().readRevision(revision).files['index.md']).toBe(
+        `---\nokf_version: "0.2"\n---\n${body}`
+      );
+    }
+  );
 
   it('refuses service attribution for authored initial content before creating Git or Audit evidence', async () => {
     for (const files of [

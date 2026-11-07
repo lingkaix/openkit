@@ -13,6 +13,14 @@ import { CoreClientProvider } from './core-client';
 import { AppRoutes } from './routes';
 import { surfaceById } from './surfaces';
 
+/**
+ * Reports the current route so redirects are observable without reading component internals.
+ */
+function Location() {
+  const location = useLocation();
+  return <output aria-label="Location">{`${location.pathname}${location.search}`}</output>;
+}
+
 const PERSISTENT_NAV_QUERY = '(min-width: 800px)';
 
 let viewportWidth = 1024;
@@ -619,14 +627,6 @@ function register_p2_nav_behavior_test_tsx_1() {
   const mediaListeners = new Set<(event: MediaQueryListEvent) => void>();
 
   const originalMatchMedia = window.matchMedia;
-
-  /**
-   * Reports the current route so redirects are observable without reading component internals.
-   */
-  function Location() {
-    const location = useLocation();
-    return <output aria-label="Location">{`${location.pathname}${location.search}`}</output>;
-  }
 
   /**
    * Sets the next `(min-width: 800px)` result and notifies installed listeners.

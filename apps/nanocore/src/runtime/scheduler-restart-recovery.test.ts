@@ -1276,309 +1276,315 @@ describe('terminal failed-start product recovery', () => {
     'unknown-status',
     'changed-extra-item',
     'changed-prior-item',
-  ] as const)('checks %s publication after boot MCP backfill before failed-start settlement', async (proof) => {
-    const suffix = `mcp_backfill_${proof}`;
-    const f = await createFailedStartFixture(suffix);
-    const completedAt = new Date(Date.parse(f.turn.startedAt!) + 1_000).toISOString();
-    f.input.now = () => new Date(Date.parse(completedAt) + 60_000).toISOString();
-    const callId = testEntityId('cap', `cap_${suffix}`);
-    const itemId = testEntityId('it', `it_${suffix}`);
-    try {
-      for (let index = 0; index < 4; index += 1) {
-        await f.store.createItem({
-          id: testEntityId('it', `it_prior_${suffix}_${index}`),
+  ] as const)(
+    'checks %s publication after boot MCP backfill before failed-start settlement',
+    async (proof) => {
+      const suffix = `mcp_backfill_${proof}`;
+      const f = await createFailedStartFixture(suffix);
+      const completedAt = new Date(Date.parse(f.turn.startedAt!) + 1_000).toISOString();
+      f.input.now = () => new Date(Date.parse(completedAt) + 60_000).toISOString();
+      const callId = testEntityId('cap', `cap_${suffix}`);
+      const itemId = testEntityId('it', `it_${suffix}`);
+      try {
+        for (let index = 0; index < 4; index += 1) {
+          await f.store.createItem({
+            id: testEntityId('it', `it_prior_${suffix}_${index}`),
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+            threadId: f.threadId,
+            turnId: f.turnId,
+            type: 'status',
+            status: 'completed',
+            level: 'warning',
+            title: 'Worker accepted',
+            summary: 'The worker attempt was admitted.',
+            createdAt: f.turn.startedAt!,
+            completedAt: f.turn.startedAt!,
+          });
+        }
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          const pkg = requireAgentEnvironmentPackageSnapshot(
+            db,
+            'ws_00000000-0000-7000-8000-000000000001',
+            `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
+          ).snapshot;
+          await startCapabilityCall({
+            workspaceDb: db,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: f.threadId,
+            turnId: f.turnId,
+            agentId: f.turn.agentId,
+            agentSessionId: f.agentSessionId,
+            packageSnapshotId: pkg.snapshotId,
+            authorityActor: f.turn.triggerActor,
+            callId,
+            itemId,
+            capabilityId: 'mcp.call-tool',
+            family: 'mcp',
+            operation: 'mcp.call-tool',
+            providerRef: 'github',
+            serviceRef: 'mcp-tool:create_branch',
+            redactionClass: 'metadata-only',
+            now: new Date(Date.parse(completedAt) - 200),
+          });
+          await finishCapabilityCall({
+            workspaceDb: db,
+            callId,
+            status: 'denied',
+            errorCode: 'mcp-denied',
+            now: new Date(Date.parse(completedAt) + (proof === 'post-terminal' ? 100 : -100)),
+          });
+        } finally {
+          db.sqlite.close();
+        }
+        const decided = await publishFixtureTerminal(f, {
+          status: 'failed',
+          completedAt,
+          error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
+        });
+        const terminalEvent = f.store
+          .getTurnEventsForExport(f.turnId)
+          .find((event) => event.event === 'turn.completed')!;
+        f.store.emitTurnEvent(
+          f.turnId,
+          await f.store.persistTurnEvent(
+            f.turnId,
+            terminalEvent,
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          ),
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+        const eventsSource = f;
+        expect(f.store.getTurnById(f.turnId).status).toBe('failed');
+        const eventsBefore = readNativeEventBytes(eventsSource);
+        await shutdownControlStoreWorkerClient();
+        await verifyAndMigrateExistingScopedDatabases(f.dataRoot);
+        const store = new FsStore({ dataRoot: f.dataRoot });
+        expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(1);
+        expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(0);
+        expect(store.getTurnById(f.turnId).items).toHaveLength(5);
+        expect(store.getTurnById(f.turnId).items[4]).toMatchObject({
+          id: itemId,
+          causationId: callId,
+          tool: 'create_branch',
+          status: 'declined',
+          arguments: null,
+          result: null,
+          error: 'mcp-denied',
+        });
+        await shutdownControlStoreWorkerClient();
+        const changed = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          if (proof === 'missing-call')
+            changed.sqlite.prepare('DELETE FROM capability_calls WHERE call_id = ?').run(callId);
+          if (proof === 'wrong-session')
+            changed.sqlite
+              .prepare('UPDATE capability_calls SET agent_session_id = ? WHERE call_id = ?')
+              .run(testEntityId('as', 'as_foreign'), callId);
+          if (proof === 'wrong-package')
+            changed.sqlite
+              .prepare('UPDATE capability_calls SET package_snapshot_id = ? WHERE call_id = ?')
+              .run('aepsnap_foreign', callId);
+          if (proof === 'wrong-agent')
+            changed.sqlite
+              .prepare('UPDATE capability_calls SET agent_id = ? WHERE call_id = ?')
+              .run('agent_foreign', callId);
+          if (proof === 'changed-call')
+            changed.sqlite
+              .prepare('UPDATE capability_calls SET service_ref = ? WHERE call_id = ?')
+              .run('mcp-tool:delete_branch', callId);
+          if (proof === 'running-call' || proof === 'unknown-status')
+            changed.sqlite
+              .prepare('UPDATE capability_calls SET status = ? WHERE call_id = ?')
+              .run(proof === 'running-call' ? 'running' : 'unrecognized', callId);
+        } finally {
+          changed.sqlite.close();
+        }
+        if (proof === 'changed-prior-item' || proof === 'changed-extra-item') {
+          // A stopped retained-data snapshot carries the deliberate extra immutable revision.
+          const item = store.getTurnById(f.turnId).items[proof === 'changed-prior-item' ? 0 : 4]!;
+          await appendRetainedItemRevision(f, writeRetainedV1({ ...item, status: 'failed' }));
+        }
+        const currentStore = new FsStore({ dataRoot: f.dataRoot });
+        const before = currentStore.getTurnById(f.turnId);
+        const input = { ...f.input, store: currentStore };
+        if (proof === 'decided') {
+          await drainTestRecovery(f.coreDb, input);
+          const durable = new FsStore({ dataRoot: f.dataRoot });
+          expect(durable.getTurnById(f.turnId)).toEqual(before);
+          expect(durable.getAgentSession(f.agentSessionId)).toMatchObject({
+            status: 'failed',
+            message: decided.error!.message,
+            updatedAt: completedAt,
+          });
+          expect(
+            durable
+              .getTurnEvents(f.turnId)
+              .filter((event) => event.event === 'agent.session.updated')
+          ).toHaveLength(1);
+          await drainTestRecovery(f.coreDb, input);
+          expect(new FsStore({ dataRoot: f.dataRoot }).getAgentSession(f.agentSessionId)).toEqual(
+            durable.getAgentSession(f.agentSessionId)
+          );
+        } else {
+          await expect(drainTestRecovery(f.coreDb, input)).rejects.toSatisfy((error: unknown) =>
+            hasRecoveryFailure(
+              error,
+              'recovery_required: Failed-start terminal publication contradicts its decided Turn.'
+            )
+          );
+          expect(
+            new FsStore({ dataRoot: f.dataRoot }).getAgentSession(f.agentSessionId).status
+          ).toBe('busy');
+        }
+        const terminalBefore = eventsBefore
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => readRetainedV1(JSON.parse(line), StoredEventPayloadV1Schema.parse))
+          .find((event) => event.event === 'turn.completed');
+        expect(
+          currentStore.getTurnEvents(f.turnId).find((event) => event.event === 'turn.completed')
+        ).toEqual(terminalBefore);
+        expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(before);
+        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      } finally {
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['maintenance', 'ordinary-owner'] as const)(
+    'leaves complete %s publication unchanged across later passes and display refreshes',
+    async (owner) => {
+      const f = await createFailedStartFixture(`repeat_${owner}`, owner === 'maintenance');
+      let timestamp = f.input.now();
+      f.input.now = () => timestamp;
+      try {
+        const display = await f.store.createItem({
+          id: testEntityId('it', `it_display_${owner}`),
           owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: f.threadId,
           turnId: f.turnId,
           type: 'status',
           status: 'completed',
           level: 'warning',
-          title: 'Worker accepted',
-          summary: 'The worker attempt was admitted.',
-          createdAt: f.turn.startedAt!,
-          completedAt: f.turn.startedAt!,
-        });
-      }
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        const pkg = requireAgentEnvironmentPackageSnapshot(
-          db,
-          'ws_00000000-0000-7000-8000-000000000001',
-          `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
-        ).snapshot;
-        await startCapabilityCall({
-          workspaceDb: db,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: f.threadId,
-          turnId: f.turnId,
-          agentId: f.turn.agentId,
-          agentSessionId: f.agentSessionId,
-          packageSnapshotId: pkg.snapshotId,
-          authorityActor: f.turn.triggerActor,
-          callId,
-          itemId,
-          capabilityId: 'mcp.call-tool',
-          family: 'mcp',
-          operation: 'mcp.call-tool',
-          providerRef: 'github',
-          serviceRef: 'mcp-tool:create_branch',
-          redactionClass: 'metadata-only',
-          now: new Date(Date.parse(completedAt) - 200),
-        });
-        await finishCapabilityCall({
-          workspaceDb: db,
-          callId,
-          status: 'denied',
-          errorCode: 'mcp-denied',
-          now: new Date(Date.parse(completedAt) + (proof === 'post-terminal' ? 100 : -100)),
-        });
-      } finally {
-        db.sqlite.close();
-      }
-      const decided = await publishFixtureTerminal(f, {
-        status: 'failed',
-        completedAt,
-        error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
-      });
-      const terminalEvent = f.store
-        .getTurnEventsForExport(f.turnId)
-        .find((event) => event.event === 'turn.completed')!;
-      f.store.emitTurnEvent(
-        f.turnId,
-        await f.store.persistTurnEvent(
-          f.turnId,
-          terminalEvent,
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        ),
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
-      const eventsSource = f;
-      expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      const eventsBefore = readNativeEventBytes(eventsSource);
-      await shutdownControlStoreWorkerClient();
-      await verifyAndMigrateExistingScopedDatabases(f.dataRoot);
-      const store = new FsStore({ dataRoot: f.dataRoot });
-      expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(1);
-      expect(await reconcileWorkerMcpItems(f.dataRoot, store)).toBe(0);
-      expect(store.getTurnById(f.turnId).items).toHaveLength(5);
-      expect(store.getTurnById(f.turnId).items[4]).toMatchObject({
-        id: itemId,
-        causationId: callId,
-        tool: 'create_branch',
-        status: 'declined',
-        arguments: null,
-        result: null,
-        error: 'mcp-denied',
-      });
-      await shutdownControlStoreWorkerClient();
-      const changed = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        if (proof === 'missing-call')
-          changed.sqlite.prepare('DELETE FROM capability_calls WHERE call_id = ?').run(callId);
-        if (proof === 'wrong-session')
-          changed.sqlite
-            .prepare('UPDATE capability_calls SET agent_session_id = ? WHERE call_id = ?')
-            .run(testEntityId('as', 'as_foreign'), callId);
-        if (proof === 'wrong-package')
-          changed.sqlite
-            .prepare('UPDATE capability_calls SET package_snapshot_id = ? WHERE call_id = ?')
-            .run('aepsnap_foreign', callId);
-        if (proof === 'wrong-agent')
-          changed.sqlite
-            .prepare('UPDATE capability_calls SET agent_id = ? WHERE call_id = ?')
-            .run('agent_foreign', callId);
-        if (proof === 'changed-call')
-          changed.sqlite
-            .prepare('UPDATE capability_calls SET service_ref = ? WHERE call_id = ?')
-            .run('mcp-tool:delete_branch', callId);
-        if (proof === 'running-call' || proof === 'unknown-status')
-          changed.sqlite
-            .prepare('UPDATE capability_calls SET status = ? WHERE call_id = ?')
-            .run(proof === 'running-call' ? 'running' : 'unrecognized', callId);
-      } finally {
-        changed.sqlite.close();
-      }
-      if (proof === 'changed-prior-item' || proof === 'changed-extra-item') {
-        // A stopped retained-data snapshot carries the deliberate extra immutable revision.
-        const item = store.getTurnById(f.turnId).items[proof === 'changed-prior-item' ? 0 : 4]!;
-        await appendRetainedItemRevision(f, writeRetainedV1({ ...item, status: 'failed' }));
-      }
-      const currentStore = new FsStore({ dataRoot: f.dataRoot });
-      const before = currentStore.getTurnById(f.turnId);
-      const input = { ...f.input, store: currentStore };
-      if (proof === 'decided') {
-        await drainTestRecovery(f.coreDb, input);
-        const durable = new FsStore({ dataRoot: f.dataRoot });
-        expect(durable.getTurnById(f.turnId)).toEqual(before);
-        expect(durable.getAgentSession(f.agentSessionId)).toMatchObject({
-          status: 'failed',
-          message: decided.error!.message,
-          updatedAt: completedAt,
-        });
-        expect(
-          durable.getTurnEvents(f.turnId).filter((event) => event.event === 'agent.session.updated')
-        ).toHaveLength(1);
-        await drainTestRecovery(f.coreDb, input);
-        expect(new FsStore({ dataRoot: f.dataRoot }).getAgentSession(f.agentSessionId)).toEqual(
-          durable.getAgentSession(f.agentSessionId)
-        );
-      } else {
-        await expect(drainTestRecovery(f.coreDb, input)).rejects.toSatisfy((error: unknown) =>
-          hasRecoveryFailure(
-            error,
-            'recovery_required: Failed-start terminal publication contradicts its decided Turn.'
-          )
-        );
-        expect(new FsStore({ dataRoot: f.dataRoot }).getAgentSession(f.agentSessionId).status).toBe(
-          'busy'
-        );
-      }
-      const terminalBefore = eventsBefore
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => readRetainedV1(JSON.parse(line), StoredEventPayloadV1Schema.parse))
-        .find((event) => event.event === 'turn.completed');
-      expect(
-        currentStore.getTurnEvents(f.turnId).find((event) => event.event === 'turn.completed')
-      ).toEqual(terminalBefore);
-      expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(before);
-      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
-    } finally {
-      f.coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'maintenance',
-    'ordinary-owner',
-  ] as const)('leaves complete %s publication unchanged across later passes and display refreshes', async (owner) => {
-    const f = await createFailedStartFixture(`repeat_${owner}`, owner === 'maintenance');
-    let timestamp = f.input.now();
-    f.input.now = () => timestamp;
-    try {
-      const display = await f.store.createItem({
-        id: testEntityId('it', `it_display_${owner}`),
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        threadId: f.threadId,
-        turnId: f.turnId,
-        type: 'status',
-        status: 'completed',
-        level: 'warning',
-        title: 'Worker Turn accepted',
-        summary: 'Conversation continued with agent_codex_host.',
-        createdAt: f.input.now(),
-        completedAt: f.input.now(),
-      });
-      await recoverTestStartup(f.coreDb, f.input);
-      if (owner === 'maintenance') {
-        await drainTestRecovery(f.coreDb, f.input);
-      } else {
-        await terminalizeGovernedWorkerTurn({
-          store: f.store,
-          turnId: f.turnId,
-          agentSessionId: f.agentSessionId,
-          requestId: fixtureRequestId(`request_repeat_${owner}`),
+          title: 'Worker Turn accepted',
+          summary: 'Conversation continued with agent_codex_host.',
+          createdAt: f.input.now(),
           completedAt: f.input.now(),
-          errorCode: 'worker_governance_turn_failed',
-          message: 'Worker turn ended without success.',
-          outcome: 'failed',
         });
-      }
-      const eventsSource = f;
-      expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      const eventsBefore = readNativeEventBytes(eventsSource);
-      const published = f.store
-        .getTurnEvents(f.turnId)
-        .find((event) => event.event === 'turn.completed');
-      expect(published?.data).toMatchObject({
-        type: 'turn-completed',
-        stopReason: 'error',
-        turn: { status: 'failed' },
-      });
-      const decided = f.store.getTurnById(f.turnId);
-      const session = f.store.getAgentSession(f.agentSessionId);
-      expect(session.status).toBe('failed');
-      expect(
-        f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
-      ).toHaveLength(1);
-      timestamp = '2026-10-03T00:01:00.000Z';
-      await drainTestRecovery(f.coreDb, f.input);
-      expect(f.store.getTurnById(f.turnId)).toEqual(decided);
-      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
-      expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
+        await recoverTestStartup(f.coreDb, f.input);
+        if (owner === 'maintenance') {
+          await drainTestRecovery(f.coreDb, f.input);
+        } else {
+          await terminalizeGovernedWorkerTurn({
+            store: f.store,
+            turnId: f.turnId,
+            agentSessionId: f.agentSessionId,
+            requestId: fixtureRequestId(`request_repeat_${owner}`),
+            completedAt: f.input.now(),
+            errorCode: 'worker_governance_turn_failed',
+            message: 'Worker turn ended without success.',
+            outcome: 'failed',
+          });
+        }
+        const eventsSource = f;
+        expect(f.store.getTurnById(f.turnId).status).toBe('failed');
+        const eventsBefore = readNativeEventBytes(eventsSource);
+        const published = f.store
+          .getTurnEvents(f.turnId)
+          .find((event) => event.event === 'turn.completed');
+        expect(published?.data).toMatchObject({
+          type: 'turn-completed',
+          stopReason: 'error',
+          turn: { status: 'failed' },
+        });
+        const decided = f.store.getTurnById(f.turnId);
+        const session = f.store.getAgentSession(f.agentSessionId);
+        expect(session.status).toBe('failed');
+        expect(
+          f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+        ).toHaveLength(1);
+        timestamp = '2026-10-03T00:01:00.000Z';
+        await drainTestRecovery(f.coreDb, f.input);
+        expect(f.store.getTurnById(f.turnId)).toEqual(decided);
+        expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+        expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
 
-      // Core Protocol admits only these named display fields after the terminal snapshot.
-      await f.store.updateItem(
-        display.id,
-        {
+        // Core Protocol admits only these named display fields after the terminal snapshot.
+        await f.store.updateItem(
+          display.id,
+          {
+            title: 'Worker Turn failed',
+            summary: 'Worker turn ended without success.',
+          },
+          DISPLAY_PROJECTION_REFRESH_ADMISSION
+        );
+        const restarted = new FsStore({ dataRoot: f.dataRoot });
+        const current = restarted.getTurnById(f.turnId);
+        expect(published?.data.type).toBe('turn-completed');
+        if (published?.data.type !== 'turn-completed')
+          throw new Error('Missing terminal snapshot.');
+        expect(
+          Object.keys(current).filter(
+            (key) =>
+              !isDeepStrictEqual(
+                current[key as keyof typeof current],
+                published.data.turn[key as keyof typeof current]
+              )
+          )
+        ).toEqual(['items']);
+        expect(current.items.find((item) => item.id === display.id)).toMatchObject({
+          level: 'warning',
           title: 'Worker Turn failed',
           summary: 'Worker turn ended without success.',
-        },
-        DISPLAY_PROJECTION_REFRESH_ADMISSION
-      );
-      const restarted = new FsStore({ dataRoot: f.dataRoot });
-      const current = restarted.getTurnById(f.turnId);
-      expect(published?.data.type).toBe('turn-completed');
-      if (published?.data.type !== 'turn-completed') throw new Error('Missing terminal snapshot.');
-      expect(
-        Object.keys(current).filter(
-          (key) =>
-            !isDeepStrictEqual(
-              current[key as keyof typeof current],
-              published.data.turn[key as keyof typeof current]
-            )
-        )
-      ).toEqual(['items']);
-      expect(current.items.find((item) => item.id === display.id)).toMatchObject({
-        level: 'warning',
-        title: 'Worker Turn failed',
-        summary: 'Worker turn ended without success.',
-      });
-      expect(current.items).toEqual(
-        published.data.turn.items.map((item) =>
-          item.id === display.id
-            ? {
-                ...item,
-                title: 'Worker Turn failed',
-                summary: 'Worker turn ended without success.',
-              }
-            : item
-        )
-      );
-      expect(published.data.turn.items.find((item) => item.id === display.id)).toMatchObject({
-        level: 'warning',
-        title: 'Worker Turn accepted',
-        summary: 'Conversation continued with agent_codex_host.',
-      });
-      const lease = requireNanoHostExecutionAttempt(
-        f.coreDb,
-        testEntityId('attempt', `lease_repeat_${owner}`)
-      );
-      const backend = getWorkerBackendSession(f.coreDb, lease.attemptId);
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const pending = readPendingRequest(db.sqlite, `input_repeat_${owner}`);
-      db.sqlite.close();
-      for (let pass = 0; pass < 2; pass += 1) {
-        timestamp = new Date(Date.parse(timestamp) + 60_000).toISOString();
-        await drainTestRecovery(f.coreDb, {
-          ...f.input,
-          store: restarted,
         });
-        const durable = new FsStore({ dataRoot: f.dataRoot });
-        expect(durable.getTurnById(f.turnId)).toEqual(current);
-        expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
-        expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
-        expect(requireNanoHostExecutionAttempt(f.coreDb, lease.attemptId)).toEqual(lease);
-        expect(getWorkerBackendSession(f.coreDb, lease.attemptId)).toEqual(backend);
-        const after = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        expect(readPendingRequest(after.sqlite, `input_repeat_${owner}`)).toEqual(pending);
-        after.sqlite.close();
+        expect(current.items).toEqual(
+          published.data.turn.items.map((item) =>
+            item.id === display.id
+              ? {
+                  ...item,
+                  title: 'Worker Turn failed',
+                  summary: 'Worker turn ended without success.',
+                }
+              : item
+          )
+        );
+        expect(published.data.turn.items.find((item) => item.id === display.id)).toMatchObject({
+          level: 'warning',
+          title: 'Worker Turn accepted',
+          summary: 'Conversation continued with agent_codex_host.',
+        });
+        const lease = requireNanoHostExecutionAttempt(
+          f.coreDb,
+          testEntityId('attempt', `lease_repeat_${owner}`)
+        );
+        const backend = getWorkerBackendSession(f.coreDb, lease.attemptId);
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        const pending = readPendingRequest(db.sqlite, `input_repeat_${owner}`);
+        db.sqlite.close();
+        for (let pass = 0; pass < 2; pass += 1) {
+          timestamp = new Date(Date.parse(timestamp) + 60_000).toISOString();
+          await drainTestRecovery(f.coreDb, {
+            ...f.input,
+            store: restarted,
+          });
+          const durable = new FsStore({ dataRoot: f.dataRoot });
+          expect(durable.getTurnById(f.turnId)).toEqual(current);
+          expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
+          expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
+          expect(requireNanoHostExecutionAttempt(f.coreDb, lease.attemptId)).toEqual(lease);
+          expect(getWorkerBackendSession(f.coreDb, lease.attemptId)).toEqual(backend);
+          const after = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+          expect(readPendingRequest(after.sqlite, `input_repeat_${owner}`)).toEqual(pending);
+          after.sqlite.close();
+        }
+        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      } finally {
+        f.coreDb.sqlite.close();
       }
-      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
-    } finally {
-      f.coreDb.sqlite.close();
     }
-  });
+  );
 
   it.each([
     'status',
@@ -1588,198 +1594,201 @@ describe('terminal failed-start product recovery', () => {
     'error-code',
     'error-message',
     'completion-time',
-  ] as const)('preserves a contradictory terminal %s and still maintains an independent lease', async (contradiction) => {
-    const suffix = `publication_${contradiction}`;
-    const f = await createFailedStartFixture(suffix);
-    let timestamp = f.input.now();
-    f.input.now = () => timestamp;
-    try {
-      const running = f.store.getTurnById(f.turnId);
-      const decided = {
-        ...running,
-        status: 'failed' as const,
-        completedAt: f.input.now(),
-        durationMs: running.startedAt
-          ? Math.max(0, Date.parse(f.input.now()) - Date.parse(running.startedAt))
-          : running.durationMs,
-        error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
-      };
-      await publishFixtureTerminal(f, {
-        status: decided.status,
-        completedAt: decided.completedAt,
-        error: decided.error,
-      });
-      const originalEvent = f.store
-        .getTurnEventsForExport(f.turnId)
-        .find((event) => event.event === 'turn.completed')!;
-      await replaceRetainedEntry(
-        f,
-        'event',
-        `${f.turnId}:${originalEvent.sequence}`,
-        writeRetainedV1({
-          ...originalEvent,
-          data: {
-            type: 'turn-completed',
-            stopReason: contradiction === 'stop-reason' ? 'aborted' : 'error',
-            turn: {
-              ...decided,
-              ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
-              ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
-              ...(contradiction === 'session'
-                ? { agentSessionId: testEntityId('as', 'as_foreign') }
-                : {}),
-              ...(contradiction === 'error-code'
-                ? { error: { ...decided.error, code: 'delivery_unknown' } }
-                : {}),
-              ...(contradiction === 'error-message'
-                ? { error: { ...decided.error, message: 'A different failure.' } }
-                : {}),
-              ...(contradiction === 'completion-time'
-                ? { completedAt: '2026-10-02T23:59:00.000Z' }
-                : {}),
-            },
-          },
-        })
-      );
-      const sibling = `z_after_publication_${contradiction}`;
-      await f.store.createThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'Independent worker',
-        testEntityId('th', `th_${sibling}`)
-      );
-      await f.store.createAgentSession({
-        id: testEntityId('as', `as_${sibling}`),
-        agentId: 'agent_codex_host',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: testEntityId('th', `th_${sibling}`),
-        status: 'busy',
-        message: null,
-        environmentPackageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${sibling}`)}_${testEntityId('as', `as_${sibling}`)}`,
-        createdAt: f.input.now(),
-        updatedAt: f.input.now(),
-      });
-      await f.store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        testEntityId('th', `th_${sibling}`),
-        'Independent work',
-        { kind: 'user', id: LOCAL_USER_ID },
-        null,
-        {
-          turnId: testEntityId('tu', `turn_${sibling}`),
-          agentId: 'agent_codex_host',
-          agentSessionId: testEntityId('as', `as_${sibling}`),
-          status: 'running',
-          executorKind: 'worker',
-        }
-      );
-      dispatchLease(f.coreDb, sibling);
-      const siblingWorkspace = openWorkspaceDb(
-        f.dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001'
-      );
+  ] as const)(
+    'preserves a contradictory terminal %s and still maintains an independent lease',
+    async (contradiction) => {
+      const suffix = `publication_${contradiction}`;
+      const f = await createFailedStartFixture(suffix);
+      let timestamp = f.input.now();
+      f.input.now = () => timestamp;
       try {
-        await recordTestAgentEnvironmentPackage(siblingWorkspace, {
-          suffix: sibling,
-          workspaceInputIds: [],
+        const running = f.store.getTurnById(f.turnId);
+        const decided = {
+          ...running,
+          status: 'failed' as const,
+          completedAt: f.input.now(),
+          durationMs: running.startedAt
+            ? Math.max(0, Date.parse(f.input.now()) - Date.parse(running.startedAt))
+            : running.durationMs,
+          error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
+        };
+        await publishFixtureTerminal(f, {
+          status: decided.status,
+          completedAt: decided.completedAt,
+          error: decided.error,
         });
-      } finally {
-        siblingWorkspace.sqlite.close();
-      }
-      await admitFixtureJournal(f.coreDb, f.store, sibling);
-      await recordBackendSession(f.coreDb, sibling, 'cleaned');
-      beginOwnedAttemptCloseout(f.coreDb, {
-        attemptId: testEntityId('attempt', `lease_${sibling}`),
-        firstTerminalCause: 'turn-start-failed',
-        outcome: 'failed',
-      });
-      expect(
-        observeExecutionAttempts(f.coreDb)
-          .filter((attempt) => attempt.phase !== 'closed')
-          .map((attempt) => attempt.turn_id)
-          .sort()
-      ).toEqual([testEntityId('tu', `turn_${sibling}`)]);
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
-          f.coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        phase: 'closed',
-        fenceRef: `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
-      });
-      const store = new FsStore({ dataRoot: f.dataRoot });
-      const before = store.getTurnById(f.turnId);
-      const session = store.getAgentSession(f.agentSessionId);
-      const events = store.getTurnEventsForExport(f.turnId);
-      const publication = store
-        .getTurnEvents(f.turnId)
-        .find((event) => event.event === 'turn.completed');
-      if (publication?.data.type !== 'turn-completed')
-        throw new Error('Missing contradictory snapshot.');
-      const differingFields = Object.keys(before).filter(
-        (key) =>
-          !isDeepStrictEqual(
-            before[key as keyof typeof before],
-            publication.data.turn[key as keyof typeof before]
-          )
-      );
-      expect(differingFields).toEqual(
-        contradiction === 'stop-reason'
-          ? []
-          : [
-              contradiction === 'status'
-                ? 'status'
-                : contradiction === 'agent'
-                  ? 'agentId'
-                  : contradiction === 'session'
-                    ? 'agentSessionId'
-                    : contradiction === 'completion-time'
-                      ? 'completedAt'
-                      : 'error',
-            ]
-      );
-      const input = { ...f.input, store, cleanupBackendSession: vi.fn(async () => {}) };
-      const completedAt = '2026-10-03T00:01:00.000Z';
-      for (let pass = 0; pass < 2; pass += 1) {
-        timestamp = new Date(Date.parse(timestamp) + 60_000).toISOString();
-        await expect(drainTestRecovery(f.coreDb, input)).rejects.toSatisfy((error: unknown) =>
-          hasRecoveryFailure(
-            error,
-            'recovery_required: Failed-start terminal publication contradicts its decided Turn.'
-          )
+        const originalEvent = f.store
+          .getTurnEventsForExport(f.turnId)
+          .find((event) => event.event === 'turn.completed')!;
+        await replaceRetainedEntry(
+          f,
+          'event',
+          `${f.turnId}:${originalEvent.sequence}`,
+          writeRetainedV1({
+            ...originalEvent,
+            data: {
+              type: 'turn-completed',
+              stopReason: contradiction === 'stop-reason' ? 'aborted' : 'error',
+              turn: {
+                ...decided,
+                ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
+                ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
+                ...(contradiction === 'session'
+                  ? { agentSessionId: testEntityId('as', 'as_foreign') }
+                  : {}),
+                ...(contradiction === 'error-code'
+                  ? { error: { ...decided.error, code: 'delivery_unknown' } }
+                  : {}),
+                ...(contradiction === 'error-message'
+                  ? { error: { ...decided.error, message: 'A different failure.' } }
+                  : {}),
+                ...(contradiction === 'completion-time'
+                  ? { completedAt: '2026-10-02T23:59:00.000Z' }
+                  : {}),
+              },
+            },
+          })
         );
-        const durable = new FsStore({ dataRoot: f.dataRoot });
-        expect(durable.getTurnById(f.turnId)).toEqual(before);
-        expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
-        expect(durable.getTurnEventsForExport(f.turnId)).toEqual(events);
-        expect(
-          observeExecutionAttempts(f.coreDb).find(
-            (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${sibling}`)
-          )?.phase
-        ).toBe('closed');
-        expect(
-          getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${sibling}`))?.state
-        ).toBe('cleaned');
-        expect(durable.getTurnById(testEntityId('tu', `turn_${sibling}`))).toMatchObject({
-          status: 'failed',
-          completedAt,
-          error: { code: 'worker_governance_turn_failed' },
+        const sibling = `z_after_publication_${contradiction}`;
+        await f.store.createThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'Independent worker',
+          testEntityId('th', `th_${sibling}`)
+        );
+        await f.store.createAgentSession({
+          id: testEntityId('as', `as_${sibling}`),
+          agentId: 'agent_codex_host',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: testEntityId('th', `th_${sibling}`),
+          status: 'busy',
+          message: null,
+          environmentPackageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${sibling}`)}_${testEntityId('as', `as_${sibling}`)}`,
+          createdAt: f.input.now(),
+          updatedAt: f.input.now(),
         });
-        expect(durable.getAgentSession(testEntityId('as', `as_${sibling}`))).toMatchObject({
-          status: 'failed',
-          updatedAt: completedAt,
+        await f.store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          testEntityId('th', `th_${sibling}`),
+          'Independent work',
+          { kind: 'user', id: LOCAL_USER_ID },
+          null,
+          {
+            turnId: testEntityId('tu', `turn_${sibling}`),
+            agentId: 'agent_codex_host',
+            agentSessionId: testEntityId('as', `as_${sibling}`),
+            status: 'running',
+            executorKind: 'worker',
+          }
+        );
+        dispatchLease(f.coreDb, sibling);
+        const siblingWorkspace = openWorkspaceDb(
+          f.dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        try {
+          await recordTestAgentEnvironmentPackage(siblingWorkspace, {
+            suffix: sibling,
+            workspaceInputIds: [],
+          });
+        } finally {
+          siblingWorkspace.sqlite.close();
+        }
+        await admitFixtureJournal(f.coreDb, f.store, sibling);
+        await recordBackendSession(f.coreDb, sibling, 'cleaned');
+        beginOwnedAttemptCloseout(f.coreDb, {
+          attemptId: testEntityId('attempt', `lease_${sibling}`),
+          firstTerminalCause: 'turn-start-failed',
+          outcome: 'failed',
         });
         expect(
-          durable
-            .getTurnEvents(testEntityId('tu', `turn_${sibling}`))
-            .filter((event) => event.event === 'turn.completed')
-        ).toHaveLength(1);
+          observeExecutionAttempts(f.coreDb)
+            .filter((attempt) => attempt.phase !== 'closed')
+            .map((attempt) => attempt.turn_id)
+            .sort()
+        ).toEqual([testEntityId('tu', `turn_${sibling}`)]);
+        expect(
+          attempts.requireSchedulerExecutionAttempt(
+            f.coreDb,
+            testEntityId('attempt', `lease_${suffix}`)
+          )
+        ).toMatchObject({
+          phase: 'closed',
+          fenceRef: `self-check:${testEntityId('attempt', `lease_${suffix}`)}`,
+        });
+        const store = new FsStore({ dataRoot: f.dataRoot });
+        const before = store.getTurnById(f.turnId);
+        const session = store.getAgentSession(f.agentSessionId);
+        const events = store.getTurnEventsForExport(f.turnId);
+        const publication = store
+          .getTurnEvents(f.turnId)
+          .find((event) => event.event === 'turn.completed');
+        if (publication?.data.type !== 'turn-completed')
+          throw new Error('Missing contradictory snapshot.');
+        const differingFields = Object.keys(before).filter(
+          (key) =>
+            !isDeepStrictEqual(
+              before[key as keyof typeof before],
+              publication.data.turn[key as keyof typeof before]
+            )
+        );
+        expect(differingFields).toEqual(
+          contradiction === 'stop-reason'
+            ? []
+            : [
+                contradiction === 'status'
+                  ? 'status'
+                  : contradiction === 'agent'
+                    ? 'agentId'
+                    : contradiction === 'session'
+                      ? 'agentSessionId'
+                      : contradiction === 'completion-time'
+                        ? 'completedAt'
+                        : 'error',
+              ]
+        );
+        const input = { ...f.input, store, cleanupBackendSession: vi.fn(async () => {}) };
+        const completedAt = '2026-10-03T00:01:00.000Z';
+        for (let pass = 0; pass < 2; pass += 1) {
+          timestamp = new Date(Date.parse(timestamp) + 60_000).toISOString();
+          await expect(drainTestRecovery(f.coreDb, input)).rejects.toSatisfy((error: unknown) =>
+            hasRecoveryFailure(
+              error,
+              'recovery_required: Failed-start terminal publication contradicts its decided Turn.'
+            )
+          );
+          const durable = new FsStore({ dataRoot: f.dataRoot });
+          expect(durable.getTurnById(f.turnId)).toEqual(before);
+          expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
+          expect(durable.getTurnEventsForExport(f.turnId)).toEqual(events);
+          expect(
+            observeExecutionAttempts(f.coreDb).find(
+              (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${sibling}`)
+            )?.phase
+          ).toBe('closed');
+          expect(
+            getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${sibling}`))?.state
+          ).toBe('cleaned');
+          expect(durable.getTurnById(testEntityId('tu', `turn_${sibling}`))).toMatchObject({
+            status: 'failed',
+            completedAt,
+            error: { code: 'worker_governance_turn_failed' },
+          });
+          expect(durable.getAgentSession(testEntityId('as', `as_${sibling}`))).toMatchObject({
+            status: 'failed',
+            updatedAt: completedAt,
+          });
+          expect(
+            durable
+              .getTurnEvents(testEntityId('tu', `turn_${sibling}`))
+              .filter((event) => event.event === 'turn.completed')
+          ).toHaveLength(1);
+        }
+        expect(input.cleanupBackendSession).not.toHaveBeenCalled();
+      } finally {
+        f.coreDb.sqlite.close();
       }
-      expect(input.cleanupBackendSession).not.toHaveBeenCalled();
-    } finally {
-      f.coreDb.sqlite.close();
     }
-  });
+  );
 
   it('settles unknown delivery and admits an Assistant conversation without claiming worker continuity', async () => {
     const f = await createFailedStartFixture('unknown_outcome', true);
@@ -2201,54 +2210,54 @@ describe('terminal failed-start product recovery', () => {
     }
   }, 60_000);
 
-  it.each([
-    true,
-    false,
-  ])('settles an ordinary failed-start worker with anchored cleanup %s', async (anchored) => {
-    const f = await createFailedStartFixture(`ordinary_${anchored}`, false, anchored);
-    const lifecycleOwner = vi.spyOn(workerTurnFailure, 'terminalizeGovernedWorkerTurn');
-    try {
-      await runRestartRecoveryThroughMaintenance(f.coreDb, f.input);
-      expect(f.store.getTurnById(f.turnId)).toMatchObject({
-        status: 'failed',
-        error: { code: 'worker_governance_turn_failed' },
-      });
-      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('failed');
-      // Either the admitted product-boundary callback or direct recovery composition may invoke
-      // this existing lifecycle owner; invocation count and anchor shape do not decide closeout.
-      expect(lifecycleOwner).toHaveBeenCalledWith(
-        expect.objectContaining({
-          store: f.store,
-          turnId: f.turnId,
-          agentSessionId: f.agentSessionId,
-          outcome: 'failed',
-          errorCode: 'worker_governance_turn_failed',
-        })
-      );
-      const terminal = f.store.getTurnById(f.turnId);
-      expect(f.store.getTurnEvents(f.turnId)).toEqual(
-        expect.arrayContaining([
+  it.each([true, false])(
+    'settles an ordinary failed-start worker with anchored cleanup %s',
+    async (anchored) => {
+      const f = await createFailedStartFixture(`ordinary_${anchored}`, false, anchored);
+      const lifecycleOwner = vi.spyOn(workerTurnFailure, 'terminalizeGovernedWorkerTurn');
+      try {
+        await runRestartRecoveryThroughMaintenance(f.coreDb, f.input);
+        expect(f.store.getTurnById(f.turnId)).toMatchObject({
+          status: 'failed',
+          error: { code: 'worker_governance_turn_failed' },
+        });
+        expect(f.store.getAgentSession(f.agentSessionId).status).toBe('failed');
+        // Either the admitted product-boundary callback or direct recovery composition may invoke
+        // this existing lifecycle owner; invocation count and anchor shape do not decide closeout.
+        expect(lifecycleOwner).toHaveBeenCalledWith(
           expect.objectContaining({
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: f.threadId,
+            store: f.store,
             turnId: f.turnId,
-            event: 'turn.completed',
-            data: { type: 'turn-completed', stopReason: 'error', turn: terminal },
-          }),
-          expect.objectContaining({
-            event: 'agent.session.updated',
-            data: expect.objectContaining({
-              type: 'agent-session-updated',
-              agentSession: expect.objectContaining({ id: f.agentSessionId, status: 'failed' }),
+            agentSessionId: f.agentSessionId,
+            outcome: 'failed',
+            errorCode: 'worker_governance_turn_failed',
+          })
+        );
+        const terminal = f.store.getTurnById(f.turnId);
+        expect(f.store.getTurnEvents(f.turnId)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: f.threadId,
+              turnId: f.turnId,
+              event: 'turn.completed',
+              data: { type: 'turn-completed', stopReason: 'error', turn: terminal },
             }),
-          }),
-        ])
-      );
-    } finally {
-      lifecycleOwner.mockRestore();
-      f.coreDb.sqlite.close();
+            expect.objectContaining({
+              event: 'agent.session.updated',
+              data: expect.objectContaining({
+                type: 'agent-session-updated',
+                agentSession: expect.objectContaining({ id: f.agentSessionId, status: 'failed' }),
+              }),
+            }),
+          ])
+        );
+      } finally {
+        lifecycleOwner.mockRestore();
+        f.coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('finishes a crash after the decided delivery failure without replacing its bytes or duplicating publications', async () => {
     const f = await createFailedStartFixture('partial_delivery', true);
@@ -2282,139 +2291,144 @@ describe('terminal failed-start product recovery', () => {
     'anchor',
     'runtime-binding',
     'stale-session',
-  ] as const)('leaves contradictory %s lineage recovery-required without product writes', async (contradiction) => {
-    const f = await createFailedStartFixture(
-      `contradictory_${contradiction}`,
-      false,
-      ['package', 'request', 'runtime-binding'].includes(contradiction)
-    );
-    if (contradiction === 'package')
-      await f.store.updateAgentSession(f.agentSessionId, {
-        environmentPackageSnapshotId: 'aepsnap_other',
-      });
-    if (contradiction === 'request')
-      f.coreDb.sqlite
-        .prepare('UPDATE scheduler_admission_entries SET request_id = ? WHERE turn_id = ?')
-        .run('request_other', f.turnId);
-    if (contradiction === 'route-token')
-      f.coreDb.sqlite
-        .prepare(
-          'UPDATE scheduler_execution_attempts SET worker_control_token_hash = ? WHERE turn_id = ?'
-        )
-        .run('a'.repeat(64), f.turnId);
-    if (contradiction === 'anchor')
-      f.coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET operation_id = 'lost-submission' WHERE turn_id = ?"
-        )
-        .run(f.turnId);
-    if (contradiction === 'stale-session')
-      await f.store.updateAgentSession(f.agentSessionId, { stale: true });
-    if (contradiction === 'runtime-binding') {
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO sandbox_runtime_records
+  ] as const)(
+    'leaves contradictory %s lineage recovery-required without product writes',
+    async (contradiction) => {
+      const f = await createFailedStartFixture(
+        `contradictory_${contradiction}`,
+        false,
+        ['package', 'request', 'runtime-binding'].includes(contradiction)
+      );
+      if (contradiction === 'package')
+        await f.store.updateAgentSession(f.agentSessionId, {
+          environmentPackageSnapshotId: 'aepsnap_other',
+        });
+      if (contradiction === 'request')
+        f.coreDb.sqlite
+          .prepare('UPDATE scheduler_admission_entries SET request_id = ? WHERE turn_id = ?')
+          .run('request_other', f.turnId);
+      if (contradiction === 'route-token')
+        f.coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_execution_attempts SET worker_control_token_hash = ? WHERE turn_id = ?'
+          )
+          .run('a'.repeat(64), f.turnId);
+      if (contradiction === 'anchor')
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET operation_id = 'lost-submission' WHERE turn_id = ?"
+          )
+          .run(f.turnId);
+      if (contradiction === 'stale-session')
+        await f.store.updateAgentSession(f.agentSessionId, { stale: true });
+      if (contradiction === 'runtime-binding') {
+        f.coreDb.sqlite
+          .prepare(`INSERT INTO sandbox_runtime_records
         (sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
          sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
          max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
          cleanup_state, created_at, updated_at)
         VALUES ('sandbox_contradictory', 'runtime-target-test', ?, 'sandbox-binding-contradictory',
          'integration-binding-contradictory', ?, ?, 'test', 2, 2, 1, 'open', 'ready', 'accepting', 'unknown', ?, ?)`)
-        .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), f.input.now(), f.input.now());
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO harness_instance_records
+          .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), f.input.now(), f.input.now());
+        f.coreDb.sqlite
+          .prepare(`INSERT INTO harness_instance_records
         (harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
          runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json, max_open_sessions,
          max_active_turns, open_session_count, active_turn_count, lifecycle_state, drain_state, next_sequence,
          operation_state, created_at, updated_at)
         VALUES ('harness_contradictory', 'sandbox_contradictory', 'harness-binding-contradictory', ?,
          'codex', 'codex', 'test', 1, '[]', 2, 1, 1, 1, 'open', 'accepting', 1, 'idle', ?, ?)`)
-        .run('a'.repeat(64), f.input.now(), f.input.now());
-      f.coreDb.sqlite
-        .prepare(`INSERT INTO agent_session_runtime_bindings
+          .run('a'.repeat(64), f.input.now(), f.input.now());
+        f.coreDb.sqlite
+          .prepare(`INSERT INTO agent_session_runtime_bindings
       (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
        agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
        current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
       VALUES (?, ?, ?, ?, ?, ?, 1, 'absent', 'active', ?, ?, 1, 'unknown', ?, ?, ?)`)
-        .run(
-          'binding_contradictory',
-          'harness_contradictory',
-          f.agentSessionId,
-          'ws_00000000-0000-7000-8000-000000000001',
-          f.threadId,
-          'a'.repeat(64),
-          f.turnId,
-          testEntityId('attempt', `lease_contradictory_${contradiction}`),
-          f.input.now(),
-          f.input.now(),
-          'a'.repeat(64)
+          .run(
+            'binding_contradictory',
+            'harness_contradictory',
+            f.agentSessionId,
+            'ws_00000000-0000-7000-8000-000000000001',
+            f.threadId,
+            'a'.repeat(64),
+            f.turnId,
+            testEntityId('attempt', `lease_contradictory_${contradiction}`),
+            f.input.now(),
+            f.input.now(),
+            'a'.repeat(64)
+          );
+      }
+      const before = f.store.getTurnById(f.turnId);
+      try {
+        await expect(runRestartRecoveryThroughMaintenance(f.coreDb, f.input)).rejects.toSatisfy(
+          (error: unknown) => hasRecoveryFailure(error, /recovery_required/)
         );
+        expect(f.store.getTurnById(f.turnId)).toEqual(before);
+        expect(f.store.getAgentSession(f.agentSessionId).status).toBe('busy');
+        expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+      } finally {
+        f.coreDb.sqlite.close();
+      }
     }
-    const before = f.store.getTurnById(f.turnId);
-    try {
-      await expect(runRestartRecoveryThroughMaintenance(f.coreDb, f.input)).rejects.toSatisfy(
-        (error: unknown) => hasRecoveryFailure(error, /recovery_required/)
-      );
-      expect(f.store.getTurnById(f.turnId)).toEqual(before);
-      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('busy');
-      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
-    } finally {
-      f.coreDb.sqlite.close();
-    }
-  });
+  );
 
-  it.each([
-    'session',
-    'terminal-event',
-  ] as const)('retries a real failed %s write after the Turn decision survives a product-store reload', async (missing) => {
-    const f = await createFailedStartFixture(`write_failure_${missing}`, true);
-    if (missing === 'session') {
-      // The crash retained the decided Turn before its Session publication; recovery owns that remaining write.
-      await publishFixtureTerminal(f, {
-        status: 'failed',
-        completedAt: f.input.now(),
-        error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
-      });
+  it.each(['session', 'terminal-event'] as const)(
+    'retries a real failed %s write after the Turn decision survives a product-store reload',
+    async (missing) => {
+      const f = await createFailedStartFixture(`write_failure_${missing}`, true);
+      if (missing === 'session') {
+        // The crash retained the decided Turn before its Session publication; recovery owns that remaining write.
+        await publishFixtureTerminal(f, {
+          status: 'failed',
+          completedAt: f.input.now(),
+          error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+        });
+      }
+      const client = getControlStoreWorkerClient();
+      const terminal = client.terminal.bind(client);
+      const fault =
+        missing === 'session'
+          ? vi
+              .spyOn(client, 'products')
+              .mockRejectedValueOnce(new Error('Injected session write failure.'))
+          : vi.spyOn(client, 'terminal').mockImplementationOnce(async (...args) => {
+              await terminal(...args);
+              throw new Error('Injected terminal event failure.');
+            });
+      try {
+        await recoverTestStartup(f.coreDb, f.input);
+        await expect(drainTestRecovery(f.coreDb, f.input)).rejects.toSatisfy((error: unknown) =>
+          hasRecoveryFailure(
+            error,
+            /recovery_required: Governed worker turn terminalization encountered partial persistence errors/
+          )
+        );
+        const decided = f.store.getTurnById(f.turnId);
+        expect(decided).toMatchObject({ status: 'failed', error: { code: 'delivery_unknown' } });
+        fault.mockRestore();
+        const restarted = new FsStore({ dataRoot: f.dataRoot });
+        const input = { ...f.input, store: restarted };
+        await drainTestRecovery(f.coreDb, input);
+        await drainTestRecovery(f.coreDb, input);
+        expect(restarted.getTurnById(f.turnId)).toEqual(decided);
+        expect(restarted.getAgentSession(f.agentSessionId).status).toBe('failed');
+        expect(
+          restarted.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+        ).toHaveLength(1);
+        expect(
+          restarted
+            .getTurnEvents(f.turnId)
+            .filter((event) => event.event === 'agent.session.updated')
+        ).toHaveLength(1);
+        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      } finally {
+        fault.mockRestore();
+        f.coreDb.sqlite.close();
+      }
     }
-    const client = getControlStoreWorkerClient();
-    const terminal = client.terminal.bind(client);
-    const fault =
-      missing === 'session'
-        ? vi
-            .spyOn(client, 'products')
-            .mockRejectedValueOnce(new Error('Injected session write failure.'))
-        : vi.spyOn(client, 'terminal').mockImplementationOnce(async (...args) => {
-            await terminal(...args);
-            throw new Error('Injected terminal event failure.');
-          });
-    try {
-      await recoverTestStartup(f.coreDb, f.input);
-      await expect(drainTestRecovery(f.coreDb, f.input)).rejects.toSatisfy((error: unknown) =>
-        hasRecoveryFailure(
-          error,
-          /recovery_required: Governed worker turn terminalization encountered partial persistence errors/
-        )
-      );
-      const decided = f.store.getTurnById(f.turnId);
-      expect(decided).toMatchObject({ status: 'failed', error: { code: 'delivery_unknown' } });
-      fault.mockRestore();
-      const restarted = new FsStore({ dataRoot: f.dataRoot });
-      const input = { ...f.input, store: restarted };
-      await drainTestRecovery(f.coreDb, input);
-      await drainTestRecovery(f.coreDb, input);
-      expect(restarted.getTurnById(f.turnId)).toEqual(decided);
-      expect(restarted.getAgentSession(f.agentSessionId).status).toBe('failed');
-      expect(
-        restarted.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
-      ).toHaveLength(1);
-      expect(
-        restarted.getTurnEvents(f.turnId).filter((event) => event.event === 'agent.session.updated')
-      ).toHaveLength(1);
-      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
-    } finally {
-      fault.mockRestore();
-      f.coreDb.sqlite.close();
-    }
-  });
+  );
 
   it('preserves an authoritative typed refusal and proved outcome delivery while repairing publication', async () => {
     const f = await createFailedStartFixture('typed_refusal', true);
@@ -2476,65 +2490,64 @@ describe('terminal failed-start product recovery', () => {
     }
   });
 
-  it.each([
-    'checkpoint',
-    'accepted-final',
-    'live-owner',
-  ] as const)('leaves an existing %s with its owner', async (owner) => {
-    const suffix = `existing_${owner}`;
-    const f = await createFailedStartFixture(suffix);
-    if (owner === 'checkpoint') {
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      db.sqlite
-        .prepare(`INSERT INTO worker_turn_checkpoints
+  it.each(['checkpoint', 'accepted-final', 'live-owner'] as const)(
+    'leaves an existing %s with its owner',
+    async (owner) => {
+      const suffix = `existing_${owner}`;
+      const f = await createFailedStartFixture(suffix);
+      if (owner === 'checkpoint') {
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        db.sqlite
+          .prepare(`INSERT INTO worker_turn_checkpoints
         (checkpoint_id, workspace_id, thread_id, turn_id, request_id, request_input_hash, stage, iteration, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 'running_worker', 1, ?, ?)`)
-        .run(
-          `checkpoint_${suffix}`,
-          'ws_00000000-0000-7000-8000-000000000001',
-          f.threadId,
-          f.turnId,
-          fixtureRequestId(`request_${suffix}`),
-          'a'.repeat(64),
-          f.input.now(),
-          f.input.now()
-        );
-      db.sqlite.close();
+          .run(
+            `checkpoint_${suffix}`,
+            'ws_00000000-0000-7000-8000-000000000001',
+            f.threadId,
+            f.turnId,
+            fixtureRequestId(`request_${suffix}`),
+            'a'.repeat(64),
+            f.input.now(),
+            f.input.now()
+          );
+        db.sqlite.close();
+      }
+      if (owner === 'accepted-final')
+        recordWorkerControlAcceptedRecord(f.coreDb, {
+          acceptedAt: f.input.now(),
+          lineage: {
+            agentSessionId: f.agentSessionId,
+            packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+            requestId: fixtureRequestId(`request_${suffix}`),
+            threadId: f.threadId,
+            turnId: f.turnId,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+          operation: 'final_status',
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+          recordKey: '1',
+          sandboxBindingRef: `lease-binding:lease_${suffix}`,
+          sequence: 1,
+        });
+      const before = f.store.getTurnById(f.turnId);
+      const session = f.store.getAgentSession(f.agentSessionId);
+      try {
+        const recovery = runRestartRecoveryThroughMaintenance(f.coreDb, {
+          ...f.input,
+          isTurnExecutionActive: () => owner === 'live-owner',
+        });
+        if (owner === 'checkpoint')
+          await expect(recovery).rejects.toThrow('Native attempt recovery failed');
+        else await recovery;
+        expect(f.store.getTurnById(f.turnId)).toEqual(before);
+        expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+        expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+      } finally {
+        f.coreDb.sqlite.close();
+      }
     }
-    if (owner === 'accepted-final')
-      recordWorkerControlAcceptedRecord(f.coreDb, {
-        acceptedAt: f.input.now(),
-        lineage: {
-          agentSessionId: f.agentSessionId,
-          packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
-          requestId: fixtureRequestId(`request_${suffix}`),
-          threadId: f.threadId,
-          turnId: f.turnId,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        operation: 'final_status',
-        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-        recordKey: '1',
-        sandboxBindingRef: `lease-binding:lease_${suffix}`,
-        sequence: 1,
-      });
-    const before = f.store.getTurnById(f.turnId);
-    const session = f.store.getAgentSession(f.agentSessionId);
-    try {
-      const recovery = runRestartRecoveryThroughMaintenance(f.coreDb, {
-        ...f.input,
-        isTurnExecutionActive: () => owner === 'live-owner',
-      });
-      if (owner === 'checkpoint')
-        await expect(recovery).rejects.toThrow('Native attempt recovery failed');
-      else await recovery;
-      expect(f.store.getTurnById(f.turnId)).toEqual(before);
-      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
-      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
-    } finally {
-      f.coreDb.sqlite.close();
-    }
-  });
+  );
 });
 
 /** Current recovery dependencies supplied by each bounded record fixture. */
@@ -3349,419 +3362,427 @@ describe('scheduler restart recovery', () => {
     }
   });
 
-  it.each([
-    true,
-    false,
-  ])('reports recovery required for a cleaned unused failed-start anchor with a running checkpoint (%s)', async (checkpointed) => {
-    const suffix = `cleaned_unused_checkpoint_${checkpointed}`;
-    const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
-    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      f.coreDb.sqlite
-        .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
-        .run(testEntityId('attempt', `lease_${suffix}`));
-      await recordBackendSession(f.coreDb, suffix, 'cleaned');
-      f.coreDb.sqlite
-        .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
-        .run(testEntityId('attempt', `lease_${suffix}`));
-      f.coreDb.sqlite
-        .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ? WHERE attempt_id = ?')
-        .run('2026-10-08T04:30:35.231Z', testEntityId('attempt', `lease_${suffix}`));
-      await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  it.each([true, false])(
+    'reports recovery required for a cleaned unused failed-start anchor with a running checkpoint (%s)',
+    async (checkpointed) => {
+      const suffix = `cleaned_unused_checkpoint_${checkpointed}`;
+      const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        expect(listBackendWorkspaceHandles(db, 'ws_00000000-0000-7000-8000-000000000001')).toEqual(
-          []
-        );
-        expect(
-          listWorkspaceMaterializationRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
-        ).toEqual([]);
-        if (checkpointed)
-          db.sqlite
-            .prepare(`INSERT INTO worker_turn_checkpoints
+        f.coreDb.sqlite
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
+          .run(testEntityId('attempt', `lease_${suffix}`));
+        await recordBackendSession(f.coreDb, suffix, 'cleaned');
+        f.coreDb.sqlite
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
+          .run(testEntityId('attempt', `lease_${suffix}`));
+        f.coreDb.sqlite
+          .prepare(
+            'UPDATE worker_backend_sessions SET physical_cleaned_at = ? WHERE attempt_id = ?'
+          )
+          .run('2026-10-08T04:30:35.231Z', testEntityId('attempt', `lease_${suffix}`));
+        await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          expect(
+            listBackendWorkspaceHandles(db, 'ws_00000000-0000-7000-8000-000000000001')
+          ).toEqual([]);
+          expect(
+            listWorkspaceMaterializationRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
+          ).toEqual([]);
+          if (checkpointed)
+            db.sqlite
+              .prepare(`INSERT INTO worker_turn_checkpoints
             (checkpoint_id, workspace_id, thread_id, turn_id, request_id, request_input_hash,
              stage, iteration, worker_session_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, 'running_worker', 1, ?, ?, ?)`)
-            .run(
-              `checkpoint_${suffix}`,
-              'ws_00000000-0000-7000-8000-000000000001',
-              f.threadId,
-              f.turnId,
-              fixtureRequestId(`request_${suffix}`),
-              'a'.repeat(64),
-              f.agentSessionId,
-              f.input.now(),
-              f.input.now()
-            );
-        const checkpoint = db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get();
-        const anchor = getWorkerBackendSession(
-          f.coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        )!;
-        const attempt = requireNanoHostExecutionAttempt(
-          f.coreDb,
-          testEntityId('attempt', `lease_${suffix}`)
-        );
-        const turn = f.store.getTurnById(f.turnId);
-        const session = f.store.getAgentSession(f.agentSessionId);
-        expect(anchor).toMatchObject({
-          state: 'cleaned',
-          workspaceHandoffState: 'pending',
-          physicalCleanedAt: '2026-10-08T04:30:35.231Z',
-        });
-        expect(attempt).toMatchObject({
-          phase: 'closed',
-          disposition: 'not_accepted',
-          terminalCause: 'turn-start-failed',
-          operationId: null,
-          deadline: null,
-          outcomeRef: null,
-          fenceRef: null,
-          lastAcceptedHeartbeatAt: null,
-          lastWorkerSequence: null,
-          workerProcessKeyHash: null,
-          workerControlTokenHash: null,
-          workerInferenceTokenHash: null,
-          workerCapabilityTokenHash: null,
-        });
-        expect(session).toMatchObject({ status: 'created', nativeHandleDigest: null });
-        expect(turn).toMatchObject({ status: 'running', completedAt: null, error: null });
-        expect(
-          f.coreDb.sqlite
-            .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
-            .get()
-        ).toEqual({ count: 0 });
-        await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
-          targetId: 'runtime-target-test',
-          closedGeneration: 1,
-          authoritativeGeneration: null,
-          observedAt: '2026-10-08T04:30:36.000Z',
-        });
-        const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-          deploymentId: 'deployment-test',
-          identityId: 'identity-test',
-          observedAt: '2026-10-08T04:30:37.000Z',
-          targetId: 'runtime-target-test',
-        });
-        await upsertNanoHostRuntimeTarget(f.coreDb, {
-          ...allocated,
-          freshEmpty: true,
-          observedAt: '2026-10-08T04:30:38.000Z',
-          physicalEpoch: 'b'.repeat(64),
-          predecessorFenced: true,
-          ready: true,
-        });
-        const recovery = testRecoveryInput(f.coreDb, {
-          ...f.input,
-          now: () => '2026-10-08T15:20:00.000Z',
-        });
-        for (let pass = 0; pass < 6; pass++) {
-          const result = await Promise.allSettled([
-            runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery),
-          ]);
-          expect(f.store.getTurnById(f.turnId).status).toBe(checkpointed ? 'running' : 'failed');
-          if (checkpointed) {
-            expect(log.mock.calls).toHaveLength(pass + 1);
-            expect(JSON.parse(log.mock.calls[pass][0])).toMatchObject({
-              severityText: 'WARN',
-              body: 'Failed-start product settlement check failed.',
-              attributes: {
-                'openkit.error.code': 'scheduler.native_failed_start_recovery_required',
-                'openkit.turn.id': f.turnId,
-                'openkit.attempt.id': attempt.attemptId,
-              },
-            });
-            expect(f.store.getTurnById(f.turnId)).toEqual(turn);
-            expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
-            expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
-          } else {
-            expect(log).not.toHaveBeenCalled();
-            expect(
-              f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
-            ).toMatchObject([{ event: 'turn.completed', data: { stopReason: 'error' } }]);
-          }
-          expect(result[0].status).toBe(checkpointed ? 'rejected' : 'fulfilled');
-          if (result[0].status === 'rejected')
-            expect(
-              hasRecoveryFailure(
-                result[0].reason,
-                'recovery_required: Failed-start nonterminal Turn retains checkpoint-owned closeout.'
-              )
-            ).toBe(true);
-          expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get()).toEqual(
-            checkpoint
+              .run(
+                `checkpoint_${suffix}`,
+                'ws_00000000-0000-7000-8000-000000000001',
+                f.threadId,
+                f.turnId,
+                fixtureRequestId(`request_${suffix}`),
+                'a'.repeat(64),
+                f.agentSessionId,
+                f.input.now(),
+                f.input.now()
+              );
+          const checkpoint = db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get();
+          const anchor = getWorkerBackendSession(
+            f.coreDb,
+            testEntityId('attempt', `lease_${suffix}`)
+          )!;
+          const attempt = requireNanoHostExecutionAttempt(
+            f.coreDb,
+            testEntityId('attempt', `lease_${suffix}`)
           );
-          expect(getWorkerBackendSession(f.coreDb, attempt.attemptId)).toEqual(anchor);
-          expect(requireNanoHostExecutionAttempt(f.coreDb, attempt.attemptId)).toEqual(attempt);
+          const turn = f.store.getTurnById(f.turnId);
+          const session = f.store.getAgentSession(f.agentSessionId);
+          expect(anchor).toMatchObject({
+            state: 'cleaned',
+            workspaceHandoffState: 'pending',
+            physicalCleanedAt: '2026-10-08T04:30:35.231Z',
+          });
+          expect(attempt).toMatchObject({
+            phase: 'closed',
+            disposition: 'not_accepted',
+            terminalCause: 'turn-start-failed',
+            operationId: null,
+            deadline: null,
+            outcomeRef: null,
+            fenceRef: null,
+            lastAcceptedHeartbeatAt: null,
+            lastWorkerSequence: null,
+            workerProcessKeyHash: null,
+            workerControlTokenHash: null,
+            workerInferenceTokenHash: null,
+            workerCapabilityTokenHash: null,
+          });
+          expect(session).toMatchObject({ status: 'created', nativeHandleDigest: null });
+          expect(turn).toMatchObject({ status: 'running', completedAt: null, error: null });
+          expect(
+            f.coreDb.sqlite
+              .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
+              .get()
+          ).toEqual({ count: 0 });
+          await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+            targetId: 'runtime-target-test',
+            closedGeneration: 1,
+            authoritativeGeneration: null,
+            observedAt: '2026-10-08T04:30:36.000Z',
+          });
+          const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+            deploymentId: 'deployment-test',
+            identityId: 'identity-test',
+            observedAt: '2026-10-08T04:30:37.000Z',
+            targetId: 'runtime-target-test',
+          });
+          await upsertNanoHostRuntimeTarget(f.coreDb, {
+            ...allocated,
+            freshEmpty: true,
+            observedAt: '2026-10-08T04:30:38.000Z',
+            physicalEpoch: 'b'.repeat(64),
+            predecessorFenced: true,
+            ready: true,
+          });
+          const recovery = testRecoveryInput(f.coreDb, {
+            ...f.input,
+            now: () => '2026-10-08T15:20:00.000Z',
+          });
+          for (let pass = 0; pass < 6; pass++) {
+            const result = await Promise.allSettled([
+              runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery),
+            ]);
+            expect(f.store.getTurnById(f.turnId).status).toBe(checkpointed ? 'running' : 'failed');
+            if (checkpointed) {
+              expect(log.mock.calls).toHaveLength(pass + 1);
+              expect(JSON.parse(log.mock.calls[pass][0])).toMatchObject({
+                severityText: 'WARN',
+                body: 'Failed-start product settlement check failed.',
+                attributes: {
+                  'openkit.error.code': 'scheduler.native_failed_start_recovery_required',
+                  'openkit.turn.id': f.turnId,
+                  'openkit.attempt.id': attempt.attemptId,
+                },
+              });
+              expect(f.store.getTurnById(f.turnId)).toEqual(turn);
+              expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+              expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+            } else {
+              expect(log).not.toHaveBeenCalled();
+              expect(
+                f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+              ).toMatchObject([{ event: 'turn.completed', data: { stopReason: 'error' } }]);
+            }
+            expect(result[0].status).toBe(checkpointed ? 'rejected' : 'fulfilled');
+            if (result[0].status === 'rejected')
+              expect(
+                hasRecoveryFailure(
+                  result[0].reason,
+                  'recovery_required: Failed-start nonterminal Turn retains checkpoint-owned closeout.'
+                )
+              ).toBe(true);
+            expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').get()).toEqual(
+              checkpoint
+            );
+            expect(getWorkerBackendSession(f.coreDb, attempt.attemptId)).toEqual(anchor);
+            expect(requireNanoHostExecutionAttempt(f.coreDb, attempt.attemptId)).toEqual(attempt);
+          }
+          expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+        } finally {
+          db.sqlite.close();
         }
-        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
       } finally {
-        db.sqlite.close();
+        log.mockRestore();
+        f.coreDb.sqlite.close();
       }
-    } finally {
-      log.mockRestore();
-      f.coreDb.sqlite.close();
     }
-  });
+  );
 
   it.each([
     { partial: false, workspaceInputIds: [] },
     { partial: true, workspaceInputIds: [] },
     { partial: false, workspaceInputIds: ['source'] },
     { partial: true, workspaceInputIds: ['source'] },
-  ])('terminalizes a no-operation failed start despite unused-anchor cleanup failure ($partial, $workspaceInputIds)', async ({
-    partial,
-    workspaceInputIds,
-  }) => {
-    const suffix = `no_effect_cleanup_failure_${partial}_${workspaceInputIds.length}`;
-    const f = await createFailedStartFixture(suffix, false, false, true, workspaceInputIds);
-    try {
-      f.coreDb.sqlite
-        .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
-        .run(testEntityId('attempt', `lease_${suffix}`));
-      await recordBackendSession(f.coreDb, suffix, 'cleanup-failed');
-      f.coreDb.sqlite
-        .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
-        .run(testEntityId('attempt', `lease_${suffix}`));
-      await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
-      expect(
+  ])(
+    'terminalizes a no-operation failed start despite unused-anchor cleanup failure ($partial, $workspaceInputIds)',
+    async ({ partial, workspaceInputIds }) => {
+      const suffix = `no_effect_cleanup_failure_${partial}_${workspaceInputIds.length}`;
+      const f = await createFailedStartFixture(suffix, false, false, true, workspaceInputIds);
+      try {
         f.coreDb.sqlite
-          .prepare(`SELECT
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
+          .run(testEntityId('attempt', `lease_${suffix}`));
+        await recordBackendSession(f.coreDb, suffix, 'cleanup-failed');
+        f.coreDb.sqlite
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
+          .run(testEntityId('attempt', `lease_${suffix}`));
+        await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
+        expect(
+          f.coreDb.sqlite
+            .prepare(`SELECT
           (SELECT COUNT(*) FROM scheduler_execution_attempts) AS attempts,
           (SELECT COUNT(*) FROM agent_session_runtime_bindings) AS bindings,
           (SELECT COUNT(*) FROM harness_instance_records) AS harnesses,
           (SELECT COUNT(*) FROM sandbox_runtime_records) AS sandboxes`)
-          .get()
-      ).toEqual({ attempts: 1, bindings: 0, harnesses: 0, sandboxes: 0 });
-      const anchor = getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))!;
-      const originalAttempt = requireNanoHostExecutionAttempt(
-        f.coreDb,
-        testEntityId('attempt', `lease_${suffix}`)
-      );
-      expect(anchor).toMatchObject({
-        state: 'cleanup-failed',
-        workspaceHandoffState: 'pending',
-        physicalCleanedAt: null,
-      });
-      expect(originalAttempt).toMatchObject({
-        phase: 'closed',
-        disposition: 'not_accepted',
-        operationId: null,
-        deadline: null,
-        lastAcceptedHeartbeatAt: null,
-        lastWorkerSequence: null,
-        workerProcessKeyHash: null,
-        workerControlTokenHash: null,
-        workerInferenceTokenHash: null,
-        workerCapabilityTokenHash: null,
-        terminalCause: 'turn-start-failed',
-      });
-      await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
-        targetId: 'runtime-target-test',
-        closedGeneration: 1,
-        authoritativeGeneration: null,
-        observedAt: '2026-10-08T04:30:00.000Z',
-      });
-      const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
-        deploymentId: 'deployment-test',
-        identityId: 'identity-test',
-        observedAt: '2026-10-08T04:30:01.000Z',
-        targetId: 'runtime-target-test',
-      });
-      await upsertNanoHostRuntimeTarget(f.coreDb, {
-        ...allocated,
-        freshEmpty: true,
-        observedAt: '2026-10-08T04:30:02.000Z',
-        physicalEpoch: 'b'.repeat(64),
-        predecessorFenced: true,
-        ready: true,
-      });
-      // Keep later work before product admission while the first Turn still owns the Thread.
-      const admission = createSchedulerAdmissionEntry(f.coreDb, {
-        queueEntryId: `queued_${suffix}`,
-        backendId: 'nanohost',
-        workspaceId: workspaceIdForOwner(f.turn.owner),
-        threadId: f.threadId,
-        turnId: testEntityId('tu', `queued_${suffix}`),
-        requestedAgentId: 'agent_codex_host',
-        triggerActor: f.turn.triggerActor,
-        turnInput: 'Later queued work',
-      });
-      expect(() => f.store.getTurnById(admission.turnId)).toThrow();
-      if (partial)
-        vi.spyOn(f.store, 'emitTurnEvent').mockImplementationOnce(() => {
-          throw new Error('Injected partial terminal publication.');
-        });
-      const recovery = testRecoveryInput(f.coreDb, {
-        ...f.input,
-        cleanupBackendSession: async () => {
-          throw new Error('Unused anchor cleanup unavailable.');
-        },
-      });
-      await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
-        'Native attempt recovery failed'
-      );
-      await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
-        'Native attempt recovery failed'
-      );
-      expect(
-        requireSchedulerExecutionAttemptAdmissionContext(
+            .get()
+        ).toEqual({ attempts: 1, bindings: 0, harnesses: 0, sandboxes: 0 });
+        const anchor = getWorkerBackendSession(
           f.coreDb,
           testEntityId('attempt', `lease_${suffix}`)
-        ).status
-      ).toBe('admitted');
-      expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toContainEqual(admission);
-      expect(f.store.getTurnById(f.turnId)).toMatchObject({
-        status: 'failed',
-        error: {
-          code: 'worker_governance_turn_failed',
-          message: 'The worker attempt failed to start.',
-        },
-      });
-      expect(
-        attempts.requireSchedulerExecutionAttempt(
+        )!;
+        const originalAttempt = requireNanoHostExecutionAttempt(
           f.coreDb,
           testEntityId('attempt', `lease_${suffix}`)
-        )
-      ).toMatchObject({
-        phase: 'closed',
-        operationId: null,
-        terminalCause: 'turn-start-failed',
-      });
-      expect(() => f.store.getTurnById(admission.turnId)).toThrow();
-      expect(
-        f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
-      ).toMatchObject([{ data: { stopReason: 'error' } }]);
-      expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(
-        f.store.getTurnById(f.turnId)
-      );
-      const terminal = f.store.getTurnById(f.turnId);
-      const session = f.store.getAgentSession(f.agentSessionId);
-      const events = f.store.getTurnEvents(f.turnId);
-      expect(session.status).toBe('failed');
-      expect(getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))).toEqual(
-        anchor
-      );
-      expect(
-        requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
-      ).toEqual(originalAttempt);
-      f.coreDb.sqlite.close();
-      const restartedCore = openCoreDb(f.dataRoot);
-      try {
-        const restartedStore = new FsStore({ dataRoot: f.dataRoot });
-        const restartedInput = testRecoveryInput(restartedCore, {
-          ...recovery,
-          store: restartedStore,
-          executionBackend: new SimulatedTurnExecutor({ coreDb: restartedCore }),
+        );
+        expect(anchor).toMatchObject({
+          state: 'cleanup-failed',
+          workspaceHandoffState: 'pending',
+          physicalCleanedAt: null,
         });
-        await recoverTestStartup(restartedCore, restartedInput);
-        for (let pass = 0; pass < 6; pass++)
-          await expect(drainTestRecovery(restartedCore, restartedInput)).rejects.toThrow(
-            'Native attempt recovery failed'
-          );
-        expect(restartedStore.getTurnById(f.turnId)).toEqual(terminal);
-        expect(restartedStore.getAgentSession(f.agentSessionId)).toEqual(session);
-        expect(restartedStore.getTurnEvents(f.turnId)).toEqual(events);
-        expect(
-          getWorkerBackendSession(restartedCore, testEntityId('attempt', `lease_${suffix}`))
-        ).toEqual(anchor);
-        expect(
-          requireNanoHostExecutionAttempt(restartedCore, testEntityId('attempt', `lease_${suffix}`))
-        ).toEqual(originalAttempt);
-        expect(() => restartedStore.getTurnById(admission.turnId)).toThrow();
-        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
-      } finally {
-        restartedCore.sqlite.close();
-      }
-    } finally {
-      vi.restoreAllMocks();
-      f.coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'materialization',
-    'handle',
-    'native-evidence',
-    'operation',
-    'accepted',
-  ] as const)('refuses unused-anchor failed-start settlement with unproved %s', async (proof) => {
-    const suffix = `no_effect_unproved_${proof}`;
-    const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
-    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      f.coreDb.sqlite
-        .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
-        .run(testEntityId('attempt', `lease_${suffix}`));
-      await recordBackendSession(f.coreDb, suffix, 'cleanup-failed');
-      f.coreDb.sqlite
-        .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
-        .run(testEntityId('attempt', `lease_${suffix}`));
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        if (proof === 'native-evidence')
-          f.coreDb.sqlite
-            .prepare(
-              'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
-            )
-            .run(testEntityId('attempt', `lease_${suffix}`));
-        else if (proof === 'operation')
-          f.coreDb.sqlite
-            .prepare(
-              'UPDATE scheduler_execution_attempts SET operation_id = ? WHERE attempt_id = ?'
-            )
-            .run('unproved-operation', testEntityId('attempt', `lease_${suffix}`));
-        else if (proof === 'accepted')
-          f.coreDb.sqlite
-            .prepare(
-              "UPDATE scheduler_execution_attempts SET disposition = 'accepted' WHERE attempt_id = ?"
-            )
-            .run(testEntityId('attempt', `lease_${suffix}`));
-        else {
-          const pkg = requireAgentEnvironmentPackageSnapshot(
-            db,
-            'ws_00000000-0000-7000-8000-000000000001',
-            `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
-          ).snapshot;
-          recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
-          if (proof === 'materialization')
-            db.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
-          else {
-            // The retained handle alone must not be mistaken for an unpublished handoff.
-            db.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
-          }
-        }
-      } finally {
-        db.sqlite.close();
-      }
-      const turn = f.store.getTurnById(f.turnId);
-      const session = f.store.getAgentSession(f.agentSessionId);
-      const anchor = getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`));
-      const recovery = testRecoveryInput(f.coreDb, {
-        ...f.input,
-        cleanupBackendSession: async () => {
-          throw new Error('Unused anchor cleanup unavailable.');
-        },
-      });
-      for (let pass = 0; pass < 2; pass++)
+        expect(originalAttempt).toMatchObject({
+          phase: 'closed',
+          disposition: 'not_accepted',
+          operationId: null,
+          deadline: null,
+          lastAcceptedHeartbeatAt: null,
+          lastWorkerSequence: null,
+          workerProcessKeyHash: null,
+          workerControlTokenHash: null,
+          workerInferenceTokenHash: null,
+          workerCapabilityTokenHash: null,
+          terminalCause: 'turn-start-failed',
+        });
+        await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+          targetId: 'runtime-target-test',
+          closedGeneration: 1,
+          authoritativeGeneration: null,
+          observedAt: '2026-10-08T04:30:00.000Z',
+        });
+        const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+          deploymentId: 'deployment-test',
+          identityId: 'identity-test',
+          observedAt: '2026-10-08T04:30:01.000Z',
+          targetId: 'runtime-target-test',
+        });
+        await upsertNanoHostRuntimeTarget(f.coreDb, {
+          ...allocated,
+          freshEmpty: true,
+          observedAt: '2026-10-08T04:30:02.000Z',
+          physicalEpoch: 'b'.repeat(64),
+          predecessorFenced: true,
+          ready: true,
+        });
+        // Keep later work before product admission while the first Turn still owns the Thread.
+        const admission = createSchedulerAdmissionEntry(f.coreDb, {
+          queueEntryId: `queued_${suffix}`,
+          backendId: 'nanohost',
+          workspaceId: workspaceIdForOwner(f.turn.owner),
+          threadId: f.threadId,
+          turnId: testEntityId('tu', `queued_${suffix}`),
+          requestedAgentId: 'agent_codex_host',
+          triggerActor: f.turn.triggerActor,
+          turnInput: 'Later queued work',
+        });
+        expect(() => f.store.getTurnById(admission.turnId)).toThrow();
+        if (partial)
+          vi.spyOn(f.store, 'emitTurnEvent').mockImplementationOnce(() => {
+            throw new Error('Injected partial terminal publication.');
+          });
+        const recovery = testRecoveryInput(f.coreDb, {
+          ...f.input,
+          cleanupBackendSession: async () => {
+            throw new Error('Unused anchor cleanup unavailable.');
+          },
+        });
         await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
           'Native attempt recovery failed'
         );
-      expect(
-        log.mock.calls.map(([line]) => JSON.parse(line).attributes['openkit.error.code'])
-      ).toContain('scheduler.native_failed_start_recovery_required');
-      expect(f.store.getTurnById(f.turnId)).toEqual(turn);
-      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
-      expect(getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))).toEqual(
-        anchor
-      );
-      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
-      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
-    } finally {
-      log.mockRestore();
-      f.coreDb.sqlite.close();
+        await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
+          'Native attempt recovery failed'
+        );
+        expect(
+          requireSchedulerExecutionAttemptAdmissionContext(
+            f.coreDb,
+            testEntityId('attempt', `lease_${suffix}`)
+          ).status
+        ).toBe('admitted');
+        expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toContainEqual(admission);
+        expect(f.store.getTurnById(f.turnId)).toMatchObject({
+          status: 'failed',
+          error: {
+            code: 'worker_governance_turn_failed',
+            message: 'The worker attempt failed to start.',
+          },
+        });
+        expect(
+          attempts.requireSchedulerExecutionAttempt(
+            f.coreDb,
+            testEntityId('attempt', `lease_${suffix}`)
+          )
+        ).toMatchObject({
+          phase: 'closed',
+          operationId: null,
+          terminalCause: 'turn-start-failed',
+        });
+        expect(() => f.store.getTurnById(admission.turnId)).toThrow();
+        expect(
+          f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+        ).toMatchObject([{ data: { stopReason: 'error' } }]);
+        expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(
+          f.store.getTurnById(f.turnId)
+        );
+        const terminal = f.store.getTurnById(f.turnId);
+        const session = f.store.getAgentSession(f.agentSessionId);
+        const events = f.store.getTurnEvents(f.turnId);
+        expect(session.status).toBe('failed');
+        expect(
+          getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
+        ).toEqual(anchor);
+        expect(
+          requireNanoHostExecutionAttempt(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
+        ).toEqual(originalAttempt);
+        f.coreDb.sqlite.close();
+        const restartedCore = openCoreDb(f.dataRoot);
+        try {
+          const restartedStore = new FsStore({ dataRoot: f.dataRoot });
+          const restartedInput = testRecoveryInput(restartedCore, {
+            ...recovery,
+            store: restartedStore,
+            executionBackend: new SimulatedTurnExecutor({ coreDb: restartedCore }),
+          });
+          await recoverTestStartup(restartedCore, restartedInput);
+          for (let pass = 0; pass < 6; pass++)
+            await expect(drainTestRecovery(restartedCore, restartedInput)).rejects.toThrow(
+              'Native attempt recovery failed'
+            );
+          expect(restartedStore.getTurnById(f.turnId)).toEqual(terminal);
+          expect(restartedStore.getAgentSession(f.agentSessionId)).toEqual(session);
+          expect(restartedStore.getTurnEvents(f.turnId)).toEqual(events);
+          expect(
+            getWorkerBackendSession(restartedCore, testEntityId('attempt', `lease_${suffix}`))
+          ).toEqual(anchor);
+          expect(
+            requireNanoHostExecutionAttempt(
+              restartedCore,
+              testEntityId('attempt', `lease_${suffix}`)
+            )
+          ).toEqual(originalAttempt);
+          expect(() => restartedStore.getTurnById(admission.turnId)).toThrow();
+          expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+        } finally {
+          restartedCore.sqlite.close();
+        }
+      } finally {
+        vi.restoreAllMocks();
+        f.coreDb.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(['materialization', 'handle', 'native-evidence', 'operation', 'accepted'] as const)(
+    'refuses unused-anchor failed-start settlement with unproved %s',
+    async (proof) => {
+      const suffix = `no_effect_unproved_${proof}`;
+      const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
+      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        f.coreDb.sqlite
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'open' WHERE attempt_id = ?")
+          .run(testEntityId('attempt', `lease_${suffix}`));
+        await recordBackendSession(f.coreDb, suffix, 'cleanup-failed');
+        f.coreDb.sqlite
+          .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
+          .run(testEntityId('attempt', `lease_${suffix}`));
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          if (proof === 'native-evidence')
+            f.coreDb.sqlite
+              .prepare(
+                'UPDATE scheduler_execution_attempts SET last_worker_sequence = 1 WHERE attempt_id = ?'
+              )
+              .run(testEntityId('attempt', `lease_${suffix}`));
+          else if (proof === 'operation')
+            f.coreDb.sqlite
+              .prepare(
+                'UPDATE scheduler_execution_attempts SET operation_id = ? WHERE attempt_id = ?'
+              )
+              .run('unproved-operation', testEntityId('attempt', `lease_${suffix}`));
+          else if (proof === 'accepted')
+            f.coreDb.sqlite
+              .prepare(
+                "UPDATE scheduler_execution_attempts SET disposition = 'accepted' WHERE attempt_id = ?"
+              )
+              .run(testEntityId('attempt', `lease_${suffix}`));
+          else {
+            const pkg = requireAgentEnvironmentPackageSnapshot(
+              db,
+              'ws_00000000-0000-7000-8000-000000000001',
+              `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
+            ).snapshot;
+            recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
+            if (proof === 'materialization')
+              db.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+            else {
+              // The retained handle alone must not be mistaken for an unpublished handoff.
+              db.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
+            }
+          }
+        } finally {
+          db.sqlite.close();
+        }
+        const turn = f.store.getTurnById(f.turnId);
+        const session = f.store.getAgentSession(f.agentSessionId);
+        const anchor = getWorkerBackendSession(
+          f.coreDb,
+          testEntityId('attempt', `lease_${suffix}`)
+        );
+        const recovery = testRecoveryInput(f.coreDb, {
+          ...f.input,
+          cleanupBackendSession: async () => {
+            throw new Error('Unused anchor cleanup unavailable.');
+          },
+        });
+        for (let pass = 0; pass < 2; pass++)
+          await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)).rejects.toThrow(
+            'Native attempt recovery failed'
+          );
+        expect(
+          log.mock.calls.map(([line]) => JSON.parse(line).attributes['openkit.error.code'])
+        ).toContain('scheduler.native_failed_start_recovery_required');
+        expect(f.store.getTurnById(f.turnId)).toEqual(turn);
+        expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+        expect(
+          getWorkerBackendSession(f.coreDb, testEntityId('attempt', `lease_${suffix}`))
+        ).toEqual(anchor);
+        expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+        expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
 
   it('preserves a backend-busy no-effect deferral as the same queued Turn', async () => {
     const suffix = 'no_effect_backend_busy';
@@ -3831,277 +3852,292 @@ describe('scheduler restart recovery', () => {
     }
   });
 
-  it.each([
-    'retain',
-    'second-handle-fault',
-  ] as const)('preserves takeover recovery stages with query-only Main: %s', async (boundary) => {
-    const coreDb = await createMigratedCoreDb();
-    // Finish Demo publication before the existing stopped scalar admission/image fixtures.
-    await shutdownControlStoreWorkerClient();
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-    const suffix = `native_takeover_${boundary}`;
-    const attemptId = testEntityId('attempt', `lease_${suffix}`);
-    const client = getControlStoreWorkerClient();
-    const scope = nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId });
-    const database = `workspace:${scope.path}`;
-    const cleanup = vi.fn(async () => undefined);
-    const project = vi.fn(async () => ({ status: 'failed' as const }));
-    const actualOpen = dbOwner.openWorkspaceDb;
-    const queryOnlyReaders: ReturnType<typeof openWorkspaceDb>[] = [];
-    let opening: { mockRestore: () => void } | undefined;
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, suffix);
-      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
-        suffix,
-        workspaceInputIds: ['repo', 'docs'],
-      });
-      await recordBackendSession(coreDb, suffix, 'launching');
-      // The Workspace writer remains closed from setup through handoff publication and fault DDL.
-      recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, '2026-07-05T00:00:10.000Z');
-      const handles = listBackendWorkspaceHandles(workspaceDb, workspaceId);
-      const materializations = listWorkspaceMaterializationRecords(workspaceDb, workspaceId);
-      const evidence = listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId);
-      const runtimeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceId);
-      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
-      expect(handles).toHaveLength(2);
-      expect(handles.every((handle) => handle.cleanupStatus === 'pending')).toBe(true);
-      expect(listWorkspaceReconciliationRecords(workspaceDb, workspaceId)).toEqual([]);
-      if (boundary === 'second-handle-fault') {
-        // Core Storage preserves these separate autocommit stages: only the later INSERT fails.
-        workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_second_takeover_stage
-            BEFORE INSERT ON workspace_reconciliation_records
-            WHEN NEW.trigger_reason = 'backend_takeover' AND EXISTS (
-              SELECT 1 FROM workspace_reconciliation_records
-              WHERE workspace_id = NEW.workspace_id AND trigger_reason = 'backend_takeover'
-            ) BEGIN SELECT RAISE(ABORT, 'second takeover stage refused'); END`);
-      }
-      await client.open({
-        database,
-        path: scope.path,
-        dataRoot: coreDb.dataRoot,
-        create: false,
-        initialize: 'workspace',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
-      // Call through to every actual recovery reader. Native SQL is in the real Worker.
-      opening = vi.spyOn(dbOwner, 'openWorkspaceDb').mockImplementation((...args) => {
-        const db = actualOpen(...args);
-        if (args[0] === coreDb.dataRoot && args[1] === workspaceId) {
-          db.sqlite.pragma('query_only = ON');
-          expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
-          queryOnlyReaders.push(db);
-        }
-        return db;
-      });
-      workspaceDb.sqlite.pragma('query_only = ON');
-      const timestamp = new Date(Date.parse(before.startupDeadline) + 1_000).toISOString();
-      expect(Date.parse(timestamp)).toBeGreaterThan(Date.parse(before.startupDeadline));
-      const input = testRecoveryInput(coreDb, {
-        cleanupBackendSession: cleanup,
-        now: () => timestamp,
-        projectRecoveredTurn: project,
-      });
-      const recovery = runNanoHostAttemptRecoveryMaintenance(coreDb, input);
-      if (boundary === 'second-handle-fault') {
-        await expect(recovery).rejects.toMatchObject({
-          errors: [expect.objectContaining({ code: 'constraint', commit: 'not-committed' })],
-        });
-      } else {
-        await recovery;
-      }
-      expect(queryOnlyReaders.length).toBeGreaterThan(0);
-      const records = listWorkspaceReconciliationRecords(workspaceDb, workspaceId);
-      expect(records).toHaveLength(boundary === 'retain' ? 2 : 1);
-      expect(new Set(records.map((record) => record.id)).size).toBe(records.length);
-      const retainedHandles = boundary === 'retain' ? handles : handles.slice(0, 1);
-      for (const handle of retainedHandles) {
-        const record = records.find((row) => row.affectedRecordIds.includes(handle.id));
-        expect(record).toMatchObject({
-          affectedRecordIds: [handle.materializationRecordId, handle.id],
-          backendHandleSummary: {
-            backendKind: handle.backendKind,
-            cleanupStatus: handle.cleanupStatus,
-            handleId: handle.id,
-            workerSessionId: handle.workerSessionId,
-          },
-          backendReachability: {
-            checkedAt: timestamp,
-            detail: before.terminalCause,
-            status: 'unavailable',
-          },
-          collectedOutputManifestIds: [],
-          finishedAt: null,
-          quarantineRefs: [],
-          retentionDecision: 'retain-backend',
-          startedAt: timestamp,
-          stateAfter: 'requires-human',
-          stateBefore: before.phase,
-          triggerReason: 'backend_takeover',
-          workspaceId,
-        });
-        expect(record!.requiredHumanDecision).toBeTruthy();
-        expect(record!.evidenceBundleIds.length).toBeGreaterThan(0);
-        for (const id of record!.evidenceBundleIds)
-          expect(evidence.find((bundle) => bundle.id === id)).toMatchObject({
-            workspaceId,
-            sourceKind: 'workspace-materialization',
-            importStatus: 'promoted',
-          });
-      }
-      const rows = workspaceDb.sqlite
-        .prepare('SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id')
-        .all();
-      if (boundary === 'retain') {
-        // A deliberate maintenance replay sees current pending evidence and preserves original bytes/time.
-        await runNanoHostAttemptRecoveryMaintenance(coreDb, {
-          ...input,
-          now: () => new Date(Date.parse(timestamp) + 60_000).toISOString(),
-        });
-        expect(listWorkspaceReconciliationRecords(workspaceDb, workspaceId)).toEqual(records);
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
-            )
-            .all()
-        ).toEqual(rows);
-      }
-      expect(cleanup).not.toHaveBeenCalled();
-      expect(project).not.toHaveBeenCalled();
-      expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
-        physicalCleanedAt: null,
-      });
-      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
-        phase: 'closing',
-      });
-      expect(listBackendWorkspaceHandles(workspaceDb, workspaceId)).toEqual(handles);
-      expect(listWorkspaceMaterializationRecords(workspaceDb, workspaceId)).toEqual(
-        materializations
-      );
-      expect(listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId)).toEqual(evidence);
-      expect(listWorkspaceRuntimeEvidence(workspaceDb, workspaceId)).toEqual(runtimeEvidence);
-      // Join the actual writer close, then inspect the committed prefix through a new Main connection.
-      await client.close(database);
-      const cold = actualOpen(coreDb.dataRoot, workspaceId);
+  it.each(['retain', 'second-handle-fault'] as const)(
+    'preserves takeover recovery stages with query-only Main: %s',
+    async (boundary) => {
+      const coreDb = await createMigratedCoreDb();
+      // Finish Demo publication before the existing stopped scalar admission/image fixtures.
+      await shutdownControlStoreWorkerClient();
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+      const suffix = `native_takeover_${boundary}`;
+      const attemptId = testEntityId('attempt', `lease_${suffix}`);
+      const client = getControlStoreWorkerClient();
+      const scope = nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId });
+      const database = `workspace:${scope.path}`;
+      const cleanup = vi.fn(async () => undefined);
+      const project = vi.fn(async () => ({ status: 'failed' as const }));
+      const actualOpen = dbOwner.openWorkspaceDb;
+      const queryOnlyReaders: ReturnType<typeof openWorkspaceDb>[] = [];
+      let opening: { mockRestore: () => void } | undefined;
       try {
-        cold.sqlite.pragma('query_only = ON');
-        expect(listWorkspaceReconciliationRecords(cold, workspaceId)).toEqual(records);
-        expect(
-          cold.sqlite
-            .prepare(
-              'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
-            )
-            .all()
-        ).toEqual(rows);
-        expect(listBackendWorkspaceHandles(cold, workspaceId)).toEqual(handles);
-        expect(listWorkspaceMaterializationRecords(cold, workspaceId)).toEqual(materializations);
-        expect(listStoredWorkspaceEvidenceBundles(cold, workspaceId)).toEqual(evidence);
-        expect(listWorkspaceRuntimeEvidence(cold, workspaceId)).toEqual(runtimeEvidence);
-      } finally {
-        cold.sqlite.close();
-      }
-    } finally {
-      opening?.mockRestore();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    ['restart_workspace', ['repo']],
-    ['restart_zero_input', []],
-  ] as const)('projects %s cleanup once after its recovery decision permits teardown', async (suffix, workspaceInputIds) => {
-    const coreDb = await createMigratedCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, suffix);
-      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
-        suffix,
-        workspaceInputIds,
-      });
-      await recordBackendSession(coreDb, suffix, 'launching');
-      if (workspaceInputIds.length > 0) {
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        dispatchLease(coreDb, suffix);
+        const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
+          suffix,
+          workspaceInputIds: ['repo', 'docs'],
+        });
+        await recordBackendSession(coreDb, suffix, 'launching');
+        // The Workspace writer remains closed from setup through handoff publication and fault DDL.
         recordCanonicalWorkspaceHandoff(
           workspaceDb,
           environmentPackage,
           '2026-07-05T00:00:10.000Z'
         );
-      }
-
-      const cleanup = vi.fn(async () => undefined);
-      const project = vi.fn(async () => ({ status: 'failed' as const }));
-      await runRestartRecoveryThroughMaintenance(coreDb, {
-        cleanupBackendSession: cleanup,
-        now: () => '2026-07-05T00:01:00.000Z',
-        projectRecoveredTurn: project,
-      });
-      if (workspaceInputIds.length > 0) {
+        const handles = listBackendWorkspaceHandles(workspaceDb, workspaceId);
+        const materializations = listWorkspaceMaterializationRecords(workspaceDb, workspaceId);
+        const evidence = listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId);
+        const runtimeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceId);
+        const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+        expect(handles).toHaveLength(2);
+        expect(handles.every((handle) => handle.cleanupStatus === 'pending')).toBe(true);
+        expect(listWorkspaceReconciliationRecords(workspaceDb, workspaceId)).toEqual([]);
+        if (boundary === 'second-handle-fault') {
+          // Core Storage preserves these separate autocommit stages: only the later INSERT fails.
+          workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_second_takeover_stage
+            BEFORE INSERT ON workspace_reconciliation_records
+            WHEN NEW.trigger_reason = 'backend_takeover' AND EXISTS (
+              SELECT 1 FROM workspace_reconciliation_records
+              WHERE workspace_id = NEW.workspace_id AND trigger_reason = 'backend_takeover'
+            ) BEGIN SELECT RAISE(ABORT, 'second takeover stage refused'); END`);
+        }
+        await client.open({
+          database,
+          path: scope.path,
+          dataRoot: coreDb.dataRoot,
+          create: false,
+          initialize: 'workspace',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        });
+        // Call through to every actual recovery reader. Native SQL is in the real Worker.
+        opening = vi.spyOn(dbOwner, 'openWorkspaceDb').mockImplementation((...args) => {
+          const db = actualOpen(...args);
+          if (args[0] === coreDb.dataRoot && args[1] === workspaceId) {
+            db.sqlite.pragma('query_only = ON');
+            expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+            queryOnlyReaders.push(db);
+          }
+          return db;
+        });
+        workspaceDb.sqlite.pragma('query_only = ON');
+        const timestamp = new Date(Date.parse(before.startupDeadline) + 1_000).toISOString();
+        expect(Date.parse(timestamp)).toBeGreaterThan(Date.parse(before.startupDeadline));
+        const input = testRecoveryInput(coreDb, {
+          cleanupBackendSession: cleanup,
+          now: () => timestamp,
+          projectRecoveredTurn: project,
+        });
+        const recovery = runNanoHostAttemptRecoveryMaintenance(coreDb, input);
+        if (boundary === 'second-handle-fault') {
+          await expect(recovery).rejects.toMatchObject({
+            errors: [expect.objectContaining({ code: 'constraint', commit: 'not-committed' })],
+          });
+        } else {
+          await recovery;
+        }
+        expect(queryOnlyReaders.length).toBeGreaterThan(0);
+        const records = listWorkspaceReconciliationRecords(workspaceDb, workspaceId);
+        expect(records).toHaveLength(boundary === 'retain' ? 2 : 1);
+        expect(new Set(records.map((record) => record.id)).size).toBe(records.length);
+        const retainedHandles = boundary === 'retain' ? handles : handles.slice(0, 1);
+        for (const handle of retainedHandles) {
+          const record = records.find((row) => row.affectedRecordIds.includes(handle.id));
+          expect(record).toMatchObject({
+            affectedRecordIds: [handle.materializationRecordId, handle.id],
+            backendHandleSummary: {
+              backendKind: handle.backendKind,
+              cleanupStatus: handle.cleanupStatus,
+              handleId: handle.id,
+              workerSessionId: handle.workerSessionId,
+            },
+            backendReachability: {
+              checkedAt: timestamp,
+              detail: before.terminalCause,
+              status: 'unavailable',
+            },
+            collectedOutputManifestIds: [],
+            finishedAt: null,
+            quarantineRefs: [],
+            retentionDecision: 'retain-backend',
+            startedAt: timestamp,
+            stateAfter: 'requires-human',
+            stateBefore: before.phase,
+            triggerReason: 'backend_takeover',
+            workspaceId,
+          });
+          expect(record!.requiredHumanDecision).toBeTruthy();
+          expect(record!.evidenceBundleIds.length).toBeGreaterThan(0);
+          for (const id of record!.evidenceBundleIds)
+            expect(evidence.find((bundle) => bundle.id === id)).toMatchObject({
+              workspaceId,
+              sourceKind: 'workspace-materialization',
+              importStatus: 'promoted',
+            });
+        }
+        const rows = workspaceDb.sqlite
+          .prepare(
+            'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+          )
+          .all();
+        if (boundary === 'retain') {
+          // A deliberate maintenance replay sees current pending evidence and preserves original bytes/time.
+          await runNanoHostAttemptRecoveryMaintenance(coreDb, {
+            ...input,
+            now: () => new Date(Date.parse(timestamp) + 60_000).toISOString(),
+          });
+          expect(listWorkspaceReconciliationRecords(workspaceDb, workspaceId)).toEqual(records);
+          expect(
+            workspaceDb.sqlite
+              .prepare(
+                'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+              )
+              .all()
+          ).toEqual(rows);
+        }
         expect(cleanup).not.toHaveBeenCalled();
         expect(project).not.toHaveBeenCalled();
-        expect(
-          getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
-        ).toMatchObject({
+        expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
           physicalCleanedAt: null,
         });
-        expect(
-          attempts.requireSchedulerExecutionAttempt(
-            coreDb,
-            testEntityId('attempt', `lease_${suffix}`)
-          )
-        ).toMatchObject({
+        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
           phase: 'closing',
-          operationId: `operation_${suffix}`,
-          disposition: 'unknown',
-          fenceRef: null,
         });
+        expect(listBackendWorkspaceHandles(workspaceDb, workspaceId)).toEqual(handles);
+        expect(listWorkspaceMaterializationRecords(workspaceDb, workspaceId)).toEqual(
+          materializations
+        );
+        expect(listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId)).toEqual(evidence);
+        expect(listWorkspaceRuntimeEvidence(workspaceDb, workspaceId)).toEqual(runtimeEvidence);
+        // Join the actual writer close, then inspect the committed prefix through a new Main connection.
+        await client.close(database);
+        const cold = actualOpen(coreDb.dataRoot, workspaceId);
+        try {
+          cold.sqlite.pragma('query_only = ON');
+          expect(listWorkspaceReconciliationRecords(cold, workspaceId)).toEqual(records);
+          expect(
+            cold.sqlite
+              .prepare(
+                'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+              )
+              .all()
+          ).toEqual(rows);
+          expect(listBackendWorkspaceHandles(cold, workspaceId)).toEqual(handles);
+          expect(listWorkspaceMaterializationRecords(cold, workspaceId)).toEqual(materializations);
+          expect(listStoredWorkspaceEvidenceBundles(cold, workspaceId)).toEqual(evidence);
+          expect(listWorkspaceRuntimeEvidence(cold, workspaceId)).toEqual(runtimeEvidence);
+        } finally {
+          cold.sqlite.close();
+        }
+      } finally {
+        opening?.mockRestore();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each([
+    ['restart_workspace', ['repo']],
+    ['restart_zero_input', []],
+  ] as const)(
+    'projects %s cleanup once after its recovery decision permits teardown',
+    async (suffix, workspaceInputIds) => {
+      const coreDb = await createMigratedCoreDb();
+      const workspaceDb = openWorkspaceDb(
+        coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+
+      try {
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        dispatchLease(coreDb, suffix);
+        const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
+          suffix,
+          workspaceInputIds,
+        });
+        await recordBackendSession(coreDb, suffix, 'launching');
+        if (workspaceInputIds.length > 0) {
+          recordCanonicalWorkspaceHandoff(
+            workspaceDb,
+            environmentPackage,
+            '2026-07-05T00:00:10.000Z'
+          );
+        }
+
+        const cleanup = vi.fn(async () => undefined);
+        const project = vi.fn(async () => ({ status: 'failed' as const }));
+        await runRestartRecoveryThroughMaintenance(coreDb, {
+          cleanupBackendSession: cleanup,
+          now: () => '2026-07-05T00:01:00.000Z',
+          projectRecoveredTurn: project,
+        });
+        if (workspaceInputIds.length > 0) {
+          expect(cleanup).not.toHaveBeenCalled();
+          expect(project).not.toHaveBeenCalled();
+          expect(
+            getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+          ).toMatchObject({
+            physicalCleanedAt: null,
+          });
+          expect(
+            attempts.requireSchedulerExecutionAttempt(
+              coreDb,
+              testEntityId('attempt', `lease_${suffix}`)
+            )
+          ).toMatchObject({
+            phase: 'closing',
+            operationId: `operation_${suffix}`,
+            disposition: 'unknown',
+            fenceRef: null,
+          });
+          expect(
+            listWorkspaceRuntimeEvidence(
+              workspaceDb,
+              'ws_00000000-0000-7000-8000-000000000001'
+            ).filter((record) => record.phase === 'teardown')
+          ).toEqual([]);
+          abandonRetainedWorkspaceRecovery(workspaceDb, '2026-07-05T00:01:01.000Z');
+          await drainTestRecovery(coreDb, {
+            cleanupBackendSession: cleanup,
+            now: () => '2026-07-05T00:01:02.000Z',
+            projectRecoveredTurn: project,
+          });
+        }
+        expect(cleanup).toHaveBeenCalledTimes(1);
+        await recoverTestStartup(coreDb, {
+          cleanupBackendSession: async () => {
+            throw new Error('Terminal backend session must not be cleaned twice.');
+          },
+          now: () => '2026-07-05T00:02:00.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+        });
+
+        expect(
+          listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+        ).toEqual(
+          workspaceInputIds.length > 0
+            ? [expect.objectContaining({ cleanupStatus: 'cleaned' })]
+            : []
+        );
         expect(
           listWorkspaceRuntimeEvidence(
             workspaceDb,
             'ws_00000000-0000-7000-8000-000000000001'
           ).filter((record) => record.phase === 'teardown')
-        ).toEqual([]);
-        abandonRetainedWorkspaceRecovery(workspaceDb, '2026-07-05T00:01:01.000Z');
-        await drainTestRecovery(coreDb, {
-          cleanupBackendSession: cleanup,
-          now: () => '2026-07-05T00:01:02.000Z',
-          projectRecoveredTurn: project,
-        });
+        ).toEqual([
+          expect.objectContaining({
+            agentSessionId: testEntityId('as', `as_${suffix}`),
+            outcome: 'succeeded',
+            stopReason: 'completed',
+          }),
+        ]);
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
       }
-      expect(cleanup).toHaveBeenCalledTimes(1);
-      await recoverTestStartup(coreDb, {
-        cleanupBackendSession: async () => {
-          throw new Error('Terminal backend session must not be cleaned twice.');
-        },
-        now: () => '2026-07-05T00:02:00.000Z',
-        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
-      });
-
-      expect(
-        listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
-      ).toEqual(
-        workspaceInputIds.length > 0 ? [expect.objectContaining({ cleanupStatus: 'cleaned' })] : []
-      );
-      expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
-          (record) => record.phase === 'teardown'
-        )
-      ).toEqual([
-        expect.objectContaining({
-          agentSessionId: testEntityId('as', `as_${suffix}`),
-          outcome: 'succeeded',
-          stopReason: 'completed',
-        }),
-      ]);
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('repairs a pending exact handoff without changing physical cleanup evidence time', async () => {
     const coreDb = await createMigratedCoreDb();
@@ -4331,57 +4367,60 @@ describe('scheduler restart recovery', () => {
   it.each([
     ['before heartbeat', false, 'materializing'],
     ['after heartbeat', true, 'launching'],
-  ] as const)('cleans and terminalizes an anchored lease %s before releasing capacity', async (_description, heartbeat, anchorState) => {
-    const coreDb = await createMigratedCoreDb();
-    const suffix = heartbeat ? 'restart_anchor_live' : 'restart_anchor_acquired';
-    const leaseId = testEntityId('attempt', `lease_${suffix}`);
-    const cleanupObservations: unknown[] = [];
+  ] as const)(
+    'cleans and terminalizes an anchored lease %s before releasing capacity',
+    async (_description, heartbeat, anchorState) => {
+      const coreDb = await createMigratedCoreDb();
+      const suffix = heartbeat ? 'restart_anchor_live' : 'restart_anchor_acquired';
+      const leaseId = testEntityId('attempt', `lease_${suffix}`);
+      const cleanupObservations: unknown[] = [];
 
-    try {
-      dispatchLease(coreDb, suffix);
-      if (heartbeat) {
-        acceptNanoHostAttemptHeartbeat(coreDb, {
-          heartbeatTimeoutMs: 900_000,
-          attemptId: testEntityId('attempt', `lease_${suffix}`),
-          now: () => '2026-07-05T00:00:10.000Z',
-          workerSequence: 1,
-        });
-      }
-      await recordBackendSession(coreDb, suffix, anchorState);
-
-      await runRestartRecoveryThroughMaintenance(coreDb, {
-        cleanupBackendSession: async (_session) => {
-          cleanupObservations.push({
-            anchor: getWorkerBackendSession(coreDb, leaseId),
-            phase: observeExecutionAttempts(coreDb).find(
-              (attempt) => attempt.attempt_id === leaseId
-            )?.phase,
+      try {
+        dispatchLease(coreDb, suffix);
+        if (heartbeat) {
+          acceptNanoHostAttemptHeartbeat(coreDb, {
+            heartbeatTimeoutMs: 900_000,
+            attemptId: testEntityId('attempt', `lease_${suffix}`),
+            now: () => '2026-07-05T00:00:10.000Z',
+            workerSequence: 1,
           });
-        },
-        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
-        now: () => '2026-07-05T00:01:00.000Z',
-      });
+        }
+        await recordBackendSession(coreDb, suffix, anchorState);
 
-      expect(cleanupObservations).toEqual([
-        {
-          anchor: expect.objectContaining({ state: 'cleanup-pending' }),
-          phase: 'closing',
-        },
-      ]);
-      expect(
-        getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
-      ).toMatchObject({
-        state: 'cleaned',
-      });
-      expect(
-        observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-        )?.phase
-      ).toBe('closing');
-    } finally {
-      coreDb.sqlite.close();
+        await runRestartRecoveryThroughMaintenance(coreDb, {
+          cleanupBackendSession: async (_session) => {
+            cleanupObservations.push({
+              anchor: getWorkerBackendSession(coreDb, leaseId),
+              phase: observeExecutionAttempts(coreDb).find(
+                (attempt) => attempt.attempt_id === leaseId
+              )?.phase,
+            });
+          },
+          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+          now: () => '2026-07-05T00:01:00.000Z',
+        });
+
+        expect(cleanupObservations).toEqual([
+          {
+            anchor: expect.objectContaining({ state: 'cleanup-pending' }),
+            phase: 'closing',
+          },
+        ]);
+        expect(
+          getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        ).toMatchObject({
+          state: 'cleaned',
+        });
+        expect(
+          observeExecutionAttempts(coreDb).find(
+            (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
+          )?.phase
+        ).toBe('closing');
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('prepares exact result-only cleanup lineage before post-listener maintenance', async () => {
     const coreDb = await createMigratedCoreDb();
@@ -4899,48 +4938,53 @@ describe('scheduler restart recovery', () => {
     ['open', 'accepted'],
     ['closing', 'unknown'],
     ['closing', 'accepted'],
-  ] as const)('retains the original %s/%s operation without a durable backend anchor', async (phase, disposition) => {
-    const coreDb = await createMigratedCoreDb();
-    const suffix = `restart_missing_anchor_${phase}_${disposition}`;
-    const cleanup = vi.fn(async () => {});
-    const project = vi.fn(async () => ({ status: 'failed' as const }));
-    try {
-      dispatchLease(coreDb, suffix);
-      let row = attempts.requireSchedulerExecutionAttempt(
-        coreDb,
-        testEntityId('attempt', `lease_${suffix}`)
-      );
-      if (disposition === 'accepted')
-        row = attempts.acceptSchedulerExecutionObservation(coreDb, {
-          ...attempts.schedulerExecutionCorrelation(row),
-          disposition: 'accepted',
-          execution: 'pending',
-          fenceRef: null,
-          outcomeRef: null,
+  ] as const)(
+    'retains the original %s/%s operation without a durable backend anchor',
+    async (phase, disposition) => {
+      const coreDb = await createMigratedCoreDb();
+      const suffix = `restart_missing_anchor_${phase}_${disposition}`;
+      const cleanup = vi.fn(async () => {});
+      const project = vi.fn(async () => ({ status: 'failed' as const }));
+      try {
+        dispatchLease(coreDb, suffix);
+        let row = attempts.requireSchedulerExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', `lease_${suffix}`)
+        );
+        if (disposition === 'accepted')
+          row = attempts.acceptSchedulerExecutionObservation(coreDb, {
+            ...attempts.schedulerExecutionCorrelation(row),
+            disposition: 'accepted',
+            execution: 'pending',
+            fenceRef: null,
+            outcomeRef: null,
+          });
+        if (phase === 'closing')
+          row = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+            attemptId: row.attemptId,
+            cause: 'restart-inspection',
+            now: () => '2026-07-05T00:00:09.000Z',
+          });
+        const input = {
+          now: () => '2026-07-05T00:01:00.000Z',
+          cleanupBackendSession: cleanup,
+          projectRecoveredTurn: project,
+        };
+        expect(await recoverTestStartup(coreDb, input)).toEqual({
+          preparationFailedAttemptIds: [],
         });
-      if (phase === 'closing')
-        row = attempts.markSchedulerExecutionAttemptClosing(coreDb, {
-          attemptId: row.attemptId,
-          cause: 'restart-inspection',
-          now: () => '2026-07-05T00:00:09.000Z',
+        await drainTestRecovery(coreDb, input);
+        expect(attempts.requireSchedulerExecutionAttempt(coreDb, row.attemptId)).toEqual({
+          ...row,
+          updatedAt: expect.any(String),
         });
-      const input = {
-        now: () => '2026-07-05T00:01:00.000Z',
-        cleanupBackendSession: cleanup,
-        projectRecoveredTurn: project,
-      };
-      expect(await recoverTestStartup(coreDb, input)).toEqual({ preparationFailedAttemptIds: [] });
-      await drainTestRecovery(coreDb, input);
-      expect(attempts.requireSchedulerExecutionAttempt(coreDb, row.attemptId)).toEqual({
-        ...row,
-        updatedAt: expect.any(String),
-      });
-      expect(cleanup).not.toHaveBeenCalled();
-      expect(project).not.toHaveBeenCalled();
-    } finally {
-      coreDb.sqlite.close();
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(project).not.toHaveBeenCalled();
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('fails a stale pre-anchor lease that has no accepted launch heartbeat', async () => {
     const coreDb = await createMigratedCoreDb();
@@ -5754,106 +5798,105 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
-  it.each([
-    'backend',
-    'first-deadline',
-    'expired',
-  ] as const)('refuses a reconnect arm after FIFO %s authority changes without extending the first deadline', async (conflict) => {
-    const coreDb = await createMigratedCoreDb();
-    const suffix = `fifo_reconnect_${conflict}`;
-    // Reuse the existing real reconnect fixture: submitted execution, backend anchor,
-    // complete handoff and the sequence-zero plus post-launch heartbeat owners.
-    await prepareReconnectLease(coreDb, suffix);
-    const attemptId = testEntityId('attempt', `lease_${suffix}`);
-    const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
-    const backendBefore = getWorkerBackendSession(coreDb, attemptId)!;
-    const classifiedAt = '2026-07-05T00:01:00.000Z';
-    const firstDeadline = '2026-07-05T00:06:00.000Z';
-    expect(isNanoHostAttemptReconnectEligible(before, backendBefore, classifiedAt)).toBe(true);
-    expect(before).toMatchObject({ phase: 'open', recoveryState: null, recoveryDeadline: null });
-    const client = getControlStoreWorkerClient();
-    const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
-    const database = `core:${scope.path}`;
-    await client.open({
-      database,
-      path: scope.path,
-      dataRoot: coreDb.dataRoot,
-      create: false,
-      initialize: 'core',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    // The existing capture hold retains request order and real admission slots; it replaces no writer.
-    const resume = await client.pauseForDataRootBackup(database);
-    const pending: Promise<unknown>[] = [];
-    try {
-      coreDb.sqlite.pragma('query_only = ON');
-      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
-      const earlier =
-        conflict === 'backend'
-          ? client.backendSession(database, {
-              kind: 'transition',
-              attemptId,
-              fromState: 'launching',
-              toState: 'cleanup-pending',
-              observedAt: classifiedAt,
-            })
-          : client.executionAttempt(database, {
-              kind: 'native-reconnect-arm',
-              attemptId,
-              classifiedAt,
-              expectedRecoveryDeadline: null,
-              observedAt: classifiedAt,
-            });
-      pending.push(earlier);
-      let settled = false;
-      const stale = client
-        .executionAttempt(database, {
-          kind: 'native-reconnect-arm',
-          attemptId,
-          classifiedAt: '2026-07-05T00:01:01.000Z',
-          expectedRecoveryDeadline: conflict === 'expired' ? firstDeadline : null,
-          observedAt:
-            conflict === 'expired' ? '2026-07-05T00:06:00.000Z' : '2026-07-05T00:01:01.000Z',
-        })
-        .then(
-          (value) => {
-            settled = true;
-            return { ok: true as const, value };
-          },
-          (error: unknown) => {
-            settled = true;
-            return { ok: false as const, error };
-          }
-        );
-      pending.push(stale);
-      expect(settled).toBe(false);
-      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
-      expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(backendBefore);
-      resume();
-      await earlier;
-      const refused = await stale;
-      expect(refused.ok).toBe(false);
-      if (!refused.ok) expect(refused.error).toBeInstanceOf(Error);
-      if (conflict === 'backend') {
-        expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
-          state: 'cleanup-pending',
-        });
+  it.each(['backend', 'first-deadline', 'expired'] as const)(
+    'refuses a reconnect arm after FIFO %s authority changes without extending the first deadline',
+    async (conflict) => {
+      const coreDb = await createMigratedCoreDb();
+      const suffix = `fifo_reconnect_${conflict}`;
+      // Reuse the existing real reconnect fixture: submitted execution, backend anchor,
+      // complete handoff and the sequence-zero plus post-launch heartbeat owners.
+      await prepareReconnectLease(coreDb, suffix);
+      const attemptId = testEntityId('attempt', `lease_${suffix}`);
+      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      const backendBefore = getWorkerBackendSession(coreDb, attemptId)!;
+      const classifiedAt = '2026-07-05T00:01:00.000Z';
+      const firstDeadline = '2026-07-05T00:06:00.000Z';
+      expect(isNanoHostAttemptReconnectEligible(before, backendBefore, classifiedAt)).toBe(true);
+      expect(before).toMatchObject({ phase: 'open', recoveryState: null, recoveryDeadline: null });
+      const client = getControlStoreWorkerClient();
+      const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+      const database = `core:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: coreDb.dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      // The existing capture hold retains request order and real admission slots; it replaces no writer.
+      const resume = await client.pauseForDataRootBackup(database);
+      const pending: Promise<unknown>[] = [];
+      try {
+        coreDb.sqlite.pragma('query_only = ON');
+        expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        const earlier =
+          conflict === 'backend'
+            ? client.backendSession(database, {
+                kind: 'transition',
+                attemptId,
+                fromState: 'launching',
+                toState: 'cleanup-pending',
+                observedAt: classifiedAt,
+              })
+            : client.executionAttempt(database, {
+                kind: 'native-reconnect-arm',
+                attemptId,
+                classifiedAt,
+                expectedRecoveryDeadline: null,
+                observedAt: classifiedAt,
+              });
+        pending.push(earlier);
+        let settled = false;
+        const stale = client
+          .executionAttempt(database, {
+            kind: 'native-reconnect-arm',
+            attemptId,
+            classifiedAt: '2026-07-05T00:01:01.000Z',
+            expectedRecoveryDeadline: conflict === 'expired' ? firstDeadline : null,
+            observedAt:
+              conflict === 'expired' ? '2026-07-05T00:06:00.000Z' : '2026-07-05T00:01:01.000Z',
+          })
+          .then(
+            (value) => {
+              settled = true;
+              return { ok: true as const, value };
+            },
+            (error: unknown) => {
+              settled = true;
+              return { ok: false as const, error };
+            }
+          );
+        pending.push(stale);
+        expect(settled).toBe(false);
         expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
-      } else {
-        // NanoHost bounded reconnect: the first accepted 300-second window survives a queued stale/expired replay exactly.
-        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual({
-          ...before,
-          recoveryState: 'awaiting-reconnect',
-          recoveryDeadline: firstDeadline,
-        });
         expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(backendBefore);
+        resume();
+        await earlier;
+        const refused = await stale;
+        expect(refused.ok).toBe(false);
+        if (!refused.ok) expect(refused.error).toBeInstanceOf(Error);
+        if (conflict === 'backend') {
+          expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+            state: 'cleanup-pending',
+          });
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+        } else {
+          // NanoHost bounded reconnect: the first accepted 300-second window survives a queued stale/expired replay exactly.
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual({
+            ...before,
+            recoveryState: 'awaiting-reconnect',
+            recoveryDeadline: firstDeadline,
+          });
+          expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(backendBefore);
+        }
+      } finally {
+        resume();
+        await Promise.allSettled(pending);
       }
-    } finally {
-      resume();
-      await Promise.allSettled(pending);
     }
-  });
+  );
 
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
     const coreDb = await createMigratedCoreDb(false);
@@ -6350,55 +6393,53 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
-  it.each([
-    'key',
-    'lineage',
-    'sequence',
-    'deadline',
-  ] as const)('rejects reconnect when %s does not match the armed lease', async (mismatch) => {
-    const coreDb = await createMigratedCoreDb();
+  it.each(['key', 'lineage', 'sequence', 'deadline'] as const)(
+    'rejects reconnect when %s does not match the armed lease',
+    async (mismatch) => {
+      const coreDb = await createMigratedCoreDb();
 
-    try {
-      const suffix = `reject_${mismatch}`;
-      const fixture = await prepareReconnectLease(coreDb, suffix);
-      await recoverTestStartup(coreDb, {
-        now: () => '2026-07-05T00:01:00.000Z',
-        projectRecoveredTurn: async () => ({ status: 'failed' as const }),
-        restoreBackendSession: async () => {},
-      });
-      const armed = requireNanoHostExecutionAttempt(
-        coreDb,
-        testEntityId('attempt', `lease_${suffix}`)
-      );
-      const lineage =
-        mismatch === 'lineage'
-          ? { ...fixture.lineage, turnId: testEntityId('tu', 'turn_from_another_worker') }
-          : fixture.lineage;
+      try {
+        const suffix = `reject_${mismatch}`;
+        const fixture = await prepareReconnectLease(coreDb, suffix);
+        await recoverTestStartup(coreDb, {
+          now: () => '2026-07-05T00:01:00.000Z',
+          projectRecoveredTurn: async () => ({ status: 'failed' as const }),
+          restoreBackendSession: async () => {},
+        });
+        const armed = requireNanoHostExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', `lease_${suffix}`)
+        );
+        const lineage =
+          mismatch === 'lineage'
+            ? { ...fixture.lineage, turnId: testEntityId('tu', 'turn_from_another_worker') }
+            : fixture.lineage;
 
-      expect(() =>
-        adoptNanoHostAttemptReconnect(coreDb, {
-          acceptedAt:
-            mismatch === 'deadline'
-              ? (armed.recoveryDeadline ?? '2026-07-05T00:01:00.000Z')
-              : '2026-07-05T00:01:01.000Z',
-          lineage,
-          reconnectKey:
-            mismatch === 'key' ? reconnectKeyFor('wrong-process') : fixture.reconnectKey,
-          sandboxBindingRef: `lease-binding:lease_${suffix}`,
-          workerSequence: mismatch === 'sequence' ? 3 : 2,
-        })
-      ).toThrow();
-      expect(
-        requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`))
-      ).toMatchObject({
-        lastWorkerSequence: 1,
-        recoveryDeadline: armed.recoveryDeadline,
-        recoveryState: 'awaiting-reconnect',
-      });
-    } finally {
-      coreDb.sqlite.close();
+        expect(() =>
+          adoptNanoHostAttemptReconnect(coreDb, {
+            acceptedAt:
+              mismatch === 'deadline'
+                ? (armed.recoveryDeadline ?? '2026-07-05T00:01:00.000Z')
+                : '2026-07-05T00:01:01.000Z',
+            lineage,
+            reconnectKey:
+              mismatch === 'key' ? reconnectKeyFor('wrong-process') : fixture.reconnectKey,
+            sandboxBindingRef: `lease-binding:lease_${suffix}`,
+            workerSequence: mismatch === 'sequence' ? 3 : 2,
+          })
+        ).toThrow();
+        expect(
+          requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`))
+        ).toMatchObject({
+          lastWorkerSequence: 1,
+          recoveryDeadline: armed.recoveryDeadline,
+          recoveryState: 'awaiting-reconnect',
+        });
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('closes an expired reconnect attempt through complete recovery and admits its next Turn', async () => {
     const f = await createFinalReviewRecoveryFixture('reconnect_timeout', 'running');
@@ -6534,150 +6575,150 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
-  it.each([
-    'JSON',
-    'schema',
-  ] as const)('classifies corrupt retained snapshot %s during retry receipt replay without logging decoder content', async (corruption) => {
-    const f = await createFinalReviewRecoveryFixture(`corrupt_retry_${corruption}`, 'running');
-    const original = requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, f.attemptId);
-    const db = openWorkspaceDb(f.coreDb.dataRoot, original.workspaceId);
-    const loggedErrors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const admission = readCommandRequestRecordsFromSqlite(db.sqlite).find(
-        (record) => record.command === 'turn.start' && record.response.id === f.turnId
-      );
-      if (!admission) throw new Error('Original Worker admission receipt is missing.');
-      expect(admission.requestId).toBe(original.requestId);
-      const checkpoint = await upsertWorkerCheckpoint(db, {
-        workspaceId: original.workspaceId,
-        threadId: original.threadId,
-        turnId: original.turnId,
-        requestId: admission.requestId,
-        requestInputHash: admission.inputHash,
-        workerSessionId: f.agentSessionId,
-        stage: 'running_worker',
-        iteration: 0,
-      });
-      await shutdownControlStoreWorkerClient();
-      await recoverTestStartup(f.coreDb, f.input);
-      const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
-      if (!armed.inputRef || !armed.bindingRef || !armed.recoveryDeadline)
-        throw new Error('Restart did not retain the exact native reconnect boundary.');
-      expect(armed.recoveryState).toBe('awaiting-reconnect');
-      f.clock.now = armed.recoveryDeadline;
-      await drainTestRecovery(f.coreDb, f.input);
-      expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
-      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('interrupted');
-      expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
-        phase: 'closed',
-        fenceRef: expect.any(String),
-        inputRef: armed.inputRef,
-      });
-      expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
-        state: 'cleaned',
-        physicalCleanedAt: expect.any(String),
-        workspaceHandoffState: 'complete',
-      });
-      expect(resolveInterruptedWorkerRetryDecision(f.coreDb, f.store, db, checkpoint).status).toBe(
-        'eligible'
-      );
-      const scope = { workspaceId: original.workspaceId, threadId: f.threadId, turnId: f.turnId };
-      const turnBefore = f.store.getTurnById(f.turnId);
-      const sessionBefore = f.store.getAgentSession(f.agentSessionId);
-      const attemptsBefore = attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope);
-      const backendBefore = getWorkerBackendSession(f.coreDb, f.attemptId);
-      const turnsBefore = f.store.listThreadTurns(scope.workspaceId, scope.threadId);
-      const queueBefore = listQueuedSchedulerAdmissionEntries(f.coreDb);
-      // Keep the real native command and its seven-day receipt on the fixture clock.
-      vi.useFakeTimers({ toFake: ['Date'] });
-      vi.setSystemTime(new Date(f.clock.now));
-      const executor = new RejectRecoveredTurnExecutor();
-      const app = createApp({
-        coreDb: f.coreDb,
-        dataRoot: f.coreDb.dataRoot,
-        store: f.store,
-        turnExecutor: executor,
-      });
-      const requestId = fixtureRequestId(`corrupt-retry:${corruption}`);
-      const request = () =>
-        app.request('/api/app/operations/recovery.checkpoint-retry', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-          body: JSON.stringify({ ...scope, requestId }),
+  it.each(['JSON', 'schema'] as const)(
+    'classifies corrupt retained snapshot %s during retry receipt replay without logging decoder content',
+    async (corruption) => {
+      const f = await createFinalReviewRecoveryFixture(`corrupt_retry_${corruption}`, 'running');
+      const original = requireSchedulerExecutionAttemptAdmissionContext(f.coreDb, f.attemptId);
+      const db = openWorkspaceDb(f.coreDb.dataRoot, original.workspaceId);
+      const loggedErrors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const admission = readCommandRequestRecordsFromSqlite(db.sqlite).find(
+          (record) => record.command === 'turn.start' && record.response.id === f.turnId
+        );
+        if (!admission) throw new Error('Original Worker admission receipt is missing.');
+        expect(admission.requestId).toBe(original.requestId);
+        const checkpoint = await upsertWorkerCheckpoint(db, {
+          workspaceId: original.workspaceId,
+          threadId: original.threadId,
+          turnId: original.turnId,
+          requestId: admission.requestId,
+          requestInputHash: admission.inputHash,
+          workerSessionId: f.agentSessionId,
+          stage: 'running_worker',
+          iteration: 0,
         });
+        await shutdownControlStoreWorkerClient();
+        await recoverTestStartup(f.coreDb, f.input);
+        const armed = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId);
+        if (!armed.inputRef || !armed.bindingRef || !armed.recoveryDeadline)
+          throw new Error('Restart did not retain the exact native reconnect boundary.');
+        expect(armed.recoveryState).toBe('awaiting-reconnect');
+        f.clock.now = armed.recoveryDeadline;
+        await drainTestRecovery(f.coreDb, f.input);
+        expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
+        expect(f.store.getAgentSession(f.agentSessionId).status).toBe('interrupted');
+        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+          phase: 'closed',
+          fenceRef: expect.any(String),
+          inputRef: armed.inputRef,
+        });
+        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+          state: 'cleaned',
+          physicalCleanedAt: expect.any(String),
+          workspaceHandoffState: 'complete',
+        });
+        expect(
+          resolveInterruptedWorkerRetryDecision(f.coreDb, f.store, db, checkpoint).status
+        ).toBe('eligible');
+        const scope = { workspaceId: original.workspaceId, threadId: f.threadId, turnId: f.turnId };
+        const turnBefore = f.store.getTurnById(f.turnId);
+        const sessionBefore = f.store.getAgentSession(f.agentSessionId);
+        const attemptsBefore = attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope);
+        const backendBefore = getWorkerBackendSession(f.coreDb, f.attemptId);
+        const turnsBefore = f.store.listThreadTurns(scope.workspaceId, scope.threadId);
+        const queueBefore = listQueuedSchedulerAdmissionEntries(f.coreDb);
+        // Keep the real native command and its seven-day receipt on the fixture clock.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(f.clock.now));
+        const executor = new RejectRecoveredTurnExecutor();
+        const app = createApp({
+          coreDb: f.coreDb,
+          dataRoot: f.coreDb.dataRoot,
+          store: f.store,
+          turnExecutor: executor,
+        });
+        const requestId = fixtureRequestId(`corrupt-retry:${corruption}`);
+        const request = () =>
+          app.request('/api/app/operations/recovery.checkpoint-retry', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+            body: JSON.stringify({ ...scope, requestId }),
+          });
 
-      // Reliability: the real retry receipt commits before terminal checkpoint cleanup.
-      // Fault only that cleanup, so the aborted checkpoint and receipt are produced by their owner.
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.exec(`CREATE TRIGGER retain_retry_checkpoint BEFORE DELETE ON worker_turn_checkpoints
+        // Reliability: the real retry receipt commits before terminal checkpoint cleanup.
+        // Fault only that cleanup, so the aborted checkpoint and receipt are produced by their owner.
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.exec(`CREATE TRIGGER retain_retry_checkpoint BEFORE DELETE ON worker_turn_checkpoints
         BEGIN SELECT RAISE(ABORT, 'Controlled retry cleanup refusal'); END`);
-      await openTestNativeWorkspace(db);
-      const first = await request();
-      expect(first.status).toBeGreaterThanOrEqual(400);
-      const receipt = f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db);
-      expect(receipt).toMatchObject({
-        command: 'worker.recovery.retry',
-        requestId,
-        scope,
-        response: { kind: 'turn', id: f.turnId },
-      });
-      const aborted = getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId);
-      expect(aborted).toMatchObject({ stage: 'aborted', stopReason: 'aborted' });
-      expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
-      expect(executor.calls).toEqual([]);
+        await openTestNativeWorkspace(db);
+        const first = await request();
+        expect(first.status).toBeGreaterThanOrEqual(400);
+        const receipt = f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db);
+        expect(receipt).toMatchObject({
+          command: 'worker.recovery.retry',
+          requestId,
+          scope,
+          response: { kind: 'turn', id: f.turnId },
+        });
+        const aborted = getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId);
+        expect(aborted).toMatchObject({ stage: 'aborted', stopReason: 'aborted' });
+        expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
+        expect(executor.calls).toEqual([]);
 
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.exec('DROP TRIGGER retain_retry_checkpoint');
-      await openTestNativeWorkspace(db);
-      // Corrupt the actual retained package only after the original public retry wrote its receipt.
-      const marker = 'ROW_SECRET_X9';
-      const snapshot = join(
-        f.coreDb.dataRoot,
-        'workspaces',
-        scope.workspaceId,
-        'runtime',
-        'agent-sessions',
-        f.agentSessionId,
-        'aep-snapshots',
-        `${armed.inputRef}.json`
-      );
-      expect(readFileSync(snapshot, 'utf8')).toContain(armed.inputRef);
-      writeFileSync(snapshot, corruption === 'JSON' ? marker : JSON.stringify(marker));
-      const response = await request();
-      expect.soft(response.status).toBe(400);
-      expect.soft(inspect(loggedErrors.mock.calls)).not.toContain(marker);
-      expect.soft(response.headers.get('content-type')).toContain('application/json');
-      await expect(response.json()).resolves.toMatchObject({
-        code: 'recovery_retry_failed',
-        message: 'The retained record could not be read.',
-      });
-      expect(getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId)).toEqual(
-        aborted
-      );
-      expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
-      expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
-      expect(f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db)).toEqual(
-        receipt
-      );
-      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(sessionBefore);
-      expect(attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope)).toEqual(
-        attemptsBefore
-      );
-      expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backendBefore);
-      expect(f.store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turnsBefore);
-      expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toEqual(queueBefore);
-      expect(executor.calls).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-      loggedErrors.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      if (db.sqlite.open) {
-        db.sqlite.exec('DROP TRIGGER IF EXISTS retain_retry_checkpoint');
-        db.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.exec('DROP TRIGGER retain_retry_checkpoint');
+        await openTestNativeWorkspace(db);
+        // Corrupt the actual retained package only after the original public retry wrote its receipt.
+        const marker = 'ROW_SECRET_X9';
+        const snapshot = join(
+          f.coreDb.dataRoot,
+          'workspaces',
+          scope.workspaceId,
+          'runtime',
+          'agent-sessions',
+          f.agentSessionId,
+          'aep-snapshots',
+          `${armed.inputRef}.json`
+        );
+        expect(readFileSync(snapshot, 'utf8')).toContain(armed.inputRef);
+        writeFileSync(snapshot, corruption === 'JSON' ? marker : JSON.stringify(marker));
+        const response = await request();
+        expect.soft(response.status).toBe(400);
+        expect.soft(inspect(loggedErrors.mock.calls)).not.toContain(marker);
+        expect.soft(response.headers.get('content-type')).toContain('application/json');
+        await expect(response.json()).resolves.toMatchObject({
+          code: 'recovery_retry_failed',
+          message: 'The retained record could not be read.',
+        });
+        expect(getWorkerCheckpoint(db, scope.workspaceId, scope.threadId, scope.turnId)).toEqual(
+          aborted
+        );
+        expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
+        expect(f.store.getTurnById(f.turnId)).toEqual(turnBefore);
+        expect(f.store.getCommandRequest('worker.recovery.retry', requestId, scope, db)).toEqual(
+          receipt
+        );
+        expect(f.store.getAgentSession(f.agentSessionId)).toEqual(sessionBefore);
+        expect(attempts.listSchedulerExecutionAttemptsForTurn(f.coreDb, scope)).toEqual(
+          attemptsBefore
+        );
+        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backendBefore);
+        expect(f.store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turnsBefore);
+        expect(listQueuedSchedulerAdmissionEntries(f.coreDb)).toEqual(queueBefore);
+        expect(executor.calls).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        loggedErrors.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        if (db.sqlite.open) {
+          db.sqlite.exec('DROP TRIGGER IF EXISTS retain_retry_checkpoint');
+          db.sqlite.close();
+        }
+        f.coreDb.sqlite.close();
       }
-      f.coreDb.sqlite.close();
     }
-  });
+  );
 
   it('keeps retained private recovery history scoped to members and current administrators', async () => {
     const coreDb = await createMigratedCoreDb(false);
@@ -6937,132 +6978,136 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
-  it.each([
-    'proved',
-    'proved-interrupted',
-    'unknown',
-    'partial',
-  ] as const)('classifies failed preparation with Context input and zero handles without repeated cleanup: %s', async (proof) => {
-    const f = await createFinalReviewRecoveryFixture(`early_image_${proof}`, 'failed-preparation');
-    const original = f.store.getTurnById(f.turnId);
-    dispatchLease(f.coreDb, 'early_image_sibling');
-    await recordBackendSession(f.coreDb, 'early_image_sibling');
-    const sibling = getWorkerBackendSession(
-      f.coreDb,
-      testEntityId('attempt', 'lease_early_image_sibling')
-    );
-    const db = openWorkspaceDb(f.coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    const cleanup = vi.fn(f.input.cleanupBackendSession);
-    const release = vi.spyOn(f.input.executionBackend, 'release');
-    try {
-      const pkg = requireAgentEnvironmentPackageSnapshot(
-        db,
-        'ws_00000000-0000-7000-8000-000000000001',
-        `aepsnap_${f.turnId}_${f.agentSessionId}`
-      ).snapshot;
-      expect(pkg.workspace.inputs).toMatchObject([
-        { access: 'read-only', id: `context_${f.turnId}`, source: { kind: 'generated' } },
-      ]);
-      if (proof === 'unknown')
-        f.coreDb.sqlite
-          .prepare(
-            "UPDATE scheduler_execution_attempts SET disposition = 'unknown', operation_id = 'unproved-preparation' WHERE attempt_id = ?"
-          )
-          .run(f.attemptId);
-      if (proof === 'partial') {
-        recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
-        db.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
-      }
-      const input = { ...f.input, cleanupBackendSession: cleanup };
-      let interruptedAttempt: ReturnType<typeof attempts.requireSchedulerExecutionAttempt> | null =
-        null;
-      if (proof === 'proved-interrupted') {
-        release.mockRejectedValueOnce(new Error('release interrupted after handoff publication'));
-        await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
-          'Native attempt recovery failed.'
-        );
-        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
-          state: 'cleaned',
-          workspaceHandoffState: 'complete',
-        });
-        interruptedAttempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
-        expect(interruptedAttempt).toMatchObject({
-          phase: 'closing',
-          terminalCause: 'execution-failed',
-          outcomeRef: `turn:${f.turnId}:failed`,
-          fenceRef: null,
-        });
-        expect(f.store.getTurnById(f.turnId)).toEqual(original);
-      }
-      const evidenceBeforeRetry = listWorkspaceRuntimeEvidence(
-        db,
-        'ws_00000000-0000-7000-8000-000000000001'
+  it.each(['proved', 'proved-interrupted', 'unknown', 'partial'] as const)(
+    'classifies failed preparation with Context input and zero handles without repeated cleanup: %s',
+    async (proof) => {
+      const f = await createFinalReviewRecoveryFixture(
+        `early_image_${proof}`,
+        'failed-preparation'
       );
-      if (proof === 'partial')
-        await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
-          'Native attempt recovery failed.'
-        );
-      else {
-        await expect(drainTestRecovery(f.coreDb, input)).resolves.toBeUndefined();
-        const evidence = listWorkspaceRuntimeEvidence(
+      const original = f.store.getTurnById(f.turnId);
+      dispatchLease(f.coreDb, 'early_image_sibling');
+      await recordBackendSession(f.coreDb, 'early_image_sibling');
+      const sibling = getWorkerBackendSession(
+        f.coreDb,
+        testEntityId('attempt', 'lease_early_image_sibling')
+      );
+      const db = openWorkspaceDb(f.coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const cleanup = vi.fn(f.input.cleanupBackendSession);
+      const release = vi.spyOn(f.input.executionBackend, 'release');
+      try {
+        const pkg = requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_00000000-0000-7000-8000-000000000001',
+          `aepsnap_${f.turnId}_${f.agentSessionId}`
+        ).snapshot;
+        expect(pkg.workspace.inputs).toMatchObject([
+          { access: 'read-only', id: `context_${f.turnId}`, source: { kind: 'generated' } },
+        ]);
+        if (proof === 'unknown')
+          f.coreDb.sqlite
+            .prepare(
+              "UPDATE scheduler_execution_attempts SET disposition = 'unknown', operation_id = 'unproved-preparation' WHERE attempt_id = ?"
+            )
+            .run(f.attemptId);
+        if (proof === 'partial') {
+          recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
+          db.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+        }
+        const input = { ...f.input, cleanupBackendSession: cleanup };
+        let interruptedAttempt: ReturnType<
+          typeof attempts.requireSchedulerExecutionAttempt
+        > | null = null;
+        if (proof === 'proved-interrupted') {
+          release.mockRejectedValueOnce(new Error('release interrupted after handoff publication'));
+          await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
+            'Native attempt recovery failed.'
+          );
+          expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+            state: 'cleaned',
+            workspaceHandoffState: 'complete',
+          });
+          interruptedAttempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
+          expect(interruptedAttempt).toMatchObject({
+            phase: 'closing',
+            terminalCause: 'execution-failed',
+            outcomeRef: `turn:${f.turnId}:failed`,
+            fenceRef: null,
+          });
+          expect(f.store.getTurnById(f.turnId)).toEqual(original);
+        }
+        const evidenceBeforeRetry = listWorkspaceRuntimeEvidence(
           db,
           'ws_00000000-0000-7000-8000-000000000001'
         );
-        if (interruptedAttempt) expect(evidence).toEqual(evidenceBeforeRetry);
-        f.clock.now = '2026-07-05T00:01:30.000Z';
-        await expect(drainTestRecovery(f.coreDb, input)).resolves.toBeUndefined();
-        expect(listWorkspaceRuntimeEvidence(db, 'ws_00000000-0000-7000-8000-000000000001')).toEqual(
-          evidence
-        );
-      }
-      expect(f.store.getTurnById(f.turnId)).toEqual(original);
-      expect(cleanup).not.toHaveBeenCalled();
-      const proved = proof === 'proved' || proof === 'proved-interrupted';
-      expect(release).toHaveBeenCalledTimes(proof === 'proved-interrupted' ? 2 : proved ? 1 : 0);
-      const finalAttempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
-      expect(finalAttempt.phase).toBe(proved ? 'closed' : 'closing');
-      if (interruptedAttempt) {
-        expect(finalAttempt).toMatchObject({
-          terminalCause: interruptedAttempt.terminalCause,
-          outcomeRef: interruptedAttempt.outcomeRef,
-          fenceRef: expect.any(String),
-        });
-        expect(release.mock.calls[1]).toEqual(release.mock.calls[0]);
-        expect(release.mock.results.filter((result) => result.type === 'return')).toHaveLength(2);
-        await expect(release.mock.results[0]?.value).rejects.toThrow(
-          'release interrupted after handoff publication'
-        );
-        await expect(release.mock.results[1]?.value).resolves.toMatchObject({ state: 'released' });
-      }
-      expect(
-        getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'lease_early_image_sibling'))
-      ).toEqual(sibling);
-      if (proof !== 'partial') {
-        expect(listBackendWorkspaceHandles(db, 'ws_00000000-0000-7000-8000-000000000001')).toEqual(
-          []
-        );
+        if (proof === 'partial')
+          await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
+            'Native attempt recovery failed.'
+          );
+        else {
+          await expect(drainTestRecovery(f.coreDb, input)).resolves.toBeUndefined();
+          const evidence = listWorkspaceRuntimeEvidence(
+            db,
+            'ws_00000000-0000-7000-8000-000000000001'
+          );
+          if (interruptedAttempt) expect(evidence).toEqual(evidenceBeforeRetry);
+          f.clock.now = '2026-07-05T00:01:30.000Z';
+          await expect(drainTestRecovery(f.coreDb, input)).resolves.toBeUndefined();
+          expect(
+            listWorkspaceRuntimeEvidence(db, 'ws_00000000-0000-7000-8000-000000000001')
+          ).toEqual(evidence);
+        }
+        expect(f.store.getTurnById(f.turnId)).toEqual(original);
+        expect(cleanup).not.toHaveBeenCalled();
+        const proved = proof === 'proved' || proof === 'proved-interrupted';
+        expect(release).toHaveBeenCalledTimes(proof === 'proved-interrupted' ? 2 : proved ? 1 : 0);
+        const finalAttempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
+        expect(finalAttempt.phase).toBe(proved ? 'closed' : 'closing');
+        if (interruptedAttempt) {
+          expect(finalAttempt).toMatchObject({
+            terminalCause: interruptedAttempt.terminalCause,
+            outcomeRef: interruptedAttempt.outcomeRef,
+            fenceRef: expect.any(String),
+          });
+          expect(release.mock.calls[1]).toEqual(release.mock.calls[0]);
+          expect(release.mock.results.filter((result) => result.type === 'return')).toHaveLength(2);
+          await expect(release.mock.results[0]?.value).rejects.toThrow(
+            'release interrupted after handoff publication'
+          );
+          await expect(release.mock.results[1]?.value).resolves.toMatchObject({
+            state: 'released',
+          });
+        }
         expect(
-          listWorkspaceMaterializationRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
-        ).toEqual([]);
+          getWorkerBackendSession(f.coreDb, testEntityId('attempt', 'lease_early_image_sibling'))
+        ).toEqual(sibling);
+        if (proof !== 'partial') {
+          expect(
+            listBackendWorkspaceHandles(db, 'ws_00000000-0000-7000-8000-000000000001')
+          ).toEqual([]);
+          expect(
+            listWorkspaceMaterializationRecords(db, 'ws_00000000-0000-7000-8000-000000000001')
+          ).toEqual([]);
+        }
+        if (proof === 'unknown')
+          expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+            recoveryState: 'needs-evidence',
+            disposition: 'unknown',
+            outcomeRef: null,
+            fenceRef: null,
+          });
+        expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
+        if (proved)
+          await assertRecoveryClosedAndNextTurnAdmitted({
+            ...f,
+            agentSessionId: await createRecoverySuccessor(f),
+          });
+      } finally {
+        db.sqlite.close();
+        f.coreDb.sqlite.close();
       }
-      if (proof === 'unknown')
-        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
-          recoveryState: 'needs-evidence',
-          disposition: 'unknown',
-          outcomeRef: null,
-          fenceRef: null,
-        });
-      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
-      if (proved)
-        await assertRecoveryClosedAndNextTurnAdmitted({
-          ...f,
-          agentSessionId: await createRecoverySuccessor(f),
-        });
-    } finally {
-      db.sqlite.close();
-      f.coreDb.sqlite.close();
     }
-  });
+  );
 
   it('finishes failed-start cleanup before the real NanoHost release can close its attempt', async () => {
     const f = await createFinalReviewRecoveryFixture('failed_start_release_order', 'failed-start');
@@ -7078,71 +7123,70 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
-  it.each([
-    'cleanup-pending',
-    'physical-cleaned',
-    'cleaned',
-  ] as const)('defers %s to a live lifecycle owner and delegates accepted final-status closeout after it exits', async (state) => {
-    const coreDb = await createMigratedCoreDb();
-    const suffix = `live_owner_${state}`;
-    const leaseId = testEntityId('attempt', `lease_${suffix}`);
-    let active = true;
-    const cleanupBackendSession = vi.fn(async () => {});
-    const reconcileAcceptedFinalStatus = vi.fn(async () => {});
-    const projectRecoveredTurn = vi.fn(async () => ({ status: 'completed' as const }));
-    try {
-      dispatchLease(coreDb, suffix);
-      await recordBackendSession(coreDb, suffix, state);
-      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: leaseId });
-      beginOwnedAttemptCloseout(coreDb, {
-        attemptId: leaseId,
-        firstTerminalCause: 'worker-final-status',
-      });
-      recordWorkerControlAcceptedRecord(coreDb, {
-        acceptedAt: '2026-07-05T00:00:07.000Z',
-        lineage: {
-          agentSessionId: testEntityId('as', `as_${suffix}`),
-          packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
-          requestId: fixtureRequestId(`request_${suffix}`),
-          threadId: testEntityId('th', `th_${suffix}`),
-          turnId: testEntityId('tu', `turn_${suffix}`),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        operation: 'final_status',
-        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-        recordKey: '1',
-        sandboxBindingRef: `lease-binding:lease_${suffix}`,
-        sequence: 1,
-      });
-      const original = getWorkerBackendSession(coreDb, leaseId);
-      const input: RecoveryFixtureInput = {
-        cleanupBackendSession,
-        reconcileAcceptedFinalStatus,
-        isTurnExecutionActive: (turnId) =>
-          active && turnId === testEntityId('tu', `turn_${suffix}`),
-        projectRecoveredTurn,
-      };
-      await drainTestRecovery(coreDb, input);
-      expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
-      expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
-      ).toBe('closing');
-      expect(cleanupBackendSession).not.toHaveBeenCalled();
-      expect(projectRecoveredTurn).not.toHaveBeenCalled();
-      active = false;
-      await drainTestRecovery(coreDb, input);
-      expect(reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(1);
-      expect(reconcileAcceptedFinalStatus).toHaveBeenCalledWith(original);
-      expect(cleanupBackendSession).not.toHaveBeenCalled();
-      expect(projectRecoveredTurn).not.toHaveBeenCalled();
-      expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
-      expect(
-        observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
-      ).toBe('closing');
-    } finally {
-      coreDb.sqlite.close();
+  it.each(['cleanup-pending', 'physical-cleaned', 'cleaned'] as const)(
+    'defers %s to a live lifecycle owner and delegates accepted final-status closeout after it exits',
+    async (state) => {
+      const coreDb = await createMigratedCoreDb();
+      const suffix = `live_owner_${state}`;
+      const leaseId = testEntityId('attempt', `lease_${suffix}`);
+      let active = true;
+      const cleanupBackendSession = vi.fn(async () => {});
+      const reconcileAcceptedFinalStatus = vi.fn(async () => {});
+      const projectRecoveredTurn = vi.fn(async () => ({ status: 'completed' as const }));
+      try {
+        dispatchLease(coreDb, suffix);
+        await recordBackendSession(coreDb, suffix, state);
+        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: leaseId });
+        beginOwnedAttemptCloseout(coreDb, {
+          attemptId: leaseId,
+          firstTerminalCause: 'worker-final-status',
+        });
+        recordWorkerControlAcceptedRecord(coreDb, {
+          acceptedAt: '2026-07-05T00:00:07.000Z',
+          lineage: {
+            agentSessionId: testEntityId('as', `as_${suffix}`),
+            packageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
+            requestId: fixtureRequestId(`request_${suffix}`),
+            threadId: testEntityId('th', `th_${suffix}`),
+            turnId: testEntityId('tu', `turn_${suffix}`),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+          operation: 'final_status',
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+          recordKey: '1',
+          sandboxBindingRef: `lease-binding:lease_${suffix}`,
+          sequence: 1,
+        });
+        const original = getWorkerBackendSession(coreDb, leaseId);
+        const input: RecoveryFixtureInput = {
+          cleanupBackendSession,
+          reconcileAcceptedFinalStatus,
+          isTurnExecutionActive: (turnId) =>
+            active && turnId === testEntityId('tu', `turn_${suffix}`),
+          projectRecoveredTurn,
+        };
+        await drainTestRecovery(coreDb, input);
+        expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
+        expect(
+          observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
+        ).toBe('closing');
+        expect(cleanupBackendSession).not.toHaveBeenCalled();
+        expect(projectRecoveredTurn).not.toHaveBeenCalled();
+        active = false;
+        await drainTestRecovery(coreDb, input);
+        expect(reconcileAcceptedFinalStatus).toHaveBeenCalledTimes(1);
+        expect(reconcileAcceptedFinalStatus).toHaveBeenCalledWith(original);
+        expect(cleanupBackendSession).not.toHaveBeenCalled();
+        expect(projectRecoveredTurn).not.toHaveBeenCalled();
+        expect(getWorkerBackendSession(coreDb, leaseId)).toEqual(original);
+        expect(
+          observeExecutionAttempts(coreDb).find((attempt) => attempt.attempt_id === leaseId)?.phase
+        ).toBe('closing');
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('keeps an accepted completed final-status closeout with its owner before listen', async () => {
     const coreDb = await createMigratedCoreDb();

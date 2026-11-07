@@ -330,42 +330,42 @@ describe('deepseek permission and bounds', () => {
 });
 
 describe('deepseek resident adapter', () => {
-  it.each([
-    'interrupt',
-    'close',
-  ] as const)('removes a cold Turn from startup admission on %s without spawning', async (action) => {
-    const inference = await startSyntheticInference(() => ({ text: 'must not launch' }));
-    closers.push(() => inference.close());
-    const roots = tempRoots();
-    const session = await open(roots, inference, null);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
-      nativeStartupAdmission.run(() => held)
-    );
-    const controller = new AbortController();
-    const pending = session.startTurn({
-      ...turn(roots, inference, 'queued input', [], 'queued'),
-      signal: controller.signal,
-    });
-    const rejected = expect(pending).rejects.toThrow(
-      action === 'close' ? 'closing' : 'interrupted'
-    );
-    try {
+  it.each(['interrupt', 'close'] as const)(
+    'removes a cold Turn from startup admission on %s without spawning',
+    async (action) => {
+      const inference = await startSyntheticInference(() => ({ text: 'must not launch' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
+        nativeStartupAdmission.run(() => held)
+      );
+      const controller = new AbortController();
+      const pending = session.startTurn({
+        ...turn(roots, inference, 'queued input', [], 'queued'),
+        signal: controller.signal,
+      });
+      const rejected = expect(pending).rejects.toThrow(
+        action === 'close' ? 'closing' : 'interrupted'
+      );
+      try {
+        expect(session.childState()).toBe('absent');
+        if (action === 'close') await session.close();
+        else controller.abort(new Error('Turn interrupted'));
+        await rejected;
+      } finally {
+        release();
+        await Promise.all(occupied);
+      }
       expect(session.childState()).toBe('absent');
-      if (action === 'close') await session.close();
-      else controller.abort(new Error('Turn interrupted'));
-      await rejected;
-    } finally {
-      release();
-      await Promise.all(occupied);
+      expect(existsSync(join(roots.control, 'deepseek-host.pid'))).toBe(false);
+      await expect(session.close()).resolves.toBeUndefined();
     }
-    expect(session.childState()).toBe('absent');
-    expect(existsSync(join(roots.control, 'deepseek-host.pid'))).toBe(false);
-    await expect(session.close()).resolves.toBeUndefined();
-  });
+  );
 
   it(
     'starts native preparation after a long queued wait with its full owned budget',
@@ -3845,101 +3845,104 @@ function snapshotRetainedBytes(root: string): Record<string, string> {
   return bytes;
 }
 
-it.each([
-  { levels: [] },
-  { levels: ['low'] },
-])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
-  levels,
-}) => {
-  const inference = await startSyntheticInference(() => ({ text: 'effort-answer' }));
-  closers.push(() => inference.close());
-  const roots = tempRoots();
-  const session = await open(roots, inference, null);
-  const reasoning = {
-    ...catalogRoute('effort-model', 128000, 8192),
-    reasoningEffortLevels: levels as ReasoningEffort[],
-    modelParameters: {
-      contextWindow: 128000,
-      maxOutputTokens: 8192,
-      inputModalities: ['text', 'image', 'pdf'] as const,
-      reasoning: true,
-    },
-  };
-  const plain = {
-    ...reasoning,
-    model: 'plain-model',
-    id: 'plain-model',
-    reasoningEffortLevels: undefined,
-  };
-  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) =>
-    catalogTurn(roots, inference, [reasoning, plain], llmRoute, text);
-  const bodies = () => inference.requests.map((request) => request.body);
-  const level = (body: Record<string, unknown>) => body.reasoning_effort;
-  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
-  for (const [index, effort] of (
-    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
-  ).entries()) {
-    // Live Gateway advertisement never resets or restricts the retained native selection.
-    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+it.each([{ levels: [] }, { levels: ['low'] }])(
+  's4: delivers effort on retained native conversation and reports native selection %j',
+  async ({ levels }) => {
+    const inference = await startSyntheticInference(() => ({ text: 'effort-answer' }));
+    closers.push(() => inference.close());
+    const roots = tempRoots();
+    const session = await open(roots, inference, null);
+    const reasoning = {
+      ...catalogRoute('effort-model', 128000, 8192),
+      reasoningEffortLevels: levels as ReasoningEffort[],
+      modelParameters: {
+        contextWindow: 128000,
+        maxOutputTokens: 8192,
+        inputModalities: ['text', 'image', 'pdf'] as const,
+        reasoning: true,
+      },
+    };
+    const plain = {
+      ...reasoning,
+      model: 'plain-model',
+      id: 'plain-model',
+      reasoningEffortLevels: undefined,
+    };
+    const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) =>
+      catalogTurn(roots, inference, [reasoning, plain], llmRoute, text);
+    const bodies = () => inference.requests.map((request) => request.body);
+    const level = (body: Record<string, unknown>) => body.reasoning_effort;
+    let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+    for (const [index, effort] of (
+      ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+    ).entries()) {
+      // Live Gateway advertisement never resets or restricts the retained native selection.
+      if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+      const before = bodies().length;
+      const admitted = input(`effort-${index}`);
+      const result = await (
+        await session.startTurn({
+          ...admitted,
+          ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        })
+      ).settled;
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+      const expected = effort ?? 'high';
+      expect(bodies().slice(before).map(level)).toEqual([expected]);
+      expect(result.diagnostics?.reasoningEffort).toBe(effort === undefined ? 'unknown' : expected);
+      expect(result.diagnostics?.omittedModalities).toBe('pdf');
+      const patch = JSON.parse(
+        readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8')
+      );
+      const plugin = patch
+        .flatMap(
+          (row: {
+            insert?: {
+              id: string;
+              config?: {
+                providers?: Record<string, { models: { id: string; input: string[] }[] }>;
+              };
+            }[];
+          }) => row.insert ?? []
+        )
+        .findLast((row: { id: string }) => row.id === 'llm-pi-ai');
+      expect(
+        plugin.config.providers['openkit-loopback'].models.find(
+          (model: { id: string }) => model.id === reasoning.model
+        ).input
+      ).toEqual(['text', 'image']);
+      if (handle) expect(await session.nativeHandle()).toEqual(handle);
+      else handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+    }
     const before = bodies().length;
-    const admitted = input(`effort-${index}`);
     const result = await (
-      await session.startTurn({
-        ...admitted,
-        ...(effort === undefined ? {} : { reasoningEffort: effort }),
-      })
+      await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
     ).settled;
     expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-    const expected = effort ?? 'high';
-    expect(bodies().slice(before).map(level)).toEqual([expected]);
-    expect(result.diagnostics?.reasoningEffort).toBe(effort === undefined ? 'unknown' : expected);
-    expect(result.diagnostics?.omittedModalities).toBe('pdf');
-    const patch = JSON.parse(
-      readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8')
+    expect(bodies().slice(before).map(level)).toEqual([undefined]);
+    expect(result.diagnostics?.reasoningEffortDelivery).toBe(
+      'not-delivered: model has no reasoning'
     );
-    const plugin = patch
-      .flatMap(
-        (row: {
-          insert?: {
-            id: string;
-            config?: { providers?: Record<string, { models: { id: string; input: string[] }[] }> };
-          }[];
-        }) => row.insert ?? []
-      )
-      .findLast((row: { id: string }) => row.id === 'llm-pi-ai');
-    expect(
-      plugin.config.providers['openkit-loopback'].models.find(
-        (model: { id: string }) => model.id === reasoning.model
-      ).input
-    ).toEqual(['text', 'image']);
-    if (handle) expect(await session.nativeHandle()).toEqual(handle);
-    else handle = await session.nativeHandle();
-    expect(handle.state).toBe('ready');
-  }
-  const before = bodies().length;
-  const result = await (
-    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
-  ).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(bodies().slice(before).map(level)).toEqual([undefined]);
-  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
-  expect(result.diagnostics?.reasoningEffort).toBe('unknown');
-  expect(await session.nativeHandle()).toEqual(handle);
-  const count = bodies().length;
-  await expect(
-    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
-  await expect(
-    session.startTurn({
-      ...input('unknown-route'),
-      llmRoute: invalidRoute,
-      allowedLlmRoutes: [invalidRoute, plain],
-    })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-}, 180000);
+    expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+    expect(await session.nativeHandle()).toEqual(handle);
+    const count = bodies().length;
+    await expect(
+      session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+    const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+    await expect(
+      session.startTurn({
+        ...input('unknown-route'),
+        llmRoute: invalidRoute,
+        allowedLlmRoutes: [invalidRoute, plain],
+      })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+  },
+  180000
+);
 
 it('s4: refuses modality subset without text before native inference', async () => {
   const inference = await startSyntheticInference(() => ({ text: 'unexpected' }));

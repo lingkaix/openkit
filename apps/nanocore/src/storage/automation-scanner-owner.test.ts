@@ -175,73 +175,73 @@ it('propagates a throwing cadence callback before native scan publication and pr
   expect(f.store.listHistory(f.healthy.id).items).toEqual([]);
 });
 
-it.each([
-  'refusal',
-  'unknown',
-] as const)('holds actual Workspace mutation admission until the original native %s ACK settles', async (outcome) => {
-  const f = await exhaustedFixture();
-  if (outcome === 'refusal') {
-    // Deliberate failure only after valid owner setup: the actual native stage cannot publish its cursor.
-    f.db.sqlite.exec(
-      `CREATE TRIGGER reject_scan_cursor BEFORE UPDATE ON recurring_schedules BEGIN SELECT RAISE(ABORT, 'test scan cursor refusal'); END;`
-    );
-  }
-  const original = coreRows(f.db);
-  f.db.sqlite.pragma('query_only = ON');
-  const observed = vi.spyOn(getControlStoreWorkerClient(), 'automationScanner');
-  const posted = vi.spyOn(Worker.prototype, 'postMessage');
-  let held: Int32Array | undefined;
-  let settled = false;
-  // The actual Main callback follows the plan ACK; arm only the subsequent publish COMMIT.
-  const onError = vi.fn(() => {
-    held = armCommit(2);
-  });
-  const result = Promise.resolve()
-    .then(() => f.store.collectScanCandidates(finalInstant, onError))
-    .finally(() => {
-      settled = true;
+it.each(['refusal', 'unknown'] as const)(
+  'holds actual Workspace mutation admission until the original native %s ACK settles',
+  async (outcome) => {
+    const f = await exhaustedFixture();
+    if (outcome === 'refusal') {
+      // Deliberate failure only after valid owner setup: the actual native stage cannot publish its cursor.
+      f.db.sqlite.exec(
+        `CREATE TRIGGER reject_scan_cursor BEFORE UPDATE ON recurring_schedules BEGIN SELECT RAISE(ABORT, 'test scan cursor refusal'); END;`
+      );
+    }
+    const original = coreRows(f.db);
+    f.db.sqlite.pragma('query_only = ON');
+    const observed = vi.spyOn(getControlStoreWorkerClient(), 'automationScanner');
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    let held: Int32Array | undefined;
+    let settled = false;
+    // The actual Main callback follows the plan ACK; arm only the subsequent publish COMMIT.
+    const onError = vi.fn(() => {
+      held = armCommit(2);
     });
-  void result.catch(() => undefined);
-  await vi.waitFor(() => expect(held && Atomics.load(held, 0)).toBe(1), { timeout: 5000 });
-  expect(Atomics.load(held!, 5)).toBe(2);
-  expect(onError).toHaveBeenCalledTimes(1);
-  expect(observed.mock.calls.map(([, input]) => input.action)).toEqual(['plan', 'publish']);
-  const committed = coreRows(f.db);
-  expect(settled).toBe(false);
-  // These are the real public gate operations; no spy supplies admission or release.
-  expect(f.gate.tryFreeze(definition.workspaceId, () => []).status).toBe('busy');
-  let closed = false;
-  const closing = f.gate.close(definition.workspaceId).then(() => {
-    closed = true;
-  });
-  await nextTurn();
-  expect(closed).toBe(false);
-  if (outcome === 'unknown') {
-    const call = posted.mock.calls.findIndex(
-      ([request]) =>
-        request?.operation === 'automation-scanner' && request.input?.action === 'publish'
-    );
-    if (call < 0) throw new Error('No actual scanner publication was posted.');
-    expect(committed).not.toEqual(original);
-    expect(f.store.getAutomation(f.exhausted.id).nextScheduledAt).toBeNull();
-    await (posted.mock.contexts[call] as Worker).terminate();
-    await expect(result).rejects.toMatchObject({ code: 'unavailable', commit: 'unknown' });
-    // Unknown is not rollback: preserve the exact committed rows observed before losing the reply.
+    const result = Promise.resolve()
+      .then(() => f.store.collectScanCandidates(finalInstant, onError))
+      .finally(() => {
+        settled = true;
+      });
+    void result.catch(() => undefined);
+    await vi.waitFor(() => expect(held && Atomics.load(held, 0)).toBe(1), { timeout: 5000 });
+    expect(Atomics.load(held!, 5)).toBe(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(observed.mock.calls.map(([, input]) => input.action)).toEqual(['plan', 'publish']);
+    const committed = coreRows(f.db);
+    expect(settled).toBe(false);
+    // These are the real public gate operations; no spy supplies admission or release.
+    expect(f.gate.tryFreeze(definition.workspaceId, () => []).status).toBe('busy');
+    let closed = false;
+    const closing = f.gate.close(definition.workspaceId).then(() => {
+      closed = true;
+    });
+    await nextTurn();
+    expect(closed).toBe(false);
+    if (outcome === 'unknown') {
+      const call = posted.mock.calls.findIndex(
+        ([request]) =>
+          request?.operation === 'automation-scanner' && request.input?.action === 'publish'
+      );
+      if (call < 0) throw new Error('No actual scanner publication was posted.');
+      expect(committed).not.toEqual(original);
+      expect(f.store.getAutomation(f.exhausted.id).nextScheduledAt).toBeNull();
+      await (posted.mock.contexts[call] as Worker).terminate();
+      await expect(result).rejects.toMatchObject({ code: 'unavailable', commit: 'unknown' });
+      // Unknown is not rollback: preserve the exact committed rows observed before losing the reply.
 
-    expect(coreRows(f.db)).toEqual(committed);
-  } else {
-    expect(committed).toEqual(original);
-    releaseCommit();
-    await expect(result).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
-    expect(coreRows(f.db)).toEqual(original);
+      expect(coreRows(f.db)).toEqual(committed);
+    } else {
+      expect(committed).toEqual(original);
+      releaseCommit();
+      await expect(result).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+      expect(coreRows(f.db)).toEqual(original);
+    }
+    await nextTurn();
+    expect(observed.mock.calls.map(([, input]) => input.action)).toEqual(['plan', 'publish']);
+    expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    await closing;
+    expect(closed).toBe(true);
+    f.gate.reopen(definition.workspaceId);
+    const freeze = f.gate.tryFreeze(definition.workspaceId, () => []);
+    expect(freeze.status).toBe('frozen');
+    if (freeze.status === 'frozen') freeze.release();
   }
-  await nextTurn();
-  expect(observed.mock.calls.map(([, input]) => input.action)).toEqual(['plan', 'publish']);
-  expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
-  await closing;
-  expect(closed).toBe(true);
-  f.gate.reopen(definition.workspaceId);
-  const freeze = f.gate.tryFreeze(definition.workspaceId, () => []);
-  expect(freeze.status).toBe('frozen');
-  if (freeze.status === 'frozen') freeze.release();
-});
+);

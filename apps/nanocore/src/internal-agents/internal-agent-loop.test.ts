@@ -111,88 +111,93 @@ describe('internal Agent loop', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('logs one safe warning per unexpected Tool failure with failing sink=%s', async (failingSink) => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
-      if (failingSink) throw new Error('Synthetic diagnostic sink failure.');
-    });
-    try {
-      const tool: AgentTool = {
-        name: 'environment.status',
-        description: 'Read admitted native state.',
-        inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
-        execute: async () => {
-          const error = Object.assign(new TypeError('exception-body-canary token=secret-canary'), {
-            code: 'token=code-value-canary',
-            body: 'result-body-canary',
+  it.each([false, true])(
+    'logs one safe warning per unexpected Tool failure with failing sink=%s',
+    async (failingSink) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+        if (failingSink) throw new Error('Synthetic diagnostic sink failure.');
+      });
+      try {
+        const tool: AgentTool = {
+          name: 'environment.status',
+          description: 'Read admitted native state.',
+          inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+          execute: async () => {
+            const error = Object.assign(
+              new TypeError('exception-body-canary token=secret-canary'),
+              {
+                code: 'token=code-value-canary',
+                body: 'result-body-canary',
+              }
+            );
+            error.stack =
+              'TypeError: exception-body-canary\n at /private/fixture/host-path-canary:1:1';
+            throw error;
+          },
+        };
+        const calls = ['unexpected-1', 'unexpected-2'];
+        const call = vi
+          .fn()
+          .mockResolvedValueOnce({
+            message: assistantMessage(
+              calls.map((callId) => ({
+                type: 'toolCall' as const,
+                callId,
+                name: tool.name,
+                arguments: { query: 'argument-body-canary' },
+              }))
+            ),
+          })
+          .mockResolvedValueOnce({
+            message: assistantMessage([{ type: 'text', text: 'Stopped.' }]),
           });
-          error.stack =
-            'TypeError: exception-body-canary\n at /private/fixture/host-path-canary:1:1';
-          throw error;
-        },
-      };
-      const calls = ['unexpected-1', 'unexpected-2'];
-      const call = vi
-        .fn()
-        .mockResolvedValueOnce({
-          message: assistantMessage(
-            calls.map((callId) => ({
-              type: 'toolCall' as const,
-              callId,
-              name: tool.name,
-              arguments: { query: 'argument-body-canary' },
-            }))
-          ),
-        })
-        .mockResolvedValueOnce({ message: assistantMessage([{ type: 'text', text: 'Stopped.' }]) });
-      const result = await runInternalAgentLoop(input([tool]), call);
-      expect(result.kind).toBe('quiescent');
-      const feedback = call.mock.calls[1]?.[0].messages.filter(
-        (message: AgentMessage) => message.role === 'tool'
-      );
-      // MEM-1 preserves the existing model-visible unexpected-failure observation verbatim.
-      expect(feedback).toEqual(
-        calls.map((callId) => ({
-          role: 'tool',
-          callId,
-          isError: true,
-          content: [{ type: 'text', text: 'The Tool failed without a safe result.' }],
-        }))
-      );
-      expect(warn).toHaveBeenCalledTimes(2);
-      const records = warn.mock.calls.map(warningRecord);
-      const correlations = records.map(warningCallCorrelation);
-      expect(new Set(correlations).size).toBe(calls.length);
-      for (const record of records) {
-        const values = JSON.stringify(record);
-        expect(values).toContain(model.logicalModelId);
-        expect(values).toContain(tool.name);
-        expect(values).toContain('TypeError');
+        const result = await runInternalAgentLoop(input([tool]), call);
+        expect(result.kind).toBe('quiescent');
+        const feedback = call.mock.calls[1]?.[0].messages.filter(
+          (message: AgentMessage) => message.role === 'tool'
+        );
+        // MEM-1 preserves the existing model-visible unexpected-failure observation verbatim.
+        expect(feedback).toEqual(
+          calls.map((callId) => ({
+            role: 'tool',
+            callId,
+            isError: true,
+            content: [{ type: 'text', text: 'The Tool failed without a safe result.' }],
+          }))
+        );
+        expect(warn).toHaveBeenCalledTimes(2);
+        const records = warn.mock.calls.map(warningRecord);
+        const correlations = records.map(warningCallCorrelation);
+        expect(new Set(correlations).size).toBe(calls.length);
+        for (const record of records) {
+          const values = JSON.stringify(record);
+          expect(values).toContain(model.logicalModelId);
+          expect(values).toContain(tool.name);
+          expect(values).toContain('TypeError');
+        }
+        // The Log Contract permits a fixed event code, not arbitrary exception properties.
+        const eventCodes = records.map((record) =>
+          Object.entries(record)
+            .filter(([key, value]) => /(?:code|event)/i.test(key) && typeof value === 'string')
+            .map(([, value]) => value)
+        );
+        expect(eventCodes[0]?.length).toBeGreaterThan(0);
+        expect(eventCodes[1]).toEqual(eventCodes[0]);
+        const logged = JSON.stringify(warn.mock.calls);
+        for (const canary of [
+          'argument-body-canary',
+          'result-body-canary',
+          'exception-body-canary',
+          'secret-canary',
+          'code-value-canary',
+          '/private/fixture/host-path-canary',
+        ])
+          expect(logged).not.toContain(canary);
+      } finally {
+        warn.mockRestore();
       }
-      // The Log Contract permits a fixed event code, not arbitrary exception properties.
-      const eventCodes = records.map((record) =>
-        Object.entries(record)
-          .filter(([key, value]) => /(?:code|event)/i.test(key) && typeof value === 'string')
-          .map(([, value]) => value)
-      );
-      expect(eventCodes[0]?.length).toBeGreaterThan(0);
-      expect(eventCodes[1]).toEqual(eventCodes[0]);
-      const logged = JSON.stringify(warn.mock.calls);
-      for (const canary of [
-        'argument-body-canary',
-        'result-body-canary',
-        'exception-body-canary',
-        'secret-canary',
-        'code-value-canary',
-        '/private/fixture/host-path-canary',
-      ])
-        expect(logged).not.toContain(canary);
-    } finally {
-      warn.mockRestore();
     }
-  });
+  );
 
   it('keeps hostile provider call IDs out of warnings while retaining deterministic call correlation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -523,43 +528,42 @@ describe('internal Agent loop', () => {
     expect(calls).toBe(1);
   });
 
-  it.each([
-    'quiescent',
-    'failed',
-    'limit_reached',
-  ] as const)('ignores saved text callbacks after a %s exit', async (kind) => {
-    vi.useFakeTimers();
-    try {
-      let emit!: NonNullable<InternalAgentProviderRequest['onTextIncrement']>;
-      const onTextIncrement = vi.fn();
-      const call = vi.fn(async (request: InternalAgentProviderRequest) => {
-        emit = request.onTextIncrement!;
-        emit('Before exit.');
-        if (kind === 'failed') throw new Error('Provider failed.');
-        return {
-          message: assistantMessage(
-            kind === 'limit_reached'
-              ? [{ type: 'toolCall', callId: 'unknown', name: 'unavailable', arguments: {} }]
-              : [{ type: 'text', text: 'Done.' }]
-          ),
-        };
-      });
-      const initial = input();
+  it.each(['quiescent', 'failed', 'limit_reached'] as const)(
+    'ignores saved text callbacks after a %s exit',
+    async (kind) => {
+      vi.useFakeTimers();
+      try {
+        let emit!: NonNullable<InternalAgentProviderRequest['onTextIncrement']>;
+        const onTextIncrement = vi.fn();
+        const call = vi.fn(async (request: InternalAgentProviderRequest) => {
+          emit = request.onTextIncrement!;
+          emit('Before exit.');
+          if (kind === 'failed') throw new Error('Provider failed.');
+          return {
+            message: assistantMessage(
+              kind === 'limit_reached'
+                ? [{ type: 'toolCall', callId: 'unknown', name: 'unavailable', arguments: {} }]
+                : [{ type: 'text', text: 'Done.' }]
+            ),
+          };
+        });
+        const initial = input();
 
-      const result = await runInternalAgentLoop(
-        { ...initial, limits: { ...initial.limits, maxModelTurns: 1 }, onTextIncrement },
-        call
-      );
-      emit('After exit.');
+        const result = await runInternalAgentLoop(
+          { ...initial, limits: { ...initial.limits, maxModelTurns: 1 }, onTextIncrement },
+          call
+        );
+        emit('After exit.');
 
-      expect(result.kind).toBe(kind);
-      expect(call).toHaveBeenCalledTimes(1);
-      expect(onTextIncrement.mock.calls).toEqual([['Before exit.']]);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
+        expect(result.kind).toBe(kind);
+        expect(call).toHaveBeenCalledTimes(1);
+        expect(onTextIncrement.mock.calls).toEqual([['Before exit.']]);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 
   it('keeps the first cancellation cause when a deadline precedes caller cancellation', async () => {
     const controller = new AbortController();

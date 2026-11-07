@@ -69,18 +69,18 @@ it('delivers one bounded excerpt while streaming every original byte for admissi
   expect(Buffer.concat(chunks)).toEqual(Buffer.from(content));
 });
 
-it.each([
-  '',
-  '\ufefforiginal\r\n',
-])('retains exact small original text without normalization', async (content) => {
-  const prepared = await prepareMaterialSourceInput(fixture(content).input);
-  expect(Buffer.from(prepared.source.deliveredBytes)).toEqual(Buffer.from(content));
-  expect(prepared.source.projection).toMatchObject({
-    kind: 'body',
-    availability: 'available',
-    truncated: false,
-  });
-});
+it.each(['', '\ufefforiginal\r\n'])(
+  'retains exact small original text without normalization',
+  async (content) => {
+    const prepared = await prepareMaterialSourceInput(fixture(content).input);
+    expect(Buffer.from(prepared.source.deliveredBytes)).toEqual(Buffer.from(content));
+    expect(prepared.source.projection).toMatchObject({
+      kind: 'body',
+      availability: 'available',
+      truncated: false,
+    });
+  }
+);
 
 it('captures immutable selected metadata and does not expose its backing original to consumers', async () => {
   const state = fixture('original');
@@ -114,28 +114,26 @@ it('refuses revoked source authority and cancellation before supplying more byte
   ).rejects.toThrow(/revoked/);
 });
 
-it.each([
-  'digest',
-  'restricted',
-  'invalid_unicode',
-  'resource_bound',
-] as const)('refuses %s without a full-body fallback', async (kind) => {
-  const state = fixture('original');
-  const changes =
-    kind === 'digest'
-      ? { contentDigest: sha256(Buffer.from('other')) }
-      : kind === 'restricted'
-        ? { sensitivity: 'restricted' }
-        : kind === 'invalid_unicode'
-          ? { content: '\ud800', contentDigest: sha256(Buffer.from('\ud800')) }
-          : { content: 'x'.repeat(16_777_217) };
-  await expect(
-    prepareMaterialSourceInput({
-      ...state.input,
-      selection: { ...state.selection, ...changes } as WorkerContextPackageMaterialSelectionInput,
-    })
-  ).rejects.toThrow();
-});
+it.each(['digest', 'restricted', 'invalid_unicode', 'resource_bound'] as const)(
+  'refuses %s without a full-body fallback',
+  async (kind) => {
+    const state = fixture('original');
+    const changes =
+      kind === 'digest'
+        ? { contentDigest: sha256(Buffer.from('other')) }
+        : kind === 'restricted'
+          ? { sensitivity: 'restricted' }
+          : kind === 'invalid_unicode'
+            ? { content: '\ud800', contentDigest: sha256(Buffer.from('\ud800')) }
+            : { content: 'x'.repeat(16_777_217) };
+    await expect(
+      prepareMaterialSourceInput({
+        ...state.input,
+        selection: { ...state.selection, ...changes } as WorkerContextPackageMaterialSelectionInput,
+      })
+    ).rejects.toThrow();
+  }
+);
 
 /** An independent digest of exact fixture or observed bytes. */
 function sha256(bytes: Uint8Array): string {

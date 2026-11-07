@@ -17,59 +17,61 @@ import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
 import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
 
 describe('worker MCP gateway', () => {
-  it.each([
-    '$id',
-    '$ref',
-  ] as const)('refuses invalid output %s before target contact and keeps a valid sibling usable', async (outputSchemaFault) => {
-    const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
-    const gateway = createDefaultWorkerMcpGateway();
-    const server = httpTestServer(upstream.url, 2_000);
-    const input = { server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
-    try {
-      const listed = await gateway.listTools(input);
-      expect(listed.tools.map((tool) => tool.name)).toEqual(['echo', 'valid-sibling']);
-      expect(listed.tools.find((tool) => tool.name === 'echo')?.outputSchema).toMatchObject({
-        [outputSchemaFault]: '1invalid://sdk-schema-canary',
-      });
-      // The real sibling recovery populates the SDK cache; Gateway discovery deliberately bypasses it.
-      const sibling = await gateway.callTool({
-        ...input,
-        arguments: { message: 'valid sibling' },
-        toolName: 'valid-sibling',
-      });
-      expect(sibling.structuredContent).toEqual({ message: 'valid sibling' });
-      expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
-        'handler|tools/call|valid-sibling',
-        'handler|tools/call|valid-sibling',
-      ]);
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
-        2
-      );
-      const beforeBadCall = upstream.observed.length;
-      const failure = await gateway
-        .callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
-        .catch((error: unknown) => error);
-      expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
-      expect(
-        upstream.observed.slice(beforeBadCall).filter((request) => request.endsWith('|tools/call'))
-      ).toEqual([]);
-      expect(upstream.observed.filter((request) => request === 'handler|tools/call|echo')).toEqual(
-        []
-      );
-      // Worker MCP error normalization distinguishes this target from earlier sibling/discovery contact.
-      expect(failure).toMatchObject({
-        code: 'mcp-server-unavailable',
-        message: 'MCP server is unavailable.',
-        status: 503,
-        upstreamEffect: 'not-contacted',
-      });
-      expect(JSON.stringify(failure)).not.toContain('sdk-schema-canary');
-      expect(gateway.getServerHealth(input)).toBe('degraded');
-    } finally {
-      await gateway.close();
-      await upstream.close();
+  it.each(['$id', '$ref'] as const)(
+    'refuses invalid output %s before target contact and keeps a valid sibling usable',
+    async (outputSchemaFault) => {
+      const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
+      const gateway = createDefaultWorkerMcpGateway();
+      const server = httpTestServer(upstream.url, 2_000);
+      const input = { server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
+      try {
+        const listed = await gateway.listTools(input);
+        expect(listed.tools.map((tool) => tool.name)).toEqual(['echo', 'valid-sibling']);
+        expect(listed.tools.find((tool) => tool.name === 'echo')?.outputSchema).toMatchObject({
+          [outputSchemaFault]: '1invalid://sdk-schema-canary',
+        });
+        // The real sibling recovery populates the SDK cache; Gateway discovery deliberately bypasses it.
+        const sibling = await gateway.callTool({
+          ...input,
+          arguments: { message: 'valid sibling' },
+          toolName: 'valid-sibling',
+        });
+        expect(sibling.structuredContent).toEqual({ message: 'valid sibling' });
+        expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
+          'handler|tools/call|valid-sibling',
+          'handler|tools/call|valid-sibling',
+        ]);
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+          2
+        );
+        const beforeBadCall = upstream.observed.length;
+        const failure = await gateway
+          .callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
+          .catch((error: unknown) => error);
+        expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
+        expect(
+          upstream.observed
+            .slice(beforeBadCall)
+            .filter((request) => request.endsWith('|tools/call'))
+        ).toEqual([]);
+        expect(
+          upstream.observed.filter((request) => request === 'handler|tools/call|echo')
+        ).toEqual([]);
+        // Worker MCP error normalization distinguishes this target from earlier sibling/discovery contact.
+        expect(failure).toMatchObject({
+          code: 'mcp-server-unavailable',
+          message: 'MCP server is unavailable.',
+          status: 503,
+          upstreamEffect: 'not-contacted',
+        });
+        expect(JSON.stringify(failure)).not.toContain('sdk-schema-canary');
+        expect(gateway.getServerHealth(input)).toBe('degraded');
+      } finally {
+        await gateway.close();
+        await upstream.close();
+      }
     }
-  });
+  );
 
   it('keeps an actual header-mismatch call contacted when refreshed output compilation fails', async () => {
     const upstream = await createMcpHttpStub({
@@ -182,81 +184,81 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it.each([
-    'same-origin',
-    'cross-origin',
-  ] as const)('refuses %s MCP redirects before forwarding headers or a body', async (destination) => {
-    const targetRequests: string[] = [];
-    const sourceHeaders: Array<import('node:http').IncomingHttpHeaders> = [];
-    let targetUrl = '';
-    const http = createServer((request, response) => {
-      if (request.url === '/target') {
-        targetRequests.push(request.url);
-        response.writeHead(500).end('Unexpected redirect target contact.');
-        return;
+  it.each(['same-origin', 'cross-origin'] as const)(
+    'refuses %s MCP redirects before forwarding headers or a body',
+    async (destination) => {
+      const targetRequests: string[] = [];
+      const sourceHeaders: Array<import('node:http').IncomingHttpHeaders> = [];
+      let targetUrl = '';
+      const http = createServer((request, response) => {
+        if (request.url === '/target') {
+          targetRequests.push(request.url);
+          response.writeHead(500).end('Unexpected redirect target contact.');
+          return;
+        }
+        sourceHeaders.push(request.headers);
+        response.writeHead(307, { location: targetUrl }).end();
+      });
+      const target =
+        destination === 'same-origin'
+          ? http
+          : createServer((request, response) => {
+              targetRequests.push(request.url ?? '');
+              response.writeHead(500).end('Unexpected redirect target contact.');
+            });
+      http.listen(0, '127.0.0.1');
+      await once(http, 'listening');
+      if (target !== http) {
+        target.listen(0, '127.0.0.1');
+        await once(target, 'listening');
       }
-      sourceHeaders.push(request.headers);
-      response.writeHead(307, { location: targetUrl }).end();
-    });
-    const target =
-      destination === 'same-origin'
-        ? http
-        : createServer((request, response) => {
-            targetRequests.push(request.url ?? '');
-            response.writeHead(500).end('Unexpected redirect target contact.');
-          });
-    http.listen(0, '127.0.0.1');
-    await once(http, 'listening');
-    if (target !== http) {
-      target.listen(0, '127.0.0.1');
-      await once(target, 'listening');
+      const originAddress = http.address();
+      const targetAddress = target.address();
+      if (
+        !originAddress ||
+        typeof originAddress === 'string' ||
+        !targetAddress ||
+        typeof targetAddress === 'string'
+      )
+        throw new Error('Redirect fixture did not bind.');
+      targetUrl = `http://127.0.0.1:${targetAddress.port}/target`;
+      const { coreDb, gateway } = await createAuditedGateway();
+      const server = httpTestServer(`http://127.0.0.1:${originAddress.port}/mcp`, 2_000);
+      server.transport = {
+        kind: 'http',
+        endpoint: `http://127.0.0.1:${originAddress.port}/mcp`,
+        headers: { 'x-fixed-canary': 'fixed-only-at-source' },
+      };
+      try {
+        await expect(
+          gateway.callTool({
+            arguments: { message: 'body-only-at-source' },
+            credentials: { bearer: 'synthetic-redirect-canary' },
+            server,
+            toolName: 'echo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).rejects.toMatchObject({
+          code: 'mcp-server-unavailable',
+          message: 'MCP server is unavailable.',
+        });
+        expect(sourceHeaders.length).toBeGreaterThan(0);
+        expect(sourceHeaders[0]).toMatchObject({
+          authorization: 'Bearer synthetic-redirect-canary',
+          'x-fixed-canary': 'fixed-only-at-source',
+        });
+        // MCP Catalog Management forbids any redirect target contact, even on the same origin.
+        expect(targetRequests).toEqual([]);
+      } finally {
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { force: true, recursive: true });
+        await new Promise<void>((resolve) => http.close(() => resolve()));
+        if (target !== http) await new Promise<void>((resolve) => target.close(() => resolve()));
+      }
     }
-    const originAddress = http.address();
-    const targetAddress = target.address();
-    if (
-      !originAddress ||
-      typeof originAddress === 'string' ||
-      !targetAddress ||
-      typeof targetAddress === 'string'
-    )
-      throw new Error('Redirect fixture did not bind.');
-    targetUrl = `http://127.0.0.1:${targetAddress.port}/target`;
-    const { coreDb, gateway } = await createAuditedGateway();
-    const server = httpTestServer(`http://127.0.0.1:${originAddress.port}/mcp`, 2_000);
-    server.transport = {
-      kind: 'http',
-      endpoint: `http://127.0.0.1:${originAddress.port}/mcp`,
-      headers: { 'x-fixed-canary': 'fixed-only-at-source' },
-    };
-    try {
-      await expect(
-        gateway.callTool({
-          arguments: { message: 'body-only-at-source' },
-          credentials: { bearer: 'synthetic-redirect-canary' },
-          server,
-          toolName: 'echo',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toMatchObject({
-        code: 'mcp-server-unavailable',
-        message: 'MCP server is unavailable.',
-      });
-      expect(sourceHeaders.length).toBeGreaterThan(0);
-      expect(sourceHeaders[0]).toMatchObject({
-        authorization: 'Bearer synthetic-redirect-canary',
-        'x-fixed-canary': 'fixed-only-at-source',
-      });
-      // MCP Catalog Management forbids any redirect target contact, even on the same origin.
-      expect(targetRequests).toEqual([]);
-    } finally {
-      await gateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { force: true, recursive: true });
-      await new Promise<void>((resolve) => http.close(() => resolve()));
-      if (target !== http) await new Promise<void>((resolve) => target.close(() => resolve()));
-    }
-  });
+  );
 
   it('sends exactly one SDK bearer Authorization value over a mixed-case fixed header', async () => {
     const upstream = await createMcpHttpStub();
@@ -293,184 +295,180 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it.each([
-    'Authorization',
-    'X-API-Key',
-  ])('replaces a mixed-case ordinary %s header with exact raw Vault bytes', async (name) => {
-    const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = await createAuditedGateway();
-    const server = httpTestServer(upstream.url, 2_000);
-    server.transport = {
-      kind: 'http',
-      endpoint: upstream.url,
-      headers: { [name.toLowerCase()]: 'ordinary-placeholder' },
-    };
-    try {
-      await gateway.listTools({
-        credentials: { headers: { [name]: 'raw-"quoted\\slash-canary' } },
-        server,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      expect(upstream.observedHeaders.length).toBeGreaterThan(0);
-      expect(
-        upstream.observedHeaders.every(
-          (headers) => headers.get(name) === 'raw-"quoted\\slash-canary'
-        )
-      ).toBe(true);
-    } finally {
-      await gateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { force: true, recursive: true });
-      await upstream.close();
-    }
-  });
-
-  it.each([
-    'raw',
-    'complete',
-    'query-encoded',
-  ] as const)('refuses a tool list echoing the %s credential value', async (form) => {
-    const canary = 'synthetic-canary/with+encoding=';
-    const encoded = new URLSearchParams({ token: canary }).toString().slice('token='.length);
-    const echo = form === 'raw' ? canary : form === 'complete' ? `Bearer ${canary}` : encoded;
-    const upstream = await createMcpHttpStub({ credentialListEcho: echo });
-    const { coreDb, gateway } = await createAuditedGateway();
-    try {
-      await expect(
-        gateway.listTools({
-          credentials: {
-            bearer: canary,
-            ...(form === 'query-encoded' ? { query: { token: canary } } : {}),
-          },
-          server: httpTestServer(upstream.url, 2_000),
+  it.each(['Authorization', 'X-API-Key'])(
+    'replaces a mixed-case ordinary %s header with exact raw Vault bytes',
+    async (name) => {
+      const upstream = await createMcpHttpStub();
+      const { coreDb, gateway } = await createAuditedGateway();
+      const server = httpTestServer(upstream.url, 2_000);
+      server.transport = {
+        kind: 'http',
+        endpoint: upstream.url,
+        headers: { [name.toLowerCase()]: 'ordinary-placeholder' },
+      };
+      try {
+        await gateway.listTools({
+          credentials: { headers: { [name]: 'raw-"quoted\\slash-canary' } },
+          server,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
-    } finally {
-      await gateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { force: true, recursive: true });
-      await upstream.close();
+        });
+        expect(upstream.observedHeaders.length).toBeGreaterThan(0);
+        expect(
+          upstream.observedHeaders.every(
+            (headers) => headers.get(name) === 'raw-"quoted\\slash-canary'
+          )
+        ).toBe(true);
+      } finally {
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { force: true, recursive: true });
+        await upstream.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    'raw',
-    'complete',
-    'query-encoded',
-  ] as const)('refuses result text and keys echoing the %s credential value', async (form) => {
-    const canary = 'synthetic-canary/with+encoding=';
-    const echo =
-      form === 'raw'
-        ? canary
-        : form === 'complete'
-          ? `Bearer ${canary}`
-          : new URLSearchParams({ token: canary }).toString().slice('token='.length);
-    const upstream = await createMcpHttpStub({ credentialEcho: echo });
-    const { coreDb, gateway } = await createAuditedGateway();
-    try {
-      for (const message of ['leak', 'key-leak']) {
+  it.each(['raw', 'complete', 'query-encoded'] as const)(
+    'refuses a tool list echoing the %s credential value',
+    async (form) => {
+      const canary = 'synthetic-canary/with+encoding=';
+      const encoded = new URLSearchParams({ token: canary }).toString().slice('token='.length);
+      const echo = form === 'raw' ? canary : form === 'complete' ? `Bearer ${canary}` : encoded;
+      const upstream = await createMcpHttpStub({ credentialListEcho: echo });
+      const { coreDb, gateway } = await createAuditedGateway();
+      try {
         await expect(
-          gateway.callTool({
-            arguments: { message },
+          gateway.listTools({
             credentials: {
               bearer: canary,
               ...(form === 'query-encoded' ? { query: { token: canary } } : {}),
             },
             server: httpTestServer(upstream.url, 2_000),
-            toolName: 'echo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+      } finally {
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { force: true, recursive: true });
+        await upstream.close();
+      }
+    }
+  );
+
+  it.each(['raw', 'complete', 'query-encoded'] as const)(
+    'refuses result text and keys echoing the %s credential value',
+    async (form) => {
+      const canary = 'synthetic-canary/with+encoding=';
+      const echo =
+        form === 'raw'
+          ? canary
+          : form === 'complete'
+            ? `Bearer ${canary}`
+            : new URLSearchParams({ token: canary }).toString().slice('token='.length);
+      const upstream = await createMcpHttpStub({ credentialEcho: echo });
+      const { coreDb, gateway } = await createAuditedGateway();
+      try {
+        for (const message of ['leak', 'key-leak']) {
+          await expect(
+            gateway.callTool({
+              arguments: { message },
+              credentials: {
+                bearer: canary,
+                ...(form === 'query-encoded' ? { query: { token: canary } } : {}),
+              },
+              server: httpTestServer(upstream.url, 2_000),
+              toolName: 'echo',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            })
+          ).rejects.toMatchObject({
+            code: 'mcp-call-failed',
+            upstreamEffect: 'contacted',
+            credentialsMaterialized: true,
+          });
+        }
+        expect(
+          upstream.observedHeaders.every(
+            (headers) => headers.get('authorization') === `Bearer ${canary}`
+          )
+        ).toBe(true);
+        if (form === 'query-encoded')
+          expect(upstream.observed.every((request) => request.split('|')[1] === canary)).toBe(true);
+      } finally {
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { force: true, recursive: true });
+        await upstream.close();
+      }
+    }
+  );
+
+  it.each(['', 'canary\r\ninvalid', 'canary\0invalid', 'canary\u0100invalid', 'canary '])(
+    'refuses invalid bearer material %j before upstream contact',
+    async (bearer) => {
+      const upstream = await createMcpHttpStub();
+      const { coreDb, gateway } = await createAuditedGateway();
+      try {
+        await expect(
+          gateway.listTools({
+            credentials: { bearer },
+            server: httpTestServer(upstream.url, 2_000),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+        expect(upstream.observed).toEqual([]);
+      } finally {
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { force: true, recursive: true });
+        await upstream.close();
+      }
+    }
+  );
+
+  it.each([401, 403])(
+    'makes one request and no metadata request after static bearer HTTP %s',
+    async (status) => {
+      const requests: Array<{ authorization: string | undefined; url: string | undefined }> = [];
+      const http = createServer((request, response) => {
+        requests.push({ authorization: request.headers.authorization, url: request.url });
+        response.writeHead(status, {
+          'www-authenticate': `Bearer error="${status === 403 ? 'insufficient_scope' : 'invalid_token'}", resource_metadata="http://${request.headers.host}/metadata", scope="extra"`,
+        });
+        response.end('Synthetic static authentication refusal.');
+      });
+      http.listen(0, '127.0.0.1');
+      await once(http, 'listening');
+      const address = http.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Synthetic HTTP server did not bind.');
+      const { coreDb, gateway } = await createAuditedGateway();
+      try {
+        await expect(
+          gateway.listTools({
+            credentials: { bearer: 'static-auth-canary' },
+            server: httpTestServer(`http://127.0.0.1:${address.port}/mcp`, 2_000),
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
         ).rejects.toMatchObject({
-          code: 'mcp-call-failed',
-          upstreamEffect: 'contacted',
-          credentialsMaterialized: true,
+          code: 'mcp-server-unavailable',
+          message: 'MCP server is unavailable.',
         });
+        expect(requests).toEqual([{ authorization: 'Bearer static-auth-canary', url: '/mcp' }]);
+      } finally {
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { force: true, recursive: true });
+        await new Promise<void>((resolve, reject) =>
+          http.close((error) => (error ? reject(error) : resolve()))
+        );
       }
-      expect(
-        upstream.observedHeaders.every(
-          (headers) => headers.get('authorization') === `Bearer ${canary}`
-        )
-      ).toBe(true);
-      if (form === 'query-encoded')
-        expect(upstream.observed.every((request) => request.split('|')[1] === canary)).toBe(true);
-    } finally {
-      await gateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { force: true, recursive: true });
-      await upstream.close();
     }
-  });
-
-  it.each([
-    '',
-    'canary\r\ninvalid',
-    'canary\0invalid',
-    'canary\u0100invalid',
-    'canary ',
-  ])('refuses invalid bearer material %j before upstream contact', async (bearer) => {
-    const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = await createAuditedGateway();
-    try {
-      await expect(
-        gateway.listTools({
-          credentials: { bearer },
-          server: httpTestServer(upstream.url, 2_000),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
-      expect(upstream.observed).toEqual([]);
-    } finally {
-      await gateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { force: true, recursive: true });
-      await upstream.close();
-    }
-  });
-
-  it.each([
-    401, 403,
-  ])('makes one request and no metadata request after static bearer HTTP %s', async (status) => {
-    const requests: Array<{ authorization: string | undefined; url: string | undefined }> = [];
-    const http = createServer((request, response) => {
-      requests.push({ authorization: request.headers.authorization, url: request.url });
-      response.writeHead(status, {
-        'www-authenticate': `Bearer error="${status === 403 ? 'insufficient_scope' : 'invalid_token'}", resource_metadata="http://${request.headers.host}/metadata", scope="extra"`,
-      });
-      response.end('Synthetic static authentication refusal.');
-    });
-    http.listen(0, '127.0.0.1');
-    await once(http, 'listening');
-    const address = http.address();
-    if (!address || typeof address === 'string')
-      throw new Error('Synthetic HTTP server did not bind.');
-    const { coreDb, gateway } = await createAuditedGateway();
-    try {
-      await expect(
-        gateway.listTools({
-          credentials: { bearer: 'static-auth-canary' },
-          server: httpTestServer(`http://127.0.0.1:${address.port}/mcp`, 2_000),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toMatchObject({
-        code: 'mcp-server-unavailable',
-        message: 'MCP server is unavailable.',
-      });
-      expect(requests).toEqual([{ authorization: 'Bearer static-auth-canary', url: '/mcp' }]);
-    } finally {
-      await gateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { force: true, recursive: true });
-      await new Promise<void>((resolve, reject) =>
-        http.close((error) => (error ? reject(error) : resolve()))
-      );
-    }
-  });
+  );
 
   it('canonicalizes tool order and nested schema keys for snapshot identity', () => {
     const first = [
@@ -722,31 +720,34 @@ describe('worker MCP gateway', () => {
   it.each([
     ['semantic result', 512 * 1024],
     ['native response envelope', 1024 * 1024],
-  ] as const)('rejects an oversized tools/list %s without truncation or tool contact', async (_boundary, bytes) => {
-    const upstream = await createMcpHttpStub({ credentialListEcho: 'a'.repeat(bytes) });
-    const gateway = createDefaultWorkerMcpGateway();
-    try {
-      await expect
-        .soft(
-          gateway.listTools({
-            server: httpTestServer(upstream.url, 2_000),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })
-        )
-        .rejects.toMatchObject({
-          code: 'mcp-result-too-large',
-          status: 413,
-          upstreamEffect: 'contacted',
-          message: expect.stringMatching(/artifacts.*data plane/i),
-        });
-      expect(upstream.observed.some((request) => request.endsWith('|initialize'))).toBe(true);
-      expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
-      expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(false);
-    } finally {
-      await gateway.close();
-      await upstream.close();
+  ] as const)(
+    'rejects an oversized tools/list %s without truncation or tool contact',
+    async (_boundary, bytes) => {
+      const upstream = await createMcpHttpStub({ credentialListEcho: 'a'.repeat(bytes) });
+      const gateway = createDefaultWorkerMcpGateway();
+      try {
+        await expect
+          .soft(
+            gateway.listTools({
+              server: httpTestServer(upstream.url, 2_000),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            })
+          )
+          .rejects.toMatchObject({
+            code: 'mcp-result-too-large',
+            status: 413,
+            upstreamEffect: 'contacted',
+            message: expect.stringMatching(/artifacts.*data plane/i),
+          });
+        expect(upstream.observed.some((request) => request.endsWith('|initialize'))).toBe(true);
+        expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
+        expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(false);
+      } finally {
+        await gateway.close();
+        await upstream.close();
+      }
     }
-  });
+  );
 
   it('rejects a chunked HTTP result at the transport byte boundary', async () => {
     const upstream = await createMcpHttpStub({ chunkedCallResultBytes: 1024 * 1024 });

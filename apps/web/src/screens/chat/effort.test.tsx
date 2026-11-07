@@ -317,37 +317,37 @@ describe.each([
     });
   });
 
-  it.each([
-    undefined,
-    'high',
-  ] as const)('has no preselection or submitted effort when the last effort %s is not advertised', async (reasoningEffort) => {
-    const user = userEvent.setup();
-    const catalog = effortCatalog();
-    catalog.targets.forEach((target) => {
-      target.defaultLogicalModelId = 'restricted';
-    });
-    const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
-    renderApp(
-      path,
-      makeClient(
-        {},
-        {
-          'conversation.targets': vi.fn().mockResolvedValue(catalog),
-          'thread.dashboard': vi
-            .fn()
-            .mockResolvedValue({ turns: [{ ...COMPLETED_TURN, reasoningEffort }] }),
-          'conversation.submit': submitConversation,
-        }
-      )
-    );
-    expect(await screen.findByRole('button', { name: /Reasoning effort/ })).toHaveTextContent(
-      'Effort'
-    );
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'No override');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(submitConversation.mock.calls[0]?.[0]).not.toHaveProperty('reasoningEffort');
-  });
+  it.each([undefined, 'high'] as const)(
+    'has no preselection or submitted effort when the last effort %s is not advertised',
+    async (reasoningEffort) => {
+      const user = userEvent.setup();
+      const catalog = effortCatalog();
+      catalog.targets.forEach((target) => {
+        target.defaultLogicalModelId = 'restricted';
+      });
+      const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
+      renderApp(
+        path,
+        makeClient(
+          {},
+          {
+            'conversation.targets': vi.fn().mockResolvedValue(catalog),
+            'thread.dashboard': vi
+              .fn()
+              .mockResolvedValue({ turns: [{ ...COMPLETED_TURN, reasoningEffort }] }),
+            'conversation.submit': submitConversation,
+          }
+        )
+      );
+      expect(await screen.findByRole('button', { name: /Reasoning effort/ })).toHaveTextContent(
+        'Effort'
+      );
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'No override');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+      expect(submitConversation.mock.calls[0]?.[0]).not.toHaveProperty('reasoningEffort');
+    }
+  );
 
   it('drops an incompatible choice on model change and derives preselection from this Thread', async () => {
     const user = userEvent.setup();
@@ -408,83 +408,90 @@ describe.each([
   it.each([
     ['failure', new ApiCallError(409, 'Busy', { code: 'target_busy' })],
     ['uncertainty', new TypeError('Transport closed')],
-  ])('retains the entire %s request across a catalog refresh and exact retry', async (_kind, error) => {
-    const user = userEvent.setup();
-    const pending = createDeferred<unknown>();
-    const submitConversation = vi
-      .fn()
-      .mockReturnValueOnce(pending.promise)
-      .mockRejectedValue(error);
-    let catalog = effortCatalog();
-    const getConversationTargets = vi.fn().mockImplementation(() => Promise.resolve(catalog));
-    const createThread = vi
-      .fn()
-      .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
-    const cache = renderApp(
-      path,
-      makeClient(
-        {
-          'thread.create': createThread,
-          'thread.read': vi.fn().mockResolvedValue({
-            ...THREAD,
-            id:
-              surface === 'starter'
-                ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
-                : 'th_00000000-0000-70a0-9cde-4561f64881c6',
-          }),
-          'artifact.list': vi.fn().mockResolvedValue({
-            items: [{ id: 'ar_00000000-0000-7bc1-85a3-6c0dfcf6ab5d', version: 2, title: 'Brief' }],
-          }),
-        },
-        {
-          'conversation.targets': getConversationTargets,
-          'conversation.submit': submitConversation,
-        }
-      )
-    );
-    await chooseEffort(user, 'High');
-    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
-    await user.click(await screen.findByRole('button', { name: 'Brief' }));
-    await user.keyboard('{Escape}');
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Exact draft  ');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    const first = submitConversation.mock.calls[0];
-    expect(first?.[0]).toEqual({
-      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-      threadId:
-        path === '/chat'
-          ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
-          : 'th_00000000-0000-70a0-9cde-4561f64881c6',
-      input: 'Exact draft  ',
-      targetRef: 'internal-role:assistant',
-      logicalModelId: 'reasoner',
-      reasoningEffort: 'high',
-      artifactRefs: [{ artifactId: 'ar_00000000-0000-7bc1-85a3-6c0dfcf6ab5d', artifactVersion: 2 }],
-      requestId: expect.any(String),
-    });
-    expect(await screen.findByRole('button', { name: 'Send message' })).toBeDisabled();
-    catalog = effortCatalog();
-    catalog.targets.forEach((target) => {
-      target.logicalModels = target.logicalModels.map((model) =>
-        model.id === 'reasoner' ? { ...model, reasoningEffortLevels: ['low'] } : model
+  ])(
+    'retains the entire %s request across a catalog refresh and exact retry',
+    async (_kind, error) => {
+      const user = userEvent.setup();
+      const pending = createDeferred<unknown>();
+      const submitConversation = vi
+        .fn()
+        .mockReturnValueOnce(pending.promise)
+        .mockRejectedValue(error);
+      let catalog = effortCatalog();
+      const getConversationTargets = vi.fn().mockImplementation(() => Promise.resolve(catalog));
+      const createThread = vi
+        .fn()
+        .mockResolvedValue({ ...THREAD, id: 'th_00000000-0000-75c2-bada-0a01c17d153e' });
+      const cache = renderApp(
+        path,
+        makeClient(
+          {
+            'thread.create': createThread,
+            'thread.read': vi.fn().mockResolvedValue({
+              ...THREAD,
+              id:
+                surface === 'starter'
+                  ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+                  : 'th_00000000-0000-70a0-9cde-4561f64881c6',
+            }),
+            'artifact.list': vi.fn().mockResolvedValue({
+              items: [
+                { id: 'ar_00000000-0000-7bc1-85a3-6c0dfcf6ab5d', version: 2, title: 'Brief' },
+              ],
+            }),
+          },
+          {
+            'conversation.targets': getConversationTargets,
+            'conversation.submit': submitConversation,
+          }
+        )
       );
-    });
-    await act(async () => {
-      await cache.invalidateQueries({ queryKey: ['conversation-targets'] });
-    });
-    await act(async () => pending.reject(error));
-    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Exact draft  ');
-    expect(screen.getByRole('button', { name: 'Remove Brief' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /Reasoning effort/ }));
-    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Low']);
-    await user.keyboard('{Escape}');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
-    expect(submitConversation.mock.calls[1]).toEqual(first);
-    expect(createThread).toHaveBeenCalledTimes(surface === 'starter' ? 1 : 0);
-  });
+      await chooseEffort(user, 'High');
+      await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+      await user.click(await screen.findByRole('button', { name: 'Brief' }));
+      await user.keyboard('{Escape}');
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Exact draft  ');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+      const first = submitConversation.mock.calls[0];
+      expect(first?.[0]).toEqual({
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId:
+          path === '/chat'
+            ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+            : 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        input: 'Exact draft  ',
+        targetRef: 'internal-role:assistant',
+        logicalModelId: 'reasoner',
+        reasoningEffort: 'high',
+        artifactRefs: [
+          { artifactId: 'ar_00000000-0000-7bc1-85a3-6c0dfcf6ab5d', artifactVersion: 2 },
+        ],
+        requestId: expect.any(String),
+      });
+      expect(await screen.findByRole('button', { name: 'Send message' })).toBeDisabled();
+      catalog = effortCatalog();
+      catalog.targets.forEach((target) => {
+        target.logicalModels = target.logicalModels.map((model) =>
+          model.id === 'reasoner' ? { ...model, reasoningEffortLevels: ['low'] } : model
+        );
+      });
+      await act(async () => {
+        await cache.invalidateQueries({ queryKey: ['conversation-targets'] });
+      });
+      await act(async () => pending.reject(error));
+      expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Exact draft  ');
+      expect(screen.getByRole('button', { name: 'Remove Brief' })).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /Reasoning effort/ }));
+      expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['Low']);
+      await user.keyboard('{Escape}');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
+      expect(submitConversation.mock.calls[1]).toEqual(first);
+      expect(createThread).toHaveBeenCalledTimes(surface === 'starter' ? 1 : 0);
+    }
+  );
 
   it('retains omission on retry even when a later dashboard and catalog advertise an admitted effort', async () => {
     const user = userEvent.setup();

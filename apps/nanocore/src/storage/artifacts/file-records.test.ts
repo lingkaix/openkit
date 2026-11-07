@@ -212,14 +212,10 @@ describe('immutable Artifact payload files', () => {
     expect(result.status).toBe(0);
   });
 
-  it.each([
-    '../escape',
-    'a/b',
-    'a\\b',
-    '.',
-    '..',
-    '\0',
-  ])('refuses unsafe Artifact path input %j', (id) => {
-    expect(() => artifactFilePayloadPath('/root', id, 1)).toThrow('identity');
-  });
+  it.each(['../escape', 'a/b', 'a\\b', '.', '..', '\0'])(
+    'refuses unsafe Artifact path input %j',
+    (id) => {
+      expect(() => artifactFilePayloadPath('/root', id, 1)).toThrow('identity');
+    }
+  );
 });

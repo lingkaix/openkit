@@ -389,17 +389,20 @@ it('keeps the full committed tuple after lost ACK without a hook, success or aut
 it.each([
   ['audit_events', 'action'],
   ['idempotency_requests', 'command_name'],
-] as const)('rolls back User sessions Tokens Audit and receipt when the real %s insert fails', async (table, column) => {
-  const f = await fixture(true);
-  const before = coldFacts(f);
-  // Deliberate SQLite fault on this scratch root, not a fabricated row, SQL owner or Worker result.
-  f.coreDb.sqlite.exec(`CREATE TRIGGER fail_user_disable BEFORE INSERT ON ${table}
+] as const)(
+  'rolls back User sessions Tokens Audit and receipt when the real %s insert fails',
+  async (table, column) => {
+    const f = await fixture(true);
+    const before = coldFacts(f);
+    // Deliberate SQLite fault on this scratch root, not a fabricated row, SQL owner or Worker result.
+    f.coreDb.sqlite.exec(`CREATE TRIGGER fail_user_disable BEFORE INSERT ON ${table}
     WHEN NEW.${column}='user.disable' BEGIN SELECT RAISE(ABORT, 'user-disable-write-refusal'); END`);
-  await expect(f.invoke()).rejects.toBeDefined();
-  expect(coldFacts(f)).toEqual(before);
-  expect(f.hooks()).toBe(0);
-  expect(fault.requests).toHaveLength(1);
-});
+    await expect(f.invoke()).rejects.toBeDefined();
+    expect(coldFacts(f)).toEqual(before);
+    expect(f.hooks()).toBe(0);
+    expect(fault.requests).toHaveLength(1);
+  }
+);
 
 it('does not roll back or repost the complete tuple when the later original hook fails', async () => {
   const f = await fixture(true);
@@ -628,20 +631,20 @@ it('refuses the complete native tuple owner on a Main SQLite connection', async 
   expect(coldFacts(f)).toEqual(before);
 });
 
-it.each([
-  'local',
-  'session',
-] as const)('keeps the admitted %s credential form on the complete native User tuple', async (kind) => {
-  const f = await fixture(true);
-  const result = await f.invoke(f.requestId, f.userId, f.contexts[kind]);
-  const committed = coldFacts(f);
-  expect(result).toEqual({ user: { ...committed.user, userId: f.userId } });
-  expect(committed.sessions).toBe(0);
-  expect(committed.tokens.every((record) => record.status === 'revoked')).toBe(true);
-  expect(committed.audits).toHaveLength(1);
-  expect(committed.receipt?.response).toEqual({ kind: 'user', id: f.userId });
-  expect(f.hooks()).toBe(1);
-});
+it.each(['local', 'session'] as const)(
+  'keeps the admitted %s credential form on the complete native User tuple',
+  async (kind) => {
+    const f = await fixture(true);
+    const result = await f.invoke(f.requestId, f.userId, f.contexts[kind]);
+    const committed = coldFacts(f);
+    expect(result).toEqual({ user: { ...committed.user, userId: f.userId } });
+    expect(committed.sessions).toBe(0);
+    expect(committed.tokens.every((record) => record.status === 'revoked')).toBe(true);
+    expect(committed.audits).toHaveLength(1);
+    expect(committed.receipt?.response).toEqual({ kind: 'user', id: f.userId });
+    expect(f.hooks()).toBe(1);
+  }
+);
 
 it('refuses a real second Main Core connection with mismatched root metadata before any native frame or effect', async () => {
   const f = await fixture(true);

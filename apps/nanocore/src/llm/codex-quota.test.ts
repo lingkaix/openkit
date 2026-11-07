@@ -230,13 +230,16 @@ describe('proveCodexCredentialCurrent', () => {
     ['not a finite instant', Number.NaN],
     ['infinite', Number.POSITIVE_INFINITY],
     ['already elapsed', 0],
-  ] as const)('returns false before reading when the deadline is %s', async (_label, absoluteDeadline) => {
-    const read = vi.fn();
-    await expect(proveCodexCredentialCurrent({ read }, presented, absoluteDeadline)).resolves.toBe(
-      false
-    );
-    expect(read).not.toHaveBeenCalled();
-  });
+  ] as const)(
+    'returns false before reading when the deadline is %s',
+    async (_label, absoluteDeadline) => {
+      const read = vi.fn();
+      await expect(
+        proveCodexCredentialCurrent({ read }, presented, absoluteDeadline)
+      ).resolves.toBe(false);
+      expect(read).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([
     { type: 'api-key', access: presented.access, accountId: presented.accountId },

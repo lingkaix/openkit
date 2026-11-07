@@ -257,135 +257,44 @@ function commandReceipt(
 }
 
 describe('provider readiness at Turn boundaries', () => {
-  it.each([
-    'missing-key',
-    'unavailable-account',
-    'dormant-backup',
-  ] as const)('orchestrator refuses %s before creating a Turn or starting its executor', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().setup).toBeNull();
-    const result = startTurn({
-      ...f.hooks,
-      gatewayConfig: f.gatewayConfig,
-      providerRegistry: f.providerRegistry,
-      agentManifests: [f.manifest],
-      agentId: f.manifest.id,
-      input: 'Use current supply.',
-      store: f.store,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      turnExecutor: f.executor,
-    });
-    await expect(result).rejects.toThrow(/logical model/i);
-    expect(
-      f.store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    ).toEqual([]);
-    expectNoRuntimeEffects(f);
-  });
-
-  it.each([
-    'missing-key',
-    'unavailable-account',
-    'dormant-backup',
-  ] as const)('product admission refuses %s before durable admission', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().setup).toBeNull();
-    const admitted = vi.fn(() => {
-      throw new Error('Unexpected durable admission.');
-    });
-    const result = startProductTurn({
-      ...f.hooks,
-      coreDb: f.coreDb,
-      store: f.store,
-      snapshot: f.snapshot,
-      turnExecutor: f.executor,
-      workerPlacement: 'local',
-      requestedAgentId: f.manifest.id,
-      providerCredentialResolver: () => null,
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      input: {
-        requestId: '00000000-0000-4000-8000-000000000302',
+  it.each(['missing-key', 'unavailable-account', 'dormant-backup'] as const)(
+    'orchestrator refuses %s before creating a Turn or starting its executor',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().setup).toBeNull();
+      const result = startTurn({
+        ...f.hooks,
+        gatewayConfig: f.gatewayConfig,
+        providerRegistry: f.providerRegistry,
+        agentManifests: [f.manifest],
+        agentId: f.manifest.id,
+        input: 'Use current supply.',
+        store: f.store,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: 'th_00000000-0000-7000-8000-000000000001',
-        input: 'Use current supply.',
-      },
-      onTurnCreated: admitted,
-    });
-    await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
-    expect(admitted).not.toHaveBeenCalled();
-    expect(f.admissions()).toEqual([]);
-    expect(
-      f.store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    ).toEqual([]);
-    expectNoRuntimeEffects(f);
-  });
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        turnExecutor: f.executor,
+      });
+      await expect(result).rejects.toThrow(/logical model/i);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
+      expectNoRuntimeEffects(f);
+    }
+  );
 
-  it.each([
-    'missing-key',
-    'unavailable-account',
-    'dormant-backup',
-  ] as const)('scheduler refuses %s before backend preparation', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().setup).toBeNull();
-    await enqueue(f);
-    const result = runSchedulerDispatchLoop({
-      ...f.hooks,
-      agentManifests: [f.manifest],
-      coreDb: f.coreDb,
-      executionBackend: f.backend,
-      gatewayConfig: f.gatewayConfig,
-      providerRegistry: f.providerRegistry,
-      store: f.store,
-      turnExecutor: f.executor,
-    });
-    await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
-    expectNoRuntimeEffects(f);
-  });
-
-  it.each([
-    'healthy',
-    'healthy-account',
-    'enabled-backup',
-  ] as const)('orchestrator starts with %s supply', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().diagnostics).toEqual([]);
-    const result = await startTurn({
-      ...f.hooks,
-      gatewayConfig: f.gatewayConfig,
-      providerRegistry: f.providerRegistry,
-      agentManifests: [f.manifest],
-      agentId: f.manifest.id,
-      input: 'Use current supply.',
-      store: f.store,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      turnExecutor: f.executor,
-    });
-    expect(result.agentSetupDiagnostics).toEqual([]);
-    expect(f.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    'healthy',
-    'healthy-account',
-    'enabled-backup',
-  ] as const)('product admits %s supply before the controlled dispatch boundary', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().diagnostics).toEqual([]);
-    const stopAfterAdmission = new Error('Stop at the admission boundary.');
-    const admitted = vi.fn(() => {
-      throw stopAfterAdmission;
-    });
-    await expect(
-      startProductTurn({
+  it.each(['missing-key', 'unavailable-account', 'dormant-backup'] as const)(
+    'product admission refuses %s before durable admission',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().setup).toBeNull();
+      const admitted = vi.fn(() => {
+        throw new Error('Unexpected durable admission.');
+      });
+      const result = startProductTurn({
         ...f.hooks,
         coreDb: f.coreDb,
         store: f.store,
@@ -396,106 +305,80 @@ describe('provider readiness at Turn boundaries', () => {
         providerCredentialResolver: () => null,
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         input: {
-          requestId: '00000000-0000-4000-8000-000000000303',
+          requestId: '00000000-0000-4000-8000-000000000302',
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           input: 'Use current supply.',
         },
         onTurnCreated: admitted,
-      })
-    ).rejects.toBe(stopAfterAdmission);
-    expect(admitted).toHaveBeenCalledTimes(1);
-    expect(f.admissions()).toHaveLength(1);
-    expectNoRuntimeEffects(f);
-  });
+      });
+      await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
+      expect(admitted).not.toHaveBeenCalled();
+      expect(f.admissions()).toEqual([]);
+      expect(
+        f.store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
+      expectNoRuntimeEffects(f);
+    }
+  );
 
-  it.each([
-    'healthy',
-    'healthy-account',
-    'enabled-backup',
-  ] as const)('scheduler reaches the backend capacity boundary with %s supply', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().diagnostics).toEqual([]);
-    await enqueue(f);
-    const result = await runSchedulerDispatchLoop({
-      ...f.hooks,
-      agentManifests: [f.manifest],
-      coreDb: f.coreDb,
-      executionBackend: f.backend,
-      gatewayConfig: f.gatewayConfig,
-      providerRegistry: f.providerRegistry,
-      store: f.store,
-      turnExecutor: f.executor,
-    });
-    expect(result.terminalResult).toEqual({ status: 'queued', reason: 'backend-busy' });
-    expect(f.prepare).toHaveBeenCalledTimes(1);
-    expect(f.execute).not.toHaveBeenCalled();
-    expect(f.backend.submit).not.toHaveBeenCalled();
-  });
-});
+  it.each(['missing-key', 'unavailable-account', 'dormant-backup'] as const)(
+    'scheduler refuses %s before backend preparation',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().setup).toBeNull();
+      await enqueue(f);
+      const result = runSchedulerDispatchLoop({
+        ...f.hooks,
+        agentManifests: [f.manifest],
+        coreDb: f.coreDb,
+        executionBackend: f.backend,
+        gatewayConfig: f.gatewayConfig,
+        providerRegistry: f.providerRegistry,
+        store: f.store,
+        turnExecutor: f.executor,
+      });
+      await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
+      expectNoRuntimeEffects(f);
+    }
+  );
 
-describe('scheduler to orchestrator readiness handoff', () => {
-  it.each([
-    'healthy',
-    'healthy-account',
-  ] as const)('rechecks %s supply after preparation and before executor start', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().diagnostics).toEqual([]);
-    await enqueue(f);
-    f.prepare.mockImplementation(async (_store, input) => {
-      if (kind === 'healthy')
-        vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
-      else
-        vi.mocked(f.hooks.subscriptionAccounts!.gatewayUnavailableReason).mockReturnValue(
-          'subscription_account_logged_out'
-        );
-      return {
-        agentSessionId: input.freshAgentSessionId,
-        currentAgentSession: null,
-        replacementRequired: false,
-        sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
-      };
-    });
-    const result = runSchedulerDispatchLoop({
-      ...f.hooks,
-      agentManifests: [f.manifest],
-      coreDb: f.coreDb,
-      executionBackend: f.backend,
-      gatewayConfig: f.gatewayConfig,
-      providerRegistry: f.providerRegistry,
-      store: f.store,
-      turnExecutor: f.executor,
-    });
-    await expect(result).rejects.toThrow(/logical model/i);
-    expect(f.setup().setup).toBeNull();
-    expect(f.prepare).toHaveBeenCalledTimes(1);
-    expect(f.execute).not.toHaveBeenCalled();
-    expect(f.backend.submit).not.toHaveBeenCalled();
-  });
-});
+  it.each(['healthy', 'healthy-account', 'enabled-backup'] as const)(
+    'orchestrator starts with %s supply',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().diagnostics).toEqual([]);
+      const result = await startTurn({
+        ...f.hooks,
+        gatewayConfig: f.gatewayConfig,
+        providerRegistry: f.providerRegistry,
+        agentManifests: [f.manifest],
+        agentId: f.manifest.id,
+        input: 'Use current supply.',
+        store: f.store,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        turnExecutor: f.executor,
+      });
+      expect(result.agentSetupDiagnostics).toEqual([]);
+      expect(f.execute).toHaveBeenCalledTimes(1);
+    }
+  );
 
-describe('product admission to queued dispatch readiness handoff', () => {
-  it.each([
-    'healthy',
-    'healthy-account',
-  ] as const)('rechecks %s supply after admission without preparing the backend', async (kind) => {
-    const f = await fixture(kind);
-    expect(f.setup().diagnostics).toEqual([]);
-    const prepared = Promise.withResolvers<void>();
-    f.prepare.mockImplementation(async () => {
-      prepared.resolve();
-      throw new WorkerGovernanceCapacityUnavailableError();
-    });
-    const input = {
-      requestId: '00000000-0000-4000-8000-000000000304',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      input: 'Recheck supply after admission.',
-    };
-    const receipt = commandReceipt(input);
-    let originalTurnId: string | undefined;
-    const observed = observeTurnAdmission({
-      execute: (admit) =>
+  it.each(['healthy', 'healthy-account', 'enabled-backup'] as const)(
+    'product admits %s supply before the controlled dispatch boundary',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().diagnostics).toEqual([]);
+      const stopAfterAdmission = new Error('Stop at the admission boundary.');
+      const admitted = vi.fn(() => {
+        throw stopAfterAdmission;
+      });
+      await expect(
         startProductTurn({
           ...f.hooks,
           coreDb: f.coreDb,
@@ -506,60 +389,176 @@ describe('product admission to queued dispatch readiness handoff', () => {
           requestedAgentId: f.manifest.id,
           providerCredentialResolver: () => null,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          input,
-          commandReceipt: receipt,
-          onTurnCreated: (turn) => {
-            expect(turn.status).toBe('pending');
-            expect(turn.agentSessionId ?? null).toBeNull();
-            originalTurnId = turn.id;
-            admit(turn);
-            if (kind === 'healthy')
-              vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
-            else
-              vi.mocked(f.hooks.subscriptionAccounts!.gatewayUnavailableReason).mockReturnValue(
-                'subscription_account_logged_out'
-              );
+          input: {
+            requestId: '00000000-0000-4000-8000-000000000303',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            input: 'Use current supply.',
           },
-        }),
-      settled: () => {},
-      failed: () => {},
-    });
-    // Accepted queue ownership survives a later execution failure; it is not a terminal handle.
-    const accepted = await observed.accepted;
-    expect(accepted.id).toBe(originalTurnId);
-    const originalReceipt = f.store.getCommandRequest('turn.start', input.requestId, receipt.scope);
-    expect(originalReceipt).toMatchObject({
-      requestId: input.requestId,
-      inputHash: receipt.inputHash,
-      response: { kind: 'turn', id: accepted.id },
-    });
-    const outcome = await Promise.race([
-      observed.execution.then(
-        () => ({ boundary: 'unexpected-success' as const }),
-        (error: unknown) => ({ boundary: 'terminal' as const, error })
-      ),
-      prepared.promise.then(() => ({ boundary: 'backend-preparation' as const })),
-    ]);
-    // Let the invoked scheduler settle before closing its real database, including the red path.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(outcome.boundary).toBe('terminal');
-    if (outcome.boundary !== 'terminal') throw new Error('Readiness reached backend preparation.');
-    expect(outcome.error).toMatchObject({
-      code: 'agent_not_ready',
-      message: expect.stringMatching(/logical model/i),
-    });
-    expect(f.store.getTurn(input.workspaceId, input.threadId, accepted.id)).toMatchObject({
-      id: accepted.id,
-      status: 'failed',
-      error: { code: 'worker_preparation_failed' },
-    });
-    expect(f.admissions()).toMatchObject([
-      { turn_id: accepted.id, request_id: input.requestId, workspace_id: input.workspaceId },
-    ]);
-    expect(f.store.getCommandRequest('turn.start', input.requestId, receipt.scope)).toEqual(
-      originalReceipt
-    );
-    expect(f.setup().setup).toBeNull();
-    expectNoRuntimeEffects(f);
-  });
+          onTurnCreated: admitted,
+        })
+      ).rejects.toBe(stopAfterAdmission);
+      expect(admitted).toHaveBeenCalledTimes(1);
+      expect(f.admissions()).toHaveLength(1);
+      expectNoRuntimeEffects(f);
+    }
+  );
+
+  it.each(['healthy', 'healthy-account', 'enabled-backup'] as const)(
+    'scheduler reaches the backend capacity boundary with %s supply',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().diagnostics).toEqual([]);
+      await enqueue(f);
+      const result = await runSchedulerDispatchLoop({
+        ...f.hooks,
+        agentManifests: [f.manifest],
+        coreDb: f.coreDb,
+        executionBackend: f.backend,
+        gatewayConfig: f.gatewayConfig,
+        providerRegistry: f.providerRegistry,
+        store: f.store,
+        turnExecutor: f.executor,
+      });
+      expect(result.terminalResult).toEqual({ status: 'queued', reason: 'backend-busy' });
+      expect(f.prepare).toHaveBeenCalledTimes(1);
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.backend.submit).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe('scheduler to orchestrator readiness handoff', () => {
+  it.each(['healthy', 'healthy-account'] as const)(
+    'rechecks %s supply after preparation and before executor start',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().diagnostics).toEqual([]);
+      await enqueue(f);
+      f.prepare.mockImplementation(async (_store, input) => {
+        if (kind === 'healthy')
+          vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
+        else
+          vi.mocked(f.hooks.subscriptionAccounts!.gatewayUnavailableReason).mockReturnValue(
+            'subscription_account_logged_out'
+          );
+        return {
+          agentSessionId: input.freshAgentSessionId,
+          currentAgentSession: null,
+          replacementRequired: false,
+          sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
+        };
+      });
+      const result = runSchedulerDispatchLoop({
+        ...f.hooks,
+        agentManifests: [f.manifest],
+        coreDb: f.coreDb,
+        executionBackend: f.backend,
+        gatewayConfig: f.gatewayConfig,
+        providerRegistry: f.providerRegistry,
+        store: f.store,
+        turnExecutor: f.executor,
+      });
+      await expect(result).rejects.toThrow(/logical model/i);
+      expect(f.setup().setup).toBeNull();
+      expect(f.prepare).toHaveBeenCalledTimes(1);
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.backend.submit).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe('product admission to queued dispatch readiness handoff', () => {
+  it.each(['healthy', 'healthy-account'] as const)(
+    'rechecks %s supply after admission without preparing the backend',
+    async (kind) => {
+      const f = await fixture(kind);
+      expect(f.setup().diagnostics).toEqual([]);
+      const prepared = Promise.withResolvers<void>();
+      f.prepare.mockImplementation(async () => {
+        prepared.resolve();
+        throw new WorkerGovernanceCapacityUnavailableError();
+      });
+      const input = {
+        requestId: '00000000-0000-4000-8000-000000000304',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        input: 'Recheck supply after admission.',
+      };
+      const receipt = commandReceipt(input);
+      let originalTurnId: string | undefined;
+      const observed = observeTurnAdmission({
+        execute: (admit) =>
+          startProductTurn({
+            ...f.hooks,
+            coreDb: f.coreDb,
+            store: f.store,
+            snapshot: f.snapshot,
+            turnExecutor: f.executor,
+            workerPlacement: 'local',
+            requestedAgentId: f.manifest.id,
+            providerCredentialResolver: () => null,
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            input,
+            commandReceipt: receipt,
+            onTurnCreated: (turn) => {
+              expect(turn.status).toBe('pending');
+              expect(turn.agentSessionId ?? null).toBeNull();
+              originalTurnId = turn.id;
+              admit(turn);
+              if (kind === 'healthy')
+                vi.mocked(f.hooks.providerCredentialConfigured!).mockReturnValue(false);
+              else
+                vi.mocked(f.hooks.subscriptionAccounts!.gatewayUnavailableReason).mockReturnValue(
+                  'subscription_account_logged_out'
+                );
+            },
+          }),
+        settled: () => {},
+        failed: () => {},
+      });
+      // Accepted queue ownership survives a later execution failure; it is not a terminal handle.
+      const accepted = await observed.accepted;
+      expect(accepted.id).toBe(originalTurnId);
+      const originalReceipt = f.store.getCommandRequest(
+        'turn.start',
+        input.requestId,
+        receipt.scope
+      );
+      expect(originalReceipt).toMatchObject({
+        requestId: input.requestId,
+        inputHash: receipt.inputHash,
+        response: { kind: 'turn', id: accepted.id },
+      });
+      const outcome = await Promise.race([
+        observed.execution.then(
+          () => ({ boundary: 'unexpected-success' as const }),
+          (error: unknown) => ({ boundary: 'terminal' as const, error })
+        ),
+        prepared.promise.then(() => ({ boundary: 'backend-preparation' as const })),
+      ]);
+      // Let the invoked scheduler settle before closing its real database, including the red path.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(outcome.boundary).toBe('terminal');
+      if (outcome.boundary !== 'terminal')
+        throw new Error('Readiness reached backend preparation.');
+      expect(outcome.error).toMatchObject({
+        code: 'agent_not_ready',
+        message: expect.stringMatching(/logical model/i),
+      });
+      expect(f.store.getTurn(input.workspaceId, input.threadId, accepted.id)).toMatchObject({
+        id: accepted.id,
+        status: 'failed',
+        error: { code: 'worker_preparation_failed' },
+      });
+      expect(f.admissions()).toMatchObject([
+        { turn_id: accepted.id, request_id: input.requestId, workspace_id: input.workspaceId },
+      ]);
+      expect(f.store.getCommandRequest('turn.start', input.requestId, receipt.scope)).toEqual(
+        originalReceipt
+      );
+      expect(f.setup().setup).toBeNull();
+      expectNoRuntimeEffects(f);
+    }
+  );
 });

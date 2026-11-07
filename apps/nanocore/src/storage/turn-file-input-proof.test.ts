@@ -70,28 +70,25 @@ it('verifies the addressed original without rescanning an unrelated corrupt inpu
   );
 });
 
-it.each([
-  'missing',
-  'symlink',
-  'hardlink',
-] as const)('refuses a selected %s original', async (kind) => {
-  const state = await fixture();
-  if (kind === 'hardlink') linkSync(state.path(0), join(state.root, 'linked-owner'));
-  else {
-    rmSync(state.path(0));
-    if (kind === 'symlink') symlinkSync(state.path(1), state.path(0));
+it.each(['missing', 'symlink', 'hardlink'] as const)(
+  'refuses a selected %s original',
+  async (kind) => {
+    const state = await fixture();
+    if (kind === 'hardlink') linkSync(state.path(0), join(state.root, 'linked-owner'));
+    else {
+      rmSync(state.path(0));
+      if (kind === 'symlink') symlinkSync(state.path(1), state.path(0));
+    }
+    expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, 0)).toThrow();
   }
-  expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, 0)).toThrow();
-});
+);
 
-it.each([
-  -1,
-  0.5,
-  2,
-  Number.MAX_SAFE_INTEGER,
-])('refuses an unavailable ordinal %s', async (ordinal) => {
-  const state = await fixture();
-  expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, ordinal)).toThrow(
-    /unavailable/
-  );
-});
+it.each([-1, 0.5, 2, Number.MAX_SAFE_INTEGER])(
+  'refuses an unavailable ordinal %s',
+  async (ordinal) => {
+    const state = await fixture();
+    expect(() => verifyTurnFileInput(state.workspaceRoot, state.turn, ordinal)).toThrow(
+      /unavailable/
+    );
+  }
+);

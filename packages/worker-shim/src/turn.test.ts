@@ -127,328 +127,335 @@ describe('normalized Turn failure cause', () => {
       stopReason: 'missing_terminal_outcome',
       expected: 'missing_terminal_outcome',
     },
-  ])('carries a sanitized cause with normalized $stopReason fallback into both terminal records ($adapter $requestTiming)', async (testCase) => {
-    const root = mkdtempSync(join(tmpdir(), 'worker-turn-cause-'));
-    const packagePath = join(root, 'package.json');
-    const lineage = {
-      workspaceId: 'ws_00000000-0000-78c8-b187-86e7b47012bf',
-      threadId: 'th_00000000-0000-7a09-9d23-e6a0be04b0de',
-      turnId: 'tu_00000000-0000-7285-81af-9881e8673872',
-      agentSessionId: 'as_00000000-0000-7cdd-bdd1-9b4637990c65',
-      packageSnapshotId: 'package-cause',
-    };
-    writeFileSync(
-      packagePath,
-      JSON.stringify({
-        control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture' },
-          bindings: {
-            capabilities: {
-              pathPrefix: '/capabilities/',
-              tokenRef: 'runtime://openkit/capability-token',
-            },
-            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
-            workerControl: {
-              pathPrefix: '/worker-control/',
-              tokenRef: 'runtime://openkit/worker-control-token',
-            },
-          },
-          mode: 'sandbox-integration',
-        },
-        capabilities: {
-          mode: 'enabled',
-          protocol: 'openkit-worker-capability-v1',
-          routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
-        },
-        extensions: {
-          openkit: {
-            turnInput: 'fail',
-            sessionWorkspace: {
-              layout: { slots: [{ kind: 'worktree', access: 'read-write', path: root }] },
-            },
-          },
-        },
-        llm: {
-          mode: 'gateway',
-          preferredLogicalModelId: 'model',
-          routes: [
-            {
-              credentialVisibility: 'placeholder',
-              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
-              id: 'route',
-              model: 'model',
-              providerInstanceId: 'provider',
-            },
-          ],
-        },
-        observability: { captureCoverage: { scope: 'server', value: 'off' } },
-        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: root } },
-        scope: lineage,
-        snapshotId: lineage.packageSnapshotId,
-        workspace: { root, inputs: [] },
-        supply: { mcpServers: [{ id: 'echo' }] },
-      })
-    );
-    const finalStatuses: Array<{ body: { diagnostics: Record<string, string> } }> = [];
-    const integration = {
-      ready: Promise.resolve(),
-      bindTurnRouteTokens() {},
-      clearTurnRouteTokens() {},
-      async drainTurn() {
-        if ('requestTiming' in testCase && testCase.requestTiming === 'during')
-          cancellation.abort();
-        return 0;
-      },
-      workerControlFetch: async (url: string, init: { body: string }) => {
-        if (url.endsWith('/final-status')) finalStatuses.push(JSON.parse(init.body));
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
-        };
-      },
-    } as unknown as SandboxIntegrationClient;
-    const cancellation = new AbortController();
-    let settleNative!: (result: WorkerAdapterResult) => void;
-    const requested = 'requested' in testCase && testCase.requested;
-    const nativeStatus = 'nativeStatus' in testCase ? testCase.nativeStatus : 'failed';
-    const expectedStatus =
-      nativeStatus === 'length' ? 'blocked' : requested ? 'interrupted' : 'failed';
-    const diagnostics = testCase.diagnostics;
-    let result: WorkerAdapterResult = {
-      assistantText: null,
-      status: nativeStatus,
-      interruptRequested: Boolean(requested),
-      stopReason: testCase.stopReason,
-      ...(diagnostics ? { diagnostics } : {}),
-    };
-    if ('adapter' in testCase && testCase.adapter === 'codex')
-      result = normalizeCodexAssistant('interrupted', ['partial'], Boolean(requested));
-    if ('adapter' in testCase && testCase.adapter === 'deepseek')
-      result = classifyDeepSeekStop({
-        badContent: false,
-        cancelRequested: Boolean(requested),
-        hostEnded: false,
-        overLimit: false,
-        promptFailed: false,
-        stopReason: 'cancelled',
-        text: 'partial',
-      });
-    if (
-      'adapter' in testCase &&
-      ['pi-self-abort', 'pi-self-abort-late', 'pi-requested'].includes(testCase.adapter)
-    ) {
-      // Feed actual host correlation and shim projection into the shared terminal publisher.
-      const tracker = new PiTurnOutcomeTracker();
-      const message = {
-        role: 'assistant',
-        provider: 'openkit-worker-inference',
-        model: 'model',
-        stopReason: 'aborted',
-        content: [{ type: 'text', text: 'partial' }],
+  ])(
+    'carries a sanitized cause with normalized $stopReason fallback into both terminal records ($adapter $requestTiming)',
+    async (testCase) => {
+      const root = mkdtempSync(join(tmpdir(), 'worker-turn-cause-'));
+      const packagePath = join(root, 'package.json');
+      const lineage = {
+        workspaceId: 'ws_00000000-0000-78c8-b187-86e7b47012bf',
+        threadId: 'th_00000000-0000-7a09-9d23-e6a0be04b0de',
+        turnId: 'tu_00000000-0000-7285-81af-9881e8673872',
+        agentSessionId: 'as_00000000-0000-7cdd-bdd1-9b4637990c65',
+        packageSnapshotId: 'package-cause',
       };
-      tracker.observe({ type: 'message_end', message });
-      tracker.observe({ type: 'turn_end', message });
-      tracker.observe({ type: 'agent_end', messages: [message], willRetry: false });
-      tracker.observe({ type: 'agent_settled' });
-      result = projectPiTurnSettlement(
-        {
-          turnId: lineage.turnId,
-          compactionEntryIds: [],
-          nativeHandle: { state: 'pending' },
-          outcome: tracker.finish({
-            interrupted: Boolean(requested),
-            promptFailed: false,
-            route: { provider: message.provider, model: message.model },
-          }),
-        },
-        { expectedHandleText: null, secrets: [] }
-      );
-    }
-    let native: WorkerResidentSession | undefined;
-    try {
-      if ('nativeError' in testCase) {
-        const stateRoot = join(root, 'native');
-        // Reuse an isolated native home; the boundary probe launches no process.
-        mkdirSync(join(stateRoot, 'dsh-home'), { recursive: true });
-        const native = (await deepseekResidentAdapter.openSession({
-          agentSessionId: lineage.agentSessionId,
-          controlRoot: join(root, 'control'),
-          stateRoot,
-          environment: {},
-          loopback: {
-            inferenceBaseUrl: 'http://127.0.0.1:9',
-            inferenceCredential: 'inference-value',
-            capabilityBaseUrl: 'http://127.0.0.1:9',
-            capabilityCredential: 'capability-value',
-          },
-          resumeReference: null,
-        })) as unknown as {
-          promptRequestId: number;
-          classifyNativeLine(line: string): string | null;
-          close(): Promise<void>;
-          beginTurn(): {
-            promptFailed: boolean;
-            settled: Promise<WorkerAdapterResult>;
-            finish(stopReason: undefined, promptFailed: boolean): void;
-          };
-        };
-        try {
-          const active = native.beginTurn();
-          native.promptRequestId = 7;
-          native.classifyNativeLine(
-            JSON.stringify({ jsonrpc: '2.0', id: 7, error: testCase.nativeError })
-          );
-          active.finish(undefined, active.promptFailed);
-          result = await active.settled;
-        } finally {
-          await native.close();
-        }
-      }
-      const turnOptions = {
-        adapterId: 'fixture',
-        credentialValues: ['secret-value'],
-        environment: {},
-        integration,
-        lineage,
-        onStarted() {
-          if (requested || ('adapter' in testCase && testCase.adapter === 'pi-self-abort-late'))
-            cancellation.abort();
-          settleNative(result);
-        },
-        onTurnBarrier() {
-          if ('requestTiming' in testCase && testCase.requestTiming === 'after')
-            cancellation.abort();
-        },
+      writeFileSync(
         packagePath,
-        resident: {
-          exited: new Promise<void>(() => undefined),
-          childState: () => 'running',
-          close: async () => undefined,
-          nativeHandle: async () => ({ state: 'pending' }),
-          startTurn: async () => ({
-            interrupt: async () => undefined,
-            settled: new Promise<WorkerAdapterResult>((resolve) => {
-              settleNative = resolve;
-            }),
-          }),
-        },
-        runtimeEnvironmentNames: new Set(),
-        nativeEnvironment: null,
-        sessionDir: join(root, 'output'),
-        signal: cancellation.signal,
-        tokens: {
-          controlToken: 'control-value',
-          inferenceToken: 'inference-value',
-          capabilityToken: 'capability-value',
-        },
-        turnDirectory: join(root, 'turn'),
-      } satisfies Parameters<typeof runResidentTurn>[0];
-      let captureRequests = 0;
-      let interruptDeliveries = 0;
-      if (
-        'requestTiming' in testCase &&
-        ['capture', 'collection'].includes(testCase.requestTiming)
-      ) {
-        const opened = await captureBoundaryResident(
-          testCase.adapter,
-          root,
-          lineage.agentSessionId,
-          testCase.requestTiming
-        );
-        native = opened.session;
-        turnOptions.resident = {
-          ...turnOptions.resident,
-          startTurn: async (input: WorkerResidentTurnInput) => {
-            const active = await opened.session.startTurn({
-              ...input,
-              mcpServerIds: [],
-              runtimeCapture: {
-                ...input.runtimeCapture,
-                emit: async (record, body) => {
-                  if (opened.isFinalCapture(record.fact)) {
-                    captureRequests += 1;
-                    cancellation.abort();
-                  }
-                  await input.runtimeCapture.emit(record, body);
-                },
+        JSON.stringify({
+          control: {
+            adapter: { kind: 'openkit-worker-shim', targetRuntime: 'fixture' },
+            bindings: {
+              capabilities: {
+                pathPrefix: '/capabilities/',
+                tokenRef: 'runtime://openkit/capability-token',
               },
-            });
-            return {
-              settled: active.settled,
-              interrupt: async () => {
-                interruptDeliveries += 1;
-                await active.interrupt();
+              inference: {
+                pathPrefix: '/inference/',
+                tokenRef: 'runtime://openkit/inference-token',
               },
-            };
-          },
-        };
-        turnOptions.onStarted = opened.finish;
-      }
-      await expect(runResidentTurn(turnOptions)).resolves.toEqual({
-        status: expectedStatus,
-        ...('nativeError' in testCase ? { nativeEvidence: { nativeTerminal: true } } : {}),
-        ...('requestTiming' in testCase &&
-        ['capture', 'collection'].includes(testCase.requestTiming)
-          ? { nativeEvidence: testCase.adapter === 'deepseek' ? {} : { nativeTerminal: true } }
-          : {}),
-      });
-      if (
-        'requestTiming' in testCase &&
-        ['capture', 'collection'].includes(testCase.requestTiming)
-      ) {
-        expect(captureRequests).toBeGreaterThan(0);
-        expect(interruptDeliveries).toBe(1);
-      }
-      expect(finalStatuses).toHaveLength(1);
-      expect(finalStatuses[0]?.body).toMatchObject({
-        status: expectedStatus,
-        stopReason: nativeStatus === 'length' ? 'length' : requested ? 'aborted' : 'error',
-      });
-      for (const canary of CAUSE_CANARIES) {
-        expect(JSON.stringify(finalStatuses)).not.toContain(canary);
-      }
-      expect(finalStatuses[0]?.body.diagnostics?.failureCause).toBe(testCase.expected);
-      const records = readFileSync(join(root, 'output', 'events.jsonl'), 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      expect(
-        records.find((record) => record.event.type === 'turn.failed').event.data.diagnostics
-          ?.failureCause
-      ).toBe(testCase.expected);
-      expect(JSON.stringify(finalStatuses)).not.toContain('secret-value');
-      expect(JSON.stringify(finalStatuses)).not.toContain('unknown-secret');
-      if ('requestTiming' in testCase && testCase.requestTiming === 'later') {
-        const nextSignal = new AbortController();
-        await expect(
-          runResidentTurn({
-            ...turnOptions,
-            lineage: { ...lineage, turnId: 'tu_00000000-0000-757a-90ed-9c78aace6916' },
-            signal: nextSignal.signal,
-            onStarted() {
-              settleNative({ ...result, interruptRequested: false });
+              workerControl: {
+                pathPrefix: '/worker-control/',
+                tokenRef: 'runtime://openkit/worker-control-token',
+              },
             },
-            onTurnBarrier() {},
-            sessionDir: join(root, 'later-output'),
-            turnDirectory: join(root, 'later-turn'),
-          })
-        ).resolves.toEqual({ status: 'failed' });
-        expect(finalStatuses).toHaveLength(2);
-        expect(finalStatuses[1]?.body).toMatchObject({
-          status: 'failed',
-          stopReason: 'error',
-          diagnostics: {
-            failureCause: 'Worker runtime stopped on its own without an OpenKit interrupt request.',
+            mode: 'sandbox-integration',
           },
+          capabilities: {
+            mode: 'enabled',
+            protocol: 'openkit-worker-capability-v1',
+            routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
+          },
+          extensions: {
+            openkit: {
+              turnInput: 'fail',
+              sessionWorkspace: {
+                layout: { slots: [{ kind: 'worktree', access: 'read-write', path: root }] },
+              },
+            },
+          },
+          llm: {
+            mode: 'gateway',
+            preferredLogicalModelId: 'model',
+            routes: [
+              {
+                credentialVisibility: 'placeholder',
+                endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+                id: 'route',
+                model: 'model',
+                providerInstanceId: 'provider',
+              },
+            ],
+          },
+          observability: { captureCoverage: { scope: 'server', value: 'off' } },
+          runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: root } },
+          scope: lineage,
+          snapshotId: lineage.packageSnapshotId,
+          workspace: { root, inputs: [] },
+          supply: { mcpServers: [{ id: 'echo' }] },
+        })
+      );
+      const finalStatuses: Array<{ body: { diagnostics: Record<string, string> } }> = [];
+      const integration = {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        async drainTurn() {
+          if ('requestTiming' in testCase && testCase.requestTiming === 'during')
+            cancellation.abort();
+          return 0;
+        },
+        workerControlFetch: async (url: string, init: { body: string }) => {
+          if (url.endsWith('/final-status')) finalStatuses.push(JSON.parse(init.body));
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+          };
+        },
+      } as unknown as SandboxIntegrationClient;
+      const cancellation = new AbortController();
+      let settleNative!: (result: WorkerAdapterResult) => void;
+      const requested = 'requested' in testCase && testCase.requested;
+      const nativeStatus = 'nativeStatus' in testCase ? testCase.nativeStatus : 'failed';
+      const expectedStatus =
+        nativeStatus === 'length' ? 'blocked' : requested ? 'interrupted' : 'failed';
+      const diagnostics = testCase.diagnostics;
+      let result: WorkerAdapterResult = {
+        assistantText: null,
+        status: nativeStatus,
+        interruptRequested: Boolean(requested),
+        stopReason: testCase.stopReason,
+        ...(diagnostics ? { diagnostics } : {}),
+      };
+      if ('adapter' in testCase && testCase.adapter === 'codex')
+        result = normalizeCodexAssistant('interrupted', ['partial'], Boolean(requested));
+      if ('adapter' in testCase && testCase.adapter === 'deepseek')
+        result = classifyDeepSeekStop({
+          badContent: false,
+          cancelRequested: Boolean(requested),
+          hostEnded: false,
+          overLimit: false,
+          promptFailed: false,
+          stopReason: 'cancelled',
+          text: 'partial',
         });
-        expect(nextSignal.signal.aborted).toBe(false);
+      if (
+        'adapter' in testCase &&
+        ['pi-self-abort', 'pi-self-abort-late', 'pi-requested'].includes(testCase.adapter)
+      ) {
+        // Feed actual host correlation and shim projection into the shared terminal publisher.
+        const tracker = new PiTurnOutcomeTracker();
+        const message = {
+          role: 'assistant',
+          provider: 'openkit-worker-inference',
+          model: 'model',
+          stopReason: 'aborted',
+          content: [{ type: 'text', text: 'partial' }],
+        };
+        tracker.observe({ type: 'message_end', message });
+        tracker.observe({ type: 'turn_end', message });
+        tracker.observe({ type: 'agent_end', messages: [message], willRetry: false });
+        tracker.observe({ type: 'agent_settled' });
+        result = projectPiTurnSettlement(
+          {
+            turnId: lineage.turnId,
+            compactionEntryIds: [],
+            nativeHandle: { state: 'pending' },
+            outcome: tracker.finish({
+              interrupted: Boolean(requested),
+              promptFailed: false,
+              route: { provider: message.provider, model: message.model },
+            }),
+          },
+          { expectedHandleText: null, secrets: [] }
+        );
       }
-    } finally {
-      await native?.close().catch(() => undefined);
-      rmSync(root, { recursive: true, force: true });
+      let native: WorkerResidentSession | undefined;
+      try {
+        if ('nativeError' in testCase) {
+          const stateRoot = join(root, 'native');
+          // Reuse an isolated native home; the boundary probe launches no process.
+          mkdirSync(join(stateRoot, 'dsh-home'), { recursive: true });
+          const native = (await deepseekResidentAdapter.openSession({
+            agentSessionId: lineage.agentSessionId,
+            controlRoot: join(root, 'control'),
+            stateRoot,
+            environment: {},
+            loopback: {
+              inferenceBaseUrl: 'http://127.0.0.1:9',
+              inferenceCredential: 'inference-value',
+              capabilityBaseUrl: 'http://127.0.0.1:9',
+              capabilityCredential: 'capability-value',
+            },
+            resumeReference: null,
+          })) as unknown as {
+            promptRequestId: number;
+            classifyNativeLine(line: string): string | null;
+            close(): Promise<void>;
+            beginTurn(): {
+              promptFailed: boolean;
+              settled: Promise<WorkerAdapterResult>;
+              finish(stopReason: undefined, promptFailed: boolean): void;
+            };
+          };
+          try {
+            const active = native.beginTurn();
+            native.promptRequestId = 7;
+            native.classifyNativeLine(
+              JSON.stringify({ jsonrpc: '2.0', id: 7, error: testCase.nativeError })
+            );
+            active.finish(undefined, active.promptFailed);
+            result = await active.settled;
+          } finally {
+            await native.close();
+          }
+        }
+        const turnOptions = {
+          adapterId: 'fixture',
+          credentialValues: ['secret-value'],
+          environment: {},
+          integration,
+          lineage,
+          onStarted() {
+            if (requested || ('adapter' in testCase && testCase.adapter === 'pi-self-abort-late'))
+              cancellation.abort();
+            settleNative(result);
+          },
+          onTurnBarrier() {
+            if ('requestTiming' in testCase && testCase.requestTiming === 'after')
+              cancellation.abort();
+          },
+          packagePath,
+          resident: {
+            exited: new Promise<void>(() => undefined),
+            childState: () => 'running',
+            close: async () => undefined,
+            nativeHandle: async () => ({ state: 'pending' }),
+            startTurn: async () => ({
+              interrupt: async () => undefined,
+              settled: new Promise<WorkerAdapterResult>((resolve) => {
+                settleNative = resolve;
+              }),
+            }),
+          },
+          runtimeEnvironmentNames: new Set(),
+          nativeEnvironment: null,
+          sessionDir: join(root, 'output'),
+          signal: cancellation.signal,
+          tokens: {
+            controlToken: 'control-value',
+            inferenceToken: 'inference-value',
+            capabilityToken: 'capability-value',
+          },
+          turnDirectory: join(root, 'turn'),
+        } satisfies Parameters<typeof runResidentTurn>[0];
+        let captureRequests = 0;
+        let interruptDeliveries = 0;
+        if (
+          'requestTiming' in testCase &&
+          ['capture', 'collection'].includes(testCase.requestTiming)
+        ) {
+          const opened = await captureBoundaryResident(
+            testCase.adapter,
+            root,
+            lineage.agentSessionId,
+            testCase.requestTiming
+          );
+          native = opened.session;
+          turnOptions.resident = {
+            ...turnOptions.resident,
+            startTurn: async (input: WorkerResidentTurnInput) => {
+              const active = await opened.session.startTurn({
+                ...input,
+                mcpServerIds: [],
+                runtimeCapture: {
+                  ...input.runtimeCapture,
+                  emit: async (record, body) => {
+                    if (opened.isFinalCapture(record.fact)) {
+                      captureRequests += 1;
+                      cancellation.abort();
+                    }
+                    await input.runtimeCapture.emit(record, body);
+                  },
+                },
+              });
+              return {
+                settled: active.settled,
+                interrupt: async () => {
+                  interruptDeliveries += 1;
+                  await active.interrupt();
+                },
+              };
+            },
+          };
+          turnOptions.onStarted = opened.finish;
+        }
+        await expect(runResidentTurn(turnOptions)).resolves.toEqual({
+          status: expectedStatus,
+          ...('nativeError' in testCase ? { nativeEvidence: { nativeTerminal: true } } : {}),
+          ...('requestTiming' in testCase &&
+          ['capture', 'collection'].includes(testCase.requestTiming)
+            ? { nativeEvidence: testCase.adapter === 'deepseek' ? {} : { nativeTerminal: true } }
+            : {}),
+        });
+        if (
+          'requestTiming' in testCase &&
+          ['capture', 'collection'].includes(testCase.requestTiming)
+        ) {
+          expect(captureRequests).toBeGreaterThan(0);
+          expect(interruptDeliveries).toBe(1);
+        }
+        expect(finalStatuses).toHaveLength(1);
+        expect(finalStatuses[0]?.body).toMatchObject({
+          status: expectedStatus,
+          stopReason: nativeStatus === 'length' ? 'length' : requested ? 'aborted' : 'error',
+        });
+        for (const canary of CAUSE_CANARIES) {
+          expect(JSON.stringify(finalStatuses)).not.toContain(canary);
+        }
+        expect(finalStatuses[0]?.body.diagnostics?.failureCause).toBe(testCase.expected);
+        const records = readFileSync(join(root, 'output', 'events.jsonl'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        expect(
+          records.find((record) => record.event.type === 'turn.failed').event.data.diagnostics
+            ?.failureCause
+        ).toBe(testCase.expected);
+        expect(JSON.stringify(finalStatuses)).not.toContain('secret-value');
+        expect(JSON.stringify(finalStatuses)).not.toContain('unknown-secret');
+        if ('requestTiming' in testCase && testCase.requestTiming === 'later') {
+          const nextSignal = new AbortController();
+          await expect(
+            runResidentTurn({
+              ...turnOptions,
+              lineage: { ...lineage, turnId: 'tu_00000000-0000-757a-90ed-9c78aace6916' },
+              signal: nextSignal.signal,
+              onStarted() {
+                settleNative({ ...result, interruptRequested: false });
+              },
+              onTurnBarrier() {},
+              sessionDir: join(root, 'later-output'),
+              turnDirectory: join(root, 'later-turn'),
+            })
+          ).resolves.toEqual({ status: 'failed' });
+          expect(finalStatuses).toHaveLength(2);
+          expect(finalStatuses[1]?.body).toMatchObject({
+            status: 'failed',
+            stopReason: 'error',
+            diagnostics: {
+              failureCause:
+                'Worker runtime stopped on its own without an OpenKit interrupt request.',
+            },
+          });
+          expect(nextSignal.signal.aborted).toBe(false);
+        }
+      } finally {
+        await native?.close().catch(() => undefined);
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 });
 
 /** Real adapter collection paths with typed native peers; no provider or native executable is launched. */
@@ -798,19 +805,19 @@ it('RET E8 supplies the selected AEP bound and authored version without manufact
 });
 
 // RET Native Transcripts And Runtime Logs: missing or invalid historical authority refuses native content.
-it.each([
-  undefined,
-  0,
-])('RET E8 refuses native publication for selected bound %s', async (bound) => {
-  const f = await e8Admission(bound, 'on', true);
-  expect(
-    f.transmitted.filter((record) => record.event.type === 'observation.content.chunk')
-  ).toHaveLength(0);
-  expect(
-    f.transmitted.some(
-      (record) =>
-        record.event.type === 'observation.recorded' &&
-        (record.event.data as { content: { state: string } }).content.state === 'unavailable'
-    )
-  ).toBe(true);
-});
+it.each([undefined, 0])(
+  'RET E8 refuses native publication for selected bound %s',
+  async (bound) => {
+    const f = await e8Admission(bound, 'on', true);
+    expect(
+      f.transmitted.filter((record) => record.event.type === 'observation.content.chunk')
+    ).toHaveLength(0);
+    expect(
+      f.transmitted.some(
+        (record) =>
+          record.event.type === 'observation.recorded' &&
+          (record.event.data as { content: { state: string } }).content.state === 'unavailable'
+      )
+    ).toBe(true);
+  }
+);

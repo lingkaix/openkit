@@ -337,56 +337,58 @@ describe('natural native same-Turn FIFO', () => {
     expect(commits.every(([, synchronous]) => synchronous === 2)).toBe(true);
   });
 
-  it.each([
-    'preparation',
-    'revision',
-  ] as const)('refuses applicable queued successors after %s failure and preserves independent work', async (failure) => {
-    const f = await fixture();
-    const [lane, sibling, scope] = f.lanes as [Lane, Lane, Lane];
-    const accepted = await f.entry(lane, 1);
-    expect(await f.send(lane, [accepted.input])).toEqual({ ok: true });
-    const before = lane.reader.entries(lane.turn.id, 'item');
-    const retainedBefore = readNativeProductEntries(lane.scope, lane.turn.id, 'item');
-    const [partial, stale, successor, independent, remote] = await Promise.all([
-      f.entry(lane, 2),
-      f.entry(lane, 3, accepted),
-      f.entry(lane, 2),
-      f.entry(sibling, 1),
-      f.entry(scope, 1),
-    ]);
-    f.arm(partial.input, failure === 'preparation');
-    // The second entry has a stale revision for the accepted Item; the first entry is valid.
-    // The SQL failure must not rebase the stale request or retain partial rows.
-    const failed = f.send(
-      lane,
-      failure === 'revision' ? [partial.input, stale.input] : [partial.input]
-    );
-    await f.wait(3);
-    const queued = f.send(lane, [successor.input]);
-    expect(await f.send(sibling, [independent.input])).toEqual({ ok: true });
-    expect(await f.send(scope, [remote.input])).toEqual({ ok: true });
-    release(4);
-    expect(await failed).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
-    // Sequence two would apply after rollback. Its refusal must come from its failed Turn prefix.
-    expect(await queued).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
-    expect(lane.reader.entries(lane.turn.id, 'item')).toEqual(before);
-    expect(sibling.reader.entries(sibling.turn.id, 'item').map(({ id }) => id)).toEqual([
-      independent.item.id,
-    ]);
-    expect(scope.reader.entries(scope.turn.id, 'item').map(({ id }) => id)).toEqual([
-      remote.item.id,
-    ]);
-    expect(
-      f
-        .trace()
-        .some(([phase]) => phase === (failure === 'preparation' ? 'file-failed' : 'item-rollback'))
-    ).toBe(true);
-    await shutdownControlStoreWorkerClient();
-    expect(readNativeProductEntries(lane.scope, lane.turn.id, 'item')).toEqual(retainedBefore);
-    expect(createTestStore({ dataRoot: f.root }).getTurnById(lane.turn.id).items).toEqual([
-      accepted.item,
-    ]);
-  });
+  it.each(['preparation', 'revision'] as const)(
+    'refuses applicable queued successors after %s failure and preserves independent work',
+    async (failure) => {
+      const f = await fixture();
+      const [lane, sibling, scope] = f.lanes as [Lane, Lane, Lane];
+      const accepted = await f.entry(lane, 1);
+      expect(await f.send(lane, [accepted.input])).toEqual({ ok: true });
+      const before = lane.reader.entries(lane.turn.id, 'item');
+      const retainedBefore = readNativeProductEntries(lane.scope, lane.turn.id, 'item');
+      const [partial, stale, successor, independent, remote] = await Promise.all([
+        f.entry(lane, 2),
+        f.entry(lane, 3, accepted),
+        f.entry(lane, 2),
+        f.entry(sibling, 1),
+        f.entry(scope, 1),
+      ]);
+      f.arm(partial.input, failure === 'preparation');
+      // The second entry has a stale revision for the accepted Item; the first entry is valid.
+      // The SQL failure must not rebase the stale request or retain partial rows.
+      const failed = f.send(
+        lane,
+        failure === 'revision' ? [partial.input, stale.input] : [partial.input]
+      );
+      await f.wait(3);
+      const queued = f.send(lane, [successor.input]);
+      expect(await f.send(sibling, [independent.input])).toEqual({ ok: true });
+      expect(await f.send(scope, [remote.input])).toEqual({ ok: true });
+      release(4);
+      expect(await failed).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
+      // Sequence two would apply after rollback. Its refusal must come from its failed Turn prefix.
+      expect(await queued).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
+      expect(lane.reader.entries(lane.turn.id, 'item')).toEqual(before);
+      expect(sibling.reader.entries(sibling.turn.id, 'item').map(({ id }) => id)).toEqual([
+        independent.item.id,
+      ]);
+      expect(scope.reader.entries(scope.turn.id, 'item').map(({ id }) => id)).toEqual([
+        remote.item.id,
+      ]);
+      expect(
+        f
+          .trace()
+          .some(
+            ([phase]) => phase === (failure === 'preparation' ? 'file-failed' : 'item-rollback')
+          )
+      ).toBe(true);
+      await shutdownControlStoreWorkerClient();
+      expect(readNativeProductEntries(lane.scope, lane.turn.id, 'item')).toEqual(retainedBefore);
+      expect(createTestStore({ dataRoot: f.root }).getTurnById(lane.turn.id).items).toEqual([
+        accepted.item,
+      ]);
+    }
+  );
 });
 
 /** Records both successful and refused public responses without leaving a rejection unobserved. */
@@ -415,37 +417,37 @@ function releasePending(f: Awaited<ReturnType<typeof fixture>>, lane: Lane) {
 }
 
 describe('native FIFO dependency and poisoned-drain crossings', () => {
-  it.each([
-    false,
-    true,
-  ])('orders owner-generated empty Pending work behind an Item (failure=%s)', async (fail) => {
-    const f = await fixture();
-    const [lane, sibling] = f.lanes as [Lane, Lane, Lane];
-    const [item, independent] = await Promise.all([f.entry(lane, 1), f.entry(sibling, 1)]);
-    const responses: string[] = [];
-    const posted = vi.spyOn(f.client, 'pendingCommand');
-    f.arm(item.input, fail);
-    const first = f.send(lane, [item.input]).then((result) => {
-      responses.push('item');
-      return result;
-    });
-    await f.wait(3);
-    const pending = observe(releasePending(f, lane), () => responses.push('pending'));
-    expect(await f.send(sibling, [independent.input])).toEqual({ ok: true });
-    await vi.waitFor(() => expect(posted).toHaveBeenCalled(), { timeout: 3000 });
-    expect(posted.mock.calls[0]![1]).toMatchObject({ products: [], entries: [], receipt: null });
-    // DX: a valid empty native tuple still acts on its named Turn and cannot pass its causal prefix.
-    expect(responses).toEqual([]);
-    release(4);
-    expect(await first).toMatchObject({ ok: !fail });
-    expect(await pending).toMatchObject(
-      fail ? { ok: false, error: { commit: 'not-committed' } } : { ok: true }
-    );
-    expect(responses).toEqual(['item', 'pending']);
-    expect(lane.reader.entries(lane.turn.id, 'item').map(({ id }) => id)).toEqual(
-      fail ? [] : [item.item.id]
-    );
-  });
+  it.each([false, true])(
+    'orders owner-generated empty Pending work behind an Item (failure=%s)',
+    async (fail) => {
+      const f = await fixture();
+      const [lane, sibling] = f.lanes as [Lane, Lane, Lane];
+      const [item, independent] = await Promise.all([f.entry(lane, 1), f.entry(sibling, 1)]);
+      const responses: string[] = [];
+      const posted = vi.spyOn(f.client, 'pendingCommand');
+      f.arm(item.input, fail);
+      const first = f.send(lane, [item.input]).then((result) => {
+        responses.push('item');
+        return result;
+      });
+      await f.wait(3);
+      const pending = observe(releasePending(f, lane), () => responses.push('pending'));
+      expect(await f.send(sibling, [independent.input])).toEqual({ ok: true });
+      await vi.waitFor(() => expect(posted).toHaveBeenCalled(), { timeout: 3000 });
+      expect(posted.mock.calls[0]![1]).toMatchObject({ products: [], entries: [], receipt: null });
+      // DX: a valid empty native tuple still acts on its named Turn and cannot pass its causal prefix.
+      expect(responses).toEqual([]);
+      release(4);
+      expect(await first).toMatchObject({ ok: !fail });
+      expect(await pending).toMatchObject(
+        fail ? { ok: false, error: { commit: 'not-committed' } } : { ok: true }
+      );
+      expect(responses).toEqual(['item', 'pending']);
+      expect(lane.reader.entries(lane.turn.id, 'item').map(({ id }) => id)).toEqual(
+        fail ? [] : [item.item.id]
+      );
+    }
+  );
 
   it('keeps poisoned refusals in Turn order until started native files drain', async () => {
     const f = await fixture();

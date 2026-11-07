@@ -84,121 +84,121 @@ afterEach(async () => {
 });
 
 describe('human Token verification through the native Core owner', () => {
-  it.each([
-    'explicit',
-    'native',
-  ] as const)('records successful use without a Main writer or bearer command with the %s clock', async (clock) => {
-    const f = fixture();
-    const tokenHash = hashOpenKitAccessTokenSecret(f.issued.secret);
-    const commands: Array<{ hasBearer: boolean; hasProof: boolean }> = [];
-    const original = Worker.prototype.postMessage;
-    vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
-      this: Worker,
-      ...args: Parameters<Worker['postMessage']>
-    ) {
-      const serialized = JSON.stringify(args[0]);
-      // Keep only Boolean observations: a failing assertion must not disclose credential material.
-      commands.push({
-        hasBearer: serialized.includes(f.issued.secret) || serialized.includes('okt_'),
-        hasProof: serialized.includes(f.issued.tokenId) && serialized.includes(tokenHash),
+  it.each(['explicit', 'native'] as const)(
+    'records successful use without a Main writer or bearer command with the %s clock',
+    async (clock) => {
+      const f = fixture();
+      const tokenHash = hashOpenKitAccessTokenSecret(f.issued.secret);
+      const commands: Array<{ hasBearer: boolean; hasProof: boolean }> = [];
+      const original = Worker.prototype.postMessage;
+      vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker['postMessage']>
+      ) {
+        const serialized = JSON.stringify(args[0]);
+        // Keep only Boolean observations: a failing assertion must not disclose credential material.
+        commands.push({
+          hasBearer: serialized.includes(f.issued.secret) || serialized.includes('okt_'),
+          hasProof: serialized.includes(f.issued.tokenId) && serialized.includes(tokenHash),
+        });
+        return original.apply(this, args);
       });
-      return original.apply(this, args);
-    });
-    rejectMainLastUseWrite();
-    const startedAt = Date.now();
+      rejectMainLastUseWrite();
+      const startedAt = Date.now();
 
-    const record = await verifyOpenKitAccessTokenRecord(f.coreDb, f.issued.secret, {
-      channel: 'remote-mcp',
-      source: 'loopback',
-      ...(clock === 'explicit' ? { now: NOW } : {}),
-    });
+      const record = await verifyOpenKitAccessTokenRecord(f.coreDb, f.issued.secret, {
+        channel: 'remote-mcp',
+        source: 'loopback',
+        ...(clock === 'explicit' ? { now: NOW } : {}),
+      });
 
-    // Remote Auth: Token format/record and channel authentication; Storage: native ownership.
-    expect(record !== null).toBe(true);
-    expect(record?.tokenId === f.issued.tokenId).toBe(true);
-    expect(record?.ownerUserId === f.ownerUserId).toBe(true);
-    expect(record?.lastUsedChannel).toBe('remote-mcp');
-    expect(record?.lastUsedSource).toBe('loopback');
-    if (clock === 'explicit') {
-      expect(record?.lastUsedAt).toBe(NOW.toISOString());
-    } else {
-      const usedAt = Date.parse(record?.lastUsedAt ?? '');
-      expect(usedAt >= startedAt && usedAt <= Date.now()).toBe(true);
+      // Remote Auth: Token format/record and channel authentication; Storage: native ownership.
+      expect(record !== null).toBe(true);
+      expect(record?.tokenId === f.issued.tokenId).toBe(true);
+      expect(record?.ownerUserId === f.ownerUserId).toBe(true);
+      expect(record?.lastUsedChannel).toBe('remote-mcp');
+      expect(record?.lastUsedSource).toBe('loopback');
+      if (clock === 'explicit') {
+        expect(record?.lastUsedAt).toBe(NOW.toISOString());
+      } else {
+        const usedAt = Date.parse(record?.lastUsedAt ?? '');
+        expect(usedAt >= startedAt && usedAt <= Date.now()).toBe(true);
+      }
+      const serializedRecord = JSON.stringify(record);
+      expect(serializedRecord.includes(tokenHash)).toBe(false);
+      expect(serializedRecord.includes(f.issued.secret)).toBe(false);
+      expect(Object.keys(record ?? {}).some((key) => /hash|secret/iu.test(key))).toBe(false);
+      expect(commands.length > 0).toBe(true);
+      expect(commands.every((command) => !command.hasBearer)).toBe(true);
+      expect(commands.filter((command) => command.hasProof).length).toBe(1);
+      const retained = getOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId);
+      expect(retained?.lastUsedAt).toBe(record?.lastUsedAt);
+      expect(retained?.lastUsedChannel).toBe('remote-mcp');
+      expect(retained?.lastUsedSource).toBe('loopback');
+      expect(f.coreDb.sqlite.inTransaction).toBe(false);
     }
-    const serializedRecord = JSON.stringify(record);
-    expect(serializedRecord.includes(tokenHash)).toBe(false);
-    expect(serializedRecord.includes(f.issued.secret)).toBe(false);
-    expect(Object.keys(record ?? {}).some((key) => /hash|secret/iu.test(key))).toBe(false);
-    expect(commands.length > 0).toBe(true);
-    expect(commands.every((command) => !command.hasBearer)).toBe(true);
-    expect(commands.filter((command) => command.hasProof).length).toBe(1);
-    const retained = getOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId);
-    expect(retained?.lastUsedAt).toBe(record?.lastUsedAt);
-    expect(retained?.lastUsedChannel).toBe('remote-mcp');
-    expect(retained?.lastUsedSource).toBe('loopback');
-    expect(f.coreDb.sqlite.inTransaction).toBe(false);
-  });
+  );
 
-  it.each([
-    'revoked',
-    'expired',
-    'hash-replaced',
-    'owner-disabled',
-    'grace-expired',
-  ] as const)('returns null without recording use when the current Token becomes %s after Main proof', async (fault) => {
-    const f = fixture();
-    if (fault === 'grace-expired') {
-      const rotation = rotateOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId, {
-        graceSeconds: 60,
+  it.each(['revoked', 'expired', 'hash-replaced', 'owner-disabled', 'grace-expired'] as const)(
+    'returns null without recording use when the current Token becomes %s after Main proof',
+    async (fault) => {
+      const f = fixture();
+      if (fault === 'grace-expired') {
+        const rotation = rotateOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId, {
+          graceSeconds: 60,
+          now: NOW,
+        });
+        expect(rotation !== null).toBe(true);
+      }
+      const crossings = changeAfterProof(f.coreDb, () => {
+        // Deliberate current-fact faults follow valid owner setup; they create no successful receipt.
+        switch (fault) {
+          case 'revoked':
+            revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId, NOW);
+            break;
+          case 'expired':
+            f.coreDb.sqlite
+              .prepare('UPDATE openkit_access_tokens SET expires_at = ? WHERE token_id = ?')
+              .run(NOW.toISOString(), f.issued.tokenId);
+            break;
+          case 'hash-replaced':
+            f.coreDb.sqlite
+              .prepare('UPDATE openkit_access_tokens SET token_hash = ? WHERE token_id = ?')
+              .run(
+                hashOpenKitAccessTokenSecret(createOpenKitAccessTokenSecret()),
+                f.issued.tokenId
+              );
+            break;
+          case 'owner-disabled':
+            f.coreDb.sqlite
+              .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
+              .run(f.ownerUserId);
+            break;
+          case 'grace-expired':
+            f.coreDb.sqlite
+              .prepare(
+                'UPDATE openkit_access_tokens SET rotated_grace_expires_at = ? WHERE token_id = ?'
+              )
+              .run(NOW.toISOString(), f.issued.tokenId);
+            break;
+        }
+      });
+      rejectMainLastUseWrite();
+
+      const record = await verifyOpenKitAccessTokenRecord(f.coreDb, f.issued.secret, {
+        channel: 'remote-mcp',
+        source: 'loopback',
         now: NOW,
       });
-      expect(rotation !== null).toBe(true);
+
+      // Immediate revocation, expiry/grace and active User authority must use current deciding facts.
+      expect(crossings()).toBe(1);
+      expect(record === null).toBe(true);
+      const retained = getOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId);
+      expect(retained?.lastUsedAt).toBeNull();
+      expect(retained?.lastUsedChannel).toBeNull();
+      expect(retained?.lastUsedSource).toBeNull();
+      expect(f.coreDb.sqlite.inTransaction).toBe(false);
     }
-    const crossings = changeAfterProof(f.coreDb, () => {
-      // Deliberate current-fact faults follow valid owner setup; they create no successful receipt.
-      switch (fault) {
-        case 'revoked':
-          revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId, NOW);
-          break;
-        case 'expired':
-          f.coreDb.sqlite
-            .prepare('UPDATE openkit_access_tokens SET expires_at = ? WHERE token_id = ?')
-            .run(NOW.toISOString(), f.issued.tokenId);
-          break;
-        case 'hash-replaced':
-          f.coreDb.sqlite
-            .prepare('UPDATE openkit_access_tokens SET token_hash = ? WHERE token_id = ?')
-            .run(hashOpenKitAccessTokenSecret(createOpenKitAccessTokenSecret()), f.issued.tokenId);
-          break;
-        case 'owner-disabled':
-          f.coreDb.sqlite
-            .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
-            .run(f.ownerUserId);
-          break;
-        case 'grace-expired':
-          f.coreDb.sqlite
-            .prepare(
-              'UPDATE openkit_access_tokens SET rotated_grace_expires_at = ? WHERE token_id = ?'
-            )
-            .run(NOW.toISOString(), f.issued.tokenId);
-          break;
-      }
-    });
-    rejectMainLastUseWrite();
-
-    const record = await verifyOpenKitAccessTokenRecord(f.coreDb, f.issued.secret, {
-      channel: 'remote-mcp',
-      source: 'loopback',
-      now: NOW,
-    });
-
-    // Immediate revocation, expiry/grace and active User authority must use current deciding facts.
-    expect(crossings()).toBe(1);
-    expect(record === null).toBe(true);
-    const retained = getOpenKitAccessTokenRecord(f.coreDb, f.issued.tokenId);
-    expect(retained?.lastUsedAt).toBeNull();
-    expect(retained?.lastUsedChannel).toBeNull();
-    expect(retained?.lastUsedSource).toBeNull();
-    expect(f.coreDb.sqlite.inTransaction).toBe(false);
-  });
+  );
 });

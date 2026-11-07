@@ -2255,39 +2255,39 @@ describe('workspace auxiliary lineage export', () => {
     );
   });
 
-  it.each([
-    false,
-    true,
-  ])('round trips source references and exact delivered previews with representation metadata=%s', async (retainRepresentation) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
-    let fixtureParent: string | undefined;
-    try {
-      const sourceRoot = join(root, 'source');
-      mkdirSync(sourceRoot);
-      const input = await createWorkResourceLineageExportInput(
-        undefined,
-        sourceRoot,
-        retainRepresentation
-      );
-      fixtureParent = dirname(input.exportRoot);
-      input.exportRoot = join(root, 'export');
-      writeWorkspacePortableFileState(sourceRoot, input.portableFileState!);
-      expect(
-        [...input.portableFileState.workerContextPackageFiles.keys()].some((path) =>
-          path.includes('/originals/')
-        )
-      ).toBe(false);
-      const verified = writeWorkspaceExportTree(input);
-      expect(
-        [...verified.artifactPayloadFiles.keys()].filter((path) =>
-          path.includes('/context-package/originals/')
-        )
-      ).toHaveLength(0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-      if (fixtureParent) rmSync(fixtureParent, { recursive: true, force: true });
+  it.each([false, true])(
+    'round trips source references and exact delivered previews with representation metadata=%s',
+    async (retainRepresentation) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
+      let fixtureParent: string | undefined;
+      try {
+        const sourceRoot = join(root, 'source');
+        mkdirSync(sourceRoot);
+        const input = await createWorkResourceLineageExportInput(
+          undefined,
+          sourceRoot,
+          retainRepresentation
+        );
+        fixtureParent = dirname(input.exportRoot);
+        input.exportRoot = join(root, 'export');
+        writeWorkspacePortableFileState(sourceRoot, input.portableFileState!);
+        expect(
+          [...input.portableFileState.workerContextPackageFiles.keys()].some((path) =>
+            path.includes('/originals/')
+          )
+        ).toBe(false);
+        const verified = writeWorkspaceExportTree(input);
+        expect(
+          [...verified.artifactPayloadFiles.keys()].filter((path) =>
+            path.includes('/context-package/originals/')
+          )
+        ).toHaveLength(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        if (fixtureParent) rmSync(fixtureParent, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('exports Knowledge exclusion revisions against the source Notebook and preserves historical absence', async () => {
     // Current exclusions carry the source Notebook revision. Legacy exclusions omit it.

@@ -511,144 +511,145 @@ it('answers an actual empty thread-scoped retrieval with uncertainty and no cita
   expect(f.store.listThreadTurns(f.workspaceId, f.timeline.id)).toEqual([]);
 }, 120_000);
 
-it.each([
-  'foreign-user',
-  'wrong-thread',
-  'revoked-source',
-] as const)('refuses %s evidence without borrowing a KM Turn or disclosing private Source content', async (fault) => {
-  const f = await fixture();
-  initializeScopedNotebook({
-    ...f.writer,
-    target: { kind: 'user' },
-    initialization: { requestId: randomUUID(), instructionReference: 'test:source-admission' },
-  });
-  const source = await registerUserKnowledgeSource(f.writer, {
-    requestId: randomUUID(),
-    kind: 'document',
-    title: 'Private preference Source',
-    content: 'PRIVATE_TELL_ASK_SOURCE_BODY',
-  });
-  const content = updateOkfFrontmatter({
-    path: 'labels.md',
-    content: f.page(`source:${source.id}@${source.contentDigest}`, preference, 'active'),
-    updates: { created_at: nativeTime, updated_at: nativeTime, review_state: 'user-authored' },
-  });
-  await saveMemoryPage(f.writer, {
-    requestId: randomUUID(),
-    baseRevision: f.notebook.publishedRevision(),
-    pageId: 'labels',
-    content,
-    summary: 'Author the private Source-backed control.',
-  });
-  const selection = await f.search();
-  expect(selection.selected.some(({ reference }) => reference.objectId === 'labels')).toBe(true);
-  expect(selection.retrievalTraceRef!.scopeId).toBe(
-    `retrieval-trace/thread/${f.workspaceId}/${f.timeline.id}`
-  );
-  const work = await f.store.createThread(
-    f.workspaceId,
-    'Independent private KM work',
-    undefined,
-    'knowledge-manager',
-    { visibility: 'private', privateOwnerUserId: f.userId }
-  );
-  const turn = await f.store.createTurn(
-    f.workspaceId,
-    work.id,
-    'Verify private query evidence.',
-    f.access.actor,
-    null,
-    { agentId: 'knowledge-manager' }
-  );
-  const callId = randomUUID();
-  const items = await createKnowledgeManagerTranscript(
-    f.store,
-    turn,
-    f.access.actor
-  )([
-    {
-      role: 'assistant',
-      truncated: false,
-      content: [
-        {
-          type: 'toolCall',
-          name: 'knowledge.retrieval',
-          callId,
-          arguments: { query: 'meridian label' },
-        },
-      ],
-    },
-    {
-      role: 'tool',
-      callId,
-      isError: false,
-      content: [{ type: 'text', text: JSON.stringify(selection) }],
-    },
-  ]);
-  const evidence = {
-    store: f.store,
-    coreDb: f.coreDb,
-    actor: f.writer.actor,
-    workspaceId: f.workspaceId,
-    threadId: work.id,
-    items,
-    strategy: 'compaction' as const,
-    knowledgeProjection: 'selection' as const,
-    retrievalContext: { threadId: f.timeline.id },
-  };
-  // Temporary type bridge: the accepted input has a Thread and no Turn; the current type still requires a Turn.
-  const verify = (input: typeof evidence) =>
-    readInternalContextEvidence(input as Parameters<typeof readInternalContextEvidence>[0]);
-  expect.soft(() => verify(evidence)).not.toThrow();
-  if (fault === 'foreign-user') evidence.actor = { kind: 'local', userId: allocateEntityId('usr') };
-  else if (fault === 'wrong-thread') evidence.retrievalContext = { threadId: work.id };
-  else {
-    const exact = f.notebook.readRevision(f.notebook.publishedRevision());
-    let step = 0;
-    f.createResponses.mockImplementation(async (_provider, request) => {
-      if (++step === 1)
-        return call('knowledge.retrieval', { query: 'meridian label ORCHID-TEAL-42' });
-      expect(output(request, 'knowledge.retrieval').sources[0].selected).not.toEqual([]);
-      recordMemorySuppression(f.writer, {
-        requestId: randomUUID(),
-        pageId: 'labels',
-        notebookRevision: exact.revision,
-        digest: digest(exact.files['labels.md']!),
-      });
-      return call('knowledge.result', {
-        answer: 'The previously selected source is no longer available.',
-        citationIds: [],
-        uncertainty: 'Current source authority changed.',
-      });
+it.each(['foreign-user', 'wrong-thread', 'revoked-source'] as const)(
+  'refuses %s evidence without borrowing a KM Turn or disclosing private Source content',
+  async (fault) => {
+    const f = await fixture();
+    initializeScopedNotebook({
+      ...f.writer,
+      target: { kind: 'user' },
+      initialization: { requestId: randomUUID(), instructionReference: 'test:source-admission' },
     });
-    const failed = await f.ask().catch((error: unknown) => error);
-    expect(failed).toMatchObject({ code: 'knowledge_query_failed', status: 422 });
-    expect.soft(step).toBe(2);
-    const failedTurn = f.store.getTurnById(
-      (failed as { details: { turnId: string } }).details.turnId
+    const source = await registerUserKnowledgeSource(f.writer, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Private preference Source',
+      content: 'PRIVATE_TELL_ASK_SOURCE_BODY',
+    });
+    const content = updateOkfFrontmatter({
+      path: 'labels.md',
+      content: f.page(`source:${source.id}@${source.contentDigest}`, preference, 'active'),
+      updates: { created_at: nativeTime, updated_at: nativeTime, review_state: 'user-authored' },
+    });
+    await saveMemoryPage(f.writer, {
+      requestId: randomUUID(),
+      baseRevision: f.notebook.publishedRevision(),
+      pageId: 'labels',
+      content,
+      summary: 'Author the private Source-backed control.',
+    });
+    const selection = await f.search();
+    expect(selection.selected.some(({ reference }) => reference.objectId === 'labels')).toBe(true);
+    expect(selection.retrievalTraceRef!.scopeId).toBe(
+      `retrieval-trace/thread/${f.workspaceId}/${f.timeline.id}`
     );
-    // COORD00:3xZ: the real bounded loop's source failure must survive the KM no-result boundary.
-    expect
-      .soft(failedTurn.error)
-      .toMatchObject({ code: 'internal_agent_context_source_unavailable' });
-    // On old production, thread admission fails before revocation can run. Keep the lower refusal control reachable.
-    if (step === 1)
-      recordMemorySuppression(f.writer, {
-        requestId: randomUUID(),
-        pageId: 'labels',
-        notebookRevision: exact.revision,
-        digest: digest(exact.files['labels.md']!),
+    const work = await f.store.createThread(
+      f.workspaceId,
+      'Independent private KM work',
+      undefined,
+      'knowledge-manager',
+      { visibility: 'private', privateOwnerUserId: f.userId }
+    );
+    const turn = await f.store.createTurn(
+      f.workspaceId,
+      work.id,
+      'Verify private query evidence.',
+      f.access.actor,
+      null,
+      { agentId: 'knowledge-manager' }
+    );
+    const callId = randomUUID();
+    const items = await createKnowledgeManagerTranscript(
+      f.store,
+      turn,
+      f.access.actor
+    )([
+      {
+        role: 'assistant',
+        truncated: false,
+        content: [
+          {
+            type: 'toolCall',
+            name: 'knowledge.retrieval',
+            callId,
+            arguments: { query: 'meridian label' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        callId,
+        isError: false,
+        content: [{ type: 'text', text: JSON.stringify(selection) }],
+      },
+    ]);
+    const evidence = {
+      store: f.store,
+      coreDb: f.coreDb,
+      actor: f.writer.actor,
+      workspaceId: f.workspaceId,
+      threadId: work.id,
+      items,
+      strategy: 'compaction' as const,
+      knowledgeProjection: 'selection' as const,
+      retrievalContext: { threadId: f.timeline.id },
+    };
+    // Temporary type bridge: the accepted input has a Thread and no Turn; the current type still requires a Turn.
+    const verify = (input: typeof evidence) =>
+      readInternalContextEvidence(input as Parameters<typeof readInternalContextEvidence>[0]);
+    expect.soft(() => verify(evidence)).not.toThrow();
+    if (fault === 'foreign-user')
+      evidence.actor = { kind: 'local', userId: allocateEntityId('usr') };
+    else if (fault === 'wrong-thread') evidence.retrievalContext = { threadId: work.id };
+    else {
+      const exact = f.notebook.readRevision(f.notebook.publishedRevision());
+      let step = 0;
+      f.createResponses.mockImplementation(async (_provider, request) => {
+        if (++step === 1)
+          return call('knowledge.retrieval', { query: 'meridian label ORCHID-TEAL-42' });
+        expect(output(request, 'knowledge.retrieval').sources[0].selected).not.toEqual([]);
+        recordMemorySuppression(f.writer, {
+          requestId: randomUUID(),
+          pageId: 'labels',
+          notebookRevision: exact.revision,
+          digest: digest(exact.files['labels.md']!),
+        });
+        return call('knowledge.result', {
+          answer: 'The previously selected source is no longer available.',
+          citationIds: [],
+          uncertainty: 'Current source authority changed.',
+        });
       });
-    expect(await readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
-  }
-  let error: unknown;
-  try {
-    verify(evidence);
-  } catch (caught) {
-    error = caught;
-  }
-  expect(error).toMatchObject({ code: 'internal_agent_context_source_unavailable' });
-  expect((error as Error).message).not.toContain('PRIVATE_TELL_ASK_SOURCE_BODY');
-  expect((error as Error).message).not.toContain(source.id);
-  if (fault !== 'revoked-source') expect(f.createResponses).not.toHaveBeenCalled();
-}, 120_000);
+      const failed = await f.ask().catch((error: unknown) => error);
+      expect(failed).toMatchObject({ code: 'knowledge_query_failed', status: 422 });
+      expect.soft(step).toBe(2);
+      const failedTurn = f.store.getTurnById(
+        (failed as { details: { turnId: string } }).details.turnId
+      );
+      // COORD00:3xZ: the real bounded loop's source failure must survive the KM no-result boundary.
+      expect
+        .soft(failedTurn.error)
+        .toMatchObject({ code: 'internal_agent_context_source_unavailable' });
+      // On old production, thread admission fails before revocation can run. Keep the lower refusal control reachable.
+      if (step === 1)
+        recordMemorySuppression(f.writer, {
+          requestId: randomUUID(),
+          pageId: 'labels',
+          notebookRevision: exact.revision,
+          digest: digest(exact.files['labels.md']!),
+        });
+      expect(await readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
+    }
+    let error: unknown;
+    try {
+      verify(evidence);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: 'internal_agent_context_source_unavailable' });
+    expect((error as Error).message).not.toContain('PRIVATE_TELL_ASK_SOURCE_BODY');
+    expect((error as Error).message).not.toContain(source.id);
+    if (fault !== 'revoked-source') expect(f.createResponses).not.toHaveBeenCalled();
+  },
+  120_000
+);

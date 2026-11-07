@@ -109,26 +109,25 @@ describe('Assistant resource selection configuration seam', () => {
     expect(readFileSync(path, 'utf8')).toBe(nextBytes);
   });
 
-  it.each([
-    undefined,
-    {},
-    { resources: { skillIds: [] } },
-  ])('loads an empty or omitted selection without selecting installed Skills: %j', (assistant) => {
-    const { dataRoot, path } = createSelectionFixture();
-    const bytes = authoredSelection(assistant);
-    const produced = WorkspaceConfigSchema.parse(parseJsoncObject(bytes, path));
-    writeFileSync(path, bytes);
+  it.each([undefined, {}, { resources: { skillIds: [] } }])(
+    'loads an empty or omitted selection without selecting installed Skills: %j',
+    (assistant) => {
+      const { dataRoot, path } = createSelectionFixture();
+      const bytes = authoredSelection(assistant);
+      const produced = WorkspaceConfigSchema.parse(parseJsoncObject(bytes, path));
+      writeFileSync(path, bytes);
 
-    const snapshot = loadRuntimeConfig(dataRoot);
-    expect(snapshot.workspaceConfigs[0]?.config).toEqual(produced);
-    expect(snapshot.workspaceConfigs[0]?.config.workspace.assistant).not.toHaveProperty(
-      'resources.skillIds.0'
-    );
-    expect(snapshot.workspaceConfigs[0]?.config.workspace.assistant).toMatchObject({
-      repositoryInspection: { enabled: true, excludedPaths: [] },
-    });
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
-  });
+      const snapshot = loadRuntimeConfig(dataRoot);
+      expect(snapshot.workspaceConfigs[0]?.config).toEqual(produced);
+      expect(snapshot.workspaceConfigs[0]?.config.workspace.assistant).not.toHaveProperty(
+        'resources.skillIds.0'
+      );
+      expect(snapshot.workspaceConfigs[0]?.config.workspace.assistant).toMatchObject({
+        repositoryInspection: { enabled: true, excludedPaths: [] },
+      });
+      expect(readFileSync(path, 'utf8')).toBe(bytes);
+    }
+  );
 
   it('retains the last good snapshot after invalid selection and recovers from corrected source', async () => {
     const { dataRoot, path } = createSelectionFixture();

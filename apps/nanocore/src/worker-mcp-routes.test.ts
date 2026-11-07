@@ -285,1147 +285,1148 @@ async function reopenCopiedMcpStore(dataRoot: string): Promise<FsStore> {
 }
 
 describe('worker MCP routes', () => {
-  it.each([
-    '$ref',
-    'after-header-mismatch',
-  ] as const)('accounts actual SDK output-schema failure %s through the Worker route', async (outputSchemaFault) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-schema-usage-'));
-    const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
-    const coreDb = openCopiedMcpCore(dataRoot);
-    const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const store = await reopenCopiedMcpStore(dataRoot);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
-    const turn = await store.createTurn(
-      workspaceId,
-      'th_00000000-0000-7000-8000-000000000001',
-      'Call schema-qualified MCP',
-      actor
-    );
-    const catalog = {
-      schemaVersion: 1 as const,
-      servers: [
-        {
-          id: 'echo',
-          enabled: true,
-          allowedTools: ['echo', 'valid-sibling'],
-          credentialBindings: [],
-          pinnedSchemaSnapshotId: null,
-          schemaPolicy: 'tracking' as const,
-          timeoutMs: 2_000,
-          transport: { kind: 'http' as const, endpoint: upstream.url },
-        },
-      ],
-    };
-    const environmentPackage = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: testEntityId('as', 'mcp-schema-usage'),
-      agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
-      backend: { kind: 'openshell' },
-      createdAt: '2026-11-01T00:00:00.000Z',
-      requestId: 'req_mcp_schema_usage',
-      triggerActor: actor,
-      turn,
-      workspaceCwd: '/workspace',
-      workspaceMcpServerCatalog: catalog,
-      workspaceRoots: [],
-    });
-    recordMcpWorkerLineage(coreDb, environmentPackage);
-    const db = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
-    await recordAgentEnvironmentPackageSnapshot(db, {
-      environmentPackage,
-      createdAt: '2026-11-01T00:00:00.000Z',
-    });
-    await openTestNativeWorkspace(db);
-    const gateway = createDefaultWorkerMcpGateway(coreDb);
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
-      coreDb,
-      store,
-      workerMcpGateway: gateway,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          workspaceMcpServerCatalogs: [
-            { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
-          ],
-        }),
-      workerControlGateway: {
-        authenticatePackageToken: vi.fn(() => environmentPackage),
-      } as unknown as WorkerControlGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-    });
-    // Raw Worker requests keep output compilation inside the actual Gateway SDK client.
-    const call = async (id: number, name: string) => {
-      const response = await app.request('/api/worker-capabilities/mcp/echo', {
-        method: 'POST',
-        headers: {
-          accept: 'application/json, text/event-stream',
-          authorization: 'Bearer schema-fixture',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id,
-          method: 'tools/call',
-          params: { name, arguments: { message: 'schema usage' } },
-        }),
-      });
-      return response.json();
-    };
-    try {
-      expect(await call(1, 'valid-sibling')).toMatchObject({
-        result: { content: [{ text: 'schema usage' }] },
-      });
-      expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
-        'handler|tools/call|valid-sibling',
-        'handler|tools/call|valid-sibling',
-      ]);
-      const before = listWorkspaceCapabilityCalls(db, workspaceId);
-      expect(before).toHaveLength(1);
-      expect(before[0]).toMatchObject({ status: 'succeeded' });
-      expect(listWorkspaceUsageRecords(db, workspaceId)).toEqual([
-        expect.objectContaining({
-          capabilityCallId: before[0]!.id,
-          category: 'tool',
-          unit: 'tool_calls',
-          quantity: 1,
-        }),
-      ]);
-      const response = await call(2, 'echo');
-      const contacted = outputSchemaFault === 'after-header-mismatch';
-      expect(
-        upstream.observed.filter((request) => request === 'handler|tools/call|echo')
-      ).toHaveLength(contacted ? 1 : 0);
-      expect(response).toMatchObject({
-        error: {
-          message: contacted
-            ? 'MCP tool call failed.'
-            : 'MCP call ended failed. The requested Tool was not contacted.',
-          data: { code: contacted ? 'mcp-call-failed' : 'mcp-server-unavailable' },
-        },
-      });
-      if (!contacted)
-        expect(response.error.data.details).toMatchObject({
-          outcome: 'failed',
-          upstreamEffect: 'not-contacted',
-        });
-      else expect(response.error.data.details?.upstreamEffect).not.toBe('not-contacted');
-      expect(JSON.stringify(response)).not.toContain('sdk-schema-canary');
-      const calls = listWorkspaceCapabilityCalls(db, workspaceId).filter(
-        (record) => record.id !== before[0]!.id
-      );
-      expect(calls).toEqual([
-        expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
-      ]);
-      const failed = calls[0]!;
-      const usage = listWorkspaceUsageRecords(db, workspaceId).filter(
-        (row) => row.capabilityCallId === failed.id
-      );
-      expect(usage).toEqual(
-        contacted
-          ? [expect.objectContaining({ category: 'tool', unit: 'tool_calls', quantity: 1 })]
-          : []
-      );
-      expect(store.listAllItems().filter((item) => item.id === failed.itemId)).toEqual([
-        expect.objectContaining({ type: 'tool-call', status: 'failed', causationId: failed.id }),
-      ]);
-      expect(
-        listWorkspaceAuditEvents(db, workspaceId).filter(
-          (event) => event.capabilityCallId === failed.id && event.action === 'capability.finish'
-        )
-      ).toHaveLength(1);
-    } finally {
-      await gateway.close();
-      await upstream.close();
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    'member',
-    'nonmember admin revoked',
-    'nonmember admin disabled',
-  ] as const)('mediates seeded I16 calls through admitted Policy before credentials and upstream effects: %s', async (authorityCase) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-i16-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const browserCredentials = {
-      name: 'I16 administrator',
-      email: 'i16-admin@example.invalid',
-      password: randomUUID(),
-    };
-    if (authorityCase !== 'member') {
-      const bootstrap = ensureServerBootstrapToken(coreDb);
-      if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
-      const consumed = await consumeServerBootstrapToken(coreDb, {
-        token: bootstrap.token,
-        ownerUserId: allocateEntityId('usr'),
-        displayName: browserCredentials.name,
-        email: browserCredentials.email,
-        password: browserCredentials.password,
-        tokenExpiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
-      expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
-    }
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    let userId = 'usr_00000000-0000-7000-8000-000000000001';
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-    if (authorityCase !== 'member') {
-      const auth = createBetterAuth(coreDb, {
-        mode: 'server',
-        env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
-      });
-      const registered = await auth.handler(
-        new Request('http://nanocore.test/api/auth/sign-in/email', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(browserCredentials),
-        })
-      );
-      expect(registered.status).toBe(200);
-      const { user } = (await registered.json()) as { user: { id: string } };
-      userId = user.id;
-      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId)).toBeNull();
-    }
-    const turn = await store.createTurn(
-      workspaceId,
-      'th_00000000-0000-7000-8000-000000000001',
-      'Call mediated echo',
-      { kind: 'user', id: userId }
-    );
-    const agentSessionId = testEntityId('as', 'i16_route');
-    await store.createAgentSession({
-      id: agentSessionId,
-      agentId: 'agent_codex_host',
-      workspaceId,
-      threadId: turn.threadId,
-      status: 'busy',
-      message: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    await store.updateTurn(turn.id, {
-      agentSessionId,
-      agentId: 'agent_codex_host',
-      status: 'running',
-    });
-    const issued = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: userId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const token = issued.record;
-    const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
-    if (!verified) throw new Error('I16 administrator bearer must authenticate.');
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server/vault'),
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
-    const referenceId = testEntityId('vault', 'i16_route');
-    vaultUnlockState.backend().store({
-      material: 'synthetic-i16-fixture-credential',
-      metadata: { ownerScope: 'workspace', workspaceId },
-      referenceId,
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: `encrypted-file://workspace/${referenceId}`,
-      displayName: 'I16 fixture',
-      ownerScope: 'workspace',
-      referenceId,
-      secretKind: 'http-bearer',
-      workspaceId,
-    });
-    const grant = await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['gateway-only'],
-      grantId: testEntityId('grant', 'i16_route'),
-      lifetime: 'workspace',
-      ownerScope: 'workspace',
-      targetCapabilityId: null,
-      vaultReferenceId: referenceId,
-      workspaceId,
-    });
-    const catalog = parseWorkspaceMcpServerCatalog({
-      schemaVersion: 1 as const,
-      servers: [
-        {
-          id: 'echo',
-          enabled: true,
-          allowedTools: ['echo'],
-          credentialBindings: [
-            {
-              presentation: 'bearer' as const,
-              sink: { kind: 'header' as const, name: 'authorization' },
-              slot: 'auth',
-              vaultGrantId: grant.grantId,
-            },
-          ],
-          schemaPolicy: 'tracking' as const,
-          pinnedSchemaSnapshotId: null,
-          timeoutMs: 2000,
-          transport: { kind: 'http' as const, endpoint: 'https://i16.invalid/mcp' },
-        },
-      ],
-    });
-    catalog.servers.push({
-      ...catalog.servers[0]!,
-      id: 'echo-approval',
-    });
-    const environmentPackage = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId,
-      agentSetup: createTestAgentSetup({ mcpIds: ['echo', 'echo-approval'] }),
-      backend: { kind: 'openshell' },
-      createdAt: new Date().toISOString(),
-      requestId: 'req_i16_route',
-      triggerActor: turn.triggerActor,
-      turn,
-      workspaceCwd: '/workspace',
-      workspaceMcpServerCatalog: catalog,
-      workspaceRoots: [],
-    });
-    recordMcpWorkerLineage(coreDb, environmentPackage, token.tokenId);
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    const tools = [
-      {
-        name: 'echo',
-        inputSchema: {
-          type: 'object' as const,
-          properties: { message: { type: 'string' } },
-          required: ['message'],
-          additionalProperties: false,
-        },
-      },
-    ];
-    const gateway: WorkerMcpGateway = {
-      listTools: vi.fn(async () => ({ serverVersion: 'i16-fixture', tools })),
-      callTool: vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'completed' }] })),
-      close: vi.fn(async () => {}),
-      closeServer: vi.fn(async () => {}),
-      closeServerIfIdle: vi.fn(async () => {}),
-      closeWorkspace: vi.fn(async () => {}),
-      getServerHealth: () => 'ready',
-    };
-    const participantVersion = `sha256:${'1'.repeat(64)}`;
-    let gate: 'allow' | 'deny' = 'allow';
-    let hold: Promise<void> | undefined;
-    let entered = () => {};
-    const invoke = vi.fn(
-      async ({
-        proposal,
-      }: Parameters<
-        NonNullable<ConstructorParameters<typeof PolicyInterception>[0]>['invoke']
-      >[0]) => {
-        expect(proposal).not.toHaveProperty('arguments');
-        entered();
-        if (hold) await hold;
-        return { decision: gate };
-      }
-    );
-    const interception = new PolicyInterception({
-      id: 'i16-fixture',
-      version: participantVersion,
-      invoke,
-    });
-    const principal = { kind: 'human' as const, id: userId };
-    const scope = {
-      subjects: [principal],
-      actions: ['tool.use'],
-      resources: ['echo', 'echo-approval'].map((serverId) => ({
-        kind: 'mcp-tool' as const,
+  it.each(['$ref', 'after-header-mismatch'] as const)(
+    'accounts actual SDK output-schema failure %s through the Worker route',
+    async (outputSchemaFault) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-schema-usage-'));
+      const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
+      const coreDb = openCopiedMcpCore(dataRoot);
+      const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const store = await reopenCopiedMcpStore(dataRoot);
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
+      const turn = await store.createTurn(
         workspaceId,
-        serverId,
-        toolName: 'echo',
-      })),
-    };
-    let document = EMPTY_POLICY_DOCUMENT;
-    let conditions: typeof document.statements = [];
-    const admit = async (version = participantVersion, failure?: 'error') => {
-      const prepared = preparePolicyDocument({
-        current: document,
-        userId,
-        now: new Date().toISOString(),
-        proposed: PolicyDocumentV1Schema.parse({
-          schemaVersion: 1,
-          statements: [
-            ...conditions,
-            {
-              id: 'i16-gate',
-              kind: 'binding',
-              author: principal,
-              authority: { kind: 'human', userId },
-              authoredAt: new Date().toISOString(),
-              scope,
-              lifetime: {
-                anchor: {
-                  owner: { kind: 'workspace', workspaceId },
-                  kind: 'workspace',
-                  id: workspaceId,
-                },
-              },
-              state: 'active',
-              operation: 'mcp.call-tool',
-              stage: 'decide',
-
-              mode: 'gate',
-              participant: { kind: 'deterministic', id: 'i16-fixture', version },
-
-              inputDisclosure: scope,
-
-              order: 0,
-              timeoutMs: 10000,
-              ...(failure ? { failure } : {}),
-              circuit: { failures: 1, recoveryAfterMs: 1 },
-            },
-          ],
-        }),
-      });
-      await recordPolicyWriteDecision({
-        coreDb,
-        actor:
-          authorityCase === 'member'
-            ? { kind: 'local', userId }
-            : {
-                kind: 'token',
-                userId: verified.ownerUserId,
-                tokenId: verified.tokenId,
-                tokenScope: verified.scope,
-              },
-        candidate: {
-          artifactId: testEntityId('ar', 'i16_policy'),
-          contentDigest: policyDigest(prepared.document),
-        },
-        proposal: {
-          schemaVersion: 1,
-          proposer: principal,
-          rationale: 'Exercise admitted native I16 mediation.',
-          baseRevision: policyDigest(document),
-          proposed: prepared.document,
-          diff: prepared.diff,
-          classification: prepared.classification,
-          validation: 'valid',
-        },
-        requestId: 'req_i16_policy',
-        threadId: turn.threadId,
-        turnId: turn.id,
-      });
-      document = prepared.document;
-      expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
-    };
-    const condition = async (effect: 'prohibit' | 'require_approval', serverId = 'echo') => {
-      conditions = [
-        {
-          id: 'human-mcp-condition',
-          kind: 'permission',
-          effect,
-          grant: { kind: 'ordinary' },
-          author: principal,
-          authority: { kind: 'human', userId },
-          authoredAt: new Date().toISOString(),
-          state: 'active',
-          scope: {
-            subjects: [principal],
-            actions: ['tool.use'],
-            resources: [{ kind: 'mcp-tool', workspaceId, serverId, toolName: 'echo' }],
+        'th_00000000-0000-7000-8000-000000000001',
+        'Call schema-qualified MCP',
+        actor
+      );
+      const catalog = {
+        schemaVersion: 1 as const,
+        servers: [
+          {
+            id: 'echo',
+            enabled: true,
+            allowedTools: ['echo', 'valid-sibling'],
+            credentialBindings: [],
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking' as const,
+            timeoutMs: 2_000,
+            transport: { kind: 'http' as const, endpoint: upstream.url },
           },
-          lifetime: {
-            anchor: {
-              owner: { kind: 'workspace', workspaceId },
-              kind: 'workspace',
-              id: workspaceId,
-            },
+        ],
+      };
+      const environmentPackage = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: testEntityId('as', 'mcp-schema-usage'),
+        agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
+        backend: { kind: 'openshell' },
+        createdAt: '2026-11-01T00:00:00.000Z',
+        requestId: 'req_mcp_schema_usage',
+        triggerActor: actor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceMcpServerCatalog: catalog,
+        workspaceRoots: [],
+      });
+      recordMcpWorkerLineage(coreDb, environmentPackage);
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      await recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: '2026-11-01T00:00:00.000Z',
+      });
+      await openTestNativeWorkspace(db);
+      const gateway = createDefaultWorkerMcpGateway(coreDb);
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        store,
+        workerMcpGateway: gateway,
+        runtimeConfig: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            dataRoot,
+            workspaceMcpServerCatalogs: [
+              { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
+            ],
+          }),
+        workerControlGateway: {
+          authenticatePackageToken: vi.fn(() => environmentPackage),
+        } as unknown as WorkerControlGateway,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      });
+      // Raw Worker requests keep output compilation inside the actual Gateway SDK client.
+      const call = async (id: number, name: string) => {
+        const response = await app.request('/api/worker-capabilities/mcp/echo', {
+          method: 'POST',
+          headers: {
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer schema-fixture',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            method: 'tools/call',
+            params: { name, arguments: { message: 'schema usage' } },
+          }),
+        });
+        return response.json();
+      };
+      try {
+        expect(await call(1, 'valid-sibling')).toMatchObject({
+          result: { content: [{ text: 'schema usage' }] },
+        });
+        expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
+          'handler|tools/call|valid-sibling',
+          'handler|tools/call|valid-sibling',
+        ]);
+        const before = listWorkspaceCapabilityCalls(db, workspaceId);
+        expect(before).toHaveLength(1);
+        expect(before[0]).toMatchObject({ status: 'succeeded' });
+        expect(listWorkspaceUsageRecords(db, workspaceId)).toEqual([
+          expect.objectContaining({
+            capabilityCallId: before[0]!.id,
+            category: 'tool',
+            unit: 'tool_calls',
+            quantity: 1,
+          }),
+        ]);
+        const response = await call(2, 'echo');
+        const contacted = outputSchemaFault === 'after-header-mismatch';
+        expect(
+          upstream.observed.filter((request) => request === 'handler|tools/call|echo')
+        ).toHaveLength(contacted ? 1 : 0);
+        expect(response).toMatchObject({
+          error: {
+            message: contacted
+              ? 'MCP tool call failed.'
+              : 'MCP call ended failed. The requested Tool was not contacted.',
+            data: { code: contacted ? 'mcp-call-failed' : 'mcp-server-unavailable' },
+          },
+        });
+        if (!contacted)
+          expect(response.error.data.details).toMatchObject({
+            outcome: 'failed',
+            upstreamEffect: 'not-contacted',
+          });
+        else expect(response.error.data.details?.upstreamEffect).not.toBe('not-contacted');
+        expect(JSON.stringify(response)).not.toContain('sdk-schema-canary');
+        const calls = listWorkspaceCapabilityCalls(db, workspaceId).filter(
+          (record) => record.id !== before[0]!.id
+        );
+        expect(calls).toEqual([
+          expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
+        ]);
+        const failed = calls[0]!;
+        const usage = listWorkspaceUsageRecords(db, workspaceId).filter(
+          (row) => row.capabilityCallId === failed.id
+        );
+        expect(usage).toEqual(
+          contacted
+            ? [expect.objectContaining({ category: 'tool', unit: 'tool_calls', quantity: 1 })]
+            : []
+        );
+        expect(store.listAllItems().filter((item) => item.id === failed.itemId)).toEqual([
+          expect.objectContaining({ type: 'tool-call', status: 'failed', causationId: failed.id }),
+        ]);
+        expect(
+          listWorkspaceAuditEvents(db, workspaceId).filter(
+            (event) => event.capabilityCallId === failed.id && event.action === 'capability.finish'
+          )
+        ).toHaveLength(1);
+      } finally {
+        await gateway.close();
+        await upstream.close();
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(['member', 'nonmember admin revoked', 'nonmember admin disabled'] as const)(
+    'mediates seeded I16 calls through admitted Policy before credentials and upstream effects: %s',
+    async (authorityCase) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-i16-route-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const browserCredentials = {
+        name: 'I16 administrator',
+        email: 'i16-admin@example.invalid',
+        password: randomUUID(),
+      };
+      if (authorityCase !== 'member') {
+        const bootstrap = ensureServerBootstrapToken(coreDb);
+        if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+        const consumed = await consumeServerBootstrapToken(coreDb, {
+          token: bootstrap.token,
+          ownerUserId: allocateEntityId('usr'),
+          displayName: browserCredentials.name,
+          email: browserCredentials.email,
+          password: browserCredentials.password,
+          tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+        expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
+      }
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      let userId = 'usr_00000000-0000-7000-8000-000000000001';
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+      if (authorityCase !== 'member') {
+        const auth = createBetterAuth(coreDb, {
+          mode: 'server',
+          env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
+        });
+        const registered = await auth.handler(
+          new Request('http://nanocore.test/api/auth/sign-in/email', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(browserCredentials),
+          })
+        );
+        expect(registered.status).toBe(200);
+        const { user } = (await registered.json()) as { user: { id: string } };
+        userId = user.id;
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId)).toBeNull();
+      }
+      const turn = await store.createTurn(
+        workspaceId,
+        'th_00000000-0000-7000-8000-000000000001',
+        'Call mediated echo',
+        { kind: 'user', id: userId }
+      );
+      const agentSessionId = testEntityId('as', 'i16_route');
+      await store.createAgentSession({
+        id: agentSessionId,
+        agentId: 'agent_codex_host',
+        workspaceId,
+        threadId: turn.threadId,
+        status: 'busy',
+        message: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      await store.updateTurn(turn.id, {
+        agentSessionId,
+        agentId: 'agent_codex_host',
+        status: 'running',
+      });
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const token = issued.record;
+      const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+      if (!verified) throw new Error('I16 administrator bearer must authenticate.');
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server/vault'),
+      });
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
+      const referenceId = testEntityId('vault', 'i16_route');
+      vaultUnlockState.backend().store({
+        material: 'synthetic-i16-fixture-credential',
+        metadata: { ownerScope: 'workspace', workspaceId },
+        referenceId,
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://workspace/${referenceId}`,
+        displayName: 'I16 fixture',
+        ownerScope: 'workspace',
+        referenceId,
+        secretKind: 'http-bearer',
+        workspaceId,
+      });
+      const grant = await createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['gateway-only'],
+        grantId: testEntityId('grant', 'i16_route'),
+        lifetime: 'workspace',
+        ownerScope: 'workspace',
+        targetCapabilityId: null,
+        vaultReferenceId: referenceId,
+        workspaceId,
+      });
+      const catalog = parseWorkspaceMcpServerCatalog({
+        schemaVersion: 1 as const,
+        servers: [
+          {
+            id: 'echo',
+            enabled: true,
+            allowedTools: ['echo'],
+            credentialBindings: [
+              {
+                presentation: 'bearer' as const,
+                sink: { kind: 'header' as const, name: 'authorization' },
+                slot: 'auth',
+                vaultGrantId: grant.grantId,
+              },
+            ],
+            schemaPolicy: 'tracking' as const,
+            pinnedSchemaSnapshotId: null,
+            timeoutMs: 2000,
+            transport: { kind: 'http' as const, endpoint: 'https://i16.invalid/mcp' },
+          },
+        ],
+      });
+      catalog.servers.push({
+        ...catalog.servers[0]!,
+        id: 'echo-approval',
+      });
+      const environmentPackage = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId,
+        agentSetup: createTestAgentSetup({ mcpIds: ['echo', 'echo-approval'] }),
+        backend: { kind: 'openshell' },
+        createdAt: new Date().toISOString(),
+        requestId: 'req_i16_route',
+        triggerActor: turn.triggerActor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceMcpServerCatalog: catalog,
+        workspaceRoots: [],
+      });
+      recordMcpWorkerLineage(coreDb, environmentPackage, token.tokenId);
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      const tools = [
+        {
+          name: 'echo',
+          inputSchema: {
+            type: 'object' as const,
+            properties: { message: { type: 'string' } },
+            required: ['message'],
+            additionalProperties: false,
           },
         },
       ];
-      await admit();
-    };
-    await admit();
-    const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
-      coreDb,
-      store,
-      interception,
-      vaultUnlockState,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-      workerControlGateway: {
-        authenticatePackageToken: vi.fn(() => environmentPackage),
-      } as unknown as WorkerControlGateway,
-      workerMcpGateway: gateway,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          agentManifests: [],
-          openKitConfig: {
-            ...baseConfig.openKitConfig,
-            policy: { ...baseConfig.openKitConfig.policy, mediation: document },
-          },
-          workspaceMcpServerCatalogs: [
-            { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
-          ],
-        }),
-    });
-    const client = new Client({ name: 'i16-route', version: '1.0.0' });
-    const approvalClient = new Client({ name: 'i16-approval-route', version: '1.0.0' });
-    const transport = (serverId: string) =>
-      new StreamableHTTPClientTransport(
-        new URL(`http://nanocore.test/api/worker-capabilities/mcp/${serverId}`),
-        {
-          fetch: (request, init) => app.fetch(new Request(request, init)),
-          requestInit: { headers: { authorization: 'Bearer fixture-package' } },
+      const gateway: WorkerMcpGateway = {
+        listTools: vi.fn(async () => ({ serverVersion: 'i16-fixture', tools })),
+        callTool: vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'completed' }] })),
+        close: vi.fn(async () => {}),
+        closeServer: vi.fn(async () => {}),
+        closeServerIfIdle: vi.fn(async () => {}),
+        closeWorkspace: vi.fn(async () => {}),
+        getServerHealth: () => 'ready',
+      };
+      const participantVersion = `sha256:${'1'.repeat(64)}`;
+      let gate: 'allow' | 'deny' = 'allow';
+      let hold: Promise<void> | undefined;
+      let entered = () => {};
+      const invoke = vi.fn(
+        async ({
+          proposal,
+        }: Parameters<
+          NonNullable<ConstructorParameters<typeof PolicyInterception>[0]>['invoke']
+        >[0]) => {
+          expect(proposal).not.toHaveProperty('arguments');
+          entered();
+          if (hold) await hold;
+          return { decision: gate };
         }
       );
-    const credentialRead = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-    const canary = 'I16_ARGUMENT_BODY_CANARY';
-    const call = () => client.callTool({ name: 'echo', arguments: { message: canary } });
-    const approvalCall = () =>
-      approvalClient.callTool({ name: 'echo', arguments: { message: canary } });
-    const decisions = () =>
-      listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId).filter(
-        (row) => row.mediation?.operation === 'mcp.call-tool'
-      );
-    const boundaryCounts = () => ({
-      list: vi.mocked(gateway.listTools).mock.calls.length,
-      call: vi.mocked(gateway.callTool).mock.calls.length,
-      credential: credentialRead.mock.calls.length,
-      plans: coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get(),
-      receipts: coreDb.sqlite
-        .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
-        .get(),
-    });
-    const assertRecords = (
-      start: number,
-      result: string,
-      outcome: string,
-      options: { kernel?: 'allow' | null; serverId?: string; gateResult?: string } = {}
-    ) => {
-      const kernel = options.kernel === undefined ? 'allow' : options.kernel;
-      const serverId = options.serverId ?? 'echo';
-      const rows = decisions().slice(start);
-      expect(rows).toHaveLength(2);
-      const binding = document.statements.find((statement) => statement.kind === 'binding');
-      expect(binding).toBeDefined();
-      const bindingRef = { id: binding!.id, digest: policyDigest(binding) };
-      const gateRow = rows.find((row) => row.mediation?.role === 'gate')!;
-      const final = rows.find((row) => row.mediation?.role === 'final')!;
-      expect(gateRow.result).toBe(options.gateResult ?? result);
-      const context = final.contextSummary as { capabilityCallId: string };
-      const expectedSubject = {
-        principal,
-        onBehalfOf: null,
-        actor: { kind: 'agent', id: environmentPackage.agent.agentId, responsibleUserId: userId },
-        process: { workspaceId, threadId: turn.threadId, turnId: turn.id },
-        credentialKind: 'worker-package',
-        responsibleHumanId: userId,
+      const interception = new PolicyInterception({
+        id: 'i16-fixture',
+        version: participantVersion,
+        invoke,
+      });
+      const principal = { kind: 'human' as const, id: userId };
+      const scope = {
+        subjects: [principal],
+        actions: ['tool.use'],
+        resources: ['echo', 'echo-approval'].map((serverId) => ({
+          kind: 'mcp-tool' as const,
+          workspaceId,
+          serverId,
+          toolName: 'echo',
+        })),
       };
-      expect(final).toMatchObject({
-        result,
-        enforcementPoint: 'mcp.call-tool@decide',
-        policySnapshotId: policyDigest(document),
-        contextSummary: {
-          capabilityCallId: context.capabilityCallId,
-          packageSnapshotId: environmentPackage.snapshotId,
-          catalogRevision: resolveWorkspaceMcpServer({ catalog, serverId }).catalogDigest,
-        },
-        mediation: {
-          subject: expectedSubject,
-          kernel: kernel ? { effect: kernel } : null,
-          invocations: [{ kind: 'decision', id: gateRow.decisionId }],
-        },
-      });
-      expect(final.mediation?.proposalDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
-      expect(final.mediation?.authorizationRevision).toMatch(/^sha256:[a-f0-9]{64}$/);
-      expect(gateRow.mediation).toMatchObject({
-        binding: bindingRef,
+      let document = EMPTY_POLICY_DOCUMENT;
+      let conditions: typeof document.statements = [];
+      const admit = async (version = participantVersion, failure?: 'error') => {
+        const prepared = preparePolicyDocument({
+          current: document,
+          userId,
+          now: new Date().toISOString(),
+          proposed: PolicyDocumentV1Schema.parse({
+            schemaVersion: 1,
+            statements: [
+              ...conditions,
+              {
+                id: 'i16-gate',
+                kind: 'binding',
+                author: principal,
+                authority: { kind: 'human', userId },
+                authoredAt: new Date().toISOString(),
+                scope,
+                lifetime: {
+                  anchor: {
+                    owner: { kind: 'workspace', workspaceId },
+                    kind: 'workspace',
+                    id: workspaceId,
+                  },
+                },
+                state: 'active',
+                operation: 'mcp.call-tool',
+                stage: 'decide',
 
-        subject: expectedSubject,
-        proposalDigest: final.mediation?.proposalDigest,
-        authorizationRevision: final.mediation?.authorizationRevision,
+                mode: 'gate',
+                participant: { kind: 'deterministic', id: 'i16-fixture', version },
+
+                inputDisclosure: scope,
+
+                order: 0,
+                timeoutMs: 10000,
+                ...(failure ? { failure } : {}),
+                circuit: { failures: 1, recoveryAfterMs: 1 },
+              },
+            ],
+          }),
+        });
+        await recordPolicyWriteDecision({
+          coreDb,
+          actor:
+            authorityCase === 'member'
+              ? { kind: 'local', userId }
+              : {
+                  kind: 'token',
+                  userId: verified.ownerUserId,
+                  tokenId: verified.tokenId,
+                  tokenScope: verified.scope,
+                },
+          candidate: {
+            artifactId: testEntityId('ar', 'i16_policy'),
+            contentDigest: policyDigest(prepared.document),
+          },
+          proposal: {
+            schemaVersion: 1,
+            proposer: principal,
+            rationale: 'Exercise admitted native I16 mediation.',
+            baseRevision: policyDigest(document),
+            proposed: prepared.document,
+            diff: prepared.diff,
+            classification: prepared.classification,
+            validation: 'valid',
+          },
+          requestId: 'req_i16_policy',
+          threadId: turn.threadId,
+          turnId: turn.id,
+        });
+        document = prepared.document;
+        expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
+      };
+      const condition = async (effect: 'prohibit' | 'require_approval', serverId = 'echo') => {
+        conditions = [
+          {
+            id: 'human-mcp-condition',
+            kind: 'permission',
+            effect,
+            grant: { kind: 'ordinary' },
+            author: principal,
+            authority: { kind: 'human', userId },
+            authoredAt: new Date().toISOString(),
+            state: 'active',
+            scope: {
+              subjects: [principal],
+              actions: ['tool.use'],
+              resources: [{ kind: 'mcp-tool', workspaceId, serverId, toolName: 'echo' }],
+            },
+            lifetime: {
+              anchor: {
+                owner: { kind: 'workspace', workspaceId },
+                kind: 'workspace',
+                id: workspaceId,
+              },
+            },
+          },
+        ];
+        await admit();
+      };
+      await admit();
+      const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        store,
+        interception,
+        vaultUnlockState,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workerControlGateway: {
+          authenticatePackageToken: vi.fn(() => environmentPackage),
+        } as unknown as WorkerControlGateway,
+        workerMcpGateway: gateway,
+        runtimeConfig: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            dataRoot,
+            agentManifests: [],
+            openKitConfig: {
+              ...baseConfig.openKitConfig,
+              policy: { ...baseConfig.openKitConfig.policy, mediation: document },
+            },
+            workspaceMcpServerCatalogs: [
+              { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
+            ],
+          }),
       });
-      const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
-      expect(audits.find((event) => event.id === gateRow.auditEventId)).toMatchObject({
-        permissionDecisionId: gateRow.decisionId,
-        capabilityCallId: context.capabilityCallId,
-        policyInvocation: {
-          mode: 'gate',
-          outcome,
+      const client = new Client({ name: 'i16-route', version: '1.0.0' });
+      const approvalClient = new Client({ name: 'i16-approval-route', version: '1.0.0' });
+      const transport = (serverId: string) =>
+        new StreamableHTTPClientTransport(
+          new URL(`http://nanocore.test/api/worker-capabilities/mcp/${serverId}`),
+          {
+            fetch: (request, init) => app.fetch(new Request(request, init)),
+            requestInit: { headers: { authorization: 'Bearer fixture-package' } },
+          }
+        );
+      const credentialRead = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+      const canary = 'I16_ARGUMENT_BODY_CANARY';
+      const call = () => client.callTool({ name: 'echo', arguments: { message: canary } });
+      const approvalCall = () =>
+        approvalClient.callTool({ name: 'echo', arguments: { message: canary } });
+      const decisions = () =>
+        listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId).filter(
+          (row) => row.mediation?.operation === 'mcp.call-tool'
+        );
+      const boundaryCounts = () => ({
+        list: vi.mocked(gateway.listTools).mock.calls.length,
+        call: vi.mocked(gateway.callTool).mock.calls.length,
+        credential: credentialRead.mock.calls.length,
+        plans: coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get(),
+        receipts: coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+          .get(),
+      });
+      const assertRecords = (
+        start: number,
+        result: string,
+        outcome: string,
+        options: { kernel?: 'allow' | null; serverId?: string; gateResult?: string } = {}
+      ) => {
+        const kernel = options.kernel === undefined ? 'allow' : options.kernel;
+        const serverId = options.serverId ?? 'echo';
+        const rows = decisions().slice(start);
+        expect(rows).toHaveLength(2);
+        const binding = document.statements.find((statement) => statement.kind === 'binding');
+        expect(binding).toBeDefined();
+        const bindingRef = { id: binding!.id, digest: policyDigest(binding) };
+        const gateRow = rows.find((row) => row.mediation?.role === 'gate')!;
+        const final = rows.find((row) => row.mediation?.role === 'final')!;
+        expect(gateRow.result).toBe(options.gateResult ?? result);
+        const context = final.contextSummary as { capabilityCallId: string };
+        const expectedSubject = {
+          principal,
+          onBehalfOf: null,
+          actor: { kind: 'agent', id: environmentPackage.agent.agentId, responsibleUserId: userId },
+          process: { workspaceId, threadId: turn.threadId, turnId: turn.id },
+          credentialKind: 'worker-package',
+          responsibleHumanId: userId,
+        };
+        expect(final).toMatchObject({
+          result,
+          enforcementPoint: 'mcp.call-tool@decide',
+          policySnapshotId: policyDigest(document),
+          contextSummary: {
+            capabilityCallId: context.capabilityCallId,
+            packageSnapshotId: environmentPackage.snapshotId,
+            catalogRevision: resolveWorkspaceMcpServer({ catalog, serverId }).catalogDigest,
+          },
+          mediation: {
+            subject: expectedSubject,
+            kernel: kernel ? { effect: kernel } : null,
+            invocations: [{ kind: 'decision', id: gateRow.decisionId }],
+          },
+        });
+        expect(final.mediation?.proposalDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+        expect(final.mediation?.authorizationRevision).toMatch(/^sha256:[a-f0-9]{64}$/);
+        expect(gateRow.mediation).toMatchObject({
           binding: bindingRef,
-          participant: { id: binding!.participant.id, version: binding!.participant.version },
+
           subject: expectedSubject,
-          capabilityCallId: context.capabilityCallId,
           proposalDigest: final.mediation?.proposalDigest,
           authorizationRevision: final.mediation?.authorizationRevision,
-        },
-      });
-      expect(audits.find((event) => event.id === final.auditEventId)).toMatchObject({
-        permissionDecisionId: final.decisionId,
-        capabilityCallId: context.capabilityCallId,
-      });
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            'SELECT package_snapshot_id, provider_ref, service_ref FROM capability_calls WHERE call_id = ?'
-          )
-          .get(context.capabilityCallId)
-      ).toEqual({
-        package_snapshot_id: environmentPackage.snapshotId,
-        provider_ref: serverId,
-        service_ref: 'mcp-tool:echo',
-      });
-      return final;
-    };
-    try {
-      await client.connect(transport('echo'));
-      await approvalClient.connect(transport('echo-approval'));
-      if (authorityCase !== 'member') {
+        });
+        const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
+        expect(audits.find((event) => event.id === gateRow.auditEventId)).toMatchObject({
+          permissionDecisionId: gateRow.decisionId,
+          capabilityCallId: context.capabilityCallId,
+          policyInvocation: {
+            mode: 'gate',
+            outcome,
+            binding: bindingRef,
+            participant: { id: binding!.participant.id, version: binding!.participant.version },
+            subject: expectedSubject,
+            capabilityCallId: context.capabilityCallId,
+            proposalDigest: final.mediation?.proposalDigest,
+            authorizationRevision: final.mediation?.authorizationRevision,
+          },
+        });
+        expect(audits.find((event) => event.id === final.auditEventId)).toMatchObject({
+          permissionDecisionId: final.decisionId,
+          capabilityCallId: context.capabilityCallId,
+        });
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              'SELECT package_snapshot_id, provider_ref, service_ref FROM capability_calls WHERE call_id = ?'
+            )
+            .get(context.capabilityCallId)
+        ).toEqual({
+          package_snapshot_id: environmentPackage.snapshotId,
+          provider_ref: serverId,
+          service_ref: 'mcp-tool:echo',
+        });
+        return final;
+      };
+      try {
+        await client.connect(transport('echo'));
+        await approvalClient.connect(transport('echo-approval'));
+        if (authorityCase !== 'member') {
+          await client.listTools();
+          const start = decisions().length;
+          expect(await call()).toMatchObject({ content: [{ text: 'completed' }] });
+          // Policy author lifetime and exact binding selection must survive request-origin hardening.
+          assertRecords(start, 'allow', 'completed');
+          expect(invoke).toHaveBeenCalledTimes(1);
+          expect(gateway.callTool).toHaveBeenCalledTimes(1);
+          expect(credentialRead).toHaveBeenCalled();
+          if (authorityCase === 'nonmember admin revoked')
+            expect(revokeOpenKitAccessTokenRecord(coreDb, token.tokenId)?.status).toBe('revoked');
+          else
+            expect(
+              coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, userId))()?.changed
+            ).toBe(true);
+          const refusedBoundary = boundaryCounts();
+          await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+          expect(boundaryCounts()).toEqual(refusedBoundary);
+          expect(invoke).toHaveBeenCalledTimes(1);
+          return;
+        }
         await client.listTools();
-        const start = decisions().length;
+        const beforeDiscoveryPolicy = document;
+        let enteredCleanup!: () => void;
+        let releaseCleanup!: () => void;
+        const cleanupEntered = new Promise<void>((resolve) => {
+          enteredCleanup = resolve;
+        });
+        const cleanupHold = new Promise<void>((resolve) => {
+          releaseCleanup = resolve;
+        });
+        vi.mocked(gateway.closeServerIfIdle).mockImplementationOnce(async () => {
+          enteredCleanup();
+          await cleanupHold;
+        });
+        const firstApprovalDiscovery = approvalClient.listTools();
+        try {
+          await cleanupEntered;
+          await condition('prohibit', 'echo-approval');
+          releaseCleanup();
+          const currentDiscovery = await firstApprovalDiscovery;
+          expect.soft(currentDiscovery.tools).toEqual([]);
+        } finally {
+          releaseCleanup();
+          conditions = [];
+          await admit();
+        }
+        expect(document).toEqual(beforeDiscoveryPolicy);
+        const seeded = workspaceDb.sqlite
+          .prepare(
+            "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo'"
+          )
+          .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
+        expect(seeded.schema_snapshot_id).toEqual(expect.any(String));
+        const approvalSchema = workspaceDb.sqlite
+          .prepare(
+            "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo-approval'"
+          )
+          .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
+        expect(approvalSchema.schema_snapshot_id).toEqual(expect.any(String));
+        expect(invoke).not.toHaveBeenCalled();
         expect(await call()).toMatchObject({ content: [{ text: 'completed' }] });
-        // Policy author lifetime and exact binding selection must survive request-origin hardening.
-        assertRecords(start, 'allow', 'completed');
-        expect(invoke).toHaveBeenCalledTimes(1);
+        assertRecords(0, 'allow', 'completed');
         expect(gateway.callTool).toHaveBeenCalledTimes(1);
         expect(credentialRead).toHaveBeenCalled();
-        if (authorityCase === 'nonmember admin revoked')
-          expect(revokeOpenKitAccessTokenRecord(coreDb, token.tokenId)?.status).toBe('revoked');
-        else
-          expect(
-            coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, userId))()?.changed
-          ).toBe(true);
-        const refusedBoundary = boundaryCounts();
+        // Baseline supply stays usable without an explicit allow statement.
+        await condition('prohibit');
+        expect((await client.listTools()).tools).toEqual([]);
+        const prohibitedBoundary = boundaryCounts();
         await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-        expect(boundaryCounts()).toEqual(refusedBoundary);
-        expect(invoke).toHaveBeenCalledTimes(1);
-        return;
-      }
-      await client.listTools();
-      const beforeDiscoveryPolicy = document;
-      let enteredCleanup!: () => void;
-      let releaseCleanup!: () => void;
-      const cleanupEntered = new Promise<void>((resolve) => {
-        enteredCleanup = resolve;
-      });
-      const cleanupHold = new Promise<void>((resolve) => {
-        releaseCleanup = resolve;
-      });
-      vi.mocked(gateway.closeServerIfIdle).mockImplementationOnce(async () => {
-        enteredCleanup();
-        await cleanupHold;
-      });
-      const firstApprovalDiscovery = approvalClient.listTools();
-      try {
-        await cleanupEntered;
-        await condition('prohibit', 'echo-approval');
-        releaseCleanup();
-        const currentDiscovery = await firstApprovalDiscovery;
-        expect.soft(currentDiscovery.tools).toEqual([]);
-      } finally {
-        releaseCleanup();
-        conditions = [];
-        await admit();
-      }
-      expect(document).toEqual(beforeDiscoveryPolicy);
-      const seeded = workspaceDb.sqlite
-        .prepare(
-          "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo'"
-        )
-        .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
-      expect(seeded.schema_snapshot_id).toEqual(expect.any(String));
-      const approvalSchema = workspaceDb.sqlite
-        .prepare(
-          "SELECT schema_snapshot_id FROM capability_calls WHERE operation = 'mcp.list-tools' AND turn_id = ? AND package_snapshot_id = ? AND provider_ref = 'echo-approval'"
-        )
-        .get(turn.id, environmentPackage.snapshotId) as { schema_snapshot_id: string };
-      expect(approvalSchema.schema_snapshot_id).toEqual(expect.any(String));
-      expect(invoke).not.toHaveBeenCalled();
-      expect(await call()).toMatchObject({ content: [{ text: 'completed' }] });
-      assertRecords(0, 'allow', 'completed');
-      expect(gateway.callTool).toHaveBeenCalledTimes(1);
-      expect(credentialRead).toHaveBeenCalled();
-      // Baseline supply stays usable without an explicit allow statement.
-      await condition('prohibit');
-      expect((await client.listTools()).tools).toEqual([]);
-      const prohibitedBoundary = boundaryCounts();
-      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      expect(boundaryCounts()).toEqual(prohibitedBoundary);
-      expect(decisions().findLast((row) => row.mediation?.role === 'final')).toMatchObject({
-        result: 'deny',
-        mediation: { kernel: { effect: 'deny' } },
-      });
-      conditions = [];
-      await admit();
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['echo']);
-      const allowedBoundary = boundaryCounts();
-      gate = 'deny';
-      let start = decisions().length;
-      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      assertRecords(start, 'deny', 'completed');
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      const absentVersion = `sha256:${'2'.repeat(64)}`;
-      await admit(absentVersion, 'error');
-      start = decisions().length;
-      await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
-      const unavailable = assertRecords(start, 'error', 'unavailable');
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      await admit(absentVersion);
-      start = decisions().length;
-      const pendingResult = await call();
-      expect(pendingResult).toMatchObject({
-        isError: true,
-        structuredContent: { status: 'pending-approval' },
-      });
-      const escalation = assertRecords(start, 'require_escalation', 'unavailable');
-      expect(escalation.decisionId).not.toBe(unavailable.decisionId);
-      const pending = listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId);
-      expect(pending).toHaveLength(1);
-      expect(pending[0]).toMatchObject({
-        state: 'pending',
-        kind: 'approval',
-        requesterKind: 'worker',
-        responsibleUserId: userId,
-        schemaSnapshotId: seeded.schema_snapshot_id,
-        policyDecisionId: escalation.decisionId,
-        canonicalArgumentsJson: JSON.stringify({ message: canary }),
-        packageDigest: environmentPackage.snapshotId,
-      });
-      expect(store.getTurnById(turn.id).items).toContainEqual(
-        expect.objectContaining({
-          type: 'approval-request',
-          approvalRequestId: pending[0]!.requestId,
-        })
-      );
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      await admit();
-      gate = 'allow';
-      start = decisions().length;
-      const invokedBeforeEvidenceFailure = invoke.mock.calls.length;
-      workspaceDb.sqlite.exec(
-        "CREATE TRIGGER fail_i16_evidence BEFORE INSERT ON audit_events WHEN NEW.policy_invocation_json IS NOT NULL BEGIN SELECT RAISE(ABORT, 'I16 required Audit unavailable'); END"
-      );
-      try {
-        await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
-      } finally {
-        workspaceDb.sqlite.exec('DROP TRIGGER fail_i16_evidence');
-      }
-      expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
-      expect(decisions()).toHaveLength(start);
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      await condition('require_approval', 'echo-approval');
-      gate = 'deny';
-      start = decisions().length;
-      await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      assertRecords(start, 'deny', 'completed', { serverId: 'echo-approval' });
-      expect(
-        listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)
-      ).toHaveLength(1);
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      gate = 'allow';
-      start = decisions().length;
-      expect(await approvalCall()).toMatchObject({
-        isError: true,
-        structuredContent: { status: 'pending-approval' },
-      });
-      const policyApproval = assertRecords(start, 'require_approval', 'completed', {
-        serverId: 'echo-approval',
-        gateResult: 'allow',
-      });
-      expect(policyApproval.requiredApprovalKind).toBe('permission');
-      const afterPolicyApproval = listThreadPendingRequests(
-        workspaceDb.sqlite,
-        workspaceId,
-        turn.threadId
-      );
-      expect(afterPolicyApproval).toHaveLength(2);
-      expect(
-        afterPolicyApproval.find((request) => request.serverId === 'echo-approval')
-      ).toMatchObject({
-        state: 'pending',
-        policyDecisionId: policyApproval.decisionId,
-        schemaSnapshotId: approvalSchema.schema_snapshot_id,
-        packageDigest: environmentPackage.snapshotId,
-      });
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      const originalApprovalPolicy = document;
-      const approvalOnlyConditions = conditions;
-      const originalPending = afterPolicyApproval.find(
-        (request) => request.serverId === 'echo-approval'
-      )!;
-      expect(await approvalCall()).toMatchObject({
-        isError: true,
-        structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
-      });
-      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
-        afterPolicyApproval
-      );
-      const approvalCondition = approvalOnlyConditions.find(
-        (statement) => statement.kind === 'permission'
-      );
-      if (!approvalCondition) throw new Error('Expected the admitted approval condition.');
-      conditions = [
-        ...approvalOnlyConditions,
-        { ...approvalCondition, id: 'prohibit-existing-approval', effect: 'prohibit' },
-      ];
-      await admit();
-      const beforeProhibitedDuplicate = boundaryCounts();
-      const beforeDuplicateDecisions = decisions().length;
-      // The SDK allocates a fresh protocol request id for identical qualified Tool arguments.
-      const prohibitedDuplicate = await approvalCall().then(
-        (result) => ({ result }),
-        (error: unknown) => ({ error })
-      );
-      expect.soft(prohibitedDuplicate).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-      expect
-        .soft(
-          decisions()
-            .slice(beforeDuplicateDecisions)
-            .find((row) => row.mediation?.role === 'final')
-        )
-        .toMatchObject({
+        expect(boundaryCounts()).toEqual(prohibitedBoundary);
+        expect(decisions().findLast((row) => row.mediation?.role === 'final')).toMatchObject({
           result: 'deny',
           mediation: { kernel: { effect: 'deny' } },
         });
-      expect(boundaryCounts()).toEqual(beforeProhibitedDuplicate);
-      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
-        afterPolicyApproval
-      );
-      conditions = approvalOnlyConditions;
-      await admit();
-      expect(document).toEqual(originalApprovalPolicy);
-      expect(await approvalCall()).toMatchObject({
-        isError: true,
-        structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+        conditions = [];
+        await admit();
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['echo']);
+        const allowedBoundary = boundaryCounts();
+        gate = 'deny';
+        let start = decisions().length;
+        await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        assertRecords(start, 'deny', 'completed');
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        const absentVersion = `sha256:${'2'.repeat(64)}`;
+        await admit(absentVersion, 'error');
+        start = decisions().length;
+        await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
+        const unavailable = assertRecords(start, 'error', 'unavailable');
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        await admit(absentVersion);
+        start = decisions().length;
+        const pendingResult = await call();
+        expect(pendingResult).toMatchObject({
+          isError: true,
+          structuredContent: { status: 'pending-approval' },
+        });
+        const escalation = assertRecords(start, 'require_escalation', 'unavailable');
+        expect(escalation.decisionId).not.toBe(unavailable.decisionId);
+        const pending = listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId);
+        expect(pending).toHaveLength(1);
+        expect(pending[0]).toMatchObject({
+          state: 'pending',
+          kind: 'approval',
+          requesterKind: 'worker',
+          responsibleUserId: userId,
+          schemaSnapshotId: seeded.schema_snapshot_id,
+          policyDecisionId: escalation.decisionId,
+          canonicalArgumentsJson: JSON.stringify({ message: canary }),
+          packageDigest: environmentPackage.snapshotId,
+        });
+        expect(store.getTurnById(turn.id).items).toContainEqual(
+          expect.objectContaining({
+            type: 'approval-request',
+            approvalRequestId: pending[0]!.requestId,
+          })
+        );
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        await admit();
+        gate = 'allow';
+        start = decisions().length;
+        const invokedBeforeEvidenceFailure = invoke.mock.calls.length;
+        workspaceDb.sqlite.exec(
+          "CREATE TRIGGER fail_i16_evidence BEFORE INSERT ON audit_events WHEN NEW.policy_invocation_json IS NOT NULL BEGIN SELECT RAISE(ABORT, 'I16 required Audit unavailable'); END"
+        );
+        try {
+          await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
+        } finally {
+          workspaceDb.sqlite.exec('DROP TRIGGER fail_i16_evidence');
+        }
+        expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
+        expect(decisions()).toHaveLength(start);
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        await condition('require_approval', 'echo-approval');
+        gate = 'deny';
+        start = decisions().length;
+        await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        assertRecords(start, 'deny', 'completed', { serverId: 'echo-approval' });
+        expect(
+          listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)
+        ).toHaveLength(1);
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        gate = 'allow';
+        start = decisions().length;
+        expect(await approvalCall()).toMatchObject({
+          isError: true,
+          structuredContent: { status: 'pending-approval' },
+        });
+        const policyApproval = assertRecords(start, 'require_approval', 'completed', {
+          serverId: 'echo-approval',
+          gateResult: 'allow',
+        });
+        expect(policyApproval.requiredApprovalKind).toBe('permission');
+        const afterPolicyApproval = listThreadPendingRequests(
+          workspaceDb.sqlite,
+          workspaceId,
+          turn.threadId
+        );
+        expect(afterPolicyApproval).toHaveLength(2);
+        expect(
+          afterPolicyApproval.find((request) => request.serverId === 'echo-approval')
+        ).toMatchObject({
+          state: 'pending',
+          policyDecisionId: policyApproval.decisionId,
+          schemaSnapshotId: approvalSchema.schema_snapshot_id,
+          packageDigest: environmentPackage.snapshotId,
+        });
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        const originalApprovalPolicy = document;
+        const approvalOnlyConditions = conditions;
+        const originalPending = afterPolicyApproval.find(
+          (request) => request.serverId === 'echo-approval'
+        )!;
+        expect(await approvalCall()).toMatchObject({
+          isError: true,
+          structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+        });
+        expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+          afterPolicyApproval
+        );
+        const approvalCondition = approvalOnlyConditions.find(
+          (statement) => statement.kind === 'permission'
+        );
+        if (!approvalCondition) throw new Error('Expected the admitted approval condition.');
+        conditions = [
+          ...approvalOnlyConditions,
+          { ...approvalCondition, id: 'prohibit-existing-approval', effect: 'prohibit' },
+        ];
+        await admit();
+        const beforeProhibitedDuplicate = boundaryCounts();
+        const beforeDuplicateDecisions = decisions().length;
+        // The SDK allocates a fresh protocol request id for identical qualified Tool arguments.
+        const prohibitedDuplicate = await approvalCall().then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        );
+        expect.soft(prohibitedDuplicate).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+        expect
+          .soft(
+            decisions()
+              .slice(beforeDuplicateDecisions)
+              .find((row) => row.mediation?.role === 'final')
+          )
+          .toMatchObject({
+            result: 'deny',
+            mediation: { kernel: { effect: 'deny' } },
+          });
+        expect(boundaryCounts()).toEqual(beforeProhibitedDuplicate);
+        expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+          afterPolicyApproval
+        );
+        conditions = approvalOnlyConditions;
+        await admit();
+        expect(document).toEqual(originalApprovalPolicy);
+        expect(await approvalCall()).toMatchObject({
+          isError: true,
+          structuredContent: { status: 'pending-approval', requestId: originalPending.requestId },
+        });
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
+          afterPolicyApproval
+        );
+        let release!: () => void;
+        hold = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const participantEntered = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        start = decisions().length;
+        const held = call();
+        const refused = expect(held).rejects.toMatchObject({
+          data: { code: 'mcp-call-failed' },
+        });
+        await participantEntered;
+        revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
+        release();
+        await refused;
+        assertRecords(start, 'error', 'error', { kernel: null, gateResult: 'require_escalation' });
+        expect(boundaryCounts()).toEqual(allowedBoundary);
+        expect(JSON.stringify(invoke.mock.calls)).not.toContain(canary);
+        expect(
+          JSON.stringify(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all())
+        ).not.toContain(canary);
+        expect(
+          JSON.stringify(coreDb.sqlite.prepare('SELECT * FROM audit_events').all())
+        ).not.toContain(canary);
+      } finally {
+        credentialRead.mockRestore();
+        await client.close();
+        await approvalClient.close();
+        await gateway.close();
+        vaultUnlockState.lock();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(['abort', 'expiry'] as const)(
+    'releases the Tool handler and Workspace admission after accepted unresolved capture %s',
+    async (ending) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-wait-'));
+      const coreDb = openCopiedMcpCore(dataRoot);
+      ensureLocalUser(coreDb);
+      const store = await reopenCopiedMcpStore(dataRoot);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      expect(listThreadPendingRequests(workspaceDb.sqlite, workspaceId, turn.threadId)).toEqual(
-        afterPolicyApproval
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Submit one file',
+        {
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+          kind: 'user',
+        }
       );
-      let release!: () => void;
-      hold = new Promise<void>((resolve) => {
-        release = resolve;
+      await store.createAgentSession({
+        agentId: 'agent_codex_host',
+        createdAt: '2026-10-05T00:00:00.000Z',
+        id: testEntityId('as', 'as_capture_wait'),
+        message: null,
+        status: 'busy',
+        threadId: turn.threadId,
+        updatedAt: '2026-10-05T00:00:00.000Z',
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
-      const participantEntered = new Promise<void>((resolve) => {
+      await store.updateTurn(turn.id, {
+        agentSessionId: testEntityId('as', 'as_capture_wait'),
+        agentId: 'agent_codex_host',
+        status: 'running',
+      });
+      const pkg = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: testEntityId('as', 'as_capture_wait'),
+        agentSetup: createTestAgentSetup(),
+        backend: { kind: 'openshell' },
+        createdAt: '2026-10-05T00:00:00.000Z',
+        requestId: 'req_capture_wait',
+        triggerActor: turn.triggerActor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      pkg.workspace.outputs = [
+        {
+          id: 'output',
+          path: '/workspace/output',
+          registerAsArtifacts: true,
+          retention: 'sync-on-turn-end',
+        },
+      ];
+      recordMcpWorkerLineage(coreDb, pkg);
+      const authority = createNanoHostTransportSessionAuthority();
+      const target = {
+        deploymentId: 'capture-wait',
+        identityId: 'capture-wait',
+        targetId: 'capture-wait',
+      };
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-10-05T00:00:00.000Z',
+      });
+      let admit!: (physical: object) => void;
+      const physicalReady = new Promise<object>((resolve) => {
+        admit = resolve;
+      });
+      const server = createHttp2Server((request, response) => {
+        admit(readNanoHostPhysicalConnectionContext(request)!);
+        response.writeHead(204).end();
+      });
+      const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+      const dispatch = createNanoHostSessionDispatch({
+        coreDb,
+        sessionAuthority: authority,
+        fileAdmission,
+      });
+      const admission = new WorkspaceMutationAdmission();
+      const gateway = createDefaultWorkerMcpGateway(coreDb);
+      const client = new Client({ name: 'capture-wait', version: '1.0.0' });
+      let nativeClient: ReturnType<typeof connectHttp2> | undefined;
+      let physical: object | undefined;
+      let entered!: () => void;
+      const captureEntered = new Promise<void>((resolve) => {
         entered = resolve;
       });
-      start = decisions().length;
-      const held = call();
-      const refused = expect(held).rejects.toMatchObject({
-        data: { code: 'mcp-call-failed' },
-      });
-      await participantEntered;
-      revokeOpenKitAccessTokenRecord(coreDb, token.tokenId);
-      release();
-      await refused;
-      assertRecords(start, 'error', 'error', { kernel: null, gateResult: 'require_escalation' });
-      expect(boundaryCounts()).toEqual(allowedBoundary);
-      expect(JSON.stringify(invoke.mock.calls)).not.toContain(canary);
-      expect(
-        JSON.stringify(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all())
-      ).not.toContain(canary);
-      expect(
-        JSON.stringify(coreDb.sqlite.prepare('SELECT * FROM audit_events').all())
-      ).not.toContain(canary);
-    } finally {
-      credentialRead.mockRestore();
-      await client.close();
-      await approvalClient.close();
-      await gateway.close();
-      vaultUnlockState.lock();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    'abort',
-    'expiry',
-  ] as const)('releases the Tool handler and Workspace admission after accepted unresolved capture %s', async (ending) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-wait-'));
-    const coreDb = openCopiedMcpCore(dataRoot);
-    ensureLocalUser(coreDb);
-    const store = await reopenCopiedMcpStore(dataRoot);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Submit one file',
-      {
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-        kind: 'user',
-      }
-    );
-    await store.createAgentSession({
-      agentId: 'agent_codex_host',
-      createdAt: '2026-10-05T00:00:00.000Z',
-      id: testEntityId('as', 'as_capture_wait'),
-      message: null,
-      status: 'busy',
-      threadId: turn.threadId,
-      updatedAt: '2026-10-05T00:00:00.000Z',
-      workspaceId: workspaceIdForOwner(turn.owner),
-    });
-    await store.updateTurn(turn.id, {
-      agentSessionId: testEntityId('as', 'as_capture_wait'),
-      agentId: 'agent_codex_host',
-      status: 'running',
-    });
-    const pkg = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: testEntityId('as', 'as_capture_wait'),
-      agentSetup: createTestAgentSetup(),
-      backend: { kind: 'openshell' },
-      createdAt: '2026-10-05T00:00:00.000Z',
-      requestId: 'req_capture_wait',
-      triggerActor: turn.triggerActor,
-      turn,
-      workspaceCwd: '/workspace',
-      workspaceRoots: [],
-    });
-    pkg.workspace.outputs = [
-      {
-        id: 'output',
-        path: '/workspace/output',
-        registerAsArtifacts: true,
-        retention: 'sync-on-turn-end',
-      },
-    ];
-    recordMcpWorkerLineage(coreDb, pkg);
-    const authority = createNanoHostTransportSessionAuthority();
-    const target = {
-      deploymentId: 'capture-wait',
-      identityId: 'capture-wait',
-      targetId: 'capture-wait',
-    };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target,
-      observedAt: '2026-10-05T00:00:00.000Z',
-    });
-    let admit!: (physical: object) => void;
-    const physicalReady = new Promise<object>((resolve) => {
-      admit = resolve;
-    });
-    const server = createHttp2Server((request, response) => {
-      admit(readNanoHostPhysicalConnectionContext(request)!);
-      response.writeHead(204).end();
-    });
-    const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
-    const dispatch = createNanoHostSessionDispatch({
-      coreDb,
-      sessionAuthority: authority,
-      fileAdmission,
-    });
-    const admission = new WorkspaceMutationAdmission();
-    const gateway = createDefaultWorkerMcpGateway(coreDb);
-    const client = new Client({ name: 'capture-wait', version: '1.0.0' });
-    let nativeClient: ReturnType<typeof connectHttp2> | undefined;
-    let physical: object | undefined;
-    let entered!: () => void;
-    const captureEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let captureCount = 0;
-    const effectRequest = {
-      kind: 'file.export',
-      requestId: 'b'.repeat(64),
-      input: {
-        purpose: 'artifact-submission',
-        submissionRequestId: 'capture-wait',
-        turnId: turn.id,
-        agentSessionId: pkg.scope.agentSessionId,
-        packageSnapshotId: pkg.snapshotId,
-        leaseId: `lease_${turn.id}`,
-        backendSessionId: 'backend_capture_wait',
-        sandboxId: 'sandbox_capture_wait',
-        maxByteLength: 1024,
-        presence: 'optional',
-        relativePath: 'report.md',
-        slot: 'output',
-      },
-    };
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
-      coreDb,
-      store,
-      workspaceMutationAdmission: admission,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          agentManifests: [],
-          workspaceMcpServerCatalogs: [],
-        }),
-      workerControlGateway: {
-        authenticatePackageToken: vi.fn(() => pkg),
-      } as unknown as WorkerControlGateway,
-      workerMcpGateway: gateway,
-      fileAdmission,
-      captureArtifact: async (input) => {
-        captureCount += 1;
-        const result = dispatch.effect({ ...effectRequest, signal: input.signal });
-        entered();
-        await result;
-        throw new Error('An abandoned capture must never return bytes to publication.');
-      },
-    });
-    let closed = false;
-    let closing: Promise<void> | undefined;
-    let call: Promise<unknown> | undefined;
-    let accepted = false;
-    try {
-      server.listen(0, '127.0.0.1');
-      await once(server, 'listening');
-      const address = server.address();
-      if (!address || typeof address === 'string') throw new Error('Missing capture address.');
-      nativeClient = connectHttp2(`http://127.0.0.1:${address.port}`);
-      nativeClient
-        .request({ ':method': 'POST', ':path': '/' })
-        .on('data', () => {})
-        .end();
-      physical = await physicalReady;
-      authority.admit({
-        connectionGeneration: 1,
-        identityId: target.identityId,
-        physicalConnection: physical,
-      });
-      await dispatch.readiness!(
-        physical,
-        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
-        { ...target, coreDb }
-      );
-      await client.connect(
-        new StreamableHTTPClientTransport(
-          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
-          {
-            fetch: (input, init) => app.fetch(new Request(input, init)),
-            requestInit: { headers: { authorization: 'Bearer capability-token' } },
-          }
-        )
-      );
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-      const abort = new AbortController();
-      call = client.callTool(
-        {
-          name: 'work_artifact_submit',
-          arguments: {
-            requestId: 'capture-wait',
-            path: '/workspace/output/report.md',
-            title: 'Report',
-            kind: 'file',
-            mediaType: 'text/markdown',
-          },
+      let captureCount = 0;
+      const effectRequest = {
+        kind: 'file.export',
+        requestId: 'b'.repeat(64),
+        input: {
+          purpose: 'artifact-submission',
+          submissionRequestId: 'capture-wait',
+          turnId: turn.id,
+          agentSessionId: pkg.scope.agentSessionId,
+          packageSnapshotId: pkg.snapshotId,
+          leaseId: `lease_${turn.id}`,
+          backendSessionId: 'backend_capture_wait',
+          sandboxId: 'sandbox_capture_wait',
+          maxByteLength: 1024,
+          presence: 'optional',
+          relativePath: 'report.md',
+          slot: 'output',
         },
-        { signal: abort.signal, timeout: 400_000 }
-      );
-      void call.catch(() => undefined);
-      await Promise.race([
-        captureEntered,
-        call.then(() => {
-          throw new Error('Capture was not entered.');
-        }),
-      ]);
-      expect(await dispatch.poll(physical, 'file.export')).toMatchObject({
-        requestId: effectRequest.requestId,
+      };
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        store,
+        workspaceMutationAdmission: admission,
+        runtimeConfig: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            dataRoot,
+            agentManifests: [],
+            workspaceMcpServerCatalogs: [],
+          }),
+        workerControlGateway: {
+          authenticatePackageToken: vi.fn(() => pkg),
+        } as unknown as WorkerControlGateway,
+        workerMcpGateway: gateway,
+        fileAdmission,
+        captureArtifact: async (input) => {
+          captureCount += 1;
+          const result = dispatch.effect({ ...effectRequest, signal: input.signal });
+          entered();
+          await result;
+          throw new Error('An abandoned capture must never return bytes to publication.');
+        },
       });
-      accepted = true;
-      closing = admission.close('ws_00000000-0000-7000-8000-000000000001').then(() => {
-        closed = true;
-      });
-      expect(closed).toBe(false);
-      if (ending === 'abort') abort.abort();
-      else await vi.advanceTimersByTimeAsync(300_000);
-      vi.useRealTimers();
-      // Closing cannot finish until the actual route's finally closes its database and releases its permit.
-      await vi.waitFor(() => expect(closed).toBe(true), { timeout: 1000, interval: 10 });
-      if (ending === 'expiry')
-        await expect(call).rejects.toMatchObject({ data: { code: 'recovery_required' } });
-      else await expect(call).rejects.toThrow(/abort/i);
-      expect(captureCount).toBe(1);
-      await expect(
-        dispatch.effect({ ...effectRequest, requestId: 'c'.repeat(64) })
-      ).rejects.toMatchObject({ code: 'artifact_capture_busy' });
-      const bytes = Buffer.from('# Late result');
-      await dispatch.fileExportResult!(
-        physical,
-        new Request('http://nanocore.test/file', {
-          method: 'POST',
-          body: bytes,
-          headers: {
-            'content-type': 'application/octet-stream',
-            'content-length': String(bytes.length),
-            'x-openkit-request-id': effectRequest.requestId,
-            'x-openkit-relative-path': 'report.md',
-            'x-openkit-slot': 'output',
-            'x-openkit-byte-length': String(bytes.length),
-            'x-openkit-sha256': `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-          },
-        })
-      );
-      accepted = false;
-      const next = dispatch.effect({ ...effectRequest, requestId: 'c'.repeat(64) });
-      expect(await dispatch.poll(physical, 'file.export')).toMatchObject({
-        requestId: 'c'.repeat(64),
-      });
-      await dispatch.result(physical, 'file.export', {
-        requestId: 'c'.repeat(64),
-        state: 'absent',
-      });
-      await expect(next).resolves.toMatchObject({ state: 'absent' });
-      expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
-      expect(
-        store
-          .listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .filter((item) => item.type === 'artifact-reference')
-      ).toEqual([]);
-      const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      let closed = false;
+      let closing: Promise<void> | undefined;
+      let call: Promise<unknown> | undefined;
+      let accepted = false;
       try {
-        expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()).toEqual({
-          count: 0,
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('Missing capture address.');
+        nativeClient = connectHttp2(`http://127.0.0.1:${address.port}`);
+        nativeClient
+          .request({ ':method': 'POST', ':path': '/' })
+          .on('data', () => {})
+          .end();
+        physical = await physicalReady;
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection: physical,
         });
-        expect(store.listCommandRequests()).toEqual([]);
-      } finally {
-        db.sqlite.close();
-      }
-      admission.reopen('ws_00000000-0000-7000-8000-000000000001');
-      expect(
-        (await client.listTools()).tools.some((tool) => tool.name === 'work_artifact_submit')
-      ).toBe(true);
-    } finally {
-      vi.useRealTimers();
-      if (accepted && physical)
-        await dispatch.result(physical, 'file.export', {
+        await dispatch.readiness!(
+          physical,
+          Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+          { ...target, coreDb }
+        );
+        await client.connect(
+          new StreamableHTTPClientTransport(
+            new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+            {
+              fetch: (input, init) => app.fetch(new Request(input, init)),
+              requestInit: { headers: { authorization: 'Bearer capability-token' } },
+            }
+          )
+        );
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        const abort = new AbortController();
+        call = client.callTool(
+          {
+            name: 'work_artifact_submit',
+            arguments: {
+              requestId: 'capture-wait',
+              path: '/workspace/output/report.md',
+              title: 'Report',
+              kind: 'file',
+              mediaType: 'text/markdown',
+            },
+          },
+          { signal: abort.signal, timeout: 400_000 }
+        );
+        void call.catch(() => undefined);
+        await Promise.race([
+          captureEntered,
+          call.then(() => {
+            throw new Error('Capture was not entered.');
+          }),
+        ]);
+        expect(await dispatch.poll(physical, 'file.export')).toMatchObject({
           requestId: effectRequest.requestId,
+        });
+        accepted = true;
+        closing = admission.close('ws_00000000-0000-7000-8000-000000000001').then(() => {
+          closed = true;
+        });
+        expect(closed).toBe(false);
+        if (ending === 'abort') abort.abort();
+        else await vi.advanceTimersByTimeAsync(300_000);
+        vi.useRealTimers();
+        // Closing cannot finish until the actual route's finally closes its database and releases its permit.
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 1000, interval: 10 });
+        if (ending === 'expiry')
+          await expect(call).rejects.toMatchObject({ data: { code: 'recovery_required' } });
+        else await expect(call).rejects.toThrow(/abort/i);
+        expect(captureCount).toBe(1);
+        await expect(
+          dispatch.effect({ ...effectRequest, requestId: 'c'.repeat(64) })
+        ).rejects.toMatchObject({ code: 'artifact_capture_busy' });
+        const bytes = Buffer.from('# Late result');
+        await dispatch.fileExportResult!(
+          physical,
+          new Request('http://nanocore.test/file', {
+            method: 'POST',
+            body: bytes,
+            headers: {
+              'content-type': 'application/octet-stream',
+              'content-length': String(bytes.length),
+              'x-openkit-request-id': effectRequest.requestId,
+              'x-openkit-relative-path': 'report.md',
+              'x-openkit-slot': 'output',
+              'x-openkit-byte-length': String(bytes.length),
+              'x-openkit-sha256': `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+            },
+          })
+        );
+        accepted = false;
+        const next = dispatch.effect({ ...effectRequest, requestId: 'c'.repeat(64) });
+        expect(await dispatch.poll(physical, 'file.export')).toMatchObject({
+          requestId: 'c'.repeat(64),
+        });
+        await dispatch.result(physical, 'file.export', {
+          requestId: 'c'.repeat(64),
           state: 'absent',
         });
-      await call?.catch(() => undefined);
-      await closing;
-      await client.close().catch(() => undefined);
-      await gateway.close();
-      nativeClient?.close();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      coreDb.sqlite.close();
+        await expect(next).resolves.toMatchObject({ state: 'absent' });
+        expect(store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
+        expect(
+          store
+            .listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+            .filter((item) => item.type === 'artifact-reference')
+        ).toEqual([]);
+        const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()).toEqual(
+            {
+              count: 0,
+            }
+          );
+          expect(store.listCommandRequests()).toEqual([]);
+        } finally {
+          db.sqlite.close();
+        }
+        admission.reopen('ws_00000000-0000-7000-8000-000000000001');
+        expect(
+          (await client.listTools()).tools.some((tool) => tool.name === 'work_artifact_submit')
+        ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+        if (accepted && physical)
+          await dispatch.result(physical, 'file.export', {
+            requestId: effectRequest.requestId,
+            state: 'absent',
+          });
+        await call?.catch(() => undefined);
+        await closing;
+        await client.close().catch(() => undefined);
+        await gateway.close();
+        nativeClient?.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('serves one stateless-era client and one session-era client on the worker MCP route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-era-'));
@@ -2066,781 +2067,802 @@ describe('worker MCP routes', () => {
   });
 
   // AUX-GROK MCP cascade diagnosis (aux-grok-mcp-cascade-diagnosis.md; #485): no fixed timer; about 150-180 FULL writer round trips plus Main work take 17-25 s quietly, so a runner timeout can abandon a body whose process-wide client shutdown cascades into later cases.
-  it.each([
-    'Workspace member',
-    'nonmember administrator',
-  ] as const)('reads only current same-Sandbox peers through Turn-scoped handles without changing their records: %s', {
-    timeout: 60_000,
-  }, async (audience) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-work-peers-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const browserCredentials = {
-      name: 'Peer administrator',
-      email: 'peer-admin@example.invalid',
-      password: randomUUID(),
-    };
-    if (audience === 'nonmember administrator') {
-      const bootstrap = ensureServerBootstrapToken(coreDb);
-      if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
-      const consumed = await consumeServerBootstrapToken(coreDb, {
-        token: bootstrap.token,
-        ownerUserId: allocateEntityId('usr'),
-        displayName: browserCredentials.name,
-        email: browserCredentials.email,
-        password: browserCredentials.password,
-        tokenExpiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
-      expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
-    }
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const threadId = 'th_00000000-0000-7000-8000-000000000001';
-    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
-    const timestamp = '2026-09-30T00:00:00.000Z';
-    const setup = createTestAgentSetup({
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    });
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      dataRoot,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Peer fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
-      agentManifests: [setup.manifest],
-    });
-    const manager = createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot });
-    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
-      readRuntimeConfig: () => snapshot,
-    });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
-    const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
-    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const auth = createBetterAuth(coreDb, {
-      mode: 'server',
-      env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
-    });
-    const taskApp = createApp({
-      mode: 'server',
-      auth,
-      coreDb,
-      store,
-      workerMcpGateway,
-      fileAdmission: native.fileAdmission,
-      turnExecutor: native.executor,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager: manager,
-    });
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
-      coreDb,
-      store,
-      workerMcpGateway,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfig: () => snapshot,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-    });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    const client = new Client({ name: 'work-peers', version: '1.0.0' });
-    const laterClient = new Client({ name: 'later-work-peers', version: '1.0.0' });
-    const task = (requestId: string, secret: string) =>
-      taskApp.request(
-        ...operationRequest(
-          'task.start',
-          { workspaceId, threadId },
-          {
-            method: 'POST',
-            headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
-            body: JSON.stringify({ input: 'Read peers', requestId }),
-          }
-        )
-      );
-    const transport = () =>
-      new StreamableHTTPClientTransport(
-        new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
-        {
-          fetch: (input, init) => app.fetch(new Request(input, init)),
-          requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
-        }
-      );
-    try {
-      let callerUserId = actor.id as string;
+  it.each(['Workspace member', 'nonmember administrator'] as const)(
+    'reads only current same-Sandbox peers through Turn-scoped handles without changing their records: %s',
+    {
+      timeout: 60_000,
+    },
+    async (audience) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-work-peers-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const browserCredentials = {
+        name: 'Peer administrator',
+        email: 'peer-admin@example.invalid',
+        password: randomUUID(),
+      };
       if (audience === 'nonmember administrator') {
-        const registered = await auth.handler(
-          new Request('http://nanocore.test/api/auth/sign-in/email', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(browserCredentials),
-          })
-        );
-        expect(registered.status).toBe(200);
-        const { user } = (await registered.json()) as { user: { id: string } };
-        callerUserId = user.id;
-        expect(isCanonicalUserActive(coreDb, callerUserId)).toBe(true);
-        expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, callerUserId)).toBeNull();
-      }
-      const issued = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: callerUserId,
-        scope: audience === 'nonmember administrator' ? 'server-admin' : 'workspace',
-        workspaceIds: audience === 'nonmember administrator' ? [] : [workspaceId],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      const firstRequestId = '0190f4c8-0000-7000-8000-000000000751';
-      const started = await task(firstRequestId, issued.secret);
-      expect(started.status).toBe(202);
-      const caller = StartTaskModeResponseSchema.parse(await started.json()).turn;
-      const first = native.executionFor(caller.id);
-      await first.launched.promise;
-      await native.waitForStartup(native.executor.nativeLineage!.turnId);
-      const firstPackage = native.workerControlGateway.authenticatePackageToken(
-        `Bearer ${native.executor.capabilityToken}`,
-        { tokenFamily: 'capability' }
-      );
-      expect(firstPackage.scope).toMatchObject({
-        workspaceId,
-        threadId,
-        turnId: caller.id,
-        triggerActor: { kind: 'user', id: callerUserId },
-      });
-      expect(
-        findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: caller.id })
-          ?.serverAdminTokenId
-      ).toBe(audience === 'nonmember administrator' ? issued.tokenId : null);
-      const callerCommand = commands.mock.calls.find(
-        ([command]) => command.operation === 'turn.start'
-      )![0];
-      const threads = await Promise.all(
-        ['peer', 'restricted', 'withdrawn', 'foreign'].map((name) =>
-          store.createThread(workspaceId, name, undefined, 'conversation', {
-            visibility: 'workspace',
-          })
-        )
-      );
-      // These peer bindings are unstarted Core inputs. No private history or native execution is admitted.
-      const sessions: ReturnType<typeof store.getAgentSession>[] = [];
-      for (const thread of threads) {
-        const session = await store.createAgentSession({
-          id: testEntityId('as', `as_native_${thread.name}`),
-          agentId: 'agent_codex_host',
-          workspaceId,
-          threadId: thread.id,
-          status: 'initializing',
-          message: 'native-state-canary credential-canary',
-          createdAt: timestamp,
-          updatedAt: timestamp,
+        const bootstrap = ensureServerBootstrapToken(coreDb);
+        if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+        const consumed = await consumeServerBootstrapToken(coreDb, {
+          token: bootstrap.token,
+          ownerUserId: allocateEntityId('usr'),
+          displayName: browserCredentials.name,
+          email: browserCredentials.email,
+          password: browserCredentials.password,
+          tokenExpiresAt: '2099-01-01T00:00:00.000Z',
         });
-        sessions.push(session);
+        if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+        expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
       }
-      const bindingInputs = sessions.map((session, index) => ({
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: session.id,
-        agentSessionRuntimeBindingId: `binding_${threads[index]!.name}`,
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: index === 3 ? 'harness_foreign' : callerCommand.harnessInstanceId,
-        workspaceId,
-        threadId: threads[index]!.id,
-        timestamp,
-      }));
-      for (const binding of bindingInputs.slice(0, 3))
-        await openNanoHostAgentSessionBinding(coreDb, binding);
-      const [peerSession, , withdrawnSession, foreignSession] = sessions as [
-        (typeof sessions)[number],
-        (typeof sessions)[number],
-        (typeof sessions)[number],
-        (typeof sessions)[number],
-      ];
-      for (let index = 0; index < 3; index += 1) {
-        const history = await store.createTurn(
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
+      const timestamp = '2026-09-30T00:00:00.000Z';
+      const setup = createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Peer fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+        agentManifests: [setup.manifest],
+      });
+      const manager = createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot });
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => snapshot,
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+      const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+      const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+      const auth = createBetterAuth(coreDb, {
+        mode: 'server',
+        env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
+      });
+      const taskApp = createApp({
+        mode: 'server',
+        auth,
+        coreDb,
+        store,
+        workerMcpGateway,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager: manager,
+      });
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        store,
+        workerMcpGateway,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfig: () => snapshot,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      });
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      const client = new Client({ name: 'work-peers', version: '1.0.0' });
+      const laterClient = new Client({ name: 'later-work-peers', version: '1.0.0' });
+      const task = (requestId: string, secret: string) =>
+        taskApp.request(
+          ...operationRequest(
+            'task.start',
+            { workspaceId, threadId },
+            {
+              method: 'POST',
+              headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+              body: JSON.stringify({ input: 'Read peers', requestId }),
+            }
+          )
+        );
+      const transport = () =>
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+          {
+            fetch: (input, init) => app.fetch(new Request(input, init)),
+            requestInit: {
+              headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
+            },
+          }
+        );
+      try {
+        let callerUserId = actor.id as string;
+        if (audience === 'nonmember administrator') {
+          const registered = await auth.handler(
+            new Request('http://nanocore.test/api/auth/sign-in/email', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(browserCredentials),
+            })
+          );
+          expect(registered.status).toBe(200);
+          const { user } = (await registered.json()) as { user: { id: string } };
+          callerUserId = user.id;
+          expect(isCanonicalUserActive(coreDb, callerUserId)).toBe(true);
+          expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, callerUserId)).toBeNull();
+        }
+        const issued = createOpenKitAccessTokenRecord(coreDb, {
+          ownerUserId: callerUserId,
+          scope: audience === 'nonmember administrator' ? 'server-admin' : 'workspace',
+          workspaceIds: audience === 'nonmember administrator' ? [] : [workspaceId],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        const firstRequestId = '0190f4c8-0000-7000-8000-000000000751';
+        const started = await task(firstRequestId, issued.secret);
+        expect(started.status).toBe(202);
+        const caller = StartTaskModeResponseSchema.parse(await started.json()).turn;
+        const first = native.executionFor(caller.id);
+        await first.launched.promise;
+        await native.waitForStartup(native.executor.nativeLineage!.turnId);
+        const firstPackage = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        expect(firstPackage.scope).toMatchObject({
+          workspaceId,
+          threadId,
+          turnId: caller.id,
+          triggerActor: { kind: 'user', id: callerUserId },
+        });
+        expect(
+          findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: caller.id })
+            ?.serverAdminTokenId
+        ).toBe(audience === 'nonmember administrator' ? issued.tokenId : null);
+        const callerCommand = commands.mock.calls.find(
+          ([command]) => command.operation === 'turn.start'
+        )![0];
+        const threads = await Promise.all(
+          ['peer', 'restricted', 'withdrawn', 'foreign'].map((name) =>
+            store.createThread(workspaceId, name, undefined, 'conversation', {
+              visibility: 'workspace',
+            })
+          )
+        );
+        // These peer bindings are unstarted Core inputs. No private history or native execution is admitted.
+        const sessions: ReturnType<typeof store.getAgentSession>[] = [];
+        for (const thread of threads) {
+          const session = await store.createAgentSession({
+            id: testEntityId('as', `as_native_${thread.name}`),
+            agentId: 'agent_codex_host',
+            workspaceId,
+            threadId: thread.id,
+            status: 'initializing',
+            message: 'native-state-canary credential-canary',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          });
+          sessions.push(session);
+        }
+        const bindingInputs = sessions.map((session, index) => ({
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: session.id,
+          agentSessionRuntimeBindingId: `binding_${threads[index]!.name}`,
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: index === 3 ? 'harness_foreign' : callerCommand.harnessInstanceId,
+          workspaceId,
+          threadId: threads[index]!.id,
+          timestamp,
+        }));
+        for (const binding of bindingInputs.slice(0, 3))
+          await openNanoHostAgentSessionBinding(coreDb, binding);
+        const [peerSession, , withdrawnSession, foreignSession] = sessions as [
+          (typeof sessions)[number],
+          (typeof sessions)[number],
+          (typeof sessions)[number],
+          (typeof sessions)[number],
+        ];
+        for (let index = 0; index < 3; index += 1) {
+          const history = await store.createTurn(
+            workspaceId,
+            threads[0]!.id,
+            'Earlier work',
+            actor,
+            null,
+            {
+              startedAt: `2026-09-29T00:00:0${index}.000Z`,
+              triggerSource: { kind: 'user-input', summary: 'Earlier work' },
+            }
+          );
+          await store.completeTurn(history.id, { status: 'completed', completedAt: timestamp });
+        }
+        const peer = await store.createTurn(
           workspaceId,
           threads[0]!.id,
-          'Earlier work',
+          'Read peers',
           actor,
           null,
           {
-            startedAt: `2026-09-29T00:00:0${index}.000Z`,
-            triggerSource: { kind: 'user-input', summary: 'Earlier work' },
+            startedAt: timestamp,
+            triggerSource: { kind: 'user-input', summary: 'Read peers' },
           }
         );
-        await store.completeTurn(history.id, { status: 'completed', completedAt: timestamp });
-      }
-      const peer = await store.createTurn(workspaceId, threads[0]!.id, 'Read peers', actor, null, {
-        startedAt: timestamp,
-        triggerSource: { kind: 'user-input', summary: 'Read peers' },
-      });
-      // Preparing Core correlation is real; no native start or ready proof is supplied for this peer.
-      await store.updateTurn(peer.id, {
-        agentId: 'agent_codex_host',
-        agentSessionId: peerSession.id,
-      });
-      expect(store.getTurnById(peer.id).agentSessionId).toBe(peerSession.id);
-      const itemFields = {
-        owner: peer.owner,
-        threadId: peer.threadId,
-        turnId: peer.id,
-        status: 'completed' as const,
-        createdAt: timestamp,
-        completedAt: timestamp,
-      };
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', 'it_peer_plan'),
-        type: 'plan',
-        title: 'Product plan',
-        summary: null,
-        steps: [],
-      });
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', 'it_peer_tool'),
-        type: 'tool-call',
-        tool: 'test',
-        server: null,
-        arguments: null,
-        result: 'Product tool summary',
-        error: null,
-        durationMs: 1,
-      });
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', 'it_peer_status'),
-        type: 'status',
-        title: 'Product status',
-        summary: null,
-        level: 'info',
-      });
-      for (let index = 0; index < 23; index += 1) {
+        // Preparing Core correlation is real; no native start or ready proof is supplied for this peer.
+        await store.updateTurn(peer.id, {
+          agentId: 'agent_codex_host',
+          agentSessionId: peerSession.id,
+        });
+        expect(store.getTurnById(peer.id).agentSessionId).toBe(peerSession.id);
+        const itemFields = {
+          owner: peer.owner,
+          threadId: peer.threadId,
+          turnId: peer.id,
+          status: 'completed' as const,
+          createdAt: timestamp,
+          completedAt: timestamp,
+        };
         await store.createItem({
           ...itemFields,
-          id: testEntityId('it', `it_peer_${String(index).padStart(2, '0')}`),
-          createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
-          type: 'assistant-message',
-          text: `Product message ${index}`,
+          id: testEntityId('it', 'it_peer_plan'),
+          type: 'plan',
+          title: 'Product plan',
+          summary: null,
+          steps: [],
         });
-      }
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', 'it_peer_reasoning'),
-        type: 'reasoning',
-        summary: [],
-        content: ['restricted-evidence-canary'],
-      });
-      const protectedTurn = await store.createTurn(
-        workspaceId,
-        threads[1]!.id,
-        'Protected current source',
-        actor,
-        null,
-        { startedAt: timestamp }
-      );
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', 'restricted_peer_source'),
-        threadId: protectedTurn.threadId,
-        turnId: protectedTurn.id,
-        type: 'assistant-message',
-        text: 'current-audience-content-canary',
-      });
-      const queued = await store.createTurn(
-        workspaceId,
-        threads[2]!.id,
-        'Queued work',
-        actor,
-        null,
-        { status: 'pending' }
-      );
-      const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');
-      retainWorkObservationBody(workspaceDb, {
-        bundleId: 'evidence_peer_private',
-        threadId: peer.threadId,
-        turnId: peer.id,
-        createdAt: timestamp,
-        sha256: createHash('sha256').update(rawEvidence).digest('hex'),
-        bytes: rawEvidence,
-      });
-      const questions = [
-        {
-          id: 'peer_question',
-          header: 'Peer',
-          question: 'Which next step?',
-          options: null,
-          isOther: false,
-          isSecret: false,
-        },
-      ];
-      const requestId = '00000000-0000-4000-8000-000000000255';
-      const requestItemId = testEntityId('it', 'peer_pending');
-      await raiseRecordedPendingRequest(
-        store,
-        workspaceDb.sqlite,
-        {
-          requestId,
-          workspaceId,
-          threadId: peer.threadId,
-          raisingTurnId: peer.id,
-          requestItemId,
-          kind: 'user-input',
-          requesterKind: 'person',
-          responsibleUserId: actor.id,
-          questions,
-          now: timestamp,
-        },
-        {
+        await store.createItem({
           ...itemFields,
-          id: requestItemId,
-          type: 'user-input-request',
-          responsibleUserId: actor.id,
-          userInputRequestId: requestId,
-          prompt: 'Keep this pending.',
-          questions,
+          id: testEntityId('it', 'it_peer_tool'),
+          type: 'tool-call',
+          tool: 'test',
+          server: null,
+          arguments: null,
+          result: 'Product tool summary',
+          error: null,
+          durationMs: 1,
+        });
+        await store.createItem({
+          ...itemFields,
+          id: testEntityId('it', 'it_peer_status'),
+          type: 'status',
+          title: 'Product status',
+          summary: null,
+          level: 'info',
+        });
+        for (let index = 0; index < 23; index += 1) {
+          await store.createItem({
+            ...itemFields,
+            id: testEntityId('it', `it_peer_${String(index).padStart(2, '0')}`),
+            createdAt: `2026-09-30T00:00:${String(index).padStart(2, '0')}.000Z`,
+            type: 'assistant-message',
+            text: `Product message ${index}`,
+          });
         }
-      );
-      await client.connect(transport());
-      // Core product and binding readers own this read-only predicate; no layout file is canonical.
-      const before = {
-        turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
-        threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
-        revisions: store
-          .listWorkspaceItemRevisions(workspaceId)
-          .filter((item) => threads.some((thread) => thread.id === item.threadId)),
-        events: threads.flatMap((thread) =>
-          store
-            .listThreadTurns(workspaceId, thread.id)
-            .map((turn) => store.getTurnEventsForExport(turn.id))
-        ),
-        requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
-        sessions: sessions.map((session) => store.getAgentSession(session.id)),
-        bindings: threads.map((thread) =>
-          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
-        ),
-        commands: commands.mock.calls.length,
-        effects: native.effects.length,
-      };
-      expect(before.requests).toHaveLength(1);
-      expect(before.bindings).toEqual(
-        sessions.map((session, index) => (index === 3 ? null : { agentSessionId: session.id }))
-      );
-      const tools = (await client.listTools()).tools;
-      expect(tools.map((tool) => tool.name)).toEqual([
-        operationToolName('automation.event-admit'),
-        operationToolName('knowledge.ask'),
-        operationToolName('knowledge.tell'),
-        'work_input_request',
-        'work_peer_list',
-        'work_peer_read',
-        'work_source_read',
-        'work_source_search',
-        'work_source_view',
-        'work_artifact_submit',
-      ]);
-      const sourceSchema = tools.find((tool) => tool.name === 'work_source_read')!.inputSchema;
-      expect(sourceSchema.required).toEqual(['path']);
-      expect(sourceSchema.additionalProperties).not.toBe(false);
-      const searchSchema = tools.find((tool) => tool.name === 'work_source_search')!.inputSchema;
-      expect(searchSchema.required).toEqual(['path', 'query']);
-      expect(searchSchema.additionalProperties).not.toBe(false);
-      const viewSchema = tools.find((tool) => tool.name === 'work_source_view')!.inputSchema;
-      expect(viewSchema.required).toEqual(['path']);
-      expect(viewSchema.additionalProperties).not.toBe(false);
-      const readSchema = tools.find((tool) => tool.name === 'work_peer_read')!.inputSchema;
-      expect(readSchema.required).toEqual(['handle']);
-      expect(readSchema.additionalProperties).not.toBe(false);
-      const listed = await client.callTool({
-        name: 'work_peer_list',
-        arguments: {
-          future: 'additive-canary',
-          agentSessionId: foreignSession.id,
-          requestId: '00000000-0000-4000-8000-000000000256',
-          prompt: 'additive-canary',
-          questions: [
-            {
-              id: 'ignored',
-              header: 'Ignored',
-              question: 'additive-canary',
-              options: null,
-              isOther: false,
-              isSecret: true,
-            },
-          ],
-        },
-      });
-      expect(listed.isError).toBe(false);
-      const peers = listed.structuredContent!.peers as Array<Record<string, unknown>>;
-      expect(peers).toHaveLength(3);
-      const readable = peers.find((entry) => entry.title === 'peer')!;
-      expect(readable).toMatchObject({
-        agentId: 'agent_codex_host',
-        runtime: 'codex',
-        activeTurn: true,
-      });
-      expect(peers.find((entry) => entry.title === 'withdrawn')).toMatchObject({
-        activeTurn: true,
-      });
-      expect(store.getTurnById(queued.id).status).toBe('pending');
-      expect(peers.map((entry) => entry.title).sort()).toEqual(['peer', 'restricted', 'withdrawn']);
-      expect(JSON.stringify(listed)).not.toMatch(/as_native_|binding_|additive-canary/);
-      expect(JSON.stringify(listed)).not.toContain(firstPackage.scope.agentSessionId);
-      const callsBefore = new Set(
-        listWorkspaceCapabilityCalls(workspaceDb, workspaceId).map((call) => call.id)
-      );
-      const defaultRead = await client.callTool({
-        name: 'work_peer_read',
-        arguments: { handle: readable.handle },
-      });
-      expect(defaultRead.structuredContent!.items).toHaveLength(20);
-      const read = await client.callTool({
-        name: 'work_peer_read',
-        arguments: { handle: readable.handle, limit: 2, future: 'additive-canary' },
-      });
-      expect(read.structuredContent).toMatchObject({
-        turns: [
-          { id: peer.id, status: 'running', triggerSource: { kind: 'user-input' } },
-          { status: 'completed' },
-        ],
-        items: [{ id: testEntityId('it', 'it_peer_22') }, { id: testEntityId('it', 'it_peer_21') }],
-        nextCursor: '2',
-      });
-      expect(
-        (read.structuredContent!.turns as Array<Record<string, unknown>>).every(
-          (turn) => !('items' in turn)
-        )
-      ).toBe(true);
-      const next = await client.callTool({
-        name: 'work_peer_read',
-        arguments: { handle: readable.handle, cursor: '2', limit: 50 },
-      });
-      expect(
-        (next.structuredContent!.items as Array<{ type: string }>).map((item) => item.type)
-      ).toEqual(expect.arrayContaining(['assistant-message', 'plan', 'tool-call', 'status']));
-      expect(next.structuredContent!.nextCursor).toBeNull();
-      expect(JSON.stringify([read, next])).not.toMatch(
-        /agentSessionId|as_native_|native-state-canary|restricted-evidence-canary|restricted-raw-canary|additive-canary|credential/
-      );
-      for (const session of sessions)
-        expect(JSON.stringify([listed, read, next])).not.toContain(session.id);
-      expect(JSON.stringify([listed, read, next])).not.toContain(callerCommand.harnessInstanceId);
-      for (const handle of [peerSession.id, 'fabricated-peer-handle']) {
-        await expect(
-          client.callTool({ name: 'work_peer_read', arguments: { handle } })
-        ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      }
-      const readCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
-        (call) => !callsBefore.has(call.id)
-      );
-      expect(readCalls).toHaveLength(5);
-      expect(readCalls.filter((call) => call.status === 'succeeded')).toHaveLength(3);
-      expect(readCalls.filter((call) => call.status === 'failed')).toHaveLength(2);
-      expect(
-        readCalls.every(
-          (call) =>
-            call.turnId === caller.id &&
-            call.agentSessionId === firstPackage.scope.agentSessionId &&
-            call.packageSnapshotId === firstPackage.snapshotId
-        )
-      ).toBe(true);
-      for (const argumentsOverride of [
-        { handle: '' },
-        { handle: 1 },
-        { cursor: '-1' },
-        { cursor: '01' },
-        { cursor: 'not-a-cursor' },
-        { limit: 0 },
-        { limit: 51 },
-        { limit: 1.5 },
-      ]) {
-        await expect(
-          client.callTool({
-            name: 'work_peer_read',
-            arguments: { handle: readable.handle, ...argumentsOverride },
-          })
-        ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
-      }
-      expect(JSON.stringify(listWorkspaceCapabilityCalls(workspaceDb, workspaceId))).not.toContain(
-        'additive-canary'
-      );
-      const after = {
-        turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
-        threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
-        revisions: store
-          .listWorkspaceItemRevisions(workspaceId)
-          .filter((item) => threads.some((thread) => thread.id === item.threadId)),
-        events: threads.flatMap((thread) =>
-          store
-            .listThreadTurns(workspaceId, thread.id)
-            .map((turn) => store.getTurnEventsForExport(turn.id))
-        ),
-        requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
-        sessions: sessions.map((session) => store.getAgentSession(session.id)),
-        bindings: threads.map((thread) =>
-          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
-        ),
-        commands: commands.mock.calls.length,
-        effects: native.effects.length,
-      };
-      expect(after).toEqual(before);
-      first.completion.resolve();
-      await first.execution;
-      const replay = await task(firstRequestId, issued.secret);
-      expect(replay.status).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(caller.id);
-      expect(store.getTurnById(caller.id).status).toBe('completed');
-      const later = await task('0190f4c8-0000-7000-8000-000000000752', issued.secret);
-      expect(later.status).toBe(202);
-      const successor = StartTaskModeResponseSchema.parse(await later.json()).turn;
-      expect(successor.id).not.toBe(caller.id);
-      const second = native.executionFor(successor.id);
-      await second.launched.promise;
-      await native.waitForStartup(native.executor.nativeLineage!.turnId);
-      const target = await recordTestNativeRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: 'test',
-        harnessBindingRef: 'harness_binding_foreign',
-        harnessCompatibilityKey: 'b'.repeat(64),
-        harnessInstanceId: 'harness_foreign',
-        imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: target.physicalEpoch!,
-        sandboxBindingRef: 'sandbox_binding_foreign',
-        sandboxCompatibilityKey: 'a'.repeat(64),
-        sandboxIntegrationBindingRef: 'integration_foreign',
-        sandboxRuntimeId: 'sandbox_foreign',
-        runtimeTargetId: target.targetId,
-        timestamp,
-      });
-      await openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
-      expect(
-        readNanoHostThreadAgentSessionBinding(coreDb, {
+        await store.createItem({
+          ...itemFields,
+          id: testEntityId('it', 'it_peer_reasoning'),
+          type: 'reasoning',
+          summary: [],
+          content: ['restricted-evidence-canary'],
+        });
+        const protectedTurn = await store.createTurn(
           workspaceId,
-          threadId: threads[3]!.id,
-        })
-      ).toEqual({ agentSessionId: foreignSession.id });
-      const beforeAudience = {
-        ...before,
-        bindings: threads.map((thread) =>
-          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
-        ),
-        commands: commands.mock.calls.length,
-        effects: native.effects.length,
-      };
-      expect(native.executor.launches).toBe(2);
-      await laterClient.connect(transport());
-      await expect(
-        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      const laterPeers = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
-        .structuredContent!.peers as Array<Record<string, unknown>>;
-      const laterPeer = laterPeers.find((entry) => entry.title === 'peer')!;
-      expect(laterPeer).toMatchObject({
-        agentId: 'agent_codex_host',
-        runtime: 'codex',
-        activeTurn: true,
-      });
-      expect(laterPeer.handle).not.toBe(readable.handle);
-      const currentPackage = native.workerControlGateway.authenticatePackageToken(
-        `Bearer ${native.executor.capabilityToken}`,
-        { tokenFamily: 'capability' }
-      );
-      expect(currentPackage.scope.agentSessionId).toBe(firstPackage.scope.agentSessionId);
-      expect(currentPackage.scope.turnId).toBe(successor.id);
-      expect(currentPackage.snapshotId).not.toBe(firstPackage.snapshotId);
-      expect(
-        findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: successor.id })
-          ?.serverAdminTokenId
-      ).toBe(audience === 'nonmember administrator' ? issued.tokenId : null);
-      expect(laterPeers).toHaveLength(3);
-      expect(laterPeers.some((entry) => entry.title === 'foreign')).toBe(false);
-      await expect(
-        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: foreignSession.id } })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      expect(laterPeers.filter((entry) => !('title' in entry))).toHaveLength(0);
-      expect(JSON.stringify(laterPeers)).not.toContain(firstPackage.scope.agentSessionId);
-      expect(
-        (
-          await laterClient.callTool({
-            name: 'work_peer_read',
-            arguments: { handle: laterPeer.handle, cursor: '1', limit: 1 },
-          })
-        ).structuredContent!.items
-      ).toHaveLength(1);
-      const boundary = {
-        id: 'peer-current-boundary',
-        kind: 'managed-boundary' as const,
-        author: { kind: 'human' as const, id: actor.id },
-        authority: { kind: 'human' as const, userId: actor.id },
-        authoredAt: timestamp,
-        state: 'active' as const,
-        scope: {
-          subjects: [],
-          actions: [],
-          resources: [
-            {
-              kind: 'container' as const,
-              container: { owner: peer.owner, kind: 'thread' as const, id: threads[1]!.id },
-            },
+          threads[1]!.id,
+          'Protected current source',
+          actor,
+          null,
+          { startedAt: timestamp }
+        );
+        await store.createItem({
+          ...itemFields,
+          id: testEntityId('it', 'restricted_peer_source'),
+          threadId: protectedTurn.threadId,
+          turnId: protectedTurn.id,
+          type: 'assistant-message',
+          text: 'current-audience-content-canary',
+        });
+        const queued = await store.createTurn(
+          workspaceId,
+          threads[2]!.id,
+          'Queued work',
+          actor,
+          null,
+          { status: 'pending' }
+        );
+        const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');
+        retainWorkObservationBody(workspaceDb, {
+          bundleId: 'evidence_peer_private',
+          threadId: peer.threadId,
+          turnId: peer.id,
+          createdAt: timestamp,
+          sha256: createHash('sha256').update(rawEvidence).digest('hex'),
+          bytes: rawEvidence,
+        });
+        const questions = [
+          {
+            id: 'peer_question',
+            header: 'Peer',
+            question: 'Which next step?',
+            options: null,
+            isOther: false,
+            isSecret: false,
+          },
+        ];
+        const requestId = '00000000-0000-4000-8000-000000000255';
+        const requestItemId = testEntityId('it', 'peer_pending');
+        await raiseRecordedPendingRequest(
+          store,
+          workspaceDb.sqlite,
+          {
+            requestId,
+            workspaceId,
+            threadId: peer.threadId,
+            raisingTurnId: peer.id,
+            requestItemId,
+            kind: 'user-input',
+            requesterKind: 'person',
+            responsibleUserId: actor.id,
+            questions,
+            now: timestamp,
+          },
+          {
+            ...itemFields,
+            id: requestItemId,
+            type: 'user-input-request',
+            responsibleUserId: actor.id,
+            userInputRequestId: requestId,
+            prompt: 'Keep this pending.',
+            questions,
+          }
+        );
+        await client.connect(transport());
+        // Core product and binding readers own this read-only predicate; no layout file is canonical.
+        const before = {
+          turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
+          threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
+          revisions: store
+            .listWorkspaceItemRevisions(workspaceId)
+            .filter((item) => threads.some((thread) => thread.id === item.threadId)),
+          events: threads.flatMap((thread) =>
+            store
+              .listThreadTurns(workspaceId, thread.id)
+              .map((turn) => store.getTurnEventsForExport(turn.id))
+          ),
+          requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
+          sessions: sessions.map((session) => store.getAgentSession(session.id)),
+          bindings: threads.map((thread) =>
+            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+          ),
+          commands: commands.mock.calls.length,
+          effects: native.effects.length,
+        };
+        expect(before.requests).toHaveLength(1);
+        expect(before.bindings).toEqual(
+          sessions.map((session, index) => (index === 3 ? null : { agentSessionId: session.id }))
+        );
+        const tools = (await client.listTools()).tools;
+        expect(tools.map((tool) => tool.name)).toEqual([
+          operationToolName('automation.event-admit'),
+          operationToolName('knowledge.ask'),
+          operationToolName('knowledge.tell'),
+          'work_input_request',
+          'work_peer_list',
+          'work_peer_read',
+          'work_source_read',
+          'work_source_search',
+          'work_source_view',
+          'work_artifact_submit',
+        ]);
+        const sourceSchema = tools.find((tool) => tool.name === 'work_source_read')!.inputSchema;
+        expect(sourceSchema.required).toEqual(['path']);
+        expect(sourceSchema.additionalProperties).not.toBe(false);
+        const searchSchema = tools.find((tool) => tool.name === 'work_source_search')!.inputSchema;
+        expect(searchSchema.required).toEqual(['path', 'query']);
+        expect(searchSchema.additionalProperties).not.toBe(false);
+        const viewSchema = tools.find((tool) => tool.name === 'work_source_view')!.inputSchema;
+        expect(viewSchema.required).toEqual(['path']);
+        expect(viewSchema.additionalProperties).not.toBe(false);
+        const readSchema = tools.find((tool) => tool.name === 'work_peer_read')!.inputSchema;
+        expect(readSchema.required).toEqual(['handle']);
+        expect(readSchema.additionalProperties).not.toBe(false);
+        const listed = await client.callTool({
+          name: 'work_peer_list',
+          arguments: {
+            future: 'additive-canary',
+            agentSessionId: foreignSession.id,
+            requestId: '00000000-0000-4000-8000-000000000256',
+            prompt: 'additive-canary',
+            questions: [
+              {
+                id: 'ignored',
+                header: 'Ignored',
+                question: 'additive-canary',
+                options: null,
+                isOther: false,
+                isSecret: true,
+              },
+            ],
+          },
+        });
+        expect(listed.isError).toBe(false);
+        const peers = listed.structuredContent!.peers as Array<Record<string, unknown>>;
+        expect(peers).toHaveLength(3);
+        const readable = peers.find((entry) => entry.title === 'peer')!;
+        expect(readable).toMatchObject({
+          agentId: 'agent_codex_host',
+          runtime: 'codex',
+          activeTurn: true,
+        });
+        expect(peers.find((entry) => entry.title === 'withdrawn')).toMatchObject({
+          activeTurn: true,
+        });
+        expect(store.getTurnById(queued.id).status).toBe('pending');
+        expect(peers.map((entry) => entry.title).sort()).toEqual([
+          'peer',
+          'restricted',
+          'withdrawn',
+        ]);
+        expect(JSON.stringify(listed)).not.toMatch(/as_native_|binding_|additive-canary/);
+        expect(JSON.stringify(listed)).not.toContain(firstPackage.scope.agentSessionId);
+        const callsBefore = new Set(
+          listWorkspaceCapabilityCalls(workspaceDb, workspaceId).map((call) => call.id)
+        );
+        const defaultRead = await client.callTool({
+          name: 'work_peer_read',
+          arguments: { handle: readable.handle },
+        });
+        expect(defaultRead.structuredContent!.items).toHaveLength(20);
+        const read = await client.callTool({
+          name: 'work_peer_read',
+          arguments: { handle: readable.handle, limit: 2, future: 'additive-canary' },
+        });
+        expect(read.structuredContent).toMatchObject({
+          turns: [
+            { id: peer.id, status: 'running', triggerSource: { kind: 'user-input' } },
+            { status: 'completed' },
           ],
-        },
-        lifetime: { anchor: { owner: peer.owner, kind: 'workspace' as const, id: workspaceId } },
-      };
-      const replacement = { schemaVersion: 1 as const, statements: [boundary] };
-      expect(
-        (
-          await laterClient.callTool({
-            name: 'work_peer_read',
-            arguments: { handle: laterPeers.find((entry) => entry.title === 'restricted')!.handle },
+          items: [
+            { id: testEntityId('it', 'it_peer_22') },
+            { id: testEntityId('it', 'it_peer_21') },
+          ],
+          nextCursor: '2',
+        });
+        expect(
+          (read.structuredContent!.turns as Array<Record<string, unknown>>).every(
+            (turn) => !('items' in turn)
+          )
+        ).toBe(true);
+        const next = await client.callTool({
+          name: 'work_peer_read',
+          arguments: { handle: readable.handle, cursor: '2', limit: 50 },
+        });
+        expect(
+          (next.structuredContent!.items as Array<{ type: string }>).map((item) => item.type)
+        ).toEqual(expect.arrayContaining(['assistant-message', 'plan', 'tool-call', 'status']));
+        expect(next.structuredContent!.nextCursor).toBeNull();
+        expect(JSON.stringify([read, next])).not.toMatch(
+          /agentSessionId|as_native_|native-state-canary|restricted-evidence-canary|restricted-raw-canary|additive-canary|credential/
+        );
+        for (const session of sessions)
+          expect(JSON.stringify([listed, read, next])).not.toContain(session.id);
+        expect(JSON.stringify([listed, read, next])).not.toContain(callerCommand.harnessInstanceId);
+        for (const handle of [peerSession.id, 'fabricated-peer-handle']) {
+          await expect(
+            client.callTool({ name: 'work_peer_read', arguments: { handle } })
+          ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+        }
+        const readCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
+          (call) => !callsBefore.has(call.id)
+        );
+        expect(readCalls).toHaveLength(5);
+        expect(readCalls.filter((call) => call.status === 'succeeded')).toHaveLength(3);
+        expect(readCalls.filter((call) => call.status === 'failed')).toHaveLength(2);
+        expect(
+          readCalls.every(
+            (call) =>
+              call.turnId === caller.id &&
+              call.agentSessionId === firstPackage.scope.agentSessionId &&
+              call.packageSnapshotId === firstPackage.snapshotId
+          )
+        ).toBe(true);
+        for (const argumentsOverride of [
+          { handle: '' },
+          { handle: 1 },
+          { cursor: '-1' },
+          { cursor: '01' },
+          { cursor: 'not-a-cursor' },
+          { limit: 0 },
+          { limit: 51 },
+          { limit: 1.5 },
+        ]) {
+          await expect(
+            client.callTool({
+              name: 'work_peer_read',
+              arguments: { handle: readable.handle, ...argumentsOverride },
+            })
+          ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
+        }
+        expect(
+          JSON.stringify(listWorkspaceCapabilityCalls(workspaceDb, workspaceId))
+        ).not.toContain('additive-canary');
+        const after = {
+          turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
+          threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
+          revisions: store
+            .listWorkspaceItemRevisions(workspaceId)
+            .filter((item) => threads.some((thread) => thread.id === item.threadId)),
+          events: threads.flatMap((thread) =>
+            store
+              .listThreadTurns(workspaceId, thread.id)
+              .map((turn) => store.getTurnEventsForExport(turn.id))
+          ),
+          requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
+          sessions: sessions.map((session) => store.getAgentSession(session.id)),
+          bindings: threads.map((thread) =>
+            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+          ),
+          commands: commands.mock.calls.length,
+          effects: native.effects.length,
+        };
+        expect(after).toEqual(before);
+        first.completion.resolve();
+        await first.execution;
+        const replay = await task(firstRequestId, issued.secret);
+        expect(replay.status).toBe(202);
+        expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(caller.id);
+        expect(store.getTurnById(caller.id).status).toBe('completed');
+        const later = await task('0190f4c8-0000-7000-8000-000000000752', issued.secret);
+        expect(later.status).toBe(202);
+        const successor = StartTaskModeResponseSchema.parse(await later.json()).turn;
+        expect(successor.id).not.toBe(caller.id);
+        const second = native.executionFor(successor.id);
+        await second.launched.promise;
+        await native.waitForStartup(native.executor.nativeLineage!.turnId);
+        const target = await recordTestNativeRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: 'test',
+          harnessBindingRef: 'harness_binding_foreign',
+          harnessCompatibilityKey: 'b'.repeat(64),
+          harnessInstanceId: 'harness_foreign',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: target.physicalEpoch!,
+          sandboxBindingRef: 'sandbox_binding_foreign',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration_foreign',
+          sandboxRuntimeId: 'sandbox_foreign',
+          runtimeTargetId: target.targetId,
+          timestamp,
+        });
+        await openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
+        expect(
+          readNanoHostThreadAgentSessionBinding(coreDb, {
+            workspaceId,
+            threadId: threads[3]!.id,
           })
-        ).structuredContent!.items
-      ).toEqual([expect.objectContaining({ text: 'current-audience-content-canary' })]);
-      // Authored Policy is a prepared reader input, not an administrative command under test.
-      const files = new RuntimeConfigFileService({
-        dataRoot,
-        workspaceIds: [workspaceId],
-        userId: actor.id,
-        runtimeConfigManager: manager,
-        readRuntimeConfigStatus: () => manager.status(),
-      });
-      const configId = `workspaces/${workspaceId}/workspace.jsonc`;
-      const configFile = files.readFile(configId);
-      const config = WorkspaceConfigSchema.parse(parse(configFile.content));
-      const mediation = {
-        ...replacement,
-        statements: [...(config.workspace.policy?.mediation.statements ?? []), boundary],
-      };
-      let content = applyEdits(
-        configFile.content,
-        modify(configFile.content, ['workspace', 'policy', 'mediation'], mediation, {})
-      );
-      content = applyEdits(
-        content,
-        modify(
+        ).toEqual({ agentSessionId: foreignSession.id });
+        const beforeAudience = {
+          ...before,
+          bindings: threads.map((thread) =>
+            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+          ),
+          commands: commands.mock.calls.length,
+          effects: native.effects.length,
+        };
+        expect(native.executor.launches).toBe(2);
+        await laterClient.connect(transport());
+        await expect(
+          laterClient.callTool({ name: 'work_peer_read', arguments: { handle: readable.handle } })
+        ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+        const laterPeers = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
+          .structuredContent!.peers as Array<Record<string, unknown>>;
+        const laterPeer = laterPeers.find((entry) => entry.title === 'peer')!;
+        expect(laterPeer).toMatchObject({
+          agentId: 'agent_codex_host',
+          runtime: 'codex',
+          activeTurn: true,
+        });
+        expect(laterPeer.handle).not.toBe(readable.handle);
+        const currentPackage = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        expect(currentPackage.scope.agentSessionId).toBe(firstPackage.scope.agentSessionId);
+        expect(currentPackage.scope.turnId).toBe(successor.id);
+        expect(currentPackage.snapshotId).not.toBe(firstPackage.snapshotId);
+        expect(
+          findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: successor.id })
+            ?.serverAdminTokenId
+        ).toBe(audience === 'nonmember administrator' ? issued.tokenId : null);
+        expect(laterPeers).toHaveLength(3);
+        expect(laterPeers.some((entry) => entry.title === 'foreign')).toBe(false);
+        await expect(
+          laterClient.callTool({ name: 'work_peer_read', arguments: { handle: foreignSession.id } })
+        ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+        expect(laterPeers.filter((entry) => !('title' in entry))).toHaveLength(0);
+        expect(JSON.stringify(laterPeers)).not.toContain(firstPackage.scope.agentSessionId);
+        expect(
+          (
+            await laterClient.callTool({
+              name: 'work_peer_read',
+              arguments: { handle: laterPeer.handle, cursor: '1', limit: 1 },
+            })
+          ).structuredContent!.items
+        ).toHaveLength(1);
+        const boundary = {
+          id: 'peer-current-boundary',
+          kind: 'managed-boundary' as const,
+          author: { kind: 'human' as const, id: actor.id },
+          authority: { kind: 'human' as const, userId: actor.id },
+          authoredAt: timestamp,
+          state: 'active' as const,
+          scope: {
+            subjects: [],
+            actions: [],
+            resources: [
+              {
+                kind: 'container' as const,
+                container: { owner: peer.owner, kind: 'thread' as const, id: threads[1]!.id },
+              },
+            ],
+          },
+          lifetime: { anchor: { owner: peer.owner, kind: 'workspace' as const, id: workspaceId } },
+        };
+        const replacement = { schemaVersion: 1 as const, statements: [boundary] };
+        expect(
+          (
+            await laterClient.callTool({
+              name: 'work_peer_read',
+              arguments: {
+                handle: laterPeers.find((entry) => entry.title === 'restricted')!.handle,
+              },
+            })
+          ).structuredContent!.items
+        ).toEqual([expect.objectContaining({ text: 'current-audience-content-canary' })]);
+        // Authored Policy is a prepared reader input, not an administrative command under test.
+        const files = new RuntimeConfigFileService({
+          dataRoot,
+          workspaceIds: [workspaceId],
+          userId: actor.id,
+          runtimeConfigManager: manager,
+          readRuntimeConfigStatus: () => manager.status(),
+        });
+        const configId = `workspaces/${workspaceId}/workspace.jsonc`;
+        const configFile = files.readFile(configId);
+        const config = WorkspaceConfigSchema.parse(parse(configFile.content));
+        const mediation = {
+          ...replacement,
+          statements: [...(config.workspace.policy?.mediation.statements ?? []), boundary],
+        };
+        let content = applyEdits(
+          configFile.content,
+          modify(configFile.content, ['workspace', 'policy', 'mediation'], mediation, {})
+        );
+        content = applyEdits(
           content,
-          ['requiredFeatures'],
-          [...new Set([...(config.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE])],
-          {}
-        )
-      );
-      await files.updateFile({
-        id: configId,
-        kind: 'workspace',
-        content,
-        expectedRevision: configFile.file.revision,
-      });
-      expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
-      const restricted = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
-        .structuredContent!.peers as Array<Record<string, unknown>>;
-      const restrictedHandle = laterPeers.find((entry) => entry.title === 'restricted')!.handle;
-      expect(
-        Object.keys(restricted.find((entry) => entry.handle === restrictedHandle)!).sort()
-      ).toEqual(['agentId', 'handle', 'runtime']);
-      const refusal = await laterClient
-        .callTool({ name: 'work_peer_read', arguments: { handle: restrictedHandle } })
-        .catch((error: unknown) => error);
-      expect(refusal).toMatchObject({ data: { code: 'peer_not_found' } });
-      expect(String(refusal)).not.toContain(threads[1]!.id);
-      expect(String(refusal)).not.toContain('current-audience-content-canary');
-      expect(
-        JSON.stringify(restricted.find((entry) => entry.handle === restrictedHandle))
-      ).not.toContain(threads[1]!.id);
-      expect(
-        JSON.stringify(restricted.find((entry) => entry.handle === restrictedHandle))
-      ).not.toContain('current-audience-content-canary');
-      expect({
-        turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
-        threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
-        revisions: store
-          .listWorkspaceItemRevisions(workspaceId)
-          .filter((item) => threads.some((thread) => thread.id === item.threadId)),
-        events: threads.flatMap((thread) =>
-          store
-            .listThreadTurns(workspaceId, thread.id)
-            .map((turn) => store.getTurnEventsForExport(turn.id))
-        ),
-        requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
-        sessions: sessions.map((session) => store.getAgentSession(session.id)),
-        bindings: threads.map((thread) =>
-          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
-        ),
-        commands: commands.mock.calls.length,
-        effects: native.effects.length,
-      }).toEqual(beforeAudience);
-      const withdrawnHandle = laterPeers.find((entry) => entry.title === 'withdrawn')!.handle;
-      expect(
-        (
-          await laterClient.callTool({
-            name: 'work_peer_read',
-            arguments: { handle: withdrawnHandle },
-          })
-        ).structuredContent!.turns
-      ).toEqual([expect.objectContaining({ id: queued.id, status: 'pending' })]);
-      // Deliberately lose only this valid, unstarted Core binding; no physical close is claimed.
-      coreDb.sqlite.transaction(() => {
-        const { changes } = coreDb.sqlite
-          .prepare(`DELETE FROM agent_session_runtime_bindings
+          modify(
+            content,
+            ['requiredFeatures'],
+            [...new Set([...(config.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE])],
+            {}
+          )
+        );
+        await files.updateFile({
+          id: configId,
+          kind: 'workspace',
+          content,
+          expectedRevision: configFile.file.revision,
+        });
+        expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
+        const restricted = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
+          .structuredContent!.peers as Array<Record<string, unknown>>;
+        const restrictedHandle = laterPeers.find((entry) => entry.title === 'restricted')!.handle;
+        expect(
+          Object.keys(restricted.find((entry) => entry.handle === restrictedHandle)!).sort()
+        ).toEqual(['agentId', 'handle', 'runtime']);
+        const refusal = await laterClient
+          .callTool({ name: 'work_peer_read', arguments: { handle: restrictedHandle } })
+          .catch((error: unknown) => error);
+        expect(refusal).toMatchObject({ data: { code: 'peer_not_found' } });
+        expect(String(refusal)).not.toContain(threads[1]!.id);
+        expect(String(refusal)).not.toContain('current-audience-content-canary');
+        expect(
+          JSON.stringify(restricted.find((entry) => entry.handle === restrictedHandle))
+        ).not.toContain(threads[1]!.id);
+        expect(
+          JSON.stringify(restricted.find((entry) => entry.handle === restrictedHandle))
+        ).not.toContain('current-audience-content-canary');
+        expect({
+          turns: threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
+          threads: threads.map((thread) => store.getThread(workspaceId, thread.id)),
+          revisions: store
+            .listWorkspaceItemRevisions(workspaceId)
+            .filter((item) => threads.some((thread) => thread.id === item.threadId)),
+          events: threads.flatMap((thread) =>
+            store
+              .listThreadTurns(workspaceId, thread.id)
+              .map((turn) => store.getTurnEventsForExport(turn.id))
+          ),
+          requests: listThreadPendingRequests(workspaceDb.sqlite, workspaceId, peer.threadId),
+          sessions: sessions.map((session) => store.getAgentSession(session.id)),
+          bindings: threads.map((thread) =>
+            readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: thread.id })
+          ),
+          commands: commands.mock.calls.length,
+          effects: native.effects.length,
+        }).toEqual(beforeAudience);
+        const withdrawnHandle = laterPeers.find((entry) => entry.title === 'withdrawn')!.handle;
+        expect(
+          (
+            await laterClient.callTool({
+              name: 'work_peer_read',
+              arguments: { handle: withdrawnHandle },
+            })
+          ).structuredContent!.turns
+        ).toEqual([expect.objectContaining({ id: queued.id, status: 'pending' })]);
+        // Deliberately lose only this valid, unstarted Core binding; no physical close is claimed.
+        coreDb.sqlite.transaction(() => {
+          const { changes } = coreDb.sqlite
+            .prepare(`DELETE FROM agent_session_runtime_bindings
             WHERE agent_session_runtime_binding_id = ? AND agent_session_id = ?
               AND workspace_id = ? AND thread_id = ?
               AND lifecycle_state = 'opening' AND native_environment_applied = 0
               AND current_turn_id IS NULL AND current_attempt_id IS NULL`)
-          .run('binding_withdrawn', withdrawnSession.id, workspaceId, threads[2]!.id);
-        expect(changes).toBe(1);
-      })();
-      expect(
-        readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
-      ).toBeNull();
-      await expect(
-        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: withdrawnHandle } })
-      ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
-      expect(
-        (
-          await laterClient.callTool({
-            name: 'work_peer_read',
-            arguments: { handle: laterPeer.handle, limit: 1 },
-          })
-        ).structuredContent!.items
-      ).toHaveLength(1);
-      expect(store.getTurnById(successor.id).status).toBe('running');
-      await store.createItem({
-        ...itemFields,
-        id: testEntityId('it', 'it_peer_oversized'),
-        createdAt: '2026-09-30T01:00:00.000Z',
-        type: 'assistant-message',
-        text: 'x'.repeat(524_288),
-      });
-      await expect(
-        laterClient.callTool({ name: 'work_peer_read', arguments: { handle: laterPeer.handle } })
-      ).rejects.toMatchObject({
-        data: { code: 'mcp-result-too-large' },
-        message: expect.stringContaining('Route bulk output through artifacts or the data plane.'),
-      });
-    } finally {
-      await Promise.allSettled([client.close(), laterClient.close()]);
-      native.executor.completion.resolve();
-      for (const turn of store.listThreadTurns(workspaceId, threadId))
-        native.executionFor(turn.id).completion.resolve();
-      const closeouts = await Promise.allSettled(
-        taskAdmissions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value.closeout)
-      );
-      commands.mockRestore();
-      taskAdmissions.mockRestore();
-      await native.restore();
-      await workerMcpGateway.close();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-      expect.soft(closeouts.filter((result) => result.status === 'rejected')).toEqual([]);
+            .run('binding_withdrawn', withdrawnSession.id, workspaceId, threads[2]!.id);
+          expect(changes).toBe(1);
+        })();
+        expect(
+          readNanoHostThreadAgentSessionBinding(coreDb, { workspaceId, threadId: threads[2]!.id })
+        ).toBeNull();
+        await expect(
+          laterClient.callTool({ name: 'work_peer_read', arguments: { handle: withdrawnHandle } })
+        ).rejects.toMatchObject({ data: { code: 'peer_not_found' } });
+        expect(
+          (
+            await laterClient.callTool({
+              name: 'work_peer_read',
+              arguments: { handle: laterPeer.handle, limit: 1 },
+            })
+          ).structuredContent!.items
+        ).toHaveLength(1);
+        expect(store.getTurnById(successor.id).status).toBe('running');
+        await store.createItem({
+          ...itemFields,
+          id: testEntityId('it', 'it_peer_oversized'),
+          createdAt: '2026-09-30T01:00:00.000Z',
+          type: 'assistant-message',
+          text: 'x'.repeat(524_288),
+        });
+        await expect(
+          laterClient.callTool({ name: 'work_peer_read', arguments: { handle: laterPeer.handle } })
+        ).rejects.toMatchObject({
+          data: { code: 'mcp-result-too-large' },
+          message: expect.stringContaining(
+            'Route bulk output through artifacts or the data plane.'
+          ),
+        });
+      } finally {
+        await Promise.allSettled([client.close(), laterClient.close()]);
+        native.executor.completion.resolve();
+        for (const turn of store.listThreadTurns(workspaceId, threadId))
+          native.executionFor(turn.id).completion.resolve();
+        const closeouts = await Promise.allSettled(
+          taskAdmissions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value.closeout)
+        );
+        commands.mockRestore();
+        taskAdmissions.mockRestore();
+        await native.restore();
+        await workerMcpGateway.close();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+        expect.soft(closeouts.filter((result) => result.status === 'rejected')).toEqual([]);
+      }
     }
-  });
+  );
 
   it('keeps a tracking server schema fixed within a Turn and refreshes it on the next Turn', {
     timeout: 60_000,
@@ -3262,367 +3284,376 @@ describe('worker MCP routes', () => {
     { fault: 'revocation', credential: 'bearer' },
     { fault: 'lineage', credential: 'bearer' },
     { fault: 'revocation', credential: 'session' },
-  ] as const)('uses the admitted admin credential for nonmember tool calls and denies revocation or lineage drift: $credential $fault', {
-    timeout: 60_000,
-  }, async ({ fault, credential }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const browserCredentials = {
-      name: 'MCP Admin',
-      email: 'mcp-admin@example.invalid',
-      password: randomUUID(),
-    };
-    const bootstrap = ensureServerBootstrapToken(coreDb);
-    if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
-    const consumed = await consumeServerBootstrapToken(coreDb, {
-      token: bootstrap.token,
-      ownerUserId: allocateEntityId('usr'),
-      displayName: browserCredentials.name,
-      email: browserCredentials.email,
-      password: browserCredentials.password,
-      tokenExpiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
-    expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const threadId = 'th_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId,
-    });
-    const baseUrl = 'http://127.0.0.1:3000';
-    const auth = createBetterAuth(coreDb, {
-      mode: 'server',
-      env: {
-        BETTER_AUTH_URL: baseUrl,
-        BETTER_AUTH_SECRET: randomUUID(),
-      },
-    });
-    const catalog = {
-      schemaVersion: 1 as const,
-      servers: [
-        {
-          allowedTools: ['echo'],
-          credentialBindings: [],
-          enabled: true,
-          id: 'echo',
-          pinnedSchemaSnapshotId: null,
-          schemaPolicy: 'tracking' as const,
-          timeoutMs: 2_000,
-          transport: {
-            args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
-            command: process.execPath,
-            environment: {},
-            kind: 'stdio' as const,
-          },
-        },
-      ],
-    };
-    const setup = createTestAgentSetup({
-      mcpIds: ['echo'],
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-    });
-    const runtimeConfig = createInMemoryRuntimeConfigSnapshot({
-      dataRoot,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Admin fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
-      agentManifests: [setup.manifest],
-      workspaceMcpServerCatalogs: [
-        { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId },
-      ],
-    });
-    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
-      readRuntimeConfig: () => runtimeConfig,
-    });
-    admitTestNativeEnvironment(coreDb, setup.manifest);
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const callTool = vi.spyOn(workerMcpGateway, 'callTool');
-    const app = createApp({
-      auth,
-      coreDb,
-      store,
-      mode: 'server',
-      workerMcpGateway,
-      fileAdmission: native.fileAdmission,
-      turnExecutor: native.executor,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager: createRuntimeConfigManager({
-        dataRoot: null,
-        initialSnapshot: runtimeConfig,
-      }),
-    });
-    let cookie = '';
-    const task = (secret: string, requestId: string) => {
-      const [path, init] = operationRequest(
-        'task.start',
-        { workspaceId, threadId },
-        {
-          headers: credential === 'session' ? { cookie } : { authorization: `Bearer ${secret}` },
-          body: JSON.stringify({ input: 'Call MCP as admin', requestId }),
-        }
-      );
-      return app.request(new URL(path, baseUrl).toString(), init);
-    };
-    const transport = (serverId: string) =>
-      new StreamableHTTPClientTransport(
-        new URL(`/api/worker-capabilities/mcp/${serverId}`, baseUrl),
-        {
-          fetch: (input, init) => app.fetch(new Request(input, init)),
-          requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
-        }
-      );
-    const client = new Client({ name: 'admin-route-test', version: '1.0.0' });
-    const generativeClient = new Client({ name: 'admin-generative-route-test', version: '1.0.0' });
-    const lineageClient = new Client({ name: 'admin-lineage-route-test', version: '1.0.0' });
-    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-    const submitObservation = vi.spyOn(native.executor.executionBackend!, 'submit');
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    try {
-      const registered = await auth.handler(
-        new Request(`${baseUrl}/api/auth/sign-in/email`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(browserCredentials),
-        })
-      );
-      expect(registered.status).toBe(200);
-      if (credential === 'session') {
-        const setCookie = registered.headers.get('set-cookie');
-        if (!setCookie) throw new Error('Administrator fixture must authenticate a Web session.');
-        cookie = setCookie.split(';')[0]!;
-      }
-      const { user } = (await registered.json()) as { user: { id: string } };
-      expect(isCanonicalUserActive(coreDb, user.id)).toBe(true);
-      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
-      if (credential === 'session') {
-        // The same authenticated ordinary session has no administrator authority before issuance.
-        expect((await task('', '0190f4c8-0000-7000-8000-000000000743')).status).toBe(403);
-        expect(submitObservation).not.toHaveBeenCalled();
-      }
-      const issued = createOpenKitAccessTokenRecord(coreDb, {
-        expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: user.id,
-        scope: 'server-admin',
-        workspaceIds: [],
+  ] as const)(
+    'uses the admitted admin credential for nonmember tool calls and denies revocation or lineage drift: $credential $fault',
+    {
+      timeout: 60_000,
+    },
+    async ({ fault, credential }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-admin-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const browserCredentials = {
+        name: 'MCP Admin',
+        email: 'mcp-admin@example.invalid',
+        password: randomUUID(),
+      };
+      const bootstrap = ensureServerBootstrapToken(coreDb);
+      if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        token: bootstrap.token,
+        ownerUserId: allocateEntityId('usr'),
+        displayName: browserCredentials.name,
+        email: browserCredentials.email,
+        password: browserCredentials.password,
+        tokenExpiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const started = await task(issued.secret, '0190f4c8-0000-7000-8000-000000000741');
-      expect(started.status).toBe(202);
-      const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
-      const first = native.executionFor(turn.id);
-      await first.launched.promise;
-      await native.waitForStartup(native.executor.nativeLineage!.turnId);
-      const environmentPackage = native.workerControlGateway.authenticatePackageToken(
-        `Bearer ${native.executor.capabilityToken}`,
-        { tokenFamily: 'capability' }
-      );
-      expect(environmentPackage.scope).toMatchObject({ workspaceId, threadId, turnId: turn.id });
-      const firstAdmission = findSchedulerAdmissionForTurn(coreDb, environmentPackage.scope);
-      expect(firstAdmission?.serverAdminTokenId === issued.tokenId).toBe(true);
-      expect(firstAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
-      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
-      // Start this authority scenario after its own original native submit completes.
-      const firstAttempt = listSchedulerExecutionAttemptsForTurn(
+      if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+      expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({
         coreDb,
-        environmentPackage.scope
-      ).find((row) => row.inputRef === environmentPackage.snapshotId && row.phase === 'open');
-      expect(firstAttempt).toBeDefined();
-      const submissions = submitObservation.mock.calls.flatMap(([input], index) =>
-        input.attemptId === firstAttempt!.attemptId &&
-        input.inputRef === environmentPackage.snapshotId
-          ? [submitObservation.mock.results[index]]
-          : []
-      );
-      expect(submissions).toHaveLength(1);
-      expect(submissions[0]?.type).toBe('return');
-      await submissions[0]!.value;
-      await client.connect(transport('echo'));
-      await generativeClient.connect(transport('openkit-generative'));
-      await expect(
-        client.callTool({ arguments: { message: 'admin allowed' }, name: 'echo' })
-      ).resolves.toMatchObject({ content: [{ text: 'admin allowed' }] });
-      await expect(
-        generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
-      ).resolves.toMatchObject({ structuredContent: { items: [] } });
-      expect(callTool).toHaveBeenCalledTimes(1);
-      if (fault === 'revocation') {
-        const blocker = openWorkspaceDb(dataRoot, workspaceId);
-        const submissions = callTool.mock.calls.length;
-        try {
-          // Control-store owner: genuine post-setup Main writer contention must stay a safe refusal.
-          blocker.sqlite.exec('BEGIN IMMEDIATE');
-          const refusal: unknown = await client
-            .callTool({
-              arguments: { message: 'contended admission must not reach echo' },
-              name: 'echo',
-            })
-            .then(
-              () => undefined,
-              (error: unknown) => error
-            );
-          expect(refusal).toMatchObject({
-            data: {
-              code: 'operation_storage_unavailable',
-              status: 503,
-              message: expect.stringMatching(/inspect.*(original|request|outcome)/i),
-              commit: 'not-committed',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId,
+      });
+      const baseUrl = 'http://127.0.0.1:3000';
+      const auth = createBetterAuth(coreDb, {
+        mode: 'server',
+        env: {
+          BETTER_AUTH_URL: baseUrl,
+          BETTER_AUTH_SECRET: randomUUID(),
+        },
+      });
+      const catalog = {
+        schemaVersion: 1 as const,
+        servers: [
+          {
+            allowedTools: ['echo'],
+            credentialBindings: [],
+            enabled: true,
+            id: 'echo',
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking' as const,
+            timeoutMs: 2_000,
+            transport: {
+              args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
+              command: process.execPath,
+              environment: {},
+              kind: 'stdio' as const,
             },
-          });
-          const received = refusal as { message: string; data: { message: string } };
-          expect(received.message).toContain(received.data.message);
-          // DX pre-contact certainty is typed metadata; all other fields retain the no-retry oracle.
-          const publicText = JSON.stringify({
-            message: received.message,
-            data: { ...received.data, commit: undefined },
-          });
-          expect(publicText).not.toContain(dataRoot);
-          expect(publicText).not.toMatch(
-            /SQLITE|database is locked|capability_calls|permission_decisions|audit_events|INSERT|DELETE|SELECT|not.?committed|roll.?back|safe.{0,12}retry|automatic.{0,12}retry|retry.{0,12}automatic/i
-          );
-          expect(callTool).toHaveBeenCalledTimes(submissions);
-        } finally {
-          if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
-          blocker.sqlite.close();
+          },
+        ],
+      };
+      const setup = createTestAgentSetup({
+        mcpIds: ['echo'],
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      const runtimeConfig = createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Admin fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+        agentManifests: [setup.manifest],
+        workspaceMcpServerCatalogs: [
+          { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId },
+        ],
+      });
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => runtimeConfig,
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+      const callTool = vi.spyOn(workerMcpGateway, 'callTool');
+      const app = createApp({
+        auth,
+        coreDb,
+        store,
+        mode: 'server',
+        workerMcpGateway,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: runtimeConfig,
+        }),
+      });
+      let cookie = '';
+      const task = (secret: string, requestId: string) => {
+        const [path, init] = operationRequest(
+          'task.start',
+          { workspaceId, threadId },
+          {
+            headers: credential === 'session' ? { cookie } : { authorization: `Bearer ${secret}` },
+            body: JSON.stringify({ input: 'Call MCP as admin', requestId }),
+          }
+        );
+        return app.request(new URL(path, baseUrl).toString(), init);
+      };
+      const transport = (serverId: string) =>
+        new StreamableHTTPClientTransport(
+          new URL(`/api/worker-capabilities/mcp/${serverId}`, baseUrl),
+          {
+            fetch: (input, init) => app.fetch(new Request(input, init)),
+            requestInit: {
+              headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
+            },
+          }
+        );
+      const client = new Client({ name: 'admin-route-test', version: '1.0.0' });
+      const generativeClient = new Client({
+        name: 'admin-generative-route-test',
+        version: '1.0.0',
+      });
+      const lineageClient = new Client({ name: 'admin-lineage-route-test', version: '1.0.0' });
+      const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+      const submitObservation = vi.spyOn(native.executor.executionBackend!, 'submit');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const registered = await auth.handler(
+          new Request(`${baseUrl}/api/auth/sign-in/email`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(browserCredentials),
+          })
+        );
+        expect(registered.status).toBe(200);
+        if (credential === 'session') {
+          const setCookie = registered.headers.get('set-cookie');
+          if (!setCookie) throw new Error('Administrator fixture must authenticate a Web session.');
+          cookie = setCookie.split(';')[0]!;
         }
-        // A fresh real read observes progress after release without replaying the refused echo.
+        const { user } = (await registered.json()) as { user: { id: string } };
+        expect(isCanonicalUserActive(coreDb, user.id)).toBe(true);
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+        if (credential === 'session') {
+          // The same authenticated ordinary session has no administrator authority before issuance.
+          expect((await task('', '0190f4c8-0000-7000-8000-000000000743')).status).toBe(403);
+          expect(submitObservation).not.toHaveBeenCalled();
+        }
+        const issued = createOpenKitAccessTokenRecord(coreDb, {
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          ownerUserId: user.id,
+          scope: 'server-admin',
+          workspaceIds: [],
+        });
+        const started = await task(issued.secret, '0190f4c8-0000-7000-8000-000000000741');
+        expect(started.status).toBe(202);
+        const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
+        const first = native.executionFor(turn.id);
+        await first.launched.promise;
+        await native.waitForStartup(native.executor.nativeLineage!.turnId);
+        const environmentPackage = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        expect(environmentPackage.scope).toMatchObject({ workspaceId, threadId, turnId: turn.id });
+        const firstAdmission = findSchedulerAdmissionForTurn(coreDb, environmentPackage.scope);
+        expect(firstAdmission?.serverAdminTokenId === issued.tokenId).toBe(true);
+        expect(firstAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+        // Start this authority scenario after its own original native submit completes.
+        const firstAttempt = listSchedulerExecutionAttemptsForTurn(
+          coreDb,
+          environmentPackage.scope
+        ).find((row) => row.inputRef === environmentPackage.snapshotId && row.phase === 'open');
+        expect(firstAttempt).toBeDefined();
+        const submissions = submitObservation.mock.calls.flatMap(([input], index) =>
+          input.attemptId === firstAttempt!.attemptId &&
+          input.inputRef === environmentPackage.snapshotId
+            ? [submitObservation.mock.results[index]]
+            : []
+        );
+        expect(submissions).toHaveLength(1);
+        expect(submissions[0]?.type).toBe('return');
+        await submissions[0]!.value;
+        await client.connect(transport('echo'));
+        await generativeClient.connect(transport('openkit-generative'));
+        await expect(
+          client.callTool({ arguments: { message: 'admin allowed' }, name: 'echo' })
+        ).resolves.toMatchObject({ content: [{ text: 'admin allowed' }] });
         await expect(
           generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
         ).resolves.toMatchObject({ structuredContent: { items: [] } });
-        expect(callTool).toHaveBeenCalledTimes(submissions);
-      }
-      const allowed = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
-        (call) =>
-          call.turnId === turn.id &&
-          call.providerRef === 'echo' &&
-          call.capabilityId === 'mcp.call-tool'
-      );
-      expect(allowed).toHaveLength(1);
-      expect(allowed[0]).toMatchObject({
-        status: 'succeeded',
-        agentSessionId: environmentPackage.scope.agentSessionId,
-        packageSnapshotId: environmentPackage.snapshotId,
-      });
-      const echoUsage = () =>
-        listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
-          (row) => row.providerRef === 'echo'
-        );
-      const usage = echoUsage();
-      expect(usage.map((row) => row.responsibleUserId)).toEqual([user.id]);
-      expect(usage[0]?.capabilityCallId === allowed[0]!.id).toBe(true);
-      if (fault === 'revocation') {
-        expect(revokeOpenKitAccessTokenRecord(coreDb, issued.tokenId)?.status).toBe('revoked');
-        await expect(
-          client.callTool({ arguments: { message: 'revoked' }, name: 'echo' })
-        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
         expect(callTool).toHaveBeenCalledTimes(1);
-        expect(echoUsage()).toEqual(usage);
-        if (credential === 'session') {
-          const submissions = submitObservation.mock.calls.length;
-          expect((await task('', '0190f4c8-0000-7000-8000-000000000744')).status).toBe(403);
-          expect(submitObservation).toHaveBeenCalledTimes(submissions);
+        if (fault === 'revocation') {
+          const blocker = openWorkspaceDb(dataRoot, workspaceId);
+          const submissions = callTool.mock.calls.length;
+          try {
+            // Control-store owner: genuine post-setup Main writer contention must stay a safe refusal.
+            blocker.sqlite.exec('BEGIN IMMEDIATE');
+            const refusal: unknown = await client
+              .callTool({
+                arguments: { message: 'contended admission must not reach echo' },
+                name: 'echo',
+              })
+              .then(
+                () => undefined,
+                (error: unknown) => error
+              );
+            expect(refusal).toMatchObject({
+              data: {
+                code: 'operation_storage_unavailable',
+                status: 503,
+                message: expect.stringMatching(/inspect.*(original|request|outcome)/i),
+                commit: 'not-committed',
+              },
+            });
+            const received = refusal as { message: string; data: { message: string } };
+            expect(received.message).toContain(received.data.message);
+            // DX pre-contact certainty is typed metadata; all other fields retain the no-retry oracle.
+            const publicText = JSON.stringify({
+              message: received.message,
+              data: { ...received.data, commit: undefined },
+            });
+            expect(publicText).not.toContain(dataRoot);
+            expect(publicText).not.toMatch(
+              /SQLITE|database is locked|capability_calls|permission_decisions|audit_events|INSERT|DELETE|SELECT|not.?committed|roll.?back|safe.{0,12}retry|automatic.{0,12}retry|retry.{0,12}automatic/i
+            );
+            expect(callTool).toHaveBeenCalledTimes(submissions);
+          } finally {
+            if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
+            blocker.sqlite.close();
+          }
+          // A fresh real read observes progress after release without replaying the refused echo.
+          await expect(
+            generativeClient.callTool({ arguments: {}, name: 'kernel_apps_list' })
+          ).resolves.toMatchObject({ structuredContent: { items: [] } });
+          expect(callTool).toHaveBeenCalledTimes(submissions);
         }
-      }
-      first.completion.resolve();
-      const closeouts = await Promise.allSettled(
-        taskAdmissions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value.closeout)
-      );
-      if (fault === 'revocation') {
-        expect(['pending', 'running']).not.toContain(store.getTurnById(turn.id).status);
-        return;
-      }
-      expect(closeouts.every((result) => result.status === 'fulfilled')).toBe(true);
-      expect(store.getTurnById(turn.id).status).toBe('completed');
-      expect(
-        listSchedulerExecutionAttemptsForTurn(coreDb, environmentPackage.scope)
-      ).toContainEqual(
-        expect.objectContaining({
-          inputRef: environmentPackage.snapshotId,
-          phase: 'closed',
-          disposition: 'accepted',
-          fenceRef: expect.stringMatching(/\S/),
-        })
-      );
-      const fresh = createOpenKitAccessTokenRecord(coreDb, {
-        expiresAt: '2099-01-01T00:00:00.000Z',
-        ownerUserId: user.id,
-        scope: 'server-admin',
-        workspaceIds: [],
-      });
-      const next = await task(fresh.secret, '0190f4c8-0000-7000-8000-000000000742');
-      expect(next.status).toBe(202);
-      const secondTurn = StartTaskModeResponseSchema.parse(await next.json()).turn;
-      expect(secondTurn.id).not.toBe(turn.id);
-      const second = native.executionFor(secondTurn.id);
-      await second.launched.promise;
-      await native.waitForStartup(native.executor.nativeLineage!.turnId);
-      const secondPackage = native.workerControlGateway.authenticatePackageToken(
-        `Bearer ${native.executor.capabilityToken}`,
-        { tokenFamily: 'capability' }
-      );
-      expect(secondPackage.scope).toMatchObject({ workspaceId, threadId, turnId: secondTurn.id });
-      const secondAdmission = findSchedulerAdmissionForTurn(coreDb, secondPackage.scope);
-      expect(secondAdmission?.serverAdminTokenId === fresh.tokenId).toBe(true);
-      expect(secondAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
-      expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
-      await lineageClient.connect(transport('echo'));
-      expect((await lineageClient.listTools()).tools.map((tool) => tool.name)).toContain('echo');
-      const attempt = listSchedulerExecutionAttemptsForTurn(coreDb, secondPackage.scope).find(
-        (row) => row.inputRef === secondPackage.snapshotId && row.phase === 'open'
-      );
-      expect(attempt).toBeDefined();
-      // Contradict only the valid second admission's package after current discovery succeeds.
-      try {
-        coreDb.sqlite
-          .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
-          .run(environmentPackage.snapshotId, attempt!.attemptId);
-        await expect(
-          lineageClient.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
-        ).rejects.toSatisfy((error: unknown) => {
-          expect(error).toMatchObject({ data: { status: 403 } });
-          expect(JSON.parse((error as { data: { text: string } }).data.text)).toMatchObject({
-            error: { data: { code: 'worker_control_lineage_mismatch' } },
-          });
-          return true;
+        const allowed = listWorkspaceCapabilityCalls(workspaceDb, workspaceId).filter(
+          (call) =>
+            call.turnId === turn.id &&
+            call.providerRef === 'echo' &&
+            call.capabilityId === 'mcp.call-tool'
+        );
+        expect(allowed).toHaveLength(1);
+        expect(allowed[0]).toMatchObject({
+          status: 'succeeded',
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          packageSnapshotId: environmentPackage.snapshotId,
         });
-        expect(callTool).toHaveBeenCalledTimes(1);
-        expect(echoUsage()).toEqual(usage);
+        const echoUsage = () =>
+          listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
+            (row) => row.providerRef === 'echo'
+          );
+        const usage = echoUsage();
+        expect(usage.map((row) => row.responsibleUserId)).toEqual([user.id]);
+        expect(usage[0]?.capabilityCallId === allowed[0]!.id).toBe(true);
+        if (fault === 'revocation') {
+          expect(revokeOpenKitAccessTokenRecord(coreDb, issued.tokenId)?.status).toBe('revoked');
+          await expect(
+            client.callTool({ arguments: { message: 'revoked' }, name: 'echo' })
+          ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+          expect(callTool).toHaveBeenCalledTimes(1);
+          expect(echoUsage()).toEqual(usage);
+          if (credential === 'session') {
+            const submissions = submitObservation.mock.calls.length;
+            expect((await task('', '0190f4c8-0000-7000-8000-000000000744')).status).toBe(403);
+            expect(submitObservation).toHaveBeenCalledTimes(submissions);
+          }
+        }
+        first.completion.resolve();
+        const closeouts = await Promise.allSettled(
+          taskAdmissions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value.closeout)
+        );
+        if (fault === 'revocation') {
+          expect(['pending', 'running']).not.toContain(store.getTurnById(turn.id).status);
+          return;
+        }
+        expect(closeouts.every((result) => result.status === 'fulfilled')).toBe(true);
+        expect(store.getTurnById(turn.id).status).toBe('completed');
+        expect(
+          listSchedulerExecutionAttemptsForTurn(coreDb, environmentPackage.scope)
+        ).toContainEqual(
+          expect.objectContaining({
+            inputRef: environmentPackage.snapshotId,
+            phase: 'closed',
+            disposition: 'accepted',
+            fenceRef: expect.stringMatching(/\S/),
+          })
+        );
+        const fresh = createOpenKitAccessTokenRecord(coreDb, {
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          ownerUserId: user.id,
+          scope: 'server-admin',
+          workspaceIds: [],
+        });
+        const next = await task(fresh.secret, '0190f4c8-0000-7000-8000-000000000742');
+        expect(next.status).toBe(202);
+        const secondTurn = StartTaskModeResponseSchema.parse(await next.json()).turn;
+        expect(secondTurn.id).not.toBe(turn.id);
+        const second = native.executionFor(secondTurn.id);
+        await second.launched.promise;
+        await native.waitForStartup(native.executor.nativeLineage!.turnId);
+        const secondPackage = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        expect(secondPackage.scope).toMatchObject({ workspaceId, threadId, turnId: secondTurn.id });
+        const secondAdmission = findSchedulerAdmissionForTurn(coreDb, secondPackage.scope);
+        expect(secondAdmission?.serverAdminTokenId === fresh.tokenId).toBe(true);
+        expect(secondAdmission?.triggerActor).toEqual({ kind: 'user', id: user.id });
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, user.id)).toBeNull();
+        await lineageClient.connect(transport('echo'));
+        expect((await lineageClient.listTools()).tools.map((tool) => tool.name)).toContain('echo');
+        const attempt = listSchedulerExecutionAttemptsForTurn(coreDb, secondPackage.scope).find(
+          (row) => row.inputRef === secondPackage.snapshotId && row.phase === 'open'
+        );
+        expect(attempt).toBeDefined();
+        // Contradict only the valid second admission's package after current discovery succeeds.
+        try {
+          coreDb.sqlite
+            .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
+            .run(environmentPackage.snapshotId, attempt!.attemptId);
+          await expect(
+            lineageClient.callTool({ arguments: { message: 'mismatched' }, name: 'echo' })
+          ).rejects.toSatisfy((error: unknown) => {
+            expect(error).toMatchObject({ data: { status: 403 } });
+            expect(JSON.parse((error as { data: { text: string } }).data.text)).toMatchObject({
+              error: { data: { code: 'worker_control_lineage_mismatch' } },
+            });
+            return true;
+          });
+          expect(callTool).toHaveBeenCalledTimes(1);
+          expect(echoUsage()).toEqual(usage);
+        } finally {
+          coreDb.sqlite
+            .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
+            .run(attempt!.inputRef, attempt!.attemptId);
+        }
       } finally {
-        coreDb.sqlite
-          .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
-          .run(attempt!.inputRef, attempt!.attemptId);
+        await Promise.allSettled([client.close(), generativeClient.close(), lineageClient.close()]);
+        for (const turn of store.listThreadTurns(workspaceId, threadId))
+          native.executionFor(turn.id).completion.resolve();
+        await Promise.allSettled(
+          taskAdmissions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value.closeout)
+        );
+        taskAdmissions.mockRestore();
+        submitObservation.mockRestore();
+        await native.restore();
+        await workerMcpGateway.close();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-    } finally {
-      await Promise.allSettled([client.close(), generativeClient.close(), lineageClient.close()]);
-      for (const turn of store.listThreadTurns(workspaceId, threadId))
-        native.executionFor(turn.id).completion.resolve();
-      await Promise.allSettled(
-        taskAdmissions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value.closeout)
-      );
-      taskAdmissions.mockRestore();
-      submitObservation.mockRestore();
-      await native.restore();
-      await workerMcpGateway.close();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it.each([
     'unchanged',
@@ -3634,583 +3665,602 @@ describe('worker MCP routes', () => {
     'credential-after-claim',
     'catalog-after-claim',
     'grant-after-claim',
-  ] as const)('re-evaluates current authority before granting a captured MCP call: %s', {
-    timeout: 60_000,
-  }, async (change) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
-    const coreDb = openCopiedMcpCore(dataRoot);
-    ensureLocalUser(coreDb);
-    let store = await reopenCopiedMcpStore(dataRoot);
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const threadId = 'th_00000000-0000-7000-8000-000000000001';
-    const userId = 'usr_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
-    vaultUnlockState.backend().store({
-      material: 'pending-secret-canary',
-      metadata: { ownerScope: 'workspace', workspaceId },
-      referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator:
-        'encrypted-file://workspace/ws_00000000-0000-7000-8000-000000000001/vault/vault_00000000-0000-7ca0-a71c-0b929d838497',
-      displayName: 'Pending echo credential',
-      ownerScope: 'workspace',
-      referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
-      secretKind: 'api-key',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const publicGrant = await createVaultGrant(coreDb, {
-      grantId: testEntityId('grant', 'pending_echo'),
-      vaultReferenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
-      ownerScope: 'workspace',
-      workspaceId,
-      lifetime: 'workspace',
-      allowedInjectionPaths: ['gateway-only'],
-    });
-    expect(publicGrant.allowedInjectionPaths).toEqual(['gateway-only']);
-    expect(JSON.stringify(publicGrant)).not.toContain('pending-secret-canary');
-    const catalog = {
-      schemaVersion: 1 as const,
-      servers: [
-        {
-          id: 'echo',
-          enabled: true,
-          allowedTools: ['echo'],
-          credentialBindings: [
-            {
-              sink: { kind: 'env' as const, name: 'PENDING_ECHO_SECRET' },
-              slot: 'auth',
-              vaultGrantId: publicGrant.grantId,
-            },
-          ],
-          pinnedSchemaSnapshotId: null,
-          schemaPolicy: 'tracking' as const,
-          timeoutMs: 2_000,
-          transport: {
-            kind: 'stdio' as const,
-            command: process.execPath,
-            args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
-            environment: {},
-          },
-        },
-      ],
-    };
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Agent OpenRouter',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      dataRoot,
-      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
-      agentManifests: [
-        createTestAgentSetup({
-          mcpIds: ['echo'],
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        }).manifest,
-      ],
-      workspaceMcpServerCatalogs: [
-        {
-          catalog,
-          path: join(dataRoot, 'catalog.json'),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-      ],
-    });
-    snapshot.openKitConfig.policy = {
-      ...snapshot.openKitConfig.policy,
-      mediation: await admitTestMcpApproval({
-        coreDb,
-        workspaceId,
-        serverId: 'echo',
-        toolName: 'echo',
-        userId: 'usr_00000000-0000-7000-8000-000000000001',
-        threadId,
-        turnId: testEntityId('tu', 'pending-mcp-policy'),
-      }),
-    };
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
-    const upstream = vi.spyOn(workerMcpGateway, 'callTool');
-    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
-      readRuntimeConfig: () => snapshot,
-    });
-    let nativeRestore: Promise<void> | undefined;
-    const restoreNative = () => (nativeRestore ??= native.restore());
-    admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
-    const captureApp = createApp({
-      coreDb,
-      store,
-      workerMcpGateway,
-      vaultUnlockState,
-      fileAdmission: native.fileAdmission,
-      turnExecutor: native.executor,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager: createRuntimeConfigManager({
-        dataRoot: null,
-        initialSnapshot: snapshot,
-      }),
-    });
-    const taskRequest = operationRequest(
-      'task.start',
-      { workspaceId, threadId },
-      {
-        body: JSON.stringify({
-          input: 'Call echo',
-          requestId: '0190f4c8-0000-7000-8000-000000000701',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
-    );
-    const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-    const client = new Client({ name: 'pending-echo', version: '1' });
-    let originalPendingNativeRequest: Request | undefined;
-    try {
-      const started = await captureApp.request(...taskRequest);
-      expect(started.status, await started.clone().text()).toBe(202);
-      const { turn } = StartTaskModeResponseSchema.parse(await started.json());
-      await native.executor.launched.promise;
-      await native.waitForStartup(native.executor.nativeLineage!.turnId);
-      const environmentPackage = native.workerControlGateway.authenticatePackageToken(
-        `Bearer ${native.executor.capabilityToken}`,
-        { tokenFamily: 'capability' }
-      );
-      expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
-      await client.connect(
-        new StreamableHTTPClientTransport(
-          new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
-          {
-            fetch: async (input, init) => {
-              const request = new Request(input, init);
-              if (
-                change === 'unchanged' &&
-                request.method === 'POST' &&
-                !originalPendingNativeRequest
-              ) {
-                const message = await request.clone().json();
-                if (message.method === 'tools/call') originalPendingNativeRequest = request.clone();
-              }
-              return captureApp.fetch(request);
-            },
-            requestInit: {
-              headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
-            },
-          }
-        )
-      );
-      await client.listTools();
-      const pending = await client.callTool({
-        name: 'echo',
-        arguments: { message: 'captured effect' },
+  ] as const)(
+    're-evaluates current authority before granting a captured MCP call: %s',
+    {
+      timeout: 60_000,
+    },
+    async (change) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
+      const coreDb = openCopiedMcpCore(dataRoot);
+      ensureLocalUser(coreDb);
+      let store = await reopenCopiedMcpStore(dataRoot);
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      const userId = 'usr_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server', 'vault'),
       });
-      expect(pending.isError).toBe(true);
-      expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
-      expect(upstream).not.toHaveBeenCalled();
-      if (change === 'unchanged') {
-        const boundDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        const countCalls = () => listWorkspaceCapabilityCalls(boundDb, workspaceId).length;
-        const originalCalls = listWorkspaceCapabilityCalls(boundDb, workspaceId);
-        const originalUsage = listWorkspaceUsageRecords(boundDb, workspaceId);
-        const originalPending = listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId);
-        expect(originalCalls.filter((call) => call.operation === 'mcp.call-tool')).toEqual([
-          expect.objectContaining({ status: 'denied' }),
-        ]);
-        if (!originalPendingNativeRequest)
-          throw new Error('Expected the original native Tool request.');
-        const replay = await captureApp.fetch(originalPendingNativeRequest.clone());
-        expect(replay.status).toBe(200);
-        expect((await replay.json()).result).toEqual(pending);
-        expect(listWorkspaceCapabilityCalls(boundDb, workspaceId)).toEqual(originalCalls);
-        expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(originalUsage);
-        expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
-          originalPending
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
+      vaultUnlockState.backend().store({
+        material: 'pending-secret-canary',
+        metadata: { ownerScope: 'workspace', workspaceId },
+        referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator:
+          'encrypted-file://workspace/ws_00000000-0000-7000-8000-000000000001/vault/vault_00000000-0000-7ca0-a71c-0b929d838497',
+        displayName: 'Pending echo credential',
+        ownerScope: 'workspace',
+        referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
+        secretKind: 'api-key',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const publicGrant = await createVaultGrant(coreDb, {
+        grantId: testEntityId('grant', 'pending_echo'),
+        vaultReferenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
+        ownerScope: 'workspace',
+        workspaceId,
+        lifetime: 'workspace',
+        allowedInjectionPaths: ['gateway-only'],
+      });
+      expect(publicGrant.allowedInjectionPaths).toEqual(['gateway-only']);
+      expect(JSON.stringify(publicGrant)).not.toContain('pending-secret-canary');
+      const catalog = {
+        schemaVersion: 1 as const,
+        servers: [
+          {
+            id: 'echo',
+            enabled: true,
+            allowedTools: ['echo'],
+            credentialBindings: [
+              {
+                sink: { kind: 'env' as const, name: 'PENDING_ECHO_SECRET' },
+                slot: 'auth',
+                vaultGrantId: publicGrant.grantId,
+              },
+            ],
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking' as const,
+            timeoutMs: 2_000,
+            transport: {
+              kind: 'stdio' as const,
+              command: process.execPath,
+              args: [fileURLToPath(new URL('./test-support/mcp-stdio-stub.mjs', import.meta.url))],
+              environment: {},
+            },
+          },
+        ],
+      };
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Agent OpenRouter',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        dataRoot,
+        workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+        agentManifests: [
+          createTestAgentSetup({
+            mcpIds: ['echo'],
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          }).manifest,
+        ],
+        workspaceMcpServerCatalogs: [
+          {
+            catalog,
+            path: join(dataRoot, 'catalog.json'),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+        ],
+      });
+      snapshot.openKitConfig.policy = {
+        ...snapshot.openKitConfig.policy,
+        mediation: await admitTestMcpApproval({
+          coreDb,
+          workspaceId,
+          serverId: 'echo',
+          toolName: 'echo',
+          userId: 'usr_00000000-0000-7000-8000-000000000001',
+          threadId,
+          turnId: testEntityId('tu', 'pending-mcp-policy'),
+        }),
+      };
+      const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+      const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
+      const upstream = vi.spyOn(workerMcpGateway, 'callTool');
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => snapshot,
+      });
+      let nativeRestore: Promise<void> | undefined;
+      const restoreNative = () => (nativeRestore ??= native.restore());
+      admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
+      const captureApp = createApp({
+        coreDb,
+        store,
+        workerMcpGateway,
+        vaultUnlockState,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: snapshot,
+        }),
+      });
+      const taskRequest = operationRequest(
+        'task.start',
+        { workspaceId, threadId },
+        {
+          body: JSON.stringify({
+            input: 'Call echo',
+            requestId: '0190f4c8-0000-7000-8000-000000000701',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      );
+      const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+      const client = new Client({ name: 'pending-echo', version: '1' });
+      let originalPendingNativeRequest: Request | undefined;
+      try {
+        const started = await captureApp.request(...taskRequest);
+        expect(started.status, await started.clone().text()).toBe(202);
+        const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+        await native.executor.launched.promise;
+        await native.waitForStartup(native.executor.nativeLineage!.turnId);
+        const environmentPackage = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
         );
-        for (let repeat = 0; repeat < 2; repeat++) {
-          const beforeDuplicate = listWorkspaceCapabilityCalls(boundDb, workspaceId);
-          const duplicate = await client.callTool({
-            name: 'echo',
-            arguments: { message: 'captured effect' },
-          });
-          expect(duplicate.structuredContent).toEqual(pending.structuredContent);
-          // Supply202/215 accounts for each distinct native request, even without Tool contact.
-          const added = listWorkspaceCapabilityCalls(boundDb, workspaceId).filter(
-            (call) => !beforeDuplicate.some((prior) => prior.id === call.id)
-          );
-          expect
-            .soft(added)
-            .toEqual([expect.objectContaining({ operation: 'mcp.call-tool', status: 'denied' })]);
+        expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
+        await client.connect(
+          new StreamableHTTPClientTransport(
+            new URL('http://nanocore.test/api/worker-capabilities/mcp/echo'),
+            {
+              fetch: async (input, init) => {
+                const request = new Request(input, init);
+                if (
+                  change === 'unchanged' &&
+                  request.method === 'POST' &&
+                  !originalPendingNativeRequest
+                ) {
+                  const message = await request.clone().json();
+                  if (message.method === 'tools/call')
+                    originalPendingNativeRequest = request.clone();
+                }
+                return captureApp.fetch(request);
+              },
+              requestInit: {
+                headers: { authorization: `Bearer ${native.executor.capabilityToken}` },
+              },
+            }
+          )
+        );
+        await client.listTools();
+        const pending = await client.callTool({
+          name: 'echo',
+          arguments: { message: 'captured effect' },
+        });
+        expect(pending.isError).toBe(true);
+        expect(pending.structuredContent).toMatchObject({ status: 'pending-approval' });
+        expect(upstream).not.toHaveBeenCalled();
+        if (change === 'unchanged') {
+          const boundDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+          const countCalls = () => listWorkspaceCapabilityCalls(boundDb, workspaceId).length;
+          const originalCalls = listWorkspaceCapabilityCalls(boundDb, workspaceId);
+          const originalUsage = listWorkspaceUsageRecords(boundDb, workspaceId);
+          const originalPending = listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId);
+          expect(originalCalls.filter((call) => call.operation === 'mcp.call-tool')).toEqual([
+            expect.objectContaining({ status: 'denied' }),
+          ]);
+          if (!originalPendingNativeRequest)
+            throw new Error('Expected the original native Tool request.');
+          const replay = await captureApp.fetch(originalPendingNativeRequest.clone());
+          expect(replay.status).toBe(200);
+          expect((await replay.json()).result).toEqual(pending);
+          expect(listWorkspaceCapabilityCalls(boundDb, workspaceId)).toEqual(originalCalls);
           expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(originalUsage);
           expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
             originalPending
           );
-          expect(upstream).not.toHaveBeenCalled();
-        }
-        for (let index = 1; index < 16; index += 1)
-          expect(
-            (
-              await client.callTool({
-                name: 'echo',
-                arguments: { message: `different captured ${index}` },
-              })
-            ).isError
-          ).toBe(true);
-        const beforeLimit = countCalls();
-        const usageBeforeLimit = listWorkspaceUsageRecords(boundDb, workspaceId);
-        const pendingBeforeLimit = listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId);
-        await expect(
-          client.callTool({ name: 'echo', arguments: { message: 'seventeenth captured' } })
-        ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
-        expect.soft(countCalls()).toBe(beforeLimit + 1);
-        expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(usageBeforeLimit);
-        expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
-          pendingBeforeLimit
-        );
-        boundDb.sqlite.close();
-      }
-      if (change === 'unchanged') {
-        const evidenceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        const captured = listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId);
-        const project = (id: string, userId = 'usr_00000000-0000-7000-8000-000000000001') =>
-          projectApprovalEffect({
-            record: readPendingRequest(evidenceDb.sqlite, id)!,
-            store,
-            coreDb,
-            actor: { kind: 'local', userId },
-          });
-        const details = captured.map((row) => project(row.requestId));
-        expect(details.every((detail) => detail.status === 'available')).toBe(true);
-        expect(
-          new Set(details.map((detail) => detail.status === 'available' && detail.detail)).size
-        ).toBe(16);
-        const beforeRead = listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId);
-        project(captured[0]!.requestId);
-        expect(listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId)).toEqual(
-          beforeRead
-        );
-        expect(JSON.stringify(details)).not.toContain('pending-secret-canary');
-        expect(JSON.stringify(store.listAllItems())).not.toContain('captured effect');
-        evidenceDb.sqlite.close();
-      }
-      expect(store.getTurnById(turn.id).status).toBe('running');
-      const approvalItem = store
-        .listThreadItems(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-        .find((item) => item.type === 'approval-request');
-      if (!approvalItem || approvalItem.type !== 'approval-request')
-        throw new Error('Missing approval request.');
-      await client.close();
-      native.executor.completion.resolve();
-      await native.executor.execution;
-      expect(store.getTurnById(turn.id).status).toBe('completed');
-      const replay = await captureApp.request(...taskRequest);
-      expect(replay.status, await replay.clone().text()).toBe(202);
-      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(turn.id);
-      expect(native.executor.launches).toBe(1);
-      expect(upstream).not.toHaveBeenCalled();
-      await restoreNative();
-      await shutdownControlStoreWorkerClient();
-      // Reopen real products for the response module; delivery is a separate covered owner.
-      store = new FsStore({ dataRoot });
-      const dependencies = { coreDb, openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id) };
-      installPendingRequestAdmission(store, dependencies);
-      if (change === 'revoke') await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
-      const resolved = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-      if (change === 'credential-after-claim') {
-        const callTool = originalCallTool;
-        upstream.mockImplementationOnce(async (input) => {
-          expect(resolved).toHaveBeenCalled();
-          const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-          try {
-            expect(readPendingRequest(db.sqlite, approvalItem.approvalRequestId)).toMatchObject({
-              claim: 'claimed',
+          for (let repeat = 0; repeat < 2; repeat++) {
+            const beforeDuplicate = listWorkspaceCapabilityCalls(boundDb, workspaceId);
+            const duplicate = await client.callTool({
+              name: 'echo',
+              arguments: { message: 'captured effect' },
             });
-          } finally {
-            db.sqlite.close();
-          }
-          snapshot.agentManifests.splice(0);
-          return callTool(input);
-        });
-      }
-      if (change === 'known-error' || change === 'unknown-effect' || change === 'no-contact') {
-        upstream.mockRejectedValueOnce(
-          new WorkerMcpGatewayCallError(
-            'mcp-call-failed',
-            'Synthetic captured failure.',
-            502,
-            change === 'known-error'
-              ? 'contacted'
-              : change === 'no-contact'
-                ? 'not-contacted'
-                : 'unknown'
-          )
-        );
-      }
-      const refusedAfterClaim = change === 'catalog-after-claim' || change === 'grant-after-claim';
-      const executed = change !== 'deny' && change !== 'revoke' && !refusedAfterClaim;
-      const disposition =
-        change === 'deny'
-          ? 'denied-not-executed'
-          : change === 'unknown-effect'
-            ? 'outcome-unknown'
-            : refusedAfterClaim || ['known-error', 'no-contact', 'revoke'].includes(change)
-              ? 'execution-error'
-              : 'approved-executed';
-      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      await openTestNativeWorkspace(workspaceDb);
-      const captured = readPendingRequest(workspaceDb.sqlite, approvalItem.approvalRequestId)!;
-      let prepared: PreparedCapturedPendingCall | undefined;
-      let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
-      const context = { catalog, coreDb, workspaceDb, workerMcpGateway, record: captured };
-      const respond = () =>
-        respondRecordedApproval({
-          store,
-          sqlite: workspaceDb.sqlite,
-          workspaceId,
-          threadId,
-          coreDb,
-          approvalRequestId: captured.requestId,
-          decision: change === 'deny' ? 'denied' : 'granted',
-          actorId: userId,
-          requestActor: { kind: 'local', userId },
-          dependencies,
-          prepare: async () => {
-            prepared = await prepareCapturedPendingCall({
-              actor: { userId },
-              ...context,
-              vaultBackend: () => vaultUnlockState.backend(),
-              reviewPolicy: (record, actor) =>
-                reviewCapturedMcpPolicy({
-                  record,
-                  actor,
-                  workspaceDb,
-                  catalog,
-                  interception: new PolicyInterception(),
-                  routes: {
-                    coreDb,
-                    store,
-                    workerMcpGateway,
-                    vaultUnlockState,
-                    workerControlGateway: native.workerControlGateway,
-                    runtimeConfig: () => snapshot,
-                    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-                  },
-                }),
-            });
-          },
-          evaluate: () =>
-            evaluateCapturedPendingCall({
-              manifest: snapshot.agentManifests.find((row) => row.id === captured.agentId) ?? null,
-              ...context,
-              sqlite: workspaceDb.sqlite,
-              prepared,
-            }),
-          admitExecution: async (failure) => {
-            executionCall = await admitCapturedPendingCall(
-              captured,
-              workspaceDb,
-              '00000000-0000-4000-8000-000000000117',
-              prepared,
-              failure
+            expect(duplicate.structuredContent).toEqual(pending.structuredContent);
+            // Supply202/215 accounts for each distinct native request, even without Tool contact.
+            const added = listWorkspaceCapabilityCalls(boundDb, workspaceId).filter(
+              (call) => !beforeDuplicate.some((prior) => prior.id === call.id)
             );
-            if (refusedAfterClaim) {
-              // The approval owner has claimed this exact call; prepared material is still private.
-              expect(readPendingRequest(workspaceDb.sqlite, captured.requestId)).toMatchObject({
+            expect
+              .soft(added)
+              .toEqual([expect.objectContaining({ operation: 'mcp.call-tool', status: 'denied' })]);
+            expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(originalUsage);
+            expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
+              originalPending
+            );
+            expect(upstream).not.toHaveBeenCalled();
+          }
+          for (let index = 1; index < 16; index += 1)
+            expect(
+              (
+                await client.callTool({
+                  name: 'echo',
+                  arguments: { message: `different captured ${index}` },
+                })
+              ).isError
+            ).toBe(true);
+          const beforeLimit = countCalls();
+          const usageBeforeLimit = listWorkspaceUsageRecords(boundDb, workspaceId);
+          const pendingBeforeLimit = listThreadPendingRequests(
+            boundDb.sqlite,
+            workspaceId,
+            threadId
+          );
+          await expect(
+            client.callTool({ name: 'echo', arguments: { message: 'seventeenth captured' } })
+          ).rejects.toMatchObject({ data: { code: 'request_limit_reached' } });
+          expect.soft(countCalls()).toBe(beforeLimit + 1);
+          expect(listWorkspaceUsageRecords(boundDb, workspaceId)).toEqual(usageBeforeLimit);
+          expect(listThreadPendingRequests(boundDb.sqlite, workspaceId, threadId)).toEqual(
+            pendingBeforeLimit
+          );
+          boundDb.sqlite.close();
+        }
+        if (change === 'unchanged') {
+          const evidenceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+          const captured = listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId);
+          const project = (id: string, userId = 'usr_00000000-0000-7000-8000-000000000001') =>
+            projectApprovalEffect({
+              record: readPendingRequest(evidenceDb.sqlite, id)!,
+              store,
+              coreDb,
+              actor: { kind: 'local', userId },
+            });
+          const details = captured.map((row) => project(row.requestId));
+          expect(details.every((detail) => detail.status === 'available')).toBe(true);
+          expect(
+            new Set(details.map((detail) => detail.status === 'available' && detail.detail)).size
+          ).toBe(16);
+          const beforeRead = listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId);
+          project(captured[0]!.requestId);
+          expect(listThreadPendingRequests(evidenceDb.sqlite, workspaceId, threadId)).toEqual(
+            beforeRead
+          );
+          expect(JSON.stringify(details)).not.toContain('pending-secret-canary');
+          expect(JSON.stringify(store.listAllItems())).not.toContain('captured effect');
+          evidenceDb.sqlite.close();
+        }
+        expect(store.getTurnById(turn.id).status).toBe('running');
+        const approvalItem = store
+          .listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+          .find((item) => item.type === 'approval-request');
+        if (!approvalItem || approvalItem.type !== 'approval-request')
+          throw new Error('Missing approval request.');
+        await client.close();
+        native.executor.completion.resolve();
+        await native.executor.execution;
+        expect(store.getTurnById(turn.id).status).toBe('completed');
+        const replay = await captureApp.request(...taskRequest);
+        expect(replay.status, await replay.clone().text()).toBe(202);
+        expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(turn.id);
+        expect(native.executor.launches).toBe(1);
+        expect(upstream).not.toHaveBeenCalled();
+        await restoreNative();
+        await shutdownControlStoreWorkerClient();
+        // Reopen real products for the response module; delivery is a separate covered owner.
+        store = new FsStore({ dataRoot });
+        const dependencies = {
+          coreDb,
+          openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
+        };
+        installPendingRequestAdmission(store, dependencies);
+        if (change === 'revoke') await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
+        const resolved = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+        if (change === 'credential-after-claim') {
+          const callTool = originalCallTool;
+          upstream.mockImplementationOnce(async (input) => {
+            expect(resolved).toHaveBeenCalled();
+            const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+            try {
+              expect(readPendingRequest(db.sqlite, approvalItem.approvalRequestId)).toMatchObject({
                 claim: 'claimed',
               });
-              expect(prepared).toMatchObject({
-                failed: false,
-                credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
-              });
-              if (change === 'catalog-after-claim') {
-                // The execution input can advance independently of the prepared Policy view.
-                context.catalog = {
-                  ...catalog,
-                  servers: [
-                    { ...catalog.servers[0]!, timeoutMs: catalog.servers[0]!.timeoutMs + 1 },
-                  ],
-                };
-                expect(
-                  resolveWorkspaceMcpServer({ catalog: context.catalog, serverId: 'echo' })
-                    .catalogDigest
-                ).not.toBe(captured.catalogRevision);
-              } else {
-                await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
-              }
-              expect(prepared?.mediation?.current()).toBe(true);
+            } finally {
+              db.sqlite.close();
             }
-            return executionCall.refusal;
-          },
-          execute: (record) =>
-            executeCapturedPendingCall({
-              ...context,
-              record,
-              prepared,
-              executionCall,
-            }),
-        });
-      const response = await respond();
-      resolved.mockRestore();
-      expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
-      if (change === 'unchanged') {
-        expect(upstream.mock.calls[0]?.[0]).toMatchObject({
-          toolName: 'echo',
-          arguments: { message: 'captured effect' },
-          credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
-        });
-      }
-      try {
-        expect(response).toMatchObject({
-          state: 'resolved',
-          resolution: change === 'deny' ? 'denied' : 'granted',
-          disposition,
-          claim: change === 'deny' ? 'unclaimed' : 'finished',
-          executionCallId: change === 'deny' ? null : executionCallIdForRequest(captured.requestId),
-        });
-        const callId = executionCallIdForRequest(captured.requestId);
-        const calls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
-        expect(calls.filter((call) => call.id === callId)).toEqual(
-          change === 'deny'
-            ? []
-            : [
-                expect.objectContaining({
-                  status:
-                    disposition === 'approved-executed'
-                      ? 'succeeded'
-                      : disposition === 'outcome-unknown'
-                        ? 'unknown'
-                        : 'failed',
-                  ...(change === 'revoke' || refusedAfterClaim ? { upstreamContacted: false } : {}),
-                }),
-              ]
-        );
-        const usage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
-        expect(usage.filter((row) => row.capabilityCallId === callId)).toHaveLength(
-          executed && change !== 'no-contact' ? 1 : 0
-        );
-        if (change !== 'deny')
-          expect(
-            listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)
-          ).toContainEqual(
-            expect.objectContaining({
-              approvalId: captured.requestId,
-              result: change === 'revoke' ? 'deny' : 'allow',
-              contextSummary: expect.objectContaining({ capabilityCallId: callId }),
-            })
+            snapshot.agentManifests.splice(0);
+            return callTool(input);
+          });
+        }
+        if (change === 'known-error' || change === 'unknown-effect' || change === 'no-contact') {
+          upstream.mockRejectedValueOnce(
+            new WorkerMcpGatewayCallError(
+              'mcp-call-failed',
+              'Synthetic captured failure.',
+              502,
+              change === 'known-error'
+                ? 'contacted'
+                : change === 'no-contact'
+                  ? 'not-contacted'
+                  : 'unknown'
+            )
           );
-        expect(JSON.stringify(response)).not.toContain('pending-secret-canary');
-        await expect(respond()).rejects.toMatchObject({ code: 'request_not_pending' });
-        expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceId)).toEqual(calls);
-        expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(usage);
+        }
+        const refusedAfterClaim =
+          change === 'catalog-after-claim' || change === 'grant-after-claim';
+        const executed = change !== 'deny' && change !== 'revoke' && !refusedAfterClaim;
+        const disposition =
+          change === 'deny'
+            ? 'denied-not-executed'
+            : change === 'unknown-effect'
+              ? 'outcome-unknown'
+              : refusedAfterClaim || ['known-error', 'no-contact', 'revoke'].includes(change)
+                ? 'execution-error'
+                : 'approved-executed';
+        const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+        await openTestNativeWorkspace(workspaceDb);
+        const captured = readPendingRequest(workspaceDb.sqlite, approvalItem.approvalRequestId)!;
+        let prepared: PreparedCapturedPendingCall | undefined;
+        let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
+        const context = { catalog, coreDb, workspaceDb, workerMcpGateway, record: captured };
+        const respond = () =>
+          respondRecordedApproval({
+            store,
+            sqlite: workspaceDb.sqlite,
+            workspaceId,
+            threadId,
+            coreDb,
+            approvalRequestId: captured.requestId,
+            decision: change === 'deny' ? 'denied' : 'granted',
+            actorId: userId,
+            requestActor: { kind: 'local', userId },
+            dependencies,
+            prepare: async () => {
+              prepared = await prepareCapturedPendingCall({
+                actor: { userId },
+                ...context,
+                vaultBackend: () => vaultUnlockState.backend(),
+                reviewPolicy: (record, actor) =>
+                  reviewCapturedMcpPolicy({
+                    record,
+                    actor,
+                    workspaceDb,
+                    catalog,
+                    interception: new PolicyInterception(),
+                    routes: {
+                      coreDb,
+                      store,
+                      workerMcpGateway,
+                      vaultUnlockState,
+                      workerControlGateway: native.workerControlGateway,
+                      runtimeConfig: () => snapshot,
+                      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+                    },
+                  }),
+              });
+            },
+            evaluate: () =>
+              evaluateCapturedPendingCall({
+                manifest:
+                  snapshot.agentManifests.find((row) => row.id === captured.agentId) ?? null,
+                ...context,
+                sqlite: workspaceDb.sqlite,
+                prepared,
+              }),
+            admitExecution: async (failure) => {
+              executionCall = await admitCapturedPendingCall(
+                captured,
+                workspaceDb,
+                '00000000-0000-4000-8000-000000000117',
+                prepared,
+                failure
+              );
+              if (refusedAfterClaim) {
+                // The approval owner has claimed this exact call; prepared material is still private.
+                expect(readPendingRequest(workspaceDb.sqlite, captured.requestId)).toMatchObject({
+                  claim: 'claimed',
+                });
+                expect(prepared).toMatchObject({
+                  failed: false,
+                  credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
+                });
+                if (change === 'catalog-after-claim') {
+                  // The execution input can advance independently of the prepared Policy view.
+                  context.catalog = {
+                    ...catalog,
+                    servers: [
+                      { ...catalog.servers[0]!, timeoutMs: catalog.servers[0]!.timeoutMs + 1 },
+                    ],
+                  };
+                  expect(
+                    resolveWorkspaceMcpServer({ catalog: context.catalog, serverId: 'echo' })
+                      .catalogDigest
+                  ).not.toBe(captured.catalogRevision);
+                } else {
+                  await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
+                }
+                expect(prepared?.mediation?.current()).toBe(true);
+              }
+              return executionCall.refusal;
+            },
+            execute: (record) =>
+              executeCapturedPendingCall({
+                ...context,
+                record,
+                prepared,
+                executionCall,
+              }),
+          });
+        const response = await respond();
+        resolved.mockRestore();
         expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
         if (change === 'unchanged') {
-          await openTestNativeWorkspace(workspaceDb);
-          const scope = { workspaceDb, workspaceId, catalogEntryId: 'echo' };
-          const currentId = () =>
-            readCurrentMcpToolSchemaSnapshot({ ...scope, pinnedSchemaSnapshotId: null })
-              ?.schemaSnapshotId;
-          type Tool = { name: string; inputSchema: Record<string, unknown> };
-          const tool = (v: string | number) => ({ inputSchema: { const: v }, name: 'echo' });
-          const record = async (id: string, tools: Tool[]) =>
-            await recordMcpToolSchemaSnapshot({
-              environmentPackage,
-              serverId: 'echo',
-              source: 'live',
+          expect(upstream.mock.calls[0]?.[0]).toMatchObject({
+            toolName: 'echo',
+            arguments: { message: 'captured effect' },
+            credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
+          });
+        }
+        try {
+          expect(response).toMatchObject({
+            state: 'resolved',
+            resolution: change === 'deny' ? 'denied' : 'granted',
+            disposition,
+            claim: change === 'deny' ? 'unclaimed' : 'finished',
+            executionCallId:
+              change === 'deny' ? null : executionCallIdForRequest(captured.requestId),
+          });
+          const callId = executionCallIdForRequest(captured.requestId);
+          const calls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
+          expect(calls.filter((call) => call.id === callId)).toEqual(
+            change === 'deny'
+              ? []
+              : [
+                  expect.objectContaining({
+                    status:
+                      disposition === 'approved-executed'
+                        ? 'succeeded'
+                        : disposition === 'outcome-unknown'
+                          ? 'unknown'
+                          : 'failed',
+                    ...(change === 'revoke' || refusedAfterClaim
+                      ? { upstreamContacted: false }
+                      : {}),
+                  }),
+                ]
+          );
+          const usage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
+          expect(usage.filter((row) => row.capabilityCallId === callId)).toHaveLength(
+            executed && change !== 'no-contact' ? 1 : 0
+          );
+          if (change !== 'deny')
+            expect(
+              listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)
+            ).toContainEqual(
+              expect.objectContaining({
+                approvalId: captured.requestId,
+                result: change === 'revoke' ? 'deny' : 'allow',
+                contextSummary: expect.objectContaining({ capabilityCallId: callId }),
+              })
+            );
+          expect(JSON.stringify(response)).not.toContain('pending-secret-canary');
+          await expect(respond()).rejects.toMatchObject({ code: 'request_not_pending' });
+          expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceId)).toEqual(calls);
+          expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(usage);
+          expect(upstream).toHaveBeenCalledTimes(executed ? 1 : 0);
+          if (change === 'unchanged') {
+            await openTestNativeWorkspace(workspaceDb);
+            const scope = { workspaceDb, workspaceId, catalogEntryId: 'echo' };
+            const currentId = () =>
+              readCurrentMcpToolSchemaSnapshot({ ...scope, pinnedSchemaSnapshotId: null })
+                ?.schemaSnapshotId;
+            type Tool = { name: string; inputSchema: Record<string, unknown> };
+            const tool = (v: string | number) => ({ inputSchema: { const: v }, name: 'echo' });
+            const record = async (id: string, tools: Tool[]) =>
+              await recordMcpToolSchemaSnapshot({
+                environmentPackage,
+                serverId: 'echo',
+                source: 'live',
+                schemaSnapshotId: id,
+                tools,
+                workspaceDb,
+                workspaceId,
+              });
+            const retained = (id: string) =>
+              readRetainedMcpToolSchemaSnapshot({ ...scope, schemaSnapshotId: id });
+            const referencedId = captured.schemaSnapshotId!;
+            const referenced = retained(referencedId);
+            expect(referenced).not.toBeNull();
+            expect(
+              listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId).find(
+                (row) => row.schemaSnapshotId === referencedId
+              )?.source
+            ).toBe('live');
+            for (const label of ['a', 'b', 'a']) await record(`mcpsnap_${label}`, [tool(label)]);
+            expect(currentId()).toBe('mcpsnap_a');
+            const tools = [{ inputSchema: { type: 'object' }, name: 'imported' }];
+            const history = (id: string, catalogEntryId: string) => ({
+              capturedAt: '2099-01-01T00:00:00.000Z',
+              catalogEntryId,
+              contentDigest: mcpToolSchemaContentDigest(tools),
+              toolsJson: canonicalJsonText(canonicalMcpToolSchemas(tools)),
               schemaSnapshotId: id,
+              serverVersion: '1.0.0',
+              source: 'aep' as const,
+              sourceRef: 'aep_history',
               tools,
-              workspaceDb,
               workspaceId,
             });
-          const retained = (id: string) =>
-            readRetainedMcpToolSchemaSnapshot({ ...scope, schemaSnapshotId: id });
-          const referencedId = captured.schemaSnapshotId!;
-          const referenced = retained(referencedId);
-          expect(referenced).not.toBeNull();
-          expect(
-            listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId).find(
-              (row) => row.schemaSnapshotId === referencedId
-            )?.source
-          ).toBe('live');
-          for (const label of ['a', 'b', 'a']) await record(`mcpsnap_${label}`, [tool(label)]);
-          expect(currentId()).toBe('mcpsnap_a');
-          const tools = [{ inputSchema: { type: 'object' }, name: 'imported' }];
-          const history = (id: string, catalogEntryId: string) => ({
-            capturedAt: '2099-01-01T00:00:00.000Z',
-            catalogEntryId,
-            contentDigest: mcpToolSchemaContentDigest(tools),
-            toolsJson: canonicalJsonText(canonicalMcpToolSchemas(tools)),
-            schemaSnapshotId: id,
-            serverVersion: '1.0.0',
-            source: 'aep' as const,
-            sourceRef: 'aep_history',
-            tools,
-            workspaceId,
-          });
-          await shutdownControlStoreWorkerClient();
-          importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_imported_history', 'echo')]);
-          await openTestNativeWorkspace(workspaceDb);
-          expect(currentId()).toBe('mcpsnap_a');
-          const captures = () =>
-            listWorkspaceAuditEvents(workspaceDb, workspaceId).filter(
-              (event) =>
-                event.action === 'mcp.schema.capture' &&
-                event.resource === 'mcp-schema:mcpsnap_imported_history'
+            await shutdownControlStoreWorkerClient();
+            importMcpToolSchemaSnapshots(workspaceDb, [
+              history('mcpsnap_imported_history', 'echo'),
+            ]);
+            await openTestNativeWorkspace(workspaceDb);
+            expect(currentId()).toBe('mcpsnap_a');
+            const captures = () =>
+              listWorkspaceAuditEvents(workspaceDb, workspaceId).filter(
+                (event) =>
+                  event.action === 'mcp.schema.capture' &&
+                  event.resource === 'mcp-schema:mcpsnap_imported_history'
+              );
+            const beforePromotion = captures().length;
+            await record('mcpsnap_imported_history', tools);
+            await record('mcpsnap_imported_history', tools);
+            expect(captures()).toHaveLength(beforePromotion + 1);
+            expect(currentId()).toBe('mcpsnap_imported_history');
+            await shutdownControlStoreWorkerClient();
+            importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_cross_catalog', 'other')]);
+            await openTestNativeWorkspace(workspaceDb);
+            const beforeConflict = listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId);
+            await expect(async () => await record('mcpsnap_cross_catalog', tools)).rejects.toThrow(
+              Error
             );
-          const beforePromotion = captures().length;
-          await record('mcpsnap_imported_history', tools);
-          await record('mcpsnap_imported_history', tools);
-          expect(captures()).toHaveLength(beforePromotion + 1);
-          expect(currentId()).toBe('mcpsnap_imported_history');
-          await shutdownControlStoreWorkerClient();
-          importMcpToolSchemaSnapshots(workspaceDb, [history('mcpsnap_cross_catalog', 'other')]);
-          await openTestNativeWorkspace(workspaceDb);
-          const beforeConflict = listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId);
-          await expect(async () => await record('mcpsnap_cross_catalog', tools)).rejects.toThrow(
-            Error
-          );
-          expect(listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId)).toEqual(
-            beforeConflict
-          );
-          const churn = Array.from({ length: 10 }, (_, index) => `mcpsnap_retention_${index}`);
-          for (const [index, id] of churn.entries()) {
-            await record(id, [tool(index)]);
+            expect(listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId)).toEqual(
+              beforeConflict
+            );
+            const churn = Array.from({ length: 10 }, (_, index) => `mcpsnap_retention_${index}`);
+            for (const [index, id] of churn.entries()) {
+              await record(id, [tool(index)]);
+            }
+            expect(churn.some((id) => retained(id) === null)).toBe(true);
+            expect(retained(referencedId)).toEqual(referenced);
+            expect(currentId()).toBe(churn.at(-1));
           }
-          expect(churn.some((id) => retained(id) === null)).toBe(true);
-          expect(retained(referencedId)).toEqual(referenced);
-          expect(currentId()).toBe(churn.at(-1));
+        } finally {
+          workspaceDb.sqlite.close();
         }
       } finally {
-        workspaceDb.sqlite.close();
+        await client.close().catch(() => undefined);
+        native.executor.completion.resolve();
+        if (native.executor.launches) await native.executor.execution.catch(() => undefined);
+        await Promise.allSettled(
+          taskAdmissions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value.closeout)
+        );
+        taskAdmissions.mockRestore();
+        await restoreNative();
+        await workerMcpGateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-    } finally {
-      await client.close().catch(() => undefined);
-      native.executor.completion.resolve();
-      if (native.executor.launches) await native.executor.execution.catch(() => undefined);
-      await Promise.allSettled(
-        taskAdmissions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value.closeout)
-      );
-      taskAdmissions.mockRestore();
-      await restoreNative();
-      await workerMcpGateway.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it('maps the bounded MCP failure table without extra tool effects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-failures-'));
@@ -4988,270 +5038,281 @@ describe('worker MCP routes', () => {
     'noncanonical',
     'programming',
     'coded-programming',
-  ] as const)('defers only unavailable named snapshot storage during real MCP boot reconciliation: %s', async (failure) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-backfill-unavailable-'));
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const store = await createRetainedDemoStore(
-      { dataRoot },
-      ['0_unavailable', '1_healthy'].map((suffix, index) => ({
-        name: `MCP backfill ${suffix}`,
-        input: 'Recover decided MCP publication',
-        agentId: 'agent_codex_host',
-        timestamp: `2026-09-22T00:00:0${index}.000Z`,
-      }))
-    );
-    const coreDb = openCoreDb(dataRoot);
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    const packages: AgentEnvironmentPackage[] = [];
-    const calls: Awaited<ReturnType<typeof startCapabilityCall>>[] = [];
-    let restoreRead: (() => void) | undefined;
-    let unavailableDirectory: string | undefined;
-    try {
-      await openTestNativeWorkspace(workspaceDb);
-      for (const suffix of ['0_unavailable', '1_healthy']) {
-        const thread = store
-          .listThreads(workspaceId)
-          .find((row) => row.name === `MCP backfill ${suffix}`)!;
-        const turn = store.listThreadTurns(workspaceId, thread.id)[0]!;
-        const session = store.getAgentSession(turn.agentSessionId!);
-        expect(turn).toMatchObject({
-          status: 'completed',
-          agentId: session.agentId,
-          agentSessionId: session.id,
-        });
-        expect(session).toMatchObject({ workspaceId, threadId: turn.threadId, status: 'idle' });
-        const environmentPackage = await resolveAgentEnvironmentPackage({
-          coreDb,
-          agentSetup: createTestAgentSetup(),
-          agentSessionId: session.id,
-          backend: { kind: 'openshell' },
-          requestId: `req_mcp_${suffix}`,
-          createdAt: turn.startedAt!,
-          triggerActor: turn.triggerActor,
-          turn,
-          turnInput: 'Recover decided MCP publication',
-          workspaceCwd: null,
-          workspaceRoots: [],
-        });
-        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-          environmentPackage,
-          createdAt: turn.startedAt!,
-        });
-        expect(
-          snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
-            workspaceDb,
-            workspaceId,
-            session.id,
-            environmentPackage.snapshotId
-          )
-        ).toMatchObject({
-          workspaceId,
-          threadId: thread.id,
-          turnId: turn.id,
-          agentSessionId: session.id,
-          snapshotId: environmentPackage.snapshotId,
-        });
-        packages.push(environmentPackage);
-        const call = await startCapabilityCall({
-          workspaceDb,
-          workspaceId,
-          authorityActor: turn.triggerActor,
-          agentId: session.agentId,
-          agentSessionId: session.id,
-          callId: testEntityId('cap', `cap_mcp_${suffix}`),
-          itemId: testEntityId('it', `it_mcp_${suffix}`),
-          capabilityId: 'mcp.call-tool',
-          family: 'mcp',
-          operation: 'mcp.call-tool',
-          packageSnapshotId: environmentPackage.snapshotId,
-          providerRef: 'echo',
-          serviceRef: 'mcp-tool:echo',
-          redactionClass: 'metadata-only',
-          threadId: thread.id,
-          turnId: turn.id,
-          now: new Date(turn.startedAt!),
-        });
-        await finishCapabilityCall({
-          callId: call.id,
-          status: 'succeeded',
-          workspaceDb,
-          now: new Date(turn.completedAt!),
-        });
-        calls.push(call);
-      }
-      await shutdownControlStoreWorkerClient();
-      await verifyAndMigrateExistingScopedDatabases(dataRoot);
-      const selected = packages[0]!;
-      // Observe the real named reader's file effect; do not duplicate another owner's path layout.
-      let snapshotPath = '';
-      const originalRead = fs.readFileSync;
-      const locate = vi.spyOn(fs, 'readFileSync').mockImplementation(((
-        ...args: Parameters<typeof fs.readFileSync>
-      ) => {
-        if (typeof args[0] === 'string') snapshotPath = args[0];
-        return originalRead(...args);
-      }) as typeof fs.readFileSync);
-      syncBuiltinESMExports();
-      try {
-        expect(
-          snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
-            workspaceDb,
-            workspaceId,
-            selected.scope.agentSessionId,
-            selected.snapshotId
-          )
-        ).toMatchObject({ snapshotId: selected.snapshotId, turnId: selected.scope.turnId });
-      } finally {
-        locate.mockRestore();
-        syncBuiltinESMExports();
-      }
-      expect(snapshotPath).not.toBe('');
-      const snapshotsRoot = dirname(snapshotPath);
-      const originalBytes = readFileSync(snapshotPath, 'utf8');
-      const beforeItems = store.listAllItems();
-      const beforeEvents = packages.map((pkg) => store.getTurnEvents(pkg.scope.turnId));
-      const beforeCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
-      const beforeUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
-      // Capability Usage lifecycle: one retained successful call for each of the two source requests.
-      expect(beforeCalls).toHaveLength(2);
-      expect(beforeCalls).toEqual(
-        expect.arrayContaining(
-          packages.map((pkg, index) =>
-            expect.objectContaining({
-              id: calls[index]!.id,
-              status: 'succeeded',
-              agentSessionId: pkg.scope.agentSessionId,
-              threadId: pkg.scope.threadId,
-              turnId: pkg.scope.turnId,
-              packageSnapshotId: pkg.snapshotId,
-            })
-          )
-        )
+  ] as const)(
+    'defers only unavailable named snapshot storage during real MCP boot reconciliation: %s',
+    async (failure) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-backfill-unavailable-'));
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const store = await createRetainedDemoStore(
+        { dataRoot },
+        ['0_unavailable', '1_healthy'].map((suffix, index) => ({
+          name: `MCP backfill ${suffix}`,
+          input: 'Recover decided MCP publication',
+          agentId: 'agent_codex_host',
+          timestamp: `2026-09-22T00:00:0${index}.000Z`,
+        }))
       );
-      expect(
-        beforeItems.some((item) => calls.some((call) => call.context.itemId === item.id))
-      ).toBe(false);
-      let injections = 0;
-      let fault: Error | undefined;
-      if (failure === 'permission') {
-        chmodSync(snapshotsRoot, 0);
-        unavailableDirectory = snapshotsRoot;
-        expect(() => lstatSync(snapshotPath)).toThrow(expect.objectContaining({ code: 'EACCES' }));
-      } else if (failure === 'noncanonical') {
-        rmSync(snapshotPath);
-        symlinkSync(join(snapshotsRoot, 'missing-target'), snapshotPath);
-      } else if (['malformed-json', 'schema', 'digest', 'lineage'].includes(failure)) {
-        const record = JSON.parse(originalBytes);
-        if (failure === 'digest') record.contentDigest = '0'.repeat(64);
-        if (failure === 'lineage') record.threadId = testEntityId('th', 'th_contradictory');
-        writeFileSync(
-          snapshotPath,
-          failure === 'malformed-json' ? '{' : failure === 'schema' ? '{}' : JSON.stringify(record)
-        );
-      } else {
-        fault =
-          failure === 'programming'
-            ? new TypeError('Unexpected named-file read failure.')
-            : Object.assign(new Error('Named-file read fault.'), {
-                code: failure === 'coded-programming' ? 'EIO' : failure,
-                ...(failure === 'coded-programming'
-                  ? {}
-                  : {
-                      syscall: 'read',
-                      errno: failure === 'EIO' ? -5 : failure === 'EMFILE' ? -24 : -1,
-                      path: snapshotPath,
-                    }),
-              });
-      }
-      let inspections = 0;
-      const originalLstat = fs.lstatSync;
-      const inspect = vi.spyOn(fs, 'lstatSync').mockImplementation(((
-        ...args: Parameters<typeof fs.lstatSync>
-      ) => {
-        if (args[0] === snapshotPath) inspections += 1;
-        return originalLstat(...args);
-      }) as typeof fs.lstatSync);
-      const readFault = vi.spyOn(fs, 'readFileSync').mockImplementation(((
-        ...args: Parameters<typeof fs.readFileSync>
-      ) => {
-        if (args[0] === snapshotPath && fault) {
-          injections += 1;
-          throw fault;
-        }
-        return originalRead(...args);
-      }) as typeof fs.readFileSync);
-      syncBuiltinESMExports();
-      restoreRead = () => {
-        inspect.mockRestore();
-        readFault.mockRestore();
-        syncBuiltinESMExports();
-      };
-      // Core Protocol Turn Lifecycle permits only the exact already-decided missing Item.
-      const unavailable = ['permission', 'EPERM', 'EIO', 'EMFILE'].includes(failure);
-      if (unavailable) {
-        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-        expect(
-          store.listAllItems().filter((item) => !beforeItems.some((prior) => prior.id === item.id))
-        ).toEqual([
-          expect.objectContaining({
-            id: calls[1]!.context.itemId,
-            causationId: calls[1]!.id,
+      const coreDb = openCoreDb(dataRoot);
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      const packages: AgentEnvironmentPackage[] = [];
+      const calls: Awaited<ReturnType<typeof startCapabilityCall>>[] = [];
+      let restoreRead: (() => void) | undefined;
+      let unavailableDirectory: string | undefined;
+      try {
+        await openTestNativeWorkspace(workspaceDb);
+        for (const suffix of ['0_unavailable', '1_healthy']) {
+          const thread = store
+            .listThreads(workspaceId)
+            .find((row) => row.name === `MCP backfill ${suffix}`)!;
+          const turn = store.listThreadTurns(workspaceId, thread.id)[0]!;
+          const session = store.getAgentSession(turn.agentSessionId!);
+          expect(turn).toMatchObject({
             status: 'completed',
-          }),
-        ]);
+            agentId: session.agentId,
+            agentSessionId: session.id,
+          });
+          expect(session).toMatchObject({ workspaceId, threadId: turn.threadId, status: 'idle' });
+          const environmentPackage = await resolveAgentEnvironmentPackage({
+            coreDb,
+            agentSetup: createTestAgentSetup(),
+            agentSessionId: session.id,
+            backend: { kind: 'openshell' },
+            requestId: `req_mcp_${suffix}`,
+            createdAt: turn.startedAt!,
+            triggerActor: turn.triggerActor,
+            turn,
+            turnInput: 'Recover decided MCP publication',
+            workspaceCwd: null,
+            workspaceRoots: [],
+          });
+          await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+            environmentPackage,
+            createdAt: turn.startedAt!,
+          });
+          expect(
+            snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
+              workspaceDb,
+              workspaceId,
+              session.id,
+              environmentPackage.snapshotId
+            )
+          ).toMatchObject({
+            workspaceId,
+            threadId: thread.id,
+            turnId: turn.id,
+            agentSessionId: session.id,
+            snapshotId: environmentPackage.snapshotId,
+          });
+          packages.push(environmentPackage);
+          const call = await startCapabilityCall({
+            workspaceDb,
+            workspaceId,
+            authorityActor: turn.triggerActor,
+            agentId: session.agentId,
+            agentSessionId: session.id,
+            callId: testEntityId('cap', `cap_mcp_${suffix}`),
+            itemId: testEntityId('it', `it_mcp_${suffix}`),
+            capabilityId: 'mcp.call-tool',
+            family: 'mcp',
+            operation: 'mcp.call-tool',
+            packageSnapshotId: environmentPackage.snapshotId,
+            providerRef: 'echo',
+            serviceRef: 'mcp-tool:echo',
+            redactionClass: 'metadata-only',
+            threadId: thread.id,
+            turnId: turn.id,
+            now: new Date(turn.startedAt!),
+          });
+          await finishCapabilityCall({
+            callId: call.id,
+            status: 'succeeded',
+            workspaceDb,
+            now: new Date(turn.completedAt!),
+          });
+          calls.push(call);
+        }
+        await shutdownControlStoreWorkerClient();
+        await verifyAndMigrateExistingScopedDatabases(dataRoot);
+        const selected = packages[0]!;
+        // Observe the real named reader's file effect; do not duplicate another owner's path layout.
+        let snapshotPath = '';
+        const originalRead = fs.readFileSync;
+        const locate = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+          ...args: Parameters<typeof fs.readFileSync>
+        ) => {
+          if (typeof args[0] === 'string') snapshotPath = args[0];
+          return originalRead(...args);
+        }) as typeof fs.readFileSync);
+        syncBuiltinESMExports();
+        try {
+          expect(
+            snapshotLedger.findNamedAgentEnvironmentPackageSnapshot(
+              workspaceDb,
+              workspaceId,
+              selected.scope.agentSessionId,
+              selected.snapshotId
+            )
+          ).toMatchObject({ snapshotId: selected.snapshotId, turnId: selected.scope.turnId });
+        } finally {
+          locate.mockRestore();
+          syncBuiltinESMExports();
+        }
+        expect(snapshotPath).not.toBe('');
+        const snapshotsRoot = dirname(snapshotPath);
+        const originalBytes = readFileSync(snapshotPath, 'utf8');
+        const beforeItems = store.listAllItems();
+        const beforeEvents = packages.map((pkg) => store.getTurnEvents(pkg.scope.turnId));
+        const beforeCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId);
+        const beforeUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId);
+        // Capability Usage lifecycle: one retained successful call for each of the two source requests.
+        expect(beforeCalls).toHaveLength(2);
+        expect(beforeCalls).toEqual(
+          expect.arrayContaining(
+            packages.map((pkg, index) =>
+              expect.objectContaining({
+                id: calls[index]!.id,
+                status: 'succeeded',
+                agentSessionId: pkg.scope.agentSessionId,
+                threadId: pkg.scope.threadId,
+                turnId: pkg.scope.turnId,
+                packageSnapshotId: pkg.snapshotId,
+              })
+            )
+          )
+        );
         expect(
-          store.listAllItems().find((item) => item.id === calls[0]!.context.itemId)
-        ).toBeUndefined();
-        expect(store.getTurnEvents(selected.scope.turnId)).toEqual(beforeEvents[0]);
-        if (unavailableDirectory) {
-          chmodSync(unavailableDirectory, 0o700);
-          unavailableDirectory = undefined;
+          beforeItems.some((item) => calls.some((call) => call.context.itemId === item.id))
+        ).toBe(false);
+        let injections = 0;
+        let fault: Error | undefined;
+        if (failure === 'permission') {
+          chmodSync(snapshotsRoot, 0);
+          unavailableDirectory = snapshotsRoot;
+          expect(() => lstatSync(snapshotPath)).toThrow(
+            expect.objectContaining({ code: 'EACCES' })
+          );
+        } else if (failure === 'noncanonical') {
+          rmSync(snapshotPath);
+          symlinkSync(join(snapshotsRoot, 'missing-target'), snapshotPath);
+        } else if (['malformed-json', 'schema', 'digest', 'lineage'].includes(failure)) {
+          const record = JSON.parse(originalBytes);
+          if (failure === 'digest') record.contentDigest = '0'.repeat(64);
+          if (failure === 'lineage') record.threadId = testEntityId('th', 'th_contradictory');
+          writeFileSync(
+            snapshotPath,
+            failure === 'malformed-json'
+              ? '{'
+              : failure === 'schema'
+                ? '{}'
+                : JSON.stringify(record)
+          );
+        } else {
+          fault =
+            failure === 'programming'
+              ? new TypeError('Unexpected named-file read failure.')
+              : Object.assign(new Error('Named-file read fault.'), {
+                  code: failure === 'coded-programming' ? 'EIO' : failure,
+                  ...(failure === 'coded-programming'
+                    ? {}
+                    : {
+                        syscall: 'read',
+                        errno: failure === 'EIO' ? -5 : failure === 'EMFILE' ? -24 : -1,
+                        path: snapshotPath,
+                      }),
+                });
+        }
+        let inspections = 0;
+        const originalLstat = fs.lstatSync;
+        const inspect = vi.spyOn(fs, 'lstatSync').mockImplementation(((
+          ...args: Parameters<typeof fs.lstatSync>
+        ) => {
+          if (args[0] === snapshotPath) inspections += 1;
+          return originalLstat(...args);
+        }) as typeof fs.lstatSync);
+        const readFault = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+          ...args: Parameters<typeof fs.readFileSync>
+        ) => {
+          if (args[0] === snapshotPath && fault) {
+            injections += 1;
+            throw fault;
+          }
+          return originalRead(...args);
+        }) as typeof fs.readFileSync);
+        syncBuiltinESMExports();
+        restoreRead = () => {
+          inspect.mockRestore();
+          readFault.mockRestore();
+          syncBuiltinESMExports();
+        };
+        // Core Protocol Turn Lifecycle permits only the exact already-decided missing Item.
+        const unavailable = ['permission', 'EPERM', 'EIO', 'EMFILE'].includes(failure);
+        if (unavailable) {
+          expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+          expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+          expect(
+            store
+              .listAllItems()
+              .filter((item) => !beforeItems.some((prior) => prior.id === item.id))
+          ).toEqual([
+            expect.objectContaining({
+              id: calls[1]!.context.itemId,
+              causationId: calls[1]!.id,
+              status: 'completed',
+            }),
+          ]);
+          expect(
+            store.listAllItems().find((item) => item.id === calls[0]!.context.itemId)
+          ).toBeUndefined();
+          expect(store.getTurnEvents(selected.scope.turnId)).toEqual(beforeEvents[0]);
+          if (unavailableDirectory) {
+            chmodSync(unavailableDirectory, 0o700);
+            unavailableDirectory = undefined;
+          }
+          restoreRead?.();
+          restoreRead = undefined;
+          expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+          expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+          expect(
+            store.listAllItems().find((item) => item.id === calls[0]!.context.itemId)
+          ).toMatchObject({
+            causationId: calls[0]!.id,
+            status: 'completed',
+          });
+        } else {
+          await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toBeInstanceOf(Error);
+          expect(store.listAllItems()).toEqual(beforeItems);
+          packages.forEach((pkg, index) => {
+            expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
+          });
+        }
+        expect(inspections).toBeGreaterThan(0);
+        if (
+          !['permission', 'noncanonical', 'malformed-json', 'schema', 'digest', 'lineage'].includes(
+            failure
+          )
+        ) {
+          expect(injections).toBeGreaterThan(0);
         }
         restoreRead?.();
         restoreRead = undefined;
-        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-        expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
-        expect(
-          store.listAllItems().find((item) => item.id === calls[0]!.context.itemId)
-        ).toMatchObject({
-          causationId: calls[0]!.id,
-          status: 'completed',
-        });
-      } else {
-        await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toBeInstanceOf(Error);
-        expect(store.listAllItems()).toEqual(beforeItems);
-        packages.forEach((pkg, index) => {
-          expect(store.getTurnEvents(pkg.scope.turnId)).toEqual(beforeEvents[index]);
-        });
-      }
-      expect(inspections).toBeGreaterThan(0);
-      if (
-        !['permission', 'noncanonical', 'malformed-json', 'schema', 'digest', 'lineage'].includes(
-          failure
-        )
-      ) {
-        expect(injections).toBeGreaterThan(0);
-      }
-      restoreRead?.();
-      restoreRead = undefined;
-      await shutdownControlStoreWorkerClient();
-      const reopened = openWorkspaceDb(dataRoot, workspaceId);
-      try {
-        expect(listWorkspaceCapabilityCalls(reopened, workspaceId)).toEqual(beforeCalls);
-        expect(listWorkspaceUsageRecords(reopened, workspaceId)).toEqual(beforeUsage);
+        await shutdownControlStoreWorkerClient();
+        const reopened = openWorkspaceDb(dataRoot, workspaceId);
+        try {
+          expect(listWorkspaceCapabilityCalls(reopened, workspaceId)).toEqual(beforeCalls);
+          expect(listWorkspaceUsageRecords(reopened, workspaceId)).toEqual(beforeUsage);
+        } finally {
+          reopened.sqlite.close();
+        }
       } finally {
-        reopened.sqlite.close();
+        if (unavailableDirectory) chmodSync(unavailableDirectory, 0o700);
+        restoreRead?.();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-    } finally {
-      if (unavailableDirectory) chmodSync(unavailableDirectory, 0o700);
-      restoreRead?.();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it('recreates a missing terminal Item without changing its successful call', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-item-recovery-'));
@@ -5378,613 +5439,625 @@ describe('worker MCP routes', () => {
     ['raw', 'vault-denied-call'],
     ['raw', 'vault-denied-list'],
     ['raw', 'vault-storage-failure'],
-  ] as const)('enforces HTTP %s grant issuance %s and explicit replacement binding', async (presentation, issuance) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
-    const upstreamOptions: { credentialListEcho?: string } = {};
-    const upstream = await createMcpHttpStub(upstreamOptions);
-    const coreDb = openCopiedMcpCore(dataRoot);
-    ensureLocalUser(coreDb);
-    const store = await reopenCopiedMcpStore(dataRoot);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Call HTTP MCP',
-      {
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-        kind: 'user',
-      }
-    );
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
-    const vaultCanary = 'vault-"quoted\\slash';
-    vaultUnlockState.backend().store({
-      material: vaultCanary,
-      metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://workspace/vault_00000000-0000-7e35-8665-00e561f3dbc4',
-      displayName: 'HTTP MCP token',
-      ownerScope: 'workspace',
-      referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
-      secretKind: 'http-bearer',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const grant = await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['gateway-only'],
-      grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
-      lifetime: 'workspace',
-      ownerScope: 'workspace',
-      targetCapabilityId: null,
-      vaultReferenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const catalog = {
-      schemaVersion: 1 as const,
-      servers: [
+  ] as const)(
+    'enforces HTTP %s grant issuance %s and explicit replacement binding',
+    async (presentation, issuance) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
+      const upstreamOptions: { credentialListEcho?: string } = {};
+      const upstream = await createMcpHttpStub(upstreamOptions);
+      const coreDb = openCopiedMcpCore(dataRoot);
+      ensureLocalUser(coreDb);
+      const store = await reopenCopiedMcpStore(dataRoot);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Call HTTP MCP',
         {
-          allowedTools: ['echo'],
-          credentialBindings: [
-            {
-              presentation,
-              sink: { kind: 'header' as const, name: 'authorization' },
-              slot: 'auth',
-              vaultGrantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
-            },
-          ],
-          enabled: true,
-          id: 'http-echo',
-          pinnedSchemaSnapshotId: null,
-          schemaPolicy: 'tracking' as const,
-          // This fixture proves Vault admission and secrecy; no assertion needs a timeout.
-          timeoutMs: 10_000,
-          transport: { endpoint: upstream.url, kind: 'http' as const },
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+          kind: 'user',
+        }
+      );
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server', 'vault'),
+      });
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
+      const vaultCanary = 'vault-"quoted\\slash';
+      vaultUnlockState.backend().store({
+        material: vaultCanary,
+        metadata: {
+          ownerScope: 'workspace',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
-      ],
-    };
-    let activeCatalog = catalog;
-    let environmentPackage = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSessionId: testEntityId('as', 'as_mcp_vault'),
-      agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
-      backend: { kind: 'openshell' },
-      createdAt: '2026-09-03T00:00:00.000Z',
-      requestId: 'req_mcp_vault',
-      triggerActor: turn.triggerActor,
-      turn,
-      workspaceCwd: '/workspace',
-      workspaceMcpServerCatalog: catalog,
-      workspaceRoots: [],
-    });
-    recordMcpWorkerLineage(coreDb, environmentPackage);
-    const workerControlGateway = {
-      authenticatePackageToken: vi.fn(() => environmentPackage),
-    } as unknown as WorkerControlGateway;
-    const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-    const app = new Hono();
-    registerWorkerMcpRoutes({
-      app,
-      coreDb,
-      runtimeConfig: () =>
-        createInMemoryRuntimeConfigSnapshot({
-          dataRoot,
-          agentManifests: [],
-          workspaceMcpServerCatalogs: [
-            {
-              catalog: activeCatalog,
-              path: join(dataRoot, 'catalog/catalog.json'),
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            },
-          ],
-        }),
-      store,
-      vaultUnlockState,
-      workerControlGateway,
-      workerMcpGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-    });
-    const client = new Client({ name: 'vault-route-test', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(
-      new URL('http://nanocore.test/api/worker-capabilities/mcp/http-echo'),
-      {
-        fetch: (request, init) => app.fetch(new Request(request, init)),
-        requestInit: { headers: { authorization: 'Bearer capability-token' } },
-      }
-    );
+        referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: 'encrypted-file://workspace/vault_00000000-0000-7e35-8665-00e561f3dbc4',
+        displayName: 'HTTP MCP token',
+        ownerScope: 'workspace',
+        referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
+        secretKind: 'http-bearer',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const grant = await createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['gateway-only'],
+        grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
+        lifetime: 'workspace',
+        ownerScope: 'workspace',
+        targetCapabilityId: null,
+        vaultReferenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const catalog = {
+        schemaVersion: 1 as const,
+        servers: [
+          {
+            allowedTools: ['echo'],
+            credentialBindings: [
+              {
+                presentation,
+                sink: { kind: 'header' as const, name: 'authorization' },
+                slot: 'auth',
+                vaultGrantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
+              },
+            ],
+            enabled: true,
+            id: 'http-echo',
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking' as const,
+            // This fixture proves Vault admission and secrecy; no assertion needs a timeout.
+            timeoutMs: 10_000,
+            transport: { endpoint: upstream.url, kind: 'http' as const },
+          },
+        ],
+      };
+      let activeCatalog = catalog;
+      let environmentPackage = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: testEntityId('as', 'as_mcp_vault'),
+        agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
+        backend: { kind: 'openshell' },
+        createdAt: '2026-09-03T00:00:00.000Z',
+        requestId: 'req_mcp_vault',
+        triggerActor: turn.triggerActor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceMcpServerCatalog: catalog,
+        workspaceRoots: [],
+      });
+      recordMcpWorkerLineage(coreDb, environmentPackage);
+      const workerControlGateway = {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway;
+      const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        runtimeConfig: () =>
+          createInMemoryRuntimeConfigSnapshot({
+            dataRoot,
+            agentManifests: [],
+            workspaceMcpServerCatalogs: [
+              {
+                catalog: activeCatalog,
+                path: join(dataRoot, 'catalog/catalog.json'),
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              },
+            ],
+          }),
+        store,
+        vaultUnlockState,
+        workerControlGateway,
+        workerMcpGateway,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      });
+      const client = new Client({ name: 'vault-route-test', version: '1.0.0' });
+      const transport = new StreamableHTTPClientTransport(
+        new URL('http://nanocore.test/api/worker-capabilities/mcp/http-echo'),
+        {
+          fetch: (request, init) => app.fetch(new Request(request, init)),
+          requestInit: { headers: { authorization: 'Bearer capability-token' } },
+        }
+      );
 
-    try {
-      await client.connect(transport);
-      if (issuance === 'vault-storage-failure') {
-        const privateCanary = 'credential-primary-message-canary /private/vault-cause-canary';
-        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-        const sinks = [
-          vi.spyOn(console, 'error').mockImplementation(() => undefined),
-          vi.spyOn(console, 'warn').mockImplementation(() => undefined),
-          vi.spyOn(console, 'info').mockImplementation(() => undefined),
-        ];
-        const toolCallsBefore = upstream.observed.filter((request) =>
-          request.endsWith('|tools/call')
-        ).length;
-        coreDb.sqlite.exec(`
+      try {
+        await client.connect(transport);
+        if (issuance === 'vault-storage-failure') {
+          const privateCanary = 'credential-primary-message-canary /private/vault-cause-canary';
+          const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+          const sinks = [
+            vi.spyOn(console, 'error').mockImplementation(() => undefined),
+            vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+            vi.spyOn(console, 'info').mockImplementation(() => undefined),
+          ];
+          const toolCallsBefore = upstream.observed.filter((request) =>
+            request.endsWith('|tools/call')
+          ).length;
+          coreDb.sqlite.exec(`
           CREATE TRIGGER reject_mcp_credential_plan
           BEFORE INSERT ON vault_injection_plans
           BEGIN
             SELECT RAISE(ABORT, 'credential-primary-message-canary /private/vault-cause-canary');
           END
         `);
-        try {
-          for (const cleanupFails of [false, true]) {
-            for (const sink of sinks) sink.mockClear();
-            const cleanup = cleanupFails
-              ? vi
-                  .spyOn(workerMcpGateway, 'closeServer')
-                  .mockRejectedValueOnce(new Error('credential-secondary-cleanup-canary'))
-              : null;
-            try {
-              const failure = await client
-                .callTool({ arguments: { message: 'storage-failure' }, name: 'echo' })
-                .catch((error: unknown) => error);
-              expect(failure).toMatchObject({
-                data: { code: cleanupFails ? 'recovery_required' : 'mcp-denied' },
-              });
-              const publicBytes = `${String(failure)} ${JSON.stringify(failure)}`;
-              expect(publicBytes).not.toContain('SQLITE_CONSTRAINT_TRIGGER');
-              expect(publicBytes).not.toContain(privateCanary);
-              expect(publicBytes).not.toContain(vaultCanary);
+          try {
+            for (const cleanupFails of [false, true]) {
+              for (const sink of sinks) sink.mockClear();
+              const cleanup = cleanupFails
+                ? vi
+                    .spyOn(workerMcpGateway, 'closeServer')
+                    .mockRejectedValueOnce(new Error('credential-secondary-cleanup-canary'))
+                : null;
+              try {
+                const failure = await client
+                  .callTool({ arguments: { message: 'storage-failure' }, name: 'echo' })
+                  .catch((error: unknown) => error);
+                expect(failure).toMatchObject({
+                  data: { code: cleanupFails ? 'recovery_required' : 'mcp-denied' },
+                });
+                const publicBytes = `${String(failure)} ${JSON.stringify(failure)}`;
+                expect(publicBytes).not.toContain('SQLITE_CONSTRAINT_TRIGGER');
+                expect(publicBytes).not.toContain(privateCanary);
+                expect(publicBytes).not.toContain(vaultCanary);
 
-              // Telemetry / Data Safety: retain the trusted primary code, never exception content.
-              const privateBytes = sinks
-                .flatMap((sink) => sink.mock.calls)
-                .map((args) => format(...args))
-                .join('\n');
-              expect(privateBytes).toContain('"errorClass":"ControlStoreWorkerError"');
-              expect(privateBytes).toContain('"code":"constraint"');
-              for (const forbidden of [
-                privateCanary,
-                'credential-primary-message-canary',
-                'credential-secondary-cleanup-canary',
-                vaultCanary,
-                dataRoot,
-                'reject_mcp_credential_plan',
-              ])
-                expect(privateBytes).not.toContain(forbidden);
-              expect(resolve).not.toHaveBeenCalled();
-              expect(
-                upstream.observed.filter((request) => request.endsWith('|tools/call'))
-              ).toHaveLength(toolCallsBefore);
-            } finally {
-              cleanup?.mockRestore();
+                // Telemetry / Data Safety: retain the trusted primary code, never exception content.
+                const privateBytes = sinks
+                  .flatMap((sink) => sink.mock.calls)
+                  .map((args) => format(...args))
+                  .join('\n');
+                expect(privateBytes).toContain('"errorClass":"ControlStoreWorkerError"');
+                expect(privateBytes).toContain('"code":"constraint"');
+                for (const forbidden of [
+                  privateCanary,
+                  'credential-primary-message-canary',
+                  'credential-secondary-cleanup-canary',
+                  vaultCanary,
+                  dataRoot,
+                  'reject_mcp_credential_plan',
+                ])
+                  expect(privateBytes).not.toContain(forbidden);
+                expect(resolve).not.toHaveBeenCalled();
+                expect(
+                  upstream.observed.filter((request) => request.endsWith('|tools/call'))
+                ).toHaveLength(toolCallsBefore);
+              } finally {
+                cleanup?.mockRestore();
+              }
             }
+          } finally {
+            coreDb.sqlite.exec('DROP TRIGGER IF EXISTS reject_mcp_credential_plan');
+            resolve.mockRestore();
+            for (const sink of sinks) sink.mockRestore();
           }
-        } finally {
-          coreDb.sqlite.exec('DROP TRIGGER IF EXISTS reject_mcp_credential_plan');
-          resolve.mockRestore();
-          for (const sink of sinks) sink.mockRestore();
+          return;
         }
-        return;
-      }
-      if (issuance === 'imported-history') {
-        coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
-        importWorkspaceVaultGrants(coreDb, [grant]);
-        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-        const upstreamBefore = upstream.observed.length;
-        const plansBefore = coreDb.sqlite
-          .prepare('SELECT COUNT(*) AS count FROM vault_injection_plans')
-          .get();
-        const receiptsBefore = coreDb.sqlite
-          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
-          .get();
-        await expect(
-          client.callTool({ arguments: { message: 'blocked history' }, name: 'echo' })
-        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-        expect(resolve).not.toHaveBeenCalled();
-        expect(upstream.observed).toHaveLength(upstreamBefore);
-        expect(
-          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
-        ).toEqual(plansBefore);
-        expect(
-          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
-        ).toEqual(receiptsBefore);
-        resolve.mockRestore();
-        return;
-      }
-      if (issuance === 'vault-denied-call' || issuance === 'vault-denied-list') {
-        // Fault seam: deny the current Vault right while leaving real Tool evaluation unchanged.
-        // This tests enforcement of denial, not configured mixed-right Policy support.
-        const evaluate = workspaceAccess.evaluateProductAccess;
-        const currentPolicy = vi
-          .spyOn(workspaceAccess, 'evaluateProductAccess')
-          .mockImplementation((input) =>
-            evaluate({
-              ...input,
-              operation:
-                input.operation === 'vault.use' ? 'sec2a-denied-vault-use' : input.operation,
-            })
-          );
-        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-        const upstreamBefore = upstream.observed.length;
-        const receiptsBefore = coreDb.sqlite
-          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
-          .get();
-        try {
-          expect(
-            evaluateProductAuthorization(
-              coreDb,
-              { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-              { kind: 'workspace', workspaceId: environmentPackage.scope.workspaceId },
-              'tool.use',
-              true
-            ).effect
-          ).toBe('allow');
-          const request =
-            issuance === 'vault-denied-list'
-              ? client.listTools()
-              : client.callTool({ arguments: { message: 'denied Vault right' }, name: 'echo' });
-          await expect(request).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-          expect(currentPolicy).toHaveBeenCalledWith(
-            expect.objectContaining({ operation: 'vault.use' })
-          );
+        if (issuance === 'imported-history') {
+          coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
+          importWorkspaceVaultGrants(coreDb, [grant]);
+          const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+          const upstreamBefore = upstream.observed.length;
+          const plansBefore = coreDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM vault_injection_plans')
+            .get();
+          const receiptsBefore = coreDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+            .get();
+          await expect(
+            client.callTool({ arguments: { message: 'blocked history' }, name: 'echo' })
+          ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
           expect(resolve).not.toHaveBeenCalled();
           expect(upstream.observed).toHaveLength(upstreamBefore);
           expect(
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
+          ).toEqual(plansBefore);
+          expect(
             coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
           ).toEqual(receiptsBefore);
-        } finally {
           resolve.mockRestore();
-          currentPolicy.mockRestore();
+          return;
         }
-        return;
-      }
-      const toolCallsBeforeCall = upstream.observed.filter((request) =>
-        request.endsWith('|tools/call')
-      ).length;
-      const result = await client.callTool({ arguments: { message: 'safe' }, name: 'echo' });
-      expect(result).toMatchObject({ content: [{ text: 'safe' }] });
-      // MCP supply's credential contract forbids authentication-triggered tool replay.
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
-        toolCallsBeforeCall + 1
-      );
-      expect(
-        upstream.observed.some((request) =>
-          request.startsWith(`${presentation === 'bearer' ? 'Bearer ' : ''}${vaultCanary}||`)
-        )
-      ).toBe(true);
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
-      ).toEqual({ count: 1 });
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
-      ).toEqual({ count: 1 });
-      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      try {
-        expect(workspaceDb.sqlite.prepare('SELECT outcome FROM vault_use_records').all()).toEqual([
-          { outcome: 'succeeded' },
-        ]);
+        if (issuance === 'vault-denied-call' || issuance === 'vault-denied-list') {
+          // Fault seam: deny the current Vault right while leaving real Tool evaluation unchanged.
+          // This tests enforcement of denial, not configured mixed-right Policy support.
+          const evaluate = workspaceAccess.evaluateProductAccess;
+          const currentPolicy = vi
+            .spyOn(workspaceAccess, 'evaluateProductAccess')
+            .mockImplementation((input) =>
+              evaluate({
+                ...input,
+                operation:
+                  input.operation === 'vault.use' ? 'sec2a-denied-vault-use' : input.operation,
+              })
+            );
+          const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+          const upstreamBefore = upstream.observed.length;
+          const receiptsBefore = coreDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+            .get();
+          try {
+            expect(
+              evaluateProductAuthorization(
+                coreDb,
+                { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+                { kind: 'workspace', workspaceId: environmentPackage.scope.workspaceId },
+                'tool.use',
+                true
+              ).effect
+            ).toBe('allow');
+            const request =
+              issuance === 'vault-denied-list'
+                ? client.listTools()
+                : client.callTool({ arguments: { message: 'denied Vault right' }, name: 'echo' });
+            await expect(request).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+            expect(currentPolicy).toHaveBeenCalledWith(
+              expect.objectContaining({ operation: 'vault.use' })
+            );
+            expect(resolve).not.toHaveBeenCalled();
+            expect(upstream.observed).toHaveLength(upstreamBefore);
+            expect(
+              coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+            ).toEqual(receiptsBefore);
+          } finally {
+            resolve.mockRestore();
+            currentPolicy.mockRestore();
+          }
+          return;
+        }
+        const toolCallsBeforeCall = upstream.observed.filter((request) =>
+          request.endsWith('|tools/call')
+        ).length;
+        const result = await client.callTool({ arguments: { message: 'safe' }, name: 'echo' });
+        expect(result).toMatchObject({ content: [{ text: 'safe' }] });
+        // MCP supply's credential contract forbids authentication-triggered tool replay.
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+          toolCallsBeforeCall + 1
+        );
         expect(
-          workspaceDb.sqlite.prepare('SELECT category, unit, quantity FROM usage_records').all()
-        ).toEqual([{ category: 'tool', quantity: 1, unit: 'tool_calls' }]);
-        const exportApp = createApp({
-          coreDb,
-          dataRoot,
-          store,
-          turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-          workerMcpGateway,
-        });
-        const exportResponse = await exportApp.request(
-          ...operationRequest(
-            'workspace.export',
-            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-            {
-              method: 'POST',
-            }
+          upstream.observed.some((request) =>
+            request.startsWith(`${presentation === 'bearer' ? 'Bearer ' : ''}${vaultCanary}||`)
           )
-        );
-        expect(exportResponse.status).toBe(200);
-        const exported = WorkspaceExportResponseSchema.parse(await exportResponse.json());
-        const exportRoot = join(
-          dataRoot,
-          'server',
-          'exports',
-          'workspaces',
-          'ws_00000000-0000-7000-8000-000000000001',
-          exported.exportId
-        );
-        const publicAndDurableValues = [
-          environmentPackage,
-          result,
-          store.listAllItems(),
-          store.listThreadTurns(
+        ).toBe(true);
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
+        ).toEqual({ count: 1 });
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+        ).toEqual({ count: 1 });
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        try {
+          expect(workspaceDb.sqlite.prepare('SELECT outcome FROM vault_use_records').all()).toEqual(
+            [{ outcome: 'succeeded' }]
+          );
+          expect(
+            workspaceDb.sqlite.prepare('SELECT category, unit, quantity FROM usage_records').all()
+          ).toEqual([{ category: 'tool', quantity: 1, unit: 'tool_calls' }]);
+          const exportApp = createApp({
+            coreDb,
+            dataRoot,
+            store,
+            turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+            workerMcpGateway,
+          });
+          const exportResponse = await exportApp.request(
+            ...operationRequest(
+              'workspace.export',
+              { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+              {
+                method: 'POST',
+              }
+            )
+          );
+          expect(exportResponse.status).toBe(200);
+          const exported = WorkspaceExportResponseSchema.parse(await exportResponse.json());
+          const exportRoot = join(
+            dataRoot,
+            'server',
+            'exports',
+            'workspaces',
             'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          ),
-          store.listCommandRequests(),
-          readDatabaseRows(coreDb.sqlite),
-          readDatabaseRows(workspaceDb.sqlite),
-          exported,
-        ];
-        expect(
-          publicAndDurableValues.every((value) => !containsExactString(value, vaultCanary))
-        ).toBe(true);
-        const encodedCanary = JSON.stringify(vaultCanary).slice(1, -1);
-        const publicAndDurableBytes = [
-          ...publicAndDurableValues.map((value) => JSON.stringify(value)),
-          ...exported.checkedFiles.map((path) => readFileSync(join(exportRoot, path), 'utf8')),
-        ];
-        expect(
-          publicAndDurableBytes.every(
-            (bytes) => !bytes.includes(vaultCanary) && !bytes.includes(encodedCanary)
-          )
-        ).toBe(true);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+            exported.exportId
+          );
+          const publicAndDurableValues = [
+            environmentPackage,
+            result,
+            store.listAllItems(),
+            store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            ),
+            store.listCommandRequests(),
+            readDatabaseRows(coreDb.sqlite),
+            readDatabaseRows(workspaceDb.sqlite),
+            exported,
+          ];
+          expect(
+            publicAndDurableValues.every((value) => !containsExactString(value, vaultCanary))
+          ).toBe(true);
+          const encodedCanary = JSON.stringify(vaultCanary).slice(1, -1);
+          const publicAndDurableBytes = [
+            ...publicAndDurableValues.map((value) => JSON.stringify(value)),
+            ...exported.checkedFiles.map((path) => readFileSync(join(exportRoot, path), 'utf8')),
+          ];
+          expect(
+            publicAndDurableBytes.every(
+              (bytes) => !bytes.includes(vaultCanary) && !bytes.includes(encodedCanary)
+            )
+          ).toBe(true);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
 
-      const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const snapshotCount = schemaDb.sqlite
-        .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
-        .get();
-      schemaDb.sqlite.close();
-      const receiptsBeforeMetadataLeak = coreDb.sqlite
-        .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
-        .get() as { count: number };
-      upstreamOptions.credentialListEcho = vaultCanary;
-      await expect(
-        client.callTool({ arguments: { message: 'metadata-leak' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'mcp-server-unavailable' } });
-      delete upstreamOptions.credentialListEcho;
-      const rejectedSchemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      expect(
-        rejectedSchemaDb.sqlite
+        const schemaDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        const snapshotCount = schemaDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
-          .get()
-      ).toEqual(snapshotCount);
-      rejectedSchemaDb.sqlite.close();
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
-      ).toEqual({ count: receiptsBeforeMetadataLeak.count + 1 });
+          .get();
+        schemaDb.sqlite.close();
+        const receiptsBeforeMetadataLeak = coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+          .get() as { count: number };
+        upstreamOptions.credentialListEcho = vaultCanary;
+        await expect(
+          client.callTool({ arguments: { message: 'metadata-leak' }, name: 'echo' })
+        ).rejects.toMatchObject({ data: { code: 'mcp-server-unavailable' } });
+        delete upstreamOptions.credentialListEcho;
+        const rejectedSchemaDb = openWorkspaceDb(
+          dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        expect(
+          rejectedSchemaDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM mcp_tool_schema_snapshots')
+            .get()
+        ).toEqual(snapshotCount);
+        rejectedSchemaDb.sqlite.close();
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+        ).toEqual({ count: receiptsBeforeMetadataLeak.count + 1 });
 
-      const toolCallsBeforeReceiptFailure = upstream.observed.filter((request) =>
-        request.endsWith('|tools/call')
-      ).length;
-      coreDb.sqlite.exec(`
+        const toolCallsBeforeReceiptFailure = upstream.observed.filter((request) =>
+          request.endsWith('|tools/call')
+        ).length;
+        coreDb.sqlite.exec(`
         CREATE TRIGGER reject_mcp_receipt
         BEFORE INSERT ON vault_injection_receipts
         BEGIN
           SELECT RAISE(ABORT, 'injected MCP receipt failure');
         END
       `);
-      try {
-        await expect(
-          client.callTool({ arguments: { message: 'receipt-failure' }, name: 'echo' })
-        ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
-      } finally {
-        coreDb.sqlite.exec('DROP TRIGGER IF EXISTS reject_mcp_receipt');
-      }
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
-        toolCallsBeforeReceiptFailure
-      );
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
-      ).toEqual({ count: receiptsBeforeMetadataLeak.count + 1 });
-
-      await expect(
-        client.callTool({ arguments: { message: 'reestablish' }, name: 'echo' })
-      ).resolves.toMatchObject({ content: [{ text: 'reestablish' }] });
-      const oldResolved = resolveWorkspaceMcpServer({ catalog, serverId: 'http-echo' });
-      expect(
-        workerMcpGateway.getServerHealth({
-          server: oldResolved,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toBe('inactive');
-
-      const toolCallsBeforeMalformedExpiry = upstream.observed.filter((request) =>
-        request.endsWith('|tools/call')
-      ).length;
-      const receiptsBeforeMalformedExpiry = coreDb.sqlite
-        .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
-        .get();
-      const useDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const usesBeforeMalformedExpiry = useDb.sqlite
-        .prepare('SELECT COUNT(*) AS count FROM vault_use_records')
-        .get();
-      useDb.sqlite.close();
-      coreDb.sqlite
-        .prepare('UPDATE vault_grants SET expires_at = ? WHERE grant_id = ?')
-        .run('not-a-date', 'grant_00000000-0000-7018-b534-d496e34b4c6a');
-      const closeFailure = vi
-        .spyOn(workerMcpGateway, 'closeServer')
-        .mockRejectedValueOnce(new Error('injected credential cleanup failure'));
-      await expect(
-        client.callTool({ arguments: { message: 'malformed-expiry' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
-      closeFailure.mockRestore();
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
-        toolCallsBeforeMalformedExpiry
-      );
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
-      ).toEqual(receiptsBeforeMalformedExpiry);
-      const rejectedUseDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      expect(
-        rejectedUseDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_use_records').get()
-      ).toEqual(usesBeforeMalformedExpiry);
-      rejectedUseDb.sqlite.close();
-      coreDb.sqlite
-        .prepare('UPDATE vault_grants SET expires_at = NULL WHERE grant_id = ?')
-        .run('grant_00000000-0000-7018-b534-d496e34b4c6a');
-
-      const toolCallsBeforeRevoke = upstream.observed.filter((request) =>
-        request.endsWith('|tools/call')
-      ).length;
-      const replacement = await narrowVaultGrant(coreDb, {
-        grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
-        replacementGrantId: testEntityId('grant', 'grant_mcp_http_narrowed'),
-        constraints: {
-          targetAgentId: environmentPackage.agent.agentId,
-          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-        },
-      });
-      activeCatalog = {
-        ...catalog,
-        servers: [{ ...catalog.servers[0], timeoutMs: catalog.servers[0]!.timeoutMs + 1 }],
-      };
-      environmentPackage = await resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: testEntityId('as', 'as_mcp_vault'),
-        agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
-        backend: { kind: 'openshell' },
-        createdAt: '2026-09-03T00:01:00.000Z',
-        requestId: 'req_mcp_vault_reconfigured',
-        triggerActor: turn.triggerActor,
-        turn,
-        workspaceCwd: '/workspace',
-        workspaceMcpServerCatalog: activeCatalog,
-        workspaceRoots: [],
-      });
-      await expect(
-        client.callTool({ arguments: { message: 'blocked' }, name: 'echo' })
-      ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
-        toolCallsBeforeRevoke
-      );
-      expect(
-        workerMcpGateway.getServerHealth({
-          server: oldResolved,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toBe('inactive');
-      activeCatalog = {
-        ...catalog,
-        servers: [
-          {
-            ...catalog.servers[0]!,
-            credentialBindings: [
-              {
-                ...catalog.servers[0]!.credentialBindings[0]!,
-                vaultGrantId: replacement.grant.grantId,
-              },
-            ],
-          },
-        ],
-      };
-      await store.updateTurn(turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
-      const closing = markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: testEntityId('attempt', `lease_${turn.id}`),
-        cause: 'worker-final-status',
-        outcomeRef: `turn:${turn.id}:completed`,
-      });
-      // This fixture submits no Worker. All fake upstream exchanges completed and the old route is inactive.
-      const proof = {
-        terminalHandoff: true,
-        output: true,
-        evidence: true,
-        outsideWorkspaceCollection: true,
-        integrationDrain: true,
-        routesRevoked: true,
-      } as const;
-      const correlation = schedulerExecutionCorrelation(closing);
-      const release = await new SimulatedTurnExecutor({ coreDb }).release({
-        ...correlation,
-        proof,
-      });
-      closeSchedulerExecutionAttemptWithFence(coreDb, {
-        correlation,
-        proof,
-        fenceRef: release.fenceRef!,
-      });
-      const replacementTurn = await store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'Use the explicitly rebound grant',
-        turn.triggerActor
-      );
-      environmentPackage = await resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSessionId: testEntityId('as', 'as_mcp_rebound'),
-        agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
-        backend: { kind: 'openshell' },
-        createdAt: new Date().toISOString(),
-        requestId: randomUUID(),
-        triggerActor: turn.triggerActor,
-        turn: replacementTurn,
-        workspaceCwd: '/workspace',
-        workspaceMcpServerCatalog: activeCatalog,
-        workspaceRoots: [],
-      });
-      recordMcpWorkerLineage(coreDb, environmentPackage);
-      await expect(
-        client.callTool({ arguments: { message: 'explicit replacement' }, name: 'echo' })
-      ).resolves.toMatchObject({ content: [{ text: 'explicit replacement' }] });
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
-        toolCallsBeforeRevoke + 1
-      );
-      if (presentation === 'raw' && issuance === 'target') {
-        // Vault Secret Injection:147 and DX:103 require current authority after native plan ACK.
-        // Observe the real acknowledgement, then remove authority before its caller resumes.
-        const nativeWriter = getControlStoreWorkerClient();
-        const write = nativeWriter.vault.bind(nativeWriter);
-        let disabled: ReturnType<typeof disableCanonicalUser> | undefined;
-        const publication = vi.spyOn(nativeWriter, 'vault').mockImplementation((async (
-          db,
-          kind,
-          record,
-          beforeSubmit
-        ) => {
-          const result = await write(db, kind, record, beforeSubmit);
-          const plan = record as { grantId?: string; packageSnapshotId?: string };
-          if (
-            db === coreDb &&
-            kind === 'plan-create' &&
-            plan.grantId === replacement.grant.grantId &&
-            plan.packageSnapshotId === environmentPackage.snapshotId &&
-            disabled === undefined
-          ) {
-            disabled = coreDb.sqlite
-              .transaction(() =>
-                disableCanonicalUser(coreDb, environmentPackage.scope.triggerActor.id)
-              )
-              .immediate();
-          }
-          return result;
-        }) as typeof nativeWriter.vault);
-        const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-        const upstreamBeforeHold = [...upstream.observed];
         try {
           await expect(
-            client.callTool({ arguments: { message: 'authority lost at hold ACK' }, name: 'echo' })
-          ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
-          expect(disabled?.changed).toBe(true);
-          expect(resolve).not.toHaveBeenCalled();
-          expect(upstream.observed).toEqual(upstreamBeforeHold);
+            client.callTool({ arguments: { message: 'receipt-failure' }, name: 'echo' })
+          ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
         } finally {
-          resolve.mockRestore();
-          publication.mockRestore();
+          coreDb.sqlite.exec('DROP TRIGGER IF EXISTS reject_mcp_receipt');
         }
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+          toolCallsBeforeReceiptFailure
+        );
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+        ).toEqual({ count: receiptsBeforeMetadataLeak.count + 1 });
+
+        await expect(
+          client.callTool({ arguments: { message: 'reestablish' }, name: 'echo' })
+        ).resolves.toMatchObject({ content: [{ text: 'reestablish' }] });
+        const oldResolved = resolveWorkspaceMcpServer({ catalog, serverId: 'http-echo' });
+        expect(
+          workerMcpGateway.getServerHealth({
+            server: oldResolved,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toBe('inactive');
+
+        const toolCallsBeforeMalformedExpiry = upstream.observed.filter((request) =>
+          request.endsWith('|tools/call')
+        ).length;
+        const receiptsBeforeMalformedExpiry = coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts')
+          .get();
+        const useDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        const usesBeforeMalformedExpiry = useDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM vault_use_records')
+          .get();
+        useDb.sqlite.close();
+        coreDb.sqlite
+          .prepare('UPDATE vault_grants SET expires_at = ? WHERE grant_id = ?')
+          .run('not-a-date', 'grant_00000000-0000-7018-b534-d496e34b4c6a');
+        const closeFailure = vi
+          .spyOn(workerMcpGateway, 'closeServer')
+          .mockRejectedValueOnce(new Error('injected credential cleanup failure'));
+        await expect(
+          client.callTool({ arguments: { message: 'malformed-expiry' }, name: 'echo' })
+        ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
+        closeFailure.mockRestore();
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+          toolCallsBeforeMalformedExpiry
+        );
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
+        ).toEqual(receiptsBeforeMalformedExpiry);
+        const rejectedUseDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        expect(
+          rejectedUseDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_use_records').get()
+        ).toEqual(usesBeforeMalformedExpiry);
+        rejectedUseDb.sqlite.close();
+        coreDb.sqlite
+          .prepare('UPDATE vault_grants SET expires_at = NULL WHERE grant_id = ?')
+          .run('grant_00000000-0000-7018-b534-d496e34b4c6a');
+
+        const toolCallsBeforeRevoke = upstream.observed.filter((request) =>
+          request.endsWith('|tools/call')
+        ).length;
+        const replacement = await narrowVaultGrant(coreDb, {
+          grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
+          replacementGrantId: testEntityId('grant', 'grant_mcp_http_narrowed'),
+          constraints: {
+            targetAgentId: environmentPackage.agent.agentId,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+        });
+        activeCatalog = {
+          ...catalog,
+          servers: [{ ...catalog.servers[0], timeoutMs: catalog.servers[0]!.timeoutMs + 1 }],
+        };
+        environmentPackage = await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSessionId: testEntityId('as', 'as_mcp_vault'),
+          agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
+          backend: { kind: 'openshell' },
+          createdAt: '2026-09-03T00:01:00.000Z',
+          requestId: 'req_mcp_vault_reconfigured',
+          triggerActor: turn.triggerActor,
+          turn,
+          workspaceCwd: '/workspace',
+          workspaceMcpServerCatalog: activeCatalog,
+          workspaceRoots: [],
+        });
+        await expect(
+          client.callTool({ arguments: { message: 'blocked' }, name: 'echo' })
+        ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+          toolCallsBeforeRevoke
+        );
+        expect(
+          workerMcpGateway.getServerHealth({
+            server: oldResolved,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toBe('inactive');
+        activeCatalog = {
+          ...catalog,
+          servers: [
+            {
+              ...catalog.servers[0]!,
+              credentialBindings: [
+                {
+                  ...catalog.servers[0]!.credentialBindings[0]!,
+                  vaultGrantId: replacement.grant.grantId,
+                },
+              ],
+            },
+          ],
+        };
+        await store.updateTurn(turn.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
+        const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+          attemptId: testEntityId('attempt', `lease_${turn.id}`),
+          cause: 'worker-final-status',
+          outcomeRef: `turn:${turn.id}:completed`,
+        });
+        // This fixture submits no Worker. All fake upstream exchanges completed and the old route is inactive.
+        const proof = {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        } as const;
+        const correlation = schedulerExecutionCorrelation(closing);
+        const release = await new SimulatedTurnExecutor({ coreDb }).release({
+          ...correlation,
+          proof,
+        });
+        closeSchedulerExecutionAttemptWithFence(coreDb, {
+          correlation,
+          proof,
+          fenceRef: release.fenceRef!,
+        });
+        const replacementTurn = await store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'Use the explicitly rebound grant',
+          turn.triggerActor
+        );
+        environmentPackage = await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSessionId: testEntityId('as', 'as_mcp_rebound'),
+          agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
+          backend: { kind: 'openshell' },
+          createdAt: new Date().toISOString(),
+          requestId: randomUUID(),
+          triggerActor: turn.triggerActor,
+          turn: replacementTurn,
+          workspaceCwd: '/workspace',
+          workspaceMcpServerCatalog: activeCatalog,
+          workspaceRoots: [],
+        });
+        recordMcpWorkerLineage(coreDb, environmentPackage);
+        await expect(
+          client.callTool({ arguments: { message: 'explicit replacement' }, name: 'echo' })
+        ).resolves.toMatchObject({ content: [{ text: 'explicit replacement' }] });
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+          toolCallsBeforeRevoke + 1
+        );
+        if (presentation === 'raw' && issuance === 'target') {
+          // Vault Secret Injection:147 and DX:103 require current authority after native plan ACK.
+          // Observe the real acknowledgement, then remove authority before its caller resumes.
+          const nativeWriter = getControlStoreWorkerClient();
+          const write = nativeWriter.vault.bind(nativeWriter);
+          let disabled: ReturnType<typeof disableCanonicalUser> | undefined;
+          const publication = vi.spyOn(nativeWriter, 'vault').mockImplementation((async (
+            db,
+            kind,
+            record,
+            beforeSubmit
+          ) => {
+            const result = await write(db, kind, record, beforeSubmit);
+            const plan = record as { grantId?: string; packageSnapshotId?: string };
+            if (
+              db === coreDb &&
+              kind === 'plan-create' &&
+              plan.grantId === replacement.grant.grantId &&
+              plan.packageSnapshotId === environmentPackage.snapshotId &&
+              disabled === undefined
+            ) {
+              disabled = coreDb.sqlite
+                .transaction(() =>
+                  disableCanonicalUser(coreDb, environmentPackage.scope.triggerActor.id)
+                )
+                .immediate();
+            }
+            return result;
+          }) as typeof nativeWriter.vault);
+          const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+          const upstreamBeforeHold = [...upstream.observed];
+          try {
+            await expect(
+              client.callTool({
+                arguments: { message: 'authority lost at hold ACK' },
+                name: 'echo',
+              })
+            ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+            expect(disabled?.changed).toBe(true);
+            expect(resolve).not.toHaveBeenCalled();
+            expect(upstream.observed).toEqual(upstreamBeforeHold);
+          } finally {
+            resolve.mockRestore();
+            publication.mockRestore();
+          }
+        }
+      } finally {
+        await client.close();
+        await workerMcpGateway.close();
+        await upstream.close();
+        vaultUnlockState.lock();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-    } finally {
-      await client.close();
-      await workerMcpGateway.close();
-      await upstream.close();
-      vaultUnlockState.lock();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 });
 
 /** Reads every durable row in a test database for credential-canary assertions. */
@@ -6802,136 +6875,139 @@ describe('MCP physical commit contract', () => {
   it.each([
     { warm: false, count: 3 },
     { warm: true, count: 2 },
-  ])('uses exactly $count physical ledger commits for warm=$warm without hiding discovery', async ({
-    warm,
-    count,
-  }) => {
-    const f = await createMcpCommitFixture();
-    try {
-      if (warm) expect(await f.call()).toMatchObject({ result: { content: [{ text: 'called' }] } });
-      const snapshots = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId);
-      const contacts = f.gateway.callTool.mock.calls.length;
-      const discovery = f.gateway.listTools.mock.calls.length;
-      f.trace.reset();
-      f.observations.length = 0;
-      expect(await f.call()).toMatchObject({ result: { content: [{ text: 'called' }] } });
-      expect(f.gateway.callTool).toHaveBeenCalledTimes(contacts + 1);
-      expect(f.gateway.listTools).toHaveBeenCalledTimes(discovery + 1);
-      expectMcpCommittedTuples(f);
-      if (warm)
-        expect.soft(listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId)).toEqual(snapshots);
-      // Engineer COORD05:4x accepts r1825 W1/W2 and C1/C2/C3; count native COMMIT and autocommit, not JS calls.
-      // R1842:14/22: the switched ledger and its linked Audit have no Main DML.
-      expect(f.trace.mainLedgerWrites).toEqual([]);
-      expect.soft(f.trace.commits, JSON.stringify(f.trace.commits)).toHaveLength(count);
-      const groups = f.trace.commits;
-      expect
-        .soft(
-          groups.findIndex((writes) => writes.some((sql) => /INSERT.*capability_calls/i.test(sql)))
-        )
-        .toBe(
-          groups.findIndex((writes) =>
-            writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))
-          )
-        );
-      expect
-        .soft(
-          groups.findIndex((writes) => writes.some((sql) => /INSERT.*usage_records/i.test(sql)))
-        )
-        .toBe(
-          groups.findIndex((writes) =>
-            writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql))
-          )
-        );
-      if (!warm) {
+  ])(
+    'uses exactly $count physical ledger commits for warm=$warm without hiding discovery',
+    async ({ warm, count }) => {
+      const f = await createMcpCommitFixture();
+      try {
+        if (warm)
+          expect(await f.call()).toMatchObject({ result: { content: [{ text: 'called' }] } });
+        const snapshots = listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId);
+        const contacts = f.gateway.callTool.mock.calls.length;
+        const discovery = f.gateway.listTools.mock.calls.length;
+        f.trace.reset();
+        f.observations.length = 0;
+        expect(await f.call()).toMatchObject({ result: { content: [{ text: 'called' }] } });
+        expect(f.gateway.callTool).toHaveBeenCalledTimes(contacts + 1);
+        expect(f.gateway.listTools).toHaveBeenCalledTimes(discovery + 1);
+        expectMcpCommittedTuples(f);
+        if (warm)
+          expect.soft(listExportableMcpToolSchemaSnapshots(f.db, f.workspaceId)).toEqual(snapshots);
+        // Engineer COORD05:4x accepts r1825 W1/W2 and C1/C2/C3; count native COMMIT and autocommit, not JS calls.
+        // R1842:14/22: the switched ledger and its linked Audit have no Main DML.
+        expect(f.trace.mainLedgerWrites).toEqual([]);
+        expect.soft(f.trace.commits, JSON.stringify(f.trace.commits)).toHaveLength(count);
+        const groups = f.trace.commits;
         expect
           .soft(
             groups.findIndex((writes) =>
-              writes.some((sql) => /INSERT.*mcp_tool_schema_snapshots/i.test(sql))
+              writes.some((sql) => /INSERT.*capability_calls/i.test(sql))
             )
           )
           .toBe(
             groups.findIndex((writes) =>
-              writes.some((sql) => /UPDATE capability_calls SET schema_snapshot_id/i.test(sql))
+              writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))
             )
           );
+        expect
+          .soft(
+            groups.findIndex((writes) => writes.some((sql) => /INSERT.*usage_records/i.test(sql)))
+          )
+          .toBe(
+            groups.findIndex((writes) =>
+              writes.some((sql) => /UPDATE capability_calls SET status/i.test(sql))
+            )
+          );
+        if (!warm) {
+          expect
+            .soft(
+              groups.findIndex((writes) =>
+                writes.some((sql) => /INSERT.*mcp_tool_schema_snapshots/i.test(sql))
+              )
+            )
+            .toBe(
+              groups.findIndex((writes) =>
+                writes.some((sql) => /UPDATE capability_calls SET schema_snapshot_id/i.test(sql))
+              )
+            );
+        }
+        expect.soft(f.observations.map((row) => [row.stage, row.commits])).toEqual([
+          ['discovery', 1],
+          ['tool', warm ? 1 : 2],
+        ]);
+        expect(f.observations.map((row) => [row.stage, row.inTransaction])).toEqual([
+          ['discovery', false],
+          ['tool', false],
+        ]);
+      } finally {
+        await f.close();
       }
-      expect.soft(f.observations.map((row) => [row.stage, row.commits])).toEqual([
-        ['discovery', 1],
-        ['tool', warm ? 1 : 2],
-      ]);
-      expect(f.observations.map((row) => [row.stage, row.inTransaction])).toEqual([
-        ['discovery', false],
-        ['tool', false],
-      ]);
-    } finally {
-      await f.close();
     }
-  });
+  );
 });
 
 describe('MCP proved failure and admitted schema observation', () => {
-  it.each([
-    'sql-busy',
-    'native-busy',
-  ] as const)('discloses the committed pre-Tool %s failure without claiming admission rollback', async (fault) => {
-    const f = await createMcpCommitFixture();
-    const client = getControlStoreWorkerClient();
-    const workspaceCapability = client.workspaceCapability.bind(client);
-    let injected = false;
-    const schema = vi
-      .spyOn(client, 'workspaceCapability')
-      .mockImplementation((db, input, options) => {
-        if (fault === 'native-busy' && input.kind === 'mcp-schema') {
+  it.each(['sql-busy', 'native-busy'] as const)(
+    'discloses the committed pre-Tool %s failure without claiming admission rollback',
+    async (fault) => {
+      const f = await createMcpCommitFixture();
+      const client = getControlStoreWorkerClient();
+      const workspaceCapability = client.workspaceCapability.bind(client);
+      let injected = false;
+      const schema = vi
+        .spyOn(client, 'workspaceCapability')
+        .mockImplementation((db, input, options) => {
+          if (fault === 'native-busy' && input.kind === 'mcp-schema') {
+            injected = true;
+            return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+          }
+          return workspaceCapability(db, input, options);
+        });
+      if (fault === 'sql-busy')
+        f.discovery(() => {
           injected = true;
-          return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
-        }
-        return workspaceCapability(db, input, options);
-      });
-    if (fault === 'sql-busy')
-      f.discovery(() => {
-        injected = true;
-        throw new Database.SqliteError('private pre-Tool storage failure', 'SQLITE_BUSY');
-      });
-    try {
-      const response = await f.call();
-      expect(injected).toBe(true);
-      // COORD10:41/11:02: only an acknowledged failed terminal proves these two public facts.
-      expect.soft(response).toMatchObject({
-        error: {
-          data: {
-            details: {
-              outcome: 'failed',
-              upstreamEffect: 'not-contacted',
+          throw new Database.SqliteError('private pre-Tool storage failure', 'SQLITE_BUSY');
+        });
+      try {
+        const response = await f.call();
+        expect(injected).toBe(true);
+        // COORD10:41/11:02: only an acknowledged failed terminal proves these two public facts.
+        expect.soft(response).toMatchObject({
+          error: {
+            data: {
+              details: {
+                outcome: 'failed',
+                upstreamEffect: 'not-contacted',
+              },
             },
           },
-        },
-      });
-      expect(response.error?.data?.commit).not.toBe('not-committed');
-      expect(f.gateway.callTool).not.toHaveBeenCalled();
-      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
-      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([
-        expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
-      ]);
-      const retainedCall = listWorkspaceCapabilityCalls(f.db, f.workspaceId)[0]!;
-      // The public certainty response also requires its linked failed terminal Item.
-      expect(f.store.listAllItems().filter((item) => item.id === retainedCall.itemId)).toEqual([
-        expect.objectContaining({
-          type: 'tool-call',
-          status: 'failed',
-          causationId: retainedCall.id,
-        }),
-      ]);
-      expect(
-        listWorkspaceAuditEvents(f.db, f.workspaceId).filter(
-          (event) => event.action === 'capability.finish'
-        )
-      ).toHaveLength(1);
-    } finally {
-      schema.mockRestore();
-      await f.close();
+        });
+        expect(response.error?.data?.commit).not.toBe('not-committed');
+        expect(f.gateway.callTool).not.toHaveBeenCalled();
+        expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+        expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual([
+          expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
+        ]);
+        const retainedCall = listWorkspaceCapabilityCalls(f.db, f.workspaceId)[0]!;
+        // The public certainty response also requires its linked failed terminal Item.
+        expect(f.store.listAllItems().filter((item) => item.id === retainedCall.itemId)).toEqual([
+          expect.objectContaining({
+            type: 'tool-call',
+            status: 'failed',
+            causationId: retainedCall.id,
+          }),
+        ]);
+        expect(
+          listWorkspaceAuditEvents(f.db, f.workspaceId).filter(
+            (event) => event.action === 'capability.finish'
+          )
+        ).toHaveLength(1);
+      } finally {
+        schema.mockRestore();
+        await f.close();
+      }
     }
-  });
+  );
 
   it('keeps post-closeout read failure private without claiming unverified no-contact certainty', async () => {
     const f = await createMcpCommitFixture();
@@ -7066,45 +7142,44 @@ describe('MCP proved failure and admitted schema observation', () => {
     }
   });
 
-  it.each([
-    'warm',
-    'cold',
-    'changed',
-  ] as const)('keeps the admitted %s observation under fresh count pressure', async (observation) => {
-    const f = await createMcpCommitFixture();
-    const client = getControlStoreWorkerClient();
-    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
-    const hold = Promise.withResolvers<void>();
-    const pending: Promise<unknown>[] = [];
-    const schema = vi.spyOn(client, 'workspaceCapability');
-    try {
-      if (observation !== 'cold') expect(await f.call()).toHaveProperty('result');
-      if (observation === 'changed') f.version('2');
-      schema.mockClear();
-      f.discovery(() => {
-        // The original call is already admitted. Distinct selectors consume ordinary count slots.
-        for (let index = 0; index < 1024; index++)
-          pending.push(
-            client
-              .runTurnPublication(database, [`schema-pressure-${index}`], {}, () => hold.promise)
-              .catch((error: unknown) => error)
-          );
-      });
-      const response = await f.call();
-      expect.soft(response).toHaveProperty('result');
-      const requests = schema.mock.calls.filter(([, input]) => input.kind === 'mcp-schema');
-      // COORD10:41 a2: exact reuse sends no request; cold/changed retains one credited observation.
-      expect(requests).toHaveLength(observation === 'warm' ? 0 : 1);
-      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId).at(-1)).toMatchObject({
-        status: 'succeeded',
-      });
-    } finally {
-      hold.resolve();
-      await Promise.allSettled(pending);
-      schema.mockRestore();
-      await f.close();
+  it.each(['warm', 'cold', 'changed'] as const)(
+    'keeps the admitted %s observation under fresh count pressure',
+    async (observation) => {
+      const f = await createMcpCommitFixture();
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+      const hold = Promise.withResolvers<void>();
+      const pending: Promise<unknown>[] = [];
+      const schema = vi.spyOn(client, 'workspaceCapability');
+      try {
+        if (observation !== 'cold') expect(await f.call()).toHaveProperty('result');
+        if (observation === 'changed') f.version('2');
+        schema.mockClear();
+        f.discovery(() => {
+          // The original call is already admitted. Distinct selectors consume ordinary count slots.
+          for (let index = 0; index < 1024; index++)
+            pending.push(
+              client
+                .runTurnPublication(database, [`schema-pressure-${index}`], {}, () => hold.promise)
+                .catch((error: unknown) => error)
+            );
+        });
+        const response = await f.call();
+        expect.soft(response).toHaveProperty('result');
+        const requests = schema.mock.calls.filter(([, input]) => input.kind === 'mcp-schema');
+        // COORD10:41 a2: exact reuse sends no request; cold/changed retains one credited observation.
+        expect(requests).toHaveLength(observation === 'warm' ? 0 : 1);
+        expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId).at(-1)).toMatchObject({
+          status: 'succeeded',
+        });
+      } finally {
+        hold.resolve();
+        await Promise.allSettled(pending);
+        schema.mockRestore();
+        await f.close();
+      }
     }
-  });
+  );
 
   it('revalidates retained schema format after a warmed package reopens its reader', async () => {
     const f = await createMcpCommitFixture();
@@ -7246,200 +7321,204 @@ describe('MCP native admission and original closeout', () => {
     { kind: 'knowledge', pool: 'count' },
     { kind: 'echo', pool: 'bytes' },
     { kind: 'knowledge', pool: 'bytes' },
-  ] as const)('commits the original $kind closeout while new work fills $pool capacity', async ({
-    kind,
-    pool,
-  }) => {
-    const f = await createMcpCommitFixture();
-    const publicationErrors: unknown[] = [];
-    const createItem = f.store.createItem.bind(f.store);
-    const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (...args) => {
-      try {
-        return await createItem(...args);
-      } catch (error) {
-        // Observe the original exception without changing the publication or its failure.
-        publicationErrors.push(error);
-        throw error;
-      }
-    });
-    const client = getControlStoreWorkerClient();
-    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
-    const siblingId = testEntityId('ws', 'mcp-pressure');
-    const sibling = openWorkspaceDb(f.dataRoot, siblingId);
-    applyScopedMigrations(sibling, undefined, 'pre-knowledge');
-    await openTestNativeWorkspace(sibling);
-    const siblingDatabase = `workspace:${join(f.dataRoot, 'workspaces', siblingId, 'db', 'workspace.sqlite')}`;
-    const materialCall = await startCapabilityCall({
-      workspaceDb: sibling,
-      workspaceId: siblingId,
-      authorityActor: f.environmentPackage.scope.triggerActor,
-      family: 'knowledge',
-      operation: 'knowledge.ask',
-      capabilityId: 'knowledge.ask',
-      redactionClass: 'none',
-    });
-    const entered = Promise.withResolvers<void>();
-    const effect = Promise.withResolvers<void>();
-    const pressure = Promise.withResolvers<void>();
-    const pending: Promise<unknown>[] = [];
-    let resume: (() => void) | undefined;
-    let original: ReturnType<typeof f.call> | undefined;
-    let serial = 0;
-    const offer = (text: string) => {
-      const result = client.runTurnPublication(
-        database,
-        [`pressure-${serial++}`],
-        text,
-        () => pressure.promise
-      );
-      pending.push(result.catch((error: unknown) => error));
-      return result;
-    };
-    try {
-      if (kind === 'echo') expect(await f.call()).toHaveProperty('result');
-      const contact = async () => {
-        entered.resolve();
-        await effect.promise;
+  ] as const)(
+    'commits the original $kind closeout while new work fills $pool capacity',
+    async ({ kind, pool }) => {
+      const f = await createMcpCommitFixture();
+      const publicationErrors: unknown[] = [];
+      const createItem = f.store.createItem.bind(f.store);
+      const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (...args) => {
+        try {
+          return await createItem(...args);
+        } catch (error) {
+          // Observe the original exception without changing the publication or its failure.
+          publicationErrors.push(error);
+          throw error;
+        }
+      });
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+      const siblingId = testEntityId('ws', 'mcp-pressure');
+      const sibling = openWorkspaceDb(f.dataRoot, siblingId);
+      applyScopedMigrations(sibling, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(sibling);
+      const siblingDatabase = `workspace:${join(f.dataRoot, 'workspaces', siblingId, 'db', 'workspace.sqlite')}`;
+      const materialCall = await startCapabilityCall({
+        workspaceDb: sibling,
+        workspaceId: siblingId,
+        authorityActor: f.environmentPackage.scope.triggerActor,
+        family: 'knowledge',
+        operation: 'knowledge.ask',
+        capabilityId: 'knowledge.ask',
+        redactionClass: 'none',
+      });
+      const entered = Promise.withResolvers<void>();
+      const effect = Promise.withResolvers<void>();
+      const pressure = Promise.withResolvers<void>();
+      const pending: Promise<unknown>[] = [];
+      let resume: (() => void) | undefined;
+      let original: ReturnType<typeof f.call> | undefined;
+      let serial = 0;
+      const offer = (text: string) => {
+        const result = client.runTurnPublication(
+          database,
+          [`pressure-${serial++}`],
+          text,
+          () => pressure.promise
+        );
+        pending.push(result.catch((error: unknown) => error));
+        return result;
       };
-      if (kind === 'echo') f.tool(contact);
-      else f.knowledge(contact);
-      original = f.call(9200, kind);
-      await entered.promise;
-      const originalId = deriveEntityId('cap', [
-        'mcp',
-        f.environmentPackage.snapshotId,
-        kind === 'echo' ? 'echo' : 'openkit-work',
-        'mcp.call-tool',
-        9200,
-      ]);
-      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
-        expect.objectContaining({ id: originalId, status: 'running' })
-      );
-      // Pressure is admitted after real contact. A sibling posting hold cannot block the original finish.
-      if (pool === 'bytes') {
-        resume = await client.pauseForDataRootBackup(siblingDatabase);
-        const materialFinish = finishCapabilityCall({
-          workspaceDb: sibling,
-          callId: materialCall.id,
-          status: 'succeeded',
-          deliveredKnowledgeAnswer: 'x'.repeat(CONTROL_WORKER_LIMITS.materialPendingBytes),
-        });
-        pending.push(materialFinish.catch((error: unknown) => error));
-        expect(
-          await Promise.race([
-            materialFinish.then(
-              () => 'settled',
-              () => 'refused'
-            ),
-            new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
-          ])
-        ).toBe('held');
-        // Prove material pressure before envelope pressure can mask this refusal.
-        await expect(
-          finishCapabilityCall({
+      try {
+        if (kind === 'echo') expect(await f.call()).toHaveProperty('result');
+        const contact = async () => {
+          entered.resolve();
+          await effect.promise;
+        };
+        if (kind === 'echo') f.tool(contact);
+        else f.knowledge(contact);
+        original = f.call(9200, kind);
+        await entered.promise;
+        const originalId = deriveEntityId('cap', [
+          'mcp',
+          f.environmentPackage.snapshotId,
+          kind === 'echo' ? 'echo' : 'openkit-work',
+          'mcp.call-tool',
+          9200,
+        ]);
+        expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+          expect.objectContaining({ id: originalId, status: 'running' })
+        );
+        // Pressure is admitted after real contact. A sibling posting hold cannot block the original finish.
+        if (pool === 'bytes') {
+          resume = await client.pauseForDataRootBackup(siblingDatabase);
+          const materialFinish = finishCapabilityCall({
             workspaceDb: sibling,
             callId: materialCall.id,
             status: 'succeeded',
-            deliveredKnowledgeAnswer: 'ordinary material',
-          })
-        ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
-        // Reach envelope pressure through its public producer admission, without changing private counters.
-        offer('x'.repeat(CONTROL_WORKER_LIMITS.pendingBytes - 8192));
-        await Promise.resolve();
-        for (const size of [4096, 256, 1]) {
-          for (let index = 0; index < 128; index += 1) {
-            const result = offer('x'.repeat(size));
-            const outcome = await Promise.race([
-              result.then(
+            deliveredKnowledgeAnswer: 'x'.repeat(CONTROL_WORKER_LIMITS.materialPendingBytes),
+          });
+          pending.push(materialFinish.catch((error: unknown) => error));
+          expect(
+            await Promise.race([
+              materialFinish.then(
                 () => 'settled',
                 () => 'refused'
               ),
               new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
-            ]);
-            if (outcome === 'refused') break;
-            expect(outcome).toBe('held');
+            ])
+          ).toBe('held');
+          // Prove material pressure before envelope pressure can mask this refusal.
+          await expect(
+            finishCapabilityCall({
+              workspaceDb: sibling,
+              callId: materialCall.id,
+              status: 'succeeded',
+              deliveredKnowledgeAnswer: 'ordinary material',
+            })
+          ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+          // Reach envelope pressure through its public producer admission, without changing private counters.
+          offer('x'.repeat(CONTROL_WORKER_LIMITS.pendingBytes - 8192));
+          await Promise.resolve();
+          for (const size of [4096, 256, 1]) {
+            for (let index = 0; index < 128; index += 1) {
+              const result = offer('x'.repeat(size));
+              const outcome = await Promise.race([
+                result.then(
+                  () => 'settled',
+                  () => 'refused'
+                ),
+                new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
+              ]);
+              if (outcome === 'refused') break;
+              expect(outcome).toBe('held');
+            }
           }
+        } else {
+          for (let index = 0; index < 1024; index += 1) offer('');
         }
-      } else {
-        for (let index = 0; index < 1024; index += 1) offer('');
-      }
-      // COORD21:55: ordinary work must refuse before it can consume protected closeout capacity.
-      await expect(offer('ordinary new work')).rejects.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
-      });
-      effect.resolve();
-      const response = await original;
-      expect(response).toHaveProperty('result');
-      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
-        expect.objectContaining({ id: originalId, status: 'succeeded' })
-      );
-      if (kind === 'echo') {
-        // DX:113 protects this existing MCP Item publication through original settlement.
-        // Worker Capability MCP Item Identifier Name fixes its identity; Core Protocol owns completion.
-        // Builtin Knowledge instead retains exact delivered answer bytes in its CapabilityCall below.
-        const itemId = deriveEntityId('it', [
-          'mcp',
-          f.environmentPackage.snapshotId,
-          'echo',
-          'echo',
-          9200,
-        ]);
-        expect
-          .soft(
-            f.store
-              .listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
-              .filter((item) => item.id === itemId),
-            format('Original terminal Item publication exceptions: %o', publicationErrors)
-          )
-          .toEqual([
-            expect.objectContaining({
-              id: itemId,
-              owner: { kind: 'workspace', workspaceId: f.workspaceId },
-              threadId: f.environmentPackage.scope.threadId,
-              turnId: f.environmentPackage.scope.turnId,
-              type: 'tool-call',
-              status: 'completed',
-            }),
+        // COORD21:55: ordinary work must refuse before it can consume protected closeout capacity.
+        await expect(offer('ordinary new work')).rejects.toMatchObject({
+          code: 'busy',
+          commit: 'not-committed',
+        });
+        effect.resolve();
+        const response = await original;
+        expect(response).toHaveProperty('result');
+        expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+          expect.objectContaining({ id: originalId, status: 'succeeded' })
+        );
+        if (kind === 'echo') {
+          // DX:113 protects this existing MCP Item publication through original settlement.
+          // Worker Capability MCP Item Identifier Name fixes its identity; Core Protocol owns completion.
+          // Builtin Knowledge instead retains exact delivered answer bytes in its CapabilityCall below.
+          const itemId = deriveEntityId('it', [
+            'mcp',
+            f.environmentPackage.snapshotId,
+            'echo',
+            'echo',
+            9200,
           ]);
+          expect
+            .soft(
+              f.store
+                .listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
+                .filter((item) => item.id === itemId),
+              format('Original terminal Item publication exceptions: %o', publicationErrors)
+            )
+            .toEqual([
+              expect.objectContaining({
+                id: itemId,
+                owner: { kind: 'workspace', workspaceId: f.workspaceId },
+                threadId: f.environmentPackage.scope.threadId,
+                turnId: f.environmentPackage.scope.turnId,
+                type: 'tool-call',
+                status: 'completed',
+              }),
+            ]);
+        }
+        if (pool === 'count') {
+          // The invocation has settled: its one credit must be available to ordinary work again.
+          const replacement = offer('');
+          expect(
+            await Promise.race([
+              replacement.then(
+                () => 'settled',
+                () => 'refused'
+              ),
+              new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
+            ])
+          ).toBe('held');
+          await expect(offer('')).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+        }
+        if (kind === 'knowledge') {
+          const retained = listWorkspaceCapabilityCalls(f.db, f.workspaceId).find(
+            (call) => call.id === originalId
+          )!;
+          expect(JSON.parse(retained.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
+            response.result
+          );
+        } else {
+          expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toContainEqual(
+            expect.objectContaining({
+              capabilityCallId: originalId,
+              unit: 'tool_calls',
+              quantity: 1,
+            })
+          );
+        }
+      } finally {
+        effect.resolve();
+        pressure.resolve();
+        resume?.();
+        await original;
+        await Promise.allSettled(pending);
+        publication.mockRestore();
+        sibling.sqlite.close();
+        await f.close();
       }
-      if (pool === 'count') {
-        // The invocation has settled: its one credit must be available to ordinary work again.
-        const replacement = offer('');
-        expect(
-          await Promise.race([
-            replacement.then(
-              () => 'settled',
-              () => 'refused'
-            ),
-            new Promise<'held'>((resolve) => setImmediate(() => resolve('held'))),
-          ])
-        ).toBe('held');
-        await expect(offer('')).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
-      }
-      if (kind === 'knowledge') {
-        const retained = listWorkspaceCapabilityCalls(f.db, f.workspaceId).find(
-          (call) => call.id === originalId
-        )!;
-        expect(JSON.parse(retained.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
-          response.result
-        );
-      } else {
-        expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toContainEqual(
-          expect.objectContaining({ capabilityCallId: originalId, unit: 'tool_calls', quantity: 1 })
-        );
-      }
-    } finally {
-      effect.resolve();
-      pressure.resolve();
-      resume?.();
-      await original;
-      await Promise.allSettled(pending);
-      publication.mockRestore();
-      sibling.sqlite.close();
-      await f.close();
     }
-  });
+  );
 
   it('commits the admitted terminal Item behind eight same-Turn pending publications', async () => {
     const f = await createMcpCommitFixture();
@@ -7739,39 +7818,38 @@ describe('MCP commit crash boundaries', () => {
     }
   });
 
-  it.each([
-    'capability.admit',
-    'permission',
-    'mcp.schema.capture',
-  ] as const)('refuses contact beyond unavailable required %s Audit', async (action) => {
-    const f = await createMcpCommitFixture();
-    try {
-      // Fault injection follows valid owner-created state; this trigger never manufactures an accepted record.
-      f.db.sqlite.exec(`CREATE TRIGGER reject_required_mcp_audit BEFORE INSERT ON audit_events
+  it.each(['capability.admit', 'permission', 'mcp.schema.capture'] as const)(
+    'refuses contact beyond unavailable required %s Audit',
+    async (action) => {
+      const f = await createMcpCommitFixture();
+      try {
+        // Fault injection follows valid owner-created state; this trigger never manufactures an accepted record.
+        f.db.sqlite.exec(`CREATE TRIGGER reject_required_mcp_audit BEFORE INSERT ON audit_events
           WHEN ${action === 'permission' ? 'NEW.permission_decision_id IS NOT NULL' : `NEW.action = '${action}'`}
           BEGIN SELECT RAISE(ABORT, 'injected required MCP Audit failure'); END;`);
-      expect(await f.call()).toHaveProperty('error');
-      expect(f.gateway.callTool).not.toHaveBeenCalled();
-      expect(f.gateway.listTools).toHaveBeenCalledTimes(action === 'mcp.schema.capture' ? 1 : 0);
-      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
-      const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
-      if (action === 'capability.admit') expect(calls).toEqual([]);
-      else {
-        // L: failed Policy/schema evidence must retain the original diagnostic call when its own writes remain available.
-        expect(calls).toEqual([expect.objectContaining({ status: 'failed' })]);
-        const audit = listWorkspaceAuditEvents(f.db, f.workspaceId);
-        for (const required of ['capability.admit', 'capability.finish']) {
-          expect(
-            audit.filter(
-              (event) => event.action === required && event.capabilityCallId === calls[0]!.id
-            )
-          ).toHaveLength(1);
+        expect(await f.call()).toHaveProperty('error');
+        expect(f.gateway.callTool).not.toHaveBeenCalled();
+        expect(f.gateway.listTools).toHaveBeenCalledTimes(action === 'mcp.schema.capture' ? 1 : 0);
+        expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([]);
+        const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+        if (action === 'capability.admit') expect(calls).toEqual([]);
+        else {
+          // L: failed Policy/schema evidence must retain the original diagnostic call when its own writes remain available.
+          expect(calls).toEqual([expect.objectContaining({ status: 'failed' })]);
+          const audit = listWorkspaceAuditEvents(f.db, f.workspaceId);
+          for (const required of ['capability.admit', 'capability.finish']) {
+            expect(
+              audit.filter(
+                (event) => event.action === required && event.capabilityCallId === calls[0]!.id
+              )
+            ).toHaveLength(1);
+          }
         }
+      } finally {
+        await f.close();
       }
-    } finally {
-      await f.close();
     }
-  });
+  );
 
   it('selects one durable Turn schema when different first discoveries overlap', async () => {
     const f = await createMcpCommitFixture();

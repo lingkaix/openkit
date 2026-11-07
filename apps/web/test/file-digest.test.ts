@@ -15,18 +15,19 @@ const corpus = JSON.parse(
 };
 
 describe('Artifact file integrity before upload', () => {
-  it.each(
-    corpus.originals
-  )('hashes the exact $id bytes without using whole-file reads', async (original) => {
-    const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
-    const file = new Blob([bytes]);
-    const whole = vi.spyOn(file, 'arrayBuffer');
-    const text = vi.spyOn(file, 'text');
-    const slice = vi.spyOn(file, 'slice');
-    expect(await sha256ArtifactFile(file as unknown as globalThis.Blob)).toBe(original.sha256);
-    expect(whole).not.toHaveBeenCalled();
-    expect(text).not.toHaveBeenCalled();
-    for (const [start, end] of slice.mock.calls)
-      expect(Number(end) - Number(start)).toBeLessThanOrEqual(65_536);
-  });
+  it.each(corpus.originals)(
+    'hashes the exact $id bytes without using whole-file reads',
+    async (original) => {
+      const bytes = Buffer.from(original.patternHex.repeat(original.repeats), 'hex');
+      const file = new Blob([bytes]);
+      const whole = vi.spyOn(file, 'arrayBuffer');
+      const text = vi.spyOn(file, 'text');
+      const slice = vi.spyOn(file, 'slice');
+      expect(await sha256ArtifactFile(file as unknown as globalThis.Blob)).toBe(original.sha256);
+      expect(whole).not.toHaveBeenCalled();
+      expect(text).not.toHaveBeenCalled();
+      for (const [start, end] of slice.mock.calls)
+        expect(Number(end) - Number(start)).toBeLessThanOrEqual(65_536);
+    }
+  );
 });

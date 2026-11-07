@@ -181,19 +181,22 @@ describe('Pending Request operations', () => {
     new KernelCommandError('unavailable', 'Kernel receipt owner unavailable.'),
     new TurnStartValidationError('recovery_required', 'Turn receipt owner needs recovery.', 409),
     new KnowledgePageValidationError(),
-  ])('preserves the command error $code and status $status from a receipt dependency', async (error) => {
-    const f = await createApprovalFixture();
-    try {
-      vi.spyOn(f.store, 'getCommandRequest').mockImplementation(() => {
-        throw error;
-      });
-      const response = await respondToApproval(f, '00000000-0000-4000-8000-000000000201');
-      expect(response.status).toBe(error.status);
-      expect(await response.json()).toMatchObject({ code: error.code, message: error.message });
-    } finally {
-      f.coreDb.sqlite.close();
+  ])(
+    'preserves the command error $code and status $status from a receipt dependency',
+    async (error) => {
+      const f = await createApprovalFixture();
+      try {
+        vi.spyOn(f.store, 'getCommandRequest').mockImplementation(() => {
+          throw error;
+        });
+        const response = await respondToApproval(f, '00000000-0000-4000-8000-000000000201');
+        expect(response.status).toBe(error.status);
+        expect(await response.json()).toMatchObject({ code: error.code, message: error.message });
+      } finally {
+        f.coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('rejects tool.use without the exact worker owner tuple', async () => {
     const fixture = await createApprovalFixture('tool.use');
@@ -372,42 +375,45 @@ describe('Pending Request operations', () => {
   it.each([
     ['granted', '00000000-0000-4000-8000-000000000104'],
     ['denied', '00000000-0000-4000-8000-000000000107'],
-  ] as const)('replays one receipt-backed %s approval without closing the raising Turn', async (decision, requestId) => {
-    const fixture = await createApprovalFixture();
+  ] as const)(
+    'replays one receipt-backed %s approval without closing the raising Turn',
+    async (decision, requestId) => {
+      const fixture = await createApprovalFixture();
 
-    try {
-      const resolved = await respondToApproval(fixture, requestId, decision);
-      expect(resolved.status).toBe(200);
-
-      const replayed = await respondToApproval(fixture, requestId, decision);
-      expect(replayed.status).toBe(200);
-      await expect(replayed.json()).resolves.toMatchObject({ status: decision });
-      expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
-      expect(
-        fixture.store
-          .getTurnEvents(fixture.turn.id)
-          .filter((event) => event.event === 'turn.completed')
-      ).toEqual([]);
-      const workspaceDb = openWorkspaceDb(
-        fixture.coreDb.dataRoot,
-        workspaceIdForOwner(fixture.turn.owner)
-      );
       try {
+        const resolved = await respondToApproval(fixture, requestId, decision);
+        expect(resolved.status).toBe(200);
+
+        const replayed = await respondToApproval(fixture, requestId, decision);
+        expect(replayed.status).toBe(200);
+        await expect(replayed.json()).resolves.toMatchObject({ status: decision });
+        expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
         expect(
-          workspaceDb.sqlite
-            .prepare(
-              `SELECT result FROM permission_decisions
-               WHERE approval_id = ? AND result IN ('allow', 'deny')`
-            )
-            .all(fixture.gate.approvalId)
+          fixture.store
+            .getTurnEvents(fixture.turn.id)
+            .filter((event) => event.event === 'turn.completed')
         ).toEqual([]);
+        const workspaceDb = openWorkspaceDb(
+          fixture.coreDb.dataRoot,
+          workspaceIdForOwner(fixture.turn.owner)
+        );
+        try {
+          expect(
+            workspaceDb.sqlite
+              .prepare(
+                `SELECT result FROM permission_decisions
+               WHERE approval_id = ? AND result IN ('allow', 'deny')`
+              )
+              .all(fixture.gate.approvalId)
+          ).toEqual([]);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
       } finally {
-        workspaceDb.sqlite.close();
+        fixture.coreDb.sqlite.close();
       }
-    } finally {
-      fixture.coreDb.sqlite.close();
     }
-  });
+  );
 
   it('joins concurrent duplicate person approval responses before receipt publication', async () => {
     const fixture = await createApprovalFixture();

@@ -193,25 +193,25 @@ describe('synchronous canonical directory primitives', () => {
     expect(readFileSync(directFile, 'utf8')).toBe('direct bytes');
   });
 
-  it.each([
-    'directory',
-    'file',
-  ] as const)('preserves a %s sync failure and closes its descriptor', (kind) => {
-    const root = fixture();
-    const target = kind === 'directory' ? root : join(root, 'file');
-    if (kind === 'file') writeFileSync(target, 'retained bytes');
-    io.failSync = target;
-    io.events.length = 0;
-    io.closed.length = 0;
+  it.each(['directory', 'file'] as const)(
+    'preserves a %s sync failure and closes its descriptor',
+    (kind) => {
+      const root = fixture();
+      const target = kind === 'directory' ? root : join(root, 'file');
+      if (kind === 'file') writeFileSync(target, 'retained bytes');
+      io.failSync = target;
+      io.events.length = 0;
+      io.closed.length = 0;
 
-    const operation =
-      kind === 'directory' ? () => syncCanonicalDirectory(target) : () => syncCanonicalTree(root);
-    expect(refusal(operation)).toBe(io.failure);
-    expect(io.events).toEqual([{ operation: 'sync', path: target }]);
-    expect(io.closed).toEqual([target]);
-    expect(io.paths.size).toBe(0);
-    if (kind === 'file') expect(readFileSync(target, 'utf8')).toBe('retained bytes');
-  });
+      const operation =
+        kind === 'directory' ? () => syncCanonicalDirectory(target) : () => syncCanonicalTree(root);
+      expect(refusal(operation)).toBe(io.failure);
+      expect(io.events).toEqual([{ operation: 'sync', path: target }]);
+      expect(io.closed).toEqual([target]);
+      expect(io.paths.size).toBe(0);
+      if (kind === 'file') expect(readFileSync(target, 'utf8')).toBe('retained bytes');
+    }
+  );
 
   it('closes a file descriptor when post-open type verification refuses it', () => {
     const root = fixture();

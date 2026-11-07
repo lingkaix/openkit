@@ -270,22 +270,22 @@ describe('isolated PDF text-layer representation', () => {
     await expectClean(other);
   });
 
-  it.each([
-    ['@scanned'],
-    ['@scanned', 'Text layer'],
-  ])('reports scanned or mixed pages as incomplete without complete body absence: %j', async (...pages) => {
-    const f = await fixture(pdf(pages));
-    const result = await processPdfTextLayer(f.input);
-    expect(result.status).toBe('incomplete');
-    if (result.status === 'unavailable') throw new Error(result.reason);
-    expect(result.derivative.coverage).toMatchObject({
-      complete: false,
-      pagesWithoutText: [1],
-      reason: 'pages-without-text',
-      provesCompleteBodyAbsence: false,
-    });
-    await expectClean(f);
-  });
+  it.each([['@scanned'], ['@scanned', 'Text layer']])(
+    'reports scanned or mixed pages as incomplete without complete body absence: %j',
+    async (...pages) => {
+      const f = await fixture(pdf(pages));
+      const result = await processPdfTextLayer(f.input);
+      expect(result.status).toBe('incomplete');
+      if (result.status === 'unavailable') throw new Error(result.reason);
+      expect(result.derivative.coverage).toMatchObject({
+        complete: false,
+        pagesWithoutText: [1],
+        reason: 'pages-without-text',
+        provesCompleteBodyAbsence: false,
+      });
+      await expectClean(f);
+    }
+  );
 
   it('does not accept page-count or encryption fields forged inside private metadata', async () => {
     const f = await fixture(pdf(['One', 'Two'], 'PRIVATE_TITLE\nPages: 1\nEncrypted: yes\n'));
@@ -326,22 +326,22 @@ describe('isolated PDF text-layer representation', () => {
     await expectClean(f);
   });
 
-  it.each([
-    Buffer.from('malformed PRIVATE_CANARY'),
-    pdf(['Text']).subarray(0, 200),
-  ])('refuses malformed or truncated originals without body/error/path fallback', async (bytes) => {
-    const f = await fixture(bytes);
-    const result = await processPdfTextLayer(f.input);
-    expect(result).toEqual({
-      status: 'unavailable',
-      reason: 'invalid-pdf',
-      complete: false,
-      provesCompleteBodyAbsence: false,
-    });
-    expect(JSON.stringify(result)).not.toContain(f.root);
-    expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
-    await expectClean(f);
-  });
+  it.each([Buffer.from('malformed PRIVATE_CANARY'), pdf(['Text']).subarray(0, 200)])(
+    'refuses malformed or truncated originals without body/error/path fallback',
+    async (bytes) => {
+      const f = await fixture(bytes);
+      const result = await processPdfTextLayer(f.input);
+      expect(result).toEqual({
+        status: 'unavailable',
+        reason: 'invalid-pdf',
+        complete: false,
+        provesCompleteBodyAbsence: false,
+      });
+      expect(JSON.stringify(result)).not.toContain(f.root);
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
+      await expectClean(f);
+    }
+  );
 
   it('refuses text overflow in the real child and cleans staging', async () => {
     const f = await fixture(pdf(['x'.repeat(1000)]));

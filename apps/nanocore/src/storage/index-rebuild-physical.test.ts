@@ -154,82 +154,78 @@ describe('Workspace derived-index physical crossing', () => {
       expect(readFileSync(join(root, name))).toEqual(expectedBytes(revision, collection));
   });
 
-  it.each(
-    outputs.map((output, index) => ({ ...output, index }))
-  )('retains the original write prefix when $name fails after a native partial write', async ({
-    name,
-    index,
-  }) => {
-    const { dataRoot, root, revision } = await fixture();
-    effect.writePath = join(root, name);
-    effect.failure = new Error(`injected partial write of ${name}`);
+  it.each(outputs.map((output, index) => ({ ...output, index })))(
+    'retains the original write prefix when $name fails after a native partial write',
+    async ({ name, index }) => {
+      const { dataRoot, root, revision } = await fixture();
+      effect.writePath = join(root, name);
+      effect.failure = new Error(`injected partial write of ${name}`);
 
-    expect(
-      caught(() =>
-        rebuildWorkspaceDerivedIndexes({
-          dataRoot,
-          workspaceId: DEMO_WORKSPACE_ID,
-          now: () => rebuiltAt,
-        })
-      )
-    ).toBe(effect.failure);
+      expect(
+        caught(() =>
+          rebuildWorkspaceDerivedIndexes({
+            dataRoot,
+            workspaceId: DEMO_WORKSPACE_ID,
+            now: () => rebuiltAt,
+          })
+        )
+      ).toBe(effect.failure);
 
-    expectResidue(
-      root,
-      outputs.slice(0, index + 1).map((output) => output.name)
-    );
-    for (const output of outputs.slice(0, index))
-      expect(readFileSync(join(root, output.name))).toEqual(
-        expectedBytes(revision, output.collection)
+      expectResidue(
+        root,
+        outputs.slice(0, index + 1).map((output) => output.name)
       );
-    expect(readFileSync(join(root, name))).toEqual(Buffer.from('partial native output\0\r\n'));
-  });
+      for (const output of outputs.slice(0, index))
+        expect(readFileSync(join(root, output.name))).toEqual(
+          expectedBytes(revision, output.collection)
+        );
+      expect(readFileSync(join(root, name))).toEqual(Buffer.from('partial native output\0\r\n'));
+    }
+  );
 
-  it.each(
-    outputs.map((output, index) => ({ ...output, index }))
-  )('clears first and retains earlier writes when serializing $name fails', async ({
-    collection,
-    index,
-  }) => {
-    const { dataRoot, root, revision } = await fixture();
-    const failure = new Error(`injected ${collection} serialization refusal`);
-    const stringify = JSON.stringify;
-    let intercepted = 0;
-    // Install after real publication and recognize only this rebuild's unique domain envelope.
-    vi.spyOn(JSON, 'stringify').mockImplementation((value, replacer, space) => {
-      if (
-        value !== null &&
-        typeof value === 'object' &&
-        value.workspaceId === DEMO_WORKSPACE_ID &&
-        value.rebuiltAt === rebuiltAt &&
-        Object.hasOwn(value, collection)
-      ) {
-        intercepted++;
-        throw failure;
-      }
-      return stringify(value, replacer, space);
-    });
+  it.each(outputs.map((output, index) => ({ ...output, index })))(
+    'clears first and retains earlier writes when serializing $name fails',
+    async ({ collection, index }) => {
+      const { dataRoot, root, revision } = await fixture();
+      const failure = new Error(`injected ${collection} serialization refusal`);
+      const stringify = JSON.stringify;
+      let intercepted = 0;
+      // Install after real publication and recognize only this rebuild's unique domain envelope.
+      vi.spyOn(JSON, 'stringify').mockImplementation((value, replacer, space) => {
+        if (
+          value !== null &&
+          typeof value === 'object' &&
+          value.workspaceId === DEMO_WORKSPACE_ID &&
+          value.rebuiltAt === rebuiltAt &&
+          Object.hasOwn(value, collection)
+        ) {
+          intercepted++;
+          throw failure;
+        }
+        return stringify(value, replacer, space);
+      });
 
-    expect(
-      caught(() =>
-        rebuildWorkspaceDerivedIndexes({
-          dataRoot,
-          workspaceId: DEMO_WORKSPACE_ID,
-          now: () => rebuiltAt,
-        })
-      )
-    ).toBe(failure);
+      expect(
+        caught(() =>
+          rebuildWorkspaceDerivedIndexes({
+            dataRoot,
+            workspaceId: DEMO_WORKSPACE_ID,
+            now: () => rebuiltAt,
+          })
+        )
+      ).toBe(failure);
 
-    expect(intercepted).toBe(1);
-    expectResidue(
-      root,
-      outputs.slice(0, index).map((output) => output.name)
-    );
-    for (const output of outputs.slice(0, index))
-      expect(readFileSync(join(root, output.name))).toEqual(
-        expectedBytes(revision, output.collection)
+      expect(intercepted).toBe(1);
+      expectResidue(
+        root,
+        outputs.slice(0, index).map((output) => output.name)
       );
-  });
+      for (const output of outputs.slice(0, index))
+        expect(readFileSync(join(root, output.name))).toEqual(
+          expectedBytes(revision, output.collection)
+        );
+    }
+  );
 
   it('does not write any output after a middle sorted deletion fails', async () => {
     const { dataRoot, root } = await fixture();

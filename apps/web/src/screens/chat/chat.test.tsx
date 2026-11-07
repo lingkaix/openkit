@@ -917,51 +917,51 @@ describe('chat starter (board 01)', () => {
     expect(recent.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument();
   });
 
-  it.each([
-    'discovery',
-    'navigation',
-  ] as const)('keeps failed %s out of Recent empty and retries its own read', async (failure) => {
-    const user = userEvent.setup();
-    const workspaceResult = {
-      items: [
-        {
-          workspace: QUICK_CHAT_WORKSPACE,
-          isOwner: true,
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        },
-      ],
-    };
-    const listWorkspaces = vi.fn().mockResolvedValue(workspaceResult);
-    const listNavigation = vi.fn().mockResolvedValue({ items: [] });
-    const failedRead = failure === 'discovery' ? listWorkspaces : listNavigation;
-    failedRead.mockRejectedValue(new Error('Read unavailable'));
-    renderApp(
-      '/chat',
-      makeClient(
-        { 'workspace.list': listWorkspaces },
-        { 'conversation.navigation': listNavigation }
-      )
-    );
+  it.each(['discovery', 'navigation'] as const)(
+    'keeps failed %s out of Recent empty and retries its own read',
+    async (failure) => {
+      const user = userEvent.setup();
+      const workspaceResult = {
+        items: [
+          {
+            workspace: QUICK_CHAT_WORKSPACE,
+            isOwner: true,
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
+            membershipRevision: 1,
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            registryRevision: 1,
+          },
+        ],
+      };
+      const listWorkspaces = vi.fn().mockResolvedValue(workspaceResult);
+      const listNavigation = vi.fn().mockResolvedValue({ items: [] });
+      const failedRead = failure === 'discovery' ? listWorkspaces : listNavigation;
+      failedRead.mockRejectedValue(new Error('Read unavailable'));
+      renderApp(
+        '/chat',
+        makeClient(
+          { 'workspace.list': listWorkspaces },
+          { 'conversation.navigation': listNavigation }
+        )
+      );
 
-    await screen.findByRole('heading', { name: 'What can we get done?' });
-    const recent = within(screen.getByText('Recent').closest('section')!);
-    expect(await recent.findByText("Couldn't load recent chats.")).toBeInTheDocument();
-    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
-    if (failure === 'discovery') expect(listNavigation).not.toHaveBeenCalled();
-    const callsBeforeRetry = failedRead.mock.calls.length;
-    failedRead.mockResolvedValue(failure === 'discovery' ? workspaceResult : { items: [] });
-    await user.click(recent.getByRole('button', { name: 'Try again' }));
-    expect(await recent.findByText('Start a chat')).toBeInTheDocument();
-    expect(failedRead).toHaveBeenCalledTimes(callsBeforeRetry + 1);
-    expect(listNavigation).toHaveBeenCalledWith({
-      workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-      limit: 50,
-    });
-  });
+      await screen.findByRole('heading', { name: 'What can we get done?' });
+      const recent = within(screen.getByText('Recent').closest('section')!);
+      expect(await recent.findByText("Couldn't load recent chats.")).toBeInTheDocument();
+      expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
+      if (failure === 'discovery') expect(listNavigation).not.toHaveBeenCalled();
+      const callsBeforeRetry = failedRead.mock.calls.length;
+      failedRead.mockResolvedValue(failure === 'discovery' ? workspaceResult : { items: [] });
+      await user.click(recent.getByRole('button', { name: 'Try again' }));
+      expect(await recent.findByText('Start a chat')).toBeInTheDocument();
+      expect(failedRead).toHaveBeenCalledTimes(callsBeforeRetry + 1);
+      expect(listNavigation).toHaveBeenCalledWith({
+        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        limit: 50,
+      });
+    }
+  );
 
   it('loads Recent from actual caller membership without a separate session read', async () => {
     const getSession = vi.fn().mockRejectedValue(new Error('Identity unavailable'));
@@ -1127,62 +1127,63 @@ describe('chat starter (board 01)', () => {
     });
   });
 
-  it.each([
-    'chat',
-    'it_00000000-0000-7a85-8cdd-896abe379ad8',
-    'goal',
-  ] as const)('opens a Recent %s on its registered route with encoded owner identifiers', async (activity) => {
-    const user = userEvent.setup();
-    const workspaceId = 'ws/space ?#%';
-    const thread = {
-      ...THREAD,
-      owner: { kind: 'workspace' as const, workspaceId },
-      id: 'th_00000000-0000-77d5-84f0-993908e56e3f',
-      name: 'Encoded conversation',
-    };
-    const getThread = vi.fn().mockResolvedValue(thread);
-    const readGoal = vi.fn().mockResolvedValue({ goal: null, cards: [], versions: [], tasks: [] });
-    renderApp(
-      '/chat',
-      makeClient(
-        {
-          'workspace.list': vi.fn().mockResolvedValue({
-            items: [{ id: workspaceId, name: 'Encoded workspace', kind: 'general' }].map(
-              (workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })
-            ),
-          }),
-          'thread.read': getThread,
-        },
-        {
-          'goal.read': readGoal,
-          'conversation.navigation': vi.fn().mockResolvedValue({
-            items: [{ thread, activity, state: 'idle', lastActivityAt: thread.updatedAt }],
-          }),
-        }
-      )
-    );
-    const recent = (await screen.findByText('Recent')).closest('section')!;
-    await user.click(await within(recent).findByRole('button', { name: thread.name }));
+  it.each(['chat', 'it_00000000-0000-7a85-8cdd-896abe379ad8', 'goal'] as const)(
+    'opens a Recent %s on its registered route with encoded owner identifiers',
+    async (activity) => {
+      const user = userEvent.setup();
+      const workspaceId = 'ws/space ?#%';
+      const thread = {
+        ...THREAD,
+        owner: { kind: 'workspace' as const, workspaceId },
+        id: 'th_00000000-0000-77d5-84f0-993908e56e3f',
+        name: 'Encoded conversation',
+      };
+      const getThread = vi.fn().mockResolvedValue(thread);
+      const readGoal = vi
+        .fn()
+        .mockResolvedValue({ goal: null, cards: [], versions: [], tasks: [] });
+      renderApp(
+        '/chat',
+        makeClient(
+          {
+            'workspace.list': vi.fn().mockResolvedValue({
+              items: [{ id: workspaceId, name: 'Encoded workspace', kind: 'general' }].map(
+                (workspace) => ({
+                  membershipStatus: 'active' as const,
+                  accessCause: 'membership' as const,
+                  workspace,
+                  isOwner: true,
+                  membershipRevision: 1,
+                  ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+                  registryRevision: 1,
+                })
+              ),
+            }),
+            'thread.read': getThread,
+          },
+          {
+            'goal.read': readGoal,
+            'conversation.navigation': vi.fn().mockResolvedValue({
+              items: [{ thread, activity, state: 'idle', lastActivityAt: thread.updatedAt }],
+            }),
+          }
+        )
+      );
+      const recent = (await screen.findByText('Recent')).closest('section')!;
+      await user.click(await within(recent).findByRole('button', { name: thread.name }));
 
-    if (activity === 'goal') {
-      expect(await screen.findByRole('heading', { name: 'Create Goal' })).toBeInTheDocument();
-      expect(readGoal).toHaveBeenCalledWith({ workspaceId, threadId: thread.id });
-      expect(getThread).not.toHaveBeenCalled();
-    } else {
-      expect(await screen.findByRole('heading', { name: thread.name })).toBeInTheDocument();
-      expect(getThread).toHaveBeenCalledWith({ workspaceId: workspaceId, threadId: thread.id });
-      expect(screen.queryByRole('img', { name: 'Task' })).not.toBeInTheDocument();
-      expect(readGoal).not.toHaveBeenCalled();
+      if (activity === 'goal') {
+        expect(await screen.findByRole('heading', { name: 'Create Goal' })).toBeInTheDocument();
+        expect(readGoal).toHaveBeenCalledWith({ workspaceId, threadId: thread.id });
+        expect(getThread).not.toHaveBeenCalled();
+      } else {
+        expect(await screen.findByRole('heading', { name: thread.name })).toBeInTheDocument();
+        expect(getThread).toHaveBeenCalledWith({ workspaceId: workspaceId, threadId: thread.id });
+        expect(screen.queryByRole('img', { name: 'Task' })).not.toBeInTheDocument();
+        expect(readGoal).not.toHaveBeenCalled();
+      }
     }
-  });
+  );
 
   it('opens a Recent task on the conversation navigation task route', async () => {
     const user = userEvent.setup();
@@ -1453,75 +1454,78 @@ describe('chat starter (board 01)', () => {
     }
   });
 
-  it.each([
-    'th_00000000-0000-7507-bcfa-25c593615d8d',
-    'th_00000000-0000-75c2-bada-0a01c17d153e',
-  ])('follows the accepted receiving Workspace and Thread %s after a deferred first submit', async (receivingThreadId) => {
-    const user = userEvent.setup();
-    const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
-    const origin = {
-      ...THREAD,
-      id: 'th_00000000-0000-75c2-bada-0a01c17d153e',
-      name: 'Origin Chat',
-    };
-    const destination = {
-      ...THREAD,
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      id: receivingThreadId,
-      name: 'Receiving Task',
-    };
-    const getThread = vi
-      .fn()
-      .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-        Promise.resolve(
-          workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin
+  it.each(['th_00000000-0000-7507-bcfa-25c593615d8d', 'th_00000000-0000-75c2-bada-0a01c17d153e'])(
+    'follows the accepted receiving Workspace and Thread %s after a deferred first submit',
+    async (receivingThreadId) => {
+      const user = userEvent.setup();
+      const started = createDeferred<typeof STARTER_CHAT_MODE_RESPONSE>();
+      const origin = {
+        ...THREAD,
+        id: 'th_00000000-0000-75c2-bada-0a01c17d153e',
+        name: 'Origin Chat',
+      };
+      const destination = {
+        ...THREAD,
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        id: receivingThreadId,
+        name: 'Receiving Task',
+      };
+      const getThread = vi
+        .fn()
+        .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+          Promise.resolve(
+            workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin
+          )
+        );
+      const createThread = vi.fn().mockResolvedValue(origin);
+      const submitConversation = vi.fn().mockReturnValue(started.promise);
+      renderApp(
+        '/chat',
+        makeClient(
+          {
+            'thread.create': createThread,
+            'thread.read': getThread,
+            'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+              Promise.resolve({
+                items: [
+                  workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin,
+                ],
+              })
+            ),
+          },
+          { 'conversation.submit': submitConversation }
         )
       );
-    const createThread = vi.fn().mockResolvedValue(origin);
-    const submitConversation = vi.fn().mockReturnValue(started.promise);
-    renderApp(
-      '/chat',
-      makeClient(
-        {
-          'thread.create': createThread,
-          'thread.read': getThread,
-          'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-            Promise.resolve({
-              items: [
-                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin,
-              ],
-            })
-          ),
-        },
-        { 'conversation.submit': submitConversation }
-      )
-    );
-    await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Hand off this work');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await act(async () => {
-      started.resolve({
-        ...STARTER_CHAT_MODE_RESPONSE,
-        receivingWorkspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-        receivingThreadId,
+      await user.type(
+        await screen.findByRole('textbox', { name: 'Message' }),
+        'Hand off this work'
+      );
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      await act(async () => {
+        started.resolve({
+          ...STARTER_CHAT_MODE_RESPONSE,
+          receivingWorkspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+          receivingThreadId,
+        });
+        await started.promise;
       });
-      await started.promise;
-    });
-    expect(createThread).not.toHaveBeenCalled();
-    expect(submitConversation).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: origin.id, input: 'Hand off this work' })
-    );
-    expect(await screen.findByRole('heading', { name: 'Receiving Task' })).toBeInTheDocument();
-    expect(getThread).toHaveBeenCalledWith({
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-      threadId: receivingThreadId,
-    });
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
-    expect(submitConversation).toHaveBeenCalledTimes(1);
-    // Revisiting the origin is a history read, not another handoff request.
-    await switchToThread(user, 'Second workspace', 'Market research', 'Origin Chat');
-    expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
-    expect(submitConversation).toHaveBeenCalledTimes(1);
-  });
+      expect(createThread).not.toHaveBeenCalled();
+      expect(submitConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: origin.id, input: 'Hand off this work' })
+      );
+      expect(await screen.findByRole('heading', { name: 'Receiving Task' })).toBeInTheDocument();
+      expect(getThread).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+        threadId: receivingThreadId,
+      });
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+      expect(submitConversation).toHaveBeenCalledTimes(1);
+      // Revisiting the origin is a history read, not another handoff request.
+      await switchToThread(user, 'Second workspace', 'Market research', 'Origin Chat');
+      expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
+      expect(submitConversation).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('keeps a late first-submit handoff and draft out of another Workspace with a colliding Thread id', async () => {
     const user = userEvent.setup();
@@ -2399,97 +2403,96 @@ describe('chat thread (boards 02/03)', () => {
     expect(await screen.findByText(/Couldn't load this thread\./i)).toBeInTheDocument();
   });
 
-  it.each([
-    'resolved',
-    'ended',
-    'inspect-only',
-    'invalidated',
-  ] as const)('hides controls for an authoritative %s request before publication', async (state) => {
-    const client = makeClient(
-      {
-        subscribeTurnEvents: vi.fn().mockReturnValue({
-          [Symbol.asyncIterator]() {
-            return {
-              next: () => new Promise(() => {}),
-              return: async () => ({ done: true, value: undefined }),
-            };
-          },
-        }),
-        'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-      },
-      {
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          turns: [APPROVAL_TURN, { ...ACTIVE_TURN, id: 'tu_00000000-0000-7e19-a9ee-94030e5f5d04' }],
-          pendingRequests: [
-            {
-              requestId: 'ap1',
-              canRespond: true,
-              approvalEffect: {
-                status: 'available',
-                summary: 'Summary: Approval',
-                detail: '{"effect":{"amount":5}}',
+  it.each(['resolved', 'ended', 'inspect-only', 'invalidated'] as const)(
+    'hides controls for an authoritative %s request before publication',
+    async (state) => {
+      const client = makeClient(
+        {
+          subscribeTurnEvents: vi.fn().mockReturnValue({
+            [Symbol.asyncIterator]() {
+              return {
+                next: () => new Promise(() => {}),
+                return: async () => ({ done: true, value: undefined }),
+              };
+            },
+          }),
+          'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+        },
+        {
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            turns: [
+              APPROVAL_TURN,
+              { ...ACTIVE_TURN, id: 'tu_00000000-0000-7e19-a9ee-94030e5f5d04' },
+            ],
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: state === 'invalidated' ? 'ended' : state,
+                resolution: state === 'resolved' ? 'granted' : null,
+                ending:
+                  state === 'ended' ? 'withdrawn' : state === 'invalidated' ? 'invalidated' : null,
+                disposition: null,
               },
-              state: state === 'invalidated' ? 'ended' : state,
-              resolution: state === 'resolved' ? 'granted' : null,
-              ending:
-                state === 'ended' ? 'withdrawn' : state === 'invalidated' ? 'invalidated' : null,
-              disposition: null,
-            },
-          ],
-        }),
-      }
-    );
-    renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-    await screen.findByText('Approve $5 spend');
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
-    );
-    expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
-  });
+            ],
+          }),
+        }
+      );
+      renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
+      await screen.findByText('Approve $5 spend');
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+      );
+      expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
+    }
+  );
 
-  it.each([
-    'resolved',
-    'withdrawn',
-    'invalidated',
-    'inspect-only',
-  ] as const)('hides input controls for authoritative %s input during unrelated work', async (state) => {
-    const client = makeClient(
-      {
-        subscribeTurnEvents: vi.fn().mockReturnValue({
-          [Symbol.asyncIterator]() {
-            return {
-              next: () => new Promise(() => {}),
-              return: async () => ({ done: true, value: undefined }),
-            };
-          },
-        }),
-        'thread.items': vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
-      },
-      {
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          turns: [ACTIVE_TURN],
-          pendingRequests: [
-            {
-              requestId: 'uir1',
-              state: state === 'withdrawn' || state === 'invalidated' ? 'ended' : state,
-              resolution: state === 'resolved' ? 'answered' : null,
-              ending: state === 'withdrawn' || state === 'invalidated' ? state : null,
-              disposition: null,
+  it.each(['resolved', 'withdrawn', 'invalidated', 'inspect-only'] as const)(
+    'hides input controls for authoritative %s input during unrelated work',
+    async (state) => {
+      const client = makeClient(
+        {
+          subscribeTurnEvents: vi.fn().mockReturnValue({
+            [Symbol.asyncIterator]() {
+              return {
+                next: () => new Promise(() => {}),
+                return: async () => ({ done: true, value: undefined }),
+              };
             },
-          ],
-        }),
-      }
-    );
-    renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-    expect(await screen.findByRole('textbox', { name: 'Audience' })).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'Submit answers' })).not.toBeInTheDocument();
-  });
+          }),
+          'thread.items': vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
+        },
+        {
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            turns: [ACTIVE_TURN],
+            pendingRequests: [
+              {
+                requestId: 'uir1',
+                state: state === 'withdrawn' || state === 'invalidated' ? 'ended' : state,
+                resolution: state === 'resolved' ? 'answered' : null,
+                ending: state === 'withdrawn' || state === 'invalidated' ? state : null,
+                disposition: null,
+              },
+            ],
+          }),
+        }
+      );
+      renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
+      expect(await screen.findByRole('textbox', { name: 'Audience' })).toBeDisabled();
+      expect(screen.queryByRole('button', { name: 'Submit answers' })).not.toBeInTheDocument();
+    }
+  );
 
   it('makes approvals read-only and disables the composer when disconnected', async () => {
     const client = makeClient({
@@ -2513,92 +2516,98 @@ describe('chat thread (boards 02/03)', () => {
 });
 
 describe('thread lifecycle and attribution (S7)', () => {
-  it.each([
-    'usr_00000000-0000-7609-aed5-db4b5c95e76c',
-    'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-  ])('attributes people and agents for viewer %s', async (viewerUserId) => {
-    const messages = ItemSchema.array().parse([
-      ITEMS[0],
-      {
-        ...ITEMS[0],
-        id: 'it_00000000-0000-7670-93ab-28e0c439d4f7',
-        actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
-        text: 'Other person.',
-      },
-      {
-        ...ITEMS[0],
-        id: 'it_00000000-0000-7a85-8cdd-896abe379ad8',
-        actor: { kind: 'user', id: 'usr_00000000-0000-7838-b1bf-3222f1a8d6a7' },
-        text: 'Unknown person.',
-      },
-      {
-        ...ITEMS[0],
-        id: 'it_00000000-0000-78cd-bf21-01c4693d8efa',
-        actor: {
-          kind: 'automation',
-          id: 'auto_00000000-0000-7db2-8081-9e80c1ee615a',
-          responsibleUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+  it.each(['usr_00000000-0000-7609-aed5-db4b5c95e76c', 'usr_00000000-0000-73d4-904a-d4c4b905df7c'])(
+    'attributes people and agents for viewer %s',
+    async (viewerUserId) => {
+      const messages = ItemSchema.array().parse([
+        ITEMS[0],
+        {
+          ...ITEMS[0],
+          id: 'it_00000000-0000-7670-93ab-28e0c439d4f7',
+          actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+          text: 'Other person.',
         },
-        text: 'Scheduled input.',
-      },
-      ITEMS[1],
-      {
-        ...ITEMS[1],
-        id: 'it_00000000-0000-72dd-9e78-ec589912dbf1',
-        turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
-        text: 'Internal reply.',
-      },
-    ]);
-    const client = makeClient(
-      { 'thread.items': vi.fn().mockResolvedValue({ items: messages, nextCursor: null }) },
-      {
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          viewerUserId,
-          participants: [
-            { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c', displayName: 'Simon' },
-            { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', displayName: 'Alex' },
-            { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
-          ],
-          turns: [{ ...COMPLETED_TURN, agentId: 'agent_codex_host' }],
-        }),
-      }
-    );
-    renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-    const own = await screen.findByRole('article', {
-      name: `Message from Simon${viewerUserId === 'usr_00000000-0000-7609-aed5-db4b5c95e76c' ? ' (You)' : ''}`,
-    });
-    expect(own).toHaveClass(
-      viewerUserId === 'usr_00000000-0000-7609-aed5-db4b5c95e76c' ? 'items-end' : 'items-start'
-    );
-    expect(within(own).getByRole('img', { name: 'Simon' })).toHaveClass('rounded-full');
-    const other = screen.getByRole('article', {
-      name: `Message from Alex${viewerUserId === 'usr_00000000-0000-73d4-904a-d4c4b905df7c' ? ' (You)' : ''}`,
-    });
-    expect(other).toHaveClass(
-      viewerUserId === 'usr_00000000-0000-73d4-904a-d4c4b905df7c' ? 'items-end' : 'items-start'
-    );
-    expect(within(other).getByRole('img', { name: 'Alex' })).toHaveClass('rounded-full');
-    expect(
-      screen.getByRole('article', { name: 'Message from usr_00000000-0000-7838-b1bf-3222f1a8d6a7' })
-    ).toHaveClass('items-start');
-    const worker = screen.getByRole('article', { name: 'Message from Codex Agent' });
-    expect(within(worker).getByRole('img', { name: 'Codex Agent' })).toHaveClass('rounded-ok');
-    expect(
-      within(screen.getByRole('article', { name: 'Message from Agent' })).getByText(
-        'Internal reply.'
-      )
-    ).toBeInTheDocument();
-    expect(
-      within(
+        {
+          ...ITEMS[0],
+          id: 'it_00000000-0000-7a85-8cdd-896abe379ad8',
+          actor: { kind: 'user', id: 'usr_00000000-0000-7838-b1bf-3222f1a8d6a7' },
+          text: 'Unknown person.',
+        },
+        {
+          ...ITEMS[0],
+          id: 'it_00000000-0000-78cd-bf21-01c4693d8efa',
+          actor: {
+            kind: 'automation',
+            id: 'auto_00000000-0000-7db2-8081-9e80c1ee615a',
+            responsibleUserId: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+          },
+          text: 'Scheduled input.',
+        },
+        ITEMS[1],
+        {
+          ...ITEMS[1],
+          id: 'it_00000000-0000-72dd-9e78-ec589912dbf1',
+          turnId: 'tu_00000000-0000-7229-8099-120c4bdc703e',
+          text: 'Internal reply.',
+        },
+      ]);
+      const client = makeClient(
+        { 'thread.items': vi.fn().mockResolvedValue({ items: messages, nextCursor: null }) },
+        {
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            viewerUserId,
+            participants: [
+              {
+                kind: 'user',
+                id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c',
+                displayName: 'Simon',
+              },
+              { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', displayName: 'Alex' },
+              { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
+            ],
+            turns: [{ ...COMPLETED_TURN, agentId: 'agent_codex_host' }],
+          }),
+        }
+      );
+      renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
+      const own = await screen.findByRole('article', {
+        name: `Message from Simon${viewerUserId === 'usr_00000000-0000-7609-aed5-db4b5c95e76c' ? ' (You)' : ''}`,
+      });
+      expect(own).toHaveClass(
+        viewerUserId === 'usr_00000000-0000-7609-aed5-db4b5c95e76c' ? 'items-end' : 'items-start'
+      );
+      expect(within(own).getByRole('img', { name: 'Simon' })).toHaveClass('rounded-full');
+      const other = screen.getByRole('article', {
+        name: `Message from Alex${viewerUserId === 'usr_00000000-0000-73d4-904a-d4c4b905df7c' ? ' (You)' : ''}`,
+      });
+      expect(other).toHaveClass(
+        viewerUserId === 'usr_00000000-0000-73d4-904a-d4c4b905df7c' ? 'items-end' : 'items-start'
+      );
+      expect(within(other).getByRole('img', { name: 'Alex' })).toHaveClass('rounded-full');
+      expect(
         screen.getByRole('article', {
-          name: 'Message from auto_00000000-0000-7db2-8081-9e80c1ee615a',
+          name: 'Message from usr_00000000-0000-7838-b1bf-3222f1a8d6a7',
         })
-      ).getByText('Scheduled input.')
-    ).toBeInTheDocument();
-  });
+      ).toHaveClass('items-start');
+      const worker = screen.getByRole('article', { name: 'Message from Codex Agent' });
+      expect(within(worker).getByRole('img', { name: 'Codex Agent' })).toHaveClass('rounded-ok');
+      expect(
+        within(screen.getByRole('article', { name: 'Message from Agent' })).getByText(
+          'Internal reply.'
+        )
+      ).toBeInTheDocument();
+      expect(
+        within(
+          screen.getByRole('article', {
+            name: 'Message from auto_00000000-0000-7db2-8081-9e80c1ee615a',
+          })
+        ).getByText('Scheduled input.')
+      ).toBeInTheDocument();
+    }
+  );
 
   it('keeps the authoritative title through a failed rename and adopts the retry result', async () => {
     const user = userEvent.setup();
@@ -2731,159 +2740,162 @@ describe('thread lifecycle and attribution (S7)', () => {
     expect(await screen.findByText('Interrupted')).toBeInTheDocument();
   });
 
-  it.each([
-    'rename',
-    'archive',
-    'interrupt',
-  ] as const)('keeps a pending %s command bound to its original workspace owner', async (command) => {
-    const user = userEvent.setup();
-    const pending = createDeferred<unknown>();
-    const mutation = vi.fn().mockReturnValue(pending.promise);
-    const workspaceBThread = {
-      ...THREAD,
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      name: 'Workspace B teardown',
-      preview: 'Workspace B teardown',
-    };
-    const workspaceBTurn = TurnSchema.parse({
-      ...ACTIVE_TURN,
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
-    });
-    const subscribeTurnEvents = vi.fn().mockReturnValue({
-      [Symbol.asyncIterator]() {
-        return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
-      },
-    });
-    const method =
-      command === 'rename'
-        ? 'thread.update'
-        : command === 'archive'
-          ? 'thread.archive'
-          : 'turn.interrupt';
-    const client = makeClient(
-      {
-        [method]: mutation,
-        'thread.read': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(
-              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
-            )
-          ),
-        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-          Promise.resolve({
-            items: [
-              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
-            ],
-          })
-        ),
-        'thread.items': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve({
-              items: workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? [] : ITEMS,
-              nextCursor: null,
-            })
-          ),
-        subscribeTurnEvents,
-      },
-      {
-        'thread.dashboard': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve({
-              turns: [
+  it.each(['rename', 'archive', 'interrupt'] as const)(
+    'keeps a pending %s command bound to its original workspace owner',
+    async (command) => {
+      const user = userEvent.setup();
+      const pending = createDeferred<unknown>();
+      const mutation = vi.fn().mockReturnValue(pending.promise);
+      const workspaceBThread = {
+        ...THREAD,
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        name: 'Workspace B teardown',
+        preview: 'Workspace B teardown',
+      };
+      const workspaceBTurn = TurnSchema.parse({
+        ...ACTIVE_TURN,
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
+      });
+      const subscribeTurnEvents = vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]() {
+          return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
+        },
+      });
+      const method =
+        command === 'rename'
+          ? 'thread.update'
+          : command === 'archive'
+            ? 'thread.archive'
+            : 'turn.interrupt';
+      const client = makeClient(
+        {
+          [method]: mutation,
+          'thread.read': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve(
                 workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
-                  ? workspaceBTurn
-                  : ACTIVE_TURN,
+                  ? workspaceBThread
+                  : THREAD
+              )
+            ),
+          'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+            Promise.resolve({
+              items: [
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? workspaceBThread
+                  : THREAD,
               ],
             })
           ),
-      }
-    );
-    const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-
-    if (command === 'rename') {
-      await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
-      const name = screen.getByRole('textbox', { name: 'Thread name' });
-      await user.clear(name);
-      await user.type(name, 'Workspace A renamed');
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-    } else {
-      await user.click(
-        await screen.findByRole('button', {
-          name: command === 'archive' ? 'Archive thread' : 'Stop turn',
-        })
+          'thread.items': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve({
+                items: workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? [] : ITEMS,
+                nextCursor: null,
+              })
+            ),
+          subscribeTurnEvents,
+        },
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve({
+                turns: [
+                  workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                    ? workspaceBTurn
+                    : ACTIVE_TURN,
+                ],
+              })
+            ),
+        }
       );
-    }
+      const queryClient = renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
 
-    const expectedArgs =
-      command === 'rename'
-        ? {
-            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-            name: 'Workspace A renamed',
-          }
-        : command === 'archive'
+      if (command === 'rename') {
+        await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
+        const name = screen.getByRole('textbox', { name: 'Thread name' });
+        await user.clear(name);
+        await user.type(name, 'Workspace A renamed');
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+      } else {
+        await user.click(
+          await screen.findByRole('button', {
+            name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+          })
+        );
+      }
+
+      const expectedArgs =
+        command === 'rename'
           ? {
               workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
               threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              name: 'Workspace A renamed',
             }
-          : {
-              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-              turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-            };
-    await waitFor(() => expect(mutation).toHaveBeenCalledWith(expectedArgs));
+          : command === 'archive'
+            ? {
+                workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+                threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              }
+            : {
+                workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+                threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+                turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+              };
+      await waitFor(() => expect(mutation).toHaveBeenCalledWith(expectedArgs));
 
-    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
-    expect(
-      await screen.findByRole('heading', { name: 'Workspace B teardown' })
-    ).toBeInTheDocument();
-
-    const workspaceAResult =
-      command === 'rename'
-        ? { ...THREAD, name: 'Workspace A renamed' }
-        : command === 'archive'
-          ? { ...THREAD, status: 'archived' }
-          : TurnSchema.parse({
-              ...ACTIVE_TURN,
-              status: 'interrupted',
-              completedAt: '2026-07-21T00:00:03.000Z',
-              durationMs: 3_000,
-            });
-    await act(async () => {
-      pending.resolve(workspaceAResult);
-      await pending.promise;
-    });
-
-    if (command === 'interrupt') {
+      await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
       expect(
-        queryClient.getQueryData<{ turns: (typeof workspaceBTurn)[] }>(
-          chatKeys.dashboard(
-            'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-            'th_00000000-0000-70a0-9cde-4561f64881c6'
+        await screen.findByRole('heading', { name: 'Workspace B teardown' })
+      ).toBeInTheDocument();
+
+      const workspaceAResult =
+        command === 'rename'
+          ? { ...THREAD, name: 'Workspace A renamed' }
+          : command === 'archive'
+            ? { ...THREAD, status: 'archived' }
+            : TurnSchema.parse({
+                ...ACTIVE_TURN,
+                status: 'interrupted',
+                completedAt: '2026-07-21T00:00:03.000Z',
+                durationMs: 3_000,
+              });
+      await act(async () => {
+        pending.resolve(workspaceAResult);
+        await pending.promise;
+      });
+
+      if (command === 'interrupt') {
+        expect(
+          queryClient.getQueryData<{ turns: (typeof workspaceBTurn)[] }>(
+            chatKeys.dashboard(
+              'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+              'th_00000000-0000-70a0-9cde-4561f64881c6'
+            )
+          )?.turns[0]
+        ).toEqual(workspaceBTurn);
+        expect(screen.queryByText('Interrupted')).not.toBeInTheDocument();
+      } else {
+        expect(
+          queryClient.getQueryData(
+            chatKeys.thread(
+              'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+              'th_00000000-0000-70a0-9cde-4561f64881c6'
+            )
           )
-        )?.turns[0]
-      ).toEqual(workspaceBTurn);
-      expect(screen.queryByText('Interrupted')).not.toBeInTheDocument();
-    } else {
-      expect(
-        queryClient.getQueryData(
-          chatKeys.thread(
-            'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-            'th_00000000-0000-70a0-9cde-4561f64881c6'
-          )
-        )
-      ).toEqual(workspaceBThread);
-      expect(screen.queryByText('Archived')).not.toBeInTheDocument();
+        ).toEqual(workspaceBThread);
+        expect(screen.queryByText('Archived')).not.toBeInTheDocument();
+      }
+      expect(screen.getByRole('heading', { name: 'Workspace B teardown' })).toBeInTheDocument();
     }
-    expect(screen.getByRole('heading', { name: 'Workspace B teardown' })).toBeInTheDocument();
-  });
+  );
 
   it.each([
     ['rename', 'before'],
@@ -2892,245 +2904,252 @@ describe('thread lifecycle and attribution (S7)', () => {
     ['archive', 'after'],
     ['interrupt', 'before'],
     ['interrupt', 'after'],
-  ] as const)('keeps concurrent %s failures and retries owner-bound when B settles %s A retry', async (command, workspaceBSettlement) => {
-    // Null delay skips the per-keystroke timer. A loaded runner otherwise spends the 10s test
-    // budget on those waits before the owner-bound retry is reached.
-    const user = userEvent.setup({ delay: null });
-    const workspaceARequest = createDeferred<unknown>();
-    const workspaceBRequest = createDeferred<unknown>();
-    const workspaceBThread = {
-      ...THREAD,
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      name: 'Workspace B teardown',
-      preview: 'Workspace B teardown',
-    };
-    const workspaceBTurn = TurnSchema.parse({
-      ...ACTIVE_TURN,
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
-    });
-    const workspaceAResult =
-      command === 'rename'
-        ? { ...THREAD, name: 'Workspace A renamed' }
-        : command === 'archive'
-          ? { ...THREAD, status: 'archived' }
-          : TurnSchema.parse({
-              ...ACTIVE_TURN,
-              status: 'interrupted',
-              completedAt: '2026-07-21T00:00:03.000Z',
-              durationMs: 3_000,
-            });
-    const workspaceBResult =
-      command === 'rename'
-        ? { ...workspaceBThread, name: 'Workspace B renamed' }
-        : command === 'archive'
-          ? { ...workspaceBThread, status: 'archived' }
-          : TurnSchema.parse({
-              ...workspaceBTurn,
-              status: 'interrupted',
-              completedAt: '2026-07-21T00:00:03.000Z',
-              durationMs: 3_000,
-            });
-    let workspaceACallCount = 0;
-    const mutation = vi.fn((input: { workspaceId: string }) => {
-      if (input.workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6')
-        return workspaceBRequest.promise;
-      workspaceACallCount += 1;
-      return workspaceACallCount === 1
-        ? workspaceARequest.promise
-        : Promise.resolve(workspaceAResult);
-    });
-    const subscribeTurnEvents = vi.fn().mockReturnValue({
-      [Symbol.asyncIterator]() {
-        return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
-      },
-    });
-    const method =
-      command === 'rename'
-        ? 'thread.update'
-        : command === 'archive'
-          ? 'thread.archive'
-          : 'turn.interrupt';
-    const client = makeClient(
-      {
-        [method]: mutation,
-        'thread.read': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(
-              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
-            )
-          ),
-        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-          Promise.resolve({
-            items: [
-              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
-            ],
-          })
-        ),
-        'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        subscribeTurnEvents,
-      },
-      {
-        'thread.dashboard': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve({
-              turns: [
+  ] as const)(
+    'keeps concurrent %s failures and retries owner-bound when B settles %s A retry',
+    async (command, workspaceBSettlement) => {
+      // Null delay skips the per-keystroke timer. A loaded runner otherwise spends the 10s test
+      // budget on those waits before the owner-bound retry is reached.
+      const user = userEvent.setup({ delay: null });
+      const workspaceARequest = createDeferred<unknown>();
+      const workspaceBRequest = createDeferred<unknown>();
+      const workspaceBThread = {
+        ...THREAD,
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        name: 'Workspace B teardown',
+        preview: 'Workspace B teardown',
+      };
+      const workspaceBTurn = TurnSchema.parse({
+        ...ACTIVE_TURN,
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
+      });
+      const workspaceAResult =
+        command === 'rename'
+          ? { ...THREAD, name: 'Workspace A renamed' }
+          : command === 'archive'
+            ? { ...THREAD, status: 'archived' }
+            : TurnSchema.parse({
+                ...ACTIVE_TURN,
+                status: 'interrupted',
+                completedAt: '2026-07-21T00:00:03.000Z',
+                durationMs: 3_000,
+              });
+      const workspaceBResult =
+        command === 'rename'
+          ? { ...workspaceBThread, name: 'Workspace B renamed' }
+          : command === 'archive'
+            ? { ...workspaceBThread, status: 'archived' }
+            : TurnSchema.parse({
+                ...workspaceBTurn,
+                status: 'interrupted',
+                completedAt: '2026-07-21T00:00:03.000Z',
+                durationMs: 3_000,
+              });
+      let workspaceACallCount = 0;
+      const mutation = vi.fn((input: { workspaceId: string }) => {
+        if (input.workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6')
+          return workspaceBRequest.promise;
+        workspaceACallCount += 1;
+        return workspaceACallCount === 1
+          ? workspaceARequest.promise
+          : Promise.resolve(workspaceAResult);
+      });
+      const subscribeTurnEvents = vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]() {
+          return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
+        },
+      });
+      const method =
+        command === 'rename'
+          ? 'thread.update'
+          : command === 'archive'
+            ? 'thread.archive'
+            : 'turn.interrupt';
+      const client = makeClient(
+        {
+          [method]: mutation,
+          'thread.read': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve(
                 workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
-                  ? workspaceBTurn
-                  : ACTIVE_TURN,
+                  ? workspaceBThread
+                  : THREAD
+              )
+            ),
+          'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+            Promise.resolve({
+              items: [
+                workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                  ? workspaceBThread
+                  : THREAD,
               ],
             })
           ),
-      }
-    );
-
-    renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-
-    if (command === 'rename') {
-      await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
-      const name = screen.getByRole('textbox', { name: 'Thread name' });
-      await user.clear(name);
-      await user.type(name, 'Workspace A renamed');
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-    } else {
-      await user.click(
-        await screen.findByRole('button', {
-          name: command === 'archive' ? 'Archive thread' : 'Stop turn',
-        })
+          'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          subscribeTurnEvents,
+        },
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve({
+                turns: [
+                  workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                    ? workspaceBTurn
+                    : ACTIVE_TURN,
+                ],
+              })
+            ),
+        }
       );
-    }
 
-    const workspaceAArgs =
-      command === 'rename'
-        ? {
-            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-            name: 'Workspace A renamed',
-          }
-        : command === 'archive'
-          ? {
-              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-            }
-          : {
-              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-              turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-            };
-    await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceAArgs));
-
-    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
-    expect(
-      await screen.findByRole('heading', { name: 'Workspace B teardown' })
-    ).toBeInTheDocument();
-
-    if (command === 'rename') {
-      await user.click(screen.getByRole('button', { name: 'Rename thread' }));
-      const name = screen.getByRole('textbox', { name: 'Thread name' });
-      await user.clear(name);
-      await user.type(name, 'Workspace B renamed');
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-    } else {
-      await user.click(
-        screen.getByRole('button', {
-          name: command === 'archive' ? 'Archive thread' : 'Stop turn',
-        })
+      renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
       );
-    }
 
-    const workspaceBArgs =
-      command === 'rename'
-        ? {
-            workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-            name: 'Workspace B renamed',
-          }
-        : command === 'archive'
-          ? {
-              workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-            }
-          : {
-              workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-              turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-            };
-    await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceBArgs));
-
-    await act(async () => {
-      workspaceARequest.reject(new Error(`workspace A ${command} rejected`));
-      await workspaceARequest.promise.catch(() => undefined);
-    });
-    if (workspaceBSettlement === 'before') {
-      await act(async () => {
-        workspaceBRequest.resolve(workspaceBResult);
-        await workspaceBRequest.promise;
-      });
       if (command === 'rename') {
-        expect(await screen.findByRole('heading', { name: 'Workspace B renamed' })).toBeVisible();
-      } else if (command === 'archive') {
-        expect(await screen.findByText('Archived')).toBeInTheDocument();
+        await user.click(await screen.findByRole('button', { name: 'Rename thread' }));
+        const name = screen.getByRole('textbox', { name: 'Thread name' });
+        await user.clear(name);
+        await user.type(name, 'Workspace A renamed');
+        await user.click(screen.getByRole('button', { name: 'Save' }));
       } else {
-        expect(await screen.findByText('Interrupted')).toBeInTheDocument();
-      }
-    }
-    await switchToThread(user, 'Second workspace', 'Market research', 'Competitive teardown');
-    expect(
-      await screen.findByRole('heading', { name: 'Competitive teardown' })
-    ).toBeInTheDocument();
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(
-      command === 'rename'
-        ? "Couldn't rename this thread."
-        : command === 'archive'
-          ? "Couldn't archive this thread."
-          : "Couldn't stop this turn."
-    );
-    await user.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(3));
-    expect(mutation).toHaveBeenNthCalledWith(1, workspaceAArgs);
-    expect(mutation).toHaveBeenNthCalledWith(2, workspaceBArgs);
-    expect(mutation).toHaveBeenNthCalledWith(3, workspaceAArgs);
-    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
-
-    if (command === 'rename') {
-      expect(await screen.findByRole('heading', { name: 'Workspace A renamed' })).toBeVisible();
-    } else if (command === 'archive') {
-      expect(await screen.findByText('Archived')).toBeInTheDocument();
-    } else {
-      expect(await screen.findByText('Interrupted')).toBeInTheDocument();
-    }
-
-    if (workspaceBSettlement === 'after') {
-      await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-      if (command !== 'rename') {
-        expect(
+        await user.click(
           await screen.findByRole('button', {
             name: command === 'archive' ? 'Archive thread' : 'Stop turn',
           })
-        ).toBeDisabled();
+        );
       }
 
-      await act(async () => {
-        workspaceBRequest.resolve(workspaceBResult);
-        await workspaceBRequest.promise;
-      });
+      const workspaceAArgs =
+        command === 'rename'
+          ? {
+              workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              name: 'Workspace A renamed',
+            }
+          : command === 'archive'
+            ? {
+                workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+                threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              }
+            : {
+                workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+                threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+                turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+              };
+      await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceAArgs));
+
+      await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
+      expect(
+        await screen.findByRole('heading', { name: 'Workspace B teardown' })
+      ).toBeInTheDocument();
+
       if (command === 'rename') {
-        expect(await screen.findByRole('heading', { name: 'Workspace B renamed' })).toBeVisible();
+        await user.click(screen.getByRole('button', { name: 'Rename thread' }));
+        const name = screen.getByRole('textbox', { name: 'Thread name' });
+        await user.clear(name);
+        await user.type(name, 'Workspace B renamed');
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+      } else {
+        await user.click(
+          screen.getByRole('button', {
+            name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+          })
+        );
+      }
+
+      const workspaceBArgs =
+        command === 'rename'
+          ? {
+              workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              name: 'Workspace B renamed',
+            }
+          : command === 'archive'
+            ? {
+                workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+                threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              }
+            : {
+                workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+                threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+                turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+              };
+      await waitFor(() => expect(mutation).toHaveBeenCalledWith(workspaceBArgs));
+
+      await act(async () => {
+        workspaceARequest.reject(new Error(`workspace A ${command} rejected`));
+        await workspaceARequest.promise.catch(() => undefined);
+      });
+      if (workspaceBSettlement === 'before') {
+        await act(async () => {
+          workspaceBRequest.resolve(workspaceBResult);
+          await workspaceBRequest.promise;
+        });
+        if (command === 'rename') {
+          expect(await screen.findByRole('heading', { name: 'Workspace B renamed' })).toBeVisible();
+        } else if (command === 'archive') {
+          expect(await screen.findByText('Archived')).toBeInTheDocument();
+        } else {
+          expect(await screen.findByText('Interrupted')).toBeInTheDocument();
+        }
+      }
+      await switchToThread(user, 'Second workspace', 'Market research', 'Competitive teardown');
+      expect(
+        await screen.findByRole('heading', { name: 'Competitive teardown' })
+      ).toBeInTheDocument();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(
+        command === 'rename'
+          ? "Couldn't rename this thread."
+          : command === 'archive'
+            ? "Couldn't archive this thread."
+            : "Couldn't stop this turn."
+      );
+      await user.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(3));
+      expect(mutation).toHaveBeenNthCalledWith(1, workspaceAArgs);
+      expect(mutation).toHaveBeenNthCalledWith(2, workspaceBArgs);
+      expect(mutation).toHaveBeenNthCalledWith(3, workspaceAArgs);
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+
+      if (command === 'rename') {
+        expect(await screen.findByRole('heading', { name: 'Workspace A renamed' })).toBeVisible();
       } else if (command === 'archive') {
         expect(await screen.findByText('Archived')).toBeInTheDocument();
       } else {
         expect(await screen.findByText('Interrupted')).toBeInTheDocument();
       }
+
+      if (workspaceBSettlement === 'after') {
+        await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        if (command !== 'rename') {
+          expect(
+            await screen.findByRole('button', {
+              name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+            })
+          ).toBeDisabled();
+        }
+
+        await act(async () => {
+          workspaceBRequest.resolve(workspaceBResult);
+          await workspaceBRequest.promise;
+        });
+        if (command === 'rename') {
+          expect(await screen.findByRole('heading', { name: 'Workspace B renamed' })).toBeVisible();
+        } else if (command === 'archive') {
+          expect(await screen.findByText('Archived')).toBeInTheDocument();
+        } else {
+          expect(await screen.findByText('Interrupted')).toBeInTheDocument();
+        }
+      }
     }
-  });
+  );
 
   it('does not attach a rejected interrupt history to a newer active turn', async () => {
     const user = userEvent.setup();
@@ -3351,26 +3370,29 @@ describe('thread lifecycle and attribution (S7)', () => {
   it.each([
     ['local', 'usr_00000000-0000-7000-8000-000000000001'],
     ['server', 'usr_00000000-0000-7c6a-be9d-0973844c8526'],
-  ])('renders the exact %s user-message actor without deployment-mode probing', async (_, actorId) => {
-    const setupDiagnosticsOperation = vi.fn().mockRejectedValue(new Error('must not be called'));
-    const client = makeClient(
-      {
-        'thread.items': vi.fn().mockResolvedValue({
-          items: [{ ...ITEMS[0], actor: { kind: 'user', id: actorId } }],
-          nextCursor: null,
-        }),
-      },
-      { 'diagnostics.setup': setupDiagnosticsOperation }
-    );
+  ])(
+    'renders the exact %s user-message actor without deployment-mode probing',
+    async (_, actorId) => {
+      const setupDiagnosticsOperation = vi.fn().mockRejectedValue(new Error('must not be called'));
+      const client = makeClient(
+        {
+          'thread.items': vi.fn().mockResolvedValue({
+            items: [{ ...ITEMS[0], actor: { kind: 'user', id: actorId } }],
+            nextCursor: null,
+          }),
+        },
+        { 'diagnostics.setup': setupDiagnosticsOperation }
+      );
 
-    renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
+      renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
 
-    expect(await screen.findByText(new RegExp(actorId))).toBeInTheDocument();
-    expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
-  });
+      expect(await screen.findByText(new RegExp(actorId))).toBeInTheDocument();
+      expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
+    }
+  );
 
   it('renders the exact actors on approval decisions and user-input responses', async () => {
     const client = makeClient({
@@ -3479,55 +3501,54 @@ describe('thread lifecycle and attribution (S7)', () => {
       expected: 'Triggered by auto_00000000-0000-768a-8658-44c33d82c1f5',
       unexpected: ['Administrator', '(You)'],
     },
-  ])('resolves the running Task trigger for a $label without borrowing another kind', async ({
-    triggerActor,
-    expected,
-    unexpected,
-  }) => {
-    const subscribeTurnEvents = vi.fn().mockReturnValue({
-      [Symbol.asyncIterator]() {
-        return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
-      },
-    });
-    const client = makeClient(
-      {
-        'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        subscribeTurnEvents,
-      },
-      {
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          pendingRequests: [
-            {
-              requestId: 'uir1',
-              state: 'pending',
-              resolution: null,
-              ending: null,
-              disposition: null,
-            },
-          ],
-          viewerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-          participants: [
-            {
-              kind: 'user',
-              id: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
-              displayName: 'Administrator',
-            },
-          ],
-          turns: [TurnSchema.parse({ ...ACTIVE_TURN, triggerActor })],
-        }),
+  ])(
+    'resolves the running Task trigger for a $label without borrowing another kind',
+    async ({ triggerActor, expected, unexpected }) => {
+      const subscribeTurnEvents = vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]() {
+          return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
+        },
+      });
+      const client = makeClient(
+        {
+          'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          subscribeTurnEvents,
+        },
+        {
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'uir1',
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            viewerUserId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+            participants: [
+              {
+                kind: 'user',
+                id: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
+                displayName: 'Administrator',
+              },
+            ],
+            turns: [TurnSchema.parse({ ...ACTIVE_TURN, triggerActor })],
+          }),
+        }
+      );
+
+      renderApp(
+        '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
+
+      expect(await screen.findByText(expected)).toBeInTheDocument();
+      for (const value of unexpected) {
+        expect(screen.queryByText(new RegExp(value))).not.toBeInTheDocument();
       }
-    );
-
-    renderApp(
-      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-
-    expect(await screen.findByText(expected)).toBeInTheDocument();
-    for (const value of unexpected) {
-      expect(screen.queryByText(new RegExp(value))).not.toBeInTheDocument();
     }
-  });
+  );
 
   it('leaves an intentionally actorless assistant item without an inferred actor label', async () => {
     const client = makeClient({
@@ -3605,93 +3626,93 @@ describe('live turn subscription (S6)', () => {
     expect(getThreadDashboard).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    'send',
-    'approval',
-  ] as const)('refreshes the dashboard and subscribes once after a successful %s command', async (command) => {
-    const user = userEvent.setup();
-    const submitConversation = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
-    const respondApproval = vi.fn().mockResolvedValue({});
-    const getThreadDashboard = vi
-      .fn()
-      .mockResolvedValueOnce({
-        pendingRequests: [
-          {
-            requestId: 'ap1',
-            canRespond: true,
-            approvalEffect: {
-              status: 'available',
-              summary: 'Summary: Approval',
-              detail: '{"effect":{"amount":5}}',
+  it.each(['send', 'approval'] as const)(
+    'refreshes the dashboard and subscribes once after a successful %s command',
+    async (command) => {
+      const user = userEvent.setup();
+      const submitConversation = vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE);
+      const respondApproval = vi.fn().mockResolvedValue({});
+      const getThreadDashboard = vi
+        .fn()
+        .mockResolvedValueOnce({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
             },
-            state: 'pending',
-            resolution: null,
-            ending: null,
-            disposition: null,
-          },
-        ],
-        turns: command === 'approval' ? [APPROVAL_TURN] : [],
-      })
-      .mockResolvedValue({
-        pendingRequests: [
-          {
-            requestId: 'ap1',
-            canRespond: true,
-            approvalEffect: {
-              status: 'available',
-              summary: 'Summary: Approval',
-              detail: '{"effect":{"amount":5}}',
+          ],
+          turns: command === 'approval' ? [APPROVAL_TURN] : [],
+        })
+        .mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              canRespond: true,
+              approvalEffect: {
+                status: 'available',
+                summary: 'Summary: Approval',
+                detail: '{"effect":{"amount":5}}',
+              },
+              state: 'pending',
+              resolution: null,
+              ending: null,
+              disposition: null,
             },
-            state: 'pending',
-            resolution: null,
-            ending: null,
-            disposition: null,
-          },
-        ],
-        turns: [ACTIVE_TURN],
+          ],
+          turns: [ACTIVE_TURN],
+        });
+      const subscribeTurnEvents = vi.fn().mockReturnValue({
+        [Symbol.asyncIterator]() {
+          return {
+            next: () => new Promise(() => {}),
+            return: vi.fn().mockResolvedValue({ value: undefined, done: true }),
+          };
+        },
       });
-    const subscribeTurnEvents = vi.fn().mockReturnValue({
-      [Symbol.asyncIterator]() {
-        return {
-          next: () => new Promise(() => {}),
-          return: vi.fn().mockResolvedValue({ value: undefined, done: true }),
-        };
-      },
-    });
-    const client = makeClient(
-      {
-        'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        'approval.respond': respondApproval,
-        subscribeTurnEvents,
-      },
-      { 'thread.dashboard': getThreadDashboard, 'conversation.submit': submitConversation }
-    );
+      const client = makeClient(
+        {
+          'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          'approval.respond': respondApproval,
+          subscribeTurnEvents,
+        },
+        { 'thread.dashboard': getThreadDashboard, 'conversation.submit': submitConversation }
+      );
 
-    renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client
-    );
-    await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(1));
+      renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client
+      );
+      await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(1));
 
-    if (command === 'send') {
-      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh work');
-      await user.click(screen.getByRole('button', { name: 'Send message' }));
-      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    } else {
-      await user.click(await screen.findByRole('button', { name: 'Approve' }));
-      await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
+      if (command === 'send') {
+        await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh work');
+        await user.click(screen.getByRole('button', { name: 'Send message' }));
+        await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+      } else {
+        await user.click(await screen.findByRole('button', { name: 'Approve' }));
+        await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(1));
+      }
+
+      await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(subscribeTurnEvents).toHaveBeenCalledWith({
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+          turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+        })
+      );
+      expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
     }
-
-    await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(subscribeTurnEvents).toHaveBeenCalledWith({
-        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-      })
-    );
-    expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
-  });
+  );
 
   it('folds an already-running turn into the thread cache without refetching', async () => {
     let releaseDelta!: () => void;
@@ -3855,99 +3876,102 @@ describe('live turn subscription (S6)', () => {
     ['interrupted', 'aborted'],
     ['cancelled', 'aborted'],
     ['failed', 'error'],
-  ] as const)('projects an authoritative %s Turn without touching the items cache', async (status, stopReason) => {
-    const release = createDeferred<void>();
-    const processed = createDeferred<void>();
-    const terminalTurn = TurnSchema.parse({ ...COMPLETED_TURN, status });
-    async function* stream() {
-      await release.promise;
-      yield turnStreamEvent(1, 'turn.completed', {
-        type: 'turn-completed',
-        stopReason,
-        turn: terminalTurn,
-      });
-      processed.resolve();
-    }
-
-    const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
-    const client = makeClient(
-      {
-        'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        subscribeTurnEvents,
-      },
-      {
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          pendingRequests: [
-            {
-              requestId: 'ap1',
-              canRespond: true,
-              approvalEffect: {
-                status: 'available',
-                summary: 'Summary: Approval',
-                detail: '{"effect":{"amount":5}}',
-              },
-              state: 'pending',
-              resolution: null,
-              ending: null,
-              disposition: null,
-            },
-          ],
-          turns: [ACTIVE_TURN],
-        }),
+  ] as const)(
+    'projects an authoritative %s Turn without touching the items cache',
+    async (status, stopReason) => {
+      const release = createDeferred<void>();
+      const processed = createDeferred<void>();
+      const terminalTurn = TurnSchema.parse({ ...COMPLETED_TURN, status });
+      async function* stream() {
+        await release.promise;
+        yield turnStreamEvent(1, 'turn.completed', {
+          type: 'turn-completed',
+          stopReason,
+          turn: terminalTurn,
+        });
+        processed.resolve();
       }
-    );
-    const itemsKey = chatKeys.items(
-      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-      'th_00000000-0000-70a0-9cde-4561f64881c6'
-    );
-    const dashboardKey = chatKeys.dashboard(
-      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-      'th_00000000-0000-70a0-9cde-4561f64881c6'
-    );
-    const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client,
-      (cache) => {
-        cache.setQueryDefaults(itemsKey, { staleTime: Number.POSITIVE_INFINITY });
-        cache.setQueryData(itemsKey, ITEMS, { updatedAt: 1 });
-      }
-    );
 
-    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
-    await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
-    const initialItems = queryClient.getQueryData(itemsKey);
-    const initialItemsUpdatedAt = queryClient.getQueryState(itemsKey)?.dataUpdatedAt;
-    const cancelQueries = vi.spyOn(queryClient, 'cancelQueries');
-
-    await act(async () => {
-      release.resolve();
-      await processed.promise;
-    });
-
-    expect.soft(queryClient.getQueryData(dashboardKey)).toEqual({
-      pendingRequests: [
+      const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
+      const client = makeClient(
         {
-          requestId: 'ap1',
-          canRespond: true,
-          approvalEffect: {
-            status: 'available',
-            summary: 'Summary: Approval',
-            detail: '{"effect":{"amount":5}}',
-          },
-          state: 'pending',
-          resolution: null,
-          ending: null,
-          disposition: null,
+          'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+          subscribeTurnEvents,
         },
-      ],
-      turns: [terminalTurn],
-    });
-    expect.soft(cancelQueries).toHaveBeenCalledTimes(1);
-    expect.soft(cancelQueries).toHaveBeenCalledWith({ queryKey: dashboardKey, exact: true });
-    expect.soft(cancelQueries).not.toHaveBeenCalledWith({ queryKey: itemsKey, exact: true });
-    expect.soft(queryClient.getQueryData(itemsKey)).toEqual(initialItems);
-    expect.soft(queryClient.getQueryState(itemsKey)?.dataUpdatedAt).toBe(initialItemsUpdatedAt);
-  });
+        {
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                canRespond: true,
+                approvalEffect: {
+                  status: 'available',
+                  summary: 'Summary: Approval',
+                  detail: '{"effect":{"amount":5}}',
+                },
+                state: 'pending',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              },
+            ],
+            turns: [ACTIVE_TURN],
+          }),
+        }
+      );
+      const itemsKey = chatKeys.items(
+        'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        'th_00000000-0000-70a0-9cde-4561f64881c6'
+      );
+      const dashboardKey = chatKeys.dashboard(
+        'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        'th_00000000-0000-70a0-9cde-4561f64881c6'
+      );
+      const queryClient = renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client,
+        (cache) => {
+          cache.setQueryDefaults(itemsKey, { staleTime: Number.POSITIVE_INFINITY });
+          cache.setQueryData(itemsKey, ITEMS, { updatedAt: 1 });
+        }
+      );
+
+      expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+      await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
+      const initialItems = queryClient.getQueryData(itemsKey);
+      const initialItemsUpdatedAt = queryClient.getQueryState(itemsKey)?.dataUpdatedAt;
+      const cancelQueries = vi.spyOn(queryClient, 'cancelQueries');
+
+      await act(async () => {
+        release.resolve();
+        await processed.promise;
+      });
+
+      expect.soft(queryClient.getQueryData(dashboardKey)).toEqual({
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          },
+        ],
+        turns: [terminalTurn],
+      });
+      expect.soft(cancelQueries).toHaveBeenCalledTimes(1);
+      expect.soft(cancelQueries).toHaveBeenCalledWith({ queryKey: dashboardKey, exact: true });
+      expect.soft(cancelQueries).not.toHaveBeenCalledWith({ queryKey: itemsKey, exact: true });
+      expect.soft(queryClient.getQueryData(itemsKey)).toEqual(initialItems);
+      expect.soft(queryClient.getQueryState(itemsKey)?.dataUpdatedAt).toBe(initialItemsUpdatedAt);
+    }
+  );
 
   it('streams over a fresh authoritative cache without starting a baseline refetch', async () => {
     let releaseCompletion!: () => void;
@@ -4647,114 +4671,113 @@ describe('open thread external activity', () => {
     vi.useRealTimers();
   });
 
-  it.each([
-    'SSE terminal refresh',
-    'idle dashboard poll',
-    'first completed Turn poll',
-  ] as const)('makes the current Worker selectable after %s without reloading', async (path) => {
-    const user = userEvent.setup();
-    let completed = false;
-    const getConversationTargets = vi.fn(
-      async ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) => ({
-        ...CONVERSATION_TARGET,
-        workspaceId,
-        threadId: threadId ?? null,
-        targets: [
-          ...CONVERSATION_TARGET.targets,
-          {
-            ...CONVERSATION_TARGET.targets[1]!,
-            targetRef: 'running-worker:th_00000000-0000-70a0-9cde-4561f64881c6',
-            kind: 'running-worker' as const,
-            label: 'Current Worker',
-            threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-            availability: completed ? ('available' as const) : ('unavailable' as const),
-            unavailableReason: completed ? null : 'Worker is busy.',
-          },
-        ],
-      })
-    );
-    const completion = createDeferred<void>();
-    async function* stream() {
-      await completion.promise;
-      yield turnStreamEvent(1, 'turn.completed', {
-        type: 'turn-completed',
-        stopReason: 'completed',
-        turn: COMPLETED_TURN,
-      });
-    }
-    const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
-    const getThreadDashboard = vi.fn(async () =>
-      path === 'first completed Turn poll'
-        ? { turns: [] }
-        : path === 'idle dashboard poll'
-          ? { turns: [idleTurn] }
-          : {
-              pendingRequests: [
-                {
-                  requestId: 'ap1',
-                  canRespond: true,
-                  approvalEffect: {
-                    status: 'available',
-                    summary: 'Summary: Approval',
-                    detail: '{"effect":{"amount":5}}',
+  it.each(['SSE terminal refresh', 'idle dashboard poll', 'first completed Turn poll'] as const)(
+    'makes the current Worker selectable after %s without reloading',
+    async (path) => {
+      const user = userEvent.setup();
+      let completed = false;
+      const getConversationTargets = vi.fn(
+        async ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) => ({
+          ...CONVERSATION_TARGET,
+          workspaceId,
+          threadId: threadId ?? null,
+          targets: [
+            ...CONVERSATION_TARGET.targets,
+            {
+              ...CONVERSATION_TARGET.targets[1]!,
+              targetRef: 'running-worker:th_00000000-0000-70a0-9cde-4561f64881c6',
+              kind: 'running-worker' as const,
+              label: 'Current Worker',
+              threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+              availability: completed ? ('available' as const) : ('unavailable' as const),
+              unavailableReason: completed ? null : 'Worker is busy.',
+            },
+          ],
+        })
+      );
+      const completion = createDeferred<void>();
+      async function* stream() {
+        await completion.promise;
+        yield turnStreamEvent(1, 'turn.completed', {
+          type: 'turn-completed',
+          stopReason: 'completed',
+          turn: COMPLETED_TURN,
+        });
+      }
+      const subscribeTurnEvents = vi.fn().mockReturnValue(stream());
+      const getThreadDashboard = vi.fn(async () =>
+        path === 'first completed Turn poll'
+          ? { turns: [] }
+          : path === 'idle dashboard poll'
+            ? { turns: [idleTurn] }
+            : {
+                pendingRequests: [
+                  {
+                    requestId: 'ap1',
+                    canRespond: true,
+                    approvalEffect: {
+                      status: 'available',
+                      summary: 'Summary: Approval',
+                      detail: '{"effect":{"amount":5}}',
+                    },
+                    state: 'pending',
+                    resolution: null,
+                    ending: null,
+                    disposition: null,
                   },
-                  state: 'pending',
-                  resolution: null,
-                  ending: null,
-                  disposition: null,
-                },
-              ],
-              turns: [ACTIVE_TURN],
-            }
-    );
-    if (path !== 'SSE terminal refresh') {
-      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    }
-    renderApp(
-      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      makeClient(
-        {
-          'thread.items': vi.fn(async () => ({ items: ITEMS, nextCursor: null })),
-          subscribeTurnEvents,
-        },
-        { 'conversation.targets': getConversationTargets, 'thread.dashboard': getThreadDashboard }
-      )
-    );
-    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
-    expect(await screen.findByRole('option', { name: /Current Worker/ })).toHaveAttribute(
-      'aria-disabled',
-      'true'
-    );
-    await user.keyboard('{Escape}');
-    completed = true;
-    if (path === 'SSE terminal refresh') {
-      await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
-      await act(async () => completion.resolve());
-    } else {
-      getThreadDashboard.mockResolvedValue(laterDashboard());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(5_000);
-      });
-    }
-    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
-    await waitFor(() =>
-      expect(screen.getByRole('option', { name: /Current Worker/ })).not.toHaveAttribute(
+                ],
+                turns: [ACTIVE_TURN],
+              }
+      );
+      if (path !== 'SSE terminal refresh') {
+        vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      }
+      renderApp(
+        '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        makeClient(
+          {
+            'thread.items': vi.fn(async () => ({ items: ITEMS, nextCursor: null })),
+            subscribeTurnEvents,
+          },
+          { 'conversation.targets': getConversationTargets, 'thread.dashboard': getThreadDashboard }
+        )
+      );
+      await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+      expect(await screen.findByRole('option', { name: /Current Worker/ })).toHaveAttribute(
         'aria-disabled',
         'true'
-      )
-    );
-    await user.click(screen.getByRole('option', { name: /Current Worker/ }));
-    expect(
-      screen.getByRole('button', { name: /Current Worker.*Conversation agent/ })
-    ).toBeInTheDocument();
-    expect(
-      getConversationTargets.mock.calls.every(
-        ([{ workspaceId, threadId }]) =>
-          workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
-          (threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6' || threadId == null)
-      )
-    ).toBe(true);
-  });
+      );
+      await user.keyboard('{Escape}');
+      completed = true;
+      if (path === 'SSE terminal refresh') {
+        await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
+        await act(async () => completion.resolve());
+      } else {
+        getThreadDashboard.mockResolvedValue(laterDashboard());
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+      }
+      await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: /Current Worker/ })).not.toHaveAttribute(
+          'aria-disabled',
+          'true'
+        )
+      );
+      await user.click(screen.getByRole('option', { name: /Current Worker/ }));
+      expect(
+        screen.getByRole('button', { name: /Current Worker.*Conversation agent/ })
+      ).toBeInTheDocument();
+      expect(
+        getConversationTargets.mock.calls.every(
+          ([{ workspaceId, threadId }]) =>
+            workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
+            (threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6' || threadId == null)
+        )
+      ).toBe(true);
+    }
+  );
 
   it('refetches an idle open Thread on the foreground item poll', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -4789,129 +4812,129 @@ describe('open thread external activity', () => {
 
   it.each(
     [500, 401, 403].flatMap((status) => [true, false].map((hasItems) => ({ status, hasItems })))
-  )('suppresses cached activity after a $status refresh with Items=$hasItems until retry succeeds', async ({
-    status,
-    hasItems,
-  }) => {
-    const user = userEvent.setup();
-    const initialDashboard = {
-      pendingRequests: [
-        {
-          requestId: 'ap1',
-          canRespond: true,
-          approvalEffect: {
-            status: 'available',
-            summary: 'Summary: Approval',
-            detail: '{"effect":{"amount":5}}',
+  )(
+    'suppresses cached activity after a $status refresh with Items=$hasItems until retry succeeds',
+    async ({ status, hasItems }) => {
+      const user = userEvent.setup();
+      const initialDashboard = {
+        pendingRequests: [
+          {
+            requestId: 'ap1',
+            canRespond: true,
+            approvalEffect: {
+              status: 'available',
+              summary: 'Summary: Approval',
+              detail: '{"effect":{"amount":5}}',
+            },
+            state: 'pending',
+            resolution: null,
+            ending: null,
+            disposition: null,
           },
-          state: 'pending',
-          resolution: null,
-          ending: null,
-          disposition: null,
-        },
-      ],
-      turns: [hasItems ? APPROVAL_TURN : { ...idleTurn, items: [] }],
-      runtimeActivity: RUNTIME_ACTIVITY.map((activity) => ({
-        ...activity,
-        coverage: 'collecting' as const,
-      })),
-    };
-    const getThreadDashboard = vi.fn().mockResolvedValue(initialDashboard);
-    const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      makeClient(
-        {
-          'thread.items': vi
-            .fn()
-            .mockResolvedValue({ items: hasItems ? ITEMS : [], nextCursor: null }),
-        },
-        { 'thread.dashboard': getThreadDashboard }
-      )
-    );
-    expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
-    expect(screen.getByText('Please approve the reported proposal.')).toBeInTheDocument();
-    if (hasItems) expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+        ],
+        turns: [hasItems ? APPROVAL_TURN : { ...idleTurn, items: [] }],
+        runtimeActivity: RUNTIME_ACTIVITY.map((activity) => ({
+          ...activity,
+          coverage: 'collecting' as const,
+        })),
+      };
+      const getThreadDashboard = vi.fn().mockResolvedValue(initialDashboard);
+      const queryClient = renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        makeClient(
+          {
+            'thread.items': vi
+              .fn()
+              .mockResolvedValue({ items: hasItems ? ITEMS : [], nextCursor: null }),
+          },
+          { 'thread.dashboard': getThreadDashboard }
+        )
+      );
+      expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
+      expect(screen.getByText('Please approve the reported proposal.')).toBeInTheDocument();
+      if (hasItems) expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
 
-    getThreadDashboard.mockRejectedValue(new ApiCallError(status, 'Private refresh diagnostic'));
-    await act(async () => {
-      await queryClient.refetchQueries({
-        queryKey: chatKeys.dashboard(
-          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-          'th_00000000-0000-70a0-9cde-4561f64881c6'
-        ),
-        exact: true,
+      getThreadDashboard.mockRejectedValue(new ApiCallError(status, 'Private refresh diagnostic'));
+      await act(async () => {
+        await queryClient.refetchQueries({
+          queryKey: chatKeys.dashboard(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          ),
+          exact: true,
+        });
       });
-    });
-    expect(
-      queryClient.getQueryState(
-        chatKeys.dashboard(
-          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-          'th_00000000-0000-70a0-9cde-4561f64881c6'
-        )
-      )?.status
-    ).toBe('error');
-    expect(
-      queryClient.getQueryData(
-        chatKeys.dashboard(
-          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-          'th_00000000-0000-70a0-9cde-4561f64881c6'
-        )
-      )
-    ).toEqual(initialDashboard);
-    await waitFor(() =>
-      expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument()
-    );
-    expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Full-content capture was enabled for this Turn.')
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('Private refresh diagnostic')).not.toBeInTheDocument();
-    expect(
-      screen.getByText('Runtime activity is unavailable. Retry to refresh.')
-    ).toBeInTheDocument();
-    if (hasItems) {
-      expect(screen.getByText('Draft a competitive teardown.')).toBeInTheDocument();
-      expect(screen.getByText('Approve $5 spend')).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
-    }
-
-    const recovery = createDeferred<typeof initialDashboard>();
-    getThreadDashboard.mockImplementation(() => recovery.promise);
-    await user.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() =>
       expect(
         queryClient.getQueryState(
           chatKeys.dashboard(
             'ws_00000000-0000-7b10-9af8-12fd37a880e0',
             'th_00000000-0000-70a0-9cde-4561f64881c6'
           )
-        )?.fetchStatus
-      ).toBe('fetching')
-    );
-    expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
-    expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
-    await act(async () => {
-      recovery.resolve({
-        ...initialDashboard,
-        runtimeActivity: initialDashboard.runtimeActivity.map((activity) => ({
-          ...activity,
-          entries: activity.entries.map((entry) => ({
-            ...entry,
-            text: 'Fresh authorized activity after recovery.',
+        )?.status
+      ).toBe('error');
+      expect(
+        queryClient.getQueryData(
+          chatKeys.dashboard(
+            'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            'th_00000000-0000-70a0-9cde-4561f64881c6'
+          )
+        )
+      ).toEqual(initialDashboard);
+      await waitFor(() =>
+        expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument()
+      );
+      expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Full-content capture was enabled for this Turn.')
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Private refresh diagnostic')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('Runtime activity is unavailable. Retry to refresh.')
+      ).toBeInTheDocument();
+      if (hasItems) {
+        expect(screen.getByText('Draft a competitive teardown.')).toBeInTheDocument();
+        expect(screen.getByText('Approve $5 spend')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+      }
+
+      const recovery = createDeferred<typeof initialDashboard>();
+      getThreadDashboard.mockImplementation(() => recovery.promise);
+      await user.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() =>
+        expect(
+          queryClient.getQueryState(
+            chatKeys.dashboard(
+              'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              'th_00000000-0000-70a0-9cde-4561f64881c6'
+            )
+          )?.fetchStatus
+        ).toBe('fetching')
+      );
+      expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
+      expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
+      await act(async () => {
+        recovery.resolve({
+          ...initialDashboard,
+          runtimeActivity: initialDashboard.runtimeActivity.map((activity) => ({
+            ...activity,
+            entries: activity.entries.map((entry) => ({
+              ...entry,
+              text: 'Fresh authorized activity after recovery.',
+            })),
           })),
-        })),
+        });
       });
-    });
-    expect(
-      await screen.findByText('Fresh authorized activity after recovery.')
-    ).toBeInTheDocument();
-    expect(screen.getByText('Activity collection is ongoing.')).toBeInTheDocument();
-    expect(
-      screen.queryByText('Runtime activity is unavailable. Retry to refresh.')
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
-    if (hasItems) expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
-  });
+      expect(
+        await screen.findByText('Fresh authorized activity after recovery.')
+      ).toBeInTheDocument();
+      expect(screen.getByText('Activity collection is ongoing.')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Runtime activity is unavailable. Retry to refresh.')
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
+      if (hasItems) expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    }
+  );
 
   it('refreshes runtime activity on the existing dashboard poll without new Items', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -5710,142 +5733,149 @@ describe('mode entry and feedback (S8)', () => {
     expect(screen.queryByRole('button', { name: /bad/i })).not.toBeInTheDocument();
   });
 
-  it.each([
-    'success',
-    'failure',
-  ] as const)('keeps a late workspace A feedback %s out of workspace B', async (settlement) => {
-    const user = userEvent.setup();
-    const priorFeedback = {
-      turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-      agentId: 'agent_assistant',
-      rating: 'good' as const,
-      note: null,
-      createdAt: '2026-07-21T00:00:03.000Z',
-    };
-    const settledFeedback = {
-      ...priorFeedback,
-      rating: 'bad' as const,
-      createdAt: '2026-07-21T00:00:04.000Z',
-    };
-    const submitted = createDeferred<typeof settledFeedback>();
-    const submitTurnFeedback = vi.fn().mockReturnValue(submitted.promise);
-    const workspaceBThread = {
-      ...THREAD,
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      name: 'Workspace B teardown',
-      preview: 'Workspace B teardown',
-    };
-    const workspaceBTurn = TurnSchema.parse({
-      ...COMPLETED_TURN,
-      id: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
-    });
-    const workspaceBAssistant = ItemSchema.parse({
-      ...ITEMS[1],
-      id: 'it_00000000-0000-7a72-a3c3-089dca8798b5',
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
-      turnId: workspaceBTurn.id,
-      text: 'Workspace B answer.',
-    });
-    const client = makeClient(
-      {
-        'thread.read': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve(
-              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD
-            )
-          ),
-        'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
-          Promise.resolve({
-            items: [
-              workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? workspaceBThread : THREAD,
-            ],
-          })
-        ),
-        'thread.items': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
-            Promise.resolve({
-              items:
+  it.each(['success', 'failure'] as const)(
+    'keeps a late workspace A feedback %s out of workspace B',
+    async (settlement) => {
+      const user = userEvent.setup();
+      const priorFeedback = {
+        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+        agentId: 'agent_assistant',
+        rating: 'good' as const,
+        note: null,
+        createdAt: '2026-07-21T00:00:03.000Z',
+      };
+      const settledFeedback = {
+        ...priorFeedback,
+        rating: 'bad' as const,
+        createdAt: '2026-07-21T00:00:04.000Z',
+      };
+      const submitted = createDeferred<typeof settledFeedback>();
+      const submitTurnFeedback = vi.fn().mockReturnValue(submitted.promise);
+      const workspaceBThread = {
+        ...THREAD,
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        name: 'Workspace B teardown',
+        preview: 'Workspace B teardown',
+      };
+      const workspaceBTurn = TurnSchema.parse({
+        ...COMPLETED_TURN,
+        id: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
+      });
+      const workspaceBAssistant = ItemSchema.parse({
+        ...ITEMS[1],
+        id: 'it_00000000-0000-7a72-a3c3-089dca8798b5',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
+        turnId: workspaceBTurn.id,
+        text: 'Workspace B answer.',
+      });
+      const client = makeClient(
+        {
+          'thread.read': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve(
                 workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
-                  ? [workspaceBAssistant]
-                  : [ITEMS[1]],
-              nextCursor: null,
-            })
-          ),
-      },
-      {
-        'thread.dashboard': vi
-          .fn()
-          .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+                  ? workspaceBThread
+                  : THREAD
+              )
+            ),
+          'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({
-              turns: [
+              items: [
                 workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
-                  ? workspaceBTurn
-                  : COMPLETED_TURN,
+                  ? workspaceBThread
+                  : THREAD,
               ],
             })
           ),
-        'turn.feedback': submitTurnFeedback,
-      }
-    );
-    const queryClient = renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-      client,
-      (cache) => {
-        cache.setQueryData(
+          'thread.items': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve({
+                items:
+                  workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                    ? [workspaceBAssistant]
+                    : [ITEMS[1]],
+                nextCursor: null,
+              })
+            ),
+        },
+        {
+          'thread.dashboard': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+              Promise.resolve({
+                turns: [
+                  workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
+                    ? workspaceBTurn
+                    : COMPLETED_TURN,
+                ],
+              })
+            ),
+          'turn.feedback': submitTurnFeedback,
+        }
+      );
+      const queryClient = renderApp(
+        '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+        client,
+        (cache) => {
+          cache.setQueryData(
+            chatKeys.feedback(
+              'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+              'th_00000000-0000-70a0-9cde-4561f64881c6',
+              'tu_00000000-0000-7da3-a7fc-80982f9b215e'
+            ),
+            priorFeedback
+          );
+        }
+      );
+
+      await user.click(await screen.findByRole('button', { name: /bad/i }));
+      await waitFor(() =>
+        expect(submitTurnFeedback).toHaveBeenCalledWith({
+          turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
+          rating: 'bad',
+          note: null,
+        })
+      );
+
+      await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
+      expect(await screen.findByText('Workspace B answer.')).toBeInTheDocument();
+      await act(async () => {
+        if (settlement === 'success') submitted.resolve(settledFeedback);
+        else submitted.reject(new Error('feedback rejected'));
+        await submitted.promise.catch(() => undefined);
+      });
+
+      await waitFor(() => expect(submitTurnFeedback).toHaveBeenCalledTimes(1));
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(
+        queryClient.getQueryData(
           chatKeys.feedback(
             'ws_00000000-0000-7b10-9af8-12fd37a880e0',
             'th_00000000-0000-70a0-9cde-4561f64881c6',
             'tu_00000000-0000-7da3-a7fc-80982f9b215e'
-          ),
-          priorFeedback
-        );
-      }
-    );
-
-    await user.click(await screen.findByRole('button', { name: /bad/i }));
-    await waitFor(() =>
-      expect(submitTurnFeedback).toHaveBeenCalledWith({
-        turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-        rating: 'bad',
-        note: null,
-      })
-    );
-
-    await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
-    expect(await screen.findByText('Workspace B answer.')).toBeInTheDocument();
-    await act(async () => {
-      if (settlement === 'success') submitted.resolve(settledFeedback);
-      else submitted.reject(new Error('feedback rejected'));
-      await submitted.promise.catch(() => undefined);
-    });
-
-    await waitFor(() => expect(submitTurnFeedback).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(
-      queryClient.getQueryData(
-        chatKeys.feedback(
-          'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-          'th_00000000-0000-70a0-9cde-4561f64881c6',
-          'tu_00000000-0000-7da3-a7fc-80982f9b215e'
+          )
         )
-      )
-    ).toEqual(settlement === 'success' ? settledFeedback : priorFeedback);
-    expect(
-      queryClient.getQueryData(
-        chatKeys.feedback(
-          'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-          'th_00000000-0000-70a0-9cde-4561f64881c6',
-          workspaceBTurn.id
+      ).toEqual(settlement === 'success' ? settledFeedback : priorFeedback);
+      expect(
+        queryClient.getQueryData(
+          chatKeys.feedback(
+            'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+            'th_00000000-0000-70a0-9cde-4561f64881c6',
+            workspaceBTurn.id
+          )
         )
-      )
-    ).toBeUndefined();
-    expect(screen.getByRole('button', { name: /good/i })).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByRole('button', { name: /bad/i })).toHaveAttribute('aria-pressed', 'false');
-  });
+      ).toBeUndefined();
+      expect(screen.getByRole('button', { name: /good/i })).toHaveAttribute(
+        'aria-pressed',
+        'false'
+      );
+      expect(screen.getByRole('button', { name: /bad/i })).toHaveAttribute('aria-pressed', 'false');
+    }
+  );
 
   it('keeps one feedback selection per completed Turn and applies only authoritative responses', async () => {
     const user = userEvent.setup();
@@ -6767,122 +6797,137 @@ describe('Worker environment Advanced choice', () => {
   it.each([
     '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-75c2-bada-0a01c17d153e',
     '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-  ])('starts a fresh request only on explicit Send from %s after definitive Chat cancellation and retries that identity after transport uncertainty', async (path) => {
-    const user = userEvent.setup();
-    const threadId = path.endsWith('th_00000000-0000-75c2-bada-0a01c17d153e')
-      ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
-      : 'th_00000000-0000-70a0-9cde-4561f64881c6';
-    const originalId = '00000000-0000-4000-8000-000000000911';
-    const freshId = '00000000-0000-4000-8000-000000000912';
-    const randomUUID = vi
-      .spyOn(crypto, 'randomUUID')
-      .mockReturnValueOnce(originalId)
-      .mockReturnValueOnce(freshId)
-      .mockReturnValue('00000000-0000-4000-8000-000000000913');
-    onTestFinished(() => randomUUID.mockRestore());
-    const submitConversation = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new ApiCallError(499, 'Private cancellation detail', { code: 'provider_call_aborted' })
-      )
-      .mockRejectedValue(new TypeError('Private transport detail'));
-    renderApp(
-      path,
-      makeClient(
-        {
-          'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
-          'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
-          'artifact.list': vi.fn().mockResolvedValue({
-            items: [
-              {
-                id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
-                version: 2,
-                title: 'Existing brief',
-              },
-            ],
-          }),
-        },
-        {
-          'conversation.submit': submitConversation,
-          'conversation.targets': vi.fn().mockResolvedValue({
-            ...CONVERSATION_TARGET,
-            targets: CONVERSATION_TARGET.targets.map((target) => ({
-              ...target,
-              logicalModels: [
-                ...target.logicalModels,
-                { id: 'alternate', label: 'Alternate model', capabilities: ['chat'] },
+  ])(
+    'starts a fresh request only on explicit Send from %s after definitive Chat cancellation and retries that identity after transport uncertainty',
+    async (path) => {
+      const user = userEvent.setup();
+      const threadId = path.endsWith('th_00000000-0000-75c2-bada-0a01c17d153e')
+        ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+        : 'th_00000000-0000-70a0-9cde-4561f64881c6';
+      const originalId = '00000000-0000-4000-8000-000000000911';
+      const freshId = '00000000-0000-4000-8000-000000000912';
+      const randomUUID = vi
+        .spyOn(crypto, 'randomUUID')
+        .mockReturnValueOnce(originalId)
+        .mockReturnValueOnce(freshId)
+        .mockReturnValue('00000000-0000-4000-8000-000000000913');
+      onTestFinished(() => randomUUID.mockRestore());
+      const submitConversation = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ApiCallError(499, 'Private cancellation detail', { code: 'provider_call_aborted' })
+        )
+        .mockRejectedValue(new TypeError('Private transport detail'));
+      renderApp(
+        path,
+        makeClient(
+          {
+            'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
+            'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
+            'artifact.list': vi.fn().mockResolvedValue({
+              items: [
+                {
+                  id: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
+                  version: 2,
+                  title: 'Existing brief',
+                },
               ],
-            })),
-          }),
-          'worker-environment.list': vi
-            .fn()
-            .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null }),
-          'worker-environment.select': vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT }),
-        }
-      )
-    );
-    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
-    await user.click(await screen.findByRole('option', { name: 'Assistant' }));
-    await user.click(await screen.findByRole('button', { name: /Logical model/ }));
-    await user.click(await screen.findByRole('option', { name: 'Alternate model' }));
-    await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
-    await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
-    await user.keyboard('{Escape}');
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Original Chat draft');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    const cancellationExplanation = (
-      await screen.findByText(/This turn was stopped|Couldn't send that message/)
-    ).textContent;
-    expect(submitConversation).toHaveBeenCalledTimes(1);
-    expect(submitConversation.mock.calls[0]?.[0]).toMatchObject({
-      requestId: originalId,
-      targetRef: 'internal-role:assistant',
-      logicalModelId: 'alternate',
-    });
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Original Chat draft');
-    expect(
-      await screen.findByRole('button', { name: /Alternate model.*Logical model/ })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
-    expect(randomUUID).toHaveBeenCalledTimes(1);
-    expect(document.body).not.toHaveTextContent('Private cancellation detail');
+            }),
+          },
+          {
+            'conversation.submit': submitConversation,
+            'conversation.targets': vi.fn().mockResolvedValue({
+              ...CONVERSATION_TARGET,
+              targets: CONVERSATION_TARGET.targets.map((target) => ({
+                ...target,
+                logicalModels: [
+                  ...target.logicalModels,
+                  { id: 'alternate', label: 'Alternate model', capabilities: ['chat'] },
+                ],
+              })),
+            }),
+            'worker-environment.list': vi
+              .fn()
+              .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null }),
+            'worker-environment.select': vi
+              .fn()
+              .mockResolvedValue({ selected: WORKER_ENVIRONMENT }),
+          }
+        )
+      );
+      await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+      await user.click(await screen.findByRole('option', { name: 'Assistant' }));
+      await user.click(await screen.findByRole('button', { name: /Logical model/ }));
+      await user.click(await screen.findByRole('option', { name: 'Alternate model' }));
+      await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
+      await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
+      await user.keyboard('{Escape}');
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Original Chat draft');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      const cancellationExplanation = (
+        await screen.findByText(/This turn was stopped|Couldn't send that message/)
+      ).textContent;
+      expect(submitConversation).toHaveBeenCalledTimes(1);
+      expect(submitConversation.mock.calls[0]?.[0]).toMatchObject({
+        requestId: originalId,
+        targetRef: 'internal-role:assistant',
+        logicalModelId: 'alternate',
+      });
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Original Chat draft');
+      expect(
+        await screen.findByRole('button', { name: /Alternate model.*Logical model/ })
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Remove Existing brief' })).toBeInTheDocument();
+      expect(randomUUID).toHaveBeenCalledTimes(1);
+      expect(document.body).not.toHaveTextContent('Private cancellation detail');
 
-    // The cancelled request remains retained while the user prepares different, valid Worker work.
-    await user.clear(screen.getByRole('textbox', { name: 'Message' }));
-    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Replacement work');
-    await chooseNewTaskWorker(user);
-    await chooseRetainedEnvironment(user);
-    expect(randomUUID).toHaveBeenCalledTimes(1);
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
-    expect(submitConversation).toHaveBeenCalledTimes(2);
-    const freshDraft = {
-      input: 'Replacement work',
-      targetRef: 'new-task-worker',
-      logicalModelId: 'alternate',
-      artifactRefs: [{ artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 }],
-      requestId: freshId,
-      workerStorageChoice: {
-        expectedRevision: 4,
-        kind: 'selected',
-        purpose: 'work',
-        storageRef: WORKER_STORAGE_REF,
-      },
-    };
-    expect(submitConversation.mock.calls[1]).toEqual([
-      { workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', threadId: threadId, ...freshDraft },
-    ]);
-    expect(cancellationExplanation).toBe('This turn was stopped. Send starts a new turn.');
-    expect(randomUUID).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Replacement work');
-    expect(document.body).not.toHaveTextContent('Private transport detail');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(3));
-    expect(submitConversation.mock.calls[2]).toEqual([
-      { workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', threadId: threadId, ...freshDraft },
-    ]);
-    expect(randomUUID).toHaveBeenCalledTimes(2);
-  });
+      // The cancelled request remains retained while the user prepares different, valid Worker work.
+      await user.clear(screen.getByRole('textbox', { name: 'Message' }));
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Replacement work');
+      await chooseNewTaskWorker(user);
+      await chooseRetainedEnvironment(user);
+      expect(randomUUID).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+      expect(submitConversation).toHaveBeenCalledTimes(2);
+      const freshDraft = {
+        input: 'Replacement work',
+        targetRef: 'new-task-worker',
+        logicalModelId: 'alternate',
+        artifactRefs: [
+          { artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 },
+        ],
+        requestId: freshId,
+        workerStorageChoice: {
+          expectedRevision: 4,
+          kind: 'selected',
+          purpose: 'work',
+          storageRef: WORKER_STORAGE_REF,
+        },
+      };
+      expect(submitConversation.mock.calls[1]).toEqual([
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: threadId,
+          ...freshDraft,
+        },
+      ]);
+      expect(cancellationExplanation).toBe('This turn was stopped. Send starts a new turn.');
+      expect(randomUUID).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Replacement work');
+      expect(document.body).not.toHaveTextContent('Private transport detail');
+      await user.click(screen.getByRole('button', { name: 'Send message' }));
+      await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(3));
+      expect(submitConversation.mock.calls[2]).toEqual([
+        {
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          threadId: threadId,
+          ...freshDraft,
+        },
+      ]);
+      expect(randomUUID).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it('keeps a stale retained choice after server send denial and does not substitute a new environment', async () => {
     const user = userEvent.setup();

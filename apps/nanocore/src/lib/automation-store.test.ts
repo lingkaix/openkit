@@ -196,42 +196,42 @@ describe('durable fixed-interval recurrence', () => {
     expect(store.getAutomation(unsafe.id).nextScheduledAt).toBeNull();
   });
 
-  it.each([
-    'pause',
-    'delete',
-  ] as const)('seals a retained overflowing cadence on %s without losing its final instant', async (action) => {
-    const { db, store } = fixture();
-    const userId = testEntityId('usr', 'user_creator');
-    const created = await store.createAutomation(userId, definition);
-    const active = await store.updateAutomation(userId, created.id, {
-      expectedRevision: created.revision,
-      status: 'active',
-      scheduledAt: '2026-10-16T00:00:00.000Z',
-    });
-    db.sqlite
-      .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
-      .run(JSON.stringify({ ...active, intervalSeconds: 300_000_000_000 }), created.id);
-    if (action === 'pause')
-      await store.updateAutomation(userId, created.id, {
-        expectedRevision: active.revision,
-        status: 'paused',
+  it.each(['pause', 'delete'] as const)(
+    'seals a retained overflowing cadence on %s without losing its final instant',
+    async (action) => {
+      const { db, store } = fixture();
+      const userId = testEntityId('usr', 'user_creator');
+      const created = await store.createAutomation(userId, definition);
+      const active = await store.updateAutomation(userId, created.id, {
+        expectedRevision: created.revision,
+        status: 'active',
+        scheduledAt: '2026-10-16T00:00:00.000Z',
       });
-    else await store.deleteAutomation(userId, created.id);
-    expect(store.getAutomation(created.id)).toMatchObject({
-      status: action === 'pause' ? 'paused' : 'deleted',
-      nextScheduledAt: null,
-    });
-    expect(store.listHistory(created.id).items).toEqual([
-      expect.objectContaining({
-        kind: 'occurrence',
-        record: expect.objectContaining({
-          state: 'cancelled',
-          scheduledAt: '2026-10-16T00:00:00.000Z',
+      db.sqlite
+        .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
+        .run(JSON.stringify({ ...active, intervalSeconds: 300_000_000_000 }), created.id);
+      if (action === 'pause')
+        await store.updateAutomation(userId, created.id, {
+          expectedRevision: active.revision,
+          status: 'paused',
+        });
+      else await store.deleteAutomation(userId, created.id);
+      expect(store.getAutomation(created.id)).toMatchObject({
+        status: action === 'pause' ? 'paused' : 'deleted',
+        nextScheduledAt: null,
+      });
+      expect(store.listHistory(created.id).items).toEqual([
+        expect.objectContaining({
+          kind: 'occurrence',
+          record: expect.objectContaining({
+            state: 'cancelled',
+            scheduledAt: '2026-10-16T00:00:00.000Z',
+          }),
         }),
-      }),
-    ]);
-    expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
-  });
+      ]);
+      expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+    }
+  );
 
   it('writes v1 paused schedules and preserves identity across a database reopen', async () => {
     const { db, root, clock, store } = fixture();
@@ -314,68 +314,69 @@ describe('durable fixed-interval recurrence', () => {
   });
 });
 
-it.each([
-  'recurring_schedules',
-  'recurring_occurrences',
-  'recurring_expired_ranges',
-] as const)('refuses unknown %s versions before payload decode, scan or mutation', async (table) => {
-  const { db, store, setTime } = fixture();
-  const userId = testEntityId('usr', 'user_creator');
-  const schedule = await store.createAutomation(userId, definition);
-  const active = await store.updateAutomation(userId, schedule.id, {
-    expectedRevision: 1,
-    status: 'active',
-    scheduledAt: '2026-10-16T00:00:00.000Z',
-  });
-  if (table === 'recurring_occurrences')
-    await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  if (table === 'recurring_expired_ranges') {
-    setTime('2026-10-16T01:00:00.000Z');
-    await store.collectScanCandidates('2026-10-16T01:00:00.000Z');
-  }
-  const row = db.sqlite.prepare(`SELECT id FROM ${table} LIMIT 1`).get() as { id: string };
-  db.sqlite
-    .prepare(`UPDATE ${table} SET schema_version = 2, record_json = '{' WHERE id = ?`)
-    .run(row.id);
-  db.sqlite.exec(`CREATE TRIGGER reject_unsupported_recurring_update BEFORE UPDATE ON ${table}
+it.each(['recurring_schedules', 'recurring_occurrences', 'recurring_expired_ranges'] as const)(
+  'refuses unknown %s versions before payload decode, scan or mutation',
+  async (table) => {
+    const { db, store, setTime } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const schedule = await store.createAutomation(userId, definition);
+    const active = await store.updateAutomation(userId, schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    if (table === 'recurring_occurrences')
+      await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    if (table === 'recurring_expired_ranges') {
+      setTime('2026-10-16T01:00:00.000Z');
+      await store.collectScanCandidates('2026-10-16T01:00:00.000Z');
+    }
+    const row = db.sqlite.prepare(`SELECT id FROM ${table} LIMIT 1`).get() as { id: string };
+    db.sqlite
+      .prepare(`UPDATE ${table} SET schema_version = 2, record_json = '{' WHERE id = ?`)
+      .run(row.id);
+    db.sqlite.exec(`CREATE TRIGGER reject_unsupported_recurring_update BEFORE UPDATE ON ${table}
       BEGIN SELECT RAISE(FAIL, 'Unsupported recurring row reached an UPDATE'); END`);
 
-  if (table === 'recurring_schedules') {
-    expect(() => store.getAutomation(row.id)).toThrow('Unsupported retained record format.');
-    await expect(
-      store.updateAutomation(userId, row.id, {
-        expectedRevision: active.revision,
-        status: 'paused',
-      })
-    ).rejects.toThrow('Unsupported retained record format.');
-    await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toThrow(
+    if (table === 'recurring_schedules') {
+      expect(() => store.getAutomation(row.id)).toThrow('Unsupported retained record format.');
+      await expect(
+        store.updateAutomation(userId, row.id, {
+          expectedRevision: active.revision,
+          status: 'paused',
+        })
+      ).rejects.toThrow('Unsupported retained record format.');
+      await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toThrow(
+        'Unsupported retained record format.'
+      );
+    } else if (table === 'recurring_occurrences') {
+      expect(() => store.getOccurrence(row.id)).toThrow('Unsupported retained record format.');
+      await expect(
+        store.commitAttempt(row.id, active.revision, { kind: 'ready', payload })
+      ).rejects.toThrow('Unsupported retained record format.');
+      await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toThrow(
+        'Unsupported retained record format.'
+      );
+    } else {
+      expect(() => store.listHistory(schedule.id, 128)).toThrow(
+        'Unsupported retained record format.'
+      );
+    }
+    expect(() => exportRecurringPortableHistory(db, schedule.workspaceId, null, [])).toThrow(
       'Unsupported retained record format.'
     );
-  } else if (table === 'recurring_occurrences') {
-    expect(() => store.getOccurrence(row.id)).toThrow('Unsupported retained record format.');
-    await expect(
-      store.commitAttempt(row.id, active.revision, { kind: 'ready', payload })
-    ).rejects.toThrow('Unsupported retained record format.');
-    await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toThrow(
-      'Unsupported retained record format.'
-    );
-  } else {
-    expect(() => store.listHistory(schedule.id, 128)).toThrow(
-      'Unsupported retained record format.'
-    );
+    expect(
+      db.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE id = ?`)
+        .get(row.id)
+    ).toEqual({ schemaVersion: 2, record_json: '{' });
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({
+      n: 0,
+    });
   }
-  expect(() => exportRecurringPortableHistory(db, schedule.workspaceId, null, [])).toThrow(
-    'Unsupported retained record format.'
-  );
-  expect(
-    db.sqlite
-      .prepare(`SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE id = ?`)
-      .get(row.id)
-  ).toEqual({ schemaVersion: 2, record_json: '{' });
-  expect(db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()).toEqual({
-    n: 0,
-  });
-});
+);
 
 it('limits committed outcomes to three and keeps admission-failed terminal at expiry', async () => {
   const { store, setTime } = fixture();
@@ -512,41 +513,40 @@ it('freezes the complete first resolved payload on failure and fences substituti
   });
 });
 
-it.each([
-  'queued',
-  'admitted',
-  'denied',
-  'cancelled',
-  'expired',
-])('reconciles exact deterministic queue replay in %s without resubmission', async (status) => {
-  const { db, store } = fixture();
-  const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
-  await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
-    expectedRevision: 1,
-    status: 'active',
-    scheduledAt: '2026-10-16T00:00:00.000Z',
-  });
-  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
-  db.sqlite
-    .prepare('UPDATE scheduler_admission_entries SET status = ? WHERE queue_entry_id = ?')
-    .run(status, accepted.queueEntryId);
-  const replay = { ...accepted, state: 'pending', terminalAt: null };
-  db.sqlite
-    .prepare('UPDATE recurring_occurrences SET state = ?, record_json = ? WHERE id = ?')
-    .run('pending', JSON.stringify(replay), replay.id);
-  expect(
-    await store.commitAttempt(occurrence!.id, 2, { kind: 'failure', code: 'authority_denied' })
-  ).toMatchObject({
-    state: 'admission-accepted',
-    queueEntryId: accepted.queueEntryId,
-    turnId: accepted.turnId,
-    attempts: accepted.attempts,
-  });
-  expect(db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()).toEqual({
-    n: 1,
-  });
-});
+it.each(['queued', 'admitted', 'denied', 'cancelled', 'expired'])(
+  'reconciles exact deterministic queue replay in %s without resubmission',
+  async (status) => {
+    const { db, store } = fixture();
+    const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
+    await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
+    db.sqlite
+      .prepare('UPDATE scheduler_admission_entries SET status = ? WHERE queue_entry_id = ?')
+      .run(status, accepted.queueEntryId);
+    const replay = { ...accepted, state: 'pending', terminalAt: null };
+    db.sqlite
+      .prepare('UPDATE recurring_occurrences SET state = ?, record_json = ? WHERE id = ?')
+      .run('pending', JSON.stringify(replay), replay.id);
+    expect(
+      await store.commitAttempt(occurrence!.id, 2, { kind: 'failure', code: 'authority_denied' })
+    ).toMatchObject({
+      state: 'admission-accepted',
+      queueEntryId: accepted.queueEntryId,
+      turnId: accepted.turnId,
+      attempts: accepted.attempts,
+    });
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({
+      n: 1,
+    });
+  }
+);
 
 it('fences a conflicting deterministic queue row without overwriting it', async () => {
   const { db, store } = fixture();

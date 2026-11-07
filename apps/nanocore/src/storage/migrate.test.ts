@@ -253,96 +253,95 @@ describe('database setup', () => {
     }
   });
 
-  it.each([
-    'core',
-    'workspace',
-    'user',
-    'app',
-  ] as const)('requires an explicit Audit and Policy retained version in a fresh %s database', (scope) => {
-    const sqlite = new Database(':memory:');
-    try {
-      applyNativeScopeMigrations(
-        sqlite,
-        scope,
-        undefined,
-        undefined,
-        scope === 'workspace' ? 'pre-knowledge' : 'full'
-      );
-      const tables =
-        scope === 'core' || scope === 'workspace'
-          ? ['audit_events', 'permission_decisions']
-          : ['audit_events'];
-      for (const table of tables) {
-        const columns = sqlite.pragma(`table_info(${table})`) as Array<{
-          name: string;
-          notnull: number;
-          dflt_value: unknown;
-        }>;
-        expect(columns.find(({ name }) => name === 'schema_version')).toMatchObject({
-          notnull: 1,
-          dflt_value: null,
-        });
-      }
-      // A reset-format row must carry its writer's version; SQL cannot infer it.
-      expect(() =>
-        sqlite
-          .prepare(
-            `INSERT INTO audit_events (audit_event_id, category, action, outcome, severity, summary, created_at, occurred_at)
+  it.each(['core', 'workspace', 'user', 'app'] as const)(
+    'requires an explicit Audit and Policy retained version in a fresh %s database',
+    (scope) => {
+      const sqlite = new Database(':memory:');
+      try {
+        applyNativeScopeMigrations(
+          sqlite,
+          scope,
+          undefined,
+          undefined,
+          scope === 'workspace' ? 'pre-knowledge' : 'full'
+        );
+        const tables =
+          scope === 'core' || scope === 'workspace'
+            ? ['audit_events', 'permission_decisions']
+            : ['audit_events'];
+        for (const table of tables) {
+          const columns = sqlite.pragma(`table_info(${table})`) as Array<{
+            name: string;
+            notnull: number;
+            dflt_value: unknown;
+          }>;
+          expect(columns.find(({ name }) => name === 'schema_version')).toMatchObject({
+            notnull: 1,
+            dflt_value: null,
+          });
+        }
+        // A reset-format row must carry its writer's version; SQL cannot infer it.
+        expect(() =>
+          sqlite
+            .prepare(
+              `INSERT INTO audit_events (audit_event_id, category, action, outcome, severity, summary, created_at, occurred_at)
            VALUES ('unversioned-fixture', 'system', 'test', 'succeeded', 'info', 'test', 'now', 'now')`
-          )
-          .run()
-      ).toThrow(/schema_version/);
-    } finally {
-      sqlite.close();
+            )
+            .run()
+        ).toThrow(/schema_version/);
+      } finally {
+        sqlite.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    5, 7, 8,
-  ])('extends Core before migration %s without changing retained users', (cutoff) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
-    const legacyFolder = join(dataRoot, 'legacy-core');
-    const productionFolder = join(process.cwd(), 'drizzle', 'core');
-    mkdirSync(join(legacyFolder, 'meta'), { recursive: true });
-    const journal = JSON.parse(
-      readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
-    );
-    journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < cutoff);
-    writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
-    for (const entry of journal.entries)
-      writeFileSync(
-        join(legacyFolder, `${entry.tag}.sql`),
-        readFileSync(join(productionFolder, `${entry.tag}.sql`))
+  it.each([5, 7, 8])(
+    'extends Core before migration %s without changing retained users',
+    (cutoff) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-channel-migration-'));
+      const legacyFolder = join(dataRoot, 'legacy-core');
+      const productionFolder = join(process.cwd(), 'drizzle', 'core');
+      mkdirSync(join(legacyFolder, 'meta'), { recursive: true });
+      const journal = JSON.parse(
+        readFileSync(join(productionFolder, 'meta', '_journal.json'), 'utf8')
       );
-    const coreDb = openCoreDb(dataRoot);
-    try {
-      applyNativeScopeMigrations(coreDb.sqlite, 'core', legacyFolder);
-      // Historical setup uses its original columns, not the current ORM insert shape.
-      ensureFixtureLocalUser(coreDb);
-      const before = coreDb.sqlite
-        .prepare('SELECT id,display_name,status FROM users ORDER BY id')
-        .all();
-      expect(listTableNames(coreDb)).not.toContain(
-        cutoff === 5 ? 'discord_account_bindings' : 'capability_calls'
-      );
-      applyMigrations(coreDb);
-      expect(
-        coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
-      ).toEqual(before);
-      expect(listTableNames(coreDb)).toContain('discord_account_bindings');
-      expect(listColumnNames(coreDb, 'capability_calls')).toContain('workspace_id');
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM notification_attention').get()
-      ).toEqual({ count: 0 });
-      applyMigrations(coreDb);
-      expect(
-        coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
-      ).toEqual(before);
-    } finally {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < cutoff);
+      writeFileSync(join(legacyFolder, 'meta', '_journal.json'), JSON.stringify(journal));
+      for (const entry of journal.entries)
+        writeFileSync(
+          join(legacyFolder, `${entry.tag}.sql`),
+          readFileSync(join(productionFolder, `${entry.tag}.sql`))
+        );
+      const coreDb = openCoreDb(dataRoot);
+      try {
+        applyNativeScopeMigrations(coreDb.sqlite, 'core', legacyFolder);
+        // Historical setup uses its original columns, not the current ORM insert shape.
+        ensureFixtureLocalUser(coreDb);
+        const before = coreDb.sqlite
+          .prepare('SELECT id,display_name,status FROM users ORDER BY id')
+          .all();
+        expect(listTableNames(coreDb)).not.toContain(
+          cutoff === 5 ? 'discord_account_bindings' : 'capability_calls'
+        );
+        applyMigrations(coreDb);
+        expect(
+          coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
+        ).toEqual(before);
+        expect(listTableNames(coreDb)).toContain('discord_account_bindings');
+        expect(listColumnNames(coreDb, 'capability_calls')).toContain('workspace_id');
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM notification_attention').get()
+        ).toEqual({ count: 0 });
+        applyMigrations(coreDb);
+        expect(
+          coreDb.sqlite.prepare('SELECT id,display_name,status FROM users ORDER BY id').all()
+        ).toEqual(before);
+      } finally {
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('applies the Core setup idempotently', () => {
     const dataRoot = createDataRoot();
@@ -1309,74 +1308,77 @@ describe('native Drizzle migrate', () => {
   it.each([
     ['core', 18],
     ['workspace', 14],
-  ] as const)('adds a nullable resolved model without changing historical %s usage', (scope, cutoff) => {
-    const journal = JSON.parse(
-      readFileSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'), 'utf8')
-    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
-    // These prefixes are the last retained formats before #447, not expected new migration names.
-    const folder = createNativeJournalFolder(
-      journal.entries
-        .filter((entry) => entry.idx < cutoff)
-        .map((entry) => ({
-          ...entry,
-          sql: readFileSync(join(process.cwd(), 'drizzle', scope, `${entry.tag}.sql`), 'utf8'),
-        }))
-    );
-    const sqlite = new Database(join(folder, 'db.sqlite'));
-    try {
-      applyNativeScopeMigrations(sqlite, scope, folder);
-      const workspaceId = scope === 'core' ? null : testEntityId('ws', 'retained-model-usage');
-      const callId = testEntityId('cap', 'retained-model-call');
-      const timestamp = '2026-10-25T00:00:00.000Z';
-      // Migration setup must use the historical columns; current writers require current schema.
-      sqlite
-        .prepare(
-          `INSERT INTO capability_calls (schema_version, call_id, workspace_id, capability_id,
+  ] as const)(
+    'adds a nullable resolved model without changing historical %s usage',
+    (scope, cutoff) => {
+      const journal = JSON.parse(
+        readFileSync(join(process.cwd(), 'drizzle', scope, 'meta', '_journal.json'), 'utf8')
+      ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+      // These prefixes are the last retained formats before #447, not expected new migration names.
+      const folder = createNativeJournalFolder(
+        journal.entries
+          .filter((entry) => entry.idx < cutoff)
+          .map((entry) => ({
+            ...entry,
+            sql: readFileSync(join(process.cwd(), 'drizzle', scope, `${entry.tag}.sql`), 'utf8'),
+          }))
+      );
+      const sqlite = new Database(join(folder, 'db.sqlite'));
+      try {
+        applyNativeScopeMigrations(sqlite, scope, folder);
+        const workspaceId = scope === 'core' ? null : testEntityId('ws', 'retained-model-usage');
+        const callId = testEntityId('cap', 'retained-model-call');
+        const timestamp = '2026-10-25T00:00:00.000Z';
+        // Migration setup must use the historical columns; current writers require current schema.
+        sqlite
+          .prepare(
+            `INSERT INTO capability_calls (schema_version, call_id, workspace_id, capability_id,
             family, operation, status, redaction_class, started_at, completed_at)
            VALUES (1, ?, ?, 'llm.responses', 'llm', 'responses', 'succeeded', 'metadata-only', ?, ?)`
-        )
-        .run(callId, workspaceId, timestamp, timestamp);
-      sqlite
-        .prepare(
-          `INSERT INTO usage_records (schema_version, usage_id, workspace_id, capability_call_id,
+          )
+          .run(callId, workspaceId, timestamp, timestamp);
+        sqlite
+          .prepare(
+            `INSERT INTO usage_records (schema_version, usage_id, workspace_id, capability_call_id,
             category, unit, quantity, model_id, provider_ref, source, recorded_at)
            VALUES (1, ?, ?, ?, 'llm', 'tokens', 42, 'logical-tier', 'retained-profile',
             'provider-reported', ?)`
-        )
-        .run(testEntityId('use', 'retained-model-usage'), workspaceId, callId, timestamp);
-      const retained = sqlite.prepare('SELECT * FROM usage_records').get() as Record<
-        string,
-        unknown
-      >;
-      const retainedCall = sqlite.prepare('SELECT * FROM capability_calls').get();
-      expect(retained).not.toHaveProperty('provider_model');
-      applyNativeScopeMigrations(
-        sqlite,
-        scope,
-        undefined,
-        undefined,
-        scope === 'workspace' ? 'pre-knowledge' : 'full'
-      );
-      const migrated = sqlite.prepare('SELECT * FROM usage_records').get();
-      // #447 preserves every historical fact and adds no inferred physical-model attribution.
-      expect(migrated).toEqual({ ...retained, provider_model: null });
-      expect(sqlite.prepare('SELECT * FROM capability_calls').get()).toEqual(retainedCall);
-      const migratedBytes = sqlite.serialize();
-      applyNativeScopeMigrations(
-        sqlite,
-        scope,
-        undefined,
-        undefined,
-        scope === 'workspace' ? 'pre-knowledge' : 'full'
-      );
-      expect(sqlite.prepare('SELECT * FROM usage_records').get()).toEqual(migrated);
-      expect(sqlite.serialize().equals(migratedBytes)).toBe(true);
-      expect(sqlite.pragma('foreign_key_check')).toEqual([]);
-    } finally {
-      sqlite.close();
-      rmSync(folder, { recursive: true, force: true });
+          )
+          .run(testEntityId('use', 'retained-model-usage'), workspaceId, callId, timestamp);
+        const retained = sqlite.prepare('SELECT * FROM usage_records').get() as Record<
+          string,
+          unknown
+        >;
+        const retainedCall = sqlite.prepare('SELECT * FROM capability_calls').get();
+        expect(retained).not.toHaveProperty('provider_model');
+        applyNativeScopeMigrations(
+          sqlite,
+          scope,
+          undefined,
+          undefined,
+          scope === 'workspace' ? 'pre-knowledge' : 'full'
+        );
+        const migrated = sqlite.prepare('SELECT * FROM usage_records').get();
+        // #447 preserves every historical fact and adds no inferred physical-model attribution.
+        expect(migrated).toEqual({ ...retained, provider_model: null });
+        expect(sqlite.prepare('SELECT * FROM capability_calls').get()).toEqual(retainedCall);
+        const migratedBytes = sqlite.serialize();
+        applyNativeScopeMigrations(
+          sqlite,
+          scope,
+          undefined,
+          undefined,
+          scope === 'workspace' ? 'pre-knowledge' : 'full'
+        );
+        expect(sqlite.prepare('SELECT * FROM usage_records').get()).toEqual(migrated);
+        expect(sqlite.serialize().equals(migratedBytes)).toBe(true);
+        expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+      } finally {
+        sqlite.close();
+        rmSync(folder, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('adds trusted Discord origin without attributing or changing retained receipts', () => {
     const journal = JSON.parse(

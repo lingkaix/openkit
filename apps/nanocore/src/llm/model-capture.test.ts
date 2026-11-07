@@ -122,66 +122,70 @@ const provider = {
   gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'bridged' as const },
 };
 
-it.each([
-  'chat',
-  'responses',
-] as const)('services the event loop between durable buffered %s observations', async (format) => {
-  const f = await fixture('off');
-  const faux = fauxProvider({
-    api: 'openai-responses',
-    provider: provider.id,
-    models: [{ id: 'capture-model' }],
-  });
-  const partial = fauxAssistantMessage([fauxText('x'.repeat(12))]);
-  const events = createAssistantMessageEventStream();
-  Object.assign(faux.provider, { stream: () => events });
-  const models = createModels();
-  models.setProvider(faux.provider);
-  events.push({ type: 'start', partial });
-  events.push({ type: 'text_start', contentIndex: 0, partial });
-  for (let index = 0; index < 12; index++)
-    events.push({ type: 'text_delta', contentIndex: 0, delta: 'x', partial });
-  events.push({ type: 'text_end', contentIndex: 0, content: 'x'.repeat(12), partial });
-  events.push({ type: 'done', reason: 'stop', message: partial });
-  events.end(partial);
-  const capture = new ModelCapture({ ...f, corr: 'responsiveness' }, [], provider.id);
-  // Direct Pi calls need the actual request observation normally committed by the dispatcher.
-  await capture.request(
-    format === 'chat'
-      ? { model: 'capture-model', messages: [{ role: 'user', content: 'hello' }], stream: true }
-      : { model: 'capture-model', input: 'hello', stream: true }
-  );
-  let deltas = 0;
-  let probe!: Promise<number>;
-  const client = new PiAiGatewayClient({ models });
-  const transport = {
-    onModelEvent: async (event: Parameters<ModelCapture['event']>[0]) => {
-      await capture.event(event);
-      if (event.type === 'text_delta' && ++deltas === 1)
-        probe = new Promise((resolve) => setImmediate(() => resolve(deltas)));
-    },
-  };
-  const stream =
-    format === 'chat'
-      ? await client.createChatCompletionStream(
-          provider,
-          { model: 'capture-model', messages: [{ role: 'user', content: 'hello' }], stream: true },
-          undefined,
-          transport
-        )
-      : await client.createResponsesStream(
-          provider,
-          { model: 'capture-model', input: 'hello', stream: true },
-          undefined,
-          transport
-        );
-  await new Response(stream).text();
-  expect(await probe).toBe(1);
-  expect(deltas).toBe(12);
-  expect(
-    readWorkObservations(f.workspaceDb, f).filter((row) => row.payload.event === 'text_delta')
-  ).toHaveLength(12);
-});
+it.each(['chat', 'responses'] as const)(
+  'services the event loop between durable buffered %s observations',
+  async (format) => {
+    const f = await fixture('off');
+    const faux = fauxProvider({
+      api: 'openai-responses',
+      provider: provider.id,
+      models: [{ id: 'capture-model' }],
+    });
+    const partial = fauxAssistantMessage([fauxText('x'.repeat(12))]);
+    const events = createAssistantMessageEventStream();
+    Object.assign(faux.provider, { stream: () => events });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    events.push({ type: 'start', partial });
+    events.push({ type: 'text_start', contentIndex: 0, partial });
+    for (let index = 0; index < 12; index++)
+      events.push({ type: 'text_delta', contentIndex: 0, delta: 'x', partial });
+    events.push({ type: 'text_end', contentIndex: 0, content: 'x'.repeat(12), partial });
+    events.push({ type: 'done', reason: 'stop', message: partial });
+    events.end(partial);
+    const capture = new ModelCapture({ ...f, corr: 'responsiveness' }, [], provider.id);
+    // Direct Pi calls need the actual request observation normally committed by the dispatcher.
+    await capture.request(
+      format === 'chat'
+        ? { model: 'capture-model', messages: [{ role: 'user', content: 'hello' }], stream: true }
+        : { model: 'capture-model', input: 'hello', stream: true }
+    );
+    let deltas = 0;
+    let probe!: Promise<number>;
+    const client = new PiAiGatewayClient({ models });
+    const transport = {
+      onModelEvent: async (event: Parameters<ModelCapture['event']>[0]) => {
+        await capture.event(event);
+        if (event.type === 'text_delta' && ++deltas === 1)
+          probe = new Promise((resolve) => setImmediate(() => resolve(deltas)));
+      },
+    };
+    const stream =
+      format === 'chat'
+        ? await client.createChatCompletionStream(
+            provider,
+            {
+              model: 'capture-model',
+              messages: [{ role: 'user', content: 'hello' }],
+              stream: true,
+            },
+            undefined,
+            transport
+          )
+        : await client.createResponsesStream(
+            provider,
+            { model: 'capture-model', input: 'hello', stream: true },
+            undefined,
+            transport
+          );
+    await new Response(stream).text();
+    expect(await probe).toBe(1);
+    expect(deltas).toBe(12);
+    expect(
+      readWorkObservations(f.workspaceDb, f).filter((row) => row.payload.event === 'text_delta')
+    ).toHaveLength(12);
+  }
+);
 
 describe('Turn environment retention', () => {
   it.each([
@@ -374,94 +378,94 @@ describe('Assistant Skill admission capture', () => {
     assistantSkillAdmission: admission,
   };
 
-  it.each([
-    'off',
-    'on',
-  ] as const)('retains exact minimal admission in the complete environment before dispatch with capture %s', async (value) => {
-    const f = await fixture(value);
-    const input = { ...f, environment, requireAssistantSkillAdmission: true };
-    const run = vi.fn(async () => {
-      const rows = readWorkObservations(f.workspaceDb, f);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        id: `env:${f.turn.id}`,
-        ts: f.turn.startedAt,
-        type: 'env.bound',
-        obs: 'nanocore',
-        ret: 'turn-evidence',
-        payload: {
-          workspaceId: f.workspaceDb.workspaceId,
-          assistantSkillAdmission: admission,
-          systemPromptDigest: digestLlmSystemPrompt({
-            endpoint: 'responses',
-            request: { instructions: environment.systemPrompt },
-          }),
-          tools: [
-            {
-              name: 'skill.read',
-              inputSchemaDigest: createHash('sha256')
-                .update(JSON.stringify(environment.tools[0]!.inputSchema))
-                .digest('hex'),
-            },
-          ],
-        },
+  it.each(['off', 'on'] as const)(
+    'retains exact minimal admission in the complete environment before dispatch with capture %s',
+    async (value) => {
+      const f = await fixture(value);
+      const input = { ...f, environment, requireAssistantSkillAdmission: true };
+      const run = vi.fn(async () => {
+        const rows = readWorkObservations(f.workspaceDb, f);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: `env:${f.turn.id}`,
+          ts: f.turn.startedAt,
+          type: 'env.bound',
+          obs: 'nanocore',
+          ret: 'turn-evidence',
+          payload: {
+            workspaceId: f.workspaceDb.workspaceId,
+            assistantSkillAdmission: admission,
+            systemPromptDigest: digestLlmSystemPrompt({
+              endpoint: 'responses',
+              request: { instructions: environment.systemPrompt },
+            }),
+            tools: [
+              {
+                name: 'skill.read',
+                inputSchemaDigest: createHash('sha256')
+                  .update(JSON.stringify(environment.tools[0]!.inputSchema))
+                  .digest('hex'),
+              },
+            ],
+          },
+        });
+        expect(Object.keys(rows[0]!.payload).sort()).toEqual([
+          'assistantSkillAdmission',
+          'systemPromptDigest',
+          'tools',
+          'version',
+          'workspaceId',
+        ]);
+        expect(JSON.stringify(rows)).not.toContain('PRIVATE_');
+        expect(bodies(f)).toEqual([]);
+        expect(
+          f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
+        ).toEqual({ count: 0 });
+        return 'dispatched';
       });
-      expect(Object.keys(rows[0]!.payload).sort()).toEqual([
-        'assistantSkillAdmission',
-        'systemPromptDigest',
-        'tools',
-        'version',
-        'workspaceId',
-      ]);
-      expect(JSON.stringify(rows)).not.toContain('PRIVATE_');
-      expect(bodies(f)).toEqual([]);
-      expect(
-        f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
-      ).toEqual({ count: 0 });
-      return 'dispatched';
-    });
-    await expect(withTurnModelCapture(input, run)).resolves.toBe('dispatched');
-    expect(run).toHaveBeenCalledOnce();
-  });
+      await expect(withTurnModelCapture(input, run)).resolves.toBe('dispatched');
+      expect(run).toHaveBeenCalledOnce();
+    }
+  );
 
-  it.each([
-    false,
-    true,
-  ])('records explicit empty selection without a catalog with required admission %s', async (required) => {
-    const f = await fixture('off');
-    const empty: AssistantSkillAdmission = { catalogRevision: null, skills: [] };
-    const input = {
-      ...f,
-      environment: { ...environment, assistantSkillAdmission: empty },
-      requireAssistantSkillAdmission: required,
-    };
-    const run = vi.fn(async () => 'dispatched');
-    await expect(withTurnModelCapture(input, run)).resolves.toBe('dispatched');
-    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.assistantSkillAdmission).toEqual({
-      catalogRevision: null,
-      skills: [],
-    });
-    expect(run).toHaveBeenCalledOnce();
-  });
+  it.each([false, true])(
+    'records explicit empty selection without a catalog with required admission %s',
+    async (required) => {
+      const f = await fixture('off');
+      const empty: AssistantSkillAdmission = { catalogRevision: null, skills: [] };
+      const input = {
+        ...f,
+        environment: { ...environment, assistantSkillAdmission: empty },
+        requireAssistantSkillAdmission: required,
+      };
+      const run = vi.fn(async () => 'dispatched');
+      await expect(withTurnModelCapture(input, run)).resolves.toBe('dispatched');
+      expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.assistantSkillAdmission).toEqual({
+        catalogRevision: null,
+        skills: [],
+      });
+      expect(run).toHaveBeenCalledOnce();
+    }
+  );
 
-  it.each([
-    undefined,
-    { systemPrompt: 'Prompt', tools: [] },
-  ])('blocks missing required admission before dispatch for environment %j', async (missingEnvironment) => {
-    const f = await fixture('off');
-    const input = {
-      ...f,
-      ...(missingEnvironment ? { environment: missingEnvironment } : {}),
-      requireAssistantSkillAdmission: true,
-    };
-    const run = vi.fn(async () => 'must not dispatch');
-    await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
-      name: 'ModelCaptureError',
-      code: 'model_capture_unavailable',
-    });
-    expect(run).not.toHaveBeenCalled();
-    expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
-  });
+  it.each([undefined, { systemPrompt: 'Prompt', tools: [] }])(
+    'blocks missing required admission before dispatch for environment %j',
+    async (missingEnvironment) => {
+      const f = await fixture('off');
+      const input = {
+        ...f,
+        ...(missingEnvironment ? { environment: missingEnvironment } : {}),
+        requireAssistantSkillAdmission: true,
+      };
+      const run = vi.fn(async () => 'must not dispatch');
+      await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+        name: 'ModelCaptureError',
+        code: 'model_capture_unavailable',
+      });
+      expect(run).not.toHaveBeenCalled();
+      expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+    }
+  );
 
   it.each([
     ['negative revision', { ...admission, catalogRevision: -1 }],
@@ -486,26 +490,29 @@ describe('Assistant Skill admission capture', () => {
     ['extra admission content', { ...admission, description: 'PRIVATE_DESCRIPTION' }],
     ['extra Skill content', { ...admission, skills: [{ ...firstSkill, body: 'PRIVATE_BODY' }] }],
     ['null admission', null],
-  ])('blocks %s at the capture boundary even when admission is optional', async (_name, invalid) => {
-    for (const required of [false, true]) {
-      const f = await fixture('off');
-      const input = {
-        ...f,
-        environment: {
-          ...environment,
-          assistantSkillAdmission: invalid as unknown as AssistantSkillAdmission,
-        },
-        requireAssistantSkillAdmission: required,
-      };
-      const run = vi.fn(async () => 'must not dispatch');
-      await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
-        name: 'ModelCaptureError',
-        code: 'model_capture_unavailable',
-      });
-      expect(run).not.toHaveBeenCalled();
-      expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+  ])(
+    'blocks %s at the capture boundary even when admission is optional',
+    async (_name, invalid) => {
+      for (const required of [false, true]) {
+        const f = await fixture('off');
+        const input = {
+          ...f,
+          environment: {
+            ...environment,
+            assistantSkillAdmission: invalid as unknown as AssistantSkillAdmission,
+          },
+          requireAssistantSkillAdmission: required,
+        };
+        const run = vi.fn(async () => 'must not dispatch');
+        await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+          name: 'ModelCaptureError',
+          code: 'model_capture_unavailable',
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(readWorkObservations(f.workspaceDb, f)).toEqual([]);
+      }
     }
-  });
+  );
 
   it('re-enters the exact retained environment after reopening storage without adding a row', async () => {
     const f = await fixture('off');
@@ -563,46 +570,49 @@ describe('Assistant Skill admission capture', () => {
         ],
       },
     ],
-  ])('rejects changed %s under the same Turn identity without dispatch or replacement', async (_name, changedEnvironment) => {
-    const f = await fixture('off');
-    const input = { ...f, environment, requireAssistantSkillAdmission: true };
-    await withTurnModelCapture(input, async () => 'first dispatch');
-    const before = readWorkObservations(f.workspaceDb, f);
-    const originalBytes = observationBytes(f);
-    const run = vi.fn(async () => 'must not dispatch');
-    await expect(
-      withTurnModelCapture({ ...input, environment: changedEnvironment }, run)
-    ).rejects.toMatchObject({ name: 'ModelCaptureError', code: 'model_capture_unavailable' });
-    expect(run).not.toHaveBeenCalled();
-    expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
-    expect(observationBytes(f)).toBe(originalBytes);
-  });
+  ])(
+    'rejects changed %s under the same Turn identity without dispatch or replacement',
+    async (_name, changedEnvironment) => {
+      const f = await fixture('off');
+      const input = { ...f, environment, requireAssistantSkillAdmission: true };
+      await withTurnModelCapture(input, async () => 'first dispatch');
+      const before = readWorkObservations(f.workspaceDb, f);
+      const originalBytes = observationBytes(f);
+      const run = vi.fn(async () => 'must not dispatch');
+      await expect(
+        withTurnModelCapture({ ...input, environment: changedEnvironment }, run)
+      ).rejects.toMatchObject({ name: 'ModelCaptureError', code: 'model_capture_unavailable' });
+      expect(run).not.toHaveBeenCalled();
+      expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
+      expect(observationBytes(f)).toBe(originalBytes);
+    }
+  );
 
-  it.each([
-    admission,
-    { catalogRevision: null, skills: [] },
-  ])('does not enrich an earlier environment without admission with %j', async (laterAdmission) => {
-    const f = await fixture('off');
-    const legacyEnvironment = {
-      systemPrompt: environment.systemPrompt,
-      tools: environment.tools,
-    };
-    await withTurnModelCapture({ ...f, environment: legacyEnvironment }, async () => 'legacy');
-    const before = readWorkObservations(f.workspaceDb, f);
-    expect(before[0]?.payload).not.toHaveProperty('assistantSkillAdmission');
-    const input = {
-      ...f,
-      environment: { ...environment, assistantSkillAdmission: laterAdmission },
-      requireAssistantSkillAdmission: true,
-    };
-    const run = vi.fn(async () => 'must not dispatch');
-    await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
-      name: 'ModelCaptureError',
-      code: 'model_capture_unavailable',
-    });
-    expect(run).not.toHaveBeenCalled();
-    expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
-  });
+  it.each([admission, { catalogRevision: null, skills: [] }])(
+    'does not enrich an earlier environment without admission with %j',
+    async (laterAdmission) => {
+      const f = await fixture('off');
+      const legacyEnvironment = {
+        systemPrompt: environment.systemPrompt,
+        tools: environment.tools,
+      };
+      await withTurnModelCapture({ ...f, environment: legacyEnvironment }, async () => 'legacy');
+      const before = readWorkObservations(f.workspaceDb, f);
+      expect(before[0]?.payload).not.toHaveProperty('assistantSkillAdmission');
+      const input = {
+        ...f,
+        environment: { ...environment, assistantSkillAdmission: laterAdmission },
+        requireAssistantSkillAdmission: true,
+      };
+      const run = vi.fn(async () => 'must not dispatch');
+      await expect(withTurnModelCapture(input, run)).rejects.toMatchObject({
+        name: 'ModelCaptureError',
+        code: 'model_capture_unavailable',
+      });
+      expect(run).not.toHaveBeenCalled();
+      expect(readWorkObservations(f.workspaceDb, f)).toEqual(before);
+    }
+  );
 
   it('does not remove retained admission through an optional legacy environment', async () => {
     const f = await fixture('off');
@@ -640,39 +650,41 @@ describe('Assistant Skill admission capture', () => {
 });
 
 describe('Gateway model retention', () => {
-  it.each([
-    'off',
-    'on',
-  ] as const)('omits unrequested sampling fields with capture %s', async (value) => {
-    const f = await fixture(value);
-    await new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
-    const rows = readWorkObservations(f.workspaceDb, f).filter(
-      (row) => row.type === 'model.observed' && row.payload.direction === 'request'
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.payload.sampling).toEqual({});
-    expect(rows[0]?.payload.content).toEqual({ state: value === 'on' ? 'expected' : 'off' });
-  });
+  it.each(['off', 'on'] as const)(
+    'omits unrequested sampling fields with capture %s',
+    async (value) => {
+      const f = await fixture(value);
+      await new ModelCapture(f, [], provider.id).request({
+        model: 'capture-model',
+        input: 'hello',
+      });
+      const rows = readWorkObservations(f.workspaceDb, f).filter(
+        (row) => row.type === 'model.observed' && row.payload.direction === 'request'
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.payload.sampling).toEqual({});
+      expect(rows[0]?.payload.content).toEqual({ state: value === 'on' ? 'expected' : 'off' });
+    }
+  );
 
-  it.each([
-    'max_output_tokens',
-    'max_completion_tokens',
-    'max_tokens',
-  ])('preserves explicit zero sampling values from %s', async (tokenField) => {
-    const f = await fixture('off');
-    await new ModelCapture(f, [], provider.id).request({
-      model: 'capture-model',
-      input: 'hello',
-      temperature: 0,
-      top_p: 0,
-      [tokenField]: 0,
-    });
-    expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual({
-      temperature: 0,
-      topP: 0,
-      maxOutputTokens: 0,
-    });
-  });
+  it.each(['max_output_tokens', 'max_completion_tokens', 'max_tokens'])(
+    'preserves explicit zero sampling values from %s',
+    async (tokenField) => {
+      const f = await fixture('off');
+      await new ModelCapture(f, [], provider.id).request({
+        model: 'capture-model',
+        input: 'hello',
+        temperature: 0,
+        top_p: 0,
+        [tokenField]: 0,
+      });
+      expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual({
+        temperature: 0,
+        topP: 0,
+        maxOutputTokens: 0,
+      });
+    }
+  );
 
   it('retains only supplied reasoning sampling fields', async () => {
     const f = await fixture('off');
@@ -757,73 +769,73 @@ describe('Gateway model retention', () => {
   });
 
   for (const streaming of [false, true]) {
-    it.each([
-      undefined,
-      96,
-    ])(`retains sampling from the admitted Chat request with capture off (stream=${streaming}, max_tokens=%s)`, async (maxTokens) => {
-      const f = await fixture('off');
-      const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
-      const models = createModels();
-      models.setProvider(faux.provider);
-      faux.setResponses([
-        { ...fauxAssistantMessage('converted answer'), responseModel: 'provider-snapshot' },
-      ]);
-      const piAiClient = new PiAiGatewayClient({ models });
-      const adapterCall = vi.spyOn(
-        piAiClient,
-        streaming ? 'createChatCompletionStream' : 'createChatCompletion'
-      );
-      const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient });
-      const request = {
-        model: 'capture-model',
-        messages: [{ role: 'user' as const, content: 'hello' }],
-        temperature: 0.2,
-        max_completion_tokens: 8192,
-        ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
-        reasoning_effort: 'high',
-      };
-      const result = await dispatcher[
-        streaming ? 'createChatCompletionStream' : 'createChatCompletion'
-      ](
-        {
-          ...provider,
-          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-        },
-        request,
-        { capture: f }
-      );
-      if (result instanceof ReadableStream) await new Response(result).text();
-      expect(adapterCall).toHaveBeenCalledOnce();
-      expect(faux.state.callCount).toBe(1);
-      const adapterRequest = adapterCall.mock.calls[0]![1];
-      expect(adapterRequest).toMatchObject(request);
-      expect(adapterRequest).not.toHaveProperty('max_output_tokens');
-      expect(adapterRequest).not.toHaveProperty('reasoning');
-      const rows = readWorkObservations(f.workspaceDb, f);
-      const observation = rows.find((row) => row.payload.direction === 'request');
-      expect(observation?.payload).toMatchObject({
-        providerRef: provider.id,
-        model: adapterRequest.model,
-        content: { state: 'off' },
-      });
-      expect(observation?.payload.sampling).toEqual({
-        temperature: adapterRequest.temperature,
-        ...(adapterRequest.max_completion_tokens === undefined
-          ? {}
-          : { maxOutputTokens: adapterRequest.max_completion_tokens }),
-        reasoningEffort: adapterRequest.reasoning_effort,
-      });
-      expect(
-        rows.some(
-          (row) =>
-            row.parent === observation?.id && row.payload.reportedModel === 'provider-snapshot'
-        )
-      ).toBe(true);
-      expect(bodies(f)).toEqual([]);
-      expect(
-        f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
-      ).toEqual({ count: 0 });
-    });
+    it.each([undefined, 96])(
+      `retains sampling from the admitted Chat request with capture off (stream=${streaming}, max_tokens=%s)`,
+      async (maxTokens) => {
+        const f = await fixture('off');
+        const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
+        const models = createModels();
+        models.setProvider(faux.provider);
+        faux.setResponses([
+          { ...fauxAssistantMessage('converted answer'), responseModel: 'provider-snapshot' },
+        ]);
+        const piAiClient = new PiAiGatewayClient({ models });
+        const adapterCall = vi.spyOn(
+          piAiClient,
+          streaming ? 'createChatCompletionStream' : 'createChatCompletion'
+        );
+        const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient });
+        const request = {
+          model: 'capture-model',
+          messages: [{ role: 'user' as const, content: 'hello' }],
+          temperature: 0.2,
+          max_completion_tokens: 8192,
+          ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
+          reasoning_effort: 'high',
+        };
+        const result = await dispatcher[
+          streaming ? 'createChatCompletionStream' : 'createChatCompletion'
+        ](
+          {
+            ...provider,
+            gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          },
+          request,
+          { capture: f }
+        );
+        if (result instanceof ReadableStream) await new Response(result).text();
+        expect(adapterCall).toHaveBeenCalledOnce();
+        expect(faux.state.callCount).toBe(1);
+        const adapterRequest = adapterCall.mock.calls[0]![1];
+        expect(adapterRequest).toMatchObject(request);
+        expect(adapterRequest).not.toHaveProperty('max_output_tokens');
+        expect(adapterRequest).not.toHaveProperty('reasoning');
+        const rows = readWorkObservations(f.workspaceDb, f);
+        const observation = rows.find((row) => row.payload.direction === 'request');
+        expect(observation?.payload).toMatchObject({
+          providerRef: provider.id,
+          model: adapterRequest.model,
+          content: { state: 'off' },
+        });
+        expect(observation?.payload.sampling).toEqual({
+          temperature: adapterRequest.temperature,
+          ...(adapterRequest.max_completion_tokens === undefined
+            ? {}
+            : { maxOutputTokens: adapterRequest.max_completion_tokens }),
+          reasoningEffort: adapterRequest.reasoning_effort,
+        });
+        expect(
+          rows.some(
+            (row) =>
+              row.parent === observation?.id && row.payload.reportedModel === 'provider-snapshot'
+          )
+        ).toBe(true);
+        expect(bodies(f)).toEqual([]);
+        expect(
+          f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
+        ).toEqual({ count: 0 });
+      }
+    );
   }
 
   it('retains admitted Chat content with capture on while excluding private request carriers', async () => {
@@ -884,89 +896,89 @@ describe('Gateway model retention', () => {
     'createResponses',
     'createResponsesStream',
   ] as const) {
-    it.each([
-      'on',
-      'off',
-    ] as const)(`${method} retains exact admitted bytes only when %s`, async (value) => {
-      const f = await fixture(value);
-      const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
-      const models = createModels();
-      models.setProvider(faux.provider);
-      faux.setResponses([
-        fauxAssistantMessage(
-          [
-            fauxThinking('PRIVATE_REASONING'),
-            fauxText('  answer 雪\n\t'),
-            fauxToolCall('run', { text: '  args 雪\r\n' }, { id: 'call_one' }),
-          ],
-          { stopReason: 'toolUse' }
-        ),
-      ]);
-      const dispatcher = new LLMGatewayProviderDispatcher({
-        piAiClient: new PiAiGatewayClient({ models }),
-      });
-      const request = method.includes('Chat')
-        ? {
-            model: 'capture-model',
-            messages: [{ role: 'user' as const, content: '  input 雪\n\t' }],
-            tools: [
-              {
-                type: 'function' as const,
-                function: {
+    it.each(['on', 'off'] as const)(
+      `${method} retains exact admitted bytes only when %s`,
+      async (value) => {
+        const f = await fixture(value);
+        const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
+        const models = createModels();
+        models.setProvider(faux.provider);
+        faux.setResponses([
+          fauxAssistantMessage(
+            [
+              fauxThinking('PRIVATE_REASONING'),
+              fauxText('  answer 雪\n\t'),
+              fauxToolCall('run', { text: '  args 雪\r\n' }, { id: 'call_one' }),
+            ],
+            { stopReason: 'toolUse' }
+          ),
+        ]);
+        const dispatcher = new LLMGatewayProviderDispatcher({
+          piAiClient: new PiAiGatewayClient({ models }),
+        });
+        const request = method.includes('Chat')
+          ? {
+              model: 'capture-model',
+              messages: [{ role: 'user' as const, content: '  input 雪\n\t' }],
+              tools: [
+                {
+                  type: 'function' as const,
+                  function: {
+                    name: 'run',
+                    parameters: { type: 'object', properties: { text: { type: 'string' } } },
+                  },
+                },
+              ],
+            }
+          : {
+              model: 'capture-model',
+              input: '  input 雪\n\t',
+              tools: [
+                {
+                  type: 'function' as const,
                   name: 'run',
                   parameters: { type: 'object', properties: { text: { type: 'string' } } },
                 },
-              },
-            ],
-          }
-        : {
-            model: 'capture-model',
-            input: '  input 雪\n\t',
-            tools: [
-              {
-                type: 'function' as const,
-                name: 'run',
-                parameters: { type: 'object', properties: { text: { type: 'string' } } },
-              },
-            ],
-          };
-      const result = await (method.includes('Chat')
-        ? dispatcher[method as 'createChatCompletion' | 'createChatCompletionStream'](
-            provider,
-            request as { model: string; messages: { role: 'user'; content: string }[] },
-            { capture: f }
-          )
-        : dispatcher[method as 'createResponses' | 'createResponsesStream'](
-            provider,
-            request as { model: string; input: string },
-            { capture: f }
-          ));
-      if (result instanceof ReadableStream) await new Response(result).text();
-      expect(faux.state.callCount).toBe(1);
-      const rows = readWorkObservations(f.workspaceDb, f);
-      expect(rows.filter((row) => row.type === 'model.observed').map((row) => row.corr)).toEqual(
-        expect.arrayContaining(['logical-one'])
-      );
-      if (value === 'off') {
-        expect(bodies(f)).toEqual([]);
-        expect(
-          f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
-        ).toEqual({ count: 0 });
-      } else {
-        const captured = bodies(f);
-        expect(captured[0]).toEqual(request);
-        const serialized = JSON.stringify(captured);
-        expect(serialized).toContain(JSON.stringify('  answer 雪\n\t').slice(1, -1));
-        expect(serialized).toContain(JSON.stringify('  args 雪\r\n').slice(1, -1));
-        expect(serialized).not.toContain('PRIVATE_REASONING');
-        expect(serialized).not.toContain(provider.apiKey);
-        const workspaceId = f.workspaceDb.workspaceId;
-        f.workspaceDb.sqlite.close();
-        const reopened = openWorkspaceDb(f.dataRoot, workspaceId);
-        databases.push(reopened);
-        expect(bodies({ ...f, workspaceDb: reopened })).toEqual(captured);
+              ],
+            };
+        const result = await (method.includes('Chat')
+          ? dispatcher[method as 'createChatCompletion' | 'createChatCompletionStream'](
+              provider,
+              request as { model: string; messages: { role: 'user'; content: string }[] },
+              { capture: f }
+            )
+          : dispatcher[method as 'createResponses' | 'createResponsesStream'](
+              provider,
+              request as { model: string; input: string },
+              { capture: f }
+            ));
+        if (result instanceof ReadableStream) await new Response(result).text();
+        expect(faux.state.callCount).toBe(1);
+        const rows = readWorkObservations(f.workspaceDb, f);
+        expect(rows.filter((row) => row.type === 'model.observed').map((row) => row.corr)).toEqual(
+          expect.arrayContaining(['logical-one'])
+        );
+        if (value === 'off') {
+          expect(bodies(f)).toEqual([]);
+          expect(
+            f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()
+          ).toEqual({ count: 0 });
+        } else {
+          const captured = bodies(f);
+          expect(captured[0]).toEqual(request);
+          const serialized = JSON.stringify(captured);
+          expect(serialized).toContain(JSON.stringify('  answer 雪\n\t').slice(1, -1));
+          expect(serialized).toContain(JSON.stringify('  args 雪\r\n').slice(1, -1));
+          expect(serialized).not.toContain('PRIVATE_REASONING');
+          expect(serialized).not.toContain(provider.apiKey);
+          const workspaceId = f.workspaceDb.workspaceId;
+          f.workspaceDb.sqlite.close();
+          const reopened = openWorkspaceDb(f.dataRoot, workspaceId);
+          databases.push(reopened);
+          expect(bodies({ ...f, workspaceDb: reopened })).toEqual(captured);
+        }
       }
-    });
+    );
   }
 
   it('links fallback attempts and response parents within one fresh logical correlation per call', async () => {
@@ -1079,46 +1091,44 @@ describe('Gateway model retention', () => {
     ).toEqual(request);
   });
 
-  it.each([
-    'resolved-private-credential',
-    'Bearer opaque-credential',
-    'sk-privatecanary123',
-  ])('excludes whole bodies containing %s rather than claiming redacted losslessness', async (secret) => {
-    const f = await fixture();
-    const capture = new ModelCapture(f, [provider.apiKey], provider.id);
-    await capture.request({ model: 'capture-model', input: `prefix ${secret} suffix` });
-    await capture.event({ type: 'toolcall_delta', delta: JSON.stringify({ value: secret }) });
-    expect(bodies(f)).toEqual([]);
-    expect(readWorkObservations(f.workspaceDb, f).map((row) => row.payload.content)).toEqual([
-      { state: 'unavailable', reason: 'credential-excluded' },
-      { state: 'unavailable', reason: 'credential-excluded' },
-    ]);
-  });
+  it.each(['resolved-private-credential', 'Bearer opaque-credential', 'sk-privatecanary123'])(
+    'excludes whole bodies containing %s rather than claiming redacted losslessness',
+    async (secret) => {
+      const f = await fixture();
+      const capture = new ModelCapture(f, [provider.apiKey], provider.id);
+      await capture.request({ model: 'capture-model', input: `prefix ${secret} suffix` });
+      await capture.event({ type: 'toolcall_delta', delta: JSON.stringify({ value: secret }) });
+      expect(bodies(f)).toEqual([]);
+      expect(readWorkObservations(f.workspaceDb, f).map((row) => row.payload.content)).toEqual([
+        { state: 'unavailable', reason: 'credential-excluded' },
+        { state: 'unavailable', reason: 'credential-excluded' },
+      ]);
+    }
+  );
 
-  it.each([
-    'done',
-    'interrupted',
-    'failed',
-  ] as const)('rejects credentials split across deltas before publishing a %s unit', async (terminal) => {
-    const f = await fixture();
-    const capture = new ModelCapture(f, [provider.apiKey], provider.id);
-    await capture.request({ model: 'capture-model', input: 'safe' });
-    await capture.event({ type: 'text_delta', contentIndex: 0, delta: 'resolved-private-' });
-    expect(bodies(f)).toHaveLength(1);
-    expect(readWorkObservations(f.workspaceDb, f).at(-1)?.payload.content).toEqual({
-      state: 'expected',
-    });
-    await capture.event({ type: 'text_delta', contentIndex: 0, delta: 'credential' });
-    await capture.event({ type: terminal });
-    expect(bodies(f)).toHaveLength(1);
-    expect(
-      readWorkObservations(f.workspaceDb, f).some(
-        (row) =>
-          row.type === 'model.capture-gap' &&
-          (row.payload.content as { reason: string }).reason === 'credential-excluded'
-      )
-    ).toBe(true);
-  });
+  it.each(['done', 'interrupted', 'failed'] as const)(
+    'rejects credentials split across deltas before publishing a %s unit',
+    async (terminal) => {
+      const f = await fixture();
+      const capture = new ModelCapture(f, [provider.apiKey], provider.id);
+      await capture.request({ model: 'capture-model', input: 'safe' });
+      await capture.event({ type: 'text_delta', contentIndex: 0, delta: 'resolved-private-' });
+      expect(bodies(f)).toHaveLength(1);
+      expect(readWorkObservations(f.workspaceDb, f).at(-1)?.payload.content).toEqual({
+        state: 'expected',
+      });
+      await capture.event({ type: 'text_delta', contentIndex: 0, delta: 'credential' });
+      await capture.event({ type: terminal });
+      expect(bodies(f)).toHaveLength(1);
+      expect(
+        readWorkObservations(f.workspaceDb, f).some(
+          (row) =>
+            row.type === 'model.capture-gap' &&
+            (row.payload.content as { reason: string }).reason === 'credential-excluded'
+        )
+      ).toBe(true);
+    }
+  );
 
   it('scans decoded tool argument fragments and preserves safe interrupted bytes exactly', async () => {
     const f = await fixture();

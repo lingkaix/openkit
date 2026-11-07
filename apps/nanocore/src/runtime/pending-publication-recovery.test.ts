@@ -24,55 +24,55 @@ function probe(mode: string, phase = 'first', root?: string) {
 }
 
 describe('public pending publication recovery', () => {
-  it.each([
-    'delivery',
-    'closeout',
-    'invalidation',
-  ])('completes a named %s after native commit and process exit before the transport reply', (mode) => {
-    const crashed = probe(mode);
-    expect(crashed.result.status, crashed.result.stderr).toBe(23);
-    expect(crashed.value.boundary).toBe('native-commit-before-reply');
-    const recovered = probe(mode, 'first', crashed.root);
-    expect(recovered.result.status, recovered.result.stderr).toBe(0);
-    const published = recovered.value.records.filter(
-      (record: { publicationTurnId: string | null }) => record.publicationTurnId !== null
-    );
-    expect(published.length).toBeGreaterThan(0);
-    for (const record of published) {
-      expect(record.status).toBe('completed');
-      expect(record.validation).toBeNull();
-      expect(record.items.length).toBeGreaterThan(0);
-      if (mode === 'invalidation')
-        expect(record.invalidationTurnId).not.toBe(record.publicationTurnId);
-      expect(record.delivery).toBe(mode === 'closeout' ? 'closed-out' : 'delivered');
-    }
-    const repeated = probe(mode, 'first', crashed.root);
-    expect(repeated.value.records).toEqual(recovered.value.records);
-  }, 90_000);
-
-  it.each([
-    'delivery',
-    'closeout',
-    'invalidation',
-  ])('completes a named %s after native commit and process exit before caller acknowledgement', (mode) => {
-    const crashed = probe(mode, 'between');
-    expect(crashed.result.status, crashed.result.stderr).toBe(23);
-    expect(crashed.value.boundary).toBe('native-reply-before-consumer');
-    const recovered = probe(mode, 'between', crashed.root);
-    expect(recovered.result.status, recovered.result.stderr).toBe(0);
-    for (const record of recovered.value.records) {
-      expect(record.status).toBe('completed');
-      expect(record.validation).toBeNull();
-      expect(record.delivery).toBe(mode === 'closeout' ? 'closed-out' : 'delivered');
-      expect(record.items).toEqual(
-        mode === 'closeout'
-          ? ['status']
-          : mode === 'invalidation'
-            ? ['approval-decision', 'status']
-            : ['approval-decision']
+  it.each(['delivery', 'closeout', 'invalidation'])(
+    'completes a named %s after native commit and process exit before the transport reply',
+    (mode) => {
+      const crashed = probe(mode);
+      expect(crashed.result.status, crashed.result.stderr).toBe(23);
+      expect(crashed.value.boundary).toBe('native-commit-before-reply');
+      const recovered = probe(mode, 'first', crashed.root);
+      expect(recovered.result.status, recovered.result.stderr).toBe(0);
+      const published = recovered.value.records.filter(
+        (record: { publicationTurnId: string | null }) => record.publicationTurnId !== null
       );
-    }
-  }, 90_000);
+      expect(published.length).toBeGreaterThan(0);
+      for (const record of published) {
+        expect(record.status).toBe('completed');
+        expect(record.validation).toBeNull();
+        expect(record.items.length).toBeGreaterThan(0);
+        if (mode === 'invalidation')
+          expect(record.invalidationTurnId).not.toBe(record.publicationTurnId);
+        expect(record.delivery).toBe(mode === 'closeout' ? 'closed-out' : 'delivered');
+      }
+      const repeated = probe(mode, 'first', crashed.root);
+      expect(repeated.value.records).toEqual(recovered.value.records);
+    },
+    90_000
+  );
+
+  it.each(['delivery', 'closeout', 'invalidation'])(
+    'completes a named %s after native commit and process exit before caller acknowledgement',
+    (mode) => {
+      const crashed = probe(mode, 'between');
+      expect(crashed.result.status, crashed.result.stderr).toBe(23);
+      expect(crashed.value.boundary).toBe('native-reply-before-consumer');
+      const recovered = probe(mode, 'between', crashed.root);
+      expect(recovered.result.status, recovered.result.stderr).toBe(0);
+      for (const record of recovered.value.records) {
+        expect(record.status).toBe('completed');
+        expect(record.validation).toBeNull();
+        expect(record.delivery).toBe(mode === 'closeout' ? 'closed-out' : 'delivered');
+        expect(record.items).toEqual(
+          mode === 'closeout'
+            ? ['status']
+            : mode === 'invalidation'
+              ? ['approval-decision', 'status']
+              : ['approval-decision']
+        );
+      }
+    },
+    90_000
+  );
 
   it('retains complete native publication when caller acknowledgement throws', () => {
     const failed = probe('throw');
@@ -92,40 +92,42 @@ describe('public pending publication recovery', () => {
     });
   }, 90_000);
 
-  it.each([
-    'delivery',
-    'closeout',
-  ])('keeps independent %s identity through named completion and reopen', (mode) => {
-    const crashed = probe(mode);
-    expect(crashed.result.status, crashed.result.stderr).toBe(23);
-    const recovered = probe(mode, 'first', crashed.root);
-    expect(recovered.result.status, recovered.result.stderr).toBe(0);
-    const identities = recovered.value.records.flatMap(
-      (record: { publicationTurnId: string | null }) =>
-        record.publicationTurnId ? [record.publicationTurnId] : []
-    );
-    expect(identities.length).toBeGreaterThan(0);
-    for (const id of identities)
-      expect(id).toMatch(
-        /^tu_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  it.each(['delivery', 'closeout'])(
+    'keeps independent %s identity through named completion and reopen',
+    (mode) => {
+      const crashed = probe(mode);
+      expect(crashed.result.status, crashed.result.stderr).toBe(23);
+      const recovered = probe(mode, 'first', crashed.root);
+      expect(recovered.result.status, recovered.result.stderr).toBe(0);
+      const identities = recovered.value.records.flatMap(
+        (record: { publicationTurnId: string | null }) =>
+          record.publicationTurnId ? [record.publicationTurnId] : []
       );
-    const repeated = probe(mode, 'first', crashed.root);
-    expect(repeated.value.records).toEqual(recovered.value.records);
-  }, 90_000);
+      expect(identities.length).toBeGreaterThan(0);
+      for (const id of identities)
+        expect(id).toMatch(
+          /^tu_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+        );
+      const repeated = probe(mode, 'first', crashed.root);
+      expect(repeated.value.records).toEqual(recovered.value.records);
+    },
+    90_000
+  );
 
-  it.each([
-    'delivery',
-    'closeout',
-  ])('refuses a retained %s publication Turn without its association or a replacement', (mode) => {
-    const crashed = probe(mode, 'before-association');
-    expect(crashed.result.status, crashed.result.stderr).toBe(23);
-    const refused = probe(mode, 'before-association', crashed.root);
-    expect(refused.result.status, refused.result.stderr).toBe(0);
-    expect(refused.value.recoveryCode).toBe('recovery_required');
-    expect(refused.value.before).toEqual(refused.value.after);
-    const repeated = probe(mode, 'before-association', crashed.root);
-    expect(repeated.value).toEqual(refused.value);
-  }, 90_000);
+  it.each(['delivery', 'closeout'])(
+    'refuses a retained %s publication Turn without its association or a replacement',
+    (mode) => {
+      const crashed = probe(mode, 'before-association');
+      expect(crashed.result.status, crashed.result.stderr).toBe(23);
+      const refused = probe(mode, 'before-association', crashed.root);
+      expect(refused.result.status, refused.result.stderr).toBe(0);
+      expect(refused.value.recoveryCode).toBe('recovery_required');
+      expect(refused.value.before).toEqual(refused.value.after);
+      const repeated = probe(mode, 'before-association', crashed.root);
+      expect(repeated.value).toEqual(refused.value);
+    },
+    90_000
+  );
 
   it('refuses a recorded closeout pointer whose canonical Turn is missing', () => {
     const crashed = probe('closeout');

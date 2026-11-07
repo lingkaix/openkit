@@ -57,61 +57,61 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
     { declarations: 'absent', codex: false },
     { declarations: 'anchored', codex: true },
     { declarations: 'absent', codex: true },
-  ])('replays the exact pinned Codex compaction request at real Gateway admission: $declarations codex=$codex', async ({
-    declarations,
-    codex,
-  }) => {
-    const request = JSON.parse(
-      readFileSync(new URL('./codex-compaction-request.json', import.meta.url), 'utf8')
-    ) as OpenAICompatibleResponsesRequest;
-    if (declarations === 'absent') request.input = (request.input as unknown[]).slice(1);
-    const stock = codex ? openaiCodexProvider() : openaiProvider();
-    const models = createModels();
-    models.setProvider(stock);
-    const template = models
-      .getModels()
-      .find((model) => model.api === (codex ? 'openai-codex-responses' : 'openai-responses'))!;
-    models.setProvider({ ...stock, models: [{ ...template, id: request.model }] });
-    const client = new PiAiGatewayClient({ models });
-    const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: client });
-    const provider = piProviderConfig({
-      adapterId: stock.id,
-      apiKey: codex
-        ? `synthetic.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture' } })).toString('base64url')}.synthetic`
-        : 'explicit-secret',
-      models: [request.model],
-      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-    });
-    const payloads: Record<string, unknown>[] = [];
-    const urls: string[] = [];
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-      urls.push(String(url));
-      const body =
-        new Headers(init?.headers).get('content-encoding') === 'zstd'
-          ? zstdDecompressSync(init?.body as Uint8Array).toString()
-          : String(init?.body);
-      payloads.push(JSON.parse(body));
-      return new Response(
-        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_summary', status: 'completed', output: [], usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } })}\n\n`,
-        { headers: { 'content-type': 'text/event-stream' } }
-      );
-    });
-    try {
-      // Admission success alone is insufficient: both paths must reach stock serialization without changing history or authority.
-      await new Response(await dispatcher.createResponsesStream(provider, request)).text();
-      await new Response(await client.createResponsesStream(provider, request)).text();
-      expect(payloads).toHaveLength(2);
-      for (const payload of payloads) {
-        expect(payload.input).toEqual(request.input);
-        expect(payload.tools ?? []).toEqual([]);
-        expect(payload).not.toHaveProperty('compaction_trigger');
-        expect(payload).not.toHaveProperty('context_management');
+  ])(
+    'replays the exact pinned Codex compaction request at real Gateway admission: $declarations codex=$codex',
+    async ({ declarations, codex }) => {
+      const request = JSON.parse(
+        readFileSync(new URL('./codex-compaction-request.json', import.meta.url), 'utf8')
+      ) as OpenAICompatibleResponsesRequest;
+      if (declarations === 'absent') request.input = (request.input as unknown[]).slice(1);
+      const stock = codex ? openaiCodexProvider() : openaiProvider();
+      const models = createModels();
+      models.setProvider(stock);
+      const template = models
+        .getModels()
+        .find((model) => model.api === (codex ? 'openai-codex-responses' : 'openai-responses'))!;
+      models.setProvider({ ...stock, models: [{ ...template, id: request.model }] });
+      const client = new PiAiGatewayClient({ models });
+      const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: client });
+      const provider = piProviderConfig({
+        adapterId: stock.id,
+        apiKey: codex
+          ? `synthetic.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture' } })).toString('base64url')}.synthetic`
+          : 'explicit-secret',
+        models: [request.model],
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+      });
+      const payloads: Record<string, unknown>[] = [];
+      const urls: string[] = [];
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        urls.push(String(url));
+        const body =
+          new Headers(init?.headers).get('content-encoding') === 'zstd'
+            ? zstdDecompressSync(init?.body as Uint8Array).toString()
+            : String(init?.body);
+        payloads.push(JSON.parse(body));
+        return new Response(
+          `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_summary', status: 'completed', output: [], usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } })}\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } }
+        );
+      });
+      try {
+        // Admission success alone is insufficient: both paths must reach stock serialization without changing history or authority.
+        await new Response(await dispatcher.createResponsesStream(provider, request)).text();
+        await new Response(await client.createResponsesStream(provider, request)).text();
+        expect(payloads).toHaveLength(2);
+        for (const payload of payloads) {
+          expect(payload.input).toEqual(request.input);
+          expect(payload.tools ?? []).toEqual([]);
+          expect(payload).not.toHaveProperty('compaction_trigger');
+          expect(payload).not.toHaveProperty('context_management');
+        }
+        expect(urls.every((url) => url.endsWith('/responses'))).toBe(true);
+      } finally {
+        fetchMock.mockRestore();
       }
-      expect(urls.every((url) => url.endsWith('/responses'))).toBe(true);
-    } finally {
-      fetchMock.mockRestore();
     }
-  });
+  );
 
   it('routes pi-ai backend chat completions through the pi-ai client', async () => {
     const faux = fauxProvider({ provider: 'anthropic_primary', models: [{ id: 'faux-chat' }] });
@@ -245,60 +245,65 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
   it.each([
     { message: 'terminal provider error', stopReason: 'error' as const },
     { message: 'terminal provider abort', stopReason: 'aborted' as const },
-  ])('records $stopReason stream usage exactly once without leaking private usage', async (testCase) => {
-    const faux = fauxProvider({
-      provider: 'anthropic_primary',
-      models: [{ id: 'faux-chat', cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.5 } }],
-      tokenSize: { min: 1000, max: 1000 },
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    faux.setResponses([
-      fauxAssistantMessage('partial dispatcher stream', {
-        errorMessage: testCase.message,
-        stopReason: testCase.stopReason,
-      }),
-    ]);
-    const usageTracker = new GatewayUsageTracker();
-    const onUsage = vi.fn();
-    const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient({ models }),
-      usageTracker,
-    });
-    const stream = await dispatcher.createChatCompletionStream(
-      piProviderConfig(),
-      {
-        model: 'faux-chat',
-        messages: [{ role: 'user', content: 'Hello' }],
-        prompt_cache_key: 'private-cache-key',
-        prompt_cache_retention: 'long',
-        stream: true,
-      },
-      { onUsage }
-    );
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let body = '';
-    let streamError: unknown;
+  ])(
+    'records $stopReason stream usage exactly once without leaking private usage',
+    async (testCase) => {
+      const faux = fauxProvider({
+        provider: 'anthropic_primary',
+        models: [
+          { id: 'faux-chat', cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.5 } },
+        ],
+        tokenSize: { min: 1000, max: 1000 },
+      });
+      const models = createModels();
+      models.setProvider(faux.provider);
+      faux.setResponses([
+        fauxAssistantMessage('partial dispatcher stream', {
+          errorMessage: testCase.message,
+          stopReason: testCase.stopReason,
+        }),
+      ]);
+      const usageTracker = new GatewayUsageTracker();
+      const onUsage = vi.fn();
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+        usageTracker,
+      });
+      const stream = await dispatcher.createChatCompletionStream(
+        piProviderConfig(),
+        {
+          model: 'faux-chat',
+          messages: [{ role: 'user', content: 'Hello' }],
+          prompt_cache_key: 'private-cache-key',
+          prompt_cache_retention: 'long',
+          stream: true,
+        },
+        { onUsage }
+      );
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let body = '';
+      let streamError: unknown;
 
-    try {
-      while (true) {
-        const result = await reader.read();
+      try {
+        while (true) {
+          const result = await reader.read();
 
-        if (result.done) {
-          break;
+          if (result.done) {
+            break;
+          }
+          body += decoder.decode(result.value, { stream: true });
         }
-        body += decoder.decode(result.value, { stream: true });
+      } catch (error) {
+        streamError = error;
       }
-    } catch (error) {
-      streamError = error;
-    }
 
-    expect(streamError).toMatchObject({ message: testCase.message });
-    expect(body).not.toMatch(/cacheWrite|"cost"|private-cache-key/);
-    expect(onUsage).toHaveBeenCalledOnce();
-    expect(usageTracker.snapshot().summaries[0]?.requestCount).toBe(1);
-  });
+      expect(streamError).toMatchObject({ message: testCase.message });
+      expect(body).not.toMatch(/cacheWrite|"cost"|private-cache-key/);
+      expect(onUsage).toHaveBeenCalledOnce();
+      expect(usageTracker.snapshot().summaries[0]?.requestCount).toBe(1);
+    }
+  );
 
   it('bridges pi-ai Responses without forwarding Codex-private continuity state', async () => {
     let seenOptions: StreamOptions | undefined;
@@ -764,182 +769,182 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
     expect(faux.state.callCount).toBe(0);
   });
 
-  it.each([
-    false,
-    true,
-  ])('admits a scoped Codex Chat Completions bridge through real Responses admission; metadata=%s', async (withMetadata) => {
-    const { faux, pairModels } = codexPair();
-    const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient(),
-    });
+  it.each([false, true])(
+    'admits a scoped Codex Chat Completions bridge through real Responses admission; metadata=%s',
+    async (withMetadata) => {
+      const { faux, pairModels } = codexPair();
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient(),
+      });
 
-    const response = await dispatcher.createChatCompletion(
-      codexProvider(),
-      {
-        model: 'openai-codex/gpt-5.6-sol',
-        messages: [
-          { role: 'system', content: 'You are the OpenKit Assistant.' },
-          { role: 'user', content: 'Hello' },
-        ],
-        ...(withMetadata
-          ? {
-              metadata: {
-                openkit: {
-                  sessionId:
-                    'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
-                  workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
+      const response = await dispatcher.createChatCompletion(
+        codexProvider(),
+        {
+          model: 'openai-codex/gpt-5.6-sol',
+          messages: [
+            { role: 'system', content: 'You are the OpenKit Assistant.' },
+            { role: 'user', content: 'Hello' },
+          ],
+          ...(withMetadata
+            ? {
+                metadata: {
+                  openkit: {
+                    sessionId:
+                      'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
+                    workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
+                  },
                 },
-              },
-            }
-          : {}),
-      },
-      {
-        models: pairModels,
-        promptCacheScope: {
-          sessionId:
-            'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
-          workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
+              }
+            : {}),
         },
-        usageEndpoint: 'quick_chat',
-      }
-    );
+        {
+          models: pairModels,
+          promptCacheScope: {
+            sessionId:
+              'chat-mode:ws_00000000-0000-7210-b610-cfb6bd7096ee:th_00000000-0000-7f5f-834d-441994676939',
+            workspaceId: 'ws_00000000-0000-7210-b610-cfb6bd7096ee',
+          },
+          usageEndpoint: 'quick_chat',
+        }
+      );
 
-    expect(response.choices[0]?.message.content).toBe('Codex admitted.');
-    expect(faux.state.callCount).toBe(1);
-  });
+      expect(response.choices[0]?.message.content).toBe('Codex admitted.');
+      expect(faux.state.callCount).toBe(1);
+    }
+  );
 });
 
 describe('Responses-native Chat function round trip', () => {
-  it.each([
-    '{"x":1}',
-    '{ "x": 1 }',
-  ])('preserves stock-parser function arguments through the production bridge: %s', async (args) => {
-    // Only external fetch is replaced: stock parsing, PiAiGatewayClient and dispatch remain real.
-    const credential = {
-      type: 'oauth' as const,
-      access: [
-        'e30',
-        Buffer.from(
-          JSON.stringify({
-            'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-probe' },
-          })
-        ).toString('base64url'),
-        'signature',
-      ].join('.'),
-      refresh: 'synthetic',
-      expires: Date.now() + 3_600_000,
-    };
-    const models = createModels({
-      credentials: {
-        async delete() {},
-        async list() {
-          return [{ providerId: 'openai-codex', type: 'oauth' }];
+  it.each(['{"x":1}', '{ "x": 1 }'])(
+    'preserves stock-parser function arguments through the production bridge: %s',
+    async (args) => {
+      // Only external fetch is replaced: stock parsing, PiAiGatewayClient and dispatch remain real.
+      const credential = {
+        type: 'oauth' as const,
+        access: [
+          'e30',
+          Buffer.from(
+            JSON.stringify({
+              'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-probe' },
+            })
+          ).toString('base64url'),
+          'signature',
+        ].join('.'),
+        refresh: 'synthetic',
+        expires: Date.now() + 3_600_000,
+      };
+      const models = createModels({
+        credentials: {
+          async delete() {},
+          async list() {
+            return [{ providerId: 'openai-codex', type: 'oauth' }];
+          },
+          async modify(_id, update) {
+            return update(credential);
+          },
+          async read() {
+            return credential;
+          },
         },
-        async modify(_id, update) {
-          return update(credential);
-        },
-        async read() {
-          return credential;
-        },
-      },
-    });
-    models.setProvider(openaiCodexProvider());
-    const item = {
-      type: 'function_call',
-      id: 'fc_probe',
-      call_id: 'call_probe',
-      name: 'lookup',
-      namespace: 'functions',
-      arguments: args,
-      status: 'completed',
-    };
-    const events = [
-      {
-        type: 'response.created',
-        response: { id: 'resp_probe', status: 'in_progress', output: [] },
-      },
-      {
-        type: 'response.output_item.added',
-        output_index: 0,
-        item: { ...item, arguments: '', status: 'in_progress' },
-      },
-      {
-        type: 'response.function_call_arguments.delta',
-        output_index: 0,
-        item_id: item.id,
-        delta: args,
-      },
-      { type: 'response.output_item.done', output_index: 0, item },
-      {
-        type: 'response.completed',
-        response: {
-          id: 'resp_probe',
-          status: 'completed',
-          output: [item],
-          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-        },
-      },
-    ];
-    const fetch = vi.fn(
-      async () =>
-        new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
-          status: 200,
-          headers: { 'content-type': 'text/event-stream' },
-        })
-    );
-    vi.stubGlobal('fetch', fetch);
-    try {
-      const stream = await new LLMGatewayProviderDispatcher({}).createChatCompletionStream(
-        piProviderConfig({
-          adapterId: 'openai-codex',
-          apiKey: null,
-          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-          id: 'codex-probe',
-          models: ['openai-codex/gpt-5.6-sol'],
-          requiresApiKey: false,
-          subscriptionProviderId: 'openai-codex',
-          accountSlotId: 'probe',
-        } as Partial<ResolvedLLMProviderConfig>),
+      });
+      models.setProvider(openaiCodexProvider());
+      const item = {
+        type: 'function_call',
+        id: 'fc_probe',
+        call_id: 'call_probe',
+        name: 'lookup',
+        namespace: 'functions',
+        arguments: args,
+        status: 'completed',
+      };
+      const events = [
         {
-          model: 'openai-codex/gpt-5.6-sol',
-          messages: [{ role: 'user', content: 'Call lookup' }],
-          tools: [
-            {
-              type: 'function',
-              function: {
-                name: 'lookup',
-                parameters: {
-                  type: 'object',
-                  properties: { x: { type: 'number' } },
-                  required: ['x'],
+          type: 'response.created',
+          response: { id: 'resp_probe', status: 'in_progress', output: [] },
+        },
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { ...item, arguments: '', status: 'in_progress' },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 0,
+          item_id: item.id,
+          delta: args,
+        },
+        { type: 'response.output_item.done', output_index: 0, item },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_probe',
+            status: 'completed',
+            output: [item],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          },
+        },
+      ];
+      const fetch = vi.fn(
+        async () =>
+          new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          })
+      );
+      vi.stubGlobal('fetch', fetch);
+      try {
+        const stream = await new LLMGatewayProviderDispatcher({}).createChatCompletionStream(
+          piProviderConfig({
+            adapterId: 'openai-codex',
+            apiKey: null,
+            gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+            id: 'codex-probe',
+            models: ['openai-codex/gpt-5.6-sol'],
+            requiresApiKey: false,
+            subscriptionProviderId: 'openai-codex',
+            accountSlotId: 'probe',
+          } as Partial<ResolvedLLMProviderConfig>),
+          {
+            model: 'openai-codex/gpt-5.6-sol',
+            messages: [{ role: 'user', content: 'Call lookup' }],
+            tools: [
+              {
+                type: 'function',
+                function: {
+                  name: 'lookup',
+                  parameters: {
+                    type: 'object',
+                    properties: { x: { type: 'number' } },
+                    required: ['x'],
+                  },
                 },
               },
-            },
-          ],
-        },
-        { models }
-      );
-      const wire = await new Response(stream).text();
-      const chunks = wire
-        .split('\n\n')
-        .filter((frame) => frame && frame !== 'data: [DONE]')
-        .map((frame) => JSON.parse(frame.slice(6)));
-      const calls = chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? []);
-      expect(calls[0]).toMatchObject({
-        id: 'call_probe',
-        index: 0,
-        type: 'function',
-        function: { name: 'lookup' },
-      });
-      // Completion reserializes JSON; retain the raw delta bytes exactly once downstream.
-      expect(calls.map((call) => call.function.arguments ?? '').join('')).toBe(args);
-      expect(chunks.at(-1).choices[0].finish_reason).toBe('tool_calls');
-      expect(wire.split('data: [DONE]')).toHaveLength(2);
-      expect(fetch).toHaveBeenCalledOnce();
-    } finally {
-      vi.unstubAllGlobals();
+            ],
+          },
+          { models }
+        );
+        const wire = await new Response(stream).text();
+        const chunks = wire
+          .split('\n\n')
+          .filter((frame) => frame && frame !== 'data: [DONE]')
+          .map((frame) => JSON.parse(frame.slice(6)));
+        const calls = chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? []);
+        expect(calls[0]).toMatchObject({
+          id: 'call_probe',
+          index: 0,
+          type: 'function',
+          function: { name: 'lookup' },
+        });
+        // Completion reserializes JSON; retain the raw delta bytes exactly once downstream.
+        expect(calls.map((call) => call.function.arguments ?? '').join('')).toBe(args);
+        expect(chunks.at(-1).choices[0].finish_reason).toBe('tool_calls');
+        expect(wire.split('data: [DONE]')).toHaveLength(2);
+        expect(fetch).toHaveBeenCalledOnce();
+      } finally {
+        vi.unstubAllGlobals();
+      }
     }
-  });
+  );
 
   it('releases function output with correlated success and maps continuation through the actual dispatcher', async () => {
     const item = {

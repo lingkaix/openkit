@@ -264,106 +264,110 @@ it.each([
   'foreign-scope',
   'wrong-pin',
   'missing-target',
-] as const)('admits only exact Server page citations through maintenance publication: %s', async (kind) => {
-  const { f, target, baseRevision } = await fixtureWithCitationTarget(
-    kind !== 'reviewed-candidate'
-  );
-  const context = { ...f.dependencies, actor: f.requestActor };
-  const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
-  const changesTarget = kind === 'candidate-pinned' || kind === 'reviewed-candidate';
-  const authoredTarget = target.replace('Server evidence.', 'Updated Server evidence.');
-  const selectedTarget = changesTarget
-    ? attributedNotebookPageBytes(
-        'target.md',
-        authoredTarget,
-        { kind: 'server' },
-        kind === 'reviewed-candidate' ? 'accepted' : 'delegated'
-      )
-    : target;
-  const reference = formatReferenceUri(
-    {
-      scopeId:
-        kind === 'foreign-scope'
-          ? `page/user/${f.requestActor.userId}/${pin.knowledgeBaseId}`
-          : `page/server/${pin.knowledgeBaseId}`,
-      objectId: kind === 'missing-target' ? 'missing' : 'target',
-    },
-    kind === 'pinned' || changesTarget
-      ? `sha256:${createHash('sha256').update(selectedTarget).digest('hex')}`
-      : kind === 'wrong-pin'
-        ? `sha256:${'0'.repeat(64)}`
-        : undefined
-  );
-  const citing = serializeKnowledgePageFixture(
-    {
-      title: 'Citing',
-      content: 'Compare the target.',
-      sourceReferences: [reference],
-      createdAt: '2026-10-18T00:00:00Z',
-      updatedAt: '2026-10-18T00:00:00Z',
-    },
-    { kind: 'server' }
-  );
-  f.run.mockImplementationOnce(async (run) => {
-    const script = `${changesTarget ? `cat > target.md <<'TARGET'\n${authoredTarget}TARGET\n` : ''}cat > citing.md <<'PAGE'\n${citing}\nPAGE`;
-    for (const [name, args] of [
-      ['knowledge.notebook-workspace.update', { script }],
-      ['knowledge.notebook.update', { summary: 'Compare admitted Server page bytes.' }],
-    ] as const) {
-      await run.tools
-        .find((tool) => tool.name === name)!
-        .execute(args, {
-          callId: randomUUID(),
-          toolOccurrence: 1,
-          signal: run.signal,
-        });
+] as const)(
+  'admits only exact Server page citations through maintenance publication: %s',
+  async (kind) => {
+    const { f, target, baseRevision } = await fixtureWithCitationTarget(
+      kind !== 'reviewed-candidate'
+    );
+    const context = { ...f.dependencies, actor: f.requestActor };
+    const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
+    const changesTarget = kind === 'candidate-pinned' || kind === 'reviewed-candidate';
+    const authoredTarget = target.replace('Server evidence.', 'Updated Server evidence.');
+    const selectedTarget = changesTarget
+      ? attributedNotebookPageBytes(
+          'target.md',
+          authoredTarget,
+          { kind: 'server' },
+          kind === 'reviewed-candidate' ? 'accepted' : 'delegated'
+        )
+      : target;
+    const reference = formatReferenceUri(
+      {
+        scopeId:
+          kind === 'foreign-scope'
+            ? `page/user/${f.requestActor.userId}/${pin.knowledgeBaseId}`
+            : `page/server/${pin.knowledgeBaseId}`,
+        objectId: kind === 'missing-target' ? 'missing' : 'target',
+      },
+      kind === 'pinned' || changesTarget
+        ? `sha256:${createHash('sha256').update(selectedTarget).digest('hex')}`
+        : kind === 'wrong-pin'
+          ? `sha256:${'0'.repeat(64)}`
+          : undefined
+    );
+    const citing = serializeKnowledgePageFixture(
+      {
+        title: 'Citing',
+        content: 'Compare the target.',
+        sourceReferences: [reference],
+        createdAt: '2026-10-18T00:00:00Z',
+        updatedAt: '2026-10-18T00:00:00Z',
+      },
+      { kind: 'server' }
+    );
+    f.run.mockImplementationOnce(async (run) => {
+      const script = `${changesTarget ? `cat > target.md <<'TARGET'\n${authoredTarget}TARGET\n` : ''}cat > citing.md <<'PAGE'\n${citing}\nPAGE`;
+      for (const [name, args] of [
+        ['knowledge.notebook-workspace.update', { script }],
+        ['knowledge.notebook.update', { summary: 'Compare admitted Server page bytes.' }],
+      ] as const) {
+        await run.tools
+          .find((tool) => tool.name === name)!
+          .execute(args, {
+            callId: randomUUID(),
+            toolOccurrence: 1,
+            signal: run.signal,
+          });
+      }
+      await f.store.updateServerTurn(run.turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      return { turnId: run.turn.id, text: '{"summary":"Finished."}' };
+    });
+    const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, {
+      ...f.input,
+      tellContent: undefined,
+    });
+    const allowed = kind === 'unpinned' || kind === 'pinned' || changesTarget;
+    expect(result.outcome).toBe(
+      kind === 'reviewed-candidate' ? 'review-required' : allowed ? 'published' : 'failed'
+    );
+    expect(f.run).toHaveBeenCalledTimes(1);
+    let publishedRevision = result.notebookRevision;
+    if (kind === 'reviewed-candidate') {
+      expect(f.notebook.publishedRevision()).toBe(baseRevision);
+      const proposalContext = {
+        ...f.dependencies,
+        actor: f.requestActor,
+        revalidate: (files?: Readonly<Record<string, string>>) =>
+          serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      };
+      const saved = readServerNotebookProposal(proposalContext, result.proposalId!);
+      const accepted = await decideServerNotebookProposal(proposalContext, {
+        requestId: randomUUID(),
+        proposalId: result.proposalId!,
+        proposalDigest: saved.proposalDigest,
+        baseRevision,
+        candidateRevision: result.candidateRevision!,
+        decision: 'accepted',
+      });
+      publishedRevision = accepted.notebookRevision!;
+      expect(publishedRevision).toBe(result.candidateRevision);
     }
-    await f.store.updateServerTurn(run.turn.id, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-    });
-    return { turnId: run.turn.id, text: '{"summary":"Finished."}' };
-  });
-  const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, {
-    ...f.input,
-    tellContent: undefined,
-  });
-  const allowed = kind === 'unpinned' || kind === 'pinned' || changesTarget;
-  expect(result.outcome).toBe(
-    kind === 'reviewed-candidate' ? 'review-required' : allowed ? 'published' : 'failed'
-  );
-  expect(f.run).toHaveBeenCalledTimes(1);
-  let publishedRevision = result.notebookRevision;
-  if (kind === 'reviewed-candidate') {
-    expect(f.notebook.publishedRevision()).toBe(baseRevision);
-    const proposalContext = {
-      ...f.dependencies,
-      actor: f.requestActor,
-      revalidate: (files?: Readonly<Record<string, string>>) =>
-        serverNotebookAdmission(f.dependencies, f.requestActor, files),
-    };
-    const saved = readServerNotebookProposal(proposalContext, result.proposalId!);
-    const accepted = await decideServerNotebookProposal(proposalContext, {
-      requestId: randomUUID(),
-      proposalId: result.proposalId!,
-      proposalDigest: saved.proposalDigest,
-      baseRevision,
-      candidateRevision: result.candidateRevision!,
-      decision: 'accepted',
-    });
-    publishedRevision = accepted.notebookRevision!;
-    expect(publishedRevision).toBe(result.candidateRevision);
-  }
-  if (allowed) {
-    expect(f.notebook.readRevision(publishedRevision).files['citing.md']).toContain(reference);
-    expect(f.notebook.readRevision(publishedRevision).files['target.md']).toBe(selectedTarget);
-    const admission = serverNotebookAdmission(f.dependencies, f.requestActor);
-    expect(admission.pageScopeId).toBe(`page/server/${pin.knowledgeBaseId}`);
-    expect(admission.resolvedReferences.get('citing')?.has(reference)).toBe(true);
-  } else {
-    expect(f.notebook.publishedRevision()).toBe(baseRevision);
-  }
-}, 60_000);
+    if (allowed) {
+      expect(f.notebook.readRevision(publishedRevision).files['citing.md']).toContain(reference);
+      expect(f.notebook.readRevision(publishedRevision).files['target.md']).toBe(selectedTarget);
+      const admission = serverNotebookAdmission(f.dependencies, f.requestActor);
+      expect(admission.pageScopeId).toBe(`page/server/${pin.knowledgeBaseId}`);
+      expect(admission.resolvedReferences.get('citing')?.has(reference)).toBe(true);
+    } else {
+      expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    }
+  },
+  60_000
+);
 
 it('keeps independent historical human page bodies when their original Source is unavailable', async () => {
   const f = fixture(true);
@@ -434,54 +438,55 @@ it('keeps independent historical human page bodies when their original Source is
   expect(f.notebook.publishedRevision()).toBe(baseRevision);
 });
 
-it.each([
-  true,
-  false,
-])('keeps Server maintenance off Workspace storage, preserves human inputs and uses delegation=%s or exact review', async (enabled) => {
-  const f = fixture(enabled);
-  const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
-  expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
-  expect(f.run).toHaveBeenCalledTimes(1);
-  expect(await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
-  expect(f.run).toHaveBeenCalledTimes(1);
-  const turn = f.store.getServerTurnById(result.turnId);
-  const sourceBaseRevision = turn.internalExecution!.knowledge!.baseRevision!;
-  expect(f.notebook.inspectRevision(sourceBaseRevision).parentRevision).toBe(f.human);
-  expect(Object.keys(f.notebook.readSourcePointers(sourceBaseRevision))).toHaveLength(1);
-  expect(turn).toMatchObject({
-    owner: { kind: 'server' },
-    internalExecution: {
-      roleId: 'knowledge-manager',
-      logicalModelId: 'server-model',
-      contextStrategy: 'compaction',
-      knowledge: { baseRevision: sourceBaseRevision, ownerScope: { kind: 'server' } },
-    },
-  });
-  expect(f.store.listWorkspaces()).toEqual([]);
-  if (!enabled) {
-    expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
-    const context = {
-      ...f.dependencies,
-      actor: f.requestActor,
-      revalidate: (files?: Readonly<Record<string, string>>) =>
-        serverNotebookAdmission(f.dependencies, f.requestActor, files),
-    };
-    const candidate = readServerNotebookProposal(context, result.proposalId!);
-    expect(candidate.diff[0]!.after).toContain('Preserve this human correction.');
-    const decision = await decideServerNotebookProposal(context, {
-      proposalId: result.proposalId!,
-      requestId: randomUUID(),
-      proposalDigest: candidate.proposalDigest,
-      baseRevision: candidate.proposal.baseRevision,
-      candidateRevision: candidate.proposal.candidateRevision,
-      decision: 'accepted',
+it.each([true, false])(
+  'keeps Server maintenance off Workspace storage, preserves human inputs and uses delegation=%s or exact review',
+  async (enabled) => {
+    const f = fixture(enabled);
+    const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
+    expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
+    expect(f.run).toHaveBeenCalledTimes(1);
+    expect(await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
+    expect(f.run).toHaveBeenCalledTimes(1);
+    const turn = f.store.getServerTurnById(result.turnId);
+    const sourceBaseRevision = turn.internalExecution!.knowledge!.baseRevision!;
+    expect(f.notebook.inspectRevision(sourceBaseRevision).parentRevision).toBe(f.human);
+    expect(Object.keys(f.notebook.readSourcePointers(sourceBaseRevision))).toHaveLength(1);
+    expect(turn).toMatchObject({
+      owner: { kind: 'server' },
+      internalExecution: {
+        roleId: 'knowledge-manager',
+        logicalModelId: 'server-model',
+        contextStrategy: 'compaction',
+        knowledge: { baseRevision: sourceBaseRevision, ownerScope: { kind: 'server' } },
+      },
     });
-    expect(decision.notebookRevision).toBe(candidate.proposal.candidateRevision);
-  }
-  const files = f.notebook.readRevision(f.notebook.publishedRevision()).files;
-  expect(files['index.md']).toContain('Preserve this human correction.');
-  expect(files['index.md']).toContain('BLUE-HERON-7');
-}, 60_000);
+    expect(f.store.listWorkspaces()).toEqual([]);
+    if (!enabled) {
+      expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
+      const context = {
+        ...f.dependencies,
+        actor: f.requestActor,
+        revalidate: (files?: Readonly<Record<string, string>>) =>
+          serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      };
+      const candidate = readServerNotebookProposal(context, result.proposalId!);
+      expect(candidate.diff[0]!.after).toContain('Preserve this human correction.');
+      const decision = await decideServerNotebookProposal(context, {
+        proposalId: result.proposalId!,
+        requestId: randomUUID(),
+        proposalDigest: candidate.proposalDigest,
+        baseRevision: candidate.proposal.baseRevision,
+        candidateRevision: candidate.proposal.candidateRevision,
+        decision: 'accepted',
+      });
+      expect(decision.notebookRevision).toBe(candidate.proposal.candidateRevision);
+    }
+    const files = f.notebook.readRevision(f.notebook.publishedRevision()).files;
+    expect(files['index.md']).toContain('Preserve this human correction.');
+    expect(files['index.md']).toContain('BLUE-HERON-7');
+  },
+  60_000
+);
 
 it('recalls the exact Server candidate only after its human Review publishes the shown bytes', async () => {
   const f = fixture(false);
@@ -639,32 +644,33 @@ it('retains skipped active-writer and missing-authority schedule outcomes withou
   );
 });
 
-it.each([
-  true,
-  false,
-])('retains a completed native outcome when the later model call fails, delegation=%s', async (enabled) => {
-  const f = fixture(enabled);
-  f.run.mockImplementationOnce(async (run) => {
-    const execute = async (name: string, value: unknown) =>
-      run.tools
-        .find((tool) => tool.name === name)!
-        .execute(value, { callId: randomUUID(), toolOccurrence: 1, signal: run.signal });
-    await execute('knowledge.notebook-workspace.update', {
-      script: "printf '\\nNative change before Provider failure.\\n' >> index.md",
+it.each([true, false])(
+  'retains a completed native outcome when the later model call fails, delegation=%s',
+  async (enabled) => {
+    const f = fixture(enabled);
+    f.run.mockImplementationOnce(async (run) => {
+      const execute = async (name: string, value: unknown) =>
+        run.tools
+          .find((tool) => tool.name === name)!
+          .execute(value, { callId: randomUUID(), toolOccurrence: 1, signal: run.signal });
+      await execute('knowledge.notebook-workspace.update', {
+        script: "printf '\\nNative change before Provider failure.\\n' >> index.md",
+      });
+      await execute('knowledge.notebook.update', { summary: 'Retain the actual native outcome.' });
+      throw new Error('Synthetic Provider failure after native submission.');
     });
-    await execute('knowledge.notebook.update', { summary: 'Retain the actual native outcome.' });
-    throw new Error('Synthetic Provider failure after native submission.');
-  });
-  const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
-  expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
-  expect(result.proposalId !== undefined).toBe(!enabled);
-  expect(await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
-  expect(f.run).toHaveBeenCalledTimes(1);
-  expect(f.store.getServerTurnById(result.turnId)).toMatchObject({ status: 'failed' });
-  expect(f.store.getServerTurnById(result.turnId).items).toContainEqual(
-    expect.objectContaining({ type: 'status', knowledgeMaintenanceResult: result })
-  );
-}, 60_000);
+    const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
+    expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
+    expect(result.proposalId !== undefined).toBe(!enabled);
+    expect(await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
+    expect(f.run).toHaveBeenCalledTimes(1);
+    expect(f.store.getServerTurnById(result.turnId)).toMatchObject({ status: 'failed' });
+    expect(f.store.getServerTurnById(result.turnId).items).toContainEqual(
+      expect.objectContaining({ type: 'status', knowledgeMaintenanceResult: result })
+    );
+  },
+  60_000
+);
 
 it('previews and reviews a valid candidate larger than the display limit using the shared bounded path cursor', async () => {
   const f = fixture(false);
@@ -1102,353 +1108,357 @@ it('retains the exact human Server Proposal command receipt and Audit on accepte
 });
 
 // Evidence Audit Producers requires the human decision, independently of content publication.
-it.each([
-  'rejected',
-  'deferred',
-] as const)('retains one Server Proposal %s Audit without relabeling it on exact replay', async (decision) => {
-  const { listServerAuditEvents } = await import('../audit-events.js');
-  const f = fixture(false);
-  const context = {
-    ...f.dependencies,
-    actor: f.requestActor,
-    revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
-  };
-  const baseRevision = f.notebook.publishedRevision();
-  const proposal = createServerNotebookProposal(
-    context,
-    {
+it.each(['rejected', 'deferred'] as const)(
+  'retains one Server Proposal %s Audit without relabeling it on exact replay',
+  async (decision) => {
+    const { listServerAuditEvents } = await import('../audit-events.js');
+    const f = fixture(false);
+    const context = {
+      ...f.dependencies,
+      actor: f.requestActor,
+      revalidate: (files?: Readonly<Record<string, string>>) =>
+        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+    };
+    const baseRevision = f.notebook.publishedRevision();
+    const proposal = createServerNotebookProposal(
+      context,
+      {
+        requestId: randomUUID(),
+        baseRevision,
+        summary: 'Retain a human decision without publication.',
+        changes: [
+          {
+            path: 'index.md',
+            content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nAn unpublished addition.\n`,
+          },
+        ],
+      },
+      { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+      []
+    );
+    const selected = readServerNotebookProposal(context, proposal.id);
+    const request = {
       requestId: randomUUID(),
+      proposalId: proposal.id,
+      proposalDigest: selected.proposalDigest,
       baseRevision,
-      summary: 'Retain a human decision without publication.',
-      changes: [
-        {
-          path: 'index.md',
-          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nAn unpublished addition.\n`,
-        },
-      ],
-    },
-    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
-    []
-  );
-  const selected = readServerNotebookProposal(context, proposal.id);
-  const request = {
-    requestId: randomUUID(),
-    proposalId: proposal.id,
-    proposalDigest: selected.proposalDigest,
-    baseRevision,
-    candidateRevision: proposal.candidateRevision,
-    decision,
-  };
-  const invoke = createOperationInvocation({
-    coreDb: f.coreDb,
-    store: f.store,
-    serverKnowledgeMaintenance: f.dependencies,
-  });
-  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
-  const audits = () =>
-    listServerAuditEvents(f.coreDb).filter((event) => event.requestId === request.requestId);
-  expect(audits()).toEqual([]);
-  const result = await invoke('knowledge.server.proposal.decide', request, human);
-  const retainedAudit = audits();
-  expect.soft(retainedAudit).toEqual([
-    expect.objectContaining({
-      action: 'knowledge.proposal.decide',
-      category: 'knowledge',
-      outcome: 'succeeded',
-      actor: { kind: 'user', id: f.requestActor.userId },
-      resource: `knowledge-proposal:${proposal.id}`,
-    }),
-  ]);
-  expect(result.notebookRevision).toBeNull();
-  expect(f.notebook.publishedRevision()).toBe(baseRevision);
-  expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(result);
-  expect(audits()).toEqual(retainedAudit);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([result.review]);
-  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-});
+      candidateRevision: proposal.candidateRevision,
+      decision,
+    };
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      serverKnowledgeMaintenance: f.dependencies,
+    });
+    const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+    const audits = () =>
+      listServerAuditEvents(f.coreDb).filter((event) => event.requestId === request.requestId);
+    expect(audits()).toEqual([]);
+    const result = await invoke('knowledge.server.proposal.decide', request, human);
+    const retainedAudit = audits();
+    expect.soft(retainedAudit).toEqual([
+      expect.objectContaining({
+        action: 'knowledge.proposal.decide',
+        category: 'knowledge',
+        outcome: 'succeeded',
+        actor: { kind: 'user', id: f.requestActor.userId },
+        resource: `knowledge-proposal:${proposal.id}`,
+      }),
+    ]);
+    expect(result.notebookRevision).toBeNull();
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(result);
+    expect(audits()).toEqual(retainedAudit);
+    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([result.review]);
+    expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  }
+);
 
 // S61:220-222: a retained nonaccepted Review without its required Audit is partial evidence.
-it.each([
-  'rejected',
-  'deferred',
-] as const)('refuses Server %s replay after the actual Audit write failed after Review retention', async (decision) => {
-  const f = fixture(false);
-  const context = {
-    ...f.dependencies,
-    actor: f.requestActor,
-    revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
-  };
-  const baseRevision = f.notebook.publishedRevision();
-  const proposal = createServerNotebookProposal(
-    context,
-    {
+it.each(['rejected', 'deferred'] as const)(
+  'refuses Server %s replay after the actual Audit write failed after Review retention',
+  async (decision) => {
+    const f = fixture(false);
+    const context = {
+      ...f.dependencies,
+      actor: f.requestActor,
+      revalidate: (files?: Readonly<Record<string, string>>) =>
+        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+    };
+    const baseRevision = f.notebook.publishedRevision();
+    const proposal = createServerNotebookProposal(
+      context,
+      {
+        requestId: randomUUID(),
+        baseRevision,
+        summary: 'Inspect incomplete human decision evidence.',
+        changes: [
+          {
+            path: 'index.md',
+            content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nAn unpublished audit-fault candidate.\n`,
+          },
+        ],
+      },
+      { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+      []
+    );
+    const selected = readServerNotebookProposal(context, proposal.id);
+    const request = {
       requestId: randomUUID(),
+      proposalId: proposal.id,
+      proposalDigest: selected.proposalDigest,
       baseRevision,
-      summary: 'Inspect incomplete human decision evidence.',
-      changes: [
-        {
-          path: 'index.md',
-          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nAn unpublished audit-fault candidate.\n`,
-        },
-      ],
-    },
-    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
-    []
-  );
-  const selected = readServerNotebookProposal(context, proposal.id);
-  const request = {
-    requestId: randomUUID(),
-    proposalId: proposal.id,
-    proposalDigest: selected.proposalDigest,
-    baseRevision,
-    candidateRevision: proposal.candidateRevision,
-    decision,
-  };
-  const invoke = createOperationInvocation({
-    coreDb: f.coreDb,
-    store: f.store,
-    serverKnowledgeMaintenance: f.dependencies,
-  });
-  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
-  const auditRows = () =>
-    f.coreDb.sqlite
-      .prepare(
-        'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
-      )
-      .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
-  expect(auditRows()).toEqual([]);
-  expect(f.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(0);
-  // A persistent trigger reaches the native INSERT after the original Review file is retained.
-  f.coreDb.sqlite.exec(
-    `CREATE TRIGGER refuse_proposal_decision_audit BEFORE INSERT ON audit_events WHEN NEW.request_id = '${request.requestId}' AND NEW.action = 'knowledge.proposal.decide' AND NEW.resource = 'knowledge-proposal:${proposal.id}' BEGIN SELECT RAISE(ABORT, 'injected decision audit persistence failure'); END`
-  );
-  try {
-    const failedDecision = invoke('knowledge.server.proposal.decide', request, human);
-    await expect(failedDecision).rejects.toBeInstanceOf(ControlStoreWorkerError);
-    await expect(failedDecision).rejects.toMatchObject({
-      code: 'constraint',
-      commit: 'not-committed',
-      message: 'Control database writer operation failed.',
+      candidateRevision: proposal.candidateRevision,
+      decision,
+    };
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      serverKnowledgeMaintenance: f.dependencies,
     });
-  } finally {
-    f.coreDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');
+    const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+    const auditRows = () =>
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+        )
+        .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
+    expect(auditRows()).toEqual([]);
+    expect(f.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(0);
+    // A persistent trigger reaches the native INSERT after the original Review file is retained.
+    f.coreDb.sqlite.exec(
+      `CREATE TRIGGER refuse_proposal_decision_audit BEFORE INSERT ON audit_events WHEN NEW.request_id = '${request.requestId}' AND NEW.action = 'knowledge.proposal.decide' AND NEW.resource = 'knowledge-proposal:${proposal.id}' BEGIN SELECT RAISE(ABORT, 'injected decision audit persistence failure'); END`
+    );
+    try {
+      const failedDecision = invoke('knowledge.server.proposal.decide', request, human);
+      await expect(failedDecision).rejects.toBeInstanceOf(ControlStoreWorkerError);
+      await expect(failedDecision).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+        message: 'Control database writer operation failed.',
+      });
+    } finally {
+      f.coreDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');
+    }
+    // These deciding checks refuse credit for an error before the actual Review/Audit boundary.
+    const afterFailure = readServerNotebookProposal(context, proposal.id);
+    expect(afterFailure.reviews).toHaveLength(1);
+    expect(afterFailure.reviews[0]).toMatchObject({ requestId: request.requestId, decision });
+    expect(auditRows()).toEqual([]);
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+    const reviewPath = join(
+      f.coreDb.dataRoot,
+      'server',
+      'knowledge',
+      'reviews',
+      `${proposal.id}.json`
+    );
+    const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
+    const proposalPath = join(
+      f.coreDb.dataRoot,
+      'server',
+      'knowledge',
+      'proposals',
+      `${proposal.id}.md`
+    );
+    const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
+    await expect
+      .soft(invoke('knowledge.server.proposal.decide', request, human))
+      .rejects.toMatchObject({ code: 'recovery_required' });
+    expect(auditRows()).toEqual([]);
+    expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
+    expect(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual(afterFailure.reviews);
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
   }
-  // These deciding checks refuse credit for an error before the actual Review/Audit boundary.
-  const afterFailure = readServerNotebookProposal(context, proposal.id);
-  expect(afterFailure.reviews).toHaveLength(1);
-  expect(afterFailure.reviews[0]).toMatchObject({ requestId: request.requestId, decision });
-  expect(auditRows()).toEqual([]);
-  expect(f.notebook.publishedRevision()).toBe(baseRevision);
-  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-  const reviewPath = join(
-    f.coreDb.dataRoot,
-    'server',
-    'knowledge',
-    'reviews',
-    `${proposal.id}.json`
-  );
-  const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
-  const proposalPath = join(
-    f.coreDb.dataRoot,
-    'server',
-    'knowledge',
-    'proposals',
-    `${proposal.id}.md`
-  );
-  const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
-  await expect
-    .soft(invoke('knowledge.server.proposal.decide', request, human))
-    .rejects.toMatchObject({ code: 'recovery_required' });
-  expect(auditRows()).toEqual([]);
-  expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
-  expect(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual(afterFailure.reviews);
-  expect(f.notebook.publishedRevision()).toBe(baseRevision);
-  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-});
+);
 
 // S61:220-222: an owner-produced deciding Audit cannot recreate a lost Review on retry.
-it.each([
-  'rejected',
-  'deferred',
-] as const)('refuses Server %s replay when its original Audit survives a lost Review file', async (decision) => {
-  const { existsSync, unlinkSync } = await import('node:fs');
-  const f = fixture(false);
-  const context = {
-    ...f.dependencies,
-    actor: f.requestActor,
-    revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
-  };
-  const baseRevision = f.notebook.publishedRevision();
-  const proposal = createServerNotebookProposal(
-    context,
-    {
+it.each(['rejected', 'deferred'] as const)(
+  'refuses Server %s replay when its original Audit survives a lost Review file',
+  async (decision) => {
+    const { existsSync, unlinkSync } = await import('node:fs');
+    const f = fixture(false);
+    const context = {
+      ...f.dependencies,
+      actor: f.requestActor,
+      revalidate: (files?: Readonly<Record<string, string>>) =>
+        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+    };
+    const baseRevision = f.notebook.publishedRevision();
+    const proposal = createServerNotebookProposal(
+      context,
+      {
+        requestId: randomUUID(),
+        baseRevision,
+        summary: 'Retain a complete decision before Review loss.',
+        changes: [
+          {
+            path: 'index.md',
+            content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nA retained audit control.\n`,
+          },
+        ],
+      },
+      { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+      []
+    );
+    const selected = readServerNotebookProposal(context, proposal.id);
+    const request = {
       requestId: randomUUID(),
+      proposalId: proposal.id,
+      proposalDigest: selected.proposalDigest,
       baseRevision,
-      summary: 'Retain a complete decision before Review loss.',
-      changes: [
-        {
-          path: 'index.md',
-          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nA retained audit control.\n`,
-        },
-      ],
-    },
-    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
-    []
-  );
-  const selected = readServerNotebookProposal(context, proposal.id);
-  const request = {
-    requestId: randomUUID(),
-    proposalId: proposal.id,
-    proposalDigest: selected.proposalDigest,
-    baseRevision,
-    candidateRevision: proposal.candidateRevision,
-    decision,
-  };
-  const invoke = createOperationInvocation({
-    coreDb: f.coreDb,
-    store: f.store,
-    serverKnowledgeMaintenance: f.dependencies,
-  });
-  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
-  const auditRows = () =>
-    f.coreDb.sqlite
-      .prepare(
-        'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
-      )
-      .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
-  expect(auditRows()).toEqual([]);
-  const completed = await invoke('knowledge.server.proposal.decide', request, human);
-  expect(completed.notebookRevision).toBeNull();
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
-  const retainedAudit = auditRows();
-  expect(retainedAudit).toHaveLength(1);
-  expect(retainedAudit[0]).toMatchObject({
-    request_id: request.requestId,
-    action: 'knowledge.proposal.decide',
-    resource: `knowledge-proposal:${proposal.id}`,
-    outcome: 'succeeded',
-  });
-  const reviewPath = join(
-    f.coreDb.dataRoot,
-    'server',
-    'knowledge',
-    'reviews',
-    `${proposal.id}.json`
-  );
-  const proposalPath = join(
-    f.coreDb.dataRoot,
-    'server',
-    'knowledge',
-    'proposals',
-    `${proposal.id}.md`
-  );
-  const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
-  const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
-  expect(f.notebook.publishedRevision()).toBe(baseRevision);
-  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-  expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(completed);
-  expect(auditRows()).toEqual(retainedAudit);
-  expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
-  // Deliberate corruption after lawful public completion: remove this fixture's Review only.
-  unlinkSync(reviewPath);
-  expect(existsSync(reviewPath)).toBe(false);
-  expect(auditRows()).toEqual(retainedAudit);
-  await expect
-    .soft(invoke('knowledge.server.proposal.decide', request, human))
-    .rejects.toMatchObject({ code: 'recovery_required' });
-  expect.soft(existsSync(reviewPath)).toBe(false);
-  expect.soft(auditRows()).toEqual(retainedAudit);
-  expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
-  expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
-  expect.soft(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-  // Missing original Review also forbids changing the same incomplete command into publication.
-  await expect
-    .soft(invoke('knowledge.server.proposal.decide', { ...request, decision: 'accepted' }, human))
-    .rejects.toMatchObject({ code: 'recovery_required' });
-  expect.soft(existsSync(reviewPath)).toBe(false);
-  expect.soft(auditRows()).toEqual(retainedAudit);
-  expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
-  expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
-  expect.soft(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-});
+      candidateRevision: proposal.candidateRevision,
+      decision,
+    };
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      serverKnowledgeMaintenance: f.dependencies,
+    });
+    const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+    const auditRows = () =>
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+        )
+        .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
+    expect(auditRows()).toEqual([]);
+    const completed = await invoke('knowledge.server.proposal.decide', request, human);
+    expect(completed.notebookRevision).toBeNull();
+    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
+    const retainedAudit = auditRows();
+    expect(retainedAudit).toHaveLength(1);
+    expect(retainedAudit[0]).toMatchObject({
+      request_id: request.requestId,
+      action: 'knowledge.proposal.decide',
+      resource: `knowledge-proposal:${proposal.id}`,
+      outcome: 'succeeded',
+    });
+    const reviewPath = join(
+      f.coreDb.dataRoot,
+      'server',
+      'knowledge',
+      'reviews',
+      `${proposal.id}.json`
+    );
+    const proposalPath = join(
+      f.coreDb.dataRoot,
+      'server',
+      'knowledge',
+      'proposals',
+      `${proposal.id}.md`
+    );
+    const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
+    const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+    expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(completed);
+    expect(auditRows()).toEqual(retainedAudit);
+    expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
+    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
+    // Deliberate corruption after lawful public completion: remove this fixture's Review only.
+    unlinkSync(reviewPath);
+    expect(existsSync(reviewPath)).toBe(false);
+    expect(auditRows()).toEqual(retainedAudit);
+    await expect
+      .soft(invoke('knowledge.server.proposal.decide', request, human))
+      .rejects.toMatchObject({ code: 'recovery_required' });
+    expect.soft(existsSync(reviewPath)).toBe(false);
+    expect.soft(auditRows()).toEqual(retainedAudit);
+    expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+    expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect
+      .soft(f.notebook.retainedCandidate(proposal.id).revision)
+      .toBe(proposal.candidateRevision);
+    // Missing original Review also forbids changing the same incomplete command into publication.
+    await expect
+      .soft(invoke('knowledge.server.proposal.decide', { ...request, decision: 'accepted' }, human))
+      .rejects.toMatchObject({ code: 'recovery_required' });
+    expect.soft(existsSync(reviewPath)).toBe(false);
+    expect.soft(auditRows()).toEqual(retainedAudit);
+    expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+    expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect
+      .soft(f.notebook.retainedCandidate(proposal.id).revision)
+      .toBe(proposal.candidateRevision);
+  }
+);
 
 // S61:220–222 and the 0600 stale-new-decision ruling: only acceptance publishes against current head.
-it.each([
-  'rejected',
-  'deferred',
-  'accepted',
-] as const)('Server stale new %s decision preserves current publication and its exact reviewed tuple', async (decision) => {
-  const f = fixture(false);
-  const pending = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
-  expect(pending.outcome).toBe('review-required');
-  const context = {
-    ...f.dependencies,
-    actor: f.requestActor,
-    revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
-  };
-  const selected = readServerNotebookProposal(context, pending.proposalId!);
-  const proposal = selected.proposal;
-  // Advance the real head through a separately created and accepted Proposal, not a raw ref write.
-  const control = createServerNotebookProposal(
-    context,
-    {
+it.each(['rejected', 'deferred', 'accepted'] as const)(
+  'Server stale new %s decision preserves current publication and its exact reviewed tuple',
+  async (decision) => {
+    const f = fixture(false);
+    const pending = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
+    expect(pending.outcome).toBe('review-required');
+    const context = {
+      ...f.dependencies,
+      actor: f.requestActor,
+      revalidate: (files?: Readonly<Record<string, string>>) =>
+        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+    };
+    const selected = readServerNotebookProposal(context, pending.proposalId!);
+    const proposal = selected.proposal;
+    // Advance the real head through a separately created and accepted Proposal, not a raw ref write.
+    const control = createServerNotebookProposal(
+      context,
+      {
+        requestId: randomUUID(),
+        baseRevision: proposal.baseRevision,
+        summary: 'Publish a separate reviewed change before deciding the older Proposal.',
+        changes: [
+          {
+            path: 'index.md',
+            content: `${f.notebook.readRevision(proposal.baseRevision).files['index.md']}\nA separate current publication.\n`,
+          },
+        ],
+      },
+      { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+      []
+    );
+    const controlSelected = readServerNotebookProposal(context, control.id);
+    await decideServerNotebookProposal(context, {
       requestId: randomUUID(),
-      baseRevision: proposal.baseRevision,
-      summary: 'Publish a separate reviewed change before deciding the older Proposal.',
-      changes: [
-        {
-          path: 'index.md',
-          content: `${f.notebook.readRevision(proposal.baseRevision).files['index.md']}\nA separate current publication.\n`,
-        },
-      ],
-    },
-    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
-    []
-  );
-  const controlSelected = readServerNotebookProposal(context, control.id);
-  await decideServerNotebookProposal(context, {
-    requestId: randomUUID(),
-    proposalId: control.id,
-    proposalDigest: controlSelected.proposalDigest,
-    baseRevision: control.baseRevision,
-    candidateRevision: control.candidateRevision,
-    decision: 'accepted',
-  });
-  const currentHead = f.notebook.publishedRevision();
-  const currentFiles = f.notebook.readRevision(currentHead).files;
-  expect(currentHead).toBe(control.candidateRevision);
-  expect(currentHead).not.toBe(proposal.baseRevision);
-  expect(currentHead).not.toBe(proposal.candidateRevision);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
-  const request = {
-    requestId: randomUUID(),
-    proposalId: proposal.id,
-    proposalDigest: selected.proposalDigest,
-    baseRevision: proposal.baseRevision,
-    candidateRevision: proposal.candidateRevision,
-    decision,
-  };
-  if (decision === 'accepted') {
-    await expect(decideServerNotebookProposal(context, request)).rejects.toMatchObject({
-      code: 'conflict',
+      proposalId: control.id,
+      proposalDigest: controlSelected.proposalDigest,
+      baseRevision: control.baseRevision,
+      candidateRevision: control.candidateRevision,
+      decision: 'accepted',
     });
+    const currentHead = f.notebook.publishedRevision();
+    const currentFiles = f.notebook.readRevision(currentHead).files;
+    expect(currentHead).toBe(control.candidateRevision);
+    expect(currentHead).not.toBe(proposal.baseRevision);
+    expect(currentHead).not.toBe(proposal.candidateRevision);
     expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
-  } else {
-    await expect(decideServerNotebookProposal(context, request)).resolves.toMatchObject({
-      review: request,
-      notebookRevision: null,
-    });
-    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([
-      expect.objectContaining(request),
-    ]);
-  }
-  expect(f.notebook.publishedRevision()).toBe(currentHead);
-  expect(f.notebook.readRevision(currentHead).files).toEqual(currentFiles);
-  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
-}, 60_000);
+    const request = {
+      requestId: randomUUID(),
+      proposalId: proposal.id,
+      proposalDigest: selected.proposalDigest,
+      baseRevision: proposal.baseRevision,
+      candidateRevision: proposal.candidateRevision,
+      decision,
+    };
+    if (decision === 'accepted') {
+      await expect(decideServerNotebookProposal(context, request)).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
+    } else {
+      await expect(decideServerNotebookProposal(context, request)).resolves.toMatchObject({
+        review: request,
+        notebookRevision: null,
+      });
+      expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([
+        expect.objectContaining(request),
+      ]);
+    }
+    expect(f.notebook.publishedRevision()).toBe(currentHead);
+    expect(f.notebook.readRevision(currentHead).files).toEqual(currentFiles);
+    expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  },
+  60_000
+);

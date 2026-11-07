@@ -331,242 +331,249 @@ const cases = [
   ],
 ] as const;
 
-it.each(
-  cases
-)('retires the authorized former binding and preserves %s owned outcome', async (id, method, path, body, status) => {
-  const state = await fixture();
-  try {
-    if (id === 'workspace.deleted-recover')
-      state.coreDb.sqlite
-        .prepare("UPDATE workspace_registry SET status = 'deleted' WHERE workspace_id = ?")
-        .run(state.workspaceId);
-    const request = {
-      ...body,
-      requestId: REQUEST_ID,
-      ...(id === 'workspace.delete'
-        ? { confirmation: `permanently-delete-workspace:${state.workspaceId}:1` }
-        : {}),
-    };
-    const legacy = await state.app.request(path.replace('$workspace', state.workspaceId), {
-      method,
-      ...(method === 'GET'
-        ? {}
-        : { body: JSON.stringify(request), headers: { 'content-type': 'application/json' } }),
-    });
-    expect(legacy.status).toBe(404);
-    const selectors = {
-      ...('workspaceId' in WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS[id].inputSchema.shape
-        ? { workspaceId: state.workspaceId }
-        : {}),
-      ...('invitationId' in WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS[id].inputSchema.shape
-        ? { invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4' }
-        : {}),
-      ...(id === 'workspace.member-remove'
-        ? { targetUserId: testEntityId('usr', 'member') }
-        : id === 'user.disable'
-          ? { targetUserId: testEntityId('usr', 'target') }
+it.each(cases)(
+  'retires the authorized former binding and preserves %s owned outcome',
+  async (id, method, path, body, status) => {
+    const state = await fixture();
+    try {
+      if (id === 'workspace.deleted-recover')
+        state.coreDb.sqlite
+          .prepare("UPDATE workspace_registry SET status = 'deleted' WHERE workspace_id = ?")
+          .run(state.workspaceId);
+      const request = {
+        ...body,
+        requestId: REQUEST_ID,
+        ...(id === 'workspace.delete'
+          ? { confirmation: `permanently-delete-workspace:${state.workspaceId}:1` }
           : {}),
-    };
-    const canonical = await state.app.request(
-      ...operationRequest(id, selectors, { body: JSON.stringify(method === 'GET' ? {} : request) })
-    );
-    expect(canonical.status).toBe(status);
-    const result = await canonical.json();
-    if (id === 'workspace.leave') expect(result).toMatchObject({ code: 'owner_transfer_required' });
-    if (id === 'workspace.deleted-recover')
-      expect(result).toMatchObject({ code: 'recovery_required' });
-  } finally {
-    await state.close();
+      };
+      const legacy = await state.app.request(path.replace('$workspace', state.workspaceId), {
+        method,
+        ...(method === 'GET'
+          ? {}
+          : { body: JSON.stringify(request), headers: { 'content-type': 'application/json' } }),
+      });
+      expect(legacy.status).toBe(404);
+      const selectors = {
+        ...('workspaceId' in WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS[id].inputSchema.shape
+          ? { workspaceId: state.workspaceId }
+          : {}),
+        ...('invitationId' in WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS[id].inputSchema.shape
+          ? { invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4' }
+          : {}),
+        ...(id === 'workspace.member-remove'
+          ? { targetUserId: testEntityId('usr', 'member') }
+          : id === 'user.disable'
+            ? { targetUserId: testEntityId('usr', 'target') }
+            : {}),
+      };
+      const canonical = await state.app.request(
+        ...operationRequest(id, selectors, {
+          body: JSON.stringify(method === 'GET' ? {} : request),
+        })
+      );
+      expect(canonical.status).toBe(status);
+      const result = await canonical.json();
+      if (id === 'workspace.leave')
+        expect(result).toMatchObject({ code: 'owner_transfer_required' });
+      if (id === 'workspace.deleted-recover')
+        expect(result).toMatchObject({ code: 'recovery_required' });
+    } finally {
+      await state.close();
+    }
   }
-});
+);
 
-it.each([
-  'session',
-  'token',
-] as const)('uses current administrator %s authority on foreign members without impersonation', async (kind) => {
-  const f = await fixture();
-  try {
-    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: testEntityId('usr', 'target'),
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const actor: Actor =
-      kind === 'session'
-        ? createTestSessionActor(f.coreDb, testEntityId('usr', 'target'))
-        : {
-            kind,
-            userId: testEntityId('usr', 'target'),
-            tokenId: admin.record.tokenId,
-            tokenScope: 'server-admin',
-          };
-    const requestId = randomUUID();
-    const input = {
-      workspaceId: f.workspaceId,
-      targetUserId: testEntityId('usr', 'member'),
-
-      expectedRevision: 1,
-      requestId,
-    };
-    const output = await f.invoke('workspace.member-remove', input, {
-      kind: 'public',
-      actor,
-    });
-    expect(output.member).toMatchObject({
-      userId: testEntityId('usr', 'member'),
-      status: 'removed',
-      revision: 2,
-    });
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-        .get(f.workspaceId)
-    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, testEntityId('usr', 'target'))
-    ).toBeUndefined();
-    expect(
-      listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
-    ).toEqual([
-      expect.objectContaining({
-        actor: { kind: 'user', id: testEntityId('usr', 'target') },
-        subject: { kind: 'user', id: testEntityId('usr', 'member') },
-      }),
-    ]);
-    f.coreDb.sqlite
-      .prepare('UPDATE workspace_invitations SET invitee_user_id = ? WHERE invitation_id = ?')
-      .run(testEntityId('usr', 'member'), 'inv_00000000-0000-79cc-be8a-99985c4c44e4');
-    const accepted = await f.invoke(
-      'workspace.my-invitation-accept',
-      {
-        invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4',
-        expectedRevision: 1,
-        requestId: randomUUID(),
-      },
-      { kind: 'public', actor }
-    );
-    expect(accepted.invitation).toMatchObject({
-      inviteeUserId: testEntityId('usr', 'member'),
-      effectiveStatus: 'accepted',
-    });
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, testEntityId('usr', 'target'))
-    ).toBeUndefined();
-    const transfer = await f.invoke(
-      'workspace.ownership-transfer',
-      {
+it.each(['session', 'token'] as const)(
+  'uses current administrator %s authority on foreign members without impersonation',
+  async (kind) => {
+    const f = await fixture();
+    try {
+      const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: testEntityId('usr', 'target'),
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const actor: Actor =
+        kind === 'session'
+          ? createTestSessionActor(f.coreDb, testEntityId('usr', 'target'))
+          : {
+              kind,
+              userId: testEntityId('usr', 'target'),
+              tokenId: admin.record.tokenId,
+              tokenScope: 'server-admin',
+            };
+      const requestId = randomUUID();
+      const input = {
         workspaceId: f.workspaceId,
         targetUserId: testEntityId('usr', 'member'),
-        expectedRegistryRevision: 1,
-        requestId: randomUUID(),
-      },
-      { kind: 'public', actor }
-    );
-    expect(transfer.workspace.ownerUserId).toBe(testEntityId('usr', 'member'));
-    revokeOpenKitAccessTokenRecord(f.coreDb, admin.record.tokenId);
-    const deniedId = randomUUID();
-    const before = f.coreDb.sqlite
-      .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(f.workspaceId, testEntityId('usr', 'member'));
-    await expect(
-      f.invoke(
-        'workspace.member-remove',
-        { ...input, expectedRevision: 3, requestId: deniedId },
-        { kind: 'public', actor }
-      )
-    ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
-    expect(
+
+        expectedRevision: 1,
+        requestId,
+      };
+      const output = await f.invoke('workspace.member-remove', input, {
+        kind: 'public',
+        actor,
+      });
+      expect(output.member).toMatchObject({
+        userId: testEntityId('usr', 'member'),
+        status: 'removed',
+        revision: 2,
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+          .get(f.workspaceId)
+      ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .get(f.workspaceId, testEntityId('usr', 'target'))
+      ).toBeUndefined();
+      expect(
+        listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
+      ).toEqual([
+        expect.objectContaining({
+          actor: { kind: 'user', id: testEntityId('usr', 'target') },
+          subject: { kind: 'user', id: testEntityId('usr', 'member') },
+        }),
+      ]);
       f.coreDb.sqlite
-        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(f.workspaceId, testEntityId('usr', 'member'))
-    ).toEqual(before);
-    expect(
-      f.store.getCommandRequest(
-        'workspace.member.remove',
-        deniedId,
+        .prepare('UPDATE workspace_invitations SET invitee_user_id = ? WHERE invitation_id = ?')
+        .run(testEntityId('usr', 'member'), 'inv_00000000-0000-79cc-be8a-99985c4c44e4');
+      const accepted = await f.invoke(
+        'workspace.my-invitation-accept',
         {
-          coreId: 'server',
-          actorId: testEntityId('usr', 'target'),
-          targetWorkspaceId: f.workspaceId,
-          targetUserId: testEntityId('usr', 'member'),
+          invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4',
+          expectedRevision: 1,
+          requestId: randomUUID(),
         },
-        f.coreDb
-      )
-    ).toBeNull();
-    expect(listServerAuditEvents(f.coreDb).filter((event) => event.requestId === deniedId)).toEqual(
-      []
-    );
-  } finally {
-    await f.close();
+        { kind: 'public', actor }
+      );
+      expect(accepted.invitation).toMatchObject({
+        inviteeUserId: testEntityId('usr', 'member'),
+        effectiveStatus: 'accepted',
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .get(f.workspaceId, testEntityId('usr', 'target'))
+      ).toBeUndefined();
+      const transfer = await f.invoke(
+        'workspace.ownership-transfer',
+        {
+          workspaceId: f.workspaceId,
+          targetUserId: testEntityId('usr', 'member'),
+          expectedRegistryRevision: 1,
+          requestId: randomUUID(),
+        },
+        { kind: 'public', actor }
+      );
+      expect(transfer.workspace.ownerUserId).toBe(testEntityId('usr', 'member'));
+      revokeOpenKitAccessTokenRecord(f.coreDb, admin.record.tokenId);
+      const deniedId = randomUUID();
+      const before = f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .get(f.workspaceId, testEntityId('usr', 'member'));
+      await expect(
+        f.invoke(
+          'workspace.member-remove',
+          { ...input, expectedRevision: 3, requestId: deniedId },
+          { kind: 'public', actor }
+        )
+      ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .get(f.workspaceId, testEntityId('usr', 'member'))
+      ).toEqual(before);
+      expect(
+        f.store.getCommandRequest(
+          'workspace.member.remove',
+          deniedId,
+          {
+            coreId: 'server',
+            actorId: testEntityId('usr', 'target'),
+            targetWorkspaceId: f.workspaceId,
+            targetUserId: testEntityId('usr', 'member'),
+          },
+          f.coreDb
+        )
+      ).toBeNull();
+      expect(
+        listServerAuditEvents(f.coreDb).filter((event) => event.requestId === deniedId)
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
   }
-});
+);
 
 it.each([
   'workspace.my-invitation-accept',
   'workspace.my-invitation-decline',
   'workspace.leave',
   'workspace.access-recover',
-] as const)('fences %s through its mutation target before any row or receipt changes', async (id) => {
-  const f = await fixture();
-  try {
-    await f.admission.close(f.workspaceId);
-    const requestId = randomUUID();
-    const input =
-      id === 'workspace.leave'
-        ? { workspaceId: f.workspaceId, expectedRevision: 1, requestId }
-        : id === 'workspace.access-recover'
-          ? {
-              workspaceId: f.workspaceId,
-              action: 'add-self-as-member',
-              expectedRegistryRevision: 1,
-              requestId,
-            }
-          : {
-              invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4',
-              expectedRevision: 1,
-              requestId,
-            };
-    const beforeInvitation = f.coreDb.sqlite
-      .prepare('SELECT * FROM workspace_invitations WHERE invitation_id = ?')
-      .get('inv_00000000-0000-79cc-be8a-99985c4c44e4');
-    const beforeMembers = f.coreDb.sqlite
-      .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? ORDER BY user_id')
-      .all(f.workspaceId);
-    const response = await f.app.request(
-      ...operationRequest(id, {}, { body: JSON.stringify(input) })
-    );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      code: 'workspace_frozen',
-      details: { workspaceId: f.workspaceId, retryable: true },
-    });
-    expect(
-      f.coreDb.sqlite
+] as const)(
+  'fences %s through its mutation target before any row or receipt changes',
+  async (id) => {
+    const f = await fixture();
+    try {
+      await f.admission.close(f.workspaceId);
+      const requestId = randomUUID();
+      const input =
+        id === 'workspace.leave'
+          ? { workspaceId: f.workspaceId, expectedRevision: 1, requestId }
+          : id === 'workspace.access-recover'
+            ? {
+                workspaceId: f.workspaceId,
+                action: 'add-self-as-member',
+                expectedRegistryRevision: 1,
+                requestId,
+              }
+            : {
+                invitationId: 'inv_00000000-0000-79cc-be8a-99985c4c44e4',
+                expectedRevision: 1,
+                requestId,
+              };
+      const beforeInvitation = f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_invitations WHERE invitation_id = ?')
-        .get('inv_00000000-0000-79cc-be8a-99985c4c44e4')
-    ).toEqual(beforeInvitation);
-    expect(
-      f.coreDb.sqlite
+        .get('inv_00000000-0000-79cc-be8a-99985c4c44e4');
+      const beforeMembers = f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? ORDER BY user_id')
-        .all(f.workspaceId)
-    ).toEqual(beforeMembers);
-    expect(
-      listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
-    ).toEqual([]);
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
-        .all(requestId)
-    ).toEqual([]);
-  } finally {
-    await f.close();
+        .all(f.workspaceId);
+      const response = await f.app.request(
+        ...operationRequest(id, {}, { body: JSON.stringify(input) })
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'workspace_frozen',
+        details: { workspaceId: f.workspaceId, retryable: true },
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_invitations WHERE invitation_id = ?')
+          .get('inv_00000000-0000-79cc-be8a-99985c4c44e4')
+      ).toEqual(beforeInvitation);
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? ORDER BY user_id')
+          .all(f.workspaceId)
+      ).toEqual(beforeMembers);
+      expect(
+        listServerAuditEvents(f.coreDb).filter((event) => event.requestId === requestId)
+      ).toEqual([]);
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+          .all(requestId)
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
   }
-});
+);
 
 it('refuses HTTP user.disable during closed product admission without disabling the user or writing its receipt', async () => {
   const readiness = computeBootReadinessSnapshot({

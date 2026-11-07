@@ -135,27 +135,27 @@ describe('retained archive primary admission', () => {
     await exportedArchive(fixture);
   });
 
-  it.each([
-    'session',
-    'administrator',
-  ] as const)('fences retained %s download while its Workspace is closed', async (actor) => {
-    const fixture = await archiveFixture();
-    const archive = await exportedArchive(fixture);
-    const headers =
-      actor === 'administrator'
-        ? { authorization: `Bearer ${fixture.token('server-admin').secret}` }
-        : {};
-    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
-    const response = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      code: 'workspace_access_denied',
-      message: 'Workspace access denied.',
-      protocolVersion: PROTOCOL_VERSION,
-    });
-    fixture.workspaceMutationAdmission.reopen(fixture.workspace.id);
-    const resumed = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
-    expect(resumed.status).toBe(200);
-    expect(await resumed.arrayBuffer()).toEqual(archive.bytes);
-  });
+  it.each(['session', 'administrator'] as const)(
+    'fences retained %s download while its Workspace is closed',
+    async (actor) => {
+      const fixture = await archiveFixture();
+      const archive = await exportedArchive(fixture);
+      const headers =
+        actor === 'administrator'
+          ? { authorization: `Bearer ${fixture.token('server-admin').secret}` }
+          : {};
+      await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+      const response = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        code: 'workspace_access_denied',
+        message: 'Workspace access denied.',
+        protocolVersion: PROTOCOL_VERSION,
+      });
+      fixture.workspaceMutationAdmission.reopen(fixture.workspace.id);
+      const resumed = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
+      expect(resumed.status).toBe(200);
+      expect(await resumed.arrayBuffer()).toEqual(archive.bytes);
+    }
+  );
 });

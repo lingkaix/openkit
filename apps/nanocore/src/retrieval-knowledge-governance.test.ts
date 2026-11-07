@@ -83,33 +83,33 @@ describe('canonical local retrieval identity', () => {
     ).toThrow(expect.objectContaining({ code: 'recovery_required', status: 503 }));
   });
 
-  it.each([
-    'presented requestActor',
-    'native ActorRef',
-  ] as const)('preserves the current membership read failure for %s', async (actorInput) => {
-    const f = await createFixture('unreadable-authority');
-    const access = {
-      ...f.access,
-      ...(actorInput === 'native ActorRef' ? { requestActor: undefined } : {}),
-    };
-    const admit = () => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access });
-    expect(admit).not.toThrow();
-    const failure = new Error('Current membership reader is unavailable.');
-    const reader = vi
-      .spyOn(workspaceSharing, 'resolveWorkspaceMembershipRelation')
-      .mockImplementation(() => {
-        throw failure;
-      });
-    // Core Policy Decision: a failed mandatory fact read must not become a Kernel denial.
-    let observed: unknown;
-    try {
-      admit();
-    } catch (error) {
-      observed = error;
+  it.each(['presented requestActor', 'native ActorRef'] as const)(
+    'preserves the current membership read failure for %s',
+    async (actorInput) => {
+      const f = await createFixture('unreadable-authority');
+      const access = {
+        ...f.access,
+        ...(actorInput === 'native ActorRef' ? { requestActor: undefined } : {}),
+      };
+      const admit = () => admitKnowledgeRetrieval({ workspaceId: f.workspaceId, access });
+      expect(admit).not.toThrow();
+      const failure = new Error('Current membership reader is unavailable.');
+      const reader = vi
+        .spyOn(workspaceSharing, 'resolveWorkspaceMembershipRelation')
+        .mockImplementation(() => {
+          throw failure;
+        });
+      // Core Policy Decision: a failed mandatory fact read must not become a Kernel denial.
+      let observed: unknown;
+      try {
+        admit();
+      } catch (error) {
+        observed = error;
+      }
+      expect(reader).toHaveBeenCalledWith(f.access.coreDb, f.workspaceId, f.userId);
+      expect(observed).toBe(failure);
     }
-    expect(reader).toHaveBeenCalledWith(f.access.coreDb, f.workspaceId, f.userId);
-    expect(observed).toBe(failure);
-  });
+  );
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
@@ -135,51 +135,51 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     });
   });
 
-  it.each([
-    'restrict the referenced page',
-    'publish an unrelated page',
-  ])('rechecks current Source authority after prepared content: %s', async (change) => {
-    const fixture = await createFixture('prepared-currency');
-    const source = await createEntry(fixture, 'Supporting page', 'source-currency-marker');
-    const dependent = await createEntry(fixture, 'Dependent page', 'dependent-currency-marker', [
-      formatReferenceUri(pageReference(fixture, source.id)),
-    ]);
-    const input = {
-      dataRoot: fixture.dataRoot,
-      workspaceId: fixture.workspaceId,
-      access: fixture.access,
-    };
-    const notebookRead = await prepareAuthorizedWorkspaceNotebookRead(input);
-    const target = {
-      ...input,
-      notebookRead,
-      notebookRevision: notebookRead.selected.revision,
-      pageIds: [dependent.id],
-    };
-    const before = await readAuthorizedWorkspaceNotebookPages(target);
-    expect(before.pages).toEqual([dependent]);
-    if (change === 'restrict the referenced page')
-      await updatePageFields(fixture, source.id, { sensitivity: 'confidential' });
-    else await createEntry(fixture, 'Unrelated page', 'unrelated-currency-marker');
-    expect(fixture.notebook.publishedRevision()).not.toBe(target.notebookRevision);
-    if (change === 'restrict the referenced page') {
-      const refusal = Promise.resolve().then(() => readAuthorizedWorkspaceNotebookPages(target));
-      await expect(refusal).rejects.toBeInstanceOf(OperationError);
-      await expect(refusal).rejects.toMatchObject({ code: 'workspace_access_denied' });
-      const diagnostic = await refusal.catch(({ code, message, status }: OperationError) => ({
-        code,
-        message,
-        status,
-      }));
-      for (const secret of [dependent.id, source.id, 'dependent-currency-marker'])
-        expect(JSON.stringify(diagnostic)).not.toContain(secret);
-    } else {
-      const after = await readAuthorizedWorkspaceNotebookPages(target);
-      expect(after.notebookRevision).toBe(target.notebookRevision);
-      expect(after.pages).toEqual([dependent]);
-      expect(after.pages[0]!.contentDigest).toBe(sha256(dependent.content));
+  it.each(['restrict the referenced page', 'publish an unrelated page'])(
+    'rechecks current Source authority after prepared content: %s',
+    async (change) => {
+      const fixture = await createFixture('prepared-currency');
+      const source = await createEntry(fixture, 'Supporting page', 'source-currency-marker');
+      const dependent = await createEntry(fixture, 'Dependent page', 'dependent-currency-marker', [
+        formatReferenceUri(pageReference(fixture, source.id)),
+      ]);
+      const input = {
+        dataRoot: fixture.dataRoot,
+        workspaceId: fixture.workspaceId,
+        access: fixture.access,
+      };
+      const notebookRead = await prepareAuthorizedWorkspaceNotebookRead(input);
+      const target = {
+        ...input,
+        notebookRead,
+        notebookRevision: notebookRead.selected.revision,
+        pageIds: [dependent.id],
+      };
+      const before = await readAuthorizedWorkspaceNotebookPages(target);
+      expect(before.pages).toEqual([dependent]);
+      if (change === 'restrict the referenced page')
+        await updatePageFields(fixture, source.id, { sensitivity: 'confidential' });
+      else await createEntry(fixture, 'Unrelated page', 'unrelated-currency-marker');
+      expect(fixture.notebook.publishedRevision()).not.toBe(target.notebookRevision);
+      if (change === 'restrict the referenced page') {
+        const refusal = Promise.resolve().then(() => readAuthorizedWorkspaceNotebookPages(target));
+        await expect(refusal).rejects.toBeInstanceOf(OperationError);
+        await expect(refusal).rejects.toMatchObject({ code: 'workspace_access_denied' });
+        const diagnostic = await refusal.catch(({ code, message, status }: OperationError) => ({
+          code,
+          message,
+          status,
+        }));
+        for (const secret of [dependent.id, source.id, 'dependent-currency-marker'])
+          expect(JSON.stringify(diagnostic)).not.toContain(secret);
+      } else {
+        const after = await readAuthorizedWorkspaceNotebookPages(target);
+        expect(after.notebookRevision).toBe(target.notebookRevision);
+        expect(after.pages).toEqual([dependent]);
+        expect(after.pages[0]!.contentDigest).toBe(sha256(dependent.content));
+      }
     }
-  });
+  );
 
   it('excludes an unpublished proposal despite its delegated label and exact candidate bytes', async () => {
     const fixture = await createFixture('unpublished-proposal');
@@ -238,65 +238,12 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     expect(fixture.notebook.publishedRevision()).toBe(baseRevision);
   });
 
-  it.each([
-    'Claim',
-    'Observation',
-  ] as const)('excludes unresolved %s pages from active query and pinned selection until resolved', async (type) => {
-    const fixture = await createFixture(`conflict-${type.toLowerCase()}`);
-    const page = await createEntry(fixture, 'Conflict evidence', 'conflict-selection-marker');
-    const reference = pageReference(fixture, page.id);
-    await publishPages(fixture, [
-      {
-        path: `${page.id}.md`,
-        content: updateOkfFrontmatter({
-          path: `${page.id}.md`,
-          content: readPage(fixture, page.id),
-          updates: {
-            type,
-            ...(type === 'Claim'
-              ? { confidence: 0 }
-              : { subject_refs: [formatReferenceUri(reference)] }),
-          },
-        }),
-      },
-    ]);
-    // No recorded assessment remains eligible; it does not fabricate a resolution.
-    const unassessed = await retrieveWorkspaceKnowledge(
-      retrievalInput(fixture, 'conflict-selection-marker')
-    );
-    expect(unassessed.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
-    expect(readPage(fixture, page.id)).not.toContain('conflict_status:');
-
-    for (const conflict_status of ['unresolved', 'resolved'] as const) {
-      await publishPages(fixture, [
-        {
-          path: `${page.id}.md`,
-          content: updateOkfFrontmatter({
-            path: `${page.id}.md`,
-            content: readPage(fixture, page.id),
-            updates: { conflict_status },
-          }),
-        },
-      ]);
-      for (const pinnedReferences of [[], [reference]]) {
-        const trace = await retrieveWorkspaceKnowledge({
-          ...retrievalInput(
-            fixture,
-            pinnedReferences.length ? 'unmatched-conflict-lookup' : 'conflict-selection-marker'
-          ),
-          pinnedReferences,
-        });
-        if (conflict_status === 'unresolved') {
-          expect(trace.selected).toEqual([]);
-          expect(exclusionReasons(trace)).toEqual({ [page.id]: 'lower_conformance' });
-        } else {
-          expect(trace.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
-          expect(trace.excluded).toEqual([]);
-        }
-      }
-    }
-    if (type === 'Claim') {
-      // Current authorized inspection of non-active facts remains available.
+  it.each(['Claim', 'Observation'] as const)(
+    'excludes unresolved %s pages from active query and pinned selection until resolved',
+    async (type) => {
+      const fixture = await createFixture(`conflict-${type.toLowerCase()}`);
+      const page = await createEntry(fixture, 'Conflict evidence', 'conflict-selection-marker');
+      const reference = pageReference(fixture, page.id);
       await publishPages(fixture, [
         {
           path: `${page.id}.md`,
@@ -304,21 +251,74 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
             path: `${page.id}.md`,
             content: readPage(fixture, page.id),
             updates: {
-              openkit_status: 'archived',
-              status: 'deprecated',
-              conflict_status: 'unresolved',
+              type,
+              ...(type === 'Claim'
+                ? { confidence: 0 }
+                : { subject_refs: [formatReferenceUri(reference)] }),
             },
           }),
         },
       ]);
-      const inspected = await retrieveWorkspaceKnowledge({
-        ...retrievalInput(fixture, 'conflict-selection-marker'),
-        states: ['archived'],
-      });
-      expect(inspected.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
-      expect(inspected.excluded).toEqual([]);
+      // No recorded assessment remains eligible; it does not fabricate a resolution.
+      const unassessed = await retrieveWorkspaceKnowledge(
+        retrievalInput(fixture, 'conflict-selection-marker')
+      );
+      expect(unassessed.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+      expect(readPage(fixture, page.id)).not.toContain('conflict_status:');
+
+      for (const conflict_status of ['unresolved', 'resolved'] as const) {
+        await publishPages(fixture, [
+          {
+            path: `${page.id}.md`,
+            content: updateOkfFrontmatter({
+              path: `${page.id}.md`,
+              content: readPage(fixture, page.id),
+              updates: { conflict_status },
+            }),
+          },
+        ]);
+        for (const pinnedReferences of [[], [reference]]) {
+          const trace = await retrieveWorkspaceKnowledge({
+            ...retrievalInput(
+              fixture,
+              pinnedReferences.length ? 'unmatched-conflict-lookup' : 'conflict-selection-marker'
+            ),
+            pinnedReferences,
+          });
+          if (conflict_status === 'unresolved') {
+            expect(trace.selected).toEqual([]);
+            expect(exclusionReasons(trace)).toEqual({ [page.id]: 'lower_conformance' });
+          } else {
+            expect(trace.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+            expect(trace.excluded).toEqual([]);
+          }
+        }
+      }
+      if (type === 'Claim') {
+        // Current authorized inspection of non-active facts remains available.
+        await publishPages(fixture, [
+          {
+            path: `${page.id}.md`,
+            content: updateOkfFrontmatter({
+              path: `${page.id}.md`,
+              content: readPage(fixture, page.id),
+              updates: {
+                openkit_status: 'archived',
+                status: 'deprecated',
+                conflict_status: 'unresolved',
+              },
+            }),
+          },
+        ]);
+        const inspected = await retrieveWorkspaceKnowledge({
+          ...retrievalInput(fixture, 'conflict-selection-marker'),
+          states: ['archived'],
+        });
+        expect(inspected.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+        expect(inspected.excluded).toEqual([]);
+      }
     }
-  });
+  );
 
   it('enumerates lexical matches before sensitivity, conflict, freshness, and budget dispositions', async () => {
     const fixture = await createFixture('enumeration');

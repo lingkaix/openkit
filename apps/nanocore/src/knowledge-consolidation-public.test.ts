@@ -200,69 +200,74 @@ afterEach(async () => {
 });
 
 describe('C01/C02 public canonical Knowledge consolidation', () => {
-  it.each([
-    0, 0.75, 1,
-  ])('preserves numeric Claim confidence %s and source pins through ordinary draft, active, archive and restart', async (confidence) => {
-    const f = await fixture();
-    const reference = await source(f);
-    const id = `release-${String(confidence).replace('.', '-')}`;
-    const fields = { confidence, source_refs: [reference] };
-    await publish(f, {
-      [`${id}.md`]: page('Claim', 'fortnightly-release-marker', {
-        ...fields,
-        openkit_status: 'draft',
-        status: 'draft',
-      }),
-    });
-    const pin = { scopeId: f.pageScopeId, objectId: id };
-    const draft = await ok(f, 'knowledge.retrieval', {
-      query: 'unmatched',
-      pinnedReferences: [pin],
-    });
-    expect(draft.selected).toEqual([]);
-    await publish(f, { [`${id}.md`]: page('Claim', 'fortnightly-release-marker', fields) });
-    const active = await ok(f, 'knowledge.retrieval', {
-      query: 'unmatched',
-      pinnedReferences: [pin],
-    });
-    expect(active.selected.map((row: { reference: unknown }) => row.reference)).toContainEqual(pin);
-    expect(metadata(f, id)).toMatchObject({
-      type: 'Claim',
-      confidence,
-      source_refs: [reference],
-      scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-      freshness: 'current',
-      review_state: 'user-authored',
-    });
-    const activeRevision = await revision(f);
-    await publish(f, {
-      [`${id}.md`]: page('Claim', 'fortnightly-release-marker', {
-        ...fields,
-        openkit_status: 'archived',
-        status: 'deprecated',
-      }),
-    });
-    expect(
-      (await ok(f, 'knowledge.retrieval', { query: 'unmatched', pinnedReferences: [pin] })).selected
-    ).toEqual([]);
-    const restored = await ok(f, 'knowledge.notebook.restore', {
-      requestId: randomUUID(),
-      baseRevision: await revision(f),
-      fromRevision: activeRevision,
-      pageIds: [id],
-      summary: 'Restore the retained Claim through normal publication',
-    });
-    expect(restored.notebookRevision).not.toBe(activeRevision);
-    expect(metadata(f, id)).toMatchObject({
-      confidence,
-      source_refs: [reference],
-      openkit_status: 'active',
-    });
-    const beforeRestart = await revision(f);
-    await reopen(f);
-    expect(await revision(f)).toBe(beforeRestart);
-    expect(semanticLedgers(f)).toEqual([]);
-  }, 60_000);
+  it.each([0, 0.75, 1])(
+    'preserves numeric Claim confidence %s and source pins through ordinary draft, active, archive and restart',
+    async (confidence) => {
+      const f = await fixture();
+      const reference = await source(f);
+      const id = `release-${String(confidence).replace('.', '-')}`;
+      const fields = { confidence, source_refs: [reference] };
+      await publish(f, {
+        [`${id}.md`]: page('Claim', 'fortnightly-release-marker', {
+          ...fields,
+          openkit_status: 'draft',
+          status: 'draft',
+        }),
+      });
+      const pin = { scopeId: f.pageScopeId, objectId: id };
+      const draft = await ok(f, 'knowledge.retrieval', {
+        query: 'unmatched',
+        pinnedReferences: [pin],
+      });
+      expect(draft.selected).toEqual([]);
+      await publish(f, { [`${id}.md`]: page('Claim', 'fortnightly-release-marker', fields) });
+      const active = await ok(f, 'knowledge.retrieval', {
+        query: 'unmatched',
+        pinnedReferences: [pin],
+      });
+      expect(active.selected.map((row: { reference: unknown }) => row.reference)).toContainEqual(
+        pin
+      );
+      expect(metadata(f, id)).toMatchObject({
+        type: 'Claim',
+        confidence,
+        source_refs: [reference],
+        scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+        freshness: 'current',
+        review_state: 'user-authored',
+      });
+      const activeRevision = await revision(f);
+      await publish(f, {
+        [`${id}.md`]: page('Claim', 'fortnightly-release-marker', {
+          ...fields,
+          openkit_status: 'archived',
+          status: 'deprecated',
+        }),
+      });
+      expect(
+        (await ok(f, 'knowledge.retrieval', { query: 'unmatched', pinnedReferences: [pin] }))
+          .selected
+      ).toEqual([]);
+      const restored = await ok(f, 'knowledge.notebook.restore', {
+        requestId: randomUUID(),
+        baseRevision: await revision(f),
+        fromRevision: activeRevision,
+        pageIds: [id],
+        summary: 'Restore the retained Claim through normal publication',
+      });
+      expect(restored.notebookRevision).not.toBe(activeRevision);
+      expect(metadata(f, id)).toMatchObject({
+        confidence,
+        source_refs: [reference],
+        openkit_status: 'active',
+      });
+      const beforeRestart = await revision(f);
+      await reopen(f);
+      expect(await revision(f)).toBe(beforeRestart);
+      expect(semanticLedgers(f)).toEqual([]);
+    },
+    60_000
+  );
 
   it('excludes subject-targeted unresolved OKF conflicts from public lexical and pinned retrieval after restart', async () => {
     const f = await fixture();

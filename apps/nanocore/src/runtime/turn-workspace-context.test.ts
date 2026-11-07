@@ -25,44 +25,44 @@ beforeEach(() => {
 });
 
 describe('turn workspace context', () => {
-  it.each([
-    'read-write',
-    'read-only',
-  ] as const)('retains the exact source-kind refusal for an authored %s folder input', async (access) => {
-    const setup = createTestAgentSetup();
-    const manifest = {
-      ...setup.manifest,
-      workspace: { inputs: [{ id: 'documents', access, sourceRef: 'main-repo' }] },
-    };
-    const catalog = remoteGitCatalog({ path: 'files/contracts' });
-    catalog.sources[0]!.kind = 'workspace-dir';
-    catalog.sources[0]!.allowedSlotKinds = ['input'];
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      workspaceDataSourceCatalogs: [
-        {
-          catalog,
-          path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-      ],
-    });
-    const fixtureStore = await createDemoStore({ dataRoot });
-    expect(() =>
-      materializeWorkspaceRootsForTurn(
-        snapshot,
-        fixtureStore,
-        'ws_00000000-0000-7000-8000-000000000001',
-        manifest
-      )
-    ).toThrowError(
-      expect.objectContaining({
-        code: 'workspace_data_source_blocked',
-        status: 409,
-        message:
-          'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.',
-      })
-    );
-  });
+  it.each(['read-write', 'read-only'] as const)(
+    'retains the exact source-kind refusal for an authored %s folder input',
+    async (access) => {
+      const setup = createTestAgentSetup();
+      const manifest = {
+        ...setup.manifest,
+        workspace: { inputs: [{ id: 'documents', access, sourceRef: 'main-repo' }] },
+      };
+      const catalog = remoteGitCatalog({ path: 'files/contracts' });
+      catalog.sources[0]!.kind = 'workspace-dir';
+      catalog.sources[0]!.allowedSlotKinds = ['input'];
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        workspaceDataSourceCatalogs: [
+          {
+            catalog,
+            path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+        ],
+      });
+      const fixtureStore = await createDemoStore({ dataRoot });
+      expect(() =>
+        materializeWorkspaceRootsForTurn(
+          snapshot,
+          fixtureStore,
+          'ws_00000000-0000-7000-8000-000000000001',
+          manifest
+        )
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'workspace_data_source_blocked',
+          status: 409,
+          message:
+            'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.',
+        })
+      );
+    }
+  );
   it('retains the exact source-kind refusal for an authored inline folder input', async () => {
     const manifest = {
       ...createTestAgentSetup().manifest,
@@ -249,39 +249,39 @@ describe('turn workspace context', () => {
       locator: { commit: REMOTE_COMMIT, url: REMOTE_URL },
       vaultGrantRef: 'grant_00000000-0000-7899-9b3f-8965fec90404',
     },
-  ])('rejects a $kind Git catalog source before exposing a runtime root', async ({
-    locator,
-    vaultGrantRef,
-  }) => {
-    const agentSetup = createTestAgentSetup();
-    const manifest = {
-      ...agentSetup.manifest,
-      workspace: {
-        inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
-      },
-    };
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      agentManifests: [manifest],
-      dataRoot: null,
-      workspaceDataSourceCatalogs: [
-        {
-          catalog: remoteGitCatalog(locator, vaultGrantRef),
-          path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  ])(
+    'rejects a $kind Git catalog source before exposing a runtime root',
+    async ({ locator, vaultGrantRef }) => {
+      const agentSetup = createTestAgentSetup();
+      const manifest = {
+        ...agentSetup.manifest,
+        workspace: {
+          inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
         },
-      ],
-    });
+      };
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        workspaceDataSourceCatalogs: [
+          {
+            catalog: remoteGitCatalog(locator, vaultGrantRef),
+            path: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+        ],
+      });
 
-    const fixtureStore = await createDemoStore({ dataRoot });
-    expect(() =>
-      materializeWorkspaceRootsForTurn(
-        snapshot,
-        fixtureStore,
-        'ws_00000000-0000-7000-8000-000000000001',
-        manifest
-      )
-    ).toThrow();
-  });
+      const fixtureStore = await createDemoStore({ dataRoot });
+      expect(() =>
+        materializeWorkspaceRootsForTurn(
+          snapshot,
+          fixtureStore,
+          'ws_00000000-0000-7000-8000-000000000001',
+          manifest
+        )
+      ).toThrow();
+    }
+  );
 });
 
 /** Creates one complete remote Git catalog fixture without a local repository projection. */

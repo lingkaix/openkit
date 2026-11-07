@@ -572,79 +572,78 @@ async function cold(f: Fixture) {
   }
 }
 
-it.each([
-  'ack',
-  'rollback',
-  'lost-ack',
-] as const)('calibrates the exact Core INSERT/COMMIT/FULL/receiver gate 0: %s', async (mode) => {
-  const f = await fixture();
-  const requestId = randomUUID();
-  const action = 'administration.server-mcp-create';
-  const resource = `mcp-command:${commandInputHash({ name: action, scope: { actorId: f.userId, coreId: 'server' }, requestId })}`;
-  arm(action, resource, 'unknown', mode === 'rollback' ? 2 : 1);
-  const result = f.track(
-    outcome(
-      f.send(action, {
-        requestId,
-        id: f.id,
-        displayName: 'Calibration',
-        allowedTools: [],
-        expectedRevision: 0,
-        declaration: { kind: 'http', endpoint: 'https://example.test/mcp' },
-      })
-    )
-  );
-  const worker = await held(result, mode === 'rollback' ? 2 : 1);
-  const selected = () => f.coreEvents().filter((event) => event.resource === resource);
-  if (mode === 'rollback') {
+it.each(['ack', 'rollback', 'lost-ack'] as const)(
+  'calibrates the exact Core INSERT/COMMIT/FULL/receiver gate 0: %s',
+  async (mode) => {
+    const f = await fixture();
+    const requestId = randomUUID();
+    const action = 'administration.server-mcp-create';
+    const resource = `mcp-command:${commandInputHash({ name: action, scope: { actorId: f.userId, coreId: 'server' }, requestId })}`;
+    arm(action, resource, 'unknown', mode === 'rollback' ? 2 : 1);
+    const result = f.track(
+      outcome(
+        f.send(action, {
+          requestId,
+          id: f.id,
+          displayName: 'Calibration',
+          allowedTools: [],
+          expectedRevision: 0,
+          declaration: { kind: 'http', endpoint: 'https://example.test/mcp' },
+        })
+      )
+    );
+    const worker = await held(result, mode === 'rollback' ? 2 : 1);
+    const selected = () => f.coreEvents().filter((event) => event.resource === resource);
+    if (mode === 'rollback') {
+      const done = await result;
+      expect(done).toHaveProperty('value');
+      if (!('value' in done)) throw done.error;
+      // Server MCP Administration retains inspection-required 409; Gateway starts separately own 503.
+      expect(done.value.status).toBe(409);
+      expect(await done.value.clone().json()).toMatchObject({ code: 'recovery_required' });
+      expect(selected()).toEqual([]);
+      expect(loadResourceCatalog(f.root, { kind: 'server' }).mcp.entries).toEqual([]);
+      return;
+    }
+    expect(selected()).toHaveLength(1);
+    expect(selected()[0]).toMatchObject({
+      requestId,
+      actor: { kind: 'user', id: f.userId },
+      action,
+      outcome: 'unknown',
+    });
+    const native = beforeAck(selected()[0]!.id);
+    if (mode === 'lost-ack') await worker.terminate();
+    else release();
     const done = await result;
-    expect(done).toHaveProperty('value');
     if (!('value' in done)) throw done.error;
-    // Server MCP Administration retains inspection-required 409; Gateway starts separately own 503.
-    expect(done.value.status).toBe(409);
-    expect(await done.value.clone().json()).toMatchObject({ code: 'recovery_required' });
-    expect(selected()).toEqual([]);
-    expect(loadResourceCatalog(f.root, { kind: 'server' }).mcp.entries).toEqual([]);
-    return;
-  }
-  expect(selected()).toHaveLength(1);
-  expect(selected()[0]).toMatchObject({
-    requestId,
-    actor: { kind: 'user', id: f.userId },
-    action,
-    outcome: 'unknown',
-  });
-  const native = beforeAck(selected()[0]!.id);
-  if (mode === 'lost-ack') await worker.terminate();
-  else release();
-  const done = await result;
-  if (!('value' in done)) throw done.error;
-  if (mode === 'ack') {
-    expect(done.value.status, await done.value.clone().text()).toBe(200);
-    acknowledged(native);
-    const parsed = ControlStandaloneAuditInputSchema.parse(native.message.input);
-    expect(
-      ControlStandaloneAuditInputSchema.safeParse({
-        ...parsed,
-        event: { ...parsed.event, actor: null },
-      }).success
-    ).toBe(false);
-  } else {
-    expect(done.value.status).toBe(409);
-    expect(await done.value.clone().json()).toMatchObject({ code: 'recovery_required' });
-    expect(native.replies()).toEqual([]);
-    expect(loadResourceCatalog(f.root, { kind: 'server' }).mcp.entries).toEqual([]);
-    await shutdownControlStoreWorkerClient();
-    const db = createTestCoreDb(f.root);
-    try {
-      expect(listServerAuditEvents(db).filter((event) => event.resource === resource)).toEqual(
-        selected()
-      );
-    } finally {
-      closeTestCoreDb(db);
+    if (mode === 'ack') {
+      expect(done.value.status, await done.value.clone().text()).toBe(200);
+      acknowledged(native);
+      const parsed = ControlStandaloneAuditInputSchema.parse(native.message.input);
+      expect(
+        ControlStandaloneAuditInputSchema.safeParse({
+          ...parsed,
+          event: { ...parsed.event, actor: null },
+        }).success
+      ).toBe(false);
+    } else {
+      expect(done.value.status).toBe(409);
+      expect(await done.value.clone().json()).toMatchObject({ code: 'recovery_required' });
+      expect(native.replies()).toEqual([]);
+      expect(loadResourceCatalog(f.root, { kind: 'server' }).mcp.entries).toEqual([]);
+      await shutdownControlStoreWorkerClient();
+      const db = createTestCoreDb(f.root);
+      try {
+        expect(listServerAuditEvents(db).filter((event) => event.resource === resource)).toEqual(
+          selected()
+        );
+      } finally {
+        closeTestCoreDb(db);
+      }
     }
   }
-});
+);
 
 it('calibrates the same gate 0 on a real published Workspace standalone stage and receiver', async () => {
   const f = await fixture(true);
@@ -751,96 +750,97 @@ it('preserves actual Core preview actor/request and no synthetic Workspace throu
   expect(existsSync(f.callsFile)).toBe(false);
 });
 
-it.each([
-  'failed',
-  'degraded',
-] as const)('retains Workspace original %s and effect truth at the real failure boundary', async (state) => {
-  const f = await fixture(true);
-  const gateway = f.gateway();
-  const input = f.input(state === 'failed' ? { OPENKIT_MCP_INIT_EXIT: '1' } : {});
-  if (state === 'degraded') await gateway.listTools(input);
-  arm(`mcp.server.lifecycle.${state}`, `mcp-server:${f.id}`, 'failed');
-  const result = f.track<Outcome<unknown>>(
-    state === 'failed'
-      ? outcome(gateway.listTools(input))
-      : outcome(gateway.callTool({ ...input, toolName: 'echo', arguments: { message: 'crash' } }))
-  );
-  await held(result);
-  const native = beforeAck(original(f, state, false).id);
-  expect(existsSync(f.pidFile)).toBe(true);
-  if (state === 'degraded') expect(readFileSync(f.callsFile, 'utf8')).toContain('crash');
-  release();
-  expect(await result).toMatchObject({
-    error:
+it.each(['failed', 'degraded'] as const)(
+  'retains Workspace original %s and effect truth at the real failure boundary',
+  async (state) => {
+    const f = await fixture(true);
+    const gateway = f.gateway();
+    const input = f.input(state === 'failed' ? { OPENKIT_MCP_INIT_EXIT: '1' } : {});
+    if (state === 'degraded') await gateway.listTools(input);
+    arm(`mcp.server.lifecycle.${state}`, `mcp-server:${f.id}`, 'failed');
+    const result = f.track<Outcome<unknown>>(
       state === 'failed'
-        ? { code: 'mcp-server-unavailable', status: 503 }
-        : {
-            code: 'mcp-call-failed',
-            status: 503,
-            upstreamEffect: expect.stringMatching(/^(contacted|unknown)$/),
-          },
-  });
-  acknowledged(native);
-  expect(gateway.getServerHealth(input)).toBe(state);
-});
-
-it.each([
-  'failed',
-  'degraded',
-] as const)('retains Core preview original %s under its actual administrator and invocation', async (state) => {
-  const f = await fixture();
-  const upstream = state === 'degraded' ? await createMcpHttpStub({ listError: true }) : undefined;
-  if (upstream) f.closures.push(() => upstream.close());
-  const preview = await f.preview({
-    exit: state === 'failed',
-    ...(upstream ? { endpoint: upstream.url } : {}),
-  });
-  arm(`mcp.server.lifecycle.${state}`, `mcp-server:${f.id}`, 'failed');
-  const result = preview.start();
-  await held(result);
-  const native = beforeAck(original(f, state, true).id);
-  if (upstream)
-    expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
-  else expect(existsSync(f.pidFile)).toBe(true);
-  release();
-  const done = await result;
-  if (!('value' in done)) throw done.error;
-  expect(done.value.status).toBe(503);
-  acknowledged(native);
-  expect(await f.store.listWorkspaces()).toEqual([]);
-});
-
-it.each([
-  'rollback',
-  'lost-ack',
-] as const)('refuses credential transport after a real starting Audit %s without inventing rollback', async (mode) => {
-  const f = await fixture();
-  const preview = await f.preview({ credentials: true });
-  arm(
-    'mcp.server.lifecycle.starting',
-    `mcp-server:${f.id}`,
-    'succeeded',
-    mode === 'rollback' ? 2 : 1
-  );
-  const result = preview.start();
-  const worker = await held(result, mode === 'rollback' ? 2 : 1);
-  if (mode === 'lost-ack') {
-    const event = original(f, 'starting', true, true);
-    const native = beforeAck(event.id);
-    await worker.terminate();
-    expect(native.replies()).toEqual([]);
+        ? outcome(gateway.listTools(input))
+        : outcome(gateway.callTool({ ...input, toolName: 'echo', arguments: { message: 'crash' } }))
+    );
+    await held(result);
+    const native = beforeAck(original(f, state, false).id);
+    expect(existsSync(f.pidFile)).toBe(true);
+    if (state === 'degraded') expect(readFileSync(f.callsFile, 'utf8')).toContain('crash');
+    release();
+    expect(await result).toMatchObject({
+      error:
+        state === 'failed'
+          ? { code: 'mcp-server-unavailable', status: 503 }
+          : {
+              code: 'mcp-call-failed',
+              status: 503,
+              upstreamEffect: expect.stringMatching(/^(contacted|unknown)$/),
+            },
+    });
+    acknowledged(native);
+    expect(gateway.getServerHealth(input)).toBe(state);
   }
-  const done = await result;
-  if (!('value' in done)) throw done.error;
-  expect(done.value.status).toBe(503);
-  expect(f.contacts()).toEqual([]);
-  expect(existsSync(f.pidFile)).toBe(false);
-  expect(existsSync(f.callsFile)).toBe(false);
-  const retained = await cold(f);
-  expect(retained.filter((event) => event.action === 'mcp.server.lifecycle.starting')).toHaveLength(
-    mode === 'rollback' ? 0 : 1
-  );
-});
+);
+
+it.each(['failed', 'degraded'] as const)(
+  'retains Core preview original %s under its actual administrator and invocation',
+  async (state) => {
+    const f = await fixture();
+    const upstream =
+      state === 'degraded' ? await createMcpHttpStub({ listError: true }) : undefined;
+    if (upstream) f.closures.push(() => upstream.close());
+    const preview = await f.preview({
+      exit: state === 'failed',
+      ...(upstream ? { endpoint: upstream.url } : {}),
+    });
+    arm(`mcp.server.lifecycle.${state}`, `mcp-server:${f.id}`, 'failed');
+    const result = preview.start();
+    await held(result);
+    const native = beforeAck(original(f, state, true).id);
+    if (upstream)
+      expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
+    else expect(existsSync(f.pidFile)).toBe(true);
+    release();
+    const done = await result;
+    if (!('value' in done)) throw done.error;
+    expect(done.value.status).toBe(503);
+    acknowledged(native);
+    expect(await f.store.listWorkspaces()).toEqual([]);
+  }
+);
+
+it.each(['rollback', 'lost-ack'] as const)(
+  'refuses credential transport after a real starting Audit %s without inventing rollback',
+  async (mode) => {
+    const f = await fixture();
+    const preview = await f.preview({ credentials: true });
+    arm(
+      'mcp.server.lifecycle.starting',
+      `mcp-server:${f.id}`,
+      'succeeded',
+      mode === 'rollback' ? 2 : 1
+    );
+    const result = preview.start();
+    const worker = await held(result, mode === 'rollback' ? 2 : 1);
+    if (mode === 'lost-ack') {
+      const event = original(f, 'starting', true, true);
+      const native = beforeAck(event.id);
+      await worker.terminate();
+      expect(native.replies()).toEqual([]);
+    }
+    const done = await result;
+    if (!('value' in done)) throw done.error;
+    expect(done.value.status).toBe(503);
+    expect(f.contacts()).toEqual([]);
+    expect(existsSync(f.pidFile)).toBe(false);
+    expect(existsSync(f.callsFile)).toBe(false);
+    const retained = await cold(f);
+    expect(
+      retained.filter((event) => event.action === 'mcp.server.lifecycle.starting')
+    ).toHaveLength(mode === 'rollback' ? 0 : 1);
+  }
+);
 
 it('refuses material withdrawn during the held starting Audit before any credential-bearing contact', async () => {
   const f = await fixture();

@@ -440,68 +440,70 @@ describe('Workspace sharing lifecycle', () => {
       disableInvitee: false,
       deactivateWorkspace: true,
     },
-  ])('denies invitation acceptance at the $boundary boundary without mutation', ({
-    callerUserId,
-    deactivateWorkspace,
-    disableInvitee,
-  }) => {
-    const coreDb = openTestDb();
-    insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
-    insertUser(coreDb, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'invitee@example.com');
-    insertUser(coreDb, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'other@example.com');
-    insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
-    const now = new Date('2026-07-19T12:00:00.000Z');
-    const created = mutate(coreDb, () =>
-      createWorkspaceInvitation({
-        authorization: workspaceMembershipDecisionFixture(
+  ])(
+    'denies invitation acceptance at the $boundary boundary without mutation',
+    ({ callerUserId, deactivateWorkspace, disableInvitee }) => {
+      const coreDb = openTestDb();
+      insertUser(coreDb, 'usr_00000000-0000-7011-88df-c2b1e8466b6f', 'owner@example.com');
+      insertUser(coreDb, 'usr_00000000-0000-7a9e-8345-2bce44a3dce0', 'invitee@example.com');
+      insertUser(coreDb, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'other@example.com');
+      insertWorkspace(coreDb, 'ws_00000000-0000-7978-8378-5b5c5e93f76d');
+      const now = new Date('2026-07-19T12:00:00.000Z');
+      const created = mutate(coreDb, () =>
+        createWorkspaceInvitation({
+          authorization: workspaceMembershipDecisionFixture(
+            coreDb,
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d'
+          ),
           coreDb,
-          'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-          'ws_00000000-0000-7978-8378-5b5c5e93f76d'
-        ),
-        coreDb,
-        inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        inviteeEmail: 'invitee@example.com',
-        now,
-
-        workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
-      })
-    );
-    if (created.kind !== 'created') {
-      throw new Error('Expected invitation fixture to be created.');
-    }
-    if (disableInvitee) {
-      coreDb.sqlite
-        .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-        .run(now.toISOString(), 'usr_00000000-0000-7a9e-8345-2bce44a3dce0');
-    }
-    if (deactivateWorkspace) {
-      coreDb.sqlite
-        .prepare("UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = ?")
-        .run('ws_00000000-0000-7978-8378-5b5c5e93f76d');
-    }
-
-    expect(
-      mutate(coreDb, () =>
-        acceptWorkspaceInvitation({
-          coreDb,
-          expectedRevision: 1,
-          invitationId: created.invitation.invitationId,
-          inviteeUserId: callerUserId,
+          inviterUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          inviteeEmail: 'invitee@example.com',
           now,
+
+          workspaceId: 'ws_00000000-0000-7978-8378-5b5c5e93f76d',
         })
-      )
-    ).toEqual({ kind: 'workspace_access_denied' });
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT status, revision FROM workspace_invitations WHERE invitation_id = ?')
-        .get(created.invitation.invitationId)
-    ).toEqual({ revision: 1, status: 'pending' });
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT user_id FROM workspace_members WHERE workspace_id = ? AND user_id <> ?')
-        .all('ws_00000000-0000-7978-8378-5b5c5e93f76d', 'usr_00000000-0000-7011-88df-c2b1e8466b6f')
-    ).toEqual([]);
-  });
+      );
+      if (created.kind !== 'created') {
+        throw new Error('Expected invitation fixture to be created.');
+      }
+      if (disableInvitee) {
+        coreDb.sqlite
+          .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
+          .run(now.toISOString(), 'usr_00000000-0000-7a9e-8345-2bce44a3dce0');
+      }
+      if (deactivateWorkspace) {
+        coreDb.sqlite
+          .prepare("UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = ?")
+          .run('ws_00000000-0000-7978-8378-5b5c5e93f76d');
+      }
+
+      expect(
+        mutate(coreDb, () =>
+          acceptWorkspaceInvitation({
+            coreDb,
+            expectedRevision: 1,
+            invitationId: created.invitation.invitationId,
+            inviteeUserId: callerUserId,
+            now,
+          })
+        )
+      ).toEqual({ kind: 'workspace_access_denied' });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status, revision FROM workspace_invitations WHERE invitation_id = ?')
+          .get(created.invitation.invitationId)
+      ).toEqual({ revision: 1, status: 'pending' });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT user_id FROM workspace_members WHERE workspace_id = ? AND user_id <> ?')
+          .all(
+            'ws_00000000-0000-7978-8378-5b5c5e93f76d',
+            'usr_00000000-0000-7011-88df-c2b1e8466b6f'
+          )
+      ).toEqual([]);
+    }
+  );
 
   it('declines and revokes only one pending invitation revision', () => {
     const coreDb = openTestDb();

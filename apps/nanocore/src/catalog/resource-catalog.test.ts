@@ -105,92 +105,90 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
-  it.each([
-    'stale-current',
-    'removed-selection',
-    'removed-binding',
-    'removed-stage',
-  ] as const)('refuses %s without changing MCP history or admission', (scenario) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-lifecycle-'));
-    const owner = { kind: 'workspace' as const, workspaceId: testEntityId('ws', scenario) };
-    try {
-      const first = createMcpConfig({
-        dataRoot,
-        owner,
-        id: 'echo',
-        displayName: 'Echo',
-        allowedTools: ['echo'],
-        declaration: { kind: 'http', endpoint: 'https://example.test/first' },
-        createdAt: '2026-10-30T00:00:00.000Z',
-        expectedRevision: 0,
-        selectCurrent: true,
-      });
-      const staged = createMcpConfig({
-        dataRoot,
-        owner,
-        id: 'echo',
-        displayName: 'Echo',
-        allowedTools: ['echo'],
-        declaration: { kind: 'http', endpoint: 'https://example.test/second' },
-        createdAt: '2026-10-30T00:01:00.000Z',
-        expectedRevision: first.catalog.revision,
-        selectCurrent: false,
-      });
-      expect(staged.catalog.mcp.entries[0]?.currentVersionDigest).toBe(first.version.digest);
-      const before =
-        scenario === 'stale-current'
-          ? staged.catalog
-          : removeMcpEntry({
-              dataRoot,
-              owner,
-              mcpId: 'echo',
-              expectedRevision: staged.catalog.revision,
-            });
-      const select = {
-        dataRoot,
-        owner,
-        entryId: 'echo',
-        digest: staged.version.digest,
-        expectedRevision: before.revision,
-        expectedCurrentDigest: scenario === 'stale-current' ? null : first.version.digest,
-      };
-      expect
-        .soft(() =>
-          scenario === 'removed-stage'
-            ? createMcpConfig({
+  it.each(['stale-current', 'removed-selection', 'removed-binding', 'removed-stage'] as const)(
+    'refuses %s without changing MCP history or admission',
+    (scenario) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-lifecycle-'));
+      const owner = { kind: 'workspace' as const, workspaceId: testEntityId('ws', scenario) };
+      try {
+        const first = createMcpConfig({
+          dataRoot,
+          owner,
+          id: 'echo',
+          displayName: 'Echo',
+          allowedTools: ['echo'],
+          declaration: { kind: 'http', endpoint: 'https://example.test/first' },
+          createdAt: '2026-10-30T00:00:00.000Z',
+          expectedRevision: 0,
+          selectCurrent: true,
+        });
+        const staged = createMcpConfig({
+          dataRoot,
+          owner,
+          id: 'echo',
+          displayName: 'Echo',
+          allowedTools: ['echo'],
+          declaration: { kind: 'http', endpoint: 'https://example.test/second' },
+          createdAt: '2026-10-30T00:01:00.000Z',
+          expectedRevision: first.catalog.revision,
+          selectCurrent: false,
+        });
+        expect(staged.catalog.mcp.entries[0]?.currentVersionDigest).toBe(first.version.digest);
+        const before =
+          scenario === 'stale-current'
+            ? staged.catalog
+            : removeMcpEntry({
                 dataRoot,
                 owner,
-                id: 'echo',
-                displayName: 'Rewritten after removal',
-                declaration: { kind: 'http', endpoint: 'https://example.test/third' },
-                createdAt: '2026-10-30T00:02:00.000Z',
-                expectedRevision: before.revision,
-                selectCurrent: false,
-              })
-            : scenario === 'removed-binding'
-              ? updateMcpBinding({
+                mcpId: 'echo',
+                expectedRevision: staged.catalog.revision,
+              });
+        const select = {
+          dataRoot,
+          owner,
+          entryId: 'echo',
+          digest: staged.version.digest,
+          expectedRevision: before.revision,
+          expectedCurrentDigest: scenario === 'stale-current' ? null : first.version.digest,
+        };
+        expect
+          .soft(() =>
+            scenario === 'removed-stage'
+              ? createMcpConfig({
                   dataRoot,
                   owner,
-                  entryId: 'echo',
+                  id: 'echo',
+                  displayName: 'Rewritten after removal',
+                  declaration: { kind: 'http', endpoint: 'https://example.test/third' },
+                  createdAt: '2026-10-30T00:02:00.000Z',
                   expectedRevision: before.revision,
-                  binding: {
-                    allowedTools: ['echo'],
-                    credentialBindings: [],
-                    enabled: true,
-                    revision: before.mcp.bindings[0]?.revision ?? 0,
-                    schemaPolicy: 'tracking',
-                    timeoutMs: 60_000,
-                  },
+                  selectCurrent: false,
                 })
-              : selectMcpVersion(select)
-        )
-        .toThrow(scenario === 'stale-current' ? CatalogConflictError : CatalogNotFoundError);
-      expect(loadWorkspaceResourceCatalog(dataRoot, owner.workspaceId)).toEqual(before);
-      expect(before.mcp.versions).toEqual(staged.catalog.mcp.versions);
-    } finally {
-      rmSync(dataRoot, { force: true, recursive: true });
+              : scenario === 'removed-binding'
+                ? updateMcpBinding({
+                    dataRoot,
+                    owner,
+                    entryId: 'echo',
+                    expectedRevision: before.revision,
+                    binding: {
+                      allowedTools: ['echo'],
+                      credentialBindings: [],
+                      enabled: true,
+                      revision: before.mcp.bindings[0]?.revision ?? 0,
+                      schemaPolicy: 'tracking',
+                      timeoutMs: 60_000,
+                    },
+                  })
+                : selectMcpVersion(select)
+          )
+          .toThrow(scenario === 'stale-current' ? CatalogConflictError : CatalogNotFoundError);
+        expect(loadWorkspaceResourceCatalog(dataRoot, owner.workspaceId)).toEqual(before);
+        expect(before.mcp.versions).toEqual(staged.catalog.mcp.versions);
+      } finally {
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it('retains an original installation data key when a new version replaces every MCP member', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-legacy-data-'));
@@ -463,73 +461,73 @@ describe('workspace resource catalog', () => {
 
   // MCP Catalog portable declarations and Agent Plugin admission require local format
   // recognition, narrow component failures, and root/data working-directory containment.
-  it.each([
-    undefined,
-    'https://agent-plugins.org/schemas/9.0.0/plugin.schema.json',
-  ])('refuses an unrecognized plugin format %s before publication', (schema) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-format-'));
-    const treeRoot = join(dataRoot, 'source');
-    const workspaceId = testEntityId('ws', 'format-refusal');
-    try {
-      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
-      writeFileSync(
-        join(treeRoot, 'plugin.json'),
-        JSON.stringify({ $schema: schema, name: 'demo-pack' })
-      );
-      expect(() =>
-        importWorkspacePlugin({
-          createdAt: '2026-10-30T00:00:00.000Z',
-          dataRoot,
-          expectedRevision: 0,
-          install: false,
-          producer: { id: testEntityId('usr', 'format-refusal'), kind: 'user' },
-          treeRoot,
-          workspaceId,
-        })
-      ).toThrow(CatalogInputError);
-      const retained = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
-      expect(retained.revision).toBe(0);
-      expect(retained.plugins.versions).toEqual([]);
-      expect(retained.mcp.versions).toEqual([]);
-      expect(catalogHasStagingResidue(dataRoot, workspaceId)).toBe(false);
-    } finally {
-      rmSync(dataRoot, { force: true, recursive: true });
+  it.each([undefined, 'https://agent-plugins.org/schemas/9.0.0/plugin.schema.json'])(
+    'refuses an unrecognized plugin format %s before publication',
+    (schema) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-format-'));
+      const treeRoot = join(dataRoot, 'source');
+      const workspaceId = testEntityId('ws', 'format-refusal');
+      try {
+        writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+        writeFileSync(
+          join(treeRoot, 'plugin.json'),
+          JSON.stringify({ $schema: schema, name: 'demo-pack' })
+        );
+        expect(() =>
+          importWorkspacePlugin({
+            createdAt: '2026-10-30T00:00:00.000Z',
+            dataRoot,
+            expectedRevision: 0,
+            install: false,
+            producer: { id: testEntityId('usr', 'format-refusal'), kind: 'user' },
+            treeRoot,
+            workspaceId,
+          })
+        ).toThrow(CatalogInputError);
+        const retained = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
+        expect(retained.revision).toBe(0);
+        expect(retained.plugins.versions).toEqual([]);
+        expect(retained.mcp.versions).toEqual([]);
+        expect(catalogHasStagingResidue(dataRoot, workspaceId)).toBe(false);
+      } finally {
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
-  it.each([
-    { name: undefined },
-    { keywords: 47 },
-  ])('refuses an invalid supported manifest %j', (override) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-manifest-'));
-    const treeRoot = join(dataRoot, 'source');
-    const workspaceId = testEntityId('ws', 'manifest-refusal');
-    try {
-      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
-      writeFileSync(
-        join(treeRoot, 'plugin.json'),
-        JSON.stringify({
-          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
-          name: 'demo-pack',
-          ...override,
-        })
-      );
-      expect(() =>
-        importWorkspacePlugin({
-          createdAt: '2026-10-30T00:00:00.000Z',
-          dataRoot,
-          expectedRevision: 0,
-          install: false,
-          producer: { id: testEntityId('usr', 'manifest-refusal'), kind: 'user' },
-          treeRoot,
-          workspaceId,
-        })
-      ).toThrow(CatalogInputError);
-      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(0);
-    } finally {
-      rmSync(dataRoot, { force: true, recursive: true });
+  it.each([{ name: undefined }, { keywords: 47 }])(
+    'refuses an invalid supported manifest %j',
+    (override) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-manifest-'));
+      const treeRoot = join(dataRoot, 'source');
+      const workspaceId = testEntityId('ws', 'manifest-refusal');
+      try {
+        writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+        writeFileSync(
+          join(treeRoot, 'plugin.json'),
+          JSON.stringify({
+            $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+            name: 'demo-pack',
+            ...override,
+          })
+        );
+        expect(() =>
+          importWorkspacePlugin({
+            createdAt: '2026-10-30T00:00:00.000Z',
+            dataRoot,
+            expectedRevision: 0,
+            install: false,
+            producer: { id: testEntityId('usr', 'manifest-refusal'), kind: 'user' },
+            treeRoot,
+            workspaceId,
+          })
+        ).toThrow(CatalogInputError);
+        expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(0);
+      } finally {
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it.each([
     { label: 'null arguments', server: { type: 'stdio', command: 'node', args: null } },
@@ -674,43 +672,43 @@ describe('workspace resource catalog', () => {
     { cwd: `\${PLUGIN_ROOT}/scripts`, expectedDirectory: '/verified-plugin/scripts' },
     { cwd: `\${PLUGIN_DATA}`, expectedDirectory: '/binding-data' },
     { cwd: `\${PLUGIN_DATA}/state/../cache`, expectedDirectory: '/binding-data/cache' },
-  ])('keeps valid imported stdio cwd $cwd rooted at its declared directory', ({
-    cwd,
-    expectedDirectory,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-cwd-valid-'));
-    const treeRoot = join(dataRoot, 'source');
-    try {
-      writeStdioPluginPackage(treeRoot, 'console.log("echo");');
-      writeFileSync(
-        join(treeRoot, 'mcp.json'),
-        JSON.stringify({
-          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
-          mcpServers: { echo: { type: 'stdio', command: 'node', cwd } },
-        })
-      );
-      const imported = importWorkspacePlugin({
-        createdAt: '2026-10-30T00:00:00.000Z',
-        dataRoot,
-        expectedRevision: 0,
-        install: true,
-        producer: { id: testEntityId('usr', 'cwd-valid'), kind: 'user' },
-        treeRoot,
-        workspaceId: testEntityId('ws', 'cwd-valid'),
-      });
-      const declaration = imported.catalog.mcp.versions[0]!.declaration;
-      expect(declaration).toMatchObject({ command: 'node', kind: 'stdio' });
-      if (declaration.kind !== 'stdio') throw new Error('Expected the declared stdio transport.');
-      // The Gateway expands these two placeholders before process spawn. Equivalent
-      // declaration encodings are valid only when they retain the declared root.
-      const effectiveDirectory = (declaration.cwd ?? '/verified-plugin')
-        .replaceAll(`\${PLUGIN_ROOT}`, '/verified-plugin')
-        .replaceAll(`\${PLUGIN_DATA}`, '/binding-data');
-      expect(resolve(effectiveDirectory)).toBe(expectedDirectory);
-    } finally {
-      rmSync(dataRoot, { force: true, recursive: true });
+  ])(
+    'keeps valid imported stdio cwd $cwd rooted at its declared directory',
+    ({ cwd, expectedDirectory }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-cwd-valid-'));
+      const treeRoot = join(dataRoot, 'source');
+      try {
+        writeStdioPluginPackage(treeRoot, 'console.log("echo");');
+        writeFileSync(
+          join(treeRoot, 'mcp.json'),
+          JSON.stringify({
+            $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+            mcpServers: { echo: { type: 'stdio', command: 'node', cwd } },
+          })
+        );
+        const imported = importWorkspacePlugin({
+          createdAt: '2026-10-30T00:00:00.000Z',
+          dataRoot,
+          expectedRevision: 0,
+          install: true,
+          producer: { id: testEntityId('usr', 'cwd-valid'), kind: 'user' },
+          treeRoot,
+          workspaceId: testEntityId('ws', 'cwd-valid'),
+        });
+        const declaration = imported.catalog.mcp.versions[0]!.declaration;
+        expect(declaration).toMatchObject({ command: 'node', kind: 'stdio' });
+        if (declaration.kind !== 'stdio') throw new Error('Expected the declared stdio transport.');
+        // The Gateway expands these two placeholders before process spawn. Equivalent
+        // declaration encodings are valid only when they retain the declared root.
+        const effectiveDirectory = (declaration.cwd ?? '/verified-plugin')
+          .replaceAll(`\${PLUGIN_ROOT}`, '/verified-plugin')
+          .replaceAll(`\${PLUGIN_DATA}`, '/binding-data');
+        expect(resolve(effectiveDirectory)).toBe(expectedDirectory);
+      } finally {
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it('refuses candidate entropy failure before changing catalog or payload bytes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-candidate-entropy-'));
@@ -938,47 +936,47 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it.each([
-    'skill',
-    'mcp',
-  ] as const)('requires remapping before another PluginEntry can reuse its %s member id', (kind) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-member-collision-'));
-    const treeRoot = join(dataRoot, 'source');
-    const workspaceId = testEntityId('ws', 'ws_demo');
-    const request = {
-      createdAt: '2026-10-30T00:00:00.000Z',
-      dataRoot,
-      install: true,
-      producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
-      treeRoot,
-      workspaceId,
-    };
-    try {
-      writeStdioPluginPackage(treeRoot, 'console.log("first");');
-      if (kind === 'skill') rmSync(join(treeRoot, 'mcp.json'));
-      else rmSync(join(treeRoot, 'skills'), { recursive: true });
-      const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
-      const manifestPath = join(treeRoot, 'plugin.json');
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: 'other-pack' }));
-      if (kind === 'skill') {
-        writeFileSync(
-          join(treeRoot, 'skills', 'alpha', 'SKILL.md'),
-          '---\nname: alpha\ndescription: Another package member.\n---\n# Different\n'
-        );
-      } else writeFileSync(join(treeRoot, 'scripts', 'run.sh'), 'console.log("other");');
-      // Packaging owner: a colliding member from another source requires explicit remapping.
-      expect(() =>
-        importWorkspacePlugin({
-          ...request,
-          expectedRevision: first.catalog.revision,
-        })
-      ).toThrow(/remap/i);
-      expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(first.catalog);
-    } finally {
-      rmSync(dataRoot, { recursive: true, force: true });
+  it.each(['skill', 'mcp'] as const)(
+    'requires remapping before another PluginEntry can reuse its %s member id',
+    (kind) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-member-collision-'));
+      const treeRoot = join(dataRoot, 'source');
+      const workspaceId = testEntityId('ws', 'ws_demo');
+      const request = {
+        createdAt: '2026-10-30T00:00:00.000Z',
+        dataRoot,
+        install: true,
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
+        treeRoot,
+        workspaceId,
+      };
+      try {
+        writeStdioPluginPackage(treeRoot, 'console.log("first");');
+        if (kind === 'skill') rmSync(join(treeRoot, 'mcp.json'));
+        else rmSync(join(treeRoot, 'skills'), { recursive: true });
+        const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
+        const manifestPath = join(treeRoot, 'plugin.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: 'other-pack' }));
+        if (kind === 'skill') {
+          writeFileSync(
+            join(treeRoot, 'skills', 'alpha', 'SKILL.md'),
+            '---\nname: alpha\ndescription: Another package member.\n---\n# Different\n'
+          );
+        } else writeFileSync(join(treeRoot, 'scripts', 'run.sh'), 'console.log("other");');
+        // Packaging owner: a colliding member from another source requires explicit remapping.
+        expect(() =>
+          importWorkspacePlugin({
+            ...request,
+            expectedRevision: first.catalog.revision,
+          })
+        ).toThrow(/remap/i);
+        expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(first.catalog);
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('keeps distinct original package member keys separate or requires explicit remapping', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-original-names-'));
@@ -1035,137 +1033,136 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it.each([
-    'changed',
-    'removed',
-    'unchanged',
-  ] as const)('preserves an explicit local override when its source member is %s', (change) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-override-update-'));
-    const treeRoot = join(dataRoot, 'source');
-    const workspaceId = testEntityId('ws', 'ws_demo');
-    const producer = { id: testEntityId('usr', 'user_original'), kind: 'user' as const };
-    const request = {
-      createdAt: '2026-10-30T00:00:00.000Z',
-      dataRoot,
-      install: true,
-      producer,
-      treeRoot,
-      workspaceId,
-    };
-    try {
-      writeStdioPluginPackage(treeRoot, 'console.log("first");');
-      rmSync(join(treeRoot, 'mcp.json'));
-      const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
-      const sourceMember = first.version.members[0]!;
-      const candidate = submitWorkspaceSkillCandidate({
-        baseDigest: sourceMember.versionDigest,
-        createdAt: '2026-10-30T00:01:00.000Z',
+  it.each(['changed', 'removed', 'unchanged'] as const)(
+    'preserves an explicit local override when its source member is %s',
+    (change) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-override-update-'));
+      const treeRoot = join(dataRoot, 'source');
+      const workspaceId = testEntityId('ws', 'ws_demo');
+      const producer = { id: testEntityId('usr', 'user_original'), kind: 'user' as const };
+      const request = {
+        createdAt: '2026-10-30T00:00:00.000Z',
         dataRoot,
-        entryId: sourceMember.catalogId,
-        expectedRevision: first.catalog.revision,
+        install: true,
         producer,
-        summary: 'Retain the explicit local improvement.',
-        tree: skillTree('# Local improvement\n'),
+        treeRoot,
         workspaceId,
-      });
-      // This owner's exported publisher installs an exact override of an owner-admitted version.
-      // It does not fabricate a digest or claim coverage of the missing public override operation.
-      const override = { ...sourceMember, versionDigest: candidate.candidate.candidateDigest };
-      const bound = publishWorkspaceResourceCatalog({
-        catalog: {
-          ...candidate.catalog,
-          plugins: {
-            ...candidate.catalog.plugins,
-            installations: candidate.catalog.plugins.installations.map((installation) => ({
-              ...installation,
-              memberOverrides: [override],
-            })),
-          },
-        },
-        dataRoot,
-        expectedRevision: candidate.catalog.revision,
-        workspaceId,
-      });
-      const manifestPath = join(treeRoot, 'plugin.json');
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0' }));
-      if (change === 'changed')
-        writeFileSync(
-          join(treeRoot, 'skills', 'alpha', 'SKILL.md'),
-          '---\nname: alpha\ndescription: Changed upstream member.\n---\n# Upstream change\n'
-        );
-      if (change === 'removed') rmSync(join(treeRoot, 'skills', 'alpha'), { recursive: true });
-      if (change !== 'unchanged') {
-        // Packaging Update clause: conflicting source changes cannot advance the installation.
-        expect(() =>
-          importWorkspacePlugin({
-            ...request,
-            expectedRevision: bound.revision,
-          })
-        ).toThrow(CatalogConflictError);
-        expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(bound);
-      } else {
-        const updated = importWorkspacePlugin({ ...request, expectedRevision: bound.revision });
-        expect(updated.version.digest).not.toBe(first.version.digest);
-        expect(updated.version.members).toEqual(first.version.members);
-        expect(updated.catalog.plugins.installations[0]!.memberOverrides).toEqual([override]);
-        expect(updated.catalog.plugins.versions[0]).toEqual(first.version);
-        expect(updated.catalog.skills.versions).toEqual(bound.skills.versions);
-      }
-    } finally {
-      rmSync(dataRoot, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    'skill',
-    'mcp',
-  ] as const)('imports a colliding %s member through an explicit fresh scoped mapping', (kind) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-explicit-mapping-'));
-    const treeRoot = join(dataRoot, 'source');
-    const workspaceId = testEntityId('ws', 'ws_demo');
-    const request = {
-      createdAt: '2026-10-30T00:00:00.000Z',
-      dataRoot,
-      install: true,
-      producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
-      treeRoot,
-      workspaceId,
-    };
-    try {
-      writeStdioPluginPackage(treeRoot, 'console.log("first");');
-      if (kind === 'skill') rmSync(join(treeRoot, 'mcp.json'));
-      else rmSync(join(treeRoot, 'skills'), { recursive: true });
-      const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
-      const manifestPath = join(treeRoot, 'plugin.json');
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: 'other-pack' }));
-      const packageKey = kind === 'skill' ? 'skills/alpha' : 'mcp/echo';
-      const mappedRequest = {
-        ...request,
-        expectedRevision: first.catalog.revision,
-        memberIds: { [packageKey]: 'other-member' },
-        pluginId: 'other-pack',
       };
-      const second = importWorkspacePlugin(mappedRequest);
-      expect(second.version.members).toEqual([
-        {
-          catalogId: 'other-member',
-          kind,
-          packageKey,
-          versionDigest: expect.any(String),
-        },
-      ]);
-      expect(second.version.entryId).toBe('other-pack');
-      expect(second.catalog.plugins.versions[0]).toEqual(first.version);
-      const originalMembers = kind === 'skill' ? first.catalog.skills : first.catalog.mcp;
-      const updatedMembers = kind === 'skill' ? second.catalog.skills : second.catalog.mcp;
-      expect(updatedMembers.entries).toEqual(expect.arrayContaining(originalMembers.entries));
-      expect(updatedMembers.versions).toEqual(expect.arrayContaining(originalMembers.versions));
-    } finally {
-      rmSync(dataRoot, { recursive: true, force: true });
+      try {
+        writeStdioPluginPackage(treeRoot, 'console.log("first");');
+        rmSync(join(treeRoot, 'mcp.json'));
+        const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
+        const sourceMember = first.version.members[0]!;
+        const candidate = submitWorkspaceSkillCandidate({
+          baseDigest: sourceMember.versionDigest,
+          createdAt: '2026-10-30T00:01:00.000Z',
+          dataRoot,
+          entryId: sourceMember.catalogId,
+          expectedRevision: first.catalog.revision,
+          producer,
+          summary: 'Retain the explicit local improvement.',
+          tree: skillTree('# Local improvement\n'),
+          workspaceId,
+        });
+        // This owner's exported publisher installs an exact override of an owner-admitted version.
+        // It does not fabricate a digest or claim coverage of the missing public override operation.
+        const override = { ...sourceMember, versionDigest: candidate.candidate.candidateDigest };
+        const bound = publishWorkspaceResourceCatalog({
+          catalog: {
+            ...candidate.catalog,
+            plugins: {
+              ...candidate.catalog.plugins,
+              installations: candidate.catalog.plugins.installations.map((installation) => ({
+                ...installation,
+                memberOverrides: [override],
+              })),
+            },
+          },
+          dataRoot,
+          expectedRevision: candidate.catalog.revision,
+          workspaceId,
+        });
+        const manifestPath = join(treeRoot, 'plugin.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0' }));
+        if (change === 'changed')
+          writeFileSync(
+            join(treeRoot, 'skills', 'alpha', 'SKILL.md'),
+            '---\nname: alpha\ndescription: Changed upstream member.\n---\n# Upstream change\n'
+          );
+        if (change === 'removed') rmSync(join(treeRoot, 'skills', 'alpha'), { recursive: true });
+        if (change !== 'unchanged') {
+          // Packaging Update clause: conflicting source changes cannot advance the installation.
+          expect(() =>
+            importWorkspacePlugin({
+              ...request,
+              expectedRevision: bound.revision,
+            })
+          ).toThrow(CatalogConflictError);
+          expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId)).toEqual(bound);
+        } else {
+          const updated = importWorkspacePlugin({ ...request, expectedRevision: bound.revision });
+          expect(updated.version.digest).not.toBe(first.version.digest);
+          expect(updated.version.members).toEqual(first.version.members);
+          expect(updated.catalog.plugins.installations[0]!.memberOverrides).toEqual([override]);
+          expect(updated.catalog.plugins.versions[0]).toEqual(first.version);
+          expect(updated.catalog.skills.versions).toEqual(bound.skills.versions);
+        }
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
+
+  it.each(['skill', 'mcp'] as const)(
+    'imports a colliding %s member through an explicit fresh scoped mapping',
+    (kind) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-explicit-mapping-'));
+      const treeRoot = join(dataRoot, 'source');
+      const workspaceId = testEntityId('ws', 'ws_demo');
+      const request = {
+        createdAt: '2026-10-30T00:00:00.000Z',
+        dataRoot,
+        install: true,
+        producer: { id: testEntityId('usr', 'user_original'), kind: 'user' as const },
+        treeRoot,
+        workspaceId,
+      };
+      try {
+        writeStdioPluginPackage(treeRoot, 'console.log("first");');
+        if (kind === 'skill') rmSync(join(treeRoot, 'mcp.json'));
+        else rmSync(join(treeRoot, 'skills'), { recursive: true });
+        const first = importWorkspacePlugin({ ...request, expectedRevision: 0 });
+        const manifestPath = join(treeRoot, 'plugin.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        writeFileSync(manifestPath, JSON.stringify({ ...manifest, name: 'other-pack' }));
+        const packageKey = kind === 'skill' ? 'skills/alpha' : 'mcp/echo';
+        const mappedRequest = {
+          ...request,
+          expectedRevision: first.catalog.revision,
+          memberIds: { [packageKey]: 'other-member' },
+          pluginId: 'other-pack',
+        };
+        const second = importWorkspacePlugin(mappedRequest);
+        expect(second.version.members).toEqual([
+          {
+            catalogId: 'other-member',
+            kind,
+            packageKey,
+            versionDigest: expect.any(String),
+          },
+        ]);
+        expect(second.version.entryId).toBe('other-pack');
+        expect(second.catalog.plugins.versions[0]).toEqual(first.version);
+        const originalMembers = kind === 'skill' ? first.catalog.skills : first.catalog.mcp;
+        const updatedMembers = kind === 'skill' ? second.catalog.skills : second.catalog.mcp;
+        expect(updatedMembers.entries).toEqual(expect.arrayContaining(originalMembers.entries));
+        expect(updatedMembers.versions).toEqual(expect.arrayContaining(originalMembers.versions));
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('retains original member names and a scoped explicit mapping on same-source update', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-retained-mapping-'));
@@ -1563,71 +1560,75 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it.each([
-    'raw',
-    'bearer',
-  ] as const)('round-trips %s presentation through management, storage and the effective digest', (presentation) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-presentation-'));
-    try {
-      const created = createMcpConfig({
-        createdAt: '2026-10-03T00:00:00.000Z',
-        dataRoot,
-        declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
-        displayName: 'Echo',
-        expectedRevision: 0,
-        selectCurrent: true,
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      });
-      const credential = {
-        presentation,
-        slot: 'token',
-        vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
-        sink: { kind: 'header' as const, name: 'Authorization' },
-      };
-      const raw = updateMcpBinding({
-        binding: {
-          allowedTools: ['echo'],
-          credentialBindings: [
-            { slot: credential.slot, vaultGrantId: credential.vaultGrantId, sink: credential.sink },
-          ],
-          enabled: true,
-          revision: 0,
-          schemaPolicy: 'tracking',
-          timeoutMs: 60_000,
-        },
-        dataRoot,
-        entryId: 'echo',
-        expectedRevision: created.catalog.revision,
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      });
-      const before = resolveWorkspaceMcpServer({
-        catalog: projectEffectiveWorkspaceMcpCatalog(raw),
-        serverId: 'echo',
-      });
-      const bound = updateMcpBinding({
-        binding: { ...raw.mcp.bindings[0]!, credentialBindings: [credential] },
-        dataRoot,
-        entryId: 'echo',
-        expectedRevision: raw.revision,
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      });
-      const retained = loadWorkspaceResourceCatalog(
-        dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001'
-      );
-      expect(retained.mcp.bindings[0]!.credentialBindings).toEqual([credential]);
-      const after = resolveWorkspaceMcpServer({
-        catalog: projectEffectiveWorkspaceMcpCatalog(retained),
-        serverId: 'echo',
-      });
-      expect(after.credentialBindings).toEqual([credential]);
-      expect(after.catalogDigest).not.toBe(before.catalogDigest);
-      expect(retained.mcp.versions[0]!.digest).toBe(created.version.digest);
-      expect(bound.mcp.bindings[0]!.revision).toBe(raw.mcp.bindings[0]!.revision + 1);
-    } finally {
-      rmSync(dataRoot, { force: true, recursive: true });
+  it.each(['raw', 'bearer'] as const)(
+    'round-trips %s presentation through management, storage and the effective digest',
+    (presentation) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-presentation-'));
+      try {
+        const created = createMcpConfig({
+          createdAt: '2026-10-03T00:00:00.000Z',
+          dataRoot,
+          declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+          displayName: 'Echo',
+          expectedRevision: 0,
+          selectCurrent: true,
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        });
+        const credential = {
+          presentation,
+          slot: 'token',
+          vaultGrantId: 'grant_00000000-0000-7a77-8a56-84fc4fb5c8ba',
+          sink: { kind: 'header' as const, name: 'Authorization' },
+        };
+        const raw = updateMcpBinding({
+          binding: {
+            allowedTools: ['echo'],
+            credentialBindings: [
+              {
+                slot: credential.slot,
+                vaultGrantId: credential.vaultGrantId,
+                sink: credential.sink,
+              },
+            ],
+            enabled: true,
+            revision: 0,
+            schemaPolicy: 'tracking',
+            timeoutMs: 60_000,
+          },
+          dataRoot,
+          entryId: 'echo',
+          expectedRevision: created.catalog.revision,
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        });
+        const before = resolveWorkspaceMcpServer({
+          catalog: projectEffectiveWorkspaceMcpCatalog(raw),
+          serverId: 'echo',
+        });
+        const bound = updateMcpBinding({
+          binding: { ...raw.mcp.bindings[0]!, credentialBindings: [credential] },
+          dataRoot,
+          entryId: 'echo',
+          expectedRevision: raw.revision,
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        });
+        const retained = loadWorkspaceResourceCatalog(
+          dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        expect(retained.mcp.bindings[0]!.credentialBindings).toEqual([credential]);
+        const after = resolveWorkspaceMcpServer({
+          catalog: projectEffectiveWorkspaceMcpCatalog(retained),
+          serverId: 'echo',
+        });
+        expect(after.credentialBindings).toEqual([credential]);
+        expect(after.catalogDigest).not.toBe(before.catalogDigest);
+        expect(retained.mcp.versions[0]!.digest).toBe(created.version.digest);
+        expect(bound.mcp.bindings[0]!.revision).toBe(raw.mcp.bindings[0]!.revision + 1);
+      } finally {
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it.each([
     {
@@ -1641,51 +1642,54 @@ describe('workspace resource catalog', () => {
       value: { 'read-only': 'true' },
       reason: 'MCP HTTP query options are unsupported.',
     },
-  ])('refuses explicitly selected foreign HTTP $field configuration before publication', ({
-    field,
-    value,
-    reason,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-deferred-'));
-    const treeRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-source-'));
-    try {
-      writeFileSync(
-        join(treeRoot, 'plugin.json'),
-        JSON.stringify({
-          $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
-          name: 'deferred',
-        })
-      );
-      writeFileSync(
-        join(treeRoot, 'mcp.json'),
-        JSON.stringify({
-          $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
-          mcpServers: {
-            echo: { type: 'streamable-http', url: 'https://mcp.example.test/mcp', [field]: value },
-          },
-        })
-      );
-      expect(() =>
-        importWorkspacePlugin({
-          createdAt: '2026-10-03T00:00:00.000Z',
-          dataRoot,
-          expectedRevision: 0,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          install: true,
-          selectedPackageKeys: ['mcp/echo'],
-          producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
-          treeRoot,
-        })
-      ).toThrow(reason);
-      expect(
-        loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').mcp
-          .entries
-      ).toEqual([]);
-    } finally {
-      rmSync(dataRoot, { force: true, recursive: true });
-      rmSync(treeRoot, { force: true, recursive: true });
+  ])(
+    'refuses explicitly selected foreign HTTP $field configuration before publication',
+    ({ field, value, reason }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-deferred-'));
+      const treeRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-source-'));
+      try {
+        writeFileSync(
+          join(treeRoot, 'plugin.json'),
+          JSON.stringify({
+            $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+            name: 'deferred',
+          })
+        );
+        writeFileSync(
+          join(treeRoot, 'mcp.json'),
+          JSON.stringify({
+            $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
+            mcpServers: {
+              echo: {
+                type: 'streamable-http',
+                url: 'https://mcp.example.test/mcp',
+                [field]: value,
+              },
+            },
+          })
+        );
+        expect(() =>
+          importWorkspacePlugin({
+            createdAt: '2026-10-03T00:00:00.000Z',
+            dataRoot,
+            expectedRevision: 0,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            install: true,
+            selectedPackageKeys: ['mcp/echo'],
+            producer: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
+            treeRoot,
+          })
+        ).toThrow(reason);
+        expect(
+          loadWorkspaceResourceCatalog(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').mcp
+            .entries
+        ).toEqual([]);
+      } finally {
+        rmSync(dataRoot, { force: true, recursive: true });
+        rmSync(treeRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it('imports a foreign HTTP endpoint query string unchanged into the stored declaration and effective transport', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-query-'));

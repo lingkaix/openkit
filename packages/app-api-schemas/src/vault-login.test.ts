@@ -85,38 +85,39 @@ describe('personal Codex Login App API contracts', () => {
         expect(schema.safeParse(invalid).success).toBe(false);
   });
 
-  it.each(
-    ids
-  )('preserves exact current metadata and explicit unknown observations for %s', (id) => {
-    const schema = contract(id).outputSchema;
-    const wrap = (value: unknown) => (id === 'vault.login-list' ? { items: [value] } : value);
-    expect(schema.parse(wrap(dto))).toEqual(wrap(dto));
-    for (const status of ['active', 'revoked', 'unbound']) {
-      const currentVersion = status === 'unbound' ? 0 : 1;
-      expect(schema.parse(wrap({ ...dto, status, currentVersion }))).toEqual(
-        wrap({ ...dto, status, currentVersion })
-      );
+  it.each(ids)(
+    'preserves exact current metadata and explicit unknown observations for %s',
+    (id) => {
+      const schema = contract(id).outputSchema;
+      const wrap = (value: unknown) => (id === 'vault.login-list' ? { items: [value] } : value);
+      expect(schema.parse(wrap(dto))).toEqual(wrap(dto));
+      for (const status of ['active', 'revoked', 'unbound']) {
+        const currentVersion = status === 'unbound' ? 0 : 1;
+        expect(schema.parse(wrap({ ...dto, status, currentVersion }))).toEqual(
+          wrap({ ...dto, status, currentVersion })
+        );
+      }
+      for (const invalid of [
+        { ...dto, provider: 'unsupported' },
+        { ...dto, status: 'healthy' },
+        { ...dto, currentVersion: -1 },
+        { ...dto, currentVersion: 1.5 },
+        { ...dto, quarantined: 0 },
+        { ...dto, observations: { health: 'healthy' } },
+        { ...dto, observations: undefined },
+      ])
+        expect(schema.safeParse(wrap(invalid)).success).toBe(false);
+      const extra = {
+        ...dto,
+        accountId: 'synthetic-upstream-equality',
+        backendLocator: 'synthetic-private-locator',
+        material: 'synthetic-forbidden-field',
+      };
+      const parsed = schema.safeParse(wrap(extra));
+      // Closed rejection and descriptive stripping both exclude private fields; neither may return them.
+      if (parsed.success) expect(parsed.data).toEqual(wrap(dto));
     }
-    for (const invalid of [
-      { ...dto, provider: 'unsupported' },
-      { ...dto, status: 'healthy' },
-      { ...dto, currentVersion: -1 },
-      { ...dto, currentVersion: 1.5 },
-      { ...dto, quarantined: 0 },
-      { ...dto, observations: { health: 'healthy' } },
-      { ...dto, observations: undefined },
-    ])
-      expect(schema.safeParse(wrap(invalid)).success).toBe(false);
-    const extra = {
-      ...dto,
-      accountId: 'synthetic-upstream-equality',
-      backendLocator: 'synthetic-private-locator',
-      material: 'synthetic-forbidden-field',
-    };
-    const parsed = schema.safeParse(wrap(extra));
-    // Closed rejection and descriptive stripping both exclude private fields; neither may return them.
-    if (parsed.success) expect(parsed.data).toEqual(wrap(dto));
-  });
+  );
 });
 
 /** COORD 07:06Z: reuse the existing name and secret-stdin request for actual-human User acquisition. */

@@ -87,101 +87,105 @@ import {
   resolveWorkspaceMembershipRelation,
 } from './workspace-sharing.js';
 
-it.each([
-  'workspace',
-  'server-admin',
-] as const)('refuses personal home deletion before effects for a %s credential', async (scope) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-personal-deletion-'));
-  const coreDb = openCoreDb(dataRoot);
-  const gateway = createDefaultWorkerMcpGateway(coreDb);
-  const close = vi.spyOn(gateway, 'closeWorkspace');
-  try {
-    applyMigrations(coreDb);
-    const userId = ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    await ensureUserQuickChatWorkspace({ coreDb, store, userId });
-    const workspaceId = quickChatWorkspaceIdForUser(userId);
-    const token = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: userId,
-      scope,
-      workspaceIds: scope === 'workspace' ? [workspaceId] : [],
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    });
-    const admission = new WorkspaceMutationAdmission();
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      mode: 'server',
-      store,
-      workerMcpGateway: gateway,
-      workspaceMutationAdmission: admission,
-    });
-    const headers = {
-      authorization: `Bearer ${token.secret}`,
-      'content-type': 'application/json',
-    };
-    const readable = await app.request(
-      ...operationRequest('workspace.read', { workspaceId }, { headers })
-    );
-    expect(readable.status).toBe(200);
-    // Preserve full retained authority and files, not only the directory's existence.
-    const authority = () => [
-      coreDb.sqlite
-        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
-        .get(workspaceId),
-      coreDb.sqlite
-        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
-        .all(workspaceId),
-    ];
-    const homeRoot = join(dataRoot, 'workspaces', workspaceId);
-    const homeBytes = () =>
-      readdirSync(homeRoot, { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile() && !entry.name.endsWith('-shm'))
-        .map((entry) => join(entry.parentPath, entry.name))
-        .sort()
-        .map((path) => [path, readFileSync(path)]);
-    const beforeAuthority = authority();
-    const beforeBytes = homeBytes();
-    const requestId = randomUUID();
-    const response = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId },
-        {
-          headers,
-          method: 'POST',
-          body: JSON.stringify({
-            confirmation: `permanently-delete-workspace:${workspaceId}:1`,
-            expectedRegistryRevision: 1,
-            requestId,
-          }),
-        }
-      )
-    );
-    expect(response.status).toBe(409);
-    // Current API Projection owns the personal deletion code and absence of details.
-    const error = await response.json();
-    expect(error.code).toBe('personal_workspace_not_deletable');
-    expect(error).not.toHaveProperty('details');
-    expect(
-      parseWorkspaceSharingError(new ApiCallError(response.status, error.message, error))
-    ).not.toBeNull();
-    expect(close).not.toHaveBeenCalled();
-    expect(admission.isClosed(workspaceId)).toBe(false);
-    expect(authority()).toEqual(beforeAuthority);
-    expect(homeBytes()).toEqual(beforeBytes);
-    expect(
-      existsSync(join(dataRoot, 'server', 'exports', 'workspace-deletions', workspaceId, requestId))
-    ).toBe(false);
-    expect(existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspaceId))).toBe(false);
-  } finally {
-    close.mockRestore();
-    await gateway.close();
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+it.each(['workspace', 'server-admin'] as const)(
+  'refuses personal home deletion before effects for a %s credential',
+  async (scope) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-personal-deletion-'));
+    const coreDb = openCoreDb(dataRoot);
+    const gateway = createDefaultWorkerMcpGateway(coreDb);
+    const close = vi.spyOn(gateway, 'closeWorkspace');
+    try {
+      applyMigrations(coreDb);
+      const userId = ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      await ensureUserQuickChatWorkspace({ coreDb, store, userId });
+      const workspaceId = quickChatWorkspaceIdForUser(userId);
+      const token = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: userId,
+        scope,
+        workspaceIds: scope === 'workspace' ? [workspaceId] : [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const admission = new WorkspaceMutationAdmission();
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        store,
+        workerMcpGateway: gateway,
+        workspaceMutationAdmission: admission,
+      });
+      const headers = {
+        authorization: `Bearer ${token.secret}`,
+        'content-type': 'application/json',
+      };
+      const readable = await app.request(
+        ...operationRequest('workspace.read', { workspaceId }, { headers })
+      );
+      expect(readable.status).toBe(200);
+      // Preserve full retained authority and files, not only the directory's existence.
+      const authority = () => [
+        coreDb.sqlite
+          .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+          .get(workspaceId),
+        coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
+          .all(workspaceId),
+      ];
+      const homeRoot = join(dataRoot, 'workspaces', workspaceId);
+      const homeBytes = () =>
+        readdirSync(homeRoot, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile() && !entry.name.endsWith('-shm'))
+          .map((entry) => join(entry.parentPath, entry.name))
+          .sort()
+          .map((path) => [path, readFileSync(path)]);
+      const beforeAuthority = authority();
+      const beforeBytes = homeBytes();
+      const requestId = randomUUID();
+      const response = await app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId },
+          {
+            headers,
+            method: 'POST',
+            body: JSON.stringify({
+              confirmation: `permanently-delete-workspace:${workspaceId}:1`,
+              expectedRegistryRevision: 1,
+              requestId,
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(409);
+      // Current API Projection owns the personal deletion code and absence of details.
+      const error = await response.json();
+      expect(error.code).toBe('personal_workspace_not_deletable');
+      expect(error).not.toHaveProperty('details');
+      expect(
+        parseWorkspaceSharingError(new ApiCallError(response.status, error.message, error))
+      ).not.toBeNull();
+      expect(close).not.toHaveBeenCalled();
+      expect(admission.isClosed(workspaceId)).toBe(false);
+      expect(authority()).toEqual(beforeAuthority);
+      expect(homeBytes()).toEqual(beforeBytes);
+      expect(
+        existsSync(
+          join(dataRoot, 'server', 'exports', 'workspace-deletions', workspaceId, requestId)
+        )
+      ).toBe(false);
+      expect(existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspaceId))).toBe(
+        false
+      );
+    } finally {
+      close.mockRestore();
+      await gateway.close();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   }
-});
+);
 
 it.each([
   ['requested', false],
@@ -499,29 +503,29 @@ it('keeps every durable legal-hold schema in the deletion-owner inventory', () =
   ]);
 });
 
-it.each(
-  WORKSPACE_DELETION_LEGAL_HOLD_OWNERS
-)('blocks deletion before effects for a legal hold owned by %s', async (owner) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-hold-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Legal hold fixture');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
-    });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+it.each(WORKSPACE_DELETION_LEGAL_HOLD_OWNERS)(
+  'blocks deletion before effects for a legal hold owned by %s',
+  async (owner) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-hold-'));
+    const coreDb = openCoreDb(dataRoot);
     try {
-      applyScopedMigrations(workspaceDb);
-      const timestamp = new Date().toISOString();
-      if (owner === 'evidence-bundle') {
-        workspaceDb.sqlite
-          .prepare(
-            `INSERT INTO evidence_bundles (
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      const workspace = await store.createWorkspace('Legal hold fixture');
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: workspace.id,
+      });
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        applyScopedMigrations(workspaceDb);
+        const timestamp = new Date().toISOString();
+        if (owner === 'evidence-bundle') {
+          workspaceDb.sqlite
+            .prepare(
+              `INSERT INTO evidence_bundles (
                 evidence_bundle_id, workspace_id, thread_id, goal_id, turn_id,
                 agent_session_id, backend_type, source_kind, summary,
                 raw_evidence_refs_json, redacted_evidence_refs_json, content_digests_json,
@@ -530,87 +534,88 @@ it.each(
                 'ev_hold', ?, NULL, NULL, NULL, NULL, NULL, 'test', 'Legal hold',
                 '[]', '[]', '[]', 'legal-hold', 'product-safe', 'verified', '[]', ?
               )`
-          )
-          .run(workspace.id, timestamp);
-      } else {
-        workspaceDb.sqlite
-          .prepare(
-            `INSERT INTO workspace_quarantine_records (
+            )
+            .run(workspace.id, timestamp);
+        } else {
+          workspaceDb.sqlite
+            .prepare(
+              `INSERT INTO workspace_quarantine_records (
                 quarantine_record_id, workspace_id, failure_kind, resolution,
                 payload_json, created_at, updated_at, resolved_at
               ) VALUES ('quarantine_hold', ?, 'schema_failure', 'pending', ?, ?, ?, NULL)`
-          )
-          .run(
-            workspace.id,
-            JSON.stringify({
-              id: 'quarantine_hold',
-              workspaceId: workspace.id,
-              lifecycleRecordIds: [],
-              failureKind: 'schema_failure',
-              storageRef: 'evidence/quarantine/quarantine_hold.json',
-              retentionClass: 'legal-hold',
-              requiredHumanDecision: 'Release legal hold.',
-              resolution: 'pending',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-              resolvedAt: null,
-            }),
-            timestamp,
-            timestamp
-          );
-      }
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      mode: 'local',
-      store,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-    });
-    const requestId =
-      owner === 'evidence-bundle'
-        ? '00000000-0000-4000-8000-000000000013'
-        : '00000000-0000-4000-8000-000000000014';
-    const response = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({
-            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-            expectedRegistryRevision: 1,
-            requestId,
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
+            )
+            .run(
+              workspace.id,
+              JSON.stringify({
+                id: 'quarantine_hold',
+                workspaceId: workspace.id,
+                lifecycleRecordIds: [],
+                failureKind: 'schema_failure',
+                storageRef: 'evidence/quarantine/quarantine_hold.json',
+                retentionClass: 'legal-hold',
+                requiredHumanDecision: 'Release legal hold.',
+                resolution: 'pending',
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                resolvedAt: null,
+              }),
+              timestamp,
+              timestamp
+            );
         }
-      )
-    );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      code: 'workspace_deletion_blocked',
-      details: {
-        holdRecordIds: [owner === 'evidence-bundle' ? 'ev_hold' : 'quarantine_hold'],
-      },
-    });
-    expect(
-      existsSync(
-        join(dataRoot, 'server', 'exports', 'workspace-deletions', workspace.id, requestId)
-      )
-    ).toBe(false);
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
-        .get(workspace.id)
-    ).toEqual({ revision: 1, status: 'active' });
-  } finally {
-    coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { force: true, recursive: true });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        mode: 'local',
+        store,
+        turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+      });
+      const requestId =
+        owner === 'evidence-bundle'
+          ? '00000000-0000-4000-8000-000000000013'
+          : '00000000-0000-4000-8000-000000000014';
+      const response = await app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId: workspace.id },
+          {
+            body: JSON.stringify({
+              confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+              expectedRegistryRevision: 1,
+              requestId,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'workspace_deletion_blocked',
+        details: {
+          holdRecordIds: [owner === 'evidence-bundle' ? 'ev_hold' : 'quarantine_hold'],
+        },
+      });
+      expect(
+        existsSync(
+          join(dataRoot, 'server', 'exports', 'workspace-deletions', workspace.id, requestId)
+        )
+      ).toBe(false);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+          .get(workspace.id)
+      ).toEqual({ revision: 1, status: 'active' });
+    } finally {
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
   }
-});
+);
 
 it('refuses running work before admission and preserves exact deletion retry after cleanup failure', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-route-'));
@@ -1925,138 +1930,139 @@ it('restores registry-owned boot fences without relying on a nonterminal request
   }
 });
 
-it.each([
-  'export',
-  'closure',
-  'staged-contradiction',
-] as const)('handles the %s crash boundary without duplicating or committing contradictory state', async (crashPoint) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), `openkit-workspace-deletion-${crashPoint}-resume-`));
-  const backupParent = mkdtempSync(join(tmpdir(), 'openkit-deletion-before-cut-'));
-  const coreDb = openCoreDb(dataRoot);
-  const originalWrite = deletionRequestOwner.writeWorkspaceDeletionRequest;
-  const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
-  try {
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace(`${crashPoint} crash fixture`);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: workspace.id,
-    });
-    const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
-    const originalRoot = join(backupParent, 'workspace');
-    cpSync(canonicalRoot, originalRoot, { recursive: true });
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      mode: 'local',
-      store,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-      releaseIdentity: {
-        releaseTag: null,
-        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-      },
-    });
-    const requestId = {
-      export: '00000000-0000-4000-8000-000000000021',
-      closure: '00000000-0000-4000-8000-000000000022',
-      'staged-contradiction': '00000000-0000-4000-8000-000000000026',
-    }[crashPoint];
-    const input = {
-      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-      expectedRegistryRevision: 1,
-      requestId,
-    };
-    const remove = () =>
-      app.request(
-        ...operationRequest(
-          'workspace.delete',
-          { workspaceId: workspace.id },
-          { body: JSON.stringify(input) }
-        )
-      );
-    const stopPhase = {
-      export: 'exported',
-      closure: 'closure-sealed',
-      'staged-contradiction': 'staged',
-    }[crashPoint];
-    let injected = false;
-    // The real public delete produces and retains the cut before this one-shot return fault.
-    phaseWrite.mockImplementation((root, record) => {
-      const retained = originalWrite(root, record);
-      if (!injected && retained.phase === stopPhase) {
-        injected = true;
-        throw new Error('Injected failure after retaining the genuine deletion phase.');
-      }
-      return retained;
-    });
-    await remove();
-    phaseWrite.mockRestore();
-    expect(injected).toBe(true);
-    const request = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
-    expect(request.phase).toBe(stopPhase);
-    expect(request.recoveryBackupId).toEqual(expect.any(String));
-    const backup = await readWorkspaceSnapshotMetadata({
-      ...WORKSPACE_BACKUP_POLICY,
-      dataRoot,
-      workspaceId: workspace.id,
-      backupId: request.recoveryBackupId!,
-    });
-    expect(backup.manifestDigest).toBe(request.recoveryBackupManifestDigest);
-    const wrongBackupId = allocateEntityId('wsbak');
-    writeWorkspaceDeletionRequest(dataRoot, { ...request, recoveryBackupId: wrongBackupId });
-    const wrongBinding = await remove();
-    expect(wrongBinding.status).toBe(409);
-    expect(
-      existsSync(join(dataRoot, 'server', 'backups', 'workspaces', workspace.id, wrongBackupId))
-    ).toBe(false);
-    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual({
-      ...request,
-      recoveryBackupId: wrongBackupId,
-    });
-    writeWorkspaceDeletionRequest(dataRoot, request);
-    if (crashPoint === 'staged-contradiction')
-      cpSync(originalRoot, canonicalRoot, { recursive: true });
-    const response = await remove();
-    if (crashPoint === 'staged-contradiction') {
-      expect(response.status).toBe(409);
-      expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(request);
-      expect(existsSync(canonicalRoot)).toBe(true);
-      expect(existsSync(join(dataRoot, request.stagingRelativePath!))).toBe(true);
+it.each(['export', 'closure', 'staged-contradiction'] as const)(
+  'handles the %s crash boundary without duplicating or committing contradictory state',
+  async (crashPoint) => {
+    const dataRoot = mkdtempSync(
+      join(tmpdir(), `openkit-workspace-deletion-${crashPoint}-resume-`)
+    );
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-deletion-before-cut-'));
+    const coreDb = openCoreDb(dataRoot);
+    const originalWrite = deletionRequestOwner.writeWorkspaceDeletionRequest;
+    const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      const workspace = await store.createWorkspace(`${crashPoint} crash fixture`);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: workspace.id,
+      });
+      const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
+      const originalRoot = join(backupParent, 'workspace');
+      cpSync(canonicalRoot, originalRoot, { recursive: true });
+      const app = createApp({
+        coreDb,
+        dataRoot,
+        mode: 'local',
+        store,
+        turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+        releaseIdentity: {
+          releaseTag: null,
+          sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+        },
+      });
+      const requestId = {
+        export: '00000000-0000-4000-8000-000000000021',
+        closure: '00000000-0000-4000-8000-000000000022',
+        'staged-contradiction': '00000000-0000-4000-8000-000000000026',
+      }[crashPoint];
+      const input = {
+        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+        expectedRegistryRevision: 1,
+        requestId,
+      };
+      const remove = () =>
+        app.request(
+          ...operationRequest(
+            'workspace.delete',
+            { workspaceId: workspace.id },
+            { body: JSON.stringify(input) }
+          )
+        );
+      const stopPhase = {
+        export: 'exported',
+        closure: 'closure-sealed',
+        'staged-contradiction': 'staged',
+      }[crashPoint];
+      let injected = false;
+      // The real public delete produces and retains the cut before this one-shot return fault.
+      phaseWrite.mockImplementation((root, record) => {
+        const retained = originalWrite(root, record);
+        if (!injected && retained.phase === stopPhase) {
+          injected = true;
+          throw new Error('Injected failure after retaining the genuine deletion phase.');
+        }
+        return retained;
+      });
+      await remove();
+      phaseWrite.mockRestore();
+      expect(injected).toBe(true);
+      const request = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
+      expect(request.phase).toBe(stopPhase);
+      expect(request.recoveryBackupId).toEqual(expect.any(String));
+      const backup = await readWorkspaceSnapshotMetadata({
+        ...WORKSPACE_BACKUP_POLICY,
+        dataRoot,
+        workspaceId: workspace.id,
+        backupId: request.recoveryBackupId!,
+      });
+      expect(backup.manifestDigest).toBe(request.recoveryBackupManifestDigest);
+      const wrongBackupId = allocateEntityId('wsbak');
+      writeWorkspaceDeletionRequest(dataRoot, { ...request, recoveryBackupId: wrongBackupId });
+      const wrongBinding = await remove();
+      expect(wrongBinding.status).toBe(409);
       expect(
-        coreDb.sqlite
-          .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
-          .get(workspace.id)
-      ).toEqual({ revision: 2, status: 'deleting' });
-      return;
+        existsSync(join(dataRoot, 'server', 'backups', 'workspaces', workspace.id, wrongBackupId))
+      ).toBe(false);
+      expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual({
+        ...request,
+        recoveryBackupId: wrongBackupId,
+      });
+      writeWorkspaceDeletionRequest(dataRoot, request);
+      if (crashPoint === 'staged-contradiction')
+        cpSync(originalRoot, canonicalRoot, { recursive: true });
+      const response = await remove();
+      if (crashPoint === 'staged-contradiction') {
+        expect(response.status).toBe(409);
+        expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(request);
+        expect(existsSync(canonicalRoot)).toBe(true);
+        expect(existsSync(join(dataRoot, request.stagingRelativePath!))).toBe(true);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+            .get(workspace.id)
+        ).toEqual({ revision: 2, status: 'deleting' });
+        return;
+      }
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+      expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toMatchObject({
+        closureId: `wsclose_delete_${requestId}`,
+        recoveryBackupId: request.recoveryBackupId,
+        recoveryBackupManifestDigest: backup.manifestDigest,
+      });
+      expect(
+        (
+          await readWorkspaceSnapshotMetadata({
+            ...WORKSPACE_BACKUP_POLICY,
+            dataRoot,
+            workspaceId: workspace.id,
+            backupId: request.recoveryBackupId!,
+          })
+        ).manifestDigest
+      ).toBe(backup.manifestDigest);
+    } finally {
+      phaseWrite.mockRestore();
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { force: true, recursive: true });
+      rmSync(backupParent, { force: true, recursive: true });
     }
-    expect(response.status, await response.clone().text()).toBe(200);
-    expect(await response.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
-    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toMatchObject({
-      closureId: `wsclose_delete_${requestId}`,
-      recoveryBackupId: request.recoveryBackupId,
-      recoveryBackupManifestDigest: backup.manifestDigest,
-    });
-    expect(
-      (
-        await readWorkspaceSnapshotMetadata({
-          ...WORKSPACE_BACKUP_POLICY,
-          dataRoot,
-          workspaceId: workspace.id,
-          backupId: request.recoveryBackupId!,
-        })
-      ).manifestDigest
-    ).toBe(backup.manifestDigest);
-  } finally {
-    phaseWrite.mockRestore();
-    coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { force: true, recursive: true });
-    rmSync(backupParent, { force: true, recursive: true });
   }
-});
+);
 
 it('preserves private Thread ownership only through the exact current deletion recovery backup', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-private-deletion-backup-'));

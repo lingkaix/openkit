@@ -138,109 +138,112 @@ describe('internal Agent Gateway provider', () => {
     ['knowledge-manager', 'assistant', 'goal-orchestrator', 'custom-role'].flatMap((roleId) =>
       [undefined, 'low' as const].map((reasoningEffort) => ({ roleId, reasoningEffort }))
     )
-  )('serializes profile effort $reasoningEffort for $roleId without affecting other calls', async ({
-    roleId,
-    reasoningEffort,
-  }) => {
-    const profile = InternalRoleExecutionProfileSchema.parse({
-      id: 'selected-profile',
-      roleId,
-      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-    });
-    const models = createModels();
-    models.setProvider(xaiProvider());
-    const client = new PiAiGatewayClient({ models });
-    const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: client });
-    const config: ResolvedLLMProviderConfig = {
-      id: 'provider',
-      displayName: 'Synthetic xAI',
-      vendor: 'xai',
-      adapterId: 'xai',
-      apiKey: 'synthetic-secret',
-      baseUrl: null,
-      models: ['grok-4.6'],
-      requiresApiKey: true,
-      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-      modelMetadata: {
-        'grok-4.6': {
-          reasoning: true,
-          reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
-          limit: { context: 64_000, output: 8_000 },
-        },
-      },
-    };
-    const model: ResolvedLogicalModel = {
-      ...logicalModel,
-      modelFamilyId: 'grok',
-      routes: [{ ...logicalModel.routes[0]!, providerModel: 'grok-4.6' }],
-    };
-    const payloads: Record<string, unknown>[] = [];
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
-      const httpRequest = new Request(url, init);
-      expect(httpRequest.url).toBe('https://api.x.ai/v1/responses');
-      payloads.push(JSON.parse(await httpRequest.text()));
-      const item = {
-        id: 'msg_synthetic',
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'output_text', text: 'Ready.', annotations: [] }],
-      };
-      const events = [
-        { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
-        {
-          type: 'response.content_part.added',
-          output_index: 0,
-          content_index: 0,
-          part: { ...item.content[0], text: '' },
-        },
-        {
-          type: 'response.output_text.delta',
-          output_index: 0,
-          content_index: 0,
-          delta: 'Ready.',
-        },
-        { type: 'response.output_item.done', output_index: 0, item },
-        {
-          type: 'response.completed',
-          response: {
-            id: 'resp_synthetic',
-            object: 'response',
-            status: 'completed',
-            output: [item],
-            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  )(
+    'serializes profile effort $reasoningEffort for $roleId without affecting other calls',
+    async ({ roleId, reasoningEffort }) => {
+      const profile = InternalRoleExecutionProfileSchema.parse({
+        id: 'selected-profile',
+        roleId,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      });
+      const models = createModels();
+      models.setProvider(xaiProvider());
+      const client = new PiAiGatewayClient({ models });
+      const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: client });
+      const config: ResolvedLLMProviderConfig = {
+        id: 'provider',
+        displayName: 'Synthetic xAI',
+        vendor: 'xai',
+        adapterId: 'xai',
+        apiKey: 'synthetic-secret',
+        baseUrl: null,
+        models: ['grok-4.6'],
+        requiresApiKey: true,
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        modelMetadata: {
+          'grok-4.6': {
+            reasoning: true,
+            reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
+            limit: { context: 64_000, output: 8_000 },
           },
         },
-      ];
-      return new Response(
-        events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
-        { headers: { 'content-type': 'text/event-stream' } }
+      };
+      const model: ResolvedLogicalModel = {
+        ...logicalModel,
+        modelFamilyId: 'grok',
+        routes: [{ ...logicalModel.routes[0]!, providerModel: 'grok-4.6' }],
+      };
+      const payloads: Record<string, unknown>[] = [];
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        const httpRequest = new Request(url, init);
+        expect(httpRequest.url).toBe('https://api.x.ai/v1/responses');
+        payloads.push(JSON.parse(await httpRequest.text()));
+        const item = {
+          id: 'msg_synthetic',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'Ready.', annotations: [] }],
+        };
+        const events = [
+          { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
+          {
+            type: 'response.content_part.added',
+            output_index: 0,
+            content_index: 0,
+            part: { ...item.content[0], text: '' },
+          },
+          {
+            type: 'response.output_text.delta',
+            output_index: 0,
+            content_index: 0,
+            delta: 'Ready.',
+          },
+          { type: 'response.output_item.done', output_index: 0, item },
+          {
+            type: 'response.completed',
+            response: {
+              id: 'resp_synthetic',
+              object: 'response',
+              status: 'completed',
+              output: [item],
+              usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            },
+          },
+        ];
+        return new Response(
+          events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join(''),
+          { headers: { 'content-type': 'text/event-stream' } }
+        );
+      });
+      const provider = createInternalAgentGatewayProvider({
+        capture: await captureBinding(),
+        logicalModel: model,
+        reasoningEffort: profile.reasoningEffort,
+        resolveLogicalModel: () => model,
+        dispatcher,
+        resolveGatewayProvider: () => config,
+        promptCacheScope: { sessionId: 'internal' },
+        usageEndpoint: 'responses',
+      });
+      await expect(provider({ ...request(), tools: [] })).resolves.toHaveProperty(
+        'message.content',
+        [{ type: 'text', text: 'Ready.' }]
       );
-    });
-    const provider = createInternalAgentGatewayProvider({
-      capture: await captureBinding(),
-      logicalModel: model,
-      reasoningEffort: profile.reasoningEffort,
-      resolveLogicalModel: () => model,
-      dispatcher,
-      resolveGatewayProvider: () => config,
-      promptCacheScope: { sessionId: 'internal' },
-      usageEndpoint: 'responses',
-    });
-    await expect(provider({ ...request(), tools: [] })).resolves.toHaveProperty('message.content', [
-      { type: 'text', text: 'Ready.' },
-    ]);
-    // G3 accepted default: OpenKit-originated internal-agent Responses add reasoning.summary auto.
-    expect(payloads[0]).toHaveProperty('reasoning.summary', 'auto');
-    if (reasoningEffort !== undefined) {
-      expect(payloads[0]).toHaveProperty('reasoning.effort', reasoningEffort);
-    }
+      // G3 accepted default: OpenKit-originated internal-agent Responses add reasoning.summary auto.
+      expect(payloads[0]).toHaveProperty('reasoning.summary', 'auto');
+      if (reasoningEffort !== undefined) {
+        expect(payloads[0]).toHaveProperty('reasoning.effort', reasoningEffort);
+      }
 
-    // Reuse the real dispatcher after the internal call to detect leaked model/options state.
-    await dispatcher.createResponses(config, { model: 'grok-4.6', input: 'Unbound call.' });
-    expect(payloads).toHaveLength(2);
-    expect(payloads[1]).not.toHaveProperty('reasoning');
-  });
+      // Reuse the real dispatcher after the internal call to detect leaked model/options state.
+      await dispatcher.createResponses(config, { model: 'grok-4.6', input: 'Unbound call.' });
+      expect(payloads).toHaveLength(2);
+      expect(payloads[1]).not.toHaveProperty('reasoning');
+    }
+  );
 
   it('logs undeclared Tool output from the real adapter as output-projection', async () => {
     const capture = await captureBinding();
@@ -972,115 +975,125 @@ describe('internal Agent Gateway provider', () => {
     ['undeclared', 'undeclared', 'environment.status'],
     ['invalid/name', 'openkit_unavailable_tool', 'environment.status'],
     ['environment.status-result', 'openkit_unavailable_tool', 'environment.status-result'],
-  ])('corrects an unadmitted spelling through the real loop and Gateway history: %s', async (name, historyName, canonicalName) => {
-    const execute = vi.fn(async () => ({
-      content: [{ type: 'text' as const, text: 'Available.' }],
-    }));
-    const args = { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' };
-    const createResponses = vi
-      .fn()
-      .mockResolvedValueOnce({
-        id: 'response_unknown',
-        object: 'response',
-        status: 'completed',
-        output: [
-          { type: 'function_call', call_id: 'unknown_call', name, arguments: JSON.stringify(args) },
-        ],
-      })
-      .mockImplementationOnce(async (_provider, payload) => {
-        expect(execute).not.toHaveBeenCalled();
-        expect(payload.tools.map((tool: { name: string }) => tool.name)).toEqual([
-          canonicalName.replaceAll('.', '_'),
-        ]);
-        expect(payload.input.slice(1)).toEqual([
-          {
-            type: 'function_call',
-            call_id: 'unknown_call',
-            name: historyName,
-            arguments: JSON.stringify(args),
-          },
-          {
-            type: 'function_call_output',
-            call_id: 'unknown_call',
-            output: 'The requested Tool is unavailable.',
-          },
-        ]);
-        for (const item of payload.input) {
-          if (item.type === 'function_call') expect(item.name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
-        }
-        return {
-          id: 'response_corrected',
+  ])(
+    'corrects an unadmitted spelling through the real loop and Gateway history: %s',
+    async (name, historyName, canonicalName) => {
+      const execute = vi.fn(async () => ({
+        content: [{ type: 'text' as const, text: 'Available.' }],
+      }));
+      const args = { workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' };
+      const createResponses = vi
+        .fn()
+        .mockResolvedValueOnce({
+          id: 'response_unknown',
           object: 'response',
           status: 'completed',
           output: [
             {
               type: 'function_call',
-              call_id: 'admitted_call',
-              name: canonicalName.replaceAll('.', '_'),
+              call_id: 'unknown_call',
+              name,
               arguments: JSON.stringify(args),
             },
           ],
-        };
-      })
-      .mockResolvedValueOnce({
-        id: 'response_done',
-        object: 'response',
-        status: 'completed',
-        output: [
-          {
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'output_text', text: 'Ready.' }],
-          },
+        })
+        .mockImplementationOnce(async (_provider, payload) => {
+          expect(execute).not.toHaveBeenCalled();
+          expect(payload.tools.map((tool: { name: string }) => tool.name)).toEqual([
+            canonicalName.replaceAll('.', '_'),
+          ]);
+          expect(payload.input.slice(1)).toEqual([
+            {
+              type: 'function_call',
+              call_id: 'unknown_call',
+              name: historyName,
+              arguments: JSON.stringify(args),
+            },
+            {
+              type: 'function_call_output',
+              call_id: 'unknown_call',
+              output: 'The requested Tool is unavailable.',
+            },
+          ]);
+          for (const item of payload.input) {
+            if (item.type === 'function_call') expect(item.name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
+          }
+          return {
+            id: 'response_corrected',
+            object: 'response',
+            status: 'completed',
+            output: [
+              {
+                type: 'function_call',
+                call_id: 'admitted_call',
+                name: canonicalName.replaceAll('.', '_'),
+                arguments: JSON.stringify(args),
+              },
+            ],
+          };
+        })
+        .mockResolvedValueOnce({
+          id: 'response_done',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Ready.' }],
+            },
+          ],
+        });
+      const provider = createInternalAgentGatewayProvider({
+        capture: await captureBinding(),
+        logicalModel,
+        resolveLogicalModel: () => logicalModel,
+        dispatcher: { createResponses },
+        resolveGatewayProvider: () =>
+          ({
+            id: 'provider',
+            models: ['model'],
+            gatewayCapabilities: {},
+            modelMetadata: {
+              model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+            },
+          }) as never,
+        promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
+        usageEndpoint: 'responses',
+      });
+      const result = await runInternalAgentLoop(
+        {
+          ...request(),
+          tools: [{ ...request().tools[0]!, name: canonicalName, execute }],
+          limits: { maxModelTurns: 3, maxToolCalls: 1, deadlineMs: 10_000 },
+        },
+        provider
+      );
+      expect(result.kind).toBe('quiescent');
+      expect(createResponses).toHaveBeenCalledTimes(3);
+      expect(execute).toHaveBeenCalledExactlyOnceWith(args, {
+        callId: 'admitted_call',
+        toolOccurrence: 1,
+        signal: expect.any(AbortSignal),
+      });
+      expect(createResponses.mock.calls[2]![1].input.slice(-2)).toEqual([
+        {
+          type: 'function_call',
+          call_id: 'admitted_call',
+          name: canonicalName.replaceAll('.', '_'),
+          arguments: JSON.stringify(args),
+        },
+        { type: 'function_call_output', call_id: 'admitted_call', output: 'Available.' },
+      ]);
+      expect(result.messages).toContainEqual({
+        role: 'assistant',
+        truncated: false,
+        content: [
+          { type: 'toolCall', callId: 'admitted_call', name: canonicalName, arguments: args },
         ],
       });
-    const provider = createInternalAgentGatewayProvider({
-      capture: await captureBinding(),
-      logicalModel,
-      resolveLogicalModel: () => logicalModel,
-      dispatcher: { createResponses },
-      resolveGatewayProvider: () =>
-        ({
-          id: 'provider',
-          models: ['model'],
-          gatewayCapabilities: {},
-          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
-        }) as never,
-      promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
-      usageEndpoint: 'responses',
-    });
-    const result = await runInternalAgentLoop(
-      {
-        ...request(),
-        tools: [{ ...request().tools[0]!, name: canonicalName, execute }],
-        limits: { maxModelTurns: 3, maxToolCalls: 1, deadlineMs: 10_000 },
-      },
-      provider
-    );
-    expect(result.kind).toBe('quiescent');
-    expect(createResponses).toHaveBeenCalledTimes(3);
-    expect(execute).toHaveBeenCalledExactlyOnceWith(args, {
-      callId: 'admitted_call',
-      toolOccurrence: 1,
-      signal: expect.any(AbortSignal),
-    });
-    expect(createResponses.mock.calls[2]![1].input.slice(-2)).toEqual([
-      {
-        type: 'function_call',
-        call_id: 'admitted_call',
-        name: canonicalName.replaceAll('.', '_'),
-        arguments: JSON.stringify(args),
-      },
-      { type: 'function_call_output', call_id: 'admitted_call', output: 'Available.' },
-    ]);
-    expect(result.messages).toContainEqual({
-      role: 'assistant',
-      truncated: false,
-      content: [
-        { type: 'toolCall', callId: 'admitted_call', name: canonicalName, arguments: args },
-      ],
-    });
-  });
+    }
+  );
 
   it('keeps malformed Tool calls and arguments fatal instead of requesting correction', async () => {
     const createResponses = vi.fn();
@@ -1190,242 +1203,243 @@ describe('internal Agent Gateway provider', () => {
     expect(createResponses).not.toHaveBeenCalled();
   });
 
-  it.each([
-    0, 1,
-  ])('completes the real internal Google request with %i ordinary functions', async (toolCount) => {
-    const stock = googleProvider();
-    const models = createModels();
-    models.setProvider(stock);
-    const model = models
-      .getModels()
-      .find((model) => model.provider === stock.id && model.id === 'gemini-3-flash-preview')!;
-    expect(model.api).toBe('google-generative-ai');
-    const googleLogicalModel: ResolvedLogicalModel = {
-      ...logicalModel,
-      modelFamilyId: 'gemini',
-      routes: [{ ...logicalModel.routes[0]!, providerModel: model.id }],
-    };
-    const capture = await captureBinding();
-    const payloads: Record<string, unknown>[] = [];
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-      payloads.push(JSON.parse(String(init?.body)));
-      return new Response(
-        `data: ${JSON.stringify({
-          candidates: [
-            { content: { role: 'model', parts: [{ text: 'answer' }] }, finishReason: 'STOP' },
-          ],
-          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
-        })}\n\n`,
-        { headers: { 'content-type': 'text/event-stream' } }
-      );
-    });
-    try {
+  it.each([0, 1])(
+    'completes the real internal Google request with %i ordinary functions',
+    async (toolCount) => {
+      const stock = googleProvider();
+      const models = createModels();
+      models.setProvider(stock);
+      const model = models
+        .getModels()
+        .find((model) => model.provider === stock.id && model.id === 'gemini-3-flash-preview')!;
+      expect(model.api).toBe('google-generative-ai');
+      const googleLogicalModel: ResolvedLogicalModel = {
+        ...logicalModel,
+        modelFamilyId: 'gemini',
+        routes: [{ ...logicalModel.routes[0]!, providerModel: model.id }],
+      };
+      const capture = await captureBinding();
+      const payloads: Record<string, unknown>[] = [];
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        payloads.push(JSON.parse(String(init?.body)));
+        return new Response(
+          `data: ${JSON.stringify({
+            candidates: [
+              { content: { role: 'model', parts: [{ text: 'answer' }] }, finishReason: 'STOP' },
+            ],
+            usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+          })}\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } }
+        );
+      });
+      try {
+        const response = await withTurnModelCapture(
+          { store: capture.store, turn: capture.turn },
+          async (admitted) => {
+            const provider = createInternalAgentGatewayProvider({
+              capture: admitted,
+              logicalModel: googleLogicalModel,
+              resolveLogicalModel: () => googleLogicalModel,
+              dispatcher: new LLMGatewayProviderDispatcher({
+                piAiClient: new PiAiGatewayClient({ models }),
+              }),
+              resolveGatewayProvider: () => ({
+                id: 'provider',
+                displayName: 'Provider',
+                adapterId: stock.id,
+                apiKey: 'synthetic',
+                baseUrl: null,
+                models: [model.id],
+                requiresApiKey: true,
+                gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+                modelMetadata: { [model.id]: { tool_call: true, limit: { context: 1_000_000 } } },
+              }),
+              promptCacheScope: {
+                sessionId: 'internal-google',
+                workspaceId: workspaceIdForOwner(capture.turn.owner),
+              },
+              usageEndpoint: 'responses',
+            });
+            return provider({
+              ...request(),
+              model: {
+                logicalModelId: googleLogicalModel.id,
+                capabilities: googleLogicalModel.capabilities,
+                modelFamilyId: googleLogicalModel.modelFamilyId,
+              },
+              tools:
+                toolCount === 0
+                  ? []
+                  : [
+                      {
+                        name: 'test.lookup',
+                        description: 'Read status.',
+                        inputSchema: {
+                          type: 'object',
+                          properties: { key: { type: 'string' } },
+                          required: ['key'],
+                          additionalProperties: false,
+                        },
+                      },
+                    ],
+            });
+          }
+        );
+        expect(response.message).toEqual({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'answer' }],
+          truncated: false,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        if (toolCount === 0) {
+          expect(payloads[0]?.tools).toBeUndefined();
+        } else {
+          expect(payloads[0]?.tools).toMatchObject([
+            { functionDeclarations: [{ name: 'test_lookup' }] },
+          ]);
+          // Provider constrained generation is disabled; the internal loop retains schema admission.
+          expect(payloads[0]?.toolConfig).toBeUndefined();
+        }
+      } catch (error) {
+        throw new Error(
+          `Internal Google request failed after ${fetchMock.mock.calls.length} fetches.`,
+          { cause: error }
+        );
+      } finally {
+        fetchMock.mockRestore();
+      }
+    }
+  );
+
+  it.each(['off', 'on'] as const)(
+    'passes a physically fitting request through real Gateway admission with capture %s',
+    async (value) => {
+      const faux = fauxProvider({
+        // Give the capture fixture a meaningful API identity matching its native Responses capability.
+        api: 'openai-responses',
+        provider: 'provider',
+        models: [{ id: 'model' }],
+      });
+      const models = createModels();
+      models.setProvider(faux.provider);
+      const answer = '  Admitted. 世界\n\t';
+      faux.setResponses([fauxAssistantMessage(answer)]);
+      const capture = await captureBinding(value);
+      const providerOptions = {
+        logicalModel,
+        dispatcher: new LLMGatewayProviderDispatcher({
+          piAiClient: new PiAiGatewayClient({ models }),
+        }),
+        resolveGatewayProvider: () => ({
+          adapterId: 'provider',
+          apiKey: 'test-key',
+          baseUrl: null,
+          displayName: 'Provider',
+          gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'native' as const },
+          id: 'provider',
+          models: ['model'],
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
+          requiresApiKey: true,
+        }),
+        promptCacheScope: {
+          sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',
+          workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
+        },
+        usageEndpoint: 'responses' as const,
+      };
+      let admittedDb: WorkspaceDb | undefined;
       const response = await withTurnModelCapture(
         { store: capture.store, turn: capture.turn },
         async (admitted) => {
+          admittedDb = admitted.workspaceDb;
           const provider = createInternalAgentGatewayProvider({
+            resolveLogicalModel(): ResolvedLogicalModel {
+              return this.logicalModel;
+            },
+            ...providerOptions,
             capture: admitted,
-            logicalModel: googleLogicalModel,
-            resolveLogicalModel: () => googleLogicalModel,
-            dispatcher: new LLMGatewayProviderDispatcher({
-              piAiClient: new PiAiGatewayClient({ models }),
-            }),
-            resolveGatewayProvider: () => ({
-              id: 'provider',
-              displayName: 'Provider',
-              adapterId: stock.id,
-              apiKey: 'synthetic',
-              baseUrl: null,
-              models: [model.id],
-              requiresApiKey: true,
-              gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-              modelMetadata: { [model.id]: { tool_call: true, limit: { context: 1_000_000 } } },
-            }),
-            promptCacheScope: {
-              sessionId: 'internal-google',
-              workspaceId: workspaceIdForOwner(capture.turn.owner),
-            },
-            usageEndpoint: 'responses',
           });
-          return provider({
-            ...request(),
-            model: {
-              logicalModelId: googleLogicalModel.id,
-              capabilities: googleLogicalModel.capabilities,
-              modelFamilyId: googleLogicalModel.modelFamilyId,
-            },
-            tools:
-              toolCount === 0
-                ? []
-                : [
-                    {
-                      name: 'test.lookup',
-                      description: 'Read status.',
-                      inputSchema: {
-                        type: 'object',
-                        properties: { key: { type: 'string' } },
-                        required: ['key'],
-                        additionalProperties: false,
-                      },
-                    },
-                  ],
-          });
+          return provider(request());
         }
       );
-      expect(response.message).toEqual({
-        role: 'assistant',
-        content: [{ type: 'text', text: 'answer' }],
-        truncated: false,
-      });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      if (toolCount === 0) {
-        expect(payloads[0]?.tools).toBeUndefined();
+
+      expect(response.message.content).toEqual([{ type: 'text', text: answer }]);
+      expect(faux.state.callCount).toBe(1);
+      expect(admittedDb?.sqlite.open).toBe(false);
+      const rows = readWorkObservations(capture.workspaceDb, capture);
+      expect(rows.some((row) => row.type === 'model.observed')).toBe(true);
+      const publications = rows.filter((row) => row.type === 'content.published');
+      if (value === 'off') {
+        expect(publications).toEqual([]);
       } else {
-        expect(payloads[0]?.tools).toMatchObject([
-          { functionDeclarations: [{ name: 'test_lookup' }] },
-        ]);
-        // Provider constrained generation is disabled; the internal loop retains schema admission.
-        expect(payloads[0]?.toolConfig).toBeUndefined();
-      }
-    } catch (error) {
-      throw new Error(
-        `Internal Google request failed after ${fetchMock.mock.calls.length} fetches.`,
-        { cause: error }
-      );
-    } finally {
-      fetchMock.mockRestore();
-    }
-  });
-
-  it.each([
-    'off',
-    'on',
-  ] as const)('passes a physically fitting request through real Gateway admission with capture %s', async (value) => {
-    const faux = fauxProvider({
-      // Give the capture fixture a meaningful API identity matching its native Responses capability.
-      api: 'openai-responses',
-      provider: 'provider',
-      models: [{ id: 'model' }],
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    const answer = '  Admitted. 世界\n\t';
-    faux.setResponses([fauxAssistantMessage(answer)]);
-    const capture = await captureBinding(value);
-    const providerOptions = {
-      logicalModel,
-      dispatcher: new LLMGatewayProviderDispatcher({
-        piAiClient: new PiAiGatewayClient({ models }),
-      }),
-      resolveGatewayProvider: () => ({
-        adapterId: 'provider',
-        apiKey: 'test-key',
-        baseUrl: null,
-        displayName: 'Provider',
-        gatewayCapabilities: { chatCompletions: 'native' as const, responses: 'native' as const },
-        id: 'provider',
-        models: ['model'],
-        modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
-        requiresApiKey: true,
-      }),
-      promptCacheScope: {
-        sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',
-        workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
-      },
-      usageEndpoint: 'responses' as const,
-    };
-    let admittedDb: WorkspaceDb | undefined;
-    const response = await withTurnModelCapture(
-      { store: capture.store, turn: capture.turn },
-      async (admitted) => {
-        admittedDb = admitted.workspaceDb;
-        const provider = createInternalAgentGatewayProvider({
-          resolveLogicalModel(): ResolvedLogicalModel {
-            return this.logicalModel;
-          },
-          ...providerOptions,
-          capture: admitted,
-        });
-        return provider(request());
-      }
-    );
-
-    expect(response.message.content).toEqual([{ type: 'text', text: answer }]);
-    expect(faux.state.callCount).toBe(1);
-    expect(admittedDb?.sqlite.open).toBe(false);
-    const rows = readWorkObservations(capture.workspaceDb, capture);
-    expect(rows.some((row) => row.type === 'model.observed')).toBe(true);
-    const publications = rows.filter((row) => row.type === 'content.published');
-    if (value === 'off') {
-      expect(publications).toEqual([]);
-    } else {
-      const bodies = publications.flatMap((row) =>
-        (row.refs ?? []).map((ref) => {
-          const original = rows.find((candidate) => candidate.id === row.parent)!;
-          const bytes = readWorkObservationBody(capture.workspaceDb, {
-            ...capture,
-            bundleId: ref.locator,
-            createdAt: original.ts,
-            sha256: ref.digest!,
-          });
-          return { direction: original.payload.direction, bytes };
-        })
-      );
-      expect(bodies.every(({ bytes }) => bytes !== null)).toBe(true);
-      const responseEvents = bodies
-        .filter(({ direction }) => direction === 'response')
-        .map(
-          ({ bytes }) => JSON.parse(new TextDecoder().decode(bytes!)) as Record<string, unknown>
+        const bodies = publications.flatMap((row) =>
+          (row.refs ?? []).map((ref) => {
+            const original = rows.find((candidate) => candidate.id === row.parent)!;
+            const bytes = readWorkObservationBody(capture.workspaceDb, {
+              ...capture,
+              bundleId: ref.locator,
+              createdAt: original.ts,
+              sha256: ref.digest!,
+            });
+            return { direction: original.payload.direction, bytes };
+          })
         );
-      expect(
-        responseEvents.filter((event) => event.type === 'text_end').map((event) => event.content)
-      ).toEqual([answer]);
-      expect(
-        responseEvents
-          .filter((event) => event.type === 'text_delta')
-          .map((event) => event.delta)
-          .join('')
-      ).toBe(answer);
-      expect(
-        responseEvents
-          .filter((event) => event.type === 'done')
-          .map((event) => (event.message as { content: unknown }).content)
-      ).toEqual([[{ type: 'text', text: answer }]]);
-    }
-    // Retained history without an admitted capture binding is genuinely unknown.
-    // A readable turn.json projection cannot remove native capture authority.
-    const workspaceId = allocateEntityId('ws');
-    const threadId = allocateEntityId('th');
-    const turnId = allocateEntityId('tu');
-    const owner = { kind: 'workspace' as const, workspaceId };
-    await capture.store.importWorkspaceSnapshot({
-      workspace: {
-        ...capture.store.getWorkspace(capture.workspaceDb.workspaceId),
-        id: workspaceId,
-      },
-      threads: [
-        {
-          ...capture.store.getThread(capture.workspaceDb.workspaceId, capture.threadId),
-          id: threadId,
-          owner,
+        expect(bodies.every(({ bytes }) => bytes !== null)).toBe(true);
+        const responseEvents = bodies
+          .filter(({ direction }) => direction === 'response')
+          .map(
+            ({ bytes }) => JSON.parse(new TextDecoder().decode(bytes!)) as Record<string, unknown>
+          );
+        expect(
+          responseEvents.filter((event) => event.type === 'text_end').map((event) => event.content)
+        ).toEqual([answer]);
+        expect(
+          responseEvents
+            .filter((event) => event.type === 'text_delta')
+            .map((event) => event.delta)
+            .join('')
+        ).toBe(answer);
+        expect(
+          responseEvents
+            .filter((event) => event.type === 'done')
+            .map((event) => (event.message as { content: unknown }).content)
+        ).toEqual([[{ type: 'text', text: answer }]]);
+      }
+      // Retained history without an admitted capture binding is genuinely unknown.
+      // A readable turn.json projection cannot remove native capture authority.
+      const workspaceId = allocateEntityId('ws');
+      const threadId = allocateEntityId('th');
+      const turnId = allocateEntityId('tu');
+      const owner = { kind: 'workspace' as const, workspaceId };
+      await capture.store.importWorkspaceSnapshot({
+        workspace: {
+          ...capture.store.getWorkspace(capture.workspaceDb.workspaceId),
+          id: workspaceId,
         },
-      ],
-      turns: [{ ...capture.turn, id: turnId, owner, threadId, items: [] }],
-      knowledge: [],
-      itemRevisions: [],
-      artifacts: [],
-      agentSessions: [],
-      turnEvents: [],
-      ...notebookImportFixture({ workspaceId, knowledge: [] }),
-    });
-    const unknownTurn = capture.store.getTurn(workspaceId, threadId, turnId);
-    const onModelCall = vi.fn();
-    await expect(
-      withTurnModelCapture({ store: capture.store, turn: unknownTurn }, onModelCall)
-    ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
-    expect(onModelCall).not.toHaveBeenCalled();
-    expect(faux.state.callCount).toBe(1);
-  });
+        threads: [
+          {
+            ...capture.store.getThread(capture.workspaceDb.workspaceId, capture.threadId),
+            id: threadId,
+            owner,
+          },
+        ],
+        turns: [{ ...capture.turn, id: turnId, owner, threadId, items: [] }],
+        knowledge: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        ...notebookImportFixture({ workspaceId, knowledge: [] }),
+      });
+      const unknownTurn = capture.store.getTurn(workspaceId, threadId, turnId);
+      const onModelCall = vi.fn();
+      await expect(
+        withTurnModelCapture({ store: capture.store, turn: unknownTurn }, onModelCall)
+      ).rejects.toMatchObject({ code: 'model_capture_unavailable' });
+      expect(onModelCall).not.toHaveBeenCalled();
+      expect(faux.state.callCount).toBe(1);
+    }
+  );
 
   it('admits a Codex subscription Responses turn without internal metadata', async () => {
     const faux = fauxProvider({
@@ -1617,82 +1631,85 @@ const internalDecisions = [
 ] as const;
 
 describe('internal role shares Gateway planning and replay rules', () => {
-  it.each(
-    internalDecisions
-  )('%s follows the same retry and advancement rule', async (kind, primaryCalls, advances) => {
-    const capture = await captureBinding();
-    vi.useFakeTimers();
-    try {
-      for (const autoFailover of [false, true]) {
-        const model = {
-          ...logicalModel,
-          autoFailover,
-          routes: ['primary', 'backup'].map((id) => ({
-            ...logicalModel.routes[0]!,
-            id,
-            providerProfileId: id,
-          })),
-        };
-        const calls: string[] = [];
-        const createResponses = vi.fn(async (config: { id: string }) => {
-          calls.push(config.id);
-          if (config.id === 'primary')
-            throw Object.assign(new Error('private detail'), { failure: { kind, settled: true } });
-          return {
-            id: 'response',
-            object: 'response' as const,
-            status: 'completed',
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'Backup.' }],
-              },
-            ],
-          };
-        });
-        const provider = createInternalAgentGatewayProvider({
-          resolveLogicalModel(): ResolvedLogicalModel {
-            return this.logicalModel;
-          },
-          logicalModel: model,
-          capture,
-          dispatcher: { createResponses } as unknown as Pick<
-            LLMGatewayProviderDispatcher,
-            'createResponses'
-          >,
-          resolveGatewayProvider: (id) =>
-            ({
+  it.each(internalDecisions)(
+    '%s follows the same retry and advancement rule',
+    async (kind, primaryCalls, advances) => {
+      const capture = await captureBinding();
+      vi.useFakeTimers();
+      try {
+        for (const autoFailover of [false, true]) {
+          const model = {
+            ...logicalModel,
+            autoFailover,
+            routes: ['primary', 'backup'].map((id) => ({
+              ...logicalModel.routes[0]!,
               id,
-              models: ['model'],
-              gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
-              modelMetadata: {
-                model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
-              },
-            }) as never,
-          promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
-          usageEndpoint: 'responses',
-        });
-        const pending = provider(request()).then(
-          (result) => ({ result }),
-          (error) => ({ error })
-        );
-        await vi.runAllTimersAsync();
-        const outcome = await pending;
-        expect(calls.filter((id) => id === 'primary')).toHaveLength(primaryCalls);
-        expect(calls.filter((id) => id === 'backup')).toHaveLength(
-          autoFailover && advances ? 1 : 0
-        );
-        if (autoFailover && advances)
-          expect(outcome).toMatchObject({
-            result: { message: { content: [{ type: 'text', text: 'Backup.' }] } },
+              providerProfileId: id,
+            })),
+          };
+          const calls: string[] = [];
+          const createResponses = vi.fn(async (config: { id: string }) => {
+            calls.push(config.id);
+            if (config.id === 'primary')
+              throw Object.assign(new Error('private detail'), {
+                failure: { kind, settled: true },
+              });
+            return {
+              id: 'response',
+              object: 'response' as const,
+              status: 'completed',
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'Backup.' }],
+                },
+              ],
+            };
           });
-        else expect(outcome).toMatchObject({ error: { failure: { kind } } });
+          const provider = createInternalAgentGatewayProvider({
+            resolveLogicalModel(): ResolvedLogicalModel {
+              return this.logicalModel;
+            },
+            logicalModel: model,
+            capture,
+            dispatcher: { createResponses } as unknown as Pick<
+              LLMGatewayProviderDispatcher,
+              'createResponses'
+            >,
+            resolveGatewayProvider: (id) =>
+              ({
+                id,
+                models: ['model'],
+                gatewayCapabilities: { responses: 'native', chatCompletions: 'native' },
+                modelMetadata: {
+                  model: { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+                },
+              }) as never,
+            promptCacheScope: { sessionId: 'admin', workspaceId: testEntityId('ws', 'workspace') },
+            usageEndpoint: 'responses',
+          });
+          const pending = provider(request()).then(
+            (result) => ({ result }),
+            (error) => ({ error })
+          );
+          await vi.runAllTimersAsync();
+          const outcome = await pending;
+          expect(calls.filter((id) => id === 'primary')).toHaveLength(primaryCalls);
+          expect(calls.filter((id) => id === 'backup')).toHaveLength(
+            autoFailover && advances ? 1 : 0
+          );
+          if (autoFailover && advances)
+            expect(outcome).toMatchObject({
+              result: { message: { content: [{ type: 'text', text: 'Backup.' }] } },
+            });
+          else expect(outcome).toMatchObject({ error: { failure: { kind } } });
+        }
+      } finally {
+        vi.useRealTimers();
       }
-    } finally {
-      vi.useRealTimers();
     }
-  });
+  );
 
   it('skips a member unable to satisfy the run-pinned tool capability without dispatch', async () => {
     const calls: string[] = [];
@@ -2279,36 +2296,35 @@ describe('internal rolling context Gateway boundary', () => {
     expect(assembled.messages).toEqual(before);
   });
 
-  it.each([
-    'messages',
-    'prompt',
-    'schema',
-  ] as const)('rejects physical overflow from %s before Provider dispatch', async (component) => {
-    const { provider, createResponses } = await boundaryFixture(logicalModel, undefined, {
-      context: 16_000,
-      output: 2_000,
-    });
-    const large = 'Required source constraint and exact continuation reference. '.repeat(16_000);
-    const assembled = {
-      ...request(component === 'messages' ? large : 'Read status.'),
-      ...(component === 'prompt' ? { systemPrompt: large } : {}),
-      ...(component === 'schema'
-        ? {
-            tools: [
-              { ...request().tools[0]!, inputSchema: { type: 'object', description: large } },
-            ],
-          }
-        : {}),
-    };
-    const before = structuredClone(assembled.messages);
+  it.each(['messages', 'prompt', 'schema'] as const)(
+    'rejects physical overflow from %s before Provider dispatch',
+    async (component) => {
+      const { provider, createResponses } = await boundaryFixture(logicalModel, undefined, {
+        context: 16_000,
+        output: 2_000,
+      });
+      const large = 'Required source constraint and exact continuation reference. '.repeat(16_000);
+      const assembled = {
+        ...request(component === 'messages' ? large : 'Read status.'),
+        ...(component === 'prompt' ? { systemPrompt: large } : {}),
+        ...(component === 'schema'
+          ? {
+              tools: [
+                { ...request().tools[0]!, inputSchema: { type: 'object', description: large } },
+              ],
+            }
+          : {}),
+      };
+      const before = structuredClone(assembled.messages);
 
-    await expect(provider(assembled)).rejects.toMatchObject({
-      code: 'internal_agent_context_exceeded',
-    });
+      await expect(provider(assembled)).rejects.toMatchObject({
+        code: 'internal_agent_context_exceeded',
+      });
 
-    expect(createResponses).not.toHaveBeenCalled();
-    expect(assembled.messages).toEqual(before);
-  });
+      expect(createResponses).not.toHaveBeenCalled();
+      expect(assembled.messages).toEqual(before);
+    }
+  );
 
   it('retains final serialized admission failure through stock normalization without replay', async () => {
     const { provider, createResponses } = await boundaryFixture();
@@ -2380,24 +2396,29 @@ describe('internal rolling context Gateway boundary', () => {
   it.each([
     { admittedOutput: 2_000, expectedOutput: 2_000 },
     { admittedOutput: null, expectedOutput: 8_000 },
-  ])('caps model output at the known admitted or member limit: %j', async ({
-    admittedOutput,
-    expectedOutput,
-  }) => {
-    const admitted: ResolvedLogicalModel = {
-      ...logicalModel,
-      contract: { context: 64_000, output: admittedOutput, inputModalities: null, reasoning: null },
-    };
-    const { provider, createResponses } = await boundaryFixture(admitted);
+  ])(
+    'caps model output at the known admitted or member limit: %j',
+    async ({ admittedOutput, expectedOutput }) => {
+      const admitted: ResolvedLogicalModel = {
+        ...logicalModel,
+        contract: {
+          context: 64_000,
+          output: admittedOutput,
+          inputModalities: null,
+          reasoning: null,
+        },
+      };
+      const { provider, createResponses } = await boundaryFixture(admitted);
 
-    await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
+      await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
 
-    expect(createResponses).toHaveBeenCalledTimes(1);
-    expect(createResponses.mock.calls[0]![1]).toMatchObject({
-      model: 'model',
-      max_output_tokens: expectedOutput,
-    });
-  });
+      expect(createResponses).toHaveBeenCalledTimes(1);
+      expect(createResponses.mock.calls[0]![1]).toMatchObject({
+        model: 'model',
+        max_output_tokens: expectedOutput,
+      });
+    }
+  );
 
   it('enforces the admitted logical window when the selected member has more physical capacity', async () => {
     const admitted: ResolvedLogicalModel = {
@@ -2628,67 +2649,66 @@ describe('command audit lineage at the internal Gateway seam', () => {
       storedRequestId: '00000000-0000-4000-8000-000000000145',
       expectedAuditRequest: '00000000-0000-4000-8000-000000000145',
     },
-  ])('preserves success attribution $label', async ({
-    lineage,
-    storedRequestId,
-    expectedAuditRequest,
-  }) => {
-    const f = await auditFixture(lineage, storedRequestId);
+  ])(
+    'preserves success attribution $label',
+    async ({ lineage, storedRequestId, expectedAuditRequest }) => {
+      const f = await auditFixture(lineage, storedRequestId);
 
-    await f.provider(request());
+      await f.provider(request());
 
-    const calls = listWorkspaceCapabilityCalls(
-      f.capture.workspaceDb,
-      workspaceIdForOwner(f.capture.turn.owner)
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
-      requestId: storedRequestId,
-      status: 'succeeded',
-      threadId: f.capture.threadId,
-      turnId: f.capture.turnId,
-    });
-    const usage = listWorkspaceUsageRecords(
-      f.capture.workspaceDb,
-      workspaceIdForOwner(f.capture.turn.owner)
-    );
-    expect([...usage].sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))).toEqual(
-      [
-        ['input', 9],
-        ['output', 3],
-      ].map(([component, quantity]) =>
+      const calls = listWorkspaceCapabilityCalls(
+        f.capture.workspaceDb,
+        workspaceIdForOwner(f.capture.turn.owner)
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        requestId: storedRequestId,
+        status: 'succeeded',
+        threadId: f.capture.threadId,
+        turnId: f.capture.turnId,
+      });
+      const usage = listWorkspaceUsageRecords(
+        f.capture.workspaceDb,
+        workspaceIdForOwner(f.capture.turn.owner)
+      );
+      expect([...usage].sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))).toEqual(
+        [
+          ['input', 9],
+          ['output', 3],
+        ].map(([component, quantity]) =>
+          expect.objectContaining({
+            requestId: storedRequestId,
+            capabilityCallId: calls[0]!.id,
+            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            modelId: 'assistant',
+            providerRef: 'provider',
+            providerModel: 'model',
+            threadId: f.capture.threadId,
+            turnId: f.capture.turnId,
+            quantity,
+            source: `llm-gateway-adapter-reported:${component}`,
+            unit: 'tokens',
+          })
+        )
+      );
+      expect(usage.reduce((total, record) => total + record.quantity, 0)).toBe(12);
+      expect(
+        f.capture.workspaceDb.sqlite
+          .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+          .all(calls[0]!.id)
+      ).toEqual([
+        expect.objectContaining({ action: 'capability.admit', request_id: expectedAuditRequest }),
         expect.objectContaining({
-          requestId: storedRequestId,
-          capabilityCallId: calls[0]!.id,
-          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          modelId: 'assistant',
-          providerRef: 'provider',
-          providerModel: 'model',
-          threadId: f.capture.threadId,
-          turnId: f.capture.turnId,
-          quantity,
-          source: `llm-gateway-adapter-reported:${component}`,
-          unit: 'tokens',
-        })
-      )
-    );
-    expect(usage.reduce((total, record) => total + record.quantity, 0)).toBe(12);
-    expect(
-      f.capture.workspaceDb.sqlite
-        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
-        .all(calls[0]!.id)
-    ).toEqual([
-      expect.objectContaining({ action: 'capability.admit', request_id: expectedAuditRequest }),
-      expect.objectContaining({
-        action: 'capability.finish',
-        request_id: expectedAuditRequest,
-        capability_call_id: calls[0]!.id,
-        thread_id: f.capture.threadId,
-        turn_id: f.capture.turnId,
-        outcome: 'succeeded',
-      }),
-    ]);
-  });
+          action: 'capability.finish',
+          request_id: expectedAuditRequest,
+          capability_call_id: calls[0]!.id,
+          thread_id: f.capture.threadId,
+          turn_id: f.capture.turnId,
+          outcome: 'succeeded',
+        }),
+      ]);
+    }
+  );
 
   it('retains the command audit request when inference fails', async () => {
     const f = await auditFixture({ commandRequestId });
@@ -2726,60 +2746,60 @@ describe('command audit lineage at the internal Gateway seam', () => {
     ]);
   });
 
-  it.each([
-    'reported-callback',
-    'successful-response',
-  ] as const)('retains command audit lineage when the %s usage write fails', async (boundary) => {
-    const f = await auditFixture({ commandRequestId });
-    f.capture.workspaceDb.sqlite.exec(`
+  it.each(['reported-callback', 'successful-response'] as const)(
+    'retains command audit lineage when the %s usage write fails',
+    async (boundary) => {
+      const f = await auditFixture({ commandRequestId });
+      f.capture.workspaceDb.sqlite.exec(`
       CREATE TRIGGER reject_gateway_usage_write
       BEFORE INSERT ON usage_records
       BEGIN
         SELECT RAISE(ABORT, 'injected Gateway usage write failure');
       END
     `);
-    if (boundary === 'reported-callback') {
-      f.createResponses.mockImplementation(async (_provider, _input, context) => {
-        await context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
-        throw new Error('The failed usage callback must not return.');
+      if (boundary === 'reported-callback') {
+        f.createResponses.mockImplementation(async (_provider, _input, context) => {
+          await context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
+          throw new Error('The failed usage callback must not return.');
+        });
+      }
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(f.provider(request())).rejects.toBeInstanceOf(Error);
+
+      expect(f.createResponses).toHaveBeenCalledOnce();
+      const calls = listWorkspaceCapabilityCalls(
+        f.capture.workspaceDb,
+        workspaceIdForOwner(f.capture.turn.owner)
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        requestId: null,
+        status: 'failed',
+        errorCode: 'usage_record_failed',
       });
+      expect(
+        listWorkspaceUsageRecords(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
+      ).toEqual([]);
+      expect(
+        f.capture.workspaceDb.sqlite
+          .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+          .all(calls[0]!.id)
+      ).toEqual([
+        expect.objectContaining({ action: 'capability.admit', request_id: commandRequestId }),
+        expect.objectContaining({
+          action: 'capability.finish',
+          capability_call_id: calls[0]!.id,
+          request_id: commandRequestId,
+          workspace_id: workspaceIdForOwner(f.capture.turn.owner),
+          thread_id: f.capture.threadId,
+          turn_id: f.capture.turnId,
+          outcome: 'failed',
+          error_code: 'usage_record_failed',
+        }),
+      ]);
     }
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await expect(f.provider(request())).rejects.toBeInstanceOf(Error);
-
-    expect(f.createResponses).toHaveBeenCalledOnce();
-    const calls = listWorkspaceCapabilityCalls(
-      f.capture.workspaceDb,
-      workspaceIdForOwner(f.capture.turn.owner)
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
-      requestId: null,
-      status: 'failed',
-      errorCode: 'usage_record_failed',
-    });
-    expect(
-      listWorkspaceUsageRecords(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
-    ).toEqual([]);
-    expect(
-      f.capture.workspaceDb.sqlite
-        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
-        .all(calls[0]!.id)
-    ).toEqual([
-      expect.objectContaining({ action: 'capability.admit', request_id: commandRequestId }),
-      expect.objectContaining({
-        action: 'capability.finish',
-        capability_call_id: calls[0]!.id,
-        request_id: commandRequestId,
-        workspace_id: workspaceIdForOwner(f.capture.turn.owner),
-        thread_id: f.capture.threadId,
-        turn_id: f.capture.turnId,
-        outcome: 'failed',
-        error_code: 'usage_record_failed',
-      }),
-    ]);
-  });
+  );
 });
 
 const internalVaultReplies: Array<() => void> = [];

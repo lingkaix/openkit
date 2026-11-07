@@ -1267,39 +1267,39 @@ describe('RET-2 native observation grammar', () => {
     };
   }
 
-  it.each([
-    'native-transcript',
-    'runtime-log',
-  ] as const)('admits %s through emitter and retained reader without changing source coordinates', (kind) => {
-    const value = native(kind);
-    expect(WorkerObservationDataSchema.safeParse(value).success).toBe(true);
-    expect(WorkerObservationDataReaderSchema.parse(value)).toEqual(value);
-    const event = {
-      schemaVersion: 1,
-      kind: 'event',
-      lineage,
-      sequence: 1,
-      event: { type: 'observation.recorded', data: value },
-    };
-    expect(WorkerCanonicalEventRecordSchema.safeParse(event).success).toBe(true);
-    expect(WorkerCanonicalEventRecordReaderSchema.parse(event)).toEqual(event);
-    expect(
-      WorkerObservationDataReaderSchema.parse({
-        ...value,
-        futureNote: true,
-        fact: { ...value.fact, futureNote: true },
-      })
-    ).toEqual(value);
-    expect(
-      WorkerObservationContentChunkDataSchema.parse({
-        observationId: value.observationId,
-        chunkIndex: 0,
-        byteOffset: 0,
-        encoding: 'base64',
-        data: '/wA=',
-      }).byteOffset
-    ).toBe(0);
-  });
+  it.each(['native-transcript', 'runtime-log'] as const)(
+    'admits %s through emitter and retained reader without changing source coordinates',
+    (kind) => {
+      const value = native(kind);
+      expect(WorkerObservationDataSchema.safeParse(value).success).toBe(true);
+      expect(WorkerObservationDataReaderSchema.parse(value)).toEqual(value);
+      const event = {
+        schemaVersion: 1,
+        kind: 'event',
+        lineage,
+        sequence: 1,
+        event: { type: 'observation.recorded', data: value },
+      };
+      expect(WorkerCanonicalEventRecordSchema.safeParse(event).success).toBe(true);
+      expect(WorkerCanonicalEventRecordReaderSchema.parse(event)).toEqual(event);
+      expect(
+        WorkerObservationDataReaderSchema.parse({
+          ...value,
+          futureNote: true,
+          fact: { ...value.fact, futureNote: true },
+        })
+      ).toEqual(value);
+      expect(
+        WorkerObservationContentChunkDataSchema.parse({
+          observationId: value.observationId,
+          chunkIndex: 0,
+          byteOffset: 0,
+          encoding: 'base64',
+          data: '/wA=',
+        }).byteOffset
+      ).toBe(0);
+    }
+  );
 
   it('requires native codec, actual log source, MIME, watermark and consistent measured ranges', () => {
     const value = native();

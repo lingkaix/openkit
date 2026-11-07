@@ -692,65 +692,65 @@ describe('bounded native Goal-domain administration', () => {
     expect(missing.kernel.reasons[0]?.code).toBe('missing-privilege');
   });
 
-  it.each([
-    'coordinator-closed',
-    'task-cancelled',
-  ] as const)('refuses %s through its native owner while Policy evidence ACK is held', async (change) => {
-    const f = await fixture();
-    const original = readFileSync(f.path, 'utf8');
-    const writes = vi.spyOn(f.files, 'updateFile');
-    const reloads = f.reload.mock.calls.length;
-    const before = listServerPermissionDecisions(f.coreDb);
-    let pending: Promise<unknown> | undefined;
-    try {
-      const held = await heldServerPermissionAck(
-        { kind: 'goal-admin', coordinatorTurnId: f.coordinatorTurn.id },
-        () => (pending = Promise.resolve().then(() => f.administer()))
-      );
-      expect(readFileSync(f.path, 'utf8')).toBe(original);
-      expect(writes).not.toHaveBeenCalled();
-      const evidence = listServerPermissionDecisions(f.coreDb);
-      expect(evidence).toHaveLength(before.length + 1);
-      // The ACK is retained on Main, so the same Worker can execute this real authority mutation.
-      if (change === 'coordinator-closed') {
-        await f.store.updateTurn(f.coordinatorTurn.id, {
-          status: 'completed',
-          completedAt: new Date().toISOString(),
-        });
-      } else {
-        const card = readGoalView(f.store, f.db, f.scope.goalId).cards[0]!;
-        await executeGoalOperation(
-          'goal.card.cancel',
-          {
-            ...f.scope,
-            requestId: randomUUID(),
-            cardId: card.cardId,
-            expectedRevision: card.revision,
-            reason: 'Cancel the selected Task during Policy publication',
-          },
-          { actor: f.actor },
-          f.store,
-          f.db,
-          { coreDb: f.coreDb }
+  it.each(['coordinator-closed', 'task-cancelled'] as const)(
+    'refuses %s through its native owner while Policy evidence ACK is held',
+    async (change) => {
+      const f = await fixture();
+      const original = readFileSync(f.path, 'utf8');
+      const writes = vi.spyOn(f.files, 'updateFile');
+      const reloads = f.reload.mock.calls.length;
+      const before = listServerPermissionDecisions(f.coreDb);
+      let pending: Promise<unknown> | undefined;
+      try {
+        const held = await heldServerPermissionAck(
+          { kind: 'goal-admin', coordinatorTurnId: f.coordinatorTurn.id },
+          () => (pending = Promise.resolve().then(() => f.administer()))
         );
+        expect(readFileSync(f.path, 'utf8')).toBe(original);
+        expect(writes).not.toHaveBeenCalled();
+        const evidence = listServerPermissionDecisions(f.coreDb);
+        expect(evidence).toHaveLength(before.length + 1);
+        // The ACK is retained on Main, so the same Worker can execute this real authority mutation.
+        if (change === 'coordinator-closed') {
+          await f.store.updateTurn(f.coordinatorTurn.id, {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+          });
+        } else {
+          const card = readGoalView(f.store, f.db, f.scope.goalId).cards[0]!;
+          await executeGoalOperation(
+            'goal.card.cancel',
+            {
+              ...f.scope,
+              requestId: randomUUID(),
+              cardId: card.cardId,
+              expectedRevision: card.revision,
+              reason: 'Cancel the selected Task during Policy publication',
+            },
+            { actor: f.actor },
+            f.store,
+            f.db,
+            { coreDb: f.coreDb }
+          );
+        }
+        releaseCommit();
+        if (change === 'coordinator-closed')
+          await expect(held.result).rejects.toMatchObject({ code: 'coordinator_authority_denied' });
+        else
+          await expect(held.result).rejects.toThrow(
+            'Goal Task Policy context requires current exact owner facts.'
+          );
+        expect(readFileSync(f.path, 'utf8')).toBe(original);
+        expect(writes).not.toHaveBeenCalled();
+        expect(f.reload).toHaveBeenCalledTimes(reloads);
+        expect(listServerPermissionDecisions(f.coreDb)).toEqual(evidence);
+      } finally {
+        releaseCommit();
+        if (pending) await Promise.allSettled([pending]);
+        writes.mockRestore();
       }
-      releaseCommit();
-      if (change === 'coordinator-closed')
-        await expect(held.result).rejects.toMatchObject({ code: 'coordinator_authority_denied' });
-      else
-        await expect(held.result).rejects.toThrow(
-          'Goal Task Policy context requires current exact owner facts.'
-        );
-      expect(readFileSync(f.path, 'utf8')).toBe(original);
-      expect(writes).not.toHaveBeenCalled();
-      expect(f.reload).toHaveBeenCalledTimes(reloads);
-      expect(listServerPermissionDecisions(f.coreDb)).toEqual(evidence);
-    } finally {
-      releaseCommit();
-      if (pending) await Promise.allSettled([pending]);
-      writes.mockRestore();
     }
-  });
+  );
 
   it('refuses a candidate expiring at the held Policy ACK boundary while root, Coordinator, Task and Policy stay current', async () => {
     const f = await fixture();

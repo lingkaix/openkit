@@ -429,23 +429,24 @@ describe('agent environment package schema', () => {
     ).toBe(false);
   });
 
-  it.each([
-    'server',
-    'workspace',
-    'task',
-  ])('preserves the admitted %s capture binding independently of provenance', (scope) => {
-    const fixture = openshellPackageFixture() as Record<string, unknown>;
-    const observability = fixture.observability as Record<string, unknown>;
-    for (const value of ['off', 'on']) {
-      const captureCoverage = { scope, value };
-      const parsed = AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        observability: { ...observability, captureCoverage },
-      });
-      expect(parsed.observability).toMatchObject({ captureCoverage });
-      expect(parsed.backend.requiredCapabilities).not.toContain(WORKER_RUNTIME_PROVENANCE_FEATURE);
+  it.each(['server', 'workspace', 'task'])(
+    'preserves the admitted %s capture binding independently of provenance',
+    (scope) => {
+      const fixture = openshellPackageFixture() as Record<string, unknown>;
+      const observability = fixture.observability as Record<string, unknown>;
+      for (const value of ['off', 'on']) {
+        const captureCoverage = { scope, value };
+        const parsed = AgentEnvironmentPackageSchema.parse({
+          ...fixture,
+          observability: { ...observability, captureCoverage },
+        });
+        expect(parsed.observability).toMatchObject({ captureCoverage });
+        expect(parsed.backend.requiredCapabilities).not.toContain(
+          WORKER_RUNTIME_PROVENANCE_FEATURE
+        );
+      }
     }
-  });
+  );
 
   it('rejects an omitted capture binding rather than defaulting historical coverage to off', () => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
@@ -1317,24 +1318,20 @@ describe('agent environment package schema', () => {
     }
   });
 
-  it.each([
-    'direct-nanocore',
-    'transcript-sink',
-    'backend-relay',
-    'sidecar',
-    'stdio',
-    'disabled',
-  ])('rejects retired worker control mode %s', (mode) => {
-    const fixture = openshellPackageFixture() as Record<string, unknown>;
-    const control = fixture.control as Record<string, unknown>;
+  it.each(['direct-nanocore', 'transcript-sink', 'backend-relay', 'sidecar', 'stdio', 'disabled'])(
+    'rejects retired worker control mode %s',
+    (mode) => {
+      const fixture = openshellPackageFixture() as Record<string, unknown>;
+      const control = fixture.control as Record<string, unknown>;
 
-    expect(() =>
-      AgentEnvironmentPackageSchema.parse({
-        ...fixture,
-        control: { ...control, mode },
-      })
-    ).toThrow();
-  });
+      expect(() =>
+        AgentEnvironmentPackageSchema.parse({
+          ...fixture,
+          control: { ...control, mode },
+        })
+      ).toThrow();
+    }
+  );
 
   it.each(['sidecar', 'direct-nanocore'])('rejects retired worker capability mode %s', (mode) => {
     const fixture = openshellPackageFixture() as Record<string, unknown>;
@@ -2176,33 +2173,30 @@ describe('explicit encoded-slash grant authority', () => {
     binaries: ['/usr/local/bin/node'],
   };
 
-  it.each([
-    undefined,
-    false,
-    true,
-  ])('preserves authored %s without inventing an omitted value', (allowed) => {
-    const authored = { ...grant, ...(allowed === undefined ? {} : { allowEncodedSlash: allowed }) };
-    const parsed = WorkerSandboxAccessSchema.parse({ network: [authored] }).network[0]!;
-    expect(parsed).toMatchObject(authored);
-    expect(Object.hasOwn(parsed, 'allowEncodedSlash')).toBe(allowed !== undefined);
-    // Protocol/access defaults still resolve before checking eligibility.
-    const { protocol: _protocol, access: _access, ...defaults } = authored;
-    expect(WorkerSandboxAccessSchema.safeParse({ network: [defaults] }).success).toBe(true);
-  });
+  it.each([undefined, false, true])(
+    'preserves authored %s without inventing an omitted value',
+    (allowed) => {
+      const authored = {
+        ...grant,
+        ...(allowed === undefined ? {} : { allowEncodedSlash: allowed }),
+      };
+      const parsed = WorkerSandboxAccessSchema.parse({ network: [authored] }).network[0]!;
+      expect(parsed).toMatchObject(authored);
+      expect(Object.hasOwn(parsed, 'allowEncodedSlash')).toBe(allowed !== undefined);
+      // Protocol/access defaults still resolve before checking eligibility.
+      const { protocol: _protocol, access: _access, ...defaults } = authored;
+      expect(WorkerSandboxAccessSchema.safeParse({ network: [defaults] }).success).toBe(true);
+    }
+  );
 
-  it.each([
-    'true',
-    'false',
-    0,
-    1,
-    null,
-    {},
-    [],
-  ])('rejects malformed authority %j', (allowEncodedSlash) => {
-    expect(
-      WorkerSandboxAccessSchema.safeParse({ network: [{ ...grant, allowEncodedSlash }] }).success
-    ).toBe(false);
-  });
+  it.each(['true', 'false', 0, 1, null, {}, []])(
+    'rejects malformed authority %j',
+    (allowEncodedSlash) => {
+      expect(
+        WorkerSandboxAccessSchema.safeParse({ network: [{ ...grant, allowEncodedSlash }] }).success
+      ).toBe(false);
+    }
+  );
 
   it.each([true, false])('rejects %s on every forbidden grant shape', (allowEncodedSlash) => {
     for (const forbidden of [

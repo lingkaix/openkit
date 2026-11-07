@@ -276,54 +276,56 @@ describe('native Artifact-origin Skill candidates', () => {
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(before);
   });
 
-  it.each([
-    'rejected',
-    'withdrawn',
-  ] as const)('records a real human %s decision without activation', async (disposition) => {
-    const f = await fixture();
-    const response = await call(f, 'catalog.skill-candidate-submit', f.input);
-    expect(response.status, await response.clone().text()).toBe(201);
-    const submitted = await response.json();
-    const input = {
-      workspaceId: f.workspace.id,
-      candidateId: submitted.candidate.id,
-      expectedRevision: submitted.revision,
-      requestId: randomUUID(),
-      ...(disposition === 'rejected' ? { decision: disposition, expectedCurrentDigest: null } : {}),
-    };
-    const operation =
-      disposition === 'rejected'
-        ? 'catalog.skill-candidate-decide'
-        : 'catalog.skill-candidate-withdraw';
-    const decision = await call(f, operation, input);
-    expect(decision.status, await decision.clone().text()).toBe(200);
-    const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
-    expect(catalog.skills.candidates[0]).toMatchObject({
-      disposition,
-      decision: { actor: { kind: 'user', id: f.userId } },
-    });
-    expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
-    expect(catalog.skills.pins).toEqual([]);
-    expect((await call(f, operation, input)).status).toBe(200);
-    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(
-      catalog.revision
-    );
-  });
+  it.each(['rejected', 'withdrawn'] as const)(
+    'records a real human %s decision without activation',
+    async (disposition) => {
+      const f = await fixture();
+      const response = await call(f, 'catalog.skill-candidate-submit', f.input);
+      expect(response.status, await response.clone().text()).toBe(201);
+      const submitted = await response.json();
+      const input = {
+        workspaceId: f.workspace.id,
+        candidateId: submitted.candidate.id,
+        expectedRevision: submitted.revision,
+        requestId: randomUUID(),
+        ...(disposition === 'rejected'
+          ? { decision: disposition, expectedCurrentDigest: null }
+          : {}),
+      };
+      const operation =
+        disposition === 'rejected'
+          ? 'catalog.skill-candidate-decide'
+          : 'catalog.skill-candidate-withdraw';
+      const decision = await call(f, operation, input);
+      expect(decision.status, await decision.clone().text()).toBe(200);
+      const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+      expect(catalog.skills.candidates[0]).toMatchObject({
+        disposition,
+        decision: { actor: { kind: 'user', id: f.userId } },
+      });
+      expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
+      expect(catalog.skills.pins).toEqual([]);
+      expect((await call(f, operation, input)).status).toBe(200);
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(
+        catalog.revision
+      );
+    }
+  );
 
-  it.each([
-    'both',
-    'neither',
-  ] as const)('refuses %s candidate input alternatives before candidate effects', async (choice) => {
-    const f = await fixture();
-    const { artifact: _artifact, ...base } = f.input;
-    const response = await call(
-      f,
-      'catalog.skill-candidate-submit',
-      choice === 'both' ? { ...f.input, tree } : base
-    );
-    expect(response.status, await response.clone().text()).toBe(400);
-    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(0);
-  });
+  it.each(['both', 'neither'] as const)(
+    'refuses %s candidate input alternatives before candidate effects',
+    async (choice) => {
+      const f = await fixture();
+      const { artifact: _artifact, ...base } = f.input;
+      const response = await call(
+        f,
+        'catalog.skill-candidate-submit',
+        choice === 'both' ? { ...f.input, tree } : base
+      );
+      expect(response.status, await response.clone().text()).toBe(400);
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(0);
+    }
+  );
 
   it('reports an interrupted receipt without replaying a completed catalog effect', async () => {
     const f = await fixture();

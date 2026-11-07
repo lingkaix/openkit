@@ -296,173 +296,175 @@ function reloadResult(status: 'applied' | 'failed') {
 }
 
 describe('Worker environment activation', () => {
-  it.each([
-    'before-inspection',
-    'during-inspection',
-  ] as const)('refuses a Thread that becomes busy %s without admitting defaults or changing configuration', async (phase) => {
-    const fixture = await createBaseFixture();
-    const pair = await candidatePair(fixture, [], null);
-    const config = configurationService();
-    let otherTurn: ReturnType<FsStore['createTurn']> | undefined;
-    const occupyThread = async () => {
-      otherTurn = await fixture.store.createTurn(
-        fixture.administrationWorkspaceId,
-        fixture.administrationThreadId,
-        'Other administration work',
-        { kind: 'user', id: ACTOR.userId }
-      );
-    };
-    if (phase === 'before-inspection') await occupyThread();
-    const inspectImage = vi.fn(async () => {
-      if (phase === 'during-inspection') await occupyThread();
-      return {
-        imageDigest: IMAGE_DIGEST,
-        layout: LAYOUT,
-        layoutDigest: `sha256:${'f'.repeat(64)}`,
-        environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+  it.each(['before-inspection', 'during-inspection'] as const)(
+    'refuses a Thread that becomes busy %s without admitting defaults or changing configuration',
+    async (phase) => {
+      const fixture = await createBaseFixture();
+      const pair = await candidatePair(fixture, [], null);
+      const config = configurationService();
+      let otherTurn: ReturnType<FsStore['createTurn']> | undefined;
+      const occupyThread = async () => {
+        otherTurn = await fixture.store.createTurn(
+          fixture.administrationWorkspaceId,
+          fixture.administrationThreadId,
+          'Other administration work',
+          { kind: 'user', id: ACTOR.userId }
+        );
       };
-    });
-    const reloadRuntimeConfig = vi.fn(() => reloadResult('applied'));
-    const replaceResidentWork = vi.fn();
-    const activation = createWorkerEnvironmentActivation({
-      runtimeEffects: { inspectImage },
-      configFilesForActor: () => config.files,
-      coreDb: fixture.coreDb,
-      now: () => NOW,
-      preparation: { readResolved: () => pair },
-      reloadRuntimeConfig,
-      replaceResidentWork,
-      requireCurrentAdministrator: vi.fn(),
-      store: fixture.store,
-    });
-
-    await expect(
-      activation.activate({ actor: ACTOR }, activationRequest(pair))
-    ).rejects.toMatchObject({
-      code: 'thread_busy',
-    });
-    expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
-    expect(
-      fixture.coreDb.sqlite
-        .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-        .get()
-    ).toEqual({ environment: null });
-    expect(config.updateFile).not.toHaveBeenCalled();
-    expect(reloadRuntimeConfig).not.toHaveBeenCalled();
-    expect(replaceResidentWork).not.toHaveBeenCalled();
-    const turns = fixture.store.listThreadTurns(
-      fixture.administrationWorkspaceId,
-      fixture.administrationThreadId
-    );
-    expect(turns).toEqual([otherTurn]);
-    expect(turns[0]?.status).toBe('running');
-  });
-
-  it.each([
-    ['mutable reference tag', DECLARATION],
-    ['build declaration', BUILD_DECLARATION],
-  ] as const)('pins resolved B after a %s by exact SHA CAS and replays the immutable result Artifact', async (_kind, declaration) => {
-    const fixture = await createBaseFixture();
-    const pair = await candidatePair(fixture, [], null, declaration);
-    const request = activationRequest(pair);
-    const config = configurationService();
-    const replaceResidentWork = vi.fn();
-    const activation = createWorkerEnvironmentActivation({
-      runtimeEffects: {
-        inspectImage: async () => ({
+      if (phase === 'before-inspection') await occupyThread();
+      const inspectImage = vi.fn(async () => {
+        if (phase === 'during-inspection') await occupyThread();
+        return {
           imageDigest: IMAGE_DIGEST,
           layout: LAYOUT,
           layoutDigest: `sha256:${'f'.repeat(64)}`,
           environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
-        }),
-      },
-      configFilesForActor: () => config.files,
-      coreDb: fixture.coreDb,
-      now: () => NOW,
-      preparation: { readResolved: () => pair },
-      reloadRuntimeConfig: () => reloadResult('applied'),
-      replaceResidentWork,
-      requireCurrentAdministrator: vi.fn(),
-      store: fixture.store,
-    });
+        };
+      });
+      const reloadRuntimeConfig = vi.fn(() => reloadResult('applied'));
+      const replaceResidentWork = vi.fn();
+      const activation = createWorkerEnvironmentActivation({
+        runtimeEffects: { inspectImage },
+        configFilesForActor: () => config.files,
+        coreDb: fixture.coreDb,
+        now: () => NOW,
+        preparation: { readResolved: () => pair },
+        reloadRuntimeConfig,
+        replaceResidentWork,
+        requireCurrentAdministrator: vi.fn(),
+        store: fixture.store,
+      });
 
-    const first = await activation.activate({ actor: ACTOR }, request);
-    await fixture.store.createTurn(
-      fixture.administrationWorkspaceId,
-      fixture.administrationThreadId,
-      'Later administration work',
-      { kind: 'user', id: ACTOR.userId }
-    );
-    const replay = await activation.activate({ actor: ACTOR }, request);
-
-    expect(first).toEqual(replay);
-    expect(first).toMatchObject({
-      affected: [],
-      configuration: { fileId: CONFIGURATION.fileId, revision: WRITTEN_REVISION },
-    });
-    expect(config.updateFile).toHaveBeenCalledTimes(1);
-    expect(replaceResidentWork).not.toHaveBeenCalled();
-    expect(parse(config.readContent())).toMatchObject({
-      displayName: 'Worker Fixture',
-      runtime: { image: PINNED_IMAGE },
-    });
-    const activationArtifacts = fixture.store
-      .listArtifacts(fixture.administrationWorkspaceId)
-      .filter((artifact) => artifact.title === 'Worker environment activation result');
-    expect(activationArtifacts).toHaveLength(1);
-    expect(JSON.parse(activationArtifacts[0]!.content.body)).toEqual(first);
-  });
+      await expect(
+        activation.activate({ actor: ACTOR }, activationRequest(pair))
+      ).rejects.toMatchObject({
+        code: 'thread_busy',
+      });
+      expect(inspectImage).toHaveBeenCalledTimes(phase === 'before-inspection' ? 0 : 1);
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+          .get()
+      ).toEqual({ environment: null });
+      expect(config.updateFile).not.toHaveBeenCalled();
+      expect(reloadRuntimeConfig).not.toHaveBeenCalled();
+      expect(replaceResidentWork).not.toHaveBeenCalled();
+      const turns = fixture.store.listThreadTurns(
+        fixture.administrationWorkspaceId,
+        fixture.administrationThreadId
+      );
+      expect(turns).toEqual([otherTurn]);
+      expect(turns[0]?.status).toBe('running');
+    }
+  );
 
   it.each([
-    'absent',
-    'stale-defaults',
-    'wrong-image',
-  ] as const)('refuses %s fresh inspection before admission or configuration effects', async (variant) => {
-    const fixture = await createBaseFixture();
-    const pair = await candidatePair(fixture, [], null);
-    const config = configurationService();
-    const replaceResidentWork = vi.fn();
-    const activation = createWorkerEnvironmentActivation({
-      runtimeEffects: {
-        inspectImage: async () => ({
-          imageDigest: variant === 'wrong-image' ? `sha256:${'f'.repeat(64)}` : IMAGE_DIGEST,
-          layout: LAYOUT,
-          layoutDigest: `sha256:${'f'.repeat(64)}`,
-          ...(variant === 'absent'
-            ? {}
-            : {
-                environmentDefaults: {
-                  defaultsDigest:
-                    variant === 'stale-defaults'
-                      ? `sha256:${createHash('sha256')
-                          .update(JSON.stringify({ NEW_SETTING: 'changed' }))
-                          .digest('hex')}`
-                      : DEFAULTS_DIGEST,
-                  values: variant === 'stale-defaults' ? { NEW_SETTING: 'changed' } : {},
-                },
-              }),
-        }),
-      },
-      configFilesForActor: () => config.files,
-      coreDb: fixture.coreDb,
-      now: () => NOW,
-      preparation: { readResolved: () => pair },
-      reloadRuntimeConfig: () => reloadResult('applied'),
-      replaceResidentWork,
-      requireCurrentAdministrator: vi.fn(),
-      store: fixture.store,
-    });
-    await expect(
-      activation.activate({ actor: ACTOR }, activationRequest(pair))
-    ).rejects.toMatchObject({ code: 'candidate_conflict' });
-    expect(config.updateFile).not.toHaveBeenCalled();
-    expect(replaceResidentWork).not.toHaveBeenCalled();
-    expect(
-      fixture.coreDb.sqlite
-        .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-        .get()
-    ).toEqual({ environment: null });
-  });
+    ['mutable reference tag', DECLARATION],
+    ['build declaration', BUILD_DECLARATION],
+  ] as const)(
+    'pins resolved B after a %s by exact SHA CAS and replays the immutable result Artifact',
+    async (_kind, declaration) => {
+      const fixture = await createBaseFixture();
+      const pair = await candidatePair(fixture, [], null, declaration);
+      const request = activationRequest(pair);
+      const config = configurationService();
+      const replaceResidentWork = vi.fn();
+      const activation = createWorkerEnvironmentActivation({
+        runtimeEffects: {
+          inspectImage: async () => ({
+            imageDigest: IMAGE_DIGEST,
+            layout: LAYOUT,
+            layoutDigest: `sha256:${'f'.repeat(64)}`,
+            environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+          }),
+        },
+        configFilesForActor: () => config.files,
+        coreDb: fixture.coreDb,
+        now: () => NOW,
+        preparation: { readResolved: () => pair },
+        reloadRuntimeConfig: () => reloadResult('applied'),
+        replaceResidentWork,
+        requireCurrentAdministrator: vi.fn(),
+        store: fixture.store,
+      });
+
+      const first = await activation.activate({ actor: ACTOR }, request);
+      await fixture.store.createTurn(
+        fixture.administrationWorkspaceId,
+        fixture.administrationThreadId,
+        'Later administration work',
+        { kind: 'user', id: ACTOR.userId }
+      );
+      const replay = await activation.activate({ actor: ACTOR }, request);
+
+      expect(first).toEqual(replay);
+      expect(first).toMatchObject({
+        affected: [],
+        configuration: { fileId: CONFIGURATION.fileId, revision: WRITTEN_REVISION },
+      });
+      expect(config.updateFile).toHaveBeenCalledTimes(1);
+      expect(replaceResidentWork).not.toHaveBeenCalled();
+      expect(parse(config.readContent())).toMatchObject({
+        displayName: 'Worker Fixture',
+        runtime: { image: PINNED_IMAGE },
+      });
+      const activationArtifacts = fixture.store
+        .listArtifacts(fixture.administrationWorkspaceId)
+        .filter((artifact) => artifact.title === 'Worker environment activation result');
+      expect(activationArtifacts).toHaveLength(1);
+      expect(JSON.parse(activationArtifacts[0]!.content.body)).toEqual(first);
+    }
+  );
+
+  it.each(['absent', 'stale-defaults', 'wrong-image'] as const)(
+    'refuses %s fresh inspection before admission or configuration effects',
+    async (variant) => {
+      const fixture = await createBaseFixture();
+      const pair = await candidatePair(fixture, [], null);
+      const config = configurationService();
+      const replaceResidentWork = vi.fn();
+      const activation = createWorkerEnvironmentActivation({
+        runtimeEffects: {
+          inspectImage: async () => ({
+            imageDigest: variant === 'wrong-image' ? `sha256:${'f'.repeat(64)}` : IMAGE_DIGEST,
+            layout: LAYOUT,
+            layoutDigest: `sha256:${'f'.repeat(64)}`,
+            ...(variant === 'absent'
+              ? {}
+              : {
+                  environmentDefaults: {
+                    defaultsDigest:
+                      variant === 'stale-defaults'
+                        ? `sha256:${createHash('sha256')
+                            .update(JSON.stringify({ NEW_SETTING: 'changed' }))
+                            .digest('hex')}`
+                        : DEFAULTS_DIGEST,
+                    values: variant === 'stale-defaults' ? { NEW_SETTING: 'changed' } : {},
+                  },
+                }),
+          }),
+        },
+        configFilesForActor: () => config.files,
+        coreDb: fixture.coreDb,
+        now: () => NOW,
+        preparation: { readResolved: () => pair },
+        reloadRuntimeConfig: () => reloadResult('applied'),
+        replaceResidentWork,
+        requireCurrentAdministrator: vi.fn(),
+        store: fixture.store,
+      });
+      await expect(
+        activation.activate({ actor: ACTOR }, activationRequest(pair))
+      ).rejects.toMatchObject({ code: 'candidate_conflict' });
+      expect(config.updateFile).not.toHaveBeenCalled();
+      expect(replaceResidentWork).not.toHaveBeenCalled();
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+          .get()
+      ).toEqual({ environment: null });
+    }
+  );
 
   it('binds explicit non-secret admission to exact image/default confirmation before inspection', async () => {
     const fixture = await createBaseFixture();
@@ -495,53 +497,55 @@ describe('Worker environment activation', () => {
     expect(config.updateFile).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'administrator',
-    'revision',
-  ] as const)('rechecks %s after fresh inspection and before admitting raw values', async (variant) => {
-    const fixture = await createBaseFixture();
-    const pair = await candidatePair(fixture, [], null);
-    const config = configurationService();
-    let revoked = false;
-    const activation = createWorkerEnvironmentActivation({
-      runtimeEffects: {
-        inspectImage: async (input) => {
-          input.authorize();
-          if (variant === 'administrator') revoked = true;
-          else {
-            const source = config.readFile(CONFIGURATION.fileId);
-            config.readFile.mockReturnValue({
-              ...source,
-              file: { ...source.file, revision: WRITTEN_REVISION },
-            });
-          }
-          return {
-            imageDigest: IMAGE_DIGEST,
-            layout: LAYOUT,
-            layoutDigest: `sha256:${'f'.repeat(64)}`,
-            environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
-          };
+  it.each(['administrator', 'revision'] as const)(
+    'rechecks %s after fresh inspection and before admitting raw values',
+    async (variant) => {
+      const fixture = await createBaseFixture();
+      const pair = await candidatePair(fixture, [], null);
+      const config = configurationService();
+      let revoked = false;
+      const activation = createWorkerEnvironmentActivation({
+        runtimeEffects: {
+          inspectImage: async (input) => {
+            input.authorize();
+            if (variant === 'administrator') revoked = true;
+            else {
+              const source = config.readFile(CONFIGURATION.fileId);
+              config.readFile.mockReturnValue({
+                ...source,
+                file: { ...source.file, revision: WRITTEN_REVISION },
+              });
+            }
+            return {
+              imageDigest: IMAGE_DIGEST,
+              layout: LAYOUT,
+              layoutDigest: `sha256:${'f'.repeat(64)}`,
+              environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+            };
+          },
         },
-      },
-      configFilesForActor: () => config.files,
-      coreDb: fixture.coreDb,
-      now: () => NOW,
-      preparation: { readResolved: () => pair },
-      reloadRuntimeConfig: () => reloadResult('applied'),
-      replaceResidentWork: vi.fn(),
-      requireCurrentAdministrator: () => {
-        if (revoked) throw new Error('administrator revoked');
-      },
-      store: fixture.store,
-    });
-    await expect(activation.activate({ actor: ACTOR }, activationRequest(pair))).rejects.toThrow();
-    expect(config.updateFile).not.toHaveBeenCalled();
-    expect(
-      fixture.coreDb.sqlite
-        .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
-        .get()
-    ).toEqual({ environment: null });
-  });
+        configFilesForActor: () => config.files,
+        coreDb: fixture.coreDb,
+        now: () => NOW,
+        preparation: { readResolved: () => pair },
+        reloadRuntimeConfig: () => reloadResult('applied'),
+        replaceResidentWork: vi.fn(),
+        requireCurrentAdministrator: () => {
+          if (revoked) throw new Error('administrator revoked');
+        },
+        store: fixture.store,
+      });
+      await expect(
+        activation.activate({ actor: ACTOR }, activationRequest(pair))
+      ).rejects.toThrow();
+      expect(config.updateFile).not.toHaveBeenCalled();
+      expect(
+        fixture.coreDb.sqlite
+          .prepare('SELECT native_environment_json AS environment FROM worker_image_settlements')
+          .get()
+      ).toEqual({ environment: null });
+    }
+  );
 
   it('returns null configuration after a write fails following confirmed admission', async () => {
     const fixture = await createBaseFixture();
@@ -630,55 +634,55 @@ describe('Worker environment activation', () => {
     expect(config.updateFile).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    false,
-    true,
-  ])('rejects a stale configuration SHA before creating an activation Turn with already-pinned=%s', async (alreadyPinned) => {
-    const fixture = await createBaseFixture();
-    const pair = await candidatePair(fixture, [], null);
-    const request = activationRequest(pair);
-    const config = configurationService(alreadyPinned);
-    config.readFile.mockImplementation(() => ({
-      content: config.readContent(),
-      file: {
-        exists: true,
-        id: CONFIGURATION.fileId,
-        kind: 'agent',
-        path: `DATA_ROOT/config/${CONFIGURATION.fileId}`,
-        revision: WRITTEN_REVISION,
-        updatedAt: NOW,
-      },
-    }));
-    const activation = createWorkerEnvironmentActivation({
-      runtimeEffects: {
-        inspectImage: async () => ({
-          imageDigest: IMAGE_DIGEST,
-          layout: LAYOUT,
-          layoutDigest: `sha256:${'f'.repeat(64)}`,
-          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
-        }),
-      },
-      configFilesForActor: () => config.files,
-      coreDb: fixture.coreDb,
-      now: () => NOW,
-      preparation: { readResolved: () => pair },
-      reloadRuntimeConfig: () => reloadResult('applied'),
-      replaceResidentWork: vi.fn(),
-      requireCurrentAdministrator: vi.fn(),
-      store: fixture.store,
-    });
+  it.each([false, true])(
+    'rejects a stale configuration SHA before creating an activation Turn with already-pinned=%s',
+    async (alreadyPinned) => {
+      const fixture = await createBaseFixture();
+      const pair = await candidatePair(fixture, [], null);
+      const request = activationRequest(pair);
+      const config = configurationService(alreadyPinned);
+      config.readFile.mockImplementation(() => ({
+        content: config.readContent(),
+        file: {
+          exists: true,
+          id: CONFIGURATION.fileId,
+          kind: 'agent',
+          path: `DATA_ROOT/config/${CONFIGURATION.fileId}`,
+          revision: WRITTEN_REVISION,
+          updatedAt: NOW,
+        },
+      }));
+      const activation = createWorkerEnvironmentActivation({
+        runtimeEffects: {
+          inspectImage: async () => ({
+            imageDigest: IMAGE_DIGEST,
+            layout: LAYOUT,
+            layoutDigest: `sha256:${'f'.repeat(64)}`,
+            environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+          }),
+        },
+        configFilesForActor: () => config.files,
+        coreDb: fixture.coreDb,
+        now: () => NOW,
+        preparation: { readResolved: () => pair },
+        reloadRuntimeConfig: () => reloadResult('applied'),
+        replaceResidentWork: vi.fn(),
+        requireCurrentAdministrator: vi.fn(),
+        store: fixture.store,
+      });
 
-    await expect(activation.activate({ actor: ACTOR }, request)).rejects.toMatchObject({
-      code: 'revision_conflict',
-    });
-    expect(config.updateFile).not.toHaveBeenCalled();
-    expect(
-      fixture.store.listThreadTurns(
-        fixture.administrationWorkspaceId,
-        fixture.administrationThreadId
-      )
-    ).toEqual([]);
-  });
+      await expect(activation.activate({ actor: ACTOR }, request)).rejects.toMatchObject({
+        code: 'revision_conflict',
+      });
+      expect(config.updateFile).not.toHaveBeenCalled();
+      expect(
+        fixture.store.listThreadTurns(
+          fixture.administrationWorkspaceId,
+          fixture.administrationThreadId
+        )
+      ).toEqual([]);
+    }
+  );
 
   it('derives the sole complete sharing group and denies a different responsible user', async () => {
     const fixture = await createResidentFixture();
@@ -712,65 +716,68 @@ describe('Worker environment activation', () => {
     [false, 'applied'],
     [true, 'applied'],
     [true, 'failed'],
-  ] as const)('reports replacement uncertainty with already-pinned=%s and reload=%s', async (alreadyPinned, reloadStatus) => {
-    const resident = await createResidentFixture();
-    const pair = await candidatePair(
-      resident,
-      [{ expectedRevision: resident.bindingRevision, storageRef: resident.storageRef }],
-      resident.replaceNow
-    );
-    const request = activationRequest(pair);
-    const config = configurationService(alreadyPinned);
-    const replaceResidentWork = vi.fn(async () => {
-      throw new Error('ordinary successor outcome unavailable');
-    });
-    const activation = createWorkerEnvironmentActivation({
-      runtimeEffects: {
-        inspectImage: async () => ({
-          imageDigest: IMAGE_DIGEST,
-          layout: LAYOUT,
-          layoutDigest: `sha256:${'f'.repeat(64)}`,
-          environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
-        }),
-      },
-      configFilesForActor: () => config.files,
-      coreDb: resident.coreDb,
-      now: () => NOW,
-      preparation: { readResolved: () => pair },
-      reloadRuntimeConfig: () => reloadResult(reloadStatus),
-      replaceResidentWork,
-      requireCurrentAdministrator: vi.fn(),
-      store: resident.store,
-    });
+  ] as const)(
+    'reports replacement uncertainty with already-pinned=%s and reload=%s',
+    async (alreadyPinned, reloadStatus) => {
+      const resident = await createResidentFixture();
+      const pair = await candidatePair(
+        resident,
+        [{ expectedRevision: resident.bindingRevision, storageRef: resident.storageRef }],
+        resident.replaceNow
+      );
+      const request = activationRequest(pair);
+      const config = configurationService(alreadyPinned);
+      const replaceResidentWork = vi.fn(async () => {
+        throw new Error('ordinary successor outcome unavailable');
+      });
+      const activation = createWorkerEnvironmentActivation({
+        runtimeEffects: {
+          inspectImage: async () => ({
+            imageDigest: IMAGE_DIGEST,
+            layout: LAYOUT,
+            layoutDigest: `sha256:${'f'.repeat(64)}`,
+            environmentDefaults: { defaultsDigest: DEFAULTS_DIGEST, values: {} },
+          }),
+        },
+        configFilesForActor: () => config.files,
+        coreDb: resident.coreDb,
+        now: () => NOW,
+        preparation: { readResolved: () => pair },
+        reloadRuntimeConfig: () => reloadResult(reloadStatus),
+        replaceResidentWork,
+        requireCurrentAdministrator: vi.fn(),
+        store: resident.store,
+      });
 
-    const response = await activation.activate({ actor: ACTOR }, request);
+      const response = await activation.activate({ actor: ACTOR }, request);
 
-    expect(response.configuration).toEqual({
-      fileId: CONFIGURATION.fileId,
-      revision: alreadyPinned ? CONFIG_REVISION : WRITTEN_REVISION,
-    });
-    expect(config.updateFile).toHaveBeenCalledTimes(alreadyPinned ? 0 : 1);
-    if (alreadyPinned)
-      expect(config.readFile(CONFIGURATION.fileId).file.revision).toBe(CONFIG_REVISION);
-    expect(response.affected).toEqual([
-      {
-        disposition: reloadStatus === 'applied' ? 'unknown' : 'unchanged',
-        expectedRevision: resident.bindingRevision,
-        storageRef: resident.storageRef,
-      },
-    ]);
-    if (reloadStatus === 'failed') {
-      expect(replaceResidentWork).not.toHaveBeenCalled();
-      return;
+      expect(response.configuration).toEqual({
+        fileId: CONFIGURATION.fileId,
+        revision: alreadyPinned ? CONFIG_REVISION : WRITTEN_REVISION,
+      });
+      expect(config.updateFile).toHaveBeenCalledTimes(alreadyPinned ? 0 : 1);
+      if (alreadyPinned)
+        expect(config.readFile(CONFIGURATION.fileId).file.revision).toBe(CONFIG_REVISION);
+      expect(response.affected).toEqual([
+        {
+          disposition: reloadStatus === 'applied' ? 'unknown' : 'unchanged',
+          expectedRevision: resident.bindingRevision,
+          storageRef: resident.storageRef,
+        },
+      ]);
+      if (reloadStatus === 'failed') {
+        expect(replaceResidentWork).not.toHaveBeenCalled();
+        return;
+      }
+      expect(replaceResidentWork).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configuration: response.configuration,
+          residentMembers: [{ threadId: resident.replaceNow.threadId, turnId: null }],
+          replaceNow: resident.replaceNow,
+        })
+      );
     }
-    expect(replaceResidentWork).toHaveBeenCalledWith(
-      expect.objectContaining({
-        configuration: response.configuration,
-        residentMembers: [{ threadId: resident.replaceNow.threadId, turnId: null }],
-        replaceNow: resident.replaceNow,
-      })
-    );
-  });
+  );
 });
 
 interface ResidentFixture extends BaseFixture {

@@ -44,63 +44,67 @@ describe('source-native Worker output observation', () => {
     expect(bytes()).toBe(34);
     expect(new Set(positions.filter((p) => p.field === 'text').map((p) => p.partId)).size).toBe(2);
   });
-  it.each([
-    'openai-responses',
-    'openai-codex-responses',
-    'azure-openai-responses',
-  ])('deduplicates %s deltas, retransmissions and terminal snapshots by native identity', (api) => {
-    const { observe, positions } = meter(api);
-    observe({ type: 'response.created', response: { id: 'response' } });
-    const delta = {
-      type: 'response.output_text.delta',
-      output_index: 0,
-      content_index: 0,
-      delta: 'A🙂',
-      sequence_number: 1,
-    };
-    observe(delta);
-    observe(delta);
-    observe({ type: 'response.output_text.done', output_index: 0, content_index: 0, text: 'A🙂' });
-    observe({
-      type: 'response.function_call_arguments.delta',
-      output_index: 1,
-      delta: '{ "x": 1 }',
-      sequence_number: 2,
-    });
-    observe({
-      type: 'response.reasoning_summary_text.delta',
-      output_index: 2,
-      summary_index: 0,
-      delta: 'visible',
-      sequence_number: 3,
-    });
-    observe({
-      type: 'response.completed',
-      response: {
-        id: 'response',
-        output: [
-          { type: 'message', content: [{ type: 'output_text', text: 'A🙂' }] },
-          { type: 'function_call', arguments: '{ "x": 1 }' },
-          {
-            type: 'reasoning',
-            summary: [{ text: 'visible' }],
-            encrypted_content: 'opaque-not-output',
-          },
-        ],
-      },
-    });
-    const watermarks = new Map<number, number>();
-    let charged = 0;
-    for (const p of positions) {
-      const before = watermarks.get(p.partId) ?? 0;
-      charged += Math.max(0, p.bytePosition - before);
-      watermarks.set(p.partId, Math.max(before, p.bytePosition));
+  it.each(['openai-responses', 'openai-codex-responses', 'azure-openai-responses'])(
+    'deduplicates %s deltas, retransmissions and terminal snapshots by native identity',
+    (api) => {
+      const { observe, positions } = meter(api);
+      observe({ type: 'response.created', response: { id: 'response' } });
+      const delta = {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: 'A🙂',
+        sequence_number: 1,
+      };
+      observe(delta);
+      observe(delta);
+      observe({
+        type: 'response.output_text.done',
+        output_index: 0,
+        content_index: 0,
+        text: 'A🙂',
+      });
+      observe({
+        type: 'response.function_call_arguments.delta',
+        output_index: 1,
+        delta: '{ "x": 1 }',
+        sequence_number: 2,
+      });
+      observe({
+        type: 'response.reasoning_summary_text.delta',
+        output_index: 2,
+        summary_index: 0,
+        delta: 'visible',
+        sequence_number: 3,
+      });
+      observe({
+        type: 'response.completed',
+        response: {
+          id: 'response',
+          output: [
+            { type: 'message', content: [{ type: 'output_text', text: 'A🙂' }] },
+            { type: 'function_call', arguments: '{ "x": 1 }' },
+            {
+              type: 'reasoning',
+              summary: [{ text: 'visible' }],
+              encrypted_content: 'opaque-not-output',
+            },
+          ],
+        },
+      });
+      const watermarks = new Map<number, number>();
+      let charged = 0;
+      for (const p of positions) {
+        const before = watermarks.get(p.partId) ?? 0;
+        charged += Math.max(0, p.bytePosition - before);
+        watermarks.set(p.partId, Math.max(before, p.bytePosition));
+      }
+      expect(charged).toBe(5 + 10 + 7);
+      expect(() =>
+        observe({ type: 'response.output_text.done', output_index: 0, text: 'different' })
+      ).toThrow('unavailable');
     }
-    expect(charged).toBe(5 + 10 + 7);
-    expect(() =>
-      observe({ type: 'response.output_text.done', output_index: 0, text: 'different' })
-    ).toThrow('unavailable');
-  });
+  );
   it('counts Responses refusal deltas and terminal snapshots as emitted text', () => {
     const { observe, positions } = meter('openai-responses');
     observe({ type: 'response.created', response: { id: 'refusal' } });

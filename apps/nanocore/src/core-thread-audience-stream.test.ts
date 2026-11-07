@@ -187,44 +187,45 @@ const REVOCATIONS = [
 ] as const;
 
 describe('core Thread audience streams', () => {
-  it.each(REVOCATIONS)('blocks the next turn event after ordinary $kind revocation', async ({
-    revoke,
-  }) => {
-    const fixture = await createSharedStreamFixture();
-    const listenerSpy = vi.spyOn(fixture.store, 'addTurnListener');
-    try {
-      const response = await fixture.app.request(
-        `/api/workspaces/${fixture.workspace.id}/threads/${fixture.thread.id}/events?turnId=${fixture.turn.id}&since=0`,
-        { headers: { authorization: fixture.authorization } }
-      );
-      expect(response.status).toBe(200);
-      const bodyPromise = response.text();
-      await vi.waitFor(() => expect(listenerSpy).toHaveBeenCalledTimes(1));
+  it.each(REVOCATIONS)(
+    'blocks the next turn event after ordinary $kind revocation',
+    async ({ revoke }) => {
+      const fixture = await createSharedStreamFixture();
+      const listenerSpy = vi.spyOn(fixture.store, 'addTurnListener');
+      try {
+        const response = await fixture.app.request(
+          `/api/workspaces/${fixture.workspace.id}/threads/${fixture.thread.id}/events?turnId=${fixture.turn.id}&since=0`,
+          { headers: { authorization: fixture.authorization } }
+        );
+        expect(response.status).toBe(200);
+        const bodyPromise = response.text();
+        await vi.waitFor(() => expect(listenerSpy).toHaveBeenCalledTimes(1));
 
-      revoke(fixture);
-      fixture.store.emitTurnEvent(
-        fixture.turn.id,
-        await fixture.store.persistTurnEvent(fixture.turn.id, {
-          data: {
-            delta: REVOKED_DELTA,
-            deltaKind: 'text-delta',
-            itemId: testEntityId('it', `it_stream_${fixture.turn.id}`),
-            itemType: 'assistant-message',
-            type: 'item-delta',
-          },
-          event: 'item.delta',
-          threadId: fixture.thread.id,
-          turnId: fixture.turn.id,
-          workspaceId: fixture.workspace.id,
-        })
-      );
+        revoke(fixture);
+        fixture.store.emitTurnEvent(
+          fixture.turn.id,
+          await fixture.store.persistTurnEvent(fixture.turn.id, {
+            data: {
+              delta: REVOKED_DELTA,
+              deltaKind: 'text-delta',
+              itemId: testEntityId('it', `it_stream_${fixture.turn.id}`),
+              itemType: 'assistant-message',
+              type: 'item-delta',
+            },
+            event: 'item.delta',
+            threadId: fixture.thread.id,
+            turnId: fixture.turn.id,
+            workspaceId: fixture.workspace.id,
+          })
+        );
 
-      const text = await readClosedSseBody(bodyPromise);
-      expect(text).toContain(GRANTED_DELTA);
-      expect(text).not.toContain(REVOKED_DELTA);
-    } finally {
-      listenerSpy.mockRestore();
-      await fixture.close();
+        const text = await readClosedSseBody(bodyPromise);
+        expect(text).toContain(GRANTED_DELTA);
+        expect(text).not.toContain(REVOKED_DELTA);
+      } finally {
+        listenerSpy.mockRestore();
+        await fixture.close();
+      }
     }
-  });
+  );
 });

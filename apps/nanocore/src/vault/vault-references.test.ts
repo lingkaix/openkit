@@ -528,52 +528,55 @@ describe('explicit User Codex Login references', () => {
     ['unknown provider', { provider: 'unsupported', accountId: 'synthetic', quarantined: false }],
     ['empty account equality', { provider: 'codex', accountId: '', quarantined: false }],
     ['non-Boolean quarantine', { provider: 'codex', accountId: 'synthetic', quarantined: 0 }],
-  ])('refuses %s subtype at creation without retaining an ordinary replacement', async (_name, login) => {
-    const coreDb = createCoreDb();
-    try {
-      const input = {
-        referenceId: 'vault_00000000-0000-7000-8000-000000000301',
-        ownerScope: 'user' as const,
-        userId: ensureLocalUser(coreDb),
-        displayName: 'Invalid subtype',
-        secretKind: 'opaque',
-        backendKind: 'encrypted-file' as const,
-        login,
-      };
-      await expect(
-        createVaultReference(coreDb, input as Parameters<typeof createVaultReference>[1])
-      ).rejects.toThrow();
-      expect(getVaultReference(coreDb, input.referenceId)).toBeNull();
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+  ])(
+    'refuses %s subtype at creation without retaining an ordinary replacement',
+    async (_name, login) => {
+      const coreDb = createCoreDb();
+      try {
+        const input = {
+          referenceId: 'vault_00000000-0000-7000-8000-000000000301',
+          ownerScope: 'user' as const,
+          userId: ensureLocalUser(coreDb),
+          displayName: 'Invalid subtype',
+          secretKind: 'opaque',
+          backendKind: 'encrypted-file' as const,
+          login,
+        };
+        await expect(
+          createVaultReference(coreDb, input as Parameters<typeof createVaultReference>[1])
+        ).rejects.toThrow();
+        expect(getVaultReference(coreDb, input.referenceId)).toBeNull();
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    'server',
-    'workspace',
-  ] as const)('refuses explicit Login metadata on a %s reference', async (ownerScope) => {
-    const coreDb = createCoreDb();
-    try {
-      const input = {
-        referenceId: 'vault_00000000-0000-7000-8000-000000000401',
-        ownerScope,
-        ...(ownerScope === 'workspace'
-          ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000401' }
-          : {}),
-        displayName: 'Wrong scope subtype',
-        secretKind: 'opaque',
-        backendKind: 'encrypted-file' as const,
-        login: { provider: 'codex' as const, accountId: 'synthetic-account', quarantined: false },
-      };
-      await expect(createVaultReference(coreDb, input)).rejects.toThrow();
-      expect(getVaultReference(coreDb, input.referenceId)).toBeNull();
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+  it.each(['server', 'workspace'] as const)(
+    'refuses explicit Login metadata on a %s reference',
+    async (ownerScope) => {
+      const coreDb = createCoreDb();
+      try {
+        const input = {
+          referenceId: 'vault_00000000-0000-7000-8000-000000000401',
+          ownerScope,
+          ...(ownerScope === 'workspace'
+            ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000401' }
+            : {}),
+          displayName: 'Wrong scope subtype',
+          secretKind: 'opaque',
+          backendKind: 'encrypted-file' as const,
+          login: { provider: 'codex' as const, accountId: 'synthetic-account', quarantined: false },
+        };
+        await expect(createVaultReference(coreDb, input)).rejects.toThrow();
+        expect(getVaultReference(coreDb, input.referenceId)).toBeNull();
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 });
 
 /** Retained subtype corruption must refuse at the real reference reader, without changing the row. */
@@ -604,54 +607,65 @@ describe('retained Login subtype refusal', () => {
       "owner_scope = 'workspace', workspace_id = ?",
       ['ws_00000000-0000-7000-8000-000000000901'],
     ],
-  ] as const)('refuses retained %s rather than ordinary or false', async (_name, fault, bindings) => {
-    const coreDb = createCoreDb();
-    try {
-      const reference = await createVaultReference(coreDb, {
-        referenceId: 'vault_00000000-0000-7000-8000-000000000901',
-        ownerScope: 'user',
-        userId: ensureLocalUser(coreDb),
-        displayName: 'Retained subtype fault canary',
-        secretKind: 'opaque',
-        backendKind: 'encrypted-file',
-        login: { provider: 'codex', accountId: 'synthetic-retained-equality', quarantined: false },
-      });
-      expect(
-        reference,
-        'Valid owner-produced Login is required before retained fault injection'
-      ).toMatchObject({
-        login: { provider: 'codex', accountId: 'synthetic-retained-equality', quarantined: false },
-      });
-      await shutdownControlStoreWorkerClient();
-      // This is the reference owner's fault injection after valid native publication, never a valid-state builder.
-      coreDb.sqlite
-        .prepare(`UPDATE vault_references SET ${fault} WHERE reference_id = ?`)
-        .run(...bindings, reference.referenceId);
-      const retained = coreDb.sqlite
-        .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
-        .get(reference.referenceId);
-      expect(() => getVaultReference(coreDb, reference.referenceId)).toThrow();
-      expect(() => listVaultReferences(coreDb)).toThrow();
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
-          .get(reference.referenceId)
-      ).toEqual(retained);
-      const cold = openCoreDb(coreDb.dataRoot);
+  ] as const)(
+    'refuses retained %s rather than ordinary or false',
+    async (_name, fault, bindings) => {
+      const coreDb = createCoreDb();
       try {
-        expect(() => getVaultReference(cold, reference.referenceId)).toThrow();
-        expect(() => listVaultReferences(cold)).toThrow();
+        const reference = await createVaultReference(coreDb, {
+          referenceId: 'vault_00000000-0000-7000-8000-000000000901',
+          ownerScope: 'user',
+          userId: ensureLocalUser(coreDb),
+          displayName: 'Retained subtype fault canary',
+          secretKind: 'opaque',
+          backendKind: 'encrypted-file',
+          login: {
+            provider: 'codex',
+            accountId: 'synthetic-retained-equality',
+            quarantined: false,
+          },
+        });
         expect(
-          cold.sqlite
+          reference,
+          'Valid owner-produced Login is required before retained fault injection'
+        ).toMatchObject({
+          login: {
+            provider: 'codex',
+            accountId: 'synthetic-retained-equality',
+            quarantined: false,
+          },
+        });
+        await shutdownControlStoreWorkerClient();
+        // This is the reference owner's fault injection after valid native publication, never a valid-state builder.
+        coreDb.sqlite
+          .prepare(`UPDATE vault_references SET ${fault} WHERE reference_id = ?`)
+          .run(...bindings, reference.referenceId);
+        const retained = coreDb.sqlite
+          .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
+          .get(reference.referenceId);
+        expect(() => getVaultReference(coreDb, reference.referenceId)).toThrow();
+        expect(() => listVaultReferences(coreDb)).toThrow();
+        expect(
+          coreDb.sqlite
             .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
             .get(reference.referenceId)
         ).toEqual(retained);
+        const cold = openCoreDb(coreDb.dataRoot);
+        try {
+          expect(() => getVaultReference(cold, reference.referenceId)).toThrow();
+          expect(() => listVaultReferences(cold)).toThrow();
+          expect(
+            cold.sqlite
+              .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
+              .get(reference.referenceId)
+          ).toEqual(retained);
+        } finally {
+          cold.sqlite.close();
+        }
       } finally {
-        cold.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
       }
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
     }
-  });
+  );
 });

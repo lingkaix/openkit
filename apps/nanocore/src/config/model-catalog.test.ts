@@ -273,109 +273,109 @@ describe('deployment model extension catalog', () => {
     ).toBe(320000);
   });
 
-  it.each([
-    'openai-codex',
-    'openai_codex',
-  ])('passes catalog-only %s context 268000 through the shared resolver and request-local adapter, then a smaller profile overlay wins', async (vendor) => {
-    const { root, path, profilePath } = fixture();
-    const nativeId = 'openai-codex/future-subscription-model';
-    const catalogOnlyProfile = {
-      schemaVersion: 1,
-      id: 'primary',
-      vendor,
-      displayName: 'Subscription',
-      kind: 'oauth',
-      models: [nativeId],
-      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
-    };
-    writeFileSync(profilePath, JSON.stringify(catalogOnlyProfile));
-    writeFileSync(
-      path,
-      JSON.stringify({
+  it.each(['openai-codex', 'openai_codex'])(
+    'passes catalog-only %s context 268000 through the shared resolver and request-local adapter, then a smaller profile overlay wins',
+    async (vendor) => {
+      const { root, path, profilePath } = fixture();
+      const nativeId = 'openai-codex/future-subscription-model';
+      const catalogOnlyProfile = {
         schemaVersion: 1,
-        providers: {
-          [vendor]: {
-            models: {
-              [nativeId]: {
-                limit: { context: 268000, output: 10000 },
-                reasoning: true,
-                cost: { input: 2, output: 3, cache_read: 0, cache_write: 0 },
+        id: 'primary',
+        vendor,
+        displayName: 'Subscription',
+        kind: 'oauth',
+        models: [nativeId],
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+      };
+      writeFileSync(profilePath, JSON.stringify(catalogOnlyProfile));
+      writeFileSync(
+        path,
+        JSON.stringify({
+          schemaVersion: 1,
+          providers: {
+            [vendor]: {
+              models: {
+                [nativeId]: {
+                  limit: { context: 268000, output: 10000 },
+                  reasoning: true,
+                  cost: { input: 2, output: 3, cache_read: 0, cache_write: 0 },
+                },
               },
             },
           },
+        })
+      );
+      const catalogOnly = loadProviderProfiles(root).profiles[0]!;
+      expect(resolveEffectiveModelMetadata(catalogOnly, nativeId).limit?.context).toBe(268000);
+      let seen: Model<string> | undefined;
+      const faux = fauxProvider({
+        api: 'openai-codex-responses',
+        provider: 'openai-codex',
+        models: [{ id: 'stock-fixture' }],
+      });
+      const models = createModels();
+      models.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
+      const stock = models.getModels('openai-codex');
+      faux.setResponses([
+        (_context, _options, _state, model) => {
+          seen = model;
+          return fauxAssistantMessage('Catalog response');
         },
-      })
-    );
-    const catalogOnly = loadProviderProfiles(root).profiles[0]!;
-    expect(resolveEffectiveModelMetadata(catalogOnly, nativeId).limit?.context).toBe(268000);
-    let seen: Model<string> | undefined;
-    const faux = fauxProvider({
-      api: 'openai-codex-responses',
-      provider: 'openai-codex',
-      models: [{ id: 'stock-fixture' }],
-    });
-    const models = createModels();
-    models.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
-    const stock = models.getModels('openai-codex');
-    faux.setResponses([
-      (_context, _options, _state, model) => {
-        seen = model;
-        return fauxAssistantMessage('Catalog response');
-      },
-    ]);
-    const observed: unknown[] = [];
-    const client = new PiAiGatewayClient();
-    await client.createChatCompletion(
-      await resolveProviderProfileToLLMConfig(catalogOnly),
-      { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
-      (usage) => observed.push(usage),
-      {},
-      models
-    );
-    expect(seen).toMatchObject({
-      id: 'future-subscription-model',
-      contextWindow: 268000,
-      maxTokens: 10000,
-      reasoning: true,
-      cost: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0 },
-    });
-    expect(observed).toHaveLength(1);
-    const usage = observed[0] as { input: number; output: number; cost: { total: number } };
-    expect(usage.input).toBeGreaterThan(0);
-    expect(usage.cost.total).toBeCloseTo((2 * usage.input + 3 * usage.output) / 1_000_000, 12);
-    expect(models.getModels('openai-codex')).toEqual(stock);
-    expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
+      ]);
+      const observed: unknown[] = [];
+      const client = new PiAiGatewayClient();
+      await client.createChatCompletion(
+        await resolveProviderProfileToLLMConfig(catalogOnly),
+        { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
+        (usage) => observed.push(usage),
+        {},
+        models
+      );
+      expect(seen).toMatchObject({
+        id: 'future-subscription-model',
+        contextWindow: 268000,
+        maxTokens: 10000,
+        reasoning: true,
+        cost: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0 },
+      });
+      expect(observed).toHaveLength(1);
+      const usage = observed[0] as { input: number; output: number; cost: { total: number } };
+      expect(usage.input).toBeGreaterThan(0);
+      expect(usage.cost.total).toBeCloseTo((2 * usage.input + 3 * usage.output) / 1_000_000, 12);
+      expect(models.getModels('openai-codex')).toEqual(stock);
+      expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
 
-    writeFileSync(
-      profilePath,
-      JSON.stringify({
-        ...catalogOnlyProfile,
-        modelMetadata: { [nativeId]: { limit: { context: 100000 } } },
-      })
-    );
-    const overlay = loadProviderProfiles(root).profiles[0]!;
-    expect(resolveEffectiveModelMetadata(overlay, nativeId).limit?.context).toBe(100000);
-    seen = undefined;
-    faux.setResponses([
-      (_context, _options, _state, model) => {
-        seen = model;
-        return fauxAssistantMessage('Overlay response');
-      },
-    ]);
-    await client.createChatCompletion(
-      await resolveProviderProfileToLLMConfig(overlay),
-      { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
-      () => undefined,
-      {},
-      models
-    );
-    expect(seen).toMatchObject({
-      id: 'future-subscription-model',
-      contextWindow: 100000,
-    });
-    expect(models.getModels('openai-codex')).toEqual(stock);
-    expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
-  });
+      writeFileSync(
+        profilePath,
+        JSON.stringify({
+          ...catalogOnlyProfile,
+          modelMetadata: { [nativeId]: { limit: { context: 100000 } } },
+        })
+      );
+      const overlay = loadProviderProfiles(root).profiles[0]!;
+      expect(resolveEffectiveModelMetadata(overlay, nativeId).limit?.context).toBe(100000);
+      seen = undefined;
+      faux.setResponses([
+        (_context, _options, _state, model) => {
+          seen = model;
+          return fauxAssistantMessage('Overlay response');
+        },
+      ]);
+      await client.createChatCompletion(
+        await resolveProviderProfileToLLMConfig(overlay),
+        { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
+        () => undefined,
+        {},
+        models
+      );
+      expect(seen).toMatchObject({
+        id: 'future-subscription-model',
+        contextWindow: 100000,
+      });
+      expect(models.getModels('openai-codex')).toEqual(stock);
+      expect(models.getModel('openai-codex', 'future-subscription-model')).toBeUndefined();
+    }
+  );
 
   it('seeds an editable empty catalog without replacing an admin edit', () => {
     const { root, path } = fixture();
@@ -410,75 +410,78 @@ describe('deployment model extension catalog', () => {
       userId: 'usr_00000000-0000-7000-8000-000000000002',
       adminTokenId: 'tok_00000000-0000-7000-8000-000000000002',
     },
-  ] as Actor[])('enforces deployment authority before generic catalog access for %j', async (actor) => {
-    const { root, path } = fixture();
-    const manager = createRuntimeConfigManager({ dataRoot: root });
-    const service = new RuntimeConfigFileService({
-      dataRoot: root,
-      workspaceIds: [],
-      userId: actor.userId,
-      runtimeConfigManager: manager,
-      readRuntimeConfigStatus: () => manager.status(),
-    });
-    const app = new Hono<{ Variables: AuthVariables }>();
-    app.use('*', async (context, next) => {
-      context.set('actor', actor);
-      await next();
-    });
-    const coreDb = openCoreDb(root);
-    applyMigrations(coreDb);
-    for (const userId of [
-      'usr_00000000-0000-7000-8000-000000000002',
-      'usr_00000000-0000-7000-8000-000000000003',
-    ])
-      coreDb.sqlite
-        .prepare(
-          "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, ?, ?, 0, ?, ?, 'human')"
+  ] as Actor[])(
+    'enforces deployment authority before generic catalog access for %j',
+    async (actor) => {
+      const { root, path } = fixture();
+      const manager = createRuntimeConfigManager({ dataRoot: root });
+      const service = new RuntimeConfigFileService({
+        dataRoot: root,
+        workspaceIds: [],
+        userId: actor.userId,
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use('*', async (context, next) => {
+        context.set('actor', actor);
+        await next();
+      });
+      const coreDb = openCoreDb(root);
+      applyMigrations(coreDb);
+      for (const userId of [
+        'usr_00000000-0000-7000-8000-000000000002',
+        'usr_00000000-0000-7000-8000-000000000003',
+      ])
+        coreDb.sqlite
+          .prepare(
+            "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, ?, ?, 0, ?, ?, 'human')"
+          )
+          .run(userId, userId, `${userId}@example.test`, Date.now(), Date.now());
+      createOpenKitAccessTokenRecord(coreDb, {
+        tokenId: 'tok_00000000-0000-7000-8000-000000000002',
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000002',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const storeDataRoot = mkdtempSync(join(tmpdir(), 'model-catalog-store-'));
+      roots.push(storeDataRoot);
+      const store = await createDemoStore({ dataRoot: storeDataRoot });
+      registerOperationJsonRoutes({
+        app,
+        coreDb,
+        requestStore: () => store,
+        runtimeConfigOperations: { filesForActor: () => service, manager },
+      });
+      const authorized = actor.tokenScope === 'server-admin' || actor.adminTokenId !== undefined;
+      const read = await app.request(
+        ...operationRequest('runtime.file-read', { id: 'model-catalog.jsonc' })
+      );
+      expect(read.status).toBe(authorized ? 200 : 403);
+      const before = readFileSync(path, 'utf8');
+      const content = '{"schemaVersion":1,"providers":{}}';
+      const response = await app.request(
+        ...operationRequest(
+          'runtime.file-update',
+          {},
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              id: 'model-catalog.jsonc',
+              kind: 'model-catalog',
+              content,
+              expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
+            }),
+          }
         )
-        .run(userId, userId, `${userId}@example.test`, Date.now(), Date.now());
-    createOpenKitAccessTokenRecord(coreDb, {
-      tokenId: 'tok_00000000-0000-7000-8000-000000000002',
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000002',
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const storeDataRoot = mkdtempSync(join(tmpdir(), 'model-catalog-store-'));
-    roots.push(storeDataRoot);
-    const store = await createDemoStore({ dataRoot: storeDataRoot });
-    registerOperationJsonRoutes({
-      app,
-      coreDb,
-      requestStore: () => store,
-      runtimeConfigOperations: { filesForActor: () => service, manager },
-    });
-    const authorized = actor.tokenScope === 'server-admin' || actor.adminTokenId !== undefined;
-    const read = await app.request(
-      ...operationRequest('runtime.file-read', { id: 'model-catalog.jsonc' })
-    );
-    expect(read.status).toBe(authorized ? 200 : 403);
-    const before = readFileSync(path, 'utf8');
-    const content = '{"schemaVersion":1,"providers":{}}';
-    const response = await app.request(
-      ...operationRequest(
-        'runtime.file-update',
-        {},
-        {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            id: 'model-catalog.jsonc',
-            kind: 'model-catalog',
-            content,
-            expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
-          }),
-        }
-      )
-    );
-    expect(response.status).toBe(authorized ? 200 : 403);
-    expect(readFileSync(path, 'utf8')).toBe(authorized ? content : before);
-    coreDb.sqlite.close();
-  });
+      );
+      expect(response.status).toBe(authorized ? 200 : 403);
+      expect(readFileSync(path, 'utf8')).toBe(authorized ? content : before);
+      coreDb.sqlite.close();
+    }
+  );
 });
 
 it.each([
@@ -513,46 +516,45 @@ it.each([
     overlay: [{ type: 'effort', values: [] }],
     expected: [{ type: 'effort', values: [] }],
   },
-])('resolves reasoning arrays through the file loader: $label', ({
-  extension,
-  overlay,
-  expected,
-}) => {
-  const { root, path, profilePath } = fixture();
-  const profile = {
-    schemaVersion: 1,
-    id: 'primary',
-    vendor: 'openai',
-    displayName: 'Primary',
-    kind: 'custom',
-    models: ['gpt-5'],
-    modelMetadata: { 'gpt-5': { reasoning_options: overlay } },
-  };
-  writeFileSync(profilePath, JSON.stringify(profile));
-  writeFileSync(
-    path,
-    JSON.stringify({
+])(
+  'resolves reasoning arrays through the file loader: $label',
+  ({ extension, overlay, expected }) => {
+    const { root, path, profilePath } = fixture();
+    const profile = {
       schemaVersion: 1,
-      providers: { openai: { models: { 'gpt-5': { reasoning_options: extension } } } },
-    })
-  );
-  const before = readFileSync(profilePath, 'utf8');
-  const loaded = loadProviderProfiles(root);
-  expect(loaded.diagnostics).toEqual([]);
-  expect(resolveEffectiveModelMetadata(loaded.profiles[0]!, 'gpt-5')).toHaveProperty(
-    'reasoning_options',
-    expected
-  );
-  expect(readFileSync(profilePath, 'utf8')).toBe(before);
-  // Removing only the profile leaf restores extension or pinned inheritance on fresh loading.
-  writeFileSync(profilePath, JSON.stringify({ ...profile, modelMetadata: {} }));
-  const restored = loadProviderProfiles(root);
-  expect(restored.diagnostics).toEqual([]);
-  expect(resolveEffectiveModelMetadata(restored.profiles[0]!, 'gpt-5')).toHaveProperty(
-    'reasoning_options',
-    extension ?? [{ type: 'effort', values: ['minimal', 'low', 'medium', 'high'] }]
-  );
-});
+      id: 'primary',
+      vendor: 'openai',
+      displayName: 'Primary',
+      kind: 'custom',
+      models: ['gpt-5'],
+      modelMetadata: { 'gpt-5': { reasoning_options: overlay } },
+    };
+    writeFileSync(profilePath, JSON.stringify(profile));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        providers: { openai: { models: { 'gpt-5': { reasoning_options: extension } } } },
+      })
+    );
+    const before = readFileSync(profilePath, 'utf8');
+    const loaded = loadProviderProfiles(root);
+    expect(loaded.diagnostics).toEqual([]);
+    expect(resolveEffectiveModelMetadata(loaded.profiles[0]!, 'gpt-5')).toHaveProperty(
+      'reasoning_options',
+      expected
+    );
+    expect(readFileSync(profilePath, 'utf8')).toBe(before);
+    // Removing only the profile leaf restores extension or pinned inheritance on fresh loading.
+    writeFileSync(profilePath, JSON.stringify({ ...profile, modelMetadata: {} }));
+    const restored = loadProviderProfiles(root);
+    expect(restored.diagnostics).toEqual([]);
+    expect(resolveEffectiveModelMetadata(restored.profiles[0]!, 'gpt-5')).toHaveProperty(
+      'reasoning_options',
+      extension ?? [{ type: 'effort', values: ['minimal', 'low', 'medium', 'high'] }]
+    );
+  }
+);
 
 it('retains active reasoning options on safe reload and invalid edits, activating valid options after restart', async () => {
   const { root, path, catalog } = fixture();

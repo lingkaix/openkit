@@ -84,22 +84,23 @@ describe('native source MOVE transaction', () => {
     expect(f.snapshot()).toEqual(committed);
   }, 30_000);
 
-  it.each([
-    'stale-revision',
-    'abandoned-publication-right',
-  ] as const)('refuses %s without changing any source tuple member', async (conflict) => {
-    const f = await fixture();
-    if (conflict === 'abandoned-publication-right') {
-      await f.client.recoveryMoveOut(f.database, f.input);
-      abandonCapture(f.db, f.input.workspaceId, f.input.captureId);
-    }
-    const before = f.snapshot();
-    const input = {
-      ...f.input,
-      expectedRevision: f.input.expectedRevision + (conflict === 'stale-revision' ? 1 : 0),
-    };
-    // A historical matching seal cannot restore a closed capture publication right.
-    await expect(f.client.recoveryMoveOut(f.database, input)).rejects.toThrow();
-    expect(f.snapshot()).toEqual(before);
-  }, 30_000);
+  it.each(['stale-revision', 'abandoned-publication-right'] as const)(
+    'refuses %s without changing any source tuple member',
+    async (conflict) => {
+      const f = await fixture();
+      if (conflict === 'abandoned-publication-right') {
+        await f.client.recoveryMoveOut(f.database, f.input);
+        abandonCapture(f.db, f.input.workspaceId, f.input.captureId);
+      }
+      const before = f.snapshot();
+      const input = {
+        ...f.input,
+        expectedRevision: f.input.expectedRevision + (conflict === 'stale-revision' ? 1 : 0),
+      };
+      // A historical matching seal cannot restore a closed capture publication right.
+      await expect(f.client.recoveryMoveOut(f.database, input)).rejects.toThrow();
+      expect(f.snapshot()).toEqual(before);
+    },
+    30_000
+  );
 });

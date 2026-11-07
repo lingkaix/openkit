@@ -48,42 +48,45 @@ function resolvedSetup(): ResolvedAgentSetup {
 }
 
 describe('resolved agent setup ledger', () => {
-  it.each([
-    undefined,
-    false,
-    true,
-  ])('retains encoded-slash %s in resolved setup evidence', async (allowEncodedSlash) => {
-    const workspaceDb = createWorkspaceDb();
-    const network = WorkerSandboxAccessSchema.parse({
-      network: [
-        {
-          id: 'package-read',
-          host: 'packages.example.com',
-          port: 443,
-          protocol: 'rest',
-          access: 'read-only',
-          purpose: 'Read scoped packages.',
-          binaries: ['/usr/local/bin/node'],
-          ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
-        },
-      ],
-    }).network;
-    try {
-      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
-        recordId: 'ras_encoding',
-        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        setup: createTestAgentSetup({ network }),
-        createdAt: '2026-10-08T00:00:00.000Z',
-      });
-      expect(record.setup.manifest.sandbox.network).toEqual(network);
-      expect(
-        requireResolvedAgentSetup(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201', record.id)
-      ).toEqual(record);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
+  it.each([undefined, false, true])(
+    'retains encoded-slash %s in resolved setup evidence',
+    async (allowEncodedSlash) => {
+      const workspaceDb = createWorkspaceDb();
+      const network = WorkerSandboxAccessSchema.parse({
+        network: [
+          {
+            id: 'package-read',
+            host: 'packages.example.com',
+            port: 443,
+            protocol: 'rest',
+            access: 'read-only',
+            purpose: 'Read scoped packages.',
+            binaries: ['/usr/local/bin/node'],
+            ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
+          },
+        ],
+      }).network;
+      try {
+        const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
+          recordId: 'ras_encoding',
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          setup: createTestAgentSetup({ network }),
+          createdAt: '2026-10-08T00:00:00.000Z',
+        });
+        expect(record.setup.manifest.sandbox.network).toEqual(network);
+        expect(
+          requireResolvedAgentSetup(
+            workspaceDb,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            record.id
+          )
+        ).toEqual(record);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('persists and reopens one v1 workspace-scoped resolved setup without rewriting annotations', async () => {
     const workspaceDb = createWorkspaceDb();

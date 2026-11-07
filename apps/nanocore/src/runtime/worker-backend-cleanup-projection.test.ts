@@ -324,71 +324,75 @@ describe('worker backend cleanup projection', () => {
       }
     }
   });
-  it.each([
-    'pending',
-    'complete',
-  ] as const)('replays exact no-materialization proof with a %s handoff', async (workspaceHandoffState) => {
-    const { environmentPackage, workspaceDb } = await createFixture();
-    try {
-      workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
-      workspaceDb.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
-      const input = {
-        ...cleanupInput(environmentPackage),
-        workspaceHandoffState,
-        materializationNotPublished: true,
-      };
-      expect(await projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
-        handles: [],
-        workspaceHandoffComplete: true,
-      });
-      const evidence = listWorkspaceRuntimeEvidence(
-        workspaceDb,
-        'ws_00000000-0000-7000-8000-000000000001'
-      );
-      expect(await projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
-        handles: [],
-        workspaceHandoffComplete: true,
-      });
-      expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
-      ).toEqual(evidence);
-      expect(
-        listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
-      ).toEqual([]);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'pending',
-    'complete',
-  ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', async (workspaceHandoffState) => {
-    const { environmentPackage, workspaceDb } = await createFixture();
-    try {
-      expect(
-        workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run().changes
-      ).toBe(1);
-      await expectCleanupRefusal(
-        workspaceDb,
-        {
+  it.each(['pending', 'complete'] as const)(
+    'replays exact no-materialization proof with a %s handoff',
+    async (workspaceHandoffState) => {
+      const { environmentPackage, workspaceDb } = await createFixture();
+      try {
+        workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+        workspaceDb.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
+        const input = {
           ...cleanupInput(environmentPackage),
           workspaceHandoffState,
           materializationNotPublished: true,
-        },
-        'handoff is incomplete'
-      );
-      expect(
-        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
-          (record) => record.phase === 'teardown'
-        )
-      ).toEqual([]);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
+        };
+        expect(await projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
+          handles: [],
+          workspaceHandoffComplete: true,
+        });
+        const evidence = listWorkspaceRuntimeEvidence(
+          workspaceDb,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        expect(await projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
+          handles: [],
+          workspaceHandoffComplete: true,
+        });
+        expect(
+          listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+        ).toEqual(evidence);
+        expect(
+          listWorkspaceMaterializationRecords(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual([]);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(['pending', 'complete'] as const)(
+    'rejects partial rows despite no-materialization proof with a %s handoff',
+    async (workspaceHandoffState) => {
+      const { environmentPackage, workspaceDb } = await createFixture();
+      try {
+        expect(
+          workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run().changes
+        ).toBe(1);
+        await expectCleanupRefusal(
+          workspaceDb,
+          {
+            ...cleanupInput(environmentPackage),
+            workspaceHandoffState,
+            materializationNotPublished: true,
+          },
+          'handoff is incomplete'
+        );
+        expect(
+          listWorkspaceRuntimeEvidence(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001'
+          ).filter((record) => record.phase === 'teardown')
+        ).toEqual([]);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+      }
+    }
+  );
 
   it('accepts a complete Workspace handoff whose accepted materialization omitted optional backendStatus', async () => {
     const { environmentPackage, workspaceDb } = await createFixture({ omitBackendStatus: true });

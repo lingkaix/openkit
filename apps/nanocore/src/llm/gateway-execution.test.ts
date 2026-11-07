@@ -199,33 +199,33 @@ describe('Gateway settled quota recovery', () => {
     expect(recoverSettledQuota).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'cancel',
-    'deadline',
-  ] as const)('does not retry after %s during reset recovery', async (stop) => {
-    const controller = new AbortController();
-    let now = 0;
-    const clock: GatewayClock = { ...clockFixture().clock, now: () => now };
-    const attempt = vi.fn(async () => {
-      throw failed({ kind: 'quota_exhausted', settled: true });
-    });
-    const recoverSettledQuota = vi.fn(async () => {
-      if (stop === 'cancel') controller.abort(new Error('synthetic cancellation'));
-      else now = GATEWAY_PRECOMMIT_DEADLINE_MS;
-      return true;
-    });
-    const input: QuotaRecoveryInput = {
-      selections: selections.slice(0, 1),
-      autoFailover: true,
-      signal: controller.signal,
-      clock,
-      attempt,
-      recoverSettledQuota,
-    };
-    await expect(executeGatewayPlan(input)).rejects.toBeInstanceOf(Error);
-    expect(recoverSettledQuota).toHaveBeenCalledTimes(1);
-    expect(attempt).toHaveBeenCalledTimes(1);
-  });
+  it.each(['cancel', 'deadline'] as const)(
+    'does not retry after %s during reset recovery',
+    async (stop) => {
+      const controller = new AbortController();
+      let now = 0;
+      const clock: GatewayClock = { ...clockFixture().clock, now: () => now };
+      const attempt = vi.fn(async () => {
+        throw failed({ kind: 'quota_exhausted', settled: true });
+      });
+      const recoverSettledQuota = vi.fn(async () => {
+        if (stop === 'cancel') controller.abort(new Error('synthetic cancellation'));
+        else now = GATEWAY_PRECOMMIT_DEADLINE_MS;
+        return true;
+      });
+      const input: QuotaRecoveryInput = {
+        selections: selections.slice(0, 1),
+        autoFailover: true,
+        signal: controller.signal,
+        clock,
+        attempt,
+        recoverSettledQuota,
+      };
+      await expect(executeGatewayPlan(input)).rejects.toBeInstanceOf(Error);
+      expect(recoverSettledQuota).toHaveBeenCalledTimes(1);
+      expect(attempt).toHaveBeenCalledTimes(1);
+    }
+  );
 });
 
 describe('Gateway executor deadline, replay certainty and retry waits', () => {
@@ -268,30 +268,33 @@ describe('Gateway executor deadline, replay certainty and retry waits', () => {
   it.each([
     ['2', true],
     ['11', false],
-  ])('honors complete short Retry-After %s, never shortens a long one', async (retryAfter, retry) => {
-    vi.useFakeTimers();
-    try {
-      const { clock, delays } = clockFixture();
-      let count = 0;
-      const result = await timers(() =>
-        executeGatewayPlan({
-          selections,
-          autoFailover: true,
-          signal: new AbortController().signal,
-          clock,
-          attempt: async ({ route }) => {
-            if (route.id === 'primary' && count++ === 0)
-              throw failed({ kind: 'rate_limited', settled: true, retryAfter });
-            return route.id;
-          },
-        })
-      );
-      expect(result).toBe(retry ? 'primary' : 'backup');
-      expect(delays.slice(1)).toEqual(retry ? [2000] : []);
-    } finally {
-      vi.useRealTimers();
+  ])(
+    'honors complete short Retry-After %s, never shortens a long one',
+    async (retryAfter, retry) => {
+      vi.useFakeTimers();
+      try {
+        const { clock, delays } = clockFixture();
+        let count = 0;
+        const result = await timers(() =>
+          executeGatewayPlan({
+            selections,
+            autoFailover: true,
+            signal: new AbortController().signal,
+            clock,
+            attempt: async ({ route }) => {
+              if (route.id === 'primary' && count++ === 0)
+                throw failed({ kind: 'rate_limited', settled: true, retryAfter });
+              return route.id;
+            },
+          })
+        );
+        expect(result).toBe(retry ? 'primary' : 'backup');
+        expect(delays.slice(1)).toEqual(retry ? [2000] : []);
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 
   it('does not retry or fail over an uncertain transport loss, preserving its kind', async () => {
     const attempt = vi.fn(async () => {

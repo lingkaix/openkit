@@ -129,29 +129,29 @@ describe('layout directory physical operations', () => {
     expect(readdirSync(missing)).toEqual([]);
   });
 
-  it.each([
-    'link',
-    'file',
-  ] as const)('keeps the exact addressed-root %s refusal for ensure and read', (kind) => {
-    const { parent, root } = fixture();
-    const outside = join(parent, 'outside');
-    mkdirSync(outside);
-    writeFileSync(join(outside, 'sentinel'), sentinel);
-    if (kind === 'link') symlinkSync(outside, root, 'dir');
-    else writeFileSync(root, sentinel);
-    const message =
-      kind === 'link'
-        ? `DATA_ROOT layout directory must not be a symbolic link: ${root}`
-        : `DATA_ROOT layout path must be a directory: ${root}`;
+  it.each(['link', 'file'] as const)(
+    'keeps the exact addressed-root %s refusal for ensure and read',
+    (kind) => {
+      const { parent, root } = fixture();
+      const outside = join(parent, 'outside');
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'sentinel'), sentinel);
+      if (kind === 'link') symlinkSync(outside, root, 'dir');
+      else writeFileSync(root, sentinel);
+      const message =
+        kind === 'link'
+          ? `DATA_ROOT layout directory must not be a symbolic link: ${root}`
+          : `DATA_ROOT layout path must be a directory: ${root}`;
 
-    expect(() => ensureLayoutDirectory(root)).toThrow(message);
-    expect(() => readLayoutDirectory(root)).toThrow(message);
+      expect(() => ensureLayoutDirectory(root)).toThrow(message);
+      expect(() => readLayoutDirectory(root)).toThrow(message);
 
-    expect(readFileSync(join(outside, 'sentinel'))).toEqual(sentinel);
-    expect(readdirSync(outside)).toEqual(['sentinel']);
-    if (kind === 'link') expect(lstatSync(root).isSymbolicLink()).toBe(true);
-    else expect(readFileSync(root)).toEqual(sentinel);
-  });
+      expect(readFileSync(join(outside, 'sentinel'))).toEqual(sentinel);
+      expect(readdirSync(outside)).toEqual(['sentinel']);
+      if (kind === 'link') expect(lstatSync(root).isSymbolicLink()).toBe(true);
+      else expect(readFileSync(root)).toEqual(sentinel);
+    }
+  );
 
   it('returns absence without creation and preserves unsorted real entries for caller judgment', () => {
     const { parent, root } = fixture();

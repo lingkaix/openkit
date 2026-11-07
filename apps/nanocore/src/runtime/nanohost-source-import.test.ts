@@ -117,36 +117,33 @@ it('streams a large original through the fixed route without eager buffering and
   expect(port.poll).toHaveBeenCalledOnce();
 });
 
-it.each([
-  'short',
-  'long',
-  'digest',
-  'chunk',
-  'read',
-] as const)('refuses %s source failure instead of completing exact carriage', async (kind) => {
-  let closed = false;
-  const source: NanoHostFileImportSource = {
-    async *open() {
-      try {
-        if (kind === 'read') throw new Error('Private source failure.');
-        yield Buffer.alloc(kind === 'chunk' ? 65_537 : kind === 'short' ? 2 : 4, 120);
-      } finally {
-        closed = true;
-      }
-    },
-  };
-  const expected = `sha256:${createHash('sha256').update('xxx').digest('hex')}`;
-  const { open } = await carriage(source, kind === 'digest' ? 4 : 3, expected);
-  await expect(
-    (async () => {
-      const { request } = await open();
-      for await (const _chunk of request) {
-        /* The content is never accepted without clean EOF. */
-      }
-    })()
-  ).rejects.toThrow();
-  expect(closed).toBe(true);
-});
+it.each(['short', 'long', 'digest', 'chunk', 'read'] as const)(
+  'refuses %s source failure instead of completing exact carriage',
+  async (kind) => {
+    let closed = false;
+    const source: NanoHostFileImportSource = {
+      async *open() {
+        try {
+          if (kind === 'read') throw new Error('Private source failure.');
+          yield Buffer.alloc(kind === 'chunk' ? 65_537 : kind === 'short' ? 2 : 4, 120);
+        } finally {
+          closed = true;
+        }
+      },
+    };
+    const expected = `sha256:${createHash('sha256').update('xxx').digest('hex')}`;
+    const { open } = await carriage(source, kind === 'digest' ? 4 : 3, expected);
+    await expect(
+      (async () => {
+        const { request } = await open();
+        for await (const _chunk of request) {
+          /* The content is never accepted without clean EOF. */
+        }
+      })()
+    ).rejects.toThrow();
+    expect(closed).toBe(true);
+  }
+);
 
 it('cancels the private producer and releases carriage after an actual H2 reset', async () => {
   let closed = false;

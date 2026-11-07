@@ -169,34 +169,34 @@ it.each(['sync', 'async'] as const)('publishes a complete %s tree across parents
   expect(readFileSync(join(destination, 'nested', 'file'))).toEqual(original);
 });
 
-it.each([
-  'sync',
-  'async',
-] as const)('retains a renamed %s tree when parent acknowledgement fails', async (mode) => {
-  const root = fixture();
-  const staged = join(root, 'staged');
-  const receiving = join(root, 'receiving');
-  mkdirSync(staged);
-  mkdirSync(receiving);
-  writeFileSync(join(staged, 'file'), original);
-  const destination = join(receiving, 'accepted');
-  const refused = new Error('Selected parent acknowledgement failed.');
-  fault.directory = receiving;
-  fault.error = refused;
-  if (mode === 'sync') {
-    try {
-      publishCanonicalPath(staged, destination);
-      expect.unreachable('Publication must not acknowledge failed parent synchronization.');
-    } catch (error) {
-      expect(error).toBeInstanceOf(CanonicalPublicationError);
-      expect(error).toMatchObject({ cause: refused, code: 'recovery_required' });
+it.each(['sync', 'async'] as const)(
+  'retains a renamed %s tree when parent acknowledgement fails',
+  async (mode) => {
+    const root = fixture();
+    const staged = join(root, 'staged');
+    const receiving = join(root, 'receiving');
+    mkdirSync(staged);
+    mkdirSync(receiving);
+    writeFileSync(join(staged, 'file'), original);
+    const destination = join(receiving, 'accepted');
+    const refused = new Error('Selected parent acknowledgement failed.');
+    fault.directory = receiving;
+    fault.error = refused;
+    if (mode === 'sync') {
+      try {
+        publishCanonicalPath(staged, destination);
+        expect.unreachable('Publication must not acknowledge failed parent synchronization.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(CanonicalPublicationError);
+        expect(error).toMatchObject({ cause: refused, code: 'recovery_required' });
+      }
+    } else {
+      await expect(publishCanonicalPathAsync(staged, destination)).rejects.toBe(refused);
     }
-  } else {
-    await expect(publishCanonicalPathAsync(staged, destination)).rejects.toBe(refused);
+    expect(existsSync(staged)).toBe(false);
+    expect(readFileSync(join(destination, 'file'))).toEqual(original);
   }
-  expect(existsSync(staged)).toBe(false);
-  expect(readFileSync(join(destination, 'file'))).toEqual(original);
-});
+);
 
 it('materializes exact catalog entries once and ignores incomplete trees during file discovery', () => {
   const root = fixture();
@@ -326,35 +326,35 @@ it('removes only the selected canonical tree and preserves linked bytes, sibling
     expect(statSync(path).mode & 0o777).toBe(0o750);
 });
 
-it.each([
-  'before',
-  'after',
-] as const)('preserves the exact deletion boundary when parent acknowledgement fails %s removal', (boundary) => {
-  const root = fixture();
-  const parent = join(root, 'catalog');
-  const target = join(parent, 'selected');
-  mkdirSync(target, { recursive: true });
-  writeFileSync(join(target, 'bytes'), original);
-  writeFileSync(join(parent, 'sibling'), original);
-  const parentBefore = statSync(parent);
-  const refused = new Error('Selected deletion acknowledgement failed.');
-  // Parent admission commits its containing entry; retirement then commits the selected parent.
-  fault.directory = boundary === 'before' ? root : parent;
-  fault.error = refused;
-  try {
-    removeCanonicalTreeSync(target);
-    expect.unreachable('Deletion must not acknowledge failed parent synchronization.');
-  } catch (error) {
-    expect(error).toBe(refused);
+it.each(['before', 'after'] as const)(
+  'preserves the exact deletion boundary when parent acknowledgement fails %s removal',
+  (boundary) => {
+    const root = fixture();
+    const parent = join(root, 'catalog');
+    const target = join(parent, 'selected');
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, 'bytes'), original);
+    writeFileSync(join(parent, 'sibling'), original);
+    const parentBefore = statSync(parent);
+    const refused = new Error('Selected deletion acknowledgement failed.');
+    // Parent admission commits its containing entry; retirement then commits the selected parent.
+    fault.directory = boundary === 'before' ? root : parent;
+    fault.error = refused;
+    try {
+      removeCanonicalTreeSync(target);
+      expect.unreachable('Deletion must not acknowledge failed parent synchronization.');
+    } catch (error) {
+      expect(error).toBe(refused);
+    }
+    expect(existsSync(target)).toBe(boundary === 'before');
+    if (boundary === 'before') expect(readFileSync(join(target, 'bytes'))).toEqual(original);
+    expect(readFileSync(join(parent, 'sibling'))).toEqual(original);
+    expect(statSync(parent).ino).toBe(parentBefore.ino);
+    expect(statSync(parent).mode).toBe(parentBefore.mode);
+    // An absent-entry retry still acknowledges the parent and must preserve its failure.
+    if (boundary === 'after') expect(() => removeCanonicalTreeSync(target)).toThrow(refused);
   }
-  expect(existsSync(target)).toBe(boundary === 'before');
-  if (boundary === 'before') expect(readFileSync(join(target, 'bytes'))).toEqual(original);
-  expect(readFileSync(join(parent, 'sibling'))).toEqual(original);
-  expect(statSync(parent).ino).toBe(parentBefore.ino);
-  expect(statSync(parent).mode).toBe(parentBefore.mode);
-  // An absent-entry retry still acknowledges the parent and must preserve its failure.
-  if (boundary === 'after') expect(() => removeCanonicalTreeSync(target)).toThrow(refused);
-});
+);
 
 it('populates private overlays in caller order with exact bytes, modes and draft overwrites', () => {
   const root = fixture();

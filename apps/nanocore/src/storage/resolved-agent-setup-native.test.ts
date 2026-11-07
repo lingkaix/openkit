@@ -427,274 +427,279 @@ describe('resolved setup through the native Workspace owner', () => {
     'same-bytes-new-inode',
     'wrong-length',
     'wrong-digest',
-  ] as const)('stops callbacks and executor launch after setup publication is %s, without retry', async (failure) => {
-    const root = mkdtempSync(join(tmpdir(), 'setup-ledger-launch-boundary-'));
-    roots.push(root);
-    const store = await createDemoStore({ dataRoot: root, knowledge: [] });
-    const workspaceDb = openWorkspaceDb(root, workspaceId);
-    databases.push(workspaceDb);
-    workspaceDb.sqlite.pragma('query_only = ON');
-    const turnId = testEntityId('tu', `setup_native_${failure}`);
-    const recordId = `ras_${turnId}`;
-    const setup = createTestAgentSetup();
-    const onTurnCreated = vi.fn();
-    const onSubmissionSettled = vi.fn();
-    const launch = vi.fn<TurnExecutor['startTurn']>(async () => undefined);
-    const losesAck = failure === 'lost-ack' || failure === 'lost-ack-cleanup-fails';
-    const stagingClose = Promise.withResolvers<void>();
-    let stagingCloseReached = false;
-    let stagingHandle: FileHandle | undefined;
-    if (failure === 'staging-write-pending') {
-      // This is the published Storage helper's real FileHandle seam, not a replacement writer.
-      const probe = await open(join(root, 'setup-handle-probe'), 'wx', 0o600);
-      const prototype = Object.getPrototypeOf(probe) as FileHandle;
-      await probe.close();
-      const writeFile = prototype.writeFile;
-      vi.spyOn(prototype, 'writeFile').mockImplementation(async function (
-        this: FileHandle,
-        ...args: Parameters<FileHandle['writeFile']>
-      ) {
-        if (typeof args[0] === 'string' && args[0].includes(JSON.stringify(recordId))) {
-          stagingHandle = this;
-          const close = this.close.bind(this);
-          vi.spyOn(this, 'close').mockImplementation(async () => {
-            stagingCloseReached = true;
-            await stagingClose.promise;
-            await close();
-          });
-        }
-        await writeFile.apply(this, args);
-      });
-      launch.mockImplementation(async (...args) => {
-        args[3]?.onSubmissionSettled?.();
-      });
-    }
-    const cleanupFailure = new Error('Selected resolved setup private-tree cleanup failure.');
-    let cleanupRoot: string | undefined;
-    let cleanupCalls = 0;
-    const remove = fs.rmSync;
-    const cleanupFault =
-      failure === 'lost-ack-cleanup-fails'
-        ? vi.spyOn(fs, 'rmSync').mockImplementation((...args: Parameters<typeof fs.rmSync>) => {
-            if (cleanupRoot !== undefined && String(args[0]) === cleanupRoot) {
-              cleanupCalls++;
-              throw cleanupFailure;
-            }
-            return remove(...args);
-          })
-        : undefined;
-    if (cleanupFault) syncBuiltinESMExports();
-    const executor: TurnExecutor = {
-      capabilities: {
-        approvals: false,
-        artifacts: false,
-        interrupts: true,
-        questions: false,
-        workspaceConfig: true,
-        workspaceKnowledgeEditing: true,
-      },
-      eventFamilies: ['turn.started'],
-      startTurn: launch,
-      interruptTurn: async () => undefined,
-    };
-    if (failure === 'refused') {
-      const fault = new Database(workspaceDb.sqlite.name, { fileMustExist: true });
-      try {
-        fault.exec(`CREATE TRIGGER refuse_setup_publication BEFORE INSERT ON resolved_agent_setups
-            BEGIN SELECT RAISE(ABORT, 'Selected setup publication refusal'); END`);
-      } finally {
-        fault.close();
+  ] as const)(
+    'stops callbacks and executor launch after setup publication is %s, without retry',
+    async (failure) => {
+      const root = mkdtempSync(join(tmpdir(), 'setup-ledger-launch-boundary-'));
+      roots.push(root);
+      const store = await createDemoStore({ dataRoot: root, knowledge: [] });
+      const workspaceDb = openWorkspaceDb(root, workspaceId);
+      databases.push(workspaceDb);
+      workspaceDb.sqlite.pragma('query_only = ON');
+      const turnId = testEntityId('tu', `setup_native_${failure}`);
+      const recordId = `ras_${turnId}`;
+      const setup = createTestAgentSetup();
+      const onTurnCreated = vi.fn();
+      const onSubmissionSettled = vi.fn();
+      const launch = vi.fn<TurnExecutor['startTurn']>(async () => undefined);
+      const losesAck = failure === 'lost-ack' || failure === 'lost-ack-cleanup-fails';
+      const stagingClose = Promise.withResolvers<void>();
+      let stagingCloseReached = false;
+      let stagingHandle: FileHandle | undefined;
+      if (failure === 'staging-write-pending') {
+        // This is the published Storage helper's real FileHandle seam, not a replacement writer.
+        const probe = await open(join(root, 'setup-handle-probe'), 'wx', 0o600);
+        const prototype = Object.getPrototypeOf(probe) as FileHandle;
+        await probe.close();
+        const writeFile = prototype.writeFile;
+        vi.spyOn(prototype, 'writeFile').mockImplementation(async function (
+          this: FileHandle,
+          ...args: Parameters<FileHandle['writeFile']>
+        ) {
+          if (typeof args[0] === 'string' && args[0].includes(JSON.stringify(recordId))) {
+            stagingHandle = this;
+            const close = this.close.bind(this);
+            vi.spyOn(this, 'close').mockImplementation(async () => {
+              stagingCloseReached = true;
+              await stagingClose.promise;
+              await close();
+            });
+          }
+          await writeFile.apply(this, args);
+        });
+        launch.mockImplementation(async (...args) => {
+          args[3]?.onSubmissionSettled?.();
+        });
       }
-    }
-    let selectedWorker: Worker | undefined;
-    let gate: Int32Array | undefined;
-    let posts = 0;
-    const post = Worker.prototype.postMessage;
-    const selection = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
-      this: Worker,
-      ...args: Parameters<Worker['postMessage']>
-    ) {
-      const submitted = preparedSetupRequest(args[0], workspaceDb);
-      if (
-        submitted &&
-        (failure === 'staging-write-pending' ||
-          readFileSync(submitted.path, 'utf8').includes(JSON.stringify(recordId)))
-      ) {
-        selectedWorker = this;
-        posts++;
-        // Arm only the exact setup stage, after Turn creation's separate commit has settled.
-        if (failure === 'staging-write-pending') {
-          expect(stagingCloseReached).toBe(true);
-          expect(stagingHandle?.fd).toBe(-1);
+      const cleanupFailure = new Error('Selected resolved setup private-tree cleanup failure.');
+      let cleanupRoot: string | undefined;
+      let cleanupCalls = 0;
+      const remove = fs.rmSync;
+      const cleanupFault =
+        failure === 'lost-ack-cleanup-fails'
+          ? vi.spyOn(fs, 'rmSync').mockImplementation((...args: Parameters<typeof fs.rmSync>) => {
+              if (cleanupRoot !== undefined && String(args[0]) === cleanupRoot) {
+                cleanupCalls++;
+                throw cleanupFailure;
+              }
+              return remove(...args);
+            })
+          : undefined;
+      if (cleanupFault) syncBuiltinESMExports();
+      const executor: TurnExecutor = {
+        capabilities: {
+          approvals: false,
+          artifacts: false,
+          interrupts: true,
+          questions: false,
+          workspaceConfig: true,
+          workspaceKnowledgeEditing: true,
+        },
+        eventFamilies: ['turn.started'],
+        startTurn: launch,
+        interruptTurn: async () => undefined,
+      };
+      if (failure === 'refused') {
+        const fault = new Database(workspaceDb.sqlite.name, { fileMustExist: true });
+        try {
+          fault.exec(`CREATE TRIGGER refuse_setup_publication BEFORE INSERT ON resolved_agent_setups
+            BEGIN SELECT RAISE(ABORT, 'Selected setup publication refusal'); END`);
+        } finally {
+          fault.close();
         }
-        if (failure === 'lost-ack-cleanup-fails') cleanupRoot = dirname(submitted.path);
-        if (losesAck) gate = armCommit(2);
-        if (failure !== 'refused' && !losesAck && failure !== 'staging-write-pending') {
-          const request = submitted.request;
-          const file = request.input.file;
-          const bytes = readFileSync(submitted.path);
-          const metadata = lstatSync(submitted.path);
-          // Establish a valid real producer file before introducing one selected transport fault.
-          expect(request.input.scopeWorkspaceId).toBe(workspaceDb.workspaceId);
-          expect(metadata.isFile()).toBe(true);
-          expect(metadata.isSymbolicLink()).toBe(false);
-          expect(metadata.size).toBe(file.byteLength);
-          expect(`${metadata.dev}:${metadata.ino}`).toBe(file.identity);
-          expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(file.digest);
-          if (failure === 'wrong-scope') {
-            request.input.scopeWorkspaceId = testEntityId('ws', 'wrong_prepared_setup_owner');
-          } else if (failure === 'wrong-path') {
-            const outside = join(dirname(submitted.path), '..', 'outside-prepared-setup.json');
-            writeFileSync(outside, bytes, { flag: 'wx' });
-            const outsideMetadata = lstatSync(outside);
-            // Valid same bytes and physical identity outside staging isolate path containment.
-            request.input.file = {
-              ...file,
-              name: '../outside-prepared-setup.json',
-              identity: `${outsideMetadata.dev}:${outsideMetadata.ino}`,
-            };
-          } else if (failure === 'same-bytes-new-inode') {
-            renameSync(submitted.path, `${submitted.path}.original`);
-            writeFileSync(submitted.path, bytes, { flag: 'wx' });
-            const replacement = lstatSync(submitted.path);
-            expect(`${replacement.dev}:${replacement.ino}`).not.toBe(file.identity);
-            expect(replacement.size).toBe(file.byteLength);
-            expect(
-              `sha256:${createHash('sha256').update(readFileSync(submitted.path)).digest('hex')}`
-            ).toBe(file.digest);
-          } else if (failure === 'wrong-length') {
-            request.input.file = { ...file, byteLength: file.byteLength + 1 };
-          } else {
-            request.input.file = {
-              ...file,
-              digest: file.digest.slice(0, -1) + (file.digest.endsWith('0') ? '1' : '0'),
-            };
+      }
+      let selectedWorker: Worker | undefined;
+      let gate: Int32Array | undefined;
+      let posts = 0;
+      const post = Worker.prototype.postMessage;
+      const selection = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker['postMessage']>
+      ) {
+        const submitted = preparedSetupRequest(args[0], workspaceDb);
+        if (
+          submitted &&
+          (failure === 'staging-write-pending' ||
+            readFileSync(submitted.path, 'utf8').includes(JSON.stringify(recordId)))
+        ) {
+          selectedWorker = this;
+          posts++;
+          // Arm only the exact setup stage, after Turn creation's separate commit has settled.
+          if (failure === 'staging-write-pending') {
+            expect(stagingCloseReached).toBe(true);
+            expect(stagingHandle?.fd).toBe(-1);
+          }
+          if (failure === 'lost-ack-cleanup-fails') cleanupRoot = dirname(submitted.path);
+          if (losesAck) gate = armCommit(2);
+          if (failure !== 'refused' && !losesAck && failure !== 'staging-write-pending') {
+            const request = submitted.request;
+            const file = request.input.file;
+            const bytes = readFileSync(submitted.path);
+            const metadata = lstatSync(submitted.path);
+            // Establish a valid real producer file before introducing one selected transport fault.
+            expect(request.input.scopeWorkspaceId).toBe(workspaceDb.workspaceId);
+            expect(metadata.isFile()).toBe(true);
+            expect(metadata.isSymbolicLink()).toBe(false);
+            expect(metadata.size).toBe(file.byteLength);
+            expect(`${metadata.dev}:${metadata.ino}`).toBe(file.identity);
+            expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(file.digest);
+            if (failure === 'wrong-scope') {
+              request.input.scopeWorkspaceId = testEntityId('ws', 'wrong_prepared_setup_owner');
+            } else if (failure === 'wrong-path') {
+              const outside = join(dirname(submitted.path), '..', 'outside-prepared-setup.json');
+              writeFileSync(outside, bytes, { flag: 'wx' });
+              const outsideMetadata = lstatSync(outside);
+              // Valid same bytes and physical identity outside staging isolate path containment.
+              request.input.file = {
+                ...file,
+                name: '../outside-prepared-setup.json',
+                identity: `${outsideMetadata.dev}:${outsideMetadata.ino}`,
+              };
+            } else if (failure === 'same-bytes-new-inode') {
+              renameSync(submitted.path, `${submitted.path}.original`);
+              writeFileSync(submitted.path, bytes, { flag: 'wx' });
+              const replacement = lstatSync(submitted.path);
+              expect(`${replacement.dev}:${replacement.ino}`).not.toBe(file.identity);
+              expect(replacement.size).toBe(file.byteLength);
+              expect(
+                `sha256:${createHash('sha256').update(readFileSync(submitted.path)).digest('hex')}`
+              ).toBe(file.digest);
+            } else if (failure === 'wrong-length') {
+              request.input.file = { ...file, byteLength: file.byteLength + 1 };
+            } else {
+              request.input.file = {
+                ...file,
+                digest: file.digest.slice(0, -1) + (file.digest.endsWith('0') ? '1' : '0'),
+              };
+            }
           }
         }
-      }
-      return post.apply(this, args);
-    });
-    const pending = startTurn({
-      gatewayConfig: createTestGatewayConfig(),
-      defaultAgentId: setup.manifest.id,
-      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-      input: 'Run tests',
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          kind: 'local',
-          displayName: 'Test inference provider',
-          defaultModel: 'openai/gpt-5.2',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      store,
-      workspaceId,
-      threadId: DEMO_THREAD_ID,
-      turnId,
-      turnExecutor: executor,
-      agentManifests: [setup.manifest],
-      agentSetupLedger: { workspaceDb, writer: getControlStoreWorkerClient() },
-      onTurnCreated,
-      onSubmissionSettled,
-    });
-    void pending.catch(() => undefined);
-    let settled = false;
-    void pending.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      }
-    );
-    try {
-      if (failure === 'staging-write-pending') {
-        // A premature rejection also violates the dependency; it must not masquerade as a gate timeout.
-        await vi.waitFor(() => expect(stagingCloseReached || settled).toBe(true), {
-          timeout: 5000,
-        });
-        expect(settled).toBe(false);
-        expect(stagingCloseReached).toBe(true);
-        expect(posts).toBe(0);
-        expect(row(workspaceDb, recordId)).toBeUndefined();
-        expect(onTurnCreated).not.toHaveBeenCalled();
-        expect(onSubmissionSettled).not.toHaveBeenCalled();
-        expect(launch).not.toHaveBeenCalled();
-        stagingClose.resolve();
-        await pending;
-        expect(stagingHandle?.fd).toBe(-1);
-        expect(posts).toBe(1);
-        expect(row(workspaceDb, recordId)).toMatchObject({
-          setup_record_id: recordId,
-          workspace_id: workspaceId,
-          turn_id: turnId,
-          schema_version: 1,
-        });
-        expect(onTurnCreated).toHaveBeenCalledTimes(1);
-        expect(onSubmissionSettled).toHaveBeenCalledTimes(1);
-        expect(launch).toHaveBeenCalledTimes(1);
-        return;
-      }
-      if (losesAck) {
-        await vi.waitFor(() => expect(gate && Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
-        expect(Atomics.load(gate!, 5)).toBe(2);
-        expect(row(workspaceDb, recordId)).toMatchObject({
-          setup_record_id: recordId,
-          workspace_id: workspaceId,
-          turn_id: turnId,
-        });
-        expect(onTurnCreated).not.toHaveBeenCalled();
-        expect(onSubmissionSettled).not.toHaveBeenCalled();
-        expect(launch).not.toHaveBeenCalled();
-        expect(selectedWorker).toBeDefined();
-        await selectedWorker!.terminate();
-      }
-      await expect(pending).rejects.toMatchObject({
-        commit: losesAck ? 'unknown' : 'not-committed',
+        return post.apply(this, args);
       });
-      expect(onTurnCreated).not.toHaveBeenCalled();
-      expect(onSubmissionSettled).not.toHaveBeenCalled();
-      expect(launch).not.toHaveBeenCalled();
-      // The accepted owner permits no automatic retry after refusal or unknown acknowledgement.
-      expect(posts).toBe(1);
-      if (failure === 'lost-ack-cleanup-fails') {
-        const original = (await pending.catch(
-          (error: unknown) => error
-        )) as ControlStoreWorkerError;
-        expect(original).toBeInstanceOf(ControlStoreWorkerError);
-        expect({ code: original.code, commit: original.commit, domain: original.domain }).toEqual({
-          code: 'unavailable',
-          commit: 'unknown',
-          domain: undefined,
+      const pending = startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: setup.manifest.id,
+        triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        input: 'Run tests',
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            kind: 'local',
+            displayName: 'Test inference provider',
+            defaultModel: 'openai/gpt-5.2',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        store,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        turnId,
+        turnExecutor: executor,
+        agentManifests: [setup.manifest],
+        agentSetupLedger: { workspaceDb, writer: getControlStoreWorkerClient() },
+        onTurnCreated,
+        onSubmissionSettled,
+      });
+      void pending.catch(() => undefined);
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      try {
+        if (failure === 'staging-write-pending') {
+          // A premature rejection also violates the dependency; it must not masquerade as a gate timeout.
+          await vi.waitFor(() => expect(stagingCloseReached || settled).toBe(true), {
+            timeout: 5000,
+          });
+          expect(settled).toBe(false);
+          expect(stagingCloseReached).toBe(true);
+          expect(posts).toBe(0);
+          expect(row(workspaceDb, recordId)).toBeUndefined();
+          expect(onTurnCreated).not.toHaveBeenCalled();
+          expect(onSubmissionSettled).not.toHaveBeenCalled();
+          expect(launch).not.toHaveBeenCalled();
+          stagingClose.resolve();
+          await pending;
+          expect(stagingHandle?.fd).toBe(-1);
+          expect(posts).toBe(1);
+          expect(row(workspaceDb, recordId)).toMatchObject({
+            setup_record_id: recordId,
+            workspace_id: workspaceId,
+            turn_id: turnId,
+            schema_version: 1,
+          });
+          expect(onTurnCreated).toHaveBeenCalledTimes(1);
+          expect(onSubmissionSettled).toHaveBeenCalledTimes(1);
+          expect(launch).toHaveBeenCalledTimes(1);
+          return;
+        }
+        if (losesAck) {
+          await vi.waitFor(() => expect(gate && Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
+          expect(Atomics.load(gate!, 5)).toBe(2);
+          expect(row(workspaceDb, recordId)).toMatchObject({
+            setup_record_id: recordId,
+            workspace_id: workspaceId,
+            turn_id: turnId,
+          });
+          expect(onTurnCreated).not.toHaveBeenCalled();
+          expect(onSubmissionSettled).not.toHaveBeenCalled();
+          expect(launch).not.toHaveBeenCalled();
+          expect(selectedWorker).toBeDefined();
+          await selectedWorker!.terminate();
+        }
+        await expect(pending).rejects.toMatchObject({
+          commit: losesAck ? 'unknown' : 'not-committed',
         });
-        expect(original.cause).toBe(cleanupFailure);
-        expect(cleanupCalls).toBe(1);
-        expect(cleanupRoot).toBeDefined();
-        expect(fs.existsSync(cleanupRoot!)).toBe(true);
-      }
-      if (!losesAck) {
-        expect(row(workspaceDb, recordId)).toBeUndefined();
-      } else {
-        const retained = requireResolvedAgentSetup(workspaceDb, workspaceId, recordId);
-        releaseCommit();
-        selection.mockRestore();
-        await shutdownControlStoreWorkerClient();
-        workspaceDb.sqlite.close();
-        const cold = openWorkspaceDb(root, workspaceId);
-        databases.push(cold);
-        cold.sqlite.pragma('query_only = ON');
-        expect(requireResolvedAgentSetup(cold, workspaceId, recordId)).toEqual(retained);
+        expect(onTurnCreated).not.toHaveBeenCalled();
+        expect(onSubmissionSettled).not.toHaveBeenCalled();
         expect(launch).not.toHaveBeenCalled();
+        // The accepted owner permits no automatic retry after refusal or unknown acknowledgement.
+        expect(posts).toBe(1);
+        if (failure === 'lost-ack-cleanup-fails') {
+          const original = (await pending.catch(
+            (error: unknown) => error
+          )) as ControlStoreWorkerError;
+          expect(original).toBeInstanceOf(ControlStoreWorkerError);
+          expect({ code: original.code, commit: original.commit, domain: original.domain }).toEqual(
+            {
+              code: 'unavailable',
+              commit: 'unknown',
+              domain: undefined,
+            }
+          );
+          expect(original.cause).toBe(cleanupFailure);
+          expect(cleanupCalls).toBe(1);
+          expect(cleanupRoot).toBeDefined();
+          expect(fs.existsSync(cleanupRoot!)).toBe(true);
+        }
+        if (!losesAck) {
+          expect(row(workspaceDb, recordId)).toBeUndefined();
+        } else {
+          const retained = requireResolvedAgentSetup(workspaceDb, workspaceId, recordId);
+          releaseCommit();
+          selection.mockRestore();
+          await shutdownControlStoreWorkerClient();
+          workspaceDb.sqlite.close();
+          const cold = openWorkspaceDb(root, workspaceId);
+          databases.push(cold);
+          cold.sqlite.pragma('query_only = ON');
+          expect(requireResolvedAgentSetup(cold, workspaceId, recordId)).toEqual(retained);
+          expect(launch).not.toHaveBeenCalled();
+        }
+      } finally {
+        stagingClose.resolve();
+        releaseCommit();
+        await Promise.allSettled([pending]);
+        await stagingHandle?.close();
+        cleanupFault?.mockRestore();
+        if (cleanupFault) syncBuiltinESMExports();
+        selection.mockRestore();
       }
-    } finally {
-      stagingClose.resolve();
-      releaseCommit();
-      await Promise.allSettled([pending]);
-      await stagingHandle?.close();
-      cleanupFault?.mockRestore();
-      if (cleanupFault) syncBuiltinESMExports();
-      selection.mockRestore();
     }
-  });
+  );
 });

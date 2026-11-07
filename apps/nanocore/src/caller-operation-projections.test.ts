@@ -464,37 +464,36 @@ describe('caller operation projections', () => {
     expect(await remote.text()).not.toMatch(/private-content|caller@example/);
   });
 
-  it.each([
-    'revocation',
-    'session administrator revocation',
-    'Workspace closure',
-  ] as const)('refuses publication after %s during count acquisition', async (fault) => {
-    requireCallerDefinition();
-    const f = await fixture();
-    await seedRetainedWork(f);
-    const admin = f.token();
-    const listItems = f.store.listThreadItems.bind(f.store);
-    const crossing = vi.spyOn(f.store, 'listThreadItems').mockImplementationOnce((...args) => {
-      const records = listItems(...args);
-      if (fault !== 'Workspace closure') revokeOpenKitAccessTokenRecord(f.coreDb, admin.tokenId);
-      else
-        f.coreDb.sqlite
-          .prepare("UPDATE workspace_registry SET status='deleting' WHERE workspace_id=?")
-          .run(f.owned.id);
-      return records;
-    });
-    const response = await f.post(
-      'caller.read',
-      { workspaceId: f.owned.id },
-      fault === 'session administrator revocation'
-        ? { cookie: f.cookie }
-        : { authorization: `Bearer ${admin.secret}` }
-    );
-    expect(crossing).toHaveBeenCalled();
-    expect(crossing).toHaveBeenCalledTimes(1);
-    expect(response.status).toBe(403);
-    expect(await response.text()).not.toMatch(/"counts"|private-content|caller@example/);
-  });
+  it.each(['revocation', 'session administrator revocation', 'Workspace closure'] as const)(
+    'refuses publication after %s during count acquisition',
+    async (fault) => {
+      requireCallerDefinition();
+      const f = await fixture();
+      await seedRetainedWork(f);
+      const admin = f.token();
+      const listItems = f.store.listThreadItems.bind(f.store);
+      const crossing = vi.spyOn(f.store, 'listThreadItems').mockImplementationOnce((...args) => {
+        const records = listItems(...args);
+        if (fault !== 'Workspace closure') revokeOpenKitAccessTokenRecord(f.coreDb, admin.tokenId);
+        else
+          f.coreDb.sqlite
+            .prepare("UPDATE workspace_registry SET status='deleting' WHERE workspace_id=?")
+            .run(f.owned.id);
+        return records;
+      });
+      const response = await f.post(
+        'caller.read',
+        { workspaceId: f.owned.id },
+        fault === 'session administrator revocation'
+          ? { cookie: f.cookie }
+          : { authorization: `Bearer ${admin.secret}` }
+      );
+      expect(crossing).toHaveBeenCalled();
+      expect(crossing).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(403);
+      expect(await response.text()).not.toMatch(/"counts"|private-content|caller@example/);
+    }
+  );
 
   it('denies caller metadata and selected counts after the canonical User is disabled', async () => {
     requireCallerDefinition();

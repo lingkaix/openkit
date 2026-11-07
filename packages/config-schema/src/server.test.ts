@@ -297,19 +297,19 @@ describe('server config schema', () => {
     );
   });
 
-  it.each([
-    'encrypted-file',
-    'os-keychain',
-  ])('rejects the removed local vault backend selector value %s', (localDefaultBackend) => {
-    expect(() =>
-      OpenKitConfigSchema.parse({
-        schemaVersion: RETAINED_FORMAT_VERSION,
-        vault: {
-          localDefaultBackend,
-        },
-      })
-    ).toThrow();
-  });
+  it.each(['encrypted-file', 'os-keychain'])(
+    'rejects the removed local vault backend selector value %s',
+    (localDefaultBackend) => {
+      expect(() =>
+        OpenKitConfigSchema.parse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          vault: {
+            localDefaultBackend,
+          },
+        })
+      ).toThrow();
+    }
+  );
 
   it('omits the removed local vault backend selector from config catalogs', () => {
     expect(JSON.stringify(getConfigSchemaCatalog())).not.toContain('localDefaultBackend');

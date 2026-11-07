@@ -659,56 +659,56 @@ describe('OpenCode resident adapter', () => {
     { fault: 'read-failure', reason: 'collector-failed' },
     { fault: 'session-pages', reason: 'limit-exceeded' },
     { fault: 'message-pages', reason: 'limit-exceeded' },
-  ] as const)('RET E5 declares a $fault child-source gap without losing the admitted prefix', async ({
-    fault,
-    reason,
-  }) => {
-    const f = e5ChildFixture(fault);
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
-    const input = turnInput(f.layout, f.creds, `child-gap-${fault}`, 'prompt-model');
-    const active = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.2.5' },
-        emit: async (record, body) => {
-          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+  ] as const)(
+    'RET E5 declares a $fault child-source gap without losing the admitted prefix',
+    async ({ fault, reason }) => {
+      const f = e5ChildFixture(fault);
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+      const input = turnInput(f.layout, f.creds, `child-gap-${fault}`, 'prompt-model');
+      const active = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'task', value: 'on' },
+          ...{ nativeLogMaxBytes: 7, authoredVersion: '2.2.5' },
+          emit: async (record, body) => {
+            received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+          },
         },
-      },
-    });
-    expect((await active.settled).status).toBe('completed');
-    const coverage = received.filter(({ record }) => record.fact.family === 'child-content');
-    expect(
-      coverage.some(
-        ({ record }) => record.fact.coverage === 'unavailable' && record.fact.reason === reason
-      )
-    ).toBe(true);
-    expect(
-      coverage.some(({ record }) => ['unsupported', 'ended'].includes(record.fact.coverage ?? ''))
-    ).toBe(false);
-    const bytes = Buffer.concat(
-      received
-        .filter(({ record, body }) => record.fact.kind === 'native-transcript' && body)
-        .map(({ body }) => body!)
-    );
-    expect(
-      bytes.includes(Buffer.from(f.childRows.map((row) => JSON.stringify(row)).join('')))
-    ).toBe(true);
-    expect(
-      bytes.includes(Buffer.from(f.nestedRows.map((row) => JSON.stringify(row)).join('')))
-    ).toBe(true);
-    for (const row of [f.oldChild, f.oldNested, f.poison])
-      expect(bytes.includes(Buffer.from(JSON.stringify(row)))).toBe(false);
-    expect(
-      f.reading.mock.calls.some(
-        ([input]) => input.sessionID === 'other-root' || input.sessionID === 'unrelated-1'
-      )
-    ).toBe(false);
-    expect(f.client.session.prompt).toHaveBeenCalledTimes(1);
-  });
+      });
+      expect((await active.settled).status).toBe('completed');
+      const coverage = received.filter(({ record }) => record.fact.family === 'child-content');
+      expect(
+        coverage.some(
+          ({ record }) => record.fact.coverage === 'unavailable' && record.fact.reason === reason
+        )
+      ).toBe(true);
+      expect(
+        coverage.some(({ record }) => ['unsupported', 'ended'].includes(record.fact.coverage ?? ''))
+      ).toBe(false);
+      const bytes = Buffer.concat(
+        received
+          .filter(({ record, body }) => record.fact.kind === 'native-transcript' && body)
+          .map(({ body }) => body!)
+      );
+      expect(
+        bytes.includes(Buffer.from(f.childRows.map((row) => JSON.stringify(row)).join('')))
+      ).toBe(true);
+      expect(
+        bytes.includes(Buffer.from(f.nestedRows.map((row) => JSON.stringify(row)).join('')))
+      ).toBe(true);
+      for (const row of [f.oldChild, f.oldNested, f.poison])
+        expect(bytes.includes(Buffer.from(JSON.stringify(row)))).toBe(false);
+      expect(
+        f.reading.mock.calls.some(
+          ([input]) => input.sessionID === 'other-root' || input.sessionID === 'unrelated-1'
+        )
+      ).toBe(false);
+      expect(f.client.session.prompt).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it.each([
     { exit: 'owned stop', diagnostic: 'OpenCode assistant finish is unknown.' },
@@ -890,277 +890,294 @@ describe('OpenCode resident adapter', () => {
       owned: true,
       admitted: false,
     },
-  ])('composes OpenCode publication refusal $code/$status with capture=$capture and owned=$owned', async (testCase) => {
-    const f = timelineFixture('new');
-    const controller = new AbortController();
-    let prompted = false;
-    let nativeInterrupted = false;
-    let releasePublication!: () => void;
-    const release = new Promise<void>((resolve) => {
-      releasePublication = resolve;
-    });
-    let enteredPublication!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      enteredPublication = resolve;
-    });
-    let readyAccepted!: () => void;
-    const ready = new Promise<void>((resolve) => {
-      readyAccepted = resolve;
-    });
-    let observedInterrupt!: () => void;
-    const interruption = new Promise<void>((resolve) => {
-      observedInterrupt = resolve;
-    });
-    f.client.session.prompt = async () => {
-      prompted = true;
-      return { id: 'user-1' };
-    };
-    f.client.session.get = async () => {
-      if (prompted) await ready;
-      return {
-        id: 'sess-1',
-        model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
-        time: { idle: nativeInterrupted ? Number.MAX_SAFE_INTEGER : 0 },
-        ...(nativeInterrupted ? { outcome: 'interrupted' } : {}),
+  ])(
+    'composes OpenCode publication refusal $code/$status with capture=$capture and owned=$owned',
+    async (testCase) => {
+      const f = timelineFixture('new');
+      const controller = new AbortController();
+      let prompted = false;
+      let nativeInterrupted = false;
+      let releasePublication!: () => void;
+      const release = new Promise<void>((resolve) => {
+        releasePublication = resolve;
+      });
+      let enteredPublication!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enteredPublication = resolve;
+      });
+      let readyAccepted!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        readyAccepted = resolve;
+      });
+      let observedInterrupt!: () => void;
+      const interruption = new Promise<void>((resolve) => {
+        observedInterrupt = resolve;
+      });
+      f.client.session.prompt = async () => {
+        prompted = true;
+        return { id: 'user-1' };
       };
-    };
-    f.client.message.list = async (input) => {
-      const data = !prompted
-        ? []
-        : [
-            { id: 'user-1', type: 'user' },
-            {
-              id: 'answer-1',
-              type: 'assistant',
-              content: [{ type: 'text', text: 'Partial native evidence.' }],
-              ...(nativeInterrupted ? { finish: 'error' } : {}),
-            },
-            ...(nativeInterrupted ? [{ id: 'idle-1', type: 'idle', outcome: 'interrupted' }] : []),
-          ];
-      return { cursor: {}, data: input.order === 'desc' ? data.reverse() : data } as never;
-    };
-    const nativeInterrupt = vi.spyOn(f.client.session, 'interrupt').mockImplementation(async () => {
-      nativeInterrupted = true;
-      observedInterrupt();
-      return { interrupted: true } as never;
-    });
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    let nativeSettlement: Promise<WorkerAdapterResult> | undefined;
-    const startTurn = session.startTurn.bind(session);
-    vi.spyOn(session, 'startTurn').mockImplementation(async (input) => {
-      const turn = await startTurn(input);
-      nativeSettlement = turn.settled;
-      return turn;
-    });
-    const publication = vi.spyOn(WorkerTranscriptWriter.prototype, 'writeObservation');
-    const lineage = {
-      agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
-      packageSnapshotId: 'pkg-composed',
-      requestId: 'req-composed',
-      threadId: 'th_00000000-0000-79de-8040-f554386267ad',
-      turnId: 'tu_00000000-0000-7f8a-b8c9-d153483d39f0',
-      workspaceId: 'ws_00000000-0000-735c-bd4b-c71fce1d4dd7',
-    };
-    const packagePath = join(f.layout.root, 'composed-package.json');
-    const sessionDir = join(f.layout.root, 'composed-capture');
-    const eventPath = join(sessionDir, 'events.jsonl');
-    writeFileSync(
-      packagePath,
-      JSON.stringify({
-        control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
-          mode: 'sandbox-integration',
-          bindings: {
-            capabilities: {
-              pathPrefix: '/capabilities/',
-              tokenRef: 'runtime://openkit/capability-token',
-            },
-            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
-            workerControl: {
-              pathPrefix: '/worker-control/',
-              tokenRef: 'runtime://openkit/worker-control-token',
+      f.client.session.get = async () => {
+        if (prompted) await ready;
+        return {
+          id: 'sess-1',
+          model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+          time: { idle: nativeInterrupted ? Number.MAX_SAFE_INTEGER : 0 },
+          ...(nativeInterrupted ? { outcome: 'interrupted' } : {}),
+        };
+      };
+      f.client.message.list = async (input) => {
+        const data = !prompted
+          ? []
+          : [
+              { id: 'user-1', type: 'user' },
+              {
+                id: 'answer-1',
+                type: 'assistant',
+                content: [{ type: 'text', text: 'Partial native evidence.' }],
+                ...(nativeInterrupted ? { finish: 'error' } : {}),
+              },
+              ...(nativeInterrupted
+                ? [{ id: 'idle-1', type: 'idle', outcome: 'interrupted' }]
+                : []),
+            ];
+        return { cursor: {}, data: input.order === 'desc' ? data.reverse() : data } as never;
+      };
+      const nativeInterrupt = vi
+        .spyOn(f.client.session, 'interrupt')
+        .mockImplementation(async () => {
+          nativeInterrupted = true;
+          observedInterrupt();
+          return { interrupted: true } as never;
+        });
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      let nativeSettlement: Promise<WorkerAdapterResult> | undefined;
+      const startTurn = session.startTurn.bind(session);
+      vi.spyOn(session, 'startTurn').mockImplementation(async (input) => {
+        const turn = await startTurn(input);
+        nativeSettlement = turn.settled;
+        return turn;
+      });
+      const publication = vi.spyOn(WorkerTranscriptWriter.prototype, 'writeObservation');
+      const lineage = {
+        agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
+        packageSnapshotId: 'pkg-composed',
+        requestId: 'req-composed',
+        threadId: 'th_00000000-0000-79de-8040-f554386267ad',
+        turnId: 'tu_00000000-0000-7f8a-b8c9-d153483d39f0',
+        workspaceId: 'ws_00000000-0000-735c-bd4b-c71fce1d4dd7',
+      };
+      const packagePath = join(f.layout.root, 'composed-package.json');
+      const sessionDir = join(f.layout.root, 'composed-capture');
+      const eventPath = join(sessionDir, 'events.jsonl');
+      writeFileSync(
+        packagePath,
+        JSON.stringify({
+          control: {
+            adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+            mode: 'sandbox-integration',
+            bindings: {
+              capabilities: {
+                pathPrefix: '/capabilities/',
+                tokenRef: 'runtime://openkit/capability-token',
+              },
+              inference: {
+                pathPrefix: '/inference/',
+                tokenRef: 'runtime://openkit/inference-token',
+              },
+              workerControl: {
+                pathPrefix: '/worker-control/',
+                tokenRef: 'runtime://openkit/worker-control-token',
+              },
             },
           },
-        },
-        extensions: { openkit: { turnInput: 'Collect the addressed Turn.' } },
-        llm: {
-          mode: 'gateway',
-          preferredLogicalModelId: 'prompt-model',
-          routes: [
-            {
-              ...acceptedRoute(f.creds, 'prompt-model'),
-              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
-            },
-          ],
-        },
-        observability: { captureCoverage: { scope: 'server', value: testCase.capture } },
-        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: f.layout.work } },
-        scope: lineage,
-      })
-    );
-    const requests: Array<{ url: string; body: string }> = [];
-    const accepted: unknown[] = [];
-    const finals: Array<{ sequence: number; body: Record<string, unknown> }> = [];
-    const sealedAtFinal: string[] = [];
-    let refusedSequence: number | undefined;
-    const fetch: WorkerControlFetch = async (url, init) => {
-      requests.push({ url, body: init.body });
-      const body = JSON.parse(init.body);
-      if (url.endsWith('/events/append')) {
-        const record = body.record;
-        if (
-          record.event.type === 'observation.recorded' &&
-          record.event.data.fact.kind === 'assistant'
-        ) {
-          refusedSequence ??= record.sequence;
-          enteredPublication();
-          return {
-            ok: false,
-            status: testCase.status,
-            text: async () => {
-              await release;
-              return JSON.stringify({ code: testCase.code });
-            },
-          };
+          extensions: { openkit: { turnInput: 'Collect the addressed Turn.' } },
+          llm: {
+            mode: 'gateway',
+            preferredLogicalModelId: 'prompt-model',
+            routes: [
+              {
+                ...acceptedRoute(f.creds, 'prompt-model'),
+                endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+              },
+            ],
+          },
+          observability: { captureCoverage: { scope: 'server', value: testCase.capture } },
+          runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: f.layout.work } },
+          scope: lineage,
+        })
+      );
+      const requests: Array<{ url: string; body: string }> = [];
+      const accepted: unknown[] = [];
+      const finals: Array<{ sequence: number; body: Record<string, unknown> }> = [];
+      const sealedAtFinal: string[] = [];
+      let refusedSequence: number | undefined;
+      const fetch: WorkerControlFetch = async (url, init) => {
+        requests.push({ url, body: init.body });
+        const body = JSON.parse(init.body);
+        if (url.endsWith('/events/append')) {
+          const record = body.record;
+          if (
+            record.event.type === 'observation.recorded' &&
+            record.event.data.fact.kind === 'assistant'
+          ) {
+            refusedSequence ??= record.sequence;
+            enteredPublication();
+            return {
+              ok: false,
+              status: testCase.status,
+              text: async () => {
+                await release;
+                return JSON.stringify({ code: testCase.code });
+              },
+            };
+          }
+          accepted.push(record);
+          if (record.event.type === 'worker.ready') readyAccepted();
         }
-        accepted.push(record);
-        if (record.event.type === 'worker.ready') readyAccepted();
-      }
-      if (url.endsWith('/final-status')) {
-        finals.push(body);
-        sealedAtFinal.push(readFileSync(eventPath, 'utf8'));
-      }
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+        if (url.endsWith('/final-status')) {
+          finals.push(body);
+          sealedAtFinal.push(readFileSync(eventPath, 'utf8'));
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+        };
       };
-    };
-    const result = runResidentTurn({
-      adapterId: 'opencode',
-      credentialValues: [],
-      environment: {},
-      fetch,
-      integration: {
-        ready: Promise.resolve(),
-        bindTurnRouteTokens() {},
-        clearTurnRouteTokens() {},
-        drainTurn: async () => 0,
-      } as unknown as SandboxIntegrationClient,
-      lineage,
-      nativeEnvironment: null,
-      onStarted() {},
-      packagePath,
-      resident: session,
-      runtimeEnvironmentNames: new Set(),
-      sessionDir,
-      signal: controller.signal,
-      tokens: {
-        capabilityToken: 'composed-capability',
-        controlToken: 'composed-control',
-        inferenceToken: 'composed-inference',
-      },
-      turnDirectory: join(f.layout.root, 'composed-turn'),
-    }).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    try {
-      await nativeTestBound(
-        Promise.race([
-          entered,
-          result.then((outcome) => {
-            throw new Error(
-              `The Turn ended before publication entry: ${'error' in outcome && outcome.error instanceof Error ? outcome.error.message : JSON.stringify(outcome)}`
-            );
-          }),
-        ]),
-        1_000,
-        'The real writer publication did not enter HTTP.'
+      const result = runResidentTurn({
+        adapterId: 'opencode',
+        credentialValues: [],
+        environment: {},
+        fetch,
+        integration: {
+          ready: Promise.resolve(),
+          bindTurnRouteTokens() {},
+          clearTurnRouteTokens() {},
+          drainTurn: async () => 0,
+        } as unknown as SandboxIntegrationClient,
+        lineage,
+        nativeEnvironment: null,
+        onStarted() {},
+        packagePath,
+        resident: session,
+        runtimeEnvironmentNames: new Set(),
+        sessionDir,
+        signal: controller.signal,
+        tokens: {
+          capabilityToken: 'composed-capability',
+          controlToken: 'composed-control',
+          inferenceToken: 'composed-inference',
+        },
+        turnDirectory: join(f.layout.root, 'composed-turn'),
+      }).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
       );
-      const prefix = structuredClone(accepted);
-      const enteredRequests = requests.length;
-      if (testCase.owned) {
-        controller.abort();
-        await nativeTestBound(interruption, 1_000, 'The addressed native interrupt did not enter.');
-      }
-      releasePublication();
-      const outcome = await nativeTestBound(result, 2_000, 'The composed Turn did not settle.');
-      const acknowledgements = await Promise.all(
-        publication.mock.results.map((call) =>
-          Promise.resolve(call.value).then(
-            () => null,
-            (error: unknown) => error
+      try {
+        await nativeTestBound(
+          Promise.race([
+            entered,
+            result.then((outcome) => {
+              throw new Error(
+                `The Turn ended before publication entry: ${'error' in outcome && outcome.error instanceof Error ? outcome.error.message : JSON.stringify(outcome)}`
+              );
+            }),
+          ]),
+          1_000,
+          'The real writer publication did not enter HTTP.'
+        );
+        const prefix = structuredClone(accepted);
+        const enteredRequests = requests.length;
+        if (testCase.owned) {
+          controller.abort();
+          await nativeTestBound(
+            interruption,
+            1_000,
+            'The addressed native interrupt did not enter.'
+          );
+        }
+        releasePublication();
+        const outcome = await nativeTestBound(result, 2_000, 'The composed Turn did not settle.');
+        const acknowledgements = await Promise.all(
+          publication.mock.results.map((call) =>
+            Promise.resolve(call.value).then(
+              () => null,
+              (error: unknown) => error
+            )
           )
-        )
-      );
-      expect(acknowledgements).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ code: testCase.code, status: testCase.status }),
-        ])
-      );
-      expect(
-        acknowledgements.some(
-          (error) =>
-            error instanceof WorkerControlError &&
-            error.code === testCase.code &&
-            error.status === testCase.status
-        )
-      ).toBe(true);
-      expect(accepted).toEqual(prefix);
-      expect(
-        requests.filter(
-          (request) =>
-            request.url.endsWith('/events/append') &&
-            JSON.parse(request.body).record.sequence === refusedSequence
-        )
-      ).toHaveLength(1);
-      if (testCase.admitted) {
-        expect(outcome).toMatchObject({
-          result: { status: 'interrupted', nativeEvidence: { nativeTerminal: true } },
-        });
-        await expect(nativeSettlement).resolves.toMatchObject({
-          status: 'interrupted',
-          interruptRequested: true,
-        });
-        expect(nativeInterrupt).toHaveBeenCalledTimes(1);
-        expect(requests.slice(enteredRequests).map((request) => request.url)).toEqual([
-          '/worker-control/final-status',
-        ]);
-        const records = readFileSync(eventPath, 'utf8')
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        const terminal = records.at(-1)!;
-        expect(terminal.event.data).toMatchObject({ status: 'interrupted', stopReason: 'aborted' });
+        );
+        expect(acknowledgements).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: testCase.code, status: testCase.status }),
+          ])
+        );
         expect(
-          Object.values((terminal.event.data.diagnostics ?? {}) as Record<string, string>).some(
-            (value) => /\bincomplete\b/i.test(value)
+          acknowledgements.some(
+            (error) =>
+              error instanceof WorkerControlError &&
+              error.code === testCase.code &&
+              error.status === testCase.status
           )
         ).toBe(true);
-        expect(finals).toEqual([
-          {
-            operation: 'final_status',
-            schemaVersion: 2,
-            lineage,
-            sequence: terminal.sequence,
-            body: terminal.event.data,
-          },
-        ]);
-        expect(sealedAtFinal).toEqual([readFileSync(eventPath, 'utf8')]);
-      } else {
-        if ('result' in outcome) expect(outcome.result.status).toBe('failed');
-        else expect(outcome.error).toBeInstanceOf(Error);
-        expect(finals.filter((final) => final.body.status === 'interrupted')).toEqual([]);
+        expect(accepted).toEqual(prefix);
+        expect(
+          requests.filter(
+            (request) =>
+              request.url.endsWith('/events/append') &&
+              JSON.parse(request.body).record.sequence === refusedSequence
+          )
+        ).toHaveLength(1);
+        if (testCase.admitted) {
+          expect(outcome).toMatchObject({
+            result: { status: 'interrupted', nativeEvidence: { nativeTerminal: true } },
+          });
+          await expect(nativeSettlement).resolves.toMatchObject({
+            status: 'interrupted',
+            interruptRequested: true,
+          });
+          expect(nativeInterrupt).toHaveBeenCalledTimes(1);
+          expect(requests.slice(enteredRequests).map((request) => request.url)).toEqual([
+            '/worker-control/final-status',
+          ]);
+          const records = readFileSync(eventPath, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line));
+          const terminal = records.at(-1)!;
+          expect(terminal.event.data).toMatchObject({
+            status: 'interrupted',
+            stopReason: 'aborted',
+          });
+          expect(
+            Object.values((terminal.event.data.diagnostics ?? {}) as Record<string, string>).some(
+              (value) => /\bincomplete\b/i.test(value)
+            )
+          ).toBe(true);
+          expect(finals).toEqual([
+            {
+              operation: 'final_status',
+              schemaVersion: 2,
+              lineage,
+              sequence: terminal.sequence,
+              body: terminal.event.data,
+            },
+          ]);
+          expect(sealedAtFinal).toEqual([readFileSync(eventPath, 'utf8')]);
+        } else {
+          if ('result' in outcome) expect(outcome.result.status).toBe('failed');
+          else expect(outcome.error).toBeInstanceOf(Error);
+          expect(finals.filter((final) => final.body.status === 'interrupted')).toEqual([]);
+        }
+      } finally {
+        readyAccepted();
+        releasePublication();
+        await result;
+        publication.mockRestore();
       }
-    } finally {
-      readyAccepted();
-      releasePublication();
-      await result;
-      publication.mockRestore();
     }
-  });
+  );
 
   describe('owned collector stop boundary', () => {
     const retainedCases = (['off', 'on'] as const).flatMap((capture) =>
@@ -1314,55 +1331,56 @@ describe('OpenCode resident adapter', () => {
       };
     }
 
-    it.each(
-      retainedCases
-    )('retains correlated $native at $boundary with capture=$capture after the owned stop', async (testCase) => {
-      const fault = new RuntimeCaptureStoppedError();
-      const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
-      expect(f.controller.signal.aborted).toBe(true);
-      expect(f.outcome).toMatchObject({
-        result: {
-          status: testCase.native,
-          interruptRequested: false,
-          nativeEvidence: { nativeTerminal: true },
-        },
-      });
-      expect(f.rejected).toHaveLength(1);
-      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
-      expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
-      expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
-      expect(f.accepted).not.toContain(f.rejected[0]);
-      expect(f.nativeInterrupt).not.toHaveBeenCalled();
-      expect(f.killed).not.toHaveBeenCalled();
-    });
+    it.each(retainedCases)(
+      'retains correlated $native at $boundary with capture=$capture after the owned stop',
+      async (testCase) => {
+        const fault = new RuntimeCaptureStoppedError();
+        const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
+        expect(f.controller.signal.aborted).toBe(true);
+        expect(f.outcome).toMatchObject({
+          result: {
+            status: testCase.native,
+            interruptRequested: false,
+            nativeEvidence: { nativeTerminal: true },
+          },
+        });
+        expect(f.rejected).toHaveLength(1);
+        await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+        expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
+        expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
+        expect(f.accepted).not.toContain(f.rejected[0]);
+        expect(f.nativeInterrupt).not.toHaveBeenCalled();
+        expect(f.killed).not.toHaveBeenCalled();
+      }
+    );
 
-    it.each([
-      'off',
-      'on',
-    ] as const)('retains an interruption requested before correlation with capture=%s', async (capture) => {
-      const fault = new RuntimeCaptureStoppedError();
-      const f = await startBoundary({
-        capture,
-        boundary: 'assistant',
-        native: 'interrupted',
-        fault,
-        abortAtSink: false,
-        requestedBeforeCorrelation: true,
-      });
-      expect(f.outcome).toMatchObject({
-        result: {
-          status: 'interrupted',
-          interruptRequested: true,
-          nativeEvidence: { nativeTerminal: true },
-        },
-      });
-      expect(f.nativeInterrupt).toHaveBeenCalledTimes(1);
-      expect(f.rejected).toHaveLength(1);
-      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
-      expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
-      expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
-      expect(f.killed).not.toHaveBeenCalled();
-    });
+    it.each(['off', 'on'] as const)(
+      'retains an interruption requested before correlation with capture=%s',
+      async (capture) => {
+        const fault = new RuntimeCaptureStoppedError();
+        const f = await startBoundary({
+          capture,
+          boundary: 'assistant',
+          native: 'interrupted',
+          fault,
+          abortAtSink: false,
+          requestedBeforeCorrelation: true,
+        });
+        expect(f.outcome).toMatchObject({
+          result: {
+            status: 'interrupted',
+            interruptRequested: true,
+            nativeEvidence: { nativeTerminal: true },
+          },
+        });
+        expect(f.nativeInterrupt).toHaveBeenCalledTimes(1);
+        expect(f.rejected).toHaveLength(1);
+        await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+        expect(f.emit).toHaveBeenCalledTimes(f.firstRefusedCall + 1);
+        expect(f.collectorCallCount).toBe(f.collectorCallsAtRefusal);
+        expect(f.killed).not.toHaveBeenCalled();
+      }
+    );
 
     const refusedCases = (['off', 'on'] as const).flatMap((capture) => [
       {
@@ -1392,25 +1410,24 @@ describe('OpenCode resident adapter', () => {
         abortAtSink: true,
       },
     ]);
-    it.each(refusedCases)('fails closed for $failure with capture=$capture', async ({
-      capture,
-      fault,
-      abortAtSink,
-    }) => {
-      const f = await startBoundary({
-        capture,
-        fault,
-        abortAtSink,
-        boundary: 'assistant',
-        native: 'interrupted',
-      });
-      if ('result' in f.outcome) {
-        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
-      } else expect(f.outcome.error).toBeInstanceOf(Error);
-      expect(f.rejected.length).toBeGreaterThan(0);
-      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
-      expect(f.session.childState()).toBe('absent');
-    });
+    it.each(refusedCases)(
+      'fails closed for $failure with capture=$capture',
+      async ({ capture, fault, abortAtSink }) => {
+        const f = await startBoundary({
+          capture,
+          fault,
+          abortAtSink,
+          boundary: 'assistant',
+          native: 'interrupted',
+        });
+        if ('result' in f.outcome) {
+          expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+        } else expect(f.outcome.error).toBeInstanceOf(Error);
+        expect(f.rejected.length).toBeGreaterThan(0);
+        await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+        expect(f.session.childState()).toBe('absent');
+      }
+    );
 
     it.each(
       (['off', 'on'] as const).flatMap((capture) =>
@@ -1418,87 +1435,90 @@ describe('OpenCode resident adapter', () => {
           (['completed', 'length'] as const).map((native) => ({ capture, boundary, native }))
         )
       )
-    )('fails closed for native $native with lost observations at $boundary and capture=$capture', async (testCase) => {
-      const fault = new RuntimeCaptureStoppedError();
-      const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
-      if ('result' in f.outcome)
-        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
-      else expect(f.outcome.error).toBeInstanceOf(Error);
-      expect(f.rejected.length).toBeGreaterThan(0);
-      await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
-    });
+    )(
+      'fails closed for native $native with lost observations at $boundary and capture=$capture',
+      async (testCase) => {
+        const fault = new RuntimeCaptureStoppedError();
+        const f = await startBoundary({ ...testCase, fault, abortAtSink: true });
+        if ('result' in f.outcome)
+          expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+        else expect(f.outcome.error).toBeInstanceOf(Error);
+        expect(f.rejected.length).toBeGreaterThan(0);
+        await expect(f.emit.mock.results[f.firstRefusedCall]!.value).rejects.toBe(fault);
+      }
+    );
 
-    it.each([
-      'duplicate idle',
-      'wrong prompt',
-    ] as const)('does not replace malformed %s evidence with cancellation', async (malformed) => {
-      const f = await startBoundary({
-        capture: 'on',
-        boundary: 'origin',
-        native: 'interrupted',
-        fault: new RuntimeCaptureStoppedError(),
-        abortAtSink: false,
-        malformed,
-      });
-      expect(f.controller.signal.aborted).toBe(true);
-      if ('result' in f.outcome)
-        expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
-      else expect(f.outcome.error).toBeInstanceOf(Error);
-      expect(f.session.childState()).toBe('absent');
-    });
+    it.each(['duplicate idle', 'wrong prompt'] as const)(
+      'does not replace malformed %s evidence with cancellation',
+      async (malformed) => {
+        const f = await startBoundary({
+          capture: 'on',
+          boundary: 'origin',
+          native: 'interrupted',
+          fault: new RuntimeCaptureStoppedError(),
+          abortAtSink: false,
+          malformed,
+        });
+        expect(f.controller.signal.aborted).toBe(true);
+        if ('result' in f.outcome)
+          expect(f.outcome.result).toMatchObject({ status: 'failed', assistantText: null });
+        else expect(f.outcome.error).toBeInstanceOf(Error);
+        expect(f.session.childState()).toBe('absent');
+      }
+    );
   });
 
-  it.each([
-    'interrupt',
-    'close',
-  ] as const)('removes deferred cold service startup from admission on %s', async (action) => {
-    const f = timelineFixture('new');
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    Object.assign(f.child, {
-      stdin: Object.assign(new EventEmitter(), {
-        end: () => {
-          f.child.stdout?.emit('end');
-          f.child.stderr?.emit('end');
-          Object.assign(f.child, { exitCode: 0 });
-          f.child.emit('exit', 0, null);
-          f.child.emit('close', 0, null);
-        },
-      }),
-    });
-    const inspect = vi.spyOn(f.client.config, 'get');
-    const prompt = vi.spyOn(f.client.session, 'prompt');
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
-      nativeStartupAdmission.run(() => held)
-    );
-    const controller = new AbortController();
-    const starting = session.startTurn({
-      ...turnInput(f.layout, f.creds, 'queued', 'prompt-model'),
-      signal: controller.signal,
-    });
-    const rejected = expect(starting).rejects.toThrow(
-      action === 'interrupt' ? 'queued Turn interrupted' : 'closed before startup admission'
-    );
-    try {
-      await expect(
-        session.startTurn(turnInput(f.layout, f.creds, 'duplicate', 'prompt-model'))
-      ).rejects.toThrow('already has an active Turn');
-      if (action === 'interrupt') controller.abort(new Error('queued Turn interrupted'));
-      else await expect(session.close()).resolves.toBeUndefined();
-      await rejected;
+  it.each(['interrupt', 'close'] as const)(
+    'removes deferred cold service startup from admission on %s',
+    async (action) => {
+      const f = timelineFixture('new');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      Object.assign(f.child, {
+        stdin: Object.assign(new EventEmitter(), {
+          end: () => {
+            f.child.stdout?.emit('end');
+            f.child.stderr?.emit('end');
+            Object.assign(f.child, { exitCode: 0 });
+            f.child.emit('exit', 0, null);
+            f.child.emit('close', 0, null);
+          },
+        }),
+      });
+      const inspect = vi.spyOn(f.client.config, 'get');
+      const prompt = vi.spyOn(f.client.session, 'prompt');
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const occupied = Array.from({ length: LIFECYCLE_DEFAULTS.nativeStartupConcurrency }, () =>
+        nativeStartupAdmission.run(() => held)
+      );
+      const controller = new AbortController();
+      const starting = session.startTurn({
+        ...turnInput(f.layout, f.creds, 'queued', 'prompt-model'),
+        signal: controller.signal,
+      });
+      const rejected = expect(starting).rejects.toThrow(
+        action === 'interrupt' ? 'queued Turn interrupted' : 'closed before startup admission'
+      );
+      try {
+        await expect(
+          session.startTurn(turnInput(f.layout, f.creds, 'duplicate', 'prompt-model'))
+        ).rejects.toThrow('already has an active Turn');
+        if (action === 'interrupt') controller.abort(new Error('queued Turn interrupted'));
+        else await expect(session.close()).resolves.toBeUndefined();
+        await rejected;
+        expect(inspect).not.toHaveBeenCalled();
+        expect(prompt).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await Promise.all(occupied);
+      }
       expect(inspect).not.toHaveBeenCalled();
       expect(prompt).not.toHaveBeenCalled();
-    } finally {
-      release();
-      await Promise.all(occupied);
     }
-    expect(inspect).not.toHaveBeenCalled();
-    expect(prompt).not.toHaveBeenCalled();
-  });
+  );
 
   it('preserves correlated succeeded idle with native length as length', async () => {
     const f = timelineFixture('new');
@@ -1572,24 +1592,24 @@ describe('OpenCode resident adapter', () => {
     expect(evict).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    false,
-    true,
-  ])('keeps active bootstrap services when the Workspace is its alias=%s', async (alias) => {
-    const f = timelineFixture('new');
-    const evict = vi.spyOn(f.client.debug.location, 'evict');
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const bootstrap = join(f.layout.stateRoot, 'work');
-    const workingDirectory = alias ? join(f.layout.stateRoot, 'work-alias') : bootstrap;
-    if (alias) symlinkSync(bootstrap, workingDirectory, 'dir');
-    const turn = await session.startTurn({
-      ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
-      workingDirectory,
-    });
-    expect((await turn.settled).status).toBe('completed');
-    expect(evict).not.toHaveBeenCalled();
-  });
+  it.each([false, true])(
+    'keeps active bootstrap services when the Workspace is its alias=%s',
+    async (alias) => {
+      const f = timelineFixture('new');
+      const evict = vi.spyOn(f.client.debug.location, 'evict');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const bootstrap = join(f.layout.stateRoot, 'work');
+      const workingDirectory = alias ? join(f.layout.stateRoot, 'work-alias') : bootstrap;
+      if (alias) symlinkSync(bootstrap, workingDirectory, 'dir');
+      const turn = await session.startTurn({
+        ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+        workingDirectory,
+      });
+      expect((await turn.settled).status).toBe('completed');
+      expect(evict).not.toHaveBeenCalled();
+    }
+  );
 
   it('releases native exit waiters after completed observation RPCs', async () => {
     const f = timelineFixture('new');
@@ -1724,96 +1744,96 @@ describe('OpenCode resident adapter', () => {
     }
   });
 
-  it.each([
-    'completion',
-    'body',
-  ] as const)('round-four: accepts only the entered %s sink effect after interrupted settlement', async (effect) => {
-    const f = timelineFixture('new');
-    f.client.session.interrupt = async () => ({ interrupted: true }) as never;
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let reached!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    let acceptedEntered!: () => void;
-    const acceptedHold = new Promise<void>((resolve) => {
-      acceptedEntered = resolve;
-    });
-    let afterSettlement = false;
-    type Acceptance = { record: RuntimeObservation; body?: Uint8Array; afterSettlement: boolean };
-    const accepted: Acceptance[] = [];
-    let inFlight: Omit<Acceptance, 'afterSettlement'> | undefined;
-    // Observe the next collector invocation independently of whether its sink call is suppressed.
-    const emissions = vi.spyOn(RuntimeSemanticCapture.prototype, 'emit');
-    const input = turnInput(f.layout, f.creds, 'held-acceptance', 'prompt-model');
-    const turn = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'server', value: effect === 'body' ? 'on' : 'off' },
-        emit: async (record, body) => {
-          const selected =
-            effect === 'body'
-              ? body !== undefined
-              : record.fact.kind === 'origin' && record.fact.phase === 'completed';
-          if (selected && !inFlight) {
-            inFlight = { record, ...(body ? { body } : {}) };
-            reached();
-            await held;
-            accepted.push({ ...inFlight, afterSettlement });
-            acceptedEntered();
-          } else accepted.push({ record, ...(body ? { body } : {}), afterSettlement });
+  it.each(['completion', 'body'] as const)(
+    'round-four: accepts only the entered %s sink effect after interrupted settlement',
+    async (effect) => {
+      const f = timelineFixture('new');
+      f.client.session.interrupt = async () => ({ interrupted: true }) as never;
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reached!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let acceptedEntered!: () => void;
+      const acceptedHold = new Promise<void>((resolve) => {
+        acceptedEntered = resolve;
+      });
+      let afterSettlement = false;
+      type Acceptance = { record: RuntimeObservation; body?: Uint8Array; afterSettlement: boolean };
+      const accepted: Acceptance[] = [];
+      let inFlight: Omit<Acceptance, 'afterSettlement'> | undefined;
+      // Observe the next collector invocation independently of whether its sink call is suppressed.
+      const emissions = vi.spyOn(RuntimeSemanticCapture.prototype, 'emit');
+      const input = turnInput(f.layout, f.creds, 'held-acceptance', 'prompt-model');
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: effect === 'body' ? 'on' : 'off' },
+          emit: async (record, body) => {
+            const selected =
+              effect === 'body'
+                ? body !== undefined
+                : record.fact.kind === 'origin' && record.fact.phase === 'completed';
+            if (selected && !inFlight) {
+              inFlight = { record, ...(body ? { body } : {}) };
+              reached();
+              await held;
+              accepted.push({ ...inFlight, afterSettlement });
+              acceptedEntered();
+            } else accepted.push({ record, ...(body ? { body } : {}), afterSettlement });
+          },
         },
-      },
-    });
-    const nextInvoked = () =>
-      emissions.mock.calls.some(([, fact]) =>
-        effect === 'body'
-          ? fact.kind === 'origin' && fact.phase === 'completed'
-          : fact.kind === 'coverage' && fact.coverage === 'ended'
-      );
-    try {
-      await entered;
-      await turn.interrupt(new LifecycleDeadline(120, 80));
-      expect((await turn.settled).status).toBe('failed');
-      afterSettlement = true;
-      expect(
-        accepted.some(({ record, body }) => record === inFlight?.record && body === inFlight.body)
-      ).toBe(false);
-      expect(nextInvoked()).toBe(false);
-      expect(
-        accepted.some(
-          ({ record }) =>
-            record.fact.kind === 'coverage' &&
-            record.fact.coverage === 'unavailable' &&
-            record.fact.reason === 'collector-failed'
-        )
-      ).toBe(true);
-      release();
-      await acceptedHold;
-      await vi.waitFor(() => expect(nextInvoked()).toBe(true), { timeout: 500, interval: 10 });
-      expect(accepted.filter((entry) => entry.afterSettlement)).toEqual([
-        { ...inFlight, afterSettlement: true },
-      ]);
-      if (effect === 'body') expect(Buffer.from(inFlight!.body!).toString()).toBe('answer');
-      else expect(inFlight?.record.fact).toMatchObject({ kind: 'origin', phase: 'completed' });
-      const nextAccepted = accepted.some(({ record }) =>
-        effect === 'body'
-          ? record.fact.kind === 'origin' && record.fact.phase === 'completed'
-          : record.fact.kind === 'coverage' && record.fact.coverage === 'ended'
-      );
-      expect(nextAccepted).toBe(false);
-    } finally {
-      release();
-      emissions.mockRestore();
-      await turn.settled.catch(() => undefined);
+      });
+      const nextInvoked = () =>
+        emissions.mock.calls.some(([, fact]) =>
+          effect === 'body'
+            ? fact.kind === 'origin' && fact.phase === 'completed'
+            : fact.kind === 'coverage' && fact.coverage === 'ended'
+        );
+      try {
+        await entered;
+        await turn.interrupt(new LifecycleDeadline(120, 80));
+        expect((await turn.settled).status).toBe('failed');
+        afterSettlement = true;
+        expect(
+          accepted.some(({ record, body }) => record === inFlight?.record && body === inFlight.body)
+        ).toBe(false);
+        expect(nextInvoked()).toBe(false);
+        expect(
+          accepted.some(
+            ({ record }) =>
+              record.fact.kind === 'coverage' &&
+              record.fact.coverage === 'unavailable' &&
+              record.fact.reason === 'collector-failed'
+          )
+        ).toBe(true);
+        release();
+        await acceptedHold;
+        await vi.waitFor(() => expect(nextInvoked()).toBe(true), { timeout: 500, interval: 10 });
+        expect(accepted.filter((entry) => entry.afterSettlement)).toEqual([
+          { ...inFlight, afterSettlement: true },
+        ]);
+        if (effect === 'body') expect(Buffer.from(inFlight!.body!).toString()).toBe('answer');
+        else expect(inFlight?.record.fact).toMatchObject({ kind: 'origin', phase: 'completed' });
+        const nextAccepted = accepted.some(({ record }) =>
+          effect === 'body'
+            ? record.fact.kind === 'origin' && record.fact.phase === 'completed'
+            : record.fact.kind === 'coverage' && record.fact.coverage === 'ended'
+        );
+        expect(nextAccepted).toBe(false);
+      } finally {
+        release();
+        emissions.mockRestore();
+        await turn.settled.catch(() => undefined);
+      }
     }
-  });
+  );
 
   it('round-three: bounds the structural sink before prompt admission', async () => {
     const f = timelineFixture('new');
@@ -1876,90 +1896,90 @@ describe('OpenCode resident adapter', () => {
     }
   });
 
-  it.each([
-    'stop',
-    'interrupt',
-  ] as const)('round-three: bounds a short-deadline join of a running %s', async (owner) => {
-    const f = timelineFixture('new');
-    const signals: string[] = [];
-    let signaled!: () => void;
-    const stopping = new Promise<void>((resolve) => {
-      signaled = resolve;
-    });
-    f.child.kill = (signal) => {
-      signals.push(String(signal));
-      signaled();
-      if (signal === 'SIGKILL') {
-        Object.assign(f.child, { exitCode: 0 });
-        f.child.emit('exit', 0, null);
-        f.child.emit('close', 0, null);
-      }
-      return true;
-    };
-    f.client.session.get = async () => ({
-      id: 'sess-1',
-      time: { idle: 0 },
-      model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
-    });
-    f.client.session.interrupt = async () => ({ interrupted: true }) as never;
-    const adapter = createOpenCodeAdapter({
-      loadClient: async () => ({ OpenCode: { make: () => f.client } }),
-      resolveBinary: () => '/unused',
-      spawnServer: () => f.child,
-      stopTimeoutMs: 150,
-    });
-    const session = await adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'joining', 'prompt-model'));
-    turn.settled.catch(() => undefined);
-    const running = (
-      owner === 'stop' ? session.close() : turn.interrupt(new LifecycleDeadline(500, 460))
-    ).catch(() => undefined);
-    try {
-      await stopping;
-      const started = performance.now();
-      await expect(turn.interrupt(new LifecycleDeadline(30, 10))).rejects.toThrow(
-        /timed out|stop|proof/i
-      );
-      expect(performance.now() - started).toBeLessThan(120);
-      expect(signals).toEqual(['SIGTERM']);
-      await running;
-      expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
-    } finally {
-      await running;
-      await turn.settled.catch(() => undefined);
-    }
-  });
-
-  it.each([
-    'missing EOF',
-    'stream error',
-  ] as const)('round-three: refuses retaining close with %s', async (failure) => {
-    const f = timelineFixture('new');
-    Object.assign(f.child, {
-      stdin: Object.assign(new EventEmitter(), {
-        end: () => {
-          if (failure === 'stream error') {
-            f.child.stdout?.emit('error', new Error('lost native output'));
-            f.child.stdout?.emit('end');
-            f.child.stderr?.emit('end');
-          }
+  it.each(['stop', 'interrupt'] as const)(
+    'round-three: bounds a short-deadline join of a running %s',
+    async (owner) => {
+      const f = timelineFixture('new');
+      const signals: string[] = [];
+      let signaled!: () => void;
+      const stopping = new Promise<void>((resolve) => {
+        signaled = resolve;
+      });
+      f.child.kill = (signal) => {
+        signals.push(String(signal));
+        signaled();
+        if (signal === 'SIGKILL') {
           Object.assign(f.child, { exitCode: 0 });
           f.child.emit('exit', 0, null);
           f.child.emit('close', 0, null);
-        },
-      }),
-    });
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    await expect(session.close()).rejects.toThrow(
-      'OpenCode native drain or persistence flush was not proved. ' +
-        `(activeTurn=false, normalExit=true, stdoutEof=${failure === 'stream error'}, ` +
-        `stderrEof=${failure === 'stream error'}, streamError=${failure === 'stream error'}, ` +
-        'stopRequested=false, forcedStop=false)'
-    );
-    expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
-  });
+        }
+        return true;
+      };
+      f.client.session.get = async () => ({
+        id: 'sess-1',
+        time: { idle: 0 },
+        model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+      });
+      f.client.session.interrupt = async () => ({ interrupted: true }) as never;
+      const adapter = createOpenCodeAdapter({
+        loadClient: async () => ({ OpenCode: { make: () => f.client } }),
+        resolveBinary: () => '/unused',
+        spawnServer: () => f.child,
+        stopTimeoutMs: 150,
+      });
+      const session = await adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const turn = await session.startTurn(turnInput(f.layout, f.creds, 'joining', 'prompt-model'));
+      turn.settled.catch(() => undefined);
+      const running = (
+        owner === 'stop' ? session.close() : turn.interrupt(new LifecycleDeadline(500, 460))
+      ).catch(() => undefined);
+      try {
+        await stopping;
+        const started = performance.now();
+        await expect(turn.interrupt(new LifecycleDeadline(30, 10))).rejects.toThrow(
+          /timed out|stop|proof/i
+        );
+        expect(performance.now() - started).toBeLessThan(120);
+        expect(signals).toEqual(['SIGTERM']);
+        await running;
+        expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+      } finally {
+        await running;
+        await turn.settled.catch(() => undefined);
+      }
+    }
+  );
+
+  it.each(['missing EOF', 'stream error'] as const)(
+    'round-three: refuses retaining close with %s',
+    async (failure) => {
+      const f = timelineFixture('new');
+      Object.assign(f.child, {
+        stdin: Object.assign(new EventEmitter(), {
+          end: () => {
+            if (failure === 'stream error') {
+              f.child.stdout?.emit('error', new Error('lost native output'));
+              f.child.stdout?.emit('end');
+              f.child.stderr?.emit('end');
+            }
+            Object.assign(f.child, { exitCode: 0 });
+            f.child.emit('exit', 0, null);
+            f.child.emit('close', 0, null);
+          },
+        }),
+      });
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      await expect(session.close()).rejects.toThrow(
+        'OpenCode native drain or persistence flush was not proved. ' +
+          `(activeTurn=false, normalExit=true, stdoutEof=${failure === 'stream error'}, ` +
+          `stderrEof=${failure === 'stream error'}, streamError=${failure === 'stream error'}, ` +
+          'stopRequested=false, forcedStop=false)'
+      );
+      expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+    }
+  );
 
   it.each(['off', 'on'] as const)('collects structural metadata with content %s', async (value) => {
     const f = timelineFixture('new');
@@ -2013,179 +2033,179 @@ describe('OpenCode resident adapter', () => {
     );
   });
 
-  it.each([
-    'off',
-    'on',
-  ] as const)('captures native tool structure and admits only safe bodies with content %s', async (value) => {
-    const f = timelineFixture('new', [
-      { type: 'reasoning', text: 'private-reasoning' },
-      {
-        type: 'tool',
-        id: 'call-1',
-        name: 'shell',
-        state: {
-          status: 'completed',
-          input: { command: 'echo safe' },
-          content: [{ type: 'text', text: 'safe-result' }],
+  it.each(['off', 'on'] as const)(
+    'captures native tool structure and admits only safe bodies with content %s',
+    async (value) => {
+      const f = timelineFixture('new', [
+        { type: 'reasoning', text: 'private-reasoning' },
+        {
+          type: 'tool',
+          id: 'call-1',
+          name: 'shell',
+          state: {
+            status: 'completed',
+            input: { command: 'echo safe' },
+            content: [{ type: 'text', text: 'safe-result' }],
+          },
         },
-      },
-      {
-        type: 'tool',
-        id: 'call-2',
-        name: 'secret-tool',
-        state: {
-          status: 'error',
-          input: { value: 'known-secret' },
-          content: [{ type: 'text', text: 'known-secret' }],
+        {
+          type: 'tool',
+          id: 'call-2',
+          name: 'secret-tool',
+          state: {
+            status: 'error',
+            input: { value: 'known-secret' },
+            content: [{ type: 'text', text: 'known-secret' }],
+          },
         },
-      },
-      {
-        type: 'tool',
-        id: 'error-only',
-        name: 'shell',
-        state: {
-          status: 'error',
-          input: { command: 'exit 1' },
-          error: { type: 'ShellError', message: 'safe-tool-failure' },
+        {
+          type: 'tool',
+          id: 'error-only',
+          name: 'shell',
+          state: {
+            status: 'error',
+            input: { command: 'exit 1' },
+            error: { type: 'ShellError', message: 'safe-tool-failure' },
+          },
         },
-      },
-      { type: 'tool', id: 'call-3', state: { status: 'unknown' } },
-    ]);
-    const list = f.client.message.list;
-    f.client.message.list = async (input) => {
-      const response = await list(input);
-      return {
-        ...response,
-        data: response.data.map((row) =>
-          row.id === 'answer-2'
-            ? {
-                ...row,
-                error: {
-                  type: 'ProviderError',
-                  message: `Native generation failed: ${f.creds.inferenceCredential}.`,
-                  response: { body: 'private-provider-body' },
-                },
-              }
-            : row
-        ),
-      } as typeof response;
-    };
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
-    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
-    const turn = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'server', value },
-        credentialValues: ['known-secret'],
-        emit: async (record, body) => {
-          received.push({ record, ...(body ? { body } : {}) });
+        { type: 'tool', id: 'call-3', state: { status: 'unknown' } },
+      ]);
+      const list = f.client.message.list;
+      f.client.message.list = async (input) => {
+        const response = await list(input);
+        return {
+          ...response,
+          data: response.data.map((row) =>
+            row.id === 'answer-2'
+              ? {
+                  ...row,
+                  error: {
+                    type: 'ProviderError',
+                    message: `Native generation failed: ${f.creds.inferenceCredential}.`,
+                    response: { body: 'private-provider-body' },
+                  },
+                }
+              : row
+          ),
+        } as typeof response;
+      };
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
+      const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value },
+          credentialValues: ['known-secret'],
+          emit: async (record, body) => {
+            received.push({ record, ...(body ? { body } : {}) });
+          },
         },
-      },
-    });
-    expect((await turn.settled).status).toBe('completed');
-    expect(received.map(({ record }) => record.fact)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'tool', phase: 'completed', toolName: 'shell' }),
-        expect.objectContaining({ kind: 'tool', phase: 'failed', toolName: 'secret-tool' }),
-        expect.objectContaining({
-          kind: 'coverage',
-          coverage: 'unavailable',
-          reason: 'malformed-frame',
-        }),
-      ])
-    );
-    const bodies = received
-      .filter(({ body }) => body)
-      .map(({ body }) => Buffer.from(body!).toString())
-      .join(' ');
-    expect(bodies).not.toContain('known-secret');
-    expect(bodies).not.toContain('private-reasoning');
-    if (value === 'off') expect(bodies).toBe('');
-    else {
-      expect(bodies).toContain('safe-result');
-      expect(bodies).toContain('echo safe');
-      expect(bodies).toContain('safe-tool-failure');
-    }
-    const failed = await (await session.startTurn({ ...input, turnId: 'failed-turn' })).settled;
-    expect(failed).toMatchObject({
-      status: 'failed',
-      assistantText: null,
-      diagnostics: { native: 'Native generation failed: [redacted].' },
-    });
-    expect(JSON.stringify(failed)).not.toContain(f.creds.inferenceCredential);
-    expect(JSON.stringify(failed)).not.toContain('private-provider-body');
-  });
-
-  it.each([
-    'off',
-    'on',
-  ] as const)('publishes running tool structure before native terminal with content %s', async (value) => {
-    const f = timelineFixture('new', [
-      {
-        type: 'tool',
-        id: 'live-call',
-        name: 'shell',
-        state: { status: 'running', input: { command: 'echo live' } },
-      },
-    ]);
-    let terminal = false;
-    const get = f.client.session.get;
-    f.client.session.get = async (input) => {
-      const info = await get(input);
-      return terminal ? info : { ...info, time: { idle: 0 } };
-    };
-    const list = f.client.message.list;
-    f.client.message.list = async (input) => {
-      const response = await list(input);
-      return terminal
-        ? response
-        : {
-            ...response,
-            data: response.data.map((row) =>
-              row.type === 'assistant' ? { ...row, finish: undefined } : row
-            ),
-          };
-    };
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const received: RuntimeObservation[] = [];
-    let observed!: () => void;
-    const running = new Promise<void>((resolve) => {
-      observed = resolve;
-    });
-    const input = turnInput(f.layout, f.creds, 'live', 'prompt-model');
-    const turn = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'server', value },
-        emit: async (record) => {
-          received.push(record);
-          if (record.fact.kind === 'tool' && record.fact.phase === 'running') observed();
-        },
-      },
-    });
-    try {
-      await nativeTestBound(
-        running,
-        500,
-        'Running tool metadata did not reach the sink before terminal.'
-      );
-      expect(session.nativeEvidence?.().nativeTerminal).toBe(false);
-      expect(received.map((record) => record.fact)).toEqual(
+      });
+      expect((await turn.settled).status).toBe('completed');
+      expect(received.map(({ record }) => record.fact)).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ kind: 'assistant', phase: 'running' }),
-          expect.objectContaining({ kind: 'tool', phase: 'running' }),
+          expect.objectContaining({ kind: 'tool', phase: 'completed', toolName: 'shell' }),
+          expect.objectContaining({ kind: 'tool', phase: 'failed', toolName: 'secret-tool' }),
+          expect.objectContaining({
+            kind: 'coverage',
+            coverage: 'unavailable',
+            reason: 'malformed-frame',
+          }),
         ])
       );
-    } finally {
-      terminal = true;
-      await turn.settled;
+      const bodies = received
+        .filter(({ body }) => body)
+        .map(({ body }) => Buffer.from(body!).toString())
+        .join(' ');
+      expect(bodies).not.toContain('known-secret');
+      expect(bodies).not.toContain('private-reasoning');
+      if (value === 'off') expect(bodies).toBe('');
+      else {
+        expect(bodies).toContain('safe-result');
+        expect(bodies).toContain('echo safe');
+        expect(bodies).toContain('safe-tool-failure');
+      }
+      const failed = await (await session.startTurn({ ...input, turnId: 'failed-turn' })).settled;
+      expect(failed).toMatchObject({
+        status: 'failed',
+        assistantText: null,
+        diagnostics: { native: 'Native generation failed: [redacted].' },
+      });
+      expect(JSON.stringify(failed)).not.toContain(f.creds.inferenceCredential);
+      expect(JSON.stringify(failed)).not.toContain('private-provider-body');
     }
-  });
+  );
+
+  it.each(['off', 'on'] as const)(
+    'publishes running tool structure before native terminal with content %s',
+    async (value) => {
+      const f = timelineFixture('new', [
+        {
+          type: 'tool',
+          id: 'live-call',
+          name: 'shell',
+          state: { status: 'running', input: { command: 'echo live' } },
+        },
+      ]);
+      let terminal = false;
+      const get = f.client.session.get;
+      f.client.session.get = async (input) => {
+        const info = await get(input);
+        return terminal ? info : { ...info, time: { idle: 0 } };
+      };
+      const list = f.client.message.list;
+      f.client.message.list = async (input) => {
+        const response = await list(input);
+        return terminal
+          ? response
+          : {
+              ...response,
+              data: response.data.map((row) =>
+                row.type === 'assistant' ? { ...row, finish: undefined } : row
+              ),
+            };
+      };
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const received: RuntimeObservation[] = [];
+      let observed!: () => void;
+      const running = new Promise<void>((resolve) => {
+        observed = resolve;
+      });
+      const input = turnInput(f.layout, f.creds, 'live', 'prompt-model');
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value },
+          emit: async (record) => {
+            received.push(record);
+            if (record.fact.kind === 'tool' && record.fact.phase === 'running') observed();
+          },
+        },
+      });
+      try {
+        await nativeTestBound(
+          running,
+          500,
+          'Running tool metadata did not reach the sink before terminal.'
+        );
+        expect(session.nativeEvidence?.().nativeTerminal).toBe(false);
+        expect(received.map((record) => record.fact)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: 'assistant', phase: 'running' }),
+            expect.objectContaining({ kind: 'tool', phase: 'running' }),
+          ])
+        );
+      } finally {
+        terminal = true;
+        await turn.settled;
+      }
+    }
+  );
 
   it('excludes adapter-known credentials from restricted capture even when the shared input omits them', async () => {
     const parts: object[] = [];
@@ -2357,72 +2377,73 @@ describe('OpenCode resident adapter', () => {
     }
   }, 15_000);
 
-  it.each([
-    'new',
-    'empty',
-  ] as const)('counts only this Turn native messages with retained history and %s collection', async (second) => {
-    const f = timelineFixture(second);
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const first = new TurnTimeline();
-    expect(
-      (
-        await (
-          await session.startTurn({
-            ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
-            recordLifecycleFact: first.record,
-          })
-        ).settled
-      ).status
-    ).toBe('completed');
-    const later = new TurnTimeline();
-    expect(
-      (
-        await (
-          await session.startTurn({
-            ...turnInput(f.layout, f.creds, 'second', 'prompt-model'),
-            recordLifecycleFact: later.record,
-          })
-        ).settled
-      ).status
-    ).toBe('failed');
-    const snapshot = JSON.parse(later.seal());
-    const events = snapshot.entries.filter(
-      (entry: { label: string }) => entry.label === 'native_first' || entry.label === 'native_last'
-    );
-    if (second === 'new')
-      expect(events).toEqual([
-        expect.objectContaining({ label: 'native_first' }),
-        expect.objectContaining({ label: 'native_last', count: 3 }),
-      ]);
-    else expect(events).toEqual([]);
-  });
+  it.each(['new', 'empty'] as const)(
+    'counts only this Turn native messages with retained history and %s collection',
+    async (second) => {
+      const f = timelineFixture(second);
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const first = new TurnTimeline();
+      expect(
+        (
+          await (
+            await session.startTurn({
+              ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+              recordLifecycleFact: first.record,
+            })
+          ).settled
+        ).status
+      ).toBe('completed');
+      const later = new TurnTimeline();
+      expect(
+        (
+          await (
+            await session.startTurn({
+              ...turnInput(f.layout, f.creds, 'second', 'prompt-model'),
+              recordLifecycleFact: later.record,
+            })
+          ).settled
+        ).status
+      ).toBe('failed');
+      const snapshot = JSON.parse(later.seal());
+      const events = snapshot.entries.filter(
+        (entry: { label: string }) =>
+          entry.label === 'native_first' || entry.label === 'native_last'
+      );
+      if (second === 'new')
+        expect(events).toEqual([
+          expect.objectContaining({ label: 'native_first' }),
+          expect.objectContaining({ label: 'native_last', count: 3 }),
+        ]);
+      else expect(events).toEqual([]);
+    }
+  );
 
-  it.each([
-    'completed',
-    'failed',
-  ] as const)('contains native exit recorder faults after a %s Turn', async (status) => {
-    const f = timelineFixture(status === 'failed' ? 'failed' : 'new');
-    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
-    sessions.push(session);
-    const recordLifecycleFact = vi.fn((fact: { label: string }) => {
-      if (fact.label === 'host_exit') throw new Error('exit recorder fault');
-    });
-    const turn = await session.startTurn({
-      ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
-      recordLifecycleFact,
-    });
-    expect((await turn.settled).status).toBe(status);
-    Object.assign(f.child, { exitCode: 17 });
-    expect(() => f.child.emit('exit', 17, null)).not.toThrow();
-    expect(session.childState()).toBe('absent');
-    await session.exited;
-    expect(recordLifecycleFact).toHaveBeenCalledWith({
-      label: 'host_exit',
-      code: 17,
-      signal: null,
-    });
-  });
+  it.each(['completed', 'failed'] as const)(
+    'contains native exit recorder faults after a %s Turn',
+    async (status) => {
+      const f = timelineFixture(status === 'failed' ? 'failed' : 'new');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      const recordLifecycleFact = vi.fn((fact: { label: string }) => {
+        if (fact.label === 'host_exit') throw new Error('exit recorder fault');
+      });
+      const turn = await session.startTurn({
+        ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+        recordLifecycleFact,
+      });
+      expect((await turn.settled).status).toBe(status);
+      Object.assign(f.child, { exitCode: 17 });
+      expect(() => f.child.emit('exit', 17, null)).not.toThrow();
+      expect(session.childState()).toBe('absent');
+      await session.exited;
+      expect(recordLifecycleFact).toHaveBeenCalledWith({
+        label: 'host_exit',
+        code: 17,
+        signal: null,
+      });
+    }
+  );
 
   it('bounds diagnostics to 16 KiB and redacts both loopback credentials', () => {
     const secret = 'c'.repeat(43);
@@ -2432,57 +2453,57 @@ describe('OpenCode resident adapter', () => {
     expect(diagnostic.length).toBe(16 * 1024);
   });
 
-  it.each([
-    'UND_ERR_SOCKET',
-    'ECONNREFUSED',
-  ])('preserves transport cause code %s without credentials or secret URLs', async (code) => {
-    const { ClientError } = await import('@opencode/client');
-    const creds = loopback('transport-cause', 'http://127.0.0.1:9');
-    const root = Object.assign(
-      new Error(
-        `other side closed ${creds.capabilityCredential} https://user:password@example.test/private?token=unknown-secret#fragment`
-      ),
-      { code }
-    );
-    // A cyclic vendor cause must not hang error reporting or duplicate socket metadata.
-    root.cause = root;
-    const transport = new ClientError('Transport', {
-      cause: new TypeError('fetch failed', { cause: root }),
-    });
-    const module = failingModule('create');
-    const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
-    client.session.create = async () => {
-      throw transport;
-    };
-    module.OpenCode.make = () => client;
-    const child = stubbornChild([]);
-    child.kill = () => {
-      child.emit('exit', null, 'SIGTERM');
-      child.emit('close', null, 'SIGTERM');
-      return true;
-    };
-    const adapter = createOpenCodeAdapter({
-      loadClient: async () => module,
-      resolveBinary: () => '/unused',
-      spawnServer: () => child,
-    });
-    const failure = await adapter
-      .openSession(openInput(makeRoots(), creds))
-      .catch((error: Error) => error);
-    expect(failure).toBeInstanceOf(Error);
-    if (!(failure instanceof Error)) return;
-    expect(failure.message).toContain('Transport: fetch failed');
-    expect(failure.message).toContain(`${code}: other side closed`);
-    expect(failure.message.match(new RegExp(code, 'g'))).toHaveLength(1);
-    for (const secret of [creds.capabilityCredential, 'password', 'unknown-secret', 'fragment']) {
-      expect(failure.message).not.toContain(secret);
+  it.each(['UND_ERR_SOCKET', 'ECONNREFUSED'])(
+    'preserves transport cause code %s without credentials or secret URLs',
+    async (code) => {
+      const { ClientError } = await import('@opencode/client');
+      const creds = loopback('transport-cause', 'http://127.0.0.1:9');
+      const root = Object.assign(
+        new Error(
+          `other side closed ${creds.capabilityCredential} https://user:password@example.test/private?token=unknown-secret#fragment`
+        ),
+        { code }
+      );
+      // A cyclic vendor cause must not hang error reporting or duplicate socket metadata.
+      root.cause = root;
+      const transport = new ClientError('Transport', {
+        cause: new TypeError('fetch failed', { cause: root }),
+      });
+      const module = failingModule('create');
+      const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
+      client.session.create = async () => {
+        throw transport;
+      };
+      module.OpenCode.make = () => client;
+      const child = stubbornChild([]);
+      child.kill = () => {
+        child.emit('exit', null, 'SIGTERM');
+        child.emit('close', null, 'SIGTERM');
+        return true;
+      };
+      const adapter = createOpenCodeAdapter({
+        loadClient: async () => module,
+        resolveBinary: () => '/unused',
+        spawnServer: () => child,
+      });
+      const failure = await adapter
+        .openSession(openInput(makeRoots(), creds))
+        .catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      if (!(failure instanceof Error)) return;
+      expect(failure.message).toContain('Transport: fetch failed');
+      expect(failure.message).toContain(`${code}: other side closed`);
+      expect(failure.message.match(new RegExp(code, 'g'))).toHaveLength(1);
+      for (const secret of [creds.capabilityCredential, 'password', 'unknown-secret', 'fragment']) {
+        expect(failure.message).not.toContain(secret);
+      }
+      expect(Buffer.byteLength(failure.message)).toBeLessThanOrEqual(16 * 1024);
+      const bounded = boundOpenCodeDiagnostic(`${failure.message}${'é'.repeat(20_000)}`, []);
+      expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(16 * 1024);
+      expect(bounded).toContain(`${code}: other side closed`);
+      expect(bounded).not.toContain('\uFFFD');
     }
-    expect(Buffer.byteLength(failure.message)).toBeLessThanOrEqual(16 * 1024);
-    const bounded = boundOpenCodeDiagnostic(`${failure.message}${'é'.repeat(20_000)}`, []);
-    expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(16 * 1024);
-    expect(bounded).toContain(`${code}: other side closed`);
-    expect(bounded).not.toContain('\uFFFD');
-  });
+  );
 
   it('registers the production adapter and resolves only the pinned CLI', () => {
     expect(WORKER_ADAPTERS.opencode).toBe(opencodeAdapter);
@@ -5981,109 +6002,110 @@ it.each([
   expect(() => assertNativeEffortRequests([primary, request], 'high')).toThrow();
 });
 
-it.each([
-  { levels: [] },
-  { levels: ['low'] },
-])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
-  levels,
-}) => {
-  const inference = await startSyntheticInference(() => ({ text: 'effort-answer' }));
-  servers.push(inference);
-  const layout = makeRoots();
-  installNativeRequestProbe(layout);
-  let nativeTitles = 0;
-  const creds = loopback('effort', inference.url);
-  const session = await opencodeAdapter.openSession(openInput(layout, creds));
-  sessions.push(session);
-  const reasoning = {
-    ...acceptedRoute(creds, 'effort-model'),
-    reasoningEffortLevels: levels as ReasoningEffort[],
-    modelParameters: {
-      contextWindow: 32000,
-      maxOutputTokens: 1024,
-      inputModalities: ['text'] as const,
-      reasoning: true,
-    },
-  };
-  const plain = {
-    ...reasoning,
-    model: 'plain-model',
-    id: 'plain-model',
-    reasoningEffortLevels: undefined,
-  };
-  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
-    ...turnInput(layout, creds, text, llmRoute.model, llmRoute),
-    allowedLlmRoutes: [reasoning, plain],
-  });
-  const bodies = () =>
-    inference.requests
-      .filter(
-        (request) => request.body.model === 'effort-model' || request.body.model === 'plain-model'
-      )
-      .map((request) => request.body);
-  const level = (body: Record<string, unknown>) => body.reasoning_effort;
-  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
-  for (const [index, effort] of (
-    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
-  ).entries()) {
-    // Live Gateway advertisement never resets or restricts the retained native selection.
-    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+it.each([{ levels: [] }, { levels: ['low'] }])(
+  's4: delivers effort on retained native conversation and reports native selection %j',
+  async ({ levels }) => {
+    const inference = await startSyntheticInference(() => ({ text: 'effort-answer' }));
+    servers.push(inference);
+    const layout = makeRoots();
+    installNativeRequestProbe(layout);
+    let nativeTitles = 0;
+    const creds = loopback('effort', inference.url);
+    const session = await opencodeAdapter.openSession(openInput(layout, creds));
+    sessions.push(session);
+    const reasoning = {
+      ...acceptedRoute(creds, 'effort-model'),
+      reasoningEffortLevels: levels as ReasoningEffort[],
+      modelParameters: {
+        contextWindow: 32000,
+        maxOutputTokens: 1024,
+        inputModalities: ['text'] as const,
+        reasoning: true,
+      },
+    };
+    const plain = {
+      ...reasoning,
+      model: 'plain-model',
+      id: 'plain-model',
+      reasoningEffortLevels: undefined,
+    };
+    const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
+      ...turnInput(layout, creds, text, llmRoute.model, llmRoute),
+      allowedLlmRoutes: [reasoning, plain],
+    });
+    const bodies = () =>
+      inference.requests
+        .filter(
+          (request) => request.body.model === 'effort-model' || request.body.model === 'plain-model'
+        )
+        .map((request) => request.body);
+    const level = (body: Record<string, unknown>) => body.reasoning_effort;
+    let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+    for (const [index, effort] of (
+      ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+    ).entries()) {
+      // Live Gateway advertisement never resets or restricts the retained native selection.
+      if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+      const before = bodies().length;
+      const requestBefore = inference.requests.length;
+      const admitted = input(`effort-${index}`);
+      const result = await (
+        await session.startTurn({
+          ...admitted,
+          ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        })
+      ).settled;
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+      const expected = effort ?? 'high';
+      expect(bodies().slice(before).length).toBeGreaterThan(0);
+      expect(bodies().slice(before).map(level)).toEqual(expect.arrayContaining([expected]));
+      // COORD ruling 2026-10-31: AEP per-request precedence permits the native title variant.
+      const native = assertNativeEffortRequests(inference.requests.slice(requestBefore), expected);
+      nativeTitles += native.titles;
+      expect(native.primary.every((request) => level(request.body) === expected)).toBe(true);
+      expect(result.diagnostics?.reasoningEffort).toBe(expected);
+
+      if (handle) expect(await session.nativeHandle()).toEqual(handle);
+      else handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+    }
     const before = bodies().length;
     const requestBefore = inference.requests.length;
-    const admitted = input(`effort-${index}`);
     const result = await (
-      await session.startTurn({
-        ...admitted,
-        ...(effort === undefined ? {} : { reasoningEffort: effort }),
-      })
+      await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
     ).settled;
     expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-    const expected = effort ?? 'high';
     expect(bodies().slice(before).length).toBeGreaterThan(0);
-    expect(bodies().slice(before).map(level)).toEqual(expect.arrayContaining([expected]));
-    // COORD ruling 2026-10-31: AEP per-request precedence permits the native title variant.
-    const native = assertNativeEffortRequests(inference.requests.slice(requestBefore), expected);
-    nativeTitles += native.titles;
-    expect(native.primary.every((request) => level(request.body) === expected)).toBe(true);
-    expect(result.diagnostics?.reasoningEffort).toBe(expected);
-
-    if (handle) expect(await session.nativeHandle()).toEqual(handle);
-    else handle = await session.nativeHandle();
-    expect(handle.state).toBe('ready');
-  }
-  const before = bodies().length;
-  const requestBefore = inference.requests.length;
-  const result = await (
-    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
-  ).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(bodies().slice(before).length).toBeGreaterThan(0);
-  expect(
-    bodies()
-      .slice(before)
-      .every((body) => level(body) === undefined)
-  ).toBe(true);
-  for (const request of inference.requests.slice(requestBefore))
-    nativeRequestMetadata(request.headers);
-  expect(nativeTitles).toBeGreaterThan(0);
-  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
-  expect(result.diagnostics?.reasoningEffort).toBe('unknown');
-  expect(await session.nativeHandle()).toEqual(handle);
-  const count = bodies().length;
-  await expect(
-    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
-  await expect(
-    session.startTurn({
-      ...input('unknown-route'),
-      llmRoute: invalidRoute,
-      allowedLlmRoutes: [invalidRoute, plain],
-    })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-}, 180000);
+    expect(
+      bodies()
+        .slice(before)
+        .every((body) => level(body) === undefined)
+    ).toBe(true);
+    for (const request of inference.requests.slice(requestBefore))
+      nativeRequestMetadata(request.headers);
+    expect(nativeTitles).toBeGreaterThan(0);
+    expect(result.diagnostics?.reasoningEffortDelivery).toBe(
+      'not-delivered: model has no reasoning'
+    );
+    expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+    expect(await session.nativeHandle()).toEqual(handle);
+    const count = bodies().length;
+    await expect(
+      session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+    const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+    await expect(
+      session.startTurn({
+        ...input('unknown-route'),
+        llmRoute: invalidRoute,
+        allowedLlmRoutes: [invalidRoute, plain],
+      })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+  },
+  180000
+);
 
 it('s4: rejects an unproved native variant before prompting and proves cleanup', async () => {
   const inference = await startSyntheticInference(() => ({ text: 'unexpected' }));

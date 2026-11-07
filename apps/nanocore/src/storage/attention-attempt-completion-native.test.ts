@@ -223,98 +223,95 @@ describe('native Attention attempt completion', () => {
     expect(fault.acknowledgements).toBe(1);
   });
 
-  it.each([
-    'failed-no-send',
-    'delivery-unknown',
-    'throw',
-    'malformed',
-  ] as const)('records the original transport outcome %s without a Main completion write', async (mode) => {
-    const f = fixture();
-    let sends = 0;
-    const result = send(f, async () => {
-      sends += 1;
-      f.coreDb.sqlite.pragma('query_only = ON');
-      if (mode === 'throw') throw new Error('Adapter acknowledgement unavailable.');
-      if (mode === 'malformed') return { status: 'not-an-outcome' as 'sent' };
-      return { status: mode };
-    });
-    const status = mode === 'failed-no-send' ? 'failed-no-send' : 'delivery-unknown';
-    const failureCode = mode === 'failed-no-send' ? 'transport-refused' : 'transport-unknown';
-    await expect(result).resolves.toMatchObject({ status, attempt: { status, failureCode } });
-    expect(outcome(f)).toEqual({ status, failureCode, finishedAt });
-    expect(sends).toBe(1);
-    expect(fault.requests).toHaveLength(1);
-    expect(count(f).count).toBe(1);
-  });
-
-  it.each([
-    'sent',
-    'invalid-path',
-    'ineligible',
-  ] as const)('waits for the actual native completion ACK before publishing %s', async (mode) => {
-    const f = fixture();
-    const arrived = holdAcknowledgement();
-    let sends = 0;
-    if (mode === 'invalid-path')
-      f.options.buildAppPath = () => {
+  it.each(['failed-no-send', 'delivery-unknown', 'throw', 'malformed'] as const)(
+    'records the original transport outcome %s without a Main completion write',
+    async (mode) => {
+      const f = fixture();
+      let sends = 0;
+      const result = send(f, async () => {
+        sends += 1;
         f.coreDb.sqlite.pragma('query_only = ON');
-        return 'https://outside.invalid/';
-      };
-    const result = track(
-      f.notifications.deliver(
-        {
-          deliveryId: f.delivery.id,
-          recipientUserId,
-          channel: 'discord',
-          retry: false,
-          expectedAttemptId: null,
-        },
-        {
-          isEligible: () => {
-            if (mode === 'ineligible') f.coreDb.sqlite.pragma('query_only = ON');
-            return mode !== 'ineligible';
-          },
-          transport: async () => {
-            sends += 1;
-            f.coreDb.sqlite.pragma('query_only = ON');
-            return { status: 'sent' };
-          },
-        }
-      )
-    );
-    let settled = false;
-    void result.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      }
-    );
-    await arrived;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
-    expect(fault.acknowledgements).toBe(0);
-    const status = mode === 'sent' ? 'sent' : 'failed-no-send';
-    const failureCode =
-      mode === 'sent'
-        ? null
-        : mode === 'invalid-path'
-          ? 'transport-refused'
-          : 'authority-unavailable';
-    expect(outcome(f)).toEqual({ status, failureCode, finishedAt });
-    expect(sends).toBe(mode === 'sent' ? 1 : 0);
-    fault.hold = false;
-    fault.release?.();
-    fault.release = undefined;
-    if (mode === 'sent') await expect(result).resolves.toMatchObject({ status: 'sent' });
-    else
-      await expect(result).rejects.toMatchObject({
-        code: mode === 'invalid-path' ? 'invalid_attention_input' : 'attention_not_eligible',
+        if (mode === 'throw') throw new Error('Adapter acknowledgement unavailable.');
+        if (mode === 'malformed') return { status: 'not-an-outcome' as 'sent' };
+        return { status: mode };
       });
-    expect(fault.requests).toHaveLength(1);
-    expect(fault.acknowledgements).toBe(1);
-  });
+      const status = mode === 'failed-no-send' ? 'failed-no-send' : 'delivery-unknown';
+      const failureCode = mode === 'failed-no-send' ? 'transport-refused' : 'transport-unknown';
+      await expect(result).resolves.toMatchObject({ status, attempt: { status, failureCode } });
+      expect(outcome(f)).toEqual({ status, failureCode, finishedAt });
+      expect(sends).toBe(1);
+      expect(fault.requests).toHaveLength(1);
+      expect(count(f).count).toBe(1);
+    }
+  );
+
+  it.each(['sent', 'invalid-path', 'ineligible'] as const)(
+    'waits for the actual native completion ACK before publishing %s',
+    async (mode) => {
+      const f = fixture();
+      const arrived = holdAcknowledgement();
+      let sends = 0;
+      if (mode === 'invalid-path')
+        f.options.buildAppPath = () => {
+          f.coreDb.sqlite.pragma('query_only = ON');
+          return 'https://outside.invalid/';
+        };
+      const result = track(
+        f.notifications.deliver(
+          {
+            deliveryId: f.delivery.id,
+            recipientUserId,
+            channel: 'discord',
+            retry: false,
+            expectedAttemptId: null,
+          },
+          {
+            isEligible: () => {
+              if (mode === 'ineligible') f.coreDb.sqlite.pragma('query_only = ON');
+              return mode !== 'ineligible';
+            },
+            transport: async () => {
+              sends += 1;
+              f.coreDb.sqlite.pragma('query_only = ON');
+              return { status: 'sent' };
+            },
+          }
+        )
+      );
+      let settled = false;
+      void result.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      await arrived;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(fault.acknowledgements).toBe(0);
+      const status = mode === 'sent' ? 'sent' : 'failed-no-send';
+      const failureCode =
+        mode === 'sent'
+          ? null
+          : mode === 'invalid-path'
+            ? 'transport-refused'
+            : 'authority-unavailable';
+      expect(outcome(f)).toEqual({ status, failureCode, finishedAt });
+      expect(sends).toBe(mode === 'sent' ? 1 : 0);
+      fault.hold = false;
+      fault.release?.();
+      fault.release = undefined;
+      if (mode === 'sent') await expect(result).resolves.toMatchObject({ status: 'sent' });
+      else
+        await expect(result).rejects.toMatchObject({
+          code: mode === 'invalid-path' ? 'invalid_attention_input' : 'attention_not_eligible',
+        });
+      expect(fault.requests).toHaveLength(1);
+      expect(fault.acknowledgements).toBe(1);
+    }
+  );
 
   it('leaves the original sending attempt intact on a real native SQL rollback', async () => {
     const f = fixture();
@@ -383,36 +380,35 @@ describe('native Attention attempt completion', () => {
     expect(outcome(f)).toEqual({ status: 'sent', failureCode: null, finishedAt });
   });
 
-  it.each([
-    'connection',
-    'path',
-    'scope',
-  ] as const)('refuses a mismatched physical Core %s before native open/post', async (mode) => {
-    const f = fixture();
-    const other = fixture();
-    let sends = 0;
-    let postsBefore: string[] = [];
-    await expect(
-      send(f, async () => {
-        // Keep this completion-stage probe after the genuine native claim.
-        postsBefore = fault.posts.slice();
-        f.options.nativeCoreDb =
-          mode === 'connection'
-            ? other.coreDb
-            : mode === 'path'
-              ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
-              : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
-        sends += 1;
-        f.coreDb.sqlite.pragma('query_only = ON');
-        return { status: 'sent' };
-      })
-    ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
-    expect(sends).toBe(1);
-    expect(fault.posts).toEqual(postsBefore);
-    expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
-    expect(count(other).count).toBe(0);
-    expect(other.notifications.get(other.delivery.id)?.status).toBe('queued');
-  });
+  it.each(['connection', 'path', 'scope'] as const)(
+    'refuses a mismatched physical Core %s before native open/post',
+    async (mode) => {
+      const f = fixture();
+      const other = fixture();
+      let sends = 0;
+      let postsBefore: string[] = [];
+      await expect(
+        send(f, async () => {
+          // Keep this completion-stage probe after the genuine native claim.
+          postsBefore = fault.posts.slice();
+          f.options.nativeCoreDb =
+            mode === 'connection'
+              ? other.coreDb
+              : mode === 'path'
+                ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
+                : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
+          sends += 1;
+          f.coreDb.sqlite.pragma('query_only = ON');
+          return { status: 'sent' };
+        })
+      ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+      expect(sends).toBe(1);
+      expect(fault.posts).toEqual(postsBefore);
+      expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
+      expect(count(other).count).toBe(0);
+      expect(other.notifications.get(other.delivery.id)?.status).toBe('queued');
+    }
+  );
 
   it('keeps the original sending predicate when startup reconciliation wins first', async () => {
     const f = fixture();

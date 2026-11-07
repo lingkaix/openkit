@@ -117,30 +117,30 @@ describe('shared family contract', () => {
     expect(touched).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'success',
-    'typed refusal',
-  ] as const)('marks a JSON operation %s response as not cacheable', async (outcome) => {
-    const f = await operationFixture();
-    try {
-      const response = await f.app.request('/api/app/operations/workspace.read', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(
-          outcome === 'success' ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' } : {}
-        ),
-      });
-      expect(response.status).toBe(outcome === 'success' ? 200 : 400);
-      expect(await response.json()).toMatchObject(
-        outcome === 'success'
-          ? { id: 'ws_00000000-0000-7000-8000-000000000001' }
-          : { code: 'invalid_request' }
-      );
-      expect(response.headers.get('cache-control')).toBe('no-store');
-    } finally {
-      f.coreDb.sqlite.close();
+  it.each(['success', 'typed refusal'] as const)(
+    'marks a JSON operation %s response as not cacheable',
+    async (outcome) => {
+      const f = await operationFixture();
+      try {
+        const response = await f.app.request('/api/app/operations/workspace.read', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(
+            outcome === 'success' ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' } : {}
+          ),
+        });
+        expect(response.status).toBe(outcome === 'success' ? 200 : 400);
+        expect(await response.json()).toMatchObject(
+          outcome === 'success'
+            ? { id: 'ws_00000000-0000-7000-8000-000000000001' }
+            : { code: 'invalid_request' }
+        );
+        expect(response.headers.get('cache-control')).toBe('no-store');
+      } finally {
+        f.coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('keeps overlapping dynamic success statuses local to each request', async () => {
     const f = await operationFixture();
@@ -229,58 +229,58 @@ describe('shared family contract', () => {
       f.coreDb.sqlite.close();
     }
   });
-  it.each([
-    'handler',
-    'resolver',
-  ] as const)('lets an unclassified %s failure reach the HTTP error boundary', async (subject) => {
-    const f = await operationFixture();
-    const sentinel = new Error(`private-${subject}-sentinel`);
-    const observed = vi.fn();
-    f.app.onError((error, c) => {
-      observed(error);
-      return c.text('Internal Server Error', 500);
-    });
-    const turn = await f.store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Resolver subject',
-      f.command.actor
-    );
-    const failure =
-      subject === 'handler'
-        ? vi.spyOn(f.store, 'getWorkspaceResources').mockImplementation(() => {
-            throw sentinel;
-          })
-        : vi.spyOn(f.store, 'getTurnLineage').mockImplementation(() => {
-            throw sentinel;
-          });
-    try {
-      const response = await f.app.request(
-        `/api/app/operations/${subject === 'handler' ? 'workspace.resources' : 'turn.read'}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(
-            subject === 'handler'
-              ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
-              : {
-                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                  threadId: 'th_00000000-0000-7000-8000-000000000001',
-                  turnId: turn.id,
-                }
-          ),
-        }
+  it.each(['handler', 'resolver'] as const)(
+    'lets an unclassified %s failure reach the HTTP error boundary',
+    async (subject) => {
+      const f = await operationFixture();
+      const sentinel = new Error(`private-${subject}-sentinel`);
+      const observed = vi.fn();
+      f.app.onError((error, c) => {
+        observed(error);
+        return c.text('Internal Server Error', 500);
+      });
+      const turn = await f.store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Resolver subject',
+        f.command.actor
       );
-      expect(failure).toHaveBeenCalledOnce();
-      expect(observed).toHaveBeenCalledWith(sentinel);
-      expect(response.status).toBe(500);
-      expect(await response.text()).toBe('Internal Server Error');
-      expect(response.headers.get('cache-control')).toBe('no-store');
-    } finally {
-      failure.mockRestore();
-      f.coreDb.sqlite.close();
+      const failure =
+        subject === 'handler'
+          ? vi.spyOn(f.store, 'getWorkspaceResources').mockImplementation(() => {
+              throw sentinel;
+            })
+          : vi.spyOn(f.store, 'getTurnLineage').mockImplementation(() => {
+              throw sentinel;
+            });
+      try {
+        const response = await f.app.request(
+          `/api/app/operations/${subject === 'handler' ? 'workspace.resources' : 'turn.read'}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(
+              subject === 'handler'
+                ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+                : {
+                    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                    threadId: 'th_00000000-0000-7000-8000-000000000001',
+                    turnId: turn.id,
+                  }
+            ),
+          }
+        );
+        expect(failure).toHaveBeenCalledOnce();
+        expect(observed).toHaveBeenCalledWith(sentinel);
+        expect(response.status).toBe(500);
+        expect(await response.text()).toBe('Internal Server Error');
+        expect(response.headers.get('cache-control')).toBe('no-store');
+      } finally {
+        failure.mockRestore();
+        f.coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('preserves literal safe Kernel failure fields through HTTP, remote MCP and supplied worker MCP', async () => {
     const f = await operationFixture();
@@ -2222,22 +2222,21 @@ describe('#144 private native invocation and public exclusion', () => {
     }
   });
 
-  it.each([
-    null,
-    { value: 7 },
-    { unexpected: true },
-  ])('rejects invalid logical input %j before private handler dispatch', async (input) => {
-    const f = await privateEngineFixture();
-    try {
-      await expect(f.invoke('probe.read', input, f.context)).rejects.toMatchObject({
-        code: 'invalid_request',
-        status: 400,
-      });
-      expect(f.handler).not.toHaveBeenCalled();
-    } finally {
-      f.close();
+  it.each([null, { value: 7 }, { unexpected: true }])(
+    'rejects invalid logical input %j before private handler dispatch',
+    async (input) => {
+      const f = await privateEngineFixture();
+      try {
+        await expect(f.invoke('probe.read', input, f.context)).rejects.toMatchObject({
+          code: 'invalid_request',
+          status: 400,
+        });
+        expect(f.handler).not.toHaveBeenCalled();
+      } finally {
+        f.close();
+      }
     }
-  });
+  );
 
   it.each([
     'actor',
@@ -2273,36 +2272,36 @@ describe('#144 private native invocation and public exclusion', () => {
     }
   });
 
-  it.each([
-    'before',
-    'during',
-  ] as const)('preserves cancellation %s the private handler and returns no late success', async (when) => {
-    const f = await privateEngineFixture();
-    const stopped = new Error('Fixture cancellation.');
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    if (when === 'before') f.controller.abort(stopped);
-    else
-      f.handler.mockImplementationOnce(async () => {
-        entered.resolve();
-        await release.promise;
-        return { echo: 'late-success-canary' };
-      });
-    const pending = f.invoke('probe.read', {}, f.context);
-    try {
-      if (when === 'during') {
-        await entered.promise;
-        f.controller.abort(stopped);
+  it.each(['before', 'during'] as const)(
+    'preserves cancellation %s the private handler and returns no late success',
+    async (when) => {
+      const f = await privateEngineFixture();
+      const stopped = new Error('Fixture cancellation.');
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      if (when === 'before') f.controller.abort(stopped);
+      else
+        f.handler.mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          return { echo: 'late-success-canary' };
+        });
+      const pending = f.invoke('probe.read', {}, f.context);
+      try {
+        if (when === 'during') {
+          await entered.promise;
+          f.controller.abort(stopped);
+          release.resolve();
+        }
+        await expect(pending).rejects.toBe(stopped);
+        expect(f.handler).toHaveBeenCalledTimes(when === 'before' ? 0 : 1);
+      } finally {
         release.resolve();
+        await pending.catch(() => undefined);
+        f.close();
       }
-      await expect(pending).rejects.toBe(stopped);
-      expect(f.handler).toHaveBeenCalledTimes(when === 'before' ? 0 : 1);
-    } finally {
-      release.resolve();
-      await pending.catch(() => undefined);
-      f.close();
     }
-  });
+  );
 
   it('omits the private operation from public definitions, HTTP, OpenAPI, Core Client and CLI', async () => {
     const f = await operationFixture();
@@ -2426,52 +2425,51 @@ afterEach(async () => {
 
 /** The fixed-User definitions drive every public framing while Worker User entry remains unavailable. */
 describe('personal Login operation projections', () => {
-  it.each([
-    'vault.login-list',
-    'vault.login-quarantine',
-    'vault.login-release',
-  ])('projects %s through OpenAPI and the uniform Skill without advertising Worker admission', async (id) => {
-    const definition = OPERATION_DEFINITIONS[id];
-    expect(
-      definition,
-      'O13 expected baseline RED: missing Login operation definition'
-    ).toBeDefined();
-    expect(definition).toMatchObject({
-      binding: 'json',
-      returnsOneTimeSecret: false,
-      scope: { kind: 'user' },
-      target: { kind: 'user' },
-      policyOperation: 'vault.admin',
-      mutating: id !== 'vault.login-list',
-    });
-    expect(definition.credentials).not.toContain('worker-package');
-    expect(definition.credentials).not.toContain('coordinator');
-    expect(createAppOpenApiDocument().paths).toHaveProperty(`/api/app/operations/${id}`);
-    const { operationCatalog } = await import(
-      new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
-    );
-    const operation = operationCatalog.find((entry: { id: string }) => entry.id === id);
-    expect(operation).toBeDefined();
-    expect(operation.appOperationId).toBe(id);
-    expect(operation.mutating).toBe(id !== 'vault.login-list');
-    const input =
-      id === 'vault.login-list' ? {} : { referenceId: testEntityId('vault', 'login-projection') };
-    expect(operation.inputSchema.parse(input)).toEqual(input);
-    for (const field of [
-      'material',
-      'backendLocator',
-      'accountId',
-      'userId',
-      'actor',
-      'quarantined',
-    ])
-      expect(operation.inputSchema.safeParse({ ...input, [field]: 'synthetic' }).success).toBe(
-        false
+  it.each(['vault.login-list', 'vault.login-quarantine', 'vault.login-release'])(
+    'projects %s through OpenAPI and the uniform Skill without advertising Worker admission',
+    async (id) => {
+      const definition = OPERATION_DEFINITIONS[id];
+      expect(
+        definition,
+        'O13 expected baseline RED: missing Login operation definition'
+      ).toBeDefined();
+      expect(definition).toMatchObject({
+        binding: 'json',
+        returnsOneTimeSecret: false,
+        scope: { kind: 'user' },
+        target: { kind: 'user' },
+        policyOperation: 'vault.admin',
+        mutating: id !== 'vault.login-list',
+      });
+      expect(definition.credentials).not.toContain('worker-package');
+      expect(definition.credentials).not.toContain('coordinator');
+      expect(createAppOpenApiDocument().paths).toHaveProperty(`/api/app/operations/${id}`);
+      const { operationCatalog } = await import(
+        new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
       );
-    expect(OPENKIT_GENERATIVE_TOOL_OPERATIONS).not.toHaveProperty(
-      operationToolName(id as JsonOperationId)
-    );
-  });
+      const operation = operationCatalog.find((entry: { id: string }) => entry.id === id);
+      expect(operation).toBeDefined();
+      expect(operation.appOperationId).toBe(id);
+      expect(operation.mutating).toBe(id !== 'vault.login-list');
+      const input =
+        id === 'vault.login-list' ? {} : { referenceId: testEntityId('vault', 'login-projection') };
+      expect(operation.inputSchema.parse(input)).toEqual(input);
+      for (const field of [
+        'material',
+        'backendLocator',
+        'accountId',
+        'userId',
+        'actor',
+        'quarantined',
+      ])
+        expect(operation.inputSchema.safeParse({ ...input, [field]: 'synthetic' }).success).toBe(
+          false
+        );
+      expect(OPENKIT_GENERATIVE_TOOL_OPERATIONS).not.toHaveProperty(
+        operationToolName(id as JsonOperationId)
+      );
+    }
+  );
 
   it('preserves reference-only unknown observations through real HTTP, Core Client, CLI and remote MCP calls', async () => {
     for (const id of ['vault.login-list', 'vault.login-quarantine', 'vault.login-release'])

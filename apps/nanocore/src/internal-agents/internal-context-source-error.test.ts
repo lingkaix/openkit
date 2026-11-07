@@ -266,54 +266,58 @@ describe('Internal rolling context source failure classification', () => {
     'Knowledge Base identity',
     'private audience',
     'trace integrity',
-  ] as const)('keeps the %s check strict and reports its native verifier before dispatch', async (fault) => {
-    const workspaceOwnerUserId = fault === 'private audience' ? allocateEntityId('usr') : undefined;
-    const f = await fixture(false, workspaceOwnerUserId);
-    if (fault === 'private audience') {
-      // Active Workspace ownership does not grant another User's private audience.
-      expect(
-        threadReadable(
-          {
-            workspaceId: f.workspace.id,
-            access: {
-              ...f.access,
-              requestActor: { kind: 'session', userId: workspaceOwnerUserId! },
-              actor: { kind: 'user', id: workspaceOwnerUserId! },
+  ] as const)(
+    'keeps the %s check strict and reports its native verifier before dispatch',
+    async (fault) => {
+      const workspaceOwnerUserId =
+        fault === 'private audience' ? allocateEntityId('usr') : undefined;
+      const f = await fixture(false, workspaceOwnerUserId);
+      if (fault === 'private audience') {
+        // Active Workspace ownership does not grant another User's private audience.
+        expect(
+          threadReadable(
+            {
+              workspaceId: f.workspace.id,
+              access: {
+                ...f.access,
+                requestActor: { kind: 'session', userId: workspaceOwnerUserId! },
+                actor: { kind: 'user', id: workspaceOwnerUserId! },
+              },
             },
-          },
-          f.thread.id
-        )
-      ).toBe(false);
-      expect(f.store.getThread(f.workspace.id, f.thread.id).privateOwnerUserId).toBe(
-        f.access.actor.id
-      );
-      // Current private-entry eligibility can be revoked; its retained private owner stays immutable.
-      f.coreDb.sqlite
-        .prepare(`UPDATE workspace_members
+            f.thread.id
+          )
+        ).toBe(false);
+        expect(f.store.getThread(f.workspace.id, f.thread.id).privateOwnerUserId).toBe(
+          f.access.actor.id
+        );
+        // Current private-entry eligibility can be revoked; its retained private owner stays immutable.
+        f.coreDb.sqlite
+          .prepare(`UPDATE workspace_members
           SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
           WHERE workspace_id = ? AND user_id = ?`)
-        .run(timestamp, timestamp, f.workspace.id, f.access.actor.id);
-    } else if (fault === 'trace integrity')
-      writeFileSync(
-        f.tracePath,
-        JSON.stringify(writeRetainedV1({ ...f.trace, traceId: allocateEntityId('krt') }))
+          .run(timestamp, timestamp, f.workspace.id, f.access.actor.id);
+      } else if (fault === 'trace integrity')
+        writeFileSync(
+          f.tracePath,
+          JSON.stringify(writeRetainedV1({ ...f.trace, traceId: allocateEntityId('krt') }))
+        );
+      else {
+        const trace = structuredClone(f.trace);
+        if (fault === 'User identity')
+          trace.queryContext.actor = { kind: 'user', id: allocateEntityId('usr') };
+        else
+          trace.sourceScope = trace.sourceScope.replace(/.$/, (last) => (last === '0' ? '1' : '0'));
+        // Keep the native envelope valid so identity faults reach their owning admission check.
+        writeFileSync(f.tracePath, JSON.stringify(writeRetainedV1(trace)));
+      }
+      await expectSourceUnavailable(
+        f,
+        fault === 'trace integrity'
+          ? 'readTurnRetrievalTraces'
+          : 'assertKnowledgeRetrievalTraceReadable'
       );
-    else {
-      const trace = structuredClone(f.trace);
-      if (fault === 'User identity')
-        trace.queryContext.actor = { kind: 'user', id: allocateEntityId('usr') };
-      else
-        trace.sourceScope = trace.sourceScope.replace(/.$/, (last) => (last === '0' ? '1' : '0'));
-      // Keep the native envelope valid so identity faults reach their owning admission check.
-      writeFileSync(f.tracePath, JSON.stringify(writeRetainedV1(trace)));
     }
-    await expectSourceUnavailable(
-      f,
-      fault === 'trace integrity'
-        ? 'readTurnRetrievalTraces'
-        : 'assertKnowledgeRetrievalTraceReadable'
-    );
-  });
+  );
 
   it('rejects a previously selected Memory after current owner suppression without disclosing its body', async () => {
     const f = await fixture(true);

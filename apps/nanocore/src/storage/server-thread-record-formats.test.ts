@@ -290,35 +290,36 @@ describe('native retained Server work formats', () => {
     }
   });
 
-  it.each(
-    families
-  )('refuses %s unsupported required semantics and unknown core values', async (family) => {
-    const { dataRoot, scope, turn } = await createServerRetainedFixture();
-    const original = readServerRetainedRecord(scope, turn.id, family).record;
-    const required = {
-      ...original,
-      requiredFeatures: [
-        ...((original.requiredFeatures as string[] | undefined) ?? []),
-        'openkit.test-unsupported-retained.v1',
-      ],
-    };
-    const core = structuredClone(original);
-    if (family === 'Server Turn') core.status = 'future-status';
-    else if (family === 'Server Item') core.type = 'future-item';
-    else {
-      core.event = 'future.event';
-      core.data = { type: 'future-event' };
+  it.each(families)(
+    'refuses %s unsupported required semantics and unknown core values',
+    async (family) => {
+      const { dataRoot, scope, turn } = await createServerRetainedFixture();
+      const original = readServerRetainedRecord(scope, turn.id, family).record;
+      const required = {
+        ...original,
+        requiredFeatures: [
+          ...((original.requiredFeatures as string[] | undefined) ?? []),
+          'openkit.test-unsupported-retained.v1',
+        ],
+      };
+      const core = structuredClone(original);
+      if (family === 'Server Turn') core.status = 'future-status';
+      else if (family === 'Server Item') core.type = 'future-item';
+      else {
+        core.event = 'future.event';
+        core.data = { type: 'future-event' };
+      }
+      const read = () => loadServerThreadRecords(dataRoot);
+      for (const record of [required, core]) {
+        await replaceServerRetainedRecord(scope, turn.id, family, record);
+        const invalidBytes = readServerRetainedRecord(scope, turn.id, family).bytes;
+        expect(read).toThrow();
+        expect(readServerRetainedRecord(scope, turn.id, family).bytes).toBe(invalidBytes);
+        await replaceServerRetainedRecord(scope, turn.id, family, original);
+        expect(read).not.toThrow();
+      }
     }
-    const read = () => loadServerThreadRecords(dataRoot);
-    for (const record of [required, core]) {
-      await replaceServerRetainedRecord(scope, turn.id, family, record);
-      const invalidBytes = readServerRetainedRecord(scope, turn.id, family).bytes;
-      expect(read).toThrow();
-      expect(readServerRetainedRecord(scope, turn.id, family).bytes).toBe(invalidBytes);
-      await replaceServerRetainedRecord(scope, turn.id, family, original);
-      expect(read).not.toThrow();
-    }
-  });
+  );
 
   it.each(families)('refuses %s unknown or contradictory owner authority', async (family) => {
     const { dataRoot, scope, turn } = await createServerRetainedFixture();
@@ -338,60 +339,61 @@ describe('native retained Server work formats', () => {
     }
   });
 
-  it.each(
-    families
-  )('checks %s native SQL version before decoding retained JSON', async (family) => {
-    const { dataRoot, scope, thread, turn } = await createServerRetainedFixture();
-    const reader = new Database(scope.path, { readonly: true, fileMustExist: true });
-    let row: { schema_version: number; json: string };
-    try {
-      row =
-        family === 'Server Turn'
-          ? (reader
-              .prepare('SELECT schema_version,record_json AS json FROM control_turns WHERE id=?')
-              .get(turn.id) as typeof row)
-          : (reader
-              .prepare(
-                'SELECT schema_version,content_json AS json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=1'
-              )
-              .get(family === 'Server Item' ? 'item' : 'event', turn.id) as typeof row);
-    } finally {
-      reader.close();
-    }
-    expect(row.schema_version).toBe(1);
-    // Only this stopped fixture mutator admits corruption; the real reader keeps every guard.
-    const replace = (version: number, json: string) => {
-      const mutator = new Database(scope.path, { fileMustExist: true });
+  it.each(families)(
+    'checks %s native SQL version before decoding retained JSON',
+    async (family) => {
+      const { dataRoot, scope, thread, turn } = await createServerRetainedFixture();
+      const reader = new Database(scope.path, { readonly: true, fileMustExist: true });
+      let row: { schema_version: number; json: string };
       try {
-        mutator.pragma('ignore_check_constraints = ON');
-        if (family === 'Server Turn')
-          mutator
-            .prepare('UPDATE control_turns SET schema_version=?,record_json=? WHERE id=?')
-            .run(version, json, turn.id);
-        else
-          mutator
-            .prepare(
-              'UPDATE control_product_entries SET schema_version=?,content_json=? WHERE kind=? AND turn_id=? AND sequence=1'
-            )
-            .run(version, json, family === 'Server Item' ? 'item' : 'event', turn.id);
+        row =
+          family === 'Server Turn'
+            ? (reader
+                .prepare('SELECT schema_version,record_json AS json FROM control_turns WHERE id=?')
+                .get(turn.id) as typeof row)
+            : (reader
+                .prepare(
+                  'SELECT schema_version,content_json AS json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=1'
+                )
+                .get(family === 'Server Item' ? 'item' : 'event', turn.id) as typeof row);
       } finally {
-        try {
-          mutator.pragma('ignore_check_constraints = OFF');
-        } finally {
-          mutator.close();
-        }
+        reader.close();
       }
-    };
-    const read = () =>
-      family === 'Server Turn'
-        ? readServerTurnRecord(dataRoot, thread.id, turn.id)
-        : readNativeProductEntries(scope, turn.id, family === 'Server Item' ? 'item' : 'event');
-    for (const json of [row.json, '{invalid-json']) {
-      replace(2, json);
-      expect(read).toThrow();
-      expect(read).not.toThrow(SyntaxError);
+      expect(row.schema_version).toBe(1);
+      // Only this stopped fixture mutator admits corruption; the real reader keeps every guard.
+      const replace = (version: number, json: string) => {
+        const mutator = new Database(scope.path, { fileMustExist: true });
+        try {
+          mutator.pragma('ignore_check_constraints = ON');
+          if (family === 'Server Turn')
+            mutator
+              .prepare('UPDATE control_turns SET schema_version=?,record_json=? WHERE id=?')
+              .run(version, json, turn.id);
+          else
+            mutator
+              .prepare(
+                'UPDATE control_product_entries SET schema_version=?,content_json=? WHERE kind=? AND turn_id=? AND sequence=1'
+              )
+              .run(version, json, family === 'Server Item' ? 'item' : 'event', turn.id);
+        } finally {
+          try {
+            mutator.pragma('ignore_check_constraints = OFF');
+          } finally {
+            mutator.close();
+          }
+        }
+      };
+      const read = () =>
+        family === 'Server Turn'
+          ? readServerTurnRecord(dataRoot, thread.id, turn.id)
+          : readNativeProductEntries(scope, turn.id, family === 'Server Item' ? 'item' : 'event');
+      for (const json of [row.json, '{invalid-json']) {
+        replace(2, json);
+        expect(read).toThrow();
+        expect(read).not.toThrow(SyntaxError);
+      }
+      replace(row.schema_version, row.json);
+      expect(read).not.toThrow();
     }
-    replace(row.schema_version, row.json);
-    expect(read).not.toThrow();
-  });
+  );
 });

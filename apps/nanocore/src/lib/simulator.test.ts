@@ -933,246 +933,247 @@ describe('SimulatedTurnExecutor', () => {
     // F-PRED-LAT: restore 30 s after the owned predecessor latency follow-up proves margin.
   }, 60_000);
 
-  it.each([
-    false,
-    true,
-  ])('keeps native completion when answer admission wins the same terminal wake (unknown lookup: %s)', async (unknownLookup) => {
-    const coreDb = await createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const threadId = 'th_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId,
-    });
-    let entered!: () => void;
-    let answerSaved!: () => void;
-    let candidateSelected!: () => void;
-    let releaseCandidate!: () => void;
-    const terminalEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const saved = new Promise<void>((resolve) => {
-      answerSaved = resolve;
-    });
-    const selected = new Promise<void>((resolve) => {
-      candidateSelected = resolve;
-    });
-    const release = new Promise<void>((resolve) => {
-      releaseCandidate = resolve;
-    });
-    let terminalHeld = false;
-    let candidateHeld = false;
-    let candidateTurnId: string | undefined;
-    let lookupUnavailable = false;
-    let lookupRefusals = 0;
-    const getTurnById = store.getTurnById.bind(store);
-    const lookups = vi.spyOn(store, 'getTurnById').mockImplementation((turnId) => {
-      if (lookupUnavailable && turnId === candidateTurnId) {
-        lookupRefusals += 1;
-        throw new Error('The losing Turn lookup is unavailable.');
-      }
-      return getTurnById(turnId);
-    });
-    const setHooks = store.setTurnAdmissionHooks.bind(store);
-    const hooks = vi.spyOn(store, 'setTurnAdmissionHooks').mockImplementation((input) => {
-      if (!input) return setHooks(input);
-      return setHooks({
-        ...input,
-        async onTerminal(turn) {
-          if (!terminalHeld) {
-            terminalHeld = true;
-            entered();
-            await saved;
-          }
-          await input.onTerminal?.(turn);
-        },
+  it.each([false, true])(
+    'keeps native completion when answer admission wins the same terminal wake (unknown lookup: %s)',
+    async (unknownLookup) => {
+      const coreDb = await createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId,
       });
-    });
-    const createTurn = store.createTurn.bind(store);
-    const creates = vi.spyOn(store, 'createTurn').mockImplementation(async (...args) => {
-      if (args[2] === 'User-input outcomes' && !candidateHeld) {
-        candidateHeld = true;
-        candidateTurnId = args[5]?.turnId;
-        candidateSelected();
-        await release;
-      }
-      try {
-        return await createTurn(...args);
-      } catch (error) {
-        // Only the later absence proof is unavailable; preserve the real native admission refusal.
-        if (unknownLookup && candidateTurnId === args[5]?.turnId) lookupUnavailable = true;
-        throw error;
-      }
-    });
-    const applyPending = store.applyPendingRequestCommand.bind(store);
-    const commands = vi
-      .spyOn(store, 'applyPendingRequestCommand')
-      .mockImplementation(async (...args) => {
-        const result = await applyPending(...args);
-        if (args[1].action === 'answer' && terminalHeld && !candidateHeld) {
-          answerSaved();
-          await selected;
+      let entered!: () => void;
+      let answerSaved!: () => void;
+      let candidateSelected!: () => void;
+      let releaseCandidate!: () => void;
+      const terminalEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const saved = new Promise<void>((resolve) => {
+        answerSaved = resolve;
+      });
+      const selected = new Promise<void>((resolve) => {
+        candidateSelected = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        releaseCandidate = resolve;
+      });
+      let terminalHeld = false;
+      let candidateHeld = false;
+      let candidateTurnId: string | undefined;
+      let lookupUnavailable = false;
+      let lookupRefusals = 0;
+      const getTurnById = store.getTurnById.bind(store);
+      const lookups = vi.spyOn(store, 'getTurnById').mockImplementation((turnId) => {
+        if (lookupUnavailable && turnId === candidateTurnId) {
+          lookupRefusals += 1;
+          throw new Error('The losing Turn lookup is unavailable.');
         }
-        return result;
+        return getTurnById(turnId);
       });
-    const admission = new FileStorageAdmission(
-      coreDb.dataRoot,
-      () => 2_000_000n,
-      () => 16_000_000n
-    );
-    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
-    const executions = vi.spyOn(executor, 'startTurn');
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: coreDb.dataRoot,
-      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-        dataRoot: coreDb.dataRoot,
-        agentManifests: [createTestAgentSetup().manifest],
-        gatewayConfig: createTestGatewayConfig(),
-        openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
-        providerRegistry: new ProviderRegistry([
-          {
-            defaultModel: 'openai/gpt-5.2',
-            displayName: 'D3 admission race',
-            id: 'agent-openrouter',
-            kind: 'local',
-            models: ['openai/gpt-5.2'],
+      const setHooks = store.setTurnAdmissionHooks.bind(store);
+      const hooks = vi.spyOn(store, 'setTurnAdmissionHooks').mockImplementation((input) => {
+        if (!input) return setHooks(input);
+        return setHooks({
+          ...input,
+          async onTerminal(turn) {
+            if (!terminalHeld) {
+              terminalHeld = true;
+              entered();
+              await saved;
+            }
+            await input.onTerminal?.(turn);
           },
-        ]),
-      }),
-    });
-    const app = createApp({
-      coreDb,
-      fileAdmission: admission,
-      runtimeConfigManager,
-      store,
-      turnExecutor: executor,
-    });
-    const { startSchedulerDispatchRetryService } = await import(
-      '../runtime/scheduler-dispatch-service.js'
-    );
-    const retry = startSchedulerDispatchRetryService({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      executionBackend: executor,
-      runtimeConfigSnapshot: () => runtimeConfigManager.current(),
-      intervalMs: 5_000,
-      setInterval: () => null,
-      clearInterval: () => undefined,
-    });
-    let answerPromise: ReturnType<typeof app.request> | undefined;
-    try {
-      await linkRepository(app);
-      const started = await app.request(
-        ...operationRequest(
-          'turn.start',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              workspaceId,
-              threadId,
-              requestId: '0190f4c8-0000-7000-8000-000000000299',
-              input: 'Prepare the native question.',
-            }),
+        });
+      });
+      const createTurn = store.createTurn.bind(store);
+      const creates = vi.spyOn(store, 'createTurn').mockImplementation(async (...args) => {
+        if (args[2] === 'User-input outcomes' && !candidateHeld) {
+          candidateHeld = true;
+          candidateTurnId = args[5]?.turnId;
+          candidateSelected();
+          await release;
+        }
+        try {
+          return await createTurn(...args);
+        } catch (error) {
+          // Only the later absence proof is unavailable; preserve the real native admission refusal.
+          if (unknownLookup && candidateTurnId === args[5]?.turnId) lookupUnavailable = true;
+          throw error;
+        }
+      });
+      const applyPending = store.applyPendingRequestCommand.bind(store);
+      const commands = vi
+        .spyOn(store, 'applyPendingRequestCommand')
+        .mockImplementation(async (...args) => {
+          const result = await applyPending(...args);
+          if (args[1].action === 'answer' && terminalHeld && !candidateHeld) {
+            answerSaved();
+            await selected;
           }
-        )
+          return result;
+        });
+      const admission = new FileStorageAdmission(
+        coreDb.dataRoot,
+        () => 2_000_000n,
+        () => 16_000_000n
       );
-      expect(started.status).toBe(202);
-      await terminalEntered;
-      const first = store.listThreadTurns(workspaceId, threadId).at(-1)!;
-      expect(first.status).toBe('completed');
-      const question = store
-        .listThreadItems(workspaceId, threadId)
-        .find((item) => item.type === 'user-input-request' && item.turnId === first.id);
-      if (!question || question.type !== 'user-input-request')
-        throw new Error('Missing original race question.');
-      answerPromise = app.request(
-        ...operationRequest(
-          'question.answer',
-          { userInputRequestId: question.userInputRequestId },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              workspaceId,
-              threadId,
-              userInputRequestId: question.userInputRequestId,
-              requestId: '0190f4c8-0000-7000-8000-000000000300',
-              answers: { tone: ['Concise'] },
-            }),
-          }
-        )
+      const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
+      const executions = vi.spyOn(executor, 'startTurn');
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: coreDb.dataRoot,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot: coreDb.dataRoot,
+          agentManifests: [createTestAgentSetup().manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
+          providerRegistry: new ProviderRegistry([
+            {
+              defaultModel: 'openai/gpt-5.2',
+              displayName: 'D3 admission race',
+              id: 'agent-openrouter',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+        }),
+      });
+      const app = createApp({
+        coreDb,
+        fileAdmission: admission,
+        runtimeConfigManager,
+        store,
+        turnExecutor: executor,
+      });
+      const { startSchedulerDispatchRetryService } = await import(
+        '../runtime/scheduler-dispatch-service.js'
       );
-      const answer = await answerPromise;
-      expect(answer.status).toBe(200);
-      const answerAcceptedAt = performance.now();
-      releaseCandidate();
-      const original = await Promise.allSettled([executions.mock.results[0]!.value]);
-      console.info(
-        'D3_ADMISSION_RACE',
-        JSON.stringify({
-          turnId: first.id,
-          canonicalStatus: store.getTurnById(first.id).status,
-          originalInvocation: original[0]!.status,
-          terminalHeld,
-          candidateHeld,
-          unknownLookup,
-          lookupRefusals,
-        })
-      );
-      // The existing retry owner, not a fabricated event, dispatches the actual queued winner.
-      await retry.runOnce();
-      await vi.waitFor(
-        () => {
-          const current = store.listThreadTurns(workspaceId, threadId);
-          expect(current).toHaveLength(2);
-          expect(current.every((turn) => turn.status === 'completed')).toBe(true);
-        },
-        { timeout: Math.max(1, 15_000 - (performance.now() - answerAcceptedAt)) }
-      );
-      expect(performance.now() - answerAcceptedAt).toBeLessThanOrEqual(15_000);
-      await Promise.allSettled(
-        executions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value)
-      );
-      expect(lookupRefusals).toBe(unknownLookup ? 1 : 0);
-      if (unknownLookup) {
-        expect(original[0]!.status).toBe('rejected');
-        if (original[0]!.status === 'rejected')
-          expect(original[0]!.reason).toMatchObject({ code: 'recovery_required' });
-      } else {
-        expect(original[0]!.status).toBe('fulfilled');
+      const retry = startSchedulerDispatchRetryService({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor,
+        runtimeConfigSnapshot: () => runtimeConfigManager.current(),
+        intervalMs: 5_000,
+        setInterval: () => null,
+        clearInterval: () => undefined,
+      });
+      let answerPromise: ReturnType<typeof app.request> | undefined;
+      try {
+        await linkRepository(app);
+        const started = await app.request(
+          ...operationRequest(
+            'turn.start',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId,
+                threadId,
+                requestId: '0190f4c8-0000-7000-8000-000000000299',
+                input: 'Prepare the native question.',
+              }),
+            }
+          )
+        );
+        expect(started.status).toBe(202);
+        await terminalEntered;
+        const first = store.listThreadTurns(workspaceId, threadId).at(-1)!;
+        expect(first.status).toBe('completed');
+        const question = store
+          .listThreadItems(workspaceId, threadId)
+          .find((item) => item.type === 'user-input-request' && item.turnId === first.id);
+        if (!question || question.type !== 'user-input-request')
+          throw new Error('Missing original race question.');
+        answerPromise = app.request(
+          ...operationRequest(
+            'question.answer',
+            { userInputRequestId: question.userInputRequestId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId,
+                threadId,
+                userInputRequestId: question.userInputRequestId,
+                requestId: '0190f4c8-0000-7000-8000-000000000300',
+                answers: { tone: ['Concise'] },
+              }),
+            }
+          )
+        );
+        const answer = await answerPromise;
+        expect(answer.status).toBe(200);
+        const answerAcceptedAt = performance.now();
+        releaseCandidate();
+        const original = await Promise.allSettled([executions.mock.results[0]!.value]);
+        console.info(
+          'D3_ADMISSION_RACE',
+          JSON.stringify({
+            turnId: first.id,
+            canonicalStatus: store.getTurnById(first.id).status,
+            originalInvocation: original[0]!.status,
+            terminalHeld,
+            candidateHeld,
+            unknownLookup,
+            lookupRefusals,
+          })
+        );
+        // The existing retry owner, not a fabricated event, dispatches the actual queued winner.
+        await retry.runOnce();
+        await vi.waitFor(
+          () => {
+            const current = store.listThreadTurns(workspaceId, threadId);
+            expect(current).toHaveLength(2);
+            expect(current.every((turn) => turn.status === 'completed')).toBe(true);
+          },
+          { timeout: Math.max(1, 15_000 - (performance.now() - answerAcceptedAt)) }
+        );
+        expect(performance.now() - answerAcceptedAt).toBeLessThanOrEqual(15_000);
+        await Promise.allSettled(
+          executions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value)
+        );
+        expect(lookupRefusals).toBe(unknownLookup ? 1 : 0);
+        if (unknownLookup) {
+          expect(original[0]!.status).toBe('rejected');
+          if (original[0]!.status === 'rejected')
+            expect(original[0]!.reason).toMatchObject({ code: 'recovery_required' });
+        } else {
+          expect(original[0]!.status).toBe('fulfilled');
+        }
+        const turns = store.listThreadTurns(workspaceId, threadId);
+        expect(turns).toHaveLength(2);
+        expect(turns.every((turn) => turn.status === 'completed')).toBe(true);
+      } finally {
+        answerSaved();
+        releaseCandidate();
+        await answerPromise;
+        await Promise.allSettled(
+          executions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value)
+        );
+        retry.stop();
+        hooks.mockRestore();
+        creates.mockRestore();
+        lookups.mockRestore();
+        commands.mockRestore();
+        executions.mockRestore();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        closeWorkspaceProductReadHandles();
+        coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(coreDb.dataRoot, { recursive: true, force: true });
       }
-      const turns = store.listThreadTurns(workspaceId, threadId);
-      expect(turns).toHaveLength(2);
-      expect(turns.every((turn) => turn.status === 'completed')).toBe(true);
-    } finally {
-      answerSaved();
-      releaseCandidate();
-      await answerPromise;
-      await Promise.allSettled(
-        executions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value)
-      );
-      retry.stop();
-      hooks.mockRestore();
-      creates.mockRestore();
-      lookups.mockRestore();
-      commands.mockRestore();
-      executions.mockRestore();
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      closeWorkspaceProductReadHandles();
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(coreDb.dataRoot, { recursive: true, force: true });
-    }
-  }, 150_000);
+    },
+    150_000
+  );
 
   it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
@@ -2436,100 +2437,98 @@ describe('SimulatedTurnExecutor', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000318',
       vaultGrantRef: 'grant_00000000-0000-7899-9b3f-8965fec90404',
     },
-  ])('rejects a $kind remote Git source before product admission or runtime effects', async ({
-    forbiddenPayloadFragment,
-    locator,
-    requestId,
-    vaultGrantRef,
-  }) => {
-    const { app, canaryPath, coreDb, executor, store } = await createRemoteGitProductFixture(
-      locator,
-      vaultGrantRef,
-      true
-    );
-    const prepareSpy = vi.spyOn(executor, 'prepareAgentSessionForTurn');
-    const startSpy = vi.spyOn(executor, 'startTurn');
-    const turnsBefore = structuredClone(
-      store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    );
-    const itemsBefore = structuredClone(
-      store.listThreadItems(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    );
-
-    try {
-      expect(existsSync(canaryPath)).toBe(false);
-      const turnResponse = await app.request(
-        ...operationRequest(
-          'turn.start',
-          {},
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              requestId,
-              input: 'Reject an invalid remote Git source',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
+  ])(
+    'rejects a $kind remote Git source before product admission or runtime effects',
+    async ({ forbiddenPayloadFragment, locator, requestId, vaultGrantRef }) => {
+      const { app, canaryPath, coreDb, executor, store } = await createRemoteGitProductFixture(
+        locator,
+        vaultGrantRef,
+        true
+      );
+      const prepareSpy = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+      const startSpy = vi.spyOn(executor, 'startTurn');
+      const turnsBefore = structuredClone(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
         )
       );
-      const payload = (await turnResponse.json()) as Record<string, unknown>;
+      const itemsBefore = structuredClone(
+        store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      );
 
-      expect.soft(turnResponse.status, JSON.stringify(payload)).toBe(409);
-      expect.soft(payload).toMatchObject({ code: 'workspace_data_source_blocked' });
-      expect.soft(prepareSpy).toHaveBeenCalledTimes(0);
-      expect.soft(startSpy).toHaveBeenCalledTimes(0);
-      expect
-        .soft(
-          coreDb.sqlite
-            .prepare(`SELECT * FROM scheduler_admission_entries WHERE workspace_id = ?`)
-            .all('ws_00000000-0000-7000-8000-000000000001')
-        )
-        .toEqual([]);
-      expect
-        .soft(
-          coreDb.sqlite
-            .prepare(`SELECT * FROM scheduler_execution_attempts WHERE workspace_id = ?`)
-            .all('ws_00000000-0000-7000-8000-000000000001')
-        )
-        .toEqual([]);
-      expect
-        .soft(store.listWorkspaceAgentSessions('ws_00000000-0000-7000-8000-000000000001'))
-        .toEqual([]);
-      expect.soft(listWorkerBackendSessions(coreDb)).toEqual([]);
-      expect
-        .soft(
-          store.listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
+      try {
+        expect(existsSync(canaryPath)).toBe(false);
+        const turnResponse = await app.request(
+          ...operationRequest(
+            'turn.start',
+            {},
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                requestId,
+                input: 'Reject an invalid remote Git source',
+              }),
+              headers: { 'content-type': 'application/json' },
+            }
           )
-        )
-        .toEqual(turnsBefore);
-      expect
-        .soft(
-          store.listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
+        );
+        const payload = (await turnResponse.json()) as Record<string, unknown>;
+
+        expect.soft(turnResponse.status, JSON.stringify(payload)).toBe(409);
+        expect.soft(payload).toMatchObject({ code: 'workspace_data_source_blocked' });
+        expect.soft(prepareSpy).toHaveBeenCalledTimes(0);
+        expect.soft(startSpy).toHaveBeenCalledTimes(0);
+        expect
+          .soft(
+            coreDb.sqlite
+              .prepare(`SELECT * FROM scheduler_admission_entries WHERE workspace_id = ?`)
+              .all('ws_00000000-0000-7000-8000-000000000001')
           )
-        )
-        .toEqual(itemsBefore);
-      expect.soft(existsSync(canaryPath)).toBe(false);
-      expect.soft(JSON.stringify(payload)).not.toContain('/srv/private/repository');
-      if (forbiddenPayloadFragment) {
-        expect.soft(JSON.stringify(payload)).not.toContain(forbiddenPayloadFragment);
+          .toEqual([]);
+        expect
+          .soft(
+            coreDb.sqlite
+              .prepare(`SELECT * FROM scheduler_execution_attempts WHERE workspace_id = ?`)
+              .all('ws_00000000-0000-7000-8000-000000000001')
+          )
+          .toEqual([]);
+        expect
+          .soft(store.listWorkspaceAgentSessions('ws_00000000-0000-7000-8000-000000000001'))
+          .toEqual([]);
+        expect.soft(listWorkerBackendSessions(coreDb)).toEqual([]);
+        expect
+          .soft(
+            store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          )
+          .toEqual(turnsBefore);
+        expect
+          .soft(
+            store.listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          )
+          .toEqual(itemsBefore);
+        expect.soft(existsSync(canaryPath)).toBe(false);
+        expect.soft(JSON.stringify(payload)).not.toContain('/srv/private/repository');
+        if (forbiddenPayloadFragment) {
+          expect.soft(JSON.stringify(payload)).not.toContain(forbiddenPayloadFragment);
+        }
+      } finally {
+        vi.restoreAllMocks();
+        coreDb.sqlite.close();
       }
-    } finally {
-      vi.restoreAllMocks();
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   // Public summary reads must not starve real outcome completion under the original15s/150s bounds.
   it('keeps Material outcome delivery responsive while its dashboard is read', async () => {

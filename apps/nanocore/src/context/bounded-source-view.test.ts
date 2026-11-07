@@ -113,42 +113,45 @@ describe('bounded UTF-8 source views', () => {
     ['preview', 51],
     ['read', 2_000],
     ['read', 2_001],
-  ] as const)('independently enforces the %s line ceiling for %i LF-terminated lines', async (mode, lines) => {
-    const bytes = Buffer.from('x\n'.repeat(lines));
-    const view = await ready(inline(bytes));
-    const result = page(await view[mode](), bytes);
-    const expected = mode === 'preview' ? 50 : 2_000;
-    expect(result.range.end).toBe(Math.min(expected, lines) * 2);
-    expect(result.lineCount).toBe(Math.min(expected, lines));
-    expect(result.eof).toBe(lines === expected);
-    if (result.cursor) {
-      const remainder = page(await view.read(result.cursor), bytes);
-      expect(remainder.range).toMatchObject({ start: expected * 2, end: bytes.length });
-      expect(remainder.eof).toBe(true);
+  ] as const)(
+    'independently enforces the %s line ceiling for %i LF-terminated lines',
+    async (mode, lines) => {
+      const bytes = Buffer.from('x\n'.repeat(lines));
+      const view = await ready(inline(bytes));
+      const result = page(await view[mode](), bytes);
+      const expected = mode === 'preview' ? 50 : 2_000;
+      expect(result.range.end).toBe(Math.min(expected, lines) * 2);
+      expect(result.lineCount).toBe(Math.min(expected, lines));
+      expect(result.eof).toBe(lines === expected);
+      if (result.cursor) {
+        const remainder = page(await view.read(result.cursor), bytes);
+        expect(remainder.range).toMatchObject({ start: expected * 2, end: bytes.length });
+        expect(remainder.eof).toBe(true);
+      }
     }
-  });
+  );
 
-  it.each([
-    '界',
-    '😀',
-  ])('never splits or replaces %s across preview, read, or source-read boundaries', async (character) => {
-    const bytes = Buffer.from(character.repeat(18_000));
-    const source = inline(bytes);
-    // Deliberately split every source response inside multibyte code points.
-    source.read.mockImplementation(async (offset, maxBytes) =>
-      bytes.subarray(offset, offset + Math.min(maxBytes, 7))
-    );
-    const view = await ready(source);
-    const preview = page(await view.preview(), bytes);
-    const width = Buffer.byteLength(character, 'utf8');
-    expect(preview.range.end).toBe(Math.floor(2_048 / width) * width);
-    const first = page(await view.read(), bytes);
-    expect(first.range.end).toBe(Math.floor(51_200 / width) * width);
-    const next = page(await view.read(first.cursor!), bytes);
-    expect(next.range.start).toBe(first.range.end);
-    expect(first.text + next.text).toBe(bytes.toString('utf8'));
-    expect(next.eof).toBe(true);
-  });
+  it.each(['界', '😀'])(
+    'never splits or replaces %s across preview, read, or source-read boundaries',
+    async (character) => {
+      const bytes = Buffer.from(character.repeat(18_000));
+      const source = inline(bytes);
+      // Deliberately split every source response inside multibyte code points.
+      source.read.mockImplementation(async (offset, maxBytes) =>
+        bytes.subarray(offset, offset + Math.min(maxBytes, 7))
+      );
+      const view = await ready(source);
+      const preview = page(await view.preview(), bytes);
+      const width = Buffer.byteLength(character, 'utf8');
+      expect(preview.range.end).toBe(Math.floor(2_048 / width) * width);
+      const first = page(await view.read(), bytes);
+      expect(first.range.end).toBe(Math.floor(51_200 / width) * width);
+      const next = page(await view.read(first.cursor!), bytes);
+      expect(next.range.start).toBe(first.range.end);
+      expect(first.text + next.text).toBe(bytes.toString('utf8'));
+      expect(next.eof).toBe(true);
+    }
+  );
 
   it('reads the frozen CJK source using its prior digest and exact byte ranges', async () => {
     const fixture = originals.find((entry) => entry.id === 'cjk-single-line')!;
@@ -284,12 +287,15 @@ describe('bounded UTF-8 source views', () => {
   it.each([
     Buffer.from('00ffc328800a', 'hex'),
     Buffer.concat([Buffer.alloc(70_000, 120), Buffer.from([0xe7, 0x95])]),
-  ])('refuses invalid UTF-8 anywhere in the representation without a preview or replacement', async (bytes) => {
-    const result = await openBoundedSourceView(inline(bytes), limits);
-    expect(result).toEqual({ status: 'unavailable', reason: 'invalid_utf8' });
-    expect(result).not.toHaveProperty('preview');
-    expect(result).not.toHaveProperty('cursor');
-  });
+  ])(
+    'refuses invalid UTF-8 anywhere in the representation without a preview or replacement',
+    async (bytes) => {
+      const result = await openBoundedSourceView(inline(bytes), limits);
+      expect(result).toEqual({ status: 'unavailable', reason: 'invalid_utf8' });
+      expect(result).not.toHaveProperty('preview');
+      expect(result).not.toHaveProperty('cursor');
+    }
+  );
 
   it('rejects a corrupt digest and both short and surplus declared EOF', async () => {
     const bytes = Buffer.from('Exact bytes');
@@ -392,25 +398,26 @@ describe('bounded UTF-8 source views', () => {
     expect(source.read).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'unsupported',
-    'missing',
-    'corrupt',
-    'stale',
-  ] as const)('keeps %s diagnostics bounded and never returns a working-looking handle', async (reason) => {
-    const source = inline(Buffer.from('PRIVATE body'));
-    source.read.mockImplementation(async () => {
-      throw new BoundedSourceError(reason);
-    });
-    expect(await openBoundedSourceView(source, limits)).toEqual({ status: 'unavailable', reason });
-    source.read.mockImplementation(async () => {
-      throw Object.assign(new Error('PRIVATE path and original bytes'), { code: 'ENOENT' });
-    });
-    expect(await openBoundedSourceView(source, limits)).toEqual({
-      status: 'unavailable',
-      reason: 'missing',
-    });
-  });
+  it.each(['unsupported', 'missing', 'corrupt', 'stale'] as const)(
+    'keeps %s diagnostics bounded and never returns a working-looking handle',
+    async (reason) => {
+      const source = inline(Buffer.from('PRIVATE body'));
+      source.read.mockImplementation(async () => {
+        throw new BoundedSourceError(reason);
+      });
+      expect(await openBoundedSourceView(source, limits)).toEqual({
+        status: 'unavailable',
+        reason,
+      });
+      source.read.mockImplementation(async () => {
+        throw Object.assign(new Error('PRIVATE path and original bytes'), { code: 'ENOENT' });
+      });
+      expect(await openBoundedSourceView(source, limits)).toEqual({
+        status: 'unavailable',
+        reason: 'missing',
+      });
+    }
+  );
 
   it('bounds stalled verification and range reads and passes cancellation to the source owner', async () => {
     const source = inline(Buffer.alloc(60_000, 120));
@@ -461,35 +468,29 @@ describe('bounded UTF-8 source views', () => {
     });
   });
 
-  it.each([
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-    -1,
-    1.5,
-    Number.MAX_SAFE_INTEGER + 1,
-  ])('refuses invalid source byte admission %s before access', async (maxRepresentationBytes) => {
-    const source = inline(Buffer.from('text'));
-    expect(await openBoundedSourceView(source, { ...limits, maxRepresentationBytes })).toEqual({
-      status: 'unavailable',
-      reason: 'invalid_request',
-    });
-    expect(source.read).not.toHaveBeenCalled();
-  });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses invalid source byte admission %s before access',
+    async (maxRepresentationBytes) => {
+      const source = inline(Buffer.from('text'));
+      expect(await openBoundedSourceView(source, { ...limits, maxRepresentationBytes })).toEqual({
+        status: 'unavailable',
+        reason: 'invalid_request',
+      });
+      expect(source.read).not.toHaveBeenCalled();
+    }
+  );
 
-  it.each([
-    0,
-    -1,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-    2_147_483_648,
-  ])('rejects a nonpositive or unbounded deadline %s before source access', async (timeoutMs) => {
-    const source = inline(Buffer.from('text'));
-    expect(await openBoundedSourceView(source, { ...limits, timeoutMs })).toEqual({
-      status: 'unavailable',
-      reason: 'invalid_request',
-    });
-    expect(source.read).not.toHaveBeenCalled();
-  });
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+    'rejects a nonpositive or unbounded deadline %s before source access',
+    async (timeoutMs) => {
+      const source = inline(Buffer.from('text'));
+      expect(await openBoundedSourceView(source, { ...limits, timeoutMs })).toEqual({
+        status: 'unavailable',
+        reason: 'invalid_request',
+      });
+      expect(source.read).not.toHaveBeenCalled();
+    }
+  );
 
   it('reads real held file descriptors and rejects drift and a later missing source', async () => {
     const root = await mkdtemp(join(tmpdir(), 'bounded-source-'));

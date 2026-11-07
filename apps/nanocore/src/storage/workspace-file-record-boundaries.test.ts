@@ -433,158 +433,157 @@ describe('workspace file-record write and load boundaries', () => {
     ).not.toContain(workspace.id);
   });
 
-  it.each([
-    'AgentSession',
-    'artifact',
-    'knowledge source',
-  ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', async (family) => {
-    const f = await createBoundaryFixture();
-    const { first, second, store } = f;
-    const firstTimestamp = first.turn.startedAt ?? new Date().toISOString();
-    const secondTimestamp = second.turn.startedAt ?? new Date().toISOString();
+  it.each(['AgentSession', 'artifact', 'knowledge source'] as const)(
+    'rejects a cross-workspace duplicate %s id without replacing its owner',
+    async (family) => {
+      const f = await createBoundaryFixture();
+      const { first, second, store } = f;
+      const firstTimestamp = first.turn.startedAt ?? new Date().toISOString();
+      const secondTimestamp = second.turn.startedAt ?? new Date().toISOString();
 
-    switch (family) {
-      case 'AgentSession': {
-        const id = 'as_00000000-0000-7b0f-96e7-3f6551c1efa7';
-        const original = await store.createAgentSession({
-          id,
-          agentId: 'agent_codex_host',
-          workspaceId: first.workspace.id,
-          threadId: first.thread.id,
-          status: 'busy',
-          message: null,
-          createdAt: firstTimestamp,
-          updatedAt: firstTimestamp,
-        });
+      switch (family) {
+        case 'AgentSession': {
+          const id = 'as_00000000-0000-7b0f-96e7-3f6551c1efa7';
+          const original = await store.createAgentSession({
+            id,
+            agentId: 'agent_codex_host',
+            workspaceId: first.workspace.id,
+            threadId: first.thread.id,
+            status: 'busy',
+            message: null,
+            createdAt: firstTimestamp,
+            updatedAt: firstTimestamp,
+          });
 
-        await expect
-          .soft(
-            store.createAgentSession({
-              id,
-              agentId: 'agent_codex_host',
-              workspaceId: second.workspace.id,
-              threadId: second.thread.id,
-              status: 'busy',
-              message: null,
-              createdAt: secondTimestamp,
-              updatedAt: secondTimestamp,
-            })
-          )
-          .rejects.toThrow();
-        expect.soft(store.getAgentSession(id)).toEqual(original);
-        expect(
-          JSON.parse(nativeRows(f.dataRoot, first.workspace.id, 'control_agent_sessions', id))
-        ).toHaveLength(1);
-        break;
-      }
+          await expect
+            .soft(
+              store.createAgentSession({
+                id,
+                agentId: 'agent_codex_host',
+                workspaceId: second.workspace.id,
+                threadId: second.thread.id,
+                status: 'busy',
+                message: null,
+                createdAt: secondTimestamp,
+                updatedAt: secondTimestamp,
+              })
+            )
+            .rejects.toThrow();
+          expect.soft(store.getAgentSession(id)).toEqual(original);
+          expect(
+            JSON.parse(nativeRows(f.dataRoot, first.workspace.id, 'control_agent_sessions', id))
+          ).toHaveLength(1);
+          break;
+        }
 
-      case 'artifact': {
-        const id = 'ar_00000000-0000-7466-96a2-e0274de2cc84';
-        const original = await store.createArtifact({
-          id,
-          workspaceId: first.workspace.id,
-          threadId: first.thread.id,
-          turnId: first.turn.id,
-          kind: 'summary',
-          title: 'Original artifact',
-          status: 'ready',
-          summary: 'The first workspace owns this artifact.',
-          version: 1,
-          content: { format: 'markdown', body: '# Original artifact' },
-          contentDigest: artifactDigest('# Original artifact'),
-          lastMutationRequestId: 'req_ar_cross_workspace_boundary_original',
-          origin: {
-            kind: 'turn-output',
+        case 'artifact': {
+          const id = 'ar_00000000-0000-7466-96a2-e0274de2cc84';
+          const original = await store.createArtifact({
+            id,
+            workspaceId: first.workspace.id,
             threadId: first.thread.id,
             turnId: first.turn.id,
-            requestId: 'req_ar_cross_workspace_boundary_original',
-          },
-          createdAt: firstTimestamp,
-          updatedAt: firstTimestamp,
-        });
+            kind: 'summary',
+            title: 'Original artifact',
+            status: 'ready',
+            summary: 'The first workspace owns this artifact.',
+            version: 1,
+            content: { format: 'markdown', body: '# Original artifact' },
+            contentDigest: artifactDigest('# Original artifact'),
+            lastMutationRequestId: 'req_ar_cross_workspace_boundary_original',
+            origin: {
+              kind: 'turn-output',
+              threadId: first.thread.id,
+              turnId: first.turn.id,
+              requestId: 'req_ar_cross_workspace_boundary_original',
+            },
+            createdAt: firstTimestamp,
+            updatedAt: firstTimestamp,
+          });
 
-        expect
-          .soft(() =>
-            store.createArtifact({
-              id,
-              workspaceId: second.workspace.id,
-              threadId: second.thread.id,
-              turnId: second.turn.id,
-              kind: 'summary',
-              title: 'Replacement artifact',
-              status: 'ready',
-              summary: 'The second workspace must not replace the owner.',
-              version: 1,
-              content: { format: 'markdown', body: '# Replacement artifact' },
-              contentDigest: artifactDigest('# Replacement artifact'),
-              lastMutationRequestId: 'req_ar_cross_workspace_boundary_replacement',
-              origin: {
-                kind: 'turn-output',
+          expect
+            .soft(() =>
+              store.createArtifact({
+                id,
+                workspaceId: second.workspace.id,
                 threadId: second.thread.id,
                 turnId: second.turn.id,
-                requestId: 'req_ar_cross_workspace_boundary_replacement',
-              },
-              createdAt: secondTimestamp,
-              updatedAt: secondTimestamp,
-            })
-          )
-          .toThrow();
-        expect.soft(store.listArtifacts(first.workspace.id)).toContainEqual(original);
-        expect.soft(existsSync(join(first.root, 'artifacts', id, 'artifact.json'))).toBe(true);
-        break;
-      }
+                kind: 'summary',
+                title: 'Replacement artifact',
+                status: 'ready',
+                summary: 'The second workspace must not replace the owner.',
+                version: 1,
+                content: { format: 'markdown', body: '# Replacement artifact' },
+                contentDigest: artifactDigest('# Replacement artifact'),
+                lastMutationRequestId: 'req_ar_cross_workspace_boundary_replacement',
+                origin: {
+                  kind: 'turn-output',
+                  threadId: second.thread.id,
+                  turnId: second.turn.id,
+                  requestId: 'req_ar_cross_workspace_boundary_replacement',
+                },
+                createdAt: secondTimestamp,
+                updatedAt: secondTimestamp,
+              })
+            )
+            .toThrow();
+          expect.soft(store.listArtifacts(first.workspace.id)).toContainEqual(original);
+          expect.soft(existsSync(join(first.root, 'artifacts', id, 'artifact.json'))).toBe(true);
+          break;
+        }
 
-      case 'knowledge source': {
-        const app = sourceBoundaryApp(f);
-        const originalMaterial = 'The first workspace owns this source material.';
-        const created = await app.request(
-          ...operationRequest(
-            'knowledge.source.register',
-            { workspaceId: first.workspace.id },
-            {
-              body: JSON.stringify({
-                requestId: randomUUID(),
-                kind: 'upload',
-                title: 'Original source',
-                content: originalMaterial,
-                originatingThreadId: first.thread.id,
-                originatingTurnId: first.turn.id,
-              }),
-            }
-          )
-        );
-        expect(created.status, await created.clone().text()).toBe(200);
-        const { source: original } = await created.json();
-        const attempted = await app.request(
-          ...operationRequest(
-            'knowledge.source.register',
-            { workspaceId: second.workspace.id },
-            {
-              body: JSON.stringify({
-                id: original.id,
-                requestId: randomUUID(),
-                kind: 'upload',
-                title: 'Replacement source',
-                content: 'The second workspace must not replace this material.',
-                originatingThreadId: second.thread.id,
-                originatingTurnId: second.turn.id,
-              }),
-            }
-          )
-        );
-        expect(attempted.status).toBe(400);
-        expect(store.listKnowledgeSources(first.workspace.id)).toEqual([original]);
-        expect(store.listKnowledgeSources(second.workspace.id)).toEqual([]);
-        expect(
-          readFileSync(
-            join(first.root, 'knowledge', 'raw', 'sources', original.id, 'original'),
-            'utf8'
-          )
-        ).toBe(originalMaterial);
-        break;
+        case 'knowledge source': {
+          const app = sourceBoundaryApp(f);
+          const originalMaterial = 'The first workspace owns this source material.';
+          const created = await app.request(
+            ...operationRequest(
+              'knowledge.source.register',
+              { workspaceId: first.workspace.id },
+              {
+                body: JSON.stringify({
+                  requestId: randomUUID(),
+                  kind: 'upload',
+                  title: 'Original source',
+                  content: originalMaterial,
+                  originatingThreadId: first.thread.id,
+                  originatingTurnId: first.turn.id,
+                }),
+              }
+            )
+          );
+          expect(created.status, await created.clone().text()).toBe(200);
+          const { source: original } = await created.json();
+          const attempted = await app.request(
+            ...operationRequest(
+              'knowledge.source.register',
+              { workspaceId: second.workspace.id },
+              {
+                body: JSON.stringify({
+                  id: original.id,
+                  requestId: randomUUID(),
+                  kind: 'upload',
+                  title: 'Replacement source',
+                  content: 'The second workspace must not replace this material.',
+                  originatingThreadId: second.thread.id,
+                  originatingTurnId: second.turn.id,
+                }),
+              }
+            )
+          );
+          expect(attempted.status).toBe(400);
+          expect(store.listKnowledgeSources(first.workspace.id)).toEqual([original]);
+          expect(store.listKnowledgeSources(second.workspace.id)).toEqual([]);
+          expect(
+            readFileSync(
+              join(first.root, 'knowledge', 'raw', 'sources', original.id, 'original'),
+              'utf8'
+            )
+          ).toBe(originalMaterial);
+          break;
+        }
       }
     }
-  });
+  );
 
   it.each([
     'id',
@@ -746,87 +745,86 @@ describe('workspace file-record write and load boundaries', () => {
       },
       changed: { causationId: 'req_user_input_changed' },
     },
-  ])('rejects a valid item revision that changes immutable $name', async ({
-    original,
-    changed,
-    currentResponsibleUserId,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-item-attribution-boundary-'));
-    const store = createTestStore({ dataRoot });
-    const workspace = await store.createWorkspace('Item attribution boundary');
-    const thread = await store.createThread(workspace.id, 'Item attribution boundary');
-    const triggerActor = { kind: 'user', id: currentResponsibleUserId } as const;
-    const turn = await store.createTurn(
-      workspace.id,
-      thread.id,
-      'Protect immutable item attribution',
-      triggerActor
-    );
-    const timestamp = turn.startedAt ?? new Date().toISOString();
-    const item = ItemSchema.parse({
-      id: 'it_00000000-0000-7fc4-aae8-dd5cf69e5992',
-      owner: { kind: 'workspace', workspaceId: workspace.id },
-      threadId: thread.id,
-      turnId: turn.id,
-      status: 'completed',
-      createdAt: timestamp,
-      completedAt: timestamp,
-      ...original,
-    });
-    const changedItem = ItemSchema.parse({ ...item, ...changed });
-    const supportingRequest =
-      changedItem.type === 'user-input-response'
-        ? ItemSchema.parse({
-            id: 'it_00000000-0000-7562-879d-36174aa716fa',
-            owner: { kind: 'workspace', workspaceId: workspace.id },
-            threadId: thread.id,
-            turnId: turn.id,
-            type: 'user-input-request',
-            responsibleUserId: currentResponsibleUserId,
-            status: 'completed',
-            userInputRequestId: changedItem.userInputRequestId,
-            prompt: 'Support the response attribution revision.',
-            questions: [
-              {
-                id: 'question_attribution_boundary',
-                header: 'Attribution',
-                question: 'Continue?',
-                options: null,
-                isOther: true,
-                isSecret: false,
-              },
-            ],
-            createdAt: timestamp,
-            completedAt: timestamp,
-          })
-        : null;
-    const currentItems = supportingRequest ? [supportingRequest, changedItem] : [changedItem];
-    const itemRevisions = supportingRequest
-      ? [supportingRequest, item, changedItem]
-      : [item, changedItem];
-
-    expect(() =>
-      parseCanonicalWorkspaceHistory({
-        workspace,
-        threads: [thread],
-        turns: [{ ...turn, items: currentItems }],
-        itemRevisions,
-        artifacts: [],
-        agentSessions: [],
-        turnEvents: [],
-      })
-    ).toThrow(/attribution cannot change/);
-
-    for (const revision of itemRevisions)
-      await appendRetainedEntry(
-        dataRoot,
+  ])(
+    'rejects a valid item revision that changes immutable $name',
+    async ({ original, changed, currentResponsibleUserId }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-item-attribution-boundary-'));
+      const store = createTestStore({ dataRoot });
+      const workspace = await store.createWorkspace('Item attribution boundary');
+      const thread = await store.createThread(workspace.id, 'Item attribution boundary');
+      const triggerActor = { kind: 'user', id: currentResponsibleUserId } as const;
+      const turn = await store.createTurn(
         workspace.id,
-        turn.id,
-        'item',
-        revision as unknown as Record<string, unknown>
+        thread.id,
+        'Protect immutable item attribution',
+        triggerActor
       );
-    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
-  });
+      const timestamp = turn.startedAt ?? new Date().toISOString();
+      const item = ItemSchema.parse({
+        id: 'it_00000000-0000-7fc4-aae8-dd5cf69e5992',
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+        threadId: thread.id,
+        turnId: turn.id,
+        status: 'completed',
+        createdAt: timestamp,
+        completedAt: timestamp,
+        ...original,
+      });
+      const changedItem = ItemSchema.parse({ ...item, ...changed });
+      const supportingRequest =
+        changedItem.type === 'user-input-response'
+          ? ItemSchema.parse({
+              id: 'it_00000000-0000-7562-879d-36174aa716fa',
+              owner: { kind: 'workspace', workspaceId: workspace.id },
+              threadId: thread.id,
+              turnId: turn.id,
+              type: 'user-input-request',
+              responsibleUserId: currentResponsibleUserId,
+              status: 'completed',
+              userInputRequestId: changedItem.userInputRequestId,
+              prompt: 'Support the response attribution revision.',
+              questions: [
+                {
+                  id: 'question_attribution_boundary',
+                  header: 'Attribution',
+                  question: 'Continue?',
+                  options: null,
+                  isOther: true,
+                  isSecret: false,
+                },
+              ],
+              createdAt: timestamp,
+              completedAt: timestamp,
+            })
+          : null;
+      const currentItems = supportingRequest ? [supportingRequest, changedItem] : [changedItem];
+      const itemRevisions = supportingRequest
+        ? [supportingRequest, item, changedItem]
+        : [item, changedItem];
+
+      expect(() =>
+        parseCanonicalWorkspaceHistory({
+          workspace,
+          threads: [thread],
+          turns: [{ ...turn, items: currentItems }],
+          itemRevisions,
+          artifacts: [],
+          agentSessions: [],
+          turnEvents: [],
+        })
+      ).toThrow(/attribution cannot change/);
+
+      for (const revision of itemRevisions)
+        await appendRetainedEntry(
+          dataRoot,
+          workspace.id,
+          turn.id,
+          'item',
+          revision as unknown as Record<string, unknown>
+        );
+      await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    }
+  );
 
   it('rejects a foreign-user response when reloading canonical Turn items', async () => {
     const { dataRoot, first, store } = await createBoundaryFixture();
@@ -931,74 +929,70 @@ describe('workspace file-record write and load boundaries', () => {
       .toEqual([original]);
   });
 
-  it.each([
-    'id',
-    'workspaceId',
-    'threadId',
-    'startedAt',
-  ] as const)('rejects a turn update that changes immutable %s without altering memory or reload', async (field) => {
-    const { dataRoot, first, second, store } = await createBoundaryFixture();
-    const patch =
-      field === 'id'
-        ? { id: 'tu_00000000-0000-7d05-b7b7-98b9d4579c71' }
-        : field === 'workspaceId'
-          ? { workspaceId: second.workspace.id }
-          : field === 'threadId'
-            ? { threadId: second.thread.id }
-            : { startedAt: '2030-01-01T00:00:00.000Z' };
+  it.each(['id', 'workspaceId', 'threadId', 'startedAt'] as const)(
+    'rejects a turn update that changes immutable %s without altering memory or reload',
+    async (field) => {
+      const { dataRoot, first, second, store } = await createBoundaryFixture();
+      const patch =
+        field === 'id'
+          ? { id: 'tu_00000000-0000-7d05-b7b7-98b9d4579c71' }
+          : field === 'workspaceId'
+            ? { workspaceId: second.workspace.id }
+            : field === 'threadId'
+              ? { threadId: second.thread.id }
+              : { startedAt: '2030-01-01T00:00:00.000Z' };
 
-    await expect.soft(store.updateTurn(first.turn.id, patch)).rejects.toThrow();
-    expect
-      .soft(store.getTurn(first.workspace.id, first.thread.id, first.turn.id))
-      .toEqual(first.turn);
-    expect
-      .soft(store.listThreadTurns(second.workspace.id, second.thread.id))
-      .toEqual([second.turn]);
-    expect(() => {
-      const reloaded = new FsStore({ dataRoot });
-      expect(reloaded.getTurn(first.workspace.id, first.thread.id, first.turn.id)).toEqual(
-        first.turn
-      );
-      expect(reloaded.listThreadTurns(second.workspace.id, second.thread.id)).toEqual([
-        second.turn,
-      ]);
-    }).not.toThrow();
-  });
+      await expect.soft(store.updateTurn(first.turn.id, patch)).rejects.toThrow();
+      expect
+        .soft(store.getTurn(first.workspace.id, first.thread.id, first.turn.id))
+        .toEqual(first.turn);
+      expect
+        .soft(store.listThreadTurns(second.workspace.id, second.thread.id))
+        .toEqual([second.turn]);
+      expect(() => {
+        const reloaded = new FsStore({ dataRoot });
+        expect(reloaded.getTurn(first.workspace.id, first.thread.id, first.turn.id)).toEqual(
+          first.turn
+        );
+        expect(reloaded.listThreadTurns(second.workspace.id, second.thread.id)).toEqual([
+          second.turn,
+        ]);
+      }).not.toThrow();
+    }
+  );
 
-  it.each([
-    'id',
-    'workspaceId',
-    'threadId',
-    'createdAt',
-  ] as const)('rejects an AgentSession update that changes immutable %s without altering memory or reload', async (field) => {
-    const { dataRoot, first, second, store } = await createBoundaryFixture();
-    const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const session = await store.createAgentSession({
-      id: 'as_00000000-0000-76dd-90ec-52fddf601ff7',
-      agentId: 'agent_codex_host',
-      workspaceId: first.workspace.id,
-      threadId: first.thread.id,
-      status: 'busy',
-      message: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-    const patch =
-      field === 'id'
-        ? { id: 'as_00000000-0000-7436-a03e-9057e5ce1f82' }
-        : field === 'workspaceId'
-          ? { workspaceId: second.workspace.id }
-          : field === 'threadId'
-            ? { threadId: second.thread.id }
-            : { createdAt: '2030-01-01T00:00:00.000Z' };
+  it.each(['id', 'workspaceId', 'threadId', 'createdAt'] as const)(
+    'rejects an AgentSession update that changes immutable %s without altering memory or reload',
+    async (field) => {
+      const { dataRoot, first, second, store } = await createBoundaryFixture();
+      const timestamp = first.turn.startedAt ?? new Date().toISOString();
+      const session = await store.createAgentSession({
+        id: 'as_00000000-0000-76dd-90ec-52fddf601ff7',
+        agentId: 'agent_codex_host',
+        workspaceId: first.workspace.id,
+        threadId: first.thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      const patch =
+        field === 'id'
+          ? { id: 'as_00000000-0000-7436-a03e-9057e5ce1f82' }
+          : field === 'workspaceId'
+            ? { workspaceId: second.workspace.id }
+            : field === 'threadId'
+              ? { threadId: second.thread.id }
+              : { createdAt: '2030-01-01T00:00:00.000Z' };
 
-    await expect.soft(store.updateAgentSession(session.id, patch)).rejects.toThrow();
-    expect.soft(store.getAgentSession(session.id)).toEqual(session);
-    expect(() => {
-      const reloaded = new FsStore({ dataRoot });
-      expect(reloaded.getAgentSession(session.id)).toEqual(session);
-    }).not.toThrow();
-  });
+      await expect.soft(store.updateAgentSession(session.id, patch)).rejects.toThrow();
+      expect.soft(store.getAgentSession(session.id)).toEqual(session);
+      expect(() => {
+        const reloaded = new FsStore({ dataRoot });
+        expect(reloaded.getAgentSession(session.id)).toEqual(session);
+      }).not.toThrow();
+    }
+  );
 
   it('rejects a second current AgentSession for the same Thread without a projection', async () => {
     const { dataRoot, first, store } = await createBoundaryFixture();
@@ -1201,63 +1195,181 @@ describe('workspace file-record write and load boundaries', () => {
     expect(() => new FsStore({ dataRoot })).not.toThrow();
   });
 
-  it.each([
-    'item',
-    'artifact',
-    'AgentSession',
-  ] as const)('rejects a persisted %s event whose nested payload lineage differs from its envelope', async (family) => {
-    const { dataRoot, first, second, store } = await createBoundaryFixture();
-    const timestamp = second.turn.startedAt ?? new Date().toISOString();
-    let event: Parameters<FsStore['persistTurnEvent']>[1];
-    let readOwnBytes: (root: string) => string | Buffer;
-    let readSecond: (candidate: FsStore) => unknown;
+  it.each(['item', 'artifact', 'AgentSession'] as const)(
+    'rejects a persisted %s event whose nested payload lineage differs from its envelope',
+    async (family) => {
+      const { dataRoot, first, second, store } = await createBoundaryFixture();
+      const timestamp = second.turn.startedAt ?? new Date().toISOString();
+      let event: Parameters<FsStore['persistTurnEvent']>[1];
+      let readOwnBytes: (root: string) => string | Buffer;
+      let readSecond: (candidate: FsStore) => unknown;
 
-    switch (family) {
-      case 'item': {
-        const item = await store.createItem({
-          id: 'it_00000000-0000-78f6-9e01-ea1ec12708fe',
-          owner: { kind: 'workspace', workspaceId: second.workspace.id },
-          threadId: second.thread.id,
-          turnId: second.turn.id,
-          type: 'assistant-message',
-          status: 'completed',
-          text: 'This item belongs to the second lineage.',
-          createdAt: timestamp,
-          completedAt: timestamp,
-        });
-        event = {
-          event: 'item.created',
+      switch (family) {
+        case 'item': {
+          const item = await store.createItem({
+            id: 'it_00000000-0000-78f6-9e01-ea1ec12708fe',
+            owner: { kind: 'workspace', workspaceId: second.workspace.id },
+            threadId: second.thread.id,
+            turnId: second.turn.id,
+            type: 'assistant-message',
+            status: 'completed',
+            text: 'This item belongs to the second lineage.',
+            createdAt: timestamp,
+            completedAt: timestamp,
+          });
+          event = {
+            event: 'item.created',
+            workspaceId: first.workspace.id,
+            threadId: first.thread.id,
+            turnId: first.turn.id,
+            data: { type: 'item-created', item: { ...item, text: 'Non-owning foreign snapshot.' } },
+          };
+          readOwnBytes = (root) =>
+            nativeRows(root, second.workspace.id, 'control_product_entries', second.turn.id);
+          readSecond = (candidate) =>
+            candidate.listThreadItems(second.workspace.id, second.thread.id);
+          break;
+        }
+
+        case 'artifact': {
+          const artifact = await store.createArtifact({
+            id: 'ar_00000000-0000-7393-a5cd-4fbe2a969e4c',
+            workspaceId: second.workspace.id,
+            threadId: second.thread.id,
+            turnId: second.turn.id,
+            kind: 'summary',
+            title: 'Cross-lineage event artifact',
+            status: 'ready',
+            summary: null,
+            version: 1,
+            content: { format: 'text', body: 'This artifact belongs elsewhere.' },
+            contentDigest: artifactDigest('This artifact belongs elsewhere.'),
+            lastMutationRequestId: 'req_ar_cross_lineage_event_create',
+            origin: {
+              kind: 'turn-output',
+              threadId: second.thread.id,
+              turnId: second.turn.id,
+              requestId: 'req_ar_cross_lineage_event_create',
+            },
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          });
+          event = {
+            event: 'artifact.created',
+            workspaceId: first.workspace.id,
+            threadId: first.thread.id,
+            turnId: first.turn.id,
+            data: {
+              type: 'artifact-created',
+              artifact: { ...artifact, title: 'Non-owning foreign snapshot' },
+            },
+          };
+          readOwnBytes = (root) =>
+            readFileSync(
+              join(
+                root,
+                'workspaces',
+                second.workspace.id,
+                'artifacts',
+                artifact.id,
+                'artifact.json'
+              )
+            );
+          readSecond = (candidate) => candidate.getArtifact(second.workspace.id, artifact.id);
+          break;
+        }
+
+        case 'AgentSession': {
+          const agentSession = await store.createAgentSession({
+            id: 'as_00000000-0000-7fee-91c8-74b960d30b20',
+            agentId: 'agent_codex_host',
+            workspaceId: second.workspace.id,
+            threadId: second.thread.id,
+            status: 'busy',
+            message: null,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          });
+          event = {
+            event: 'agent.session.updated',
+            workspaceId: first.workspace.id,
+            threadId: first.thread.id,
+            turnId: first.turn.id,
+            data: {
+              type: 'agent-session-updated',
+              agentSession: { ...agentSession, message: 'Non-owning foreign snapshot.' },
+            },
+          };
+          readOwnBytes = (root) =>
+            nativeRows(root, second.workspace.id, 'control_agent_sessions', agentSession.id);
+          readSecond = (candidate) => candidate.getAgentSession(agentSession.id);
+          break;
+        }
+      }
+
+      const ownBytes = readOwnBytes(dataRoot);
+      const expectedSecond = readSecond(store);
+      expect(readSecond(new FsStore({ dataRoot }))).toEqual(expectedSecond);
+      await expect.soft(store.persistTurnEvent(first.turn.id, event)).rejects.toThrow();
+      expect.soft(store.getTurnEvents(first.turn.id)).toEqual([]);
+
+      await appendRetainedEntry(dataRoot, first.workspace.id, first.turn.id, 'event', {
+        ...event,
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: event.requestId ?? null,
+        timestamp: new Date().toISOString(),
+      });
+      const eventBytes = nativeRows(
+        dataRoot,
+        first.workspace.id,
+        'control_product_entries',
+        first.turn.id
+      );
+      const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+      expect(readSecond(refused.store)).toEqual(expectedSecond);
+      expect(readOwnBytes(refused.dataRoot)).toEqual(ownBytes);
+      const progress = await refused.store.createThread(
+        second.workspace.id,
+        'Second owner remains writable'
+      );
+      const reopened = new FsStore({ dataRoot: refused.dataRoot });
+      expect(reopened.getThread(second.workspace.id, progress.id)).toEqual(progress);
+      expect(readSecond(reopened)).toEqual(expectedSecond);
+      expect(readOwnBytes(refused.dataRoot)).toEqual(ownBytes);
+      expect(
+        nativeRows(refused.dataRoot, first.workspace.id, 'control_product_entries', first.turn.id)
+      ).toBe(eventBytes);
+    }
+  );
+
+  it.each(['artifact', 'AgentSession'] as const)(
+    'rejects a persisted event that references a missing %s record',
+    async (family) => {
+      const { dataRoot, first, store } = await createBoundaryFixture();
+      const timestamp = first.turn.startedAt ?? new Date().toISOString();
+      let event: Parameters<FsStore['persistTurnEvent']>[1];
+      let recordRoot: string | undefined;
+      let missingSessionId: string | undefined;
+
+      if (family === 'artifact') {
+        const artifact = await store.createArtifact({
+          id: 'ar_00000000-0000-70b9-84c0-0dc43cac0400',
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
           turnId: first.turn.id,
-          data: { type: 'item-created', item: { ...item, text: 'Non-owning foreign snapshot.' } },
-        };
-        readOwnBytes = (root) =>
-          nativeRows(root, second.workspace.id, 'control_product_entries', second.turn.id);
-        readSecond = (candidate) =>
-          candidate.listThreadItems(second.workspace.id, second.thread.id);
-        break;
-      }
-
-      case 'artifact': {
-        const artifact = await store.createArtifact({
-          id: 'ar_00000000-0000-7393-a5cd-4fbe2a969e4c',
-          workspaceId: second.workspace.id,
-          threadId: second.thread.id,
-          turnId: second.turn.id,
           kind: 'summary',
-          title: 'Cross-lineage event artifact',
+          title: 'Missing event artifact',
           status: 'ready',
           summary: null,
           version: 1,
-          content: { format: 'text', body: 'This artifact belongs elsewhere.' },
-          contentDigest: artifactDigest('This artifact belongs elsewhere.'),
-          lastMutationRequestId: 'req_ar_cross_lineage_event_create',
+          content: { format: 'text', body: 'Remove the canonical artifact after the event.' },
+          contentDigest: artifactDigest('Remove the canonical artifact after the event.'),
+          lastMutationRequestId: 'req_ar_missing_event_state_create',
           origin: {
             kind: 'turn-output',
-            threadId: second.thread.id,
-            turnId: second.turn.id,
-            requestId: 'req_ar_cross_lineage_event_create',
+            threadId: first.thread.id,
+            turnId: first.turn.id,
+            requestId: 'req_ar_missing_event_state_create',
           },
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -1267,25 +1379,15 @@ describe('workspace file-record write and load boundaries', () => {
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
           turnId: first.turn.id,
-          data: {
-            type: 'artifact-created',
-            artifact: { ...artifact, title: 'Non-owning foreign snapshot' },
-          },
+          data: { type: 'artifact-created', artifact },
         };
-        readOwnBytes = (root) =>
-          readFileSync(
-            join(root, 'workspaces', second.workspace.id, 'artifacts', artifact.id, 'artifact.json')
-          );
-        readSecond = (candidate) => candidate.getArtifact(second.workspace.id, artifact.id);
-        break;
-      }
-
-      case 'AgentSession': {
+        recordRoot = join(first.root, 'artifacts', artifact.id);
+      } else {
         const agentSession = await store.createAgentSession({
-          id: 'as_00000000-0000-7fee-91c8-74b960d30b20',
+          id: 'as_00000000-0000-7a30-87a3-5ec55741b8c7',
           agentId: 'agent_codex_host',
-          workspaceId: second.workspace.id,
-          threadId: second.thread.id,
+          workspaceId: first.workspace.id,
+          threadId: first.thread.id,
           status: 'busy',
           message: null,
           createdAt: timestamp,
@@ -1296,213 +1398,111 @@ describe('workspace file-record write and load boundaries', () => {
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
           turnId: first.turn.id,
-          data: {
-            type: 'agent-session-updated',
-            agentSession: { ...agentSession, message: 'Non-owning foreign snapshot.' },
-          },
+          data: { type: 'agent-session-updated', agentSession },
         };
-        readOwnBytes = (root) =>
-          nativeRows(root, second.workspace.id, 'control_agent_sessions', agentSession.id);
-        readSecond = (candidate) => candidate.getAgentSession(agentSession.id);
-        break;
+        missingSessionId = agentSession.id;
       }
-    }
 
-    const ownBytes = readOwnBytes(dataRoot);
-    const expectedSecond = readSecond(store);
-    expect(readSecond(new FsStore({ dataRoot }))).toEqual(expectedSecond);
-    await expect.soft(store.persistTurnEvent(first.turn.id, event)).rejects.toThrow();
-    expect.soft(store.getTurnEvents(first.turn.id)).toEqual([]);
-
-    await appendRetainedEntry(dataRoot, first.workspace.id, first.turn.id, 'event', {
-      ...event,
-      protocolVersion: PROTOCOL_VERSION,
-      requestId: event.requestId ?? null,
-      timestamp: new Date().toISOString(),
-    });
-    const eventBytes = nativeRows(
-      dataRoot,
-      first.workspace.id,
-      'control_product_entries',
-      first.turn.id
-    );
-    const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
-    expect(readSecond(refused.store)).toEqual(expectedSecond);
-    expect(readOwnBytes(refused.dataRoot)).toEqual(ownBytes);
-    const progress = await refused.store.createThread(
-      second.workspace.id,
-      'Second owner remains writable'
-    );
-    const reopened = new FsStore({ dataRoot: refused.dataRoot });
-    expect(reopened.getThread(second.workspace.id, progress.id)).toEqual(progress);
-    expect(readSecond(reopened)).toEqual(expectedSecond);
-    expect(readOwnBytes(refused.dataRoot)).toEqual(ownBytes);
-    expect(
-      nativeRows(refused.dataRoot, first.workspace.id, 'control_product_entries', first.turn.id)
-    ).toBe(eventBytes);
-  });
-
-  it.each([
-    'artifact',
-    'AgentSession',
-  ] as const)('rejects a persisted event that references a missing %s record', async (family) => {
-    const { dataRoot, first, store } = await createBoundaryFixture();
-    const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    let event: Parameters<FsStore['persistTurnEvent']>[1];
-    let recordRoot: string | undefined;
-    let missingSessionId: string | undefined;
-
-    if (family === 'artifact') {
-      const artifact = await store.createArtifact({
-        id: 'ar_00000000-0000-70b9-84c0-0dc43cac0400',
-        workspaceId: first.workspace.id,
-        threadId: first.thread.id,
-        turnId: first.turn.id,
-        kind: 'summary',
-        title: 'Missing event artifact',
-        status: 'ready',
-        summary: null,
-        version: 1,
-        content: { format: 'text', body: 'Remove the canonical artifact after the event.' },
-        contentDigest: artifactDigest('Remove the canonical artifact after the event.'),
-        lastMutationRequestId: 'req_ar_missing_event_state_create',
-        origin: {
-          kind: 'turn-output',
-          threadId: first.thread.id,
-          turnId: first.turn.id,
-          requestId: 'req_ar_missing_event_state_create',
-        },
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-      event = {
-        event: 'artifact.created',
-        workspaceId: first.workspace.id,
-        threadId: first.thread.id,
-        turnId: first.turn.id,
-        data: { type: 'artifact-created', artifact },
-      };
-      recordRoot = join(first.root, 'artifacts', artifact.id);
-    } else {
-      const agentSession = await store.createAgentSession({
-        id: 'as_00000000-0000-7a30-87a3-5ec55741b8c7',
-        agentId: 'agent_codex_host',
-        workspaceId: first.workspace.id,
-        threadId: first.thread.id,
-        status: 'busy',
-        message: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-      event = {
-        event: 'agent.session.updated',
-        workspaceId: first.workspace.id,
-        threadId: first.thread.id,
-        turnId: first.turn.id,
-        data: { type: 'agent-session-updated', agentSession },
-      };
-      missingSessionId = agentSession.id;
-    }
-
-    const acknowledged = await store.persistTurnEvent(first.turn.id, event);
-    store.emitTurnEvent(first.turn.id, acknowledged);
-    await shutdownControlStoreWorkerClient();
-    if (recordRoot) rmSync(recordRoot, { recursive: true });
-    else {
-      const db = openWorkspaceDb(dataRoot, first.workspace.id);
-      try {
-        db.sqlite.prepare('DELETE FROM control_agent_sessions WHERE id=?').run(missingSessionId);
-      } finally {
-        db.sqlite.close();
-      }
-    }
-
-    const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
-    if (recordRoot) {
-      expect(existsSync(recordRoot)).toBe(false);
-      expect(existsSync(join(refused.dataRoot, relative(dataRoot, recordRoot)))).toBe(false);
-    } else {
-      expect(
-        nativeRows(dataRoot, first.workspace.id, 'control_agent_sessions', missingSessionId!)
-      ).toBe('[]');
-      expect(
-        nativeRows(
-          refused.dataRoot,
-          first.workspace.id,
-          'control_agent_sessions',
-          missingSessionId!
-        )
-      ).toBe('[]');
-    }
-  });
-
-  it.each([
-    'turn items',
-    'artifact body',
-  ] as const)('fails closed when canonical %s are also embedded in metadata JSON', async (duplicateAuthority) => {
-    const { dataRoot, first, store } = await createBoundaryFixture();
-    const timestamp = first.turn.startedAt ?? new Date().toISOString();
-
-    if (duplicateAuthority === 'turn items') {
-      const item = await store.createItem({
-        id: 'it_00000000-0000-7456-9649-697d49ec361e',
-        owner: { kind: 'workspace', workspaceId: first.workspace.id },
-        threadId: first.thread.id,
-        turnId: first.turn.id,
-        type: 'assistant-message',
-        status: 'completed',
-        text: 'This item belongs only in immutable native history.',
-        createdAt: timestamp,
-        completedAt: timestamp,
-      });
+      const acknowledged = await store.persistTurnEvent(first.turn.id, event);
+      store.emitTurnEvent(first.turn.id, acknowledged);
       await shutdownControlStoreWorkerClient();
-      const db = openWorkspaceDb(dataRoot, first.workspace.id);
-      try {
-        const row = db.sqlite
-          .prepare('SELECT record_json FROM control_turns WHERE id=?')
-          .get(first.turn.id) as { record_json: string };
-        const turnRecord = JSON.parse(row.record_json);
-        turnRecord.items = [item];
-        db.sqlite
-          .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
-          .run(JSON.stringify(turnRecord), first.turn.id);
-      } finally {
-        db.sqlite.close();
+      if (recordRoot) rmSync(recordRoot, { recursive: true });
+      else {
+        const db = openWorkspaceDb(dataRoot, first.workspace.id);
+        try {
+          db.sqlite.prepare('DELETE FROM control_agent_sessions WHERE id=?').run(missingSessionId);
+        } finally {
+          db.sqlite.close();
+        }
       }
-    } else {
-      const artifact = await store.createArtifact({
-        id: 'ar_00000000-0000-78bf-b0ac-55525ed5cf3c',
-        workspaceId: first.workspace.id,
-        threadId: first.thread.id,
-        turnId: first.turn.id,
-        kind: 'summary',
-        title: 'Split artifact body',
-        status: 'ready',
-        summary: null,
-        version: 1,
-        content: { format: 'markdown', body: '# Canonical body file' },
-        contentDigest: artifactDigest('# Canonical body file'),
-        lastMutationRequestId: 'req_ar_embedded_body_boundary_create',
-        origin: {
-          kind: 'turn-output',
+
+      const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+      if (recordRoot) {
+        expect(existsSync(recordRoot)).toBe(false);
+        expect(existsSync(join(refused.dataRoot, relative(dataRoot, recordRoot)))).toBe(false);
+      } else {
+        expect(
+          nativeRows(dataRoot, first.workspace.id, 'control_agent_sessions', missingSessionId!)
+        ).toBe('[]');
+        expect(
+          nativeRows(
+            refused.dataRoot,
+            first.workspace.id,
+            'control_agent_sessions',
+            missingSessionId!
+          )
+        ).toBe('[]');
+      }
+    }
+  );
+
+  it.each(['turn items', 'artifact body'] as const)(
+    'fails closed when canonical %s are also embedded in metadata JSON',
+    async (duplicateAuthority) => {
+      const { dataRoot, first, store } = await createBoundaryFixture();
+      const timestamp = first.turn.startedAt ?? new Date().toISOString();
+
+      if (duplicateAuthority === 'turn items') {
+        const item = await store.createItem({
+          id: 'it_00000000-0000-7456-9649-697d49ec361e',
+          owner: { kind: 'workspace', workspaceId: first.workspace.id },
           threadId: first.thread.id,
           turnId: first.turn.id,
-          requestId: 'req_ar_embedded_body_boundary_create',
-        },
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-      const artifactPath = join(first.root, 'artifacts', artifact.id, 'artifact.json');
-      const artifactRecord = JSON.parse(readFileSync(artifactPath, 'utf8')) as {
-        content?: { body?: string; format?: string };
-      };
-      artifactRecord.content = {
-        format: artifact.content.format,
-        body: '# Embedded duplicate body',
-      };
-      writeFileSync(artifactPath, `${JSON.stringify(artifactRecord, null, 2)}\n`);
-    }
+          type: 'assistant-message',
+          status: 'completed',
+          text: 'This item belongs only in immutable native history.',
+          createdAt: timestamp,
+          completedAt: timestamp,
+        });
+        await shutdownControlStoreWorkerClient();
+        const db = openWorkspaceDb(dataRoot, first.workspace.id);
+        try {
+          const row = db.sqlite
+            .prepare('SELECT record_json FROM control_turns WHERE id=?')
+            .get(first.turn.id) as { record_json: string };
+          const turnRecord = JSON.parse(row.record_json);
+          turnRecord.items = [item];
+          db.sqlite
+            .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+            .run(JSON.stringify(turnRecord), first.turn.id);
+        } finally {
+          db.sqlite.close();
+        }
+      } else {
+        const artifact = await store.createArtifact({
+          id: 'ar_00000000-0000-78bf-b0ac-55525ed5cf3c',
+          workspaceId: first.workspace.id,
+          threadId: first.thread.id,
+          turnId: first.turn.id,
+          kind: 'summary',
+          title: 'Split artifact body',
+          status: 'ready',
+          summary: null,
+          version: 1,
+          content: { format: 'markdown', body: '# Canonical body file' },
+          contentDigest: artifactDigest('# Canonical body file'),
+          lastMutationRequestId: 'req_ar_embedded_body_boundary_create',
+          origin: {
+            kind: 'turn-output',
+            threadId: first.thread.id,
+            turnId: first.turn.id,
+            requestId: 'req_ar_embedded_body_boundary_create',
+          },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        const artifactPath = join(first.root, 'artifacts', artifact.id, 'artifact.json');
+        const artifactRecord = JSON.parse(readFileSync(artifactPath, 'utf8')) as {
+          content?: { body?: string; format?: string };
+        };
+        artifactRecord.content = {
+          format: artifact.content.format,
+          body: '# Embedded duplicate body',
+        };
+        writeFileSync(artifactPath, `${JSON.stringify(artifactRecord, null, 2)}\n`);
+      }
 
-    await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
-  });
+      await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    }
+  );
 });

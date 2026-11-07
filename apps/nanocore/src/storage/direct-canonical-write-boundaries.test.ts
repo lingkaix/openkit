@@ -318,49 +318,48 @@ describe('direct canonical write boundaries', () => {
     expect(existsSync(join(workspacesRoot, workspaceId))).toBe(false);
   });
 
-  it.each([
-    'original',
-    'managed-prefix',
-    'staging',
-  ] as const)('rejects a symlinked Source %s parent without writing outside the Knowledge Base', async (boundary) => {
-    const f = await createFixture(`openkit-source-${boundary}-symlink-`);
-    const coreDb = openCoreDb(f.dataRoot);
-    applyMigrations(coreDb);
-    const userId = ensureLocalUser(coreDb);
-    onTestFinished(() => coreDb.sqlite.close());
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: f.workspace.id, ownerUserId: userId });
-    const sourceId = testEntityId('ks', `source-${boundary}-symlink`);
-    const selection = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
-    const notebook = selection.notebook;
-    const revision = selection.head.notebookCommit;
-    // Keep an admitted observer across the deliberate path fault; no new scope is admitted afterward.
-    const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
-    onTestFinished(() => workspaceDb.sqlite.close());
-    const parent =
-      boundary === 'original'
-        ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources', sourceId)
-        : boundary === 'managed-prefix'
-          ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources')
-          : join(f.workspaceRoot, 'knowledge', '.source-staging');
-    const outsideRoot = installOutsideParent(parent, `openkit-source-outside-${boundary}-`);
-    onTestFinished(() => rmSync(outsideRoot, { recursive: true, force: true }));
-    const sentinel = join(outsideRoot, 'sentinel.txt');
-    writeFileSync(sentinel, 'untouched');
-    const content = 'This original must stay inside the Knowledge Base.';
-    const source = {
-      ...knowledgeSource(f.workspace.id, sourceId),
-      contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-    };
-    await expect(
-      captureWorkspaceSourceFixture({ ...f, coreDb, userId, source, content })
-    ).rejects.toThrow();
-    expect(readdirSync(outsideRoot)).toEqual(['sentinel.txt']);
-    expect(readFileSync(sentinel, 'utf8')).toBe('untouched');
-    expect(
-      readControlKnowledgeHead(workspaceDb, selection.head.knowledgeBaseId)?.notebookCommit
-    ).toBe(revision);
-    expect(notebook.readSourcePointers(revision)).not.toHaveProperty(sourceId);
-  });
+  it.each(['original', 'managed-prefix', 'staging'] as const)(
+    'rejects a symlinked Source %s parent without writing outside the Knowledge Base',
+    async (boundary) => {
+      const f = await createFixture(`openkit-source-${boundary}-symlink-`);
+      const coreDb = openCoreDb(f.dataRoot);
+      applyMigrations(coreDb);
+      const userId = ensureLocalUser(coreDb);
+      onTestFinished(() => coreDb.sqlite.close());
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId: f.workspace.id, ownerUserId: userId });
+      const sourceId = testEntityId('ks', `source-${boundary}-symlink`);
+      const selection = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
+      const notebook = selection.notebook;
+      const revision = selection.head.notebookCommit;
+      // Keep an admitted observer across the deliberate path fault; no new scope is admitted afterward.
+      const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
+      onTestFinished(() => workspaceDb.sqlite.close());
+      const parent =
+        boundary === 'original'
+          ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources', sourceId)
+          : boundary === 'managed-prefix'
+            ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources')
+            : join(f.workspaceRoot, 'knowledge', '.source-staging');
+      const outsideRoot = installOutsideParent(parent, `openkit-source-outside-${boundary}-`);
+      onTestFinished(() => rmSync(outsideRoot, { recursive: true, force: true }));
+      const sentinel = join(outsideRoot, 'sentinel.txt');
+      writeFileSync(sentinel, 'untouched');
+      const content = 'This original must stay inside the Knowledge Base.';
+      const source = {
+        ...knowledgeSource(f.workspace.id, sourceId),
+        contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      };
+      await expect(
+        captureWorkspaceSourceFixture({ ...f, coreDb, userId, source, content })
+      ).rejects.toThrow();
+      expect(readdirSync(outsideRoot)).toEqual(['sentinel.txt']);
+      expect(readFileSync(sentinel, 'utf8')).toBe('untouched');
+      expect(
+        readControlKnowledgeHead(workspaceDb, selection.head.knowledgeBaseId)?.notebookCommit
+      ).toBe(revision);
+      expect(notebook.readSourcePointers(revision)).not.toHaveProperty(sourceId);
+    }
+  );
 
   it.each([
     ['starts after sequence 1', [1, 2]],
@@ -516,122 +515,125 @@ async function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
 }
 
 describe('single-file publication seam', () => {
-  it.each([
-    'backup',
-    'vault',
-    'feedback',
-  ] as const)('syncs the %s bytes before rename and its exact parent afterward', async (kind) => {
-    const f = await durableFileFixture(kind);
-    durability.events.length = 0;
-    try {
-      f.write();
-      const renameAt = durability.events.findIndex(
-        (event) => event.op === 'rename' && event.path === f.path
-      );
-      expect(renameAt).toBeGreaterThan(0);
-      const temporaryPath = durability.events[renameAt].from;
-      expect(
-        durability.events
-          .slice(0, renameAt)
-          .some((event) => event.op === 'sync' && !event.directory && event.path === temporaryPath)
-      ).toBe(true);
-      expect(
-        durability.events
-          .slice(renameAt + 1)
-          .some((event) => event.op === 'sync' && event.directory && event.path === dirname(f.path))
-      ).toBe(true);
-      expect(f.read()).toBe(f.expected);
-      if (kind === 'vault') expect(statSync(f.path).mode & 0o777).toBe(0o600);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      rmSync(f.root, { force: true, recursive: true });
+  it.each(['backup', 'vault', 'feedback'] as const)(
+    'syncs the %s bytes before rename and its exact parent afterward',
+    async (kind) => {
+      const f = await durableFileFixture(kind);
+      durability.events.length = 0;
+      try {
+        f.write();
+        const renameAt = durability.events.findIndex(
+          (event) => event.op === 'rename' && event.path === f.path
+        );
+        expect(renameAt).toBeGreaterThan(0);
+        const temporaryPath = durability.events[renameAt].from;
+        expect(
+          durability.events
+            .slice(0, renameAt)
+            .some(
+              (event) => event.op === 'sync' && !event.directory && event.path === temporaryPath
+            )
+        ).toBe(true);
+        expect(
+          durability.events
+            .slice(renameAt + 1)
+            .some(
+              (event) => event.op === 'sync' && event.directory && event.path === dirname(f.path)
+            )
+        ).toBe(true);
+        expect(f.read()).toBe(f.expected);
+        if (kind === 'vault') expect(statSync(f.path).mode & 0o777).toBe(0o600);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        rmSync(f.root, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
-  it.each([
-    'vault',
-    'feedback',
-  ] as const)('preserves prior %s authority when its staged file sync fails', async (kind) => {
-    const f = await durableFileFixture(kind);
-    const before = readFileSync(f.path);
-    durability.events.length = 0;
-    durability.fail = (candidate, directory) =>
-      !directory && dirname(candidate) === dirname(f.path);
-    try {
-      expect(f.write).toThrow(
-        kind === 'vault' ? 'Encrypted-file vault file could not be written securely.' : undefined
-      );
-      expect(readFileSync(f.path)).toEqual(before);
-      expect(
-        durability.events.some((event) => event.op === 'rename' && event.path === f.path)
-      ).toBe(false);
-    } finally {
-      durability.fail = undefined;
-      await shutdownControlStoreWorkerClient();
-      rmSync(f.root, { force: true, recursive: true });
+  it.each(['vault', 'feedback'] as const)(
+    'preserves prior %s authority when its staged file sync fails',
+    async (kind) => {
+      const f = await durableFileFixture(kind);
+      const before = readFileSync(f.path);
+      durability.events.length = 0;
+      durability.fail = (candidate, directory) =>
+        !directory && dirname(candidate) === dirname(f.path);
+      try {
+        expect(f.write).toThrow(
+          kind === 'vault' ? 'Encrypted-file vault file could not be written securely.' : undefined
+        );
+        expect(readFileSync(f.path)).toEqual(before);
+        expect(
+          durability.events.some((event) => event.op === 'rename' && event.path === f.path)
+        ).toBe(false);
+      } finally {
+        durability.fail = undefined;
+        await shutdownControlStoreWorkerClient();
+        rmSync(f.root, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
-  it.each([
-    'vault',
-    'feedback',
-  ] as const)('rejects %s success after its renamed parent sync fails and retains readable bytes', async (kind) => {
-    const f = await durableFileFixture(kind);
-    durability.events.length = 0;
-    durability.fail = (candidate, directory) =>
-      directory &&
-      candidate === dirname(f.path) &&
-      durability.events.some((event) => event.op === 'rename' && event.path === f.path);
-    try {
-      expect(f.write).toThrow(
-        kind === 'vault' ? 'Encrypted-file vault file could not be written securely.' : undefined
-      );
-      durability.fail = undefined;
-      expect(f.read()).toBe(f.expected);
-    } finally {
-      durability.fail = undefined;
-      await shutdownControlStoreWorkerClient();
-      rmSync(f.root, { force: true, recursive: true });
+  it.each(['vault', 'feedback'] as const)(
+    'rejects %s success after its renamed parent sync fails and retains readable bytes',
+    async (kind) => {
+      const f = await durableFileFixture(kind);
+      durability.events.length = 0;
+      durability.fail = (candidate, directory) =>
+        directory &&
+        candidate === dirname(f.path) &&
+        durability.events.some((event) => event.op === 'rename' && event.path === f.path);
+      try {
+        expect(f.write).toThrow(
+          kind === 'vault' ? 'Encrypted-file vault file could not be written securely.' : undefined
+        );
+        durability.fail = undefined;
+        expect(f.read()).toBe(f.expected);
+      } finally {
+        durability.fail = undefined;
+        await shutdownControlStoreWorkerClient();
+        rmSync(f.root, { force: true, recursive: true });
+      }
     }
-  });
+  );
 });
 
 describe('uncommitted ancestor recovery', () => {
-  it.each([
-    'flat',
-    'nested',
-  ] as const)('retries the failed ancestor synchronization for a %s manifest directory', async (shape) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-ancestor-retry-'));
-    const directory = shape === 'flat' ? join(root, 'new') : join(root, 'new', 'nested');
-    const path = join(directory, 'manifest.json');
-    durability.events.length = 0;
-    durability.fail = (candidate, isDirectory) => isDirectory && candidate === root;
-    try {
-      expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
-        'Injected publication sync failure'
-      );
-      expect(existsSync(join(root, 'new'))).toBe(true);
-      expect(existsSync(path)).toBe(false);
-      // The nested case still lacks its immediate parent after the failed outer mkdir commit.
-      if (shape === 'nested') expect(existsSync(directory)).toBe(false);
+  it.each(['flat', 'nested'] as const)(
+    'retries the failed ancestor synchronization for a %s manifest directory',
+    async (shape) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-ancestor-retry-'));
+      const directory = shape === 'flat' ? join(root, 'new') : join(root, 'new', 'nested');
+      const path = join(directory, 'manifest.json');
       durability.events.length = 0;
-      expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
-        'Injected publication sync failure'
-      );
-      expect(existsSync(path)).toBe(false);
-      durability.events.length = 0;
-      durability.fail = undefined;
-      writeStorageJsonAtomically(path, { revision: 1 });
-      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 1 });
-      expect(
-        durability.events.some(
-          (event) => event.op === 'sync' && event.directory && event.path === root
-        )
-      ).toBe(true);
-    } finally {
-      durability.fail = undefined;
-      await shutdownControlStoreWorkerClient();
-      rmSync(root, { recursive: true, force: true });
+      durability.fail = (candidate, isDirectory) => isDirectory && candidate === root;
+      try {
+        expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
+          'Injected publication sync failure'
+        );
+        expect(existsSync(join(root, 'new'))).toBe(true);
+        expect(existsSync(path)).toBe(false);
+        // The nested case still lacks its immediate parent after the failed outer mkdir commit.
+        if (shape === 'nested') expect(existsSync(directory)).toBe(false);
+        durability.events.length = 0;
+        expect(() => writeStorageJsonAtomically(path, { revision: 1 })).toThrow(
+          'Injected publication sync failure'
+        );
+        expect(existsSync(path)).toBe(false);
+        durability.events.length = 0;
+        durability.fail = undefined;
+        writeStorageJsonAtomically(path, { revision: 1 });
+        expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 1 });
+        expect(
+          durability.events.some(
+            (event) => event.op === 'sync' && event.directory && event.path === root
+          )
+        ).toBe(true);
+      } finally {
+        durability.fail = undefined;
+        await shutdownControlStoreWorkerClient();
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 });

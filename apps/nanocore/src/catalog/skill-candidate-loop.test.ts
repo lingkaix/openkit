@@ -566,25 +566,24 @@ describe('synthetic Skill Artifact/catalog component', () => {
     expect(f.store.listCommandRequests()).toEqual([]);
   });
 
-  it.each([
-    'foreign-private',
-    'revoked',
-    'changed-source',
-  ] as const)('refuses %s Artifact admission without a candidate or selection effect', async (reason) => {
-    const f = await fixture(reason === 'foreign-private' ? allocateEntityId('usr') : undefined);
-    if (reason === 'revoked')
-      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, LOCAL_USER_ID))();
-    if (reason === 'changed-source') f.selection.version += 1;
-    expect(() => submit(f)).toThrowError(
-      expect.objectContaining({ name: 'SkillCandidateArtifactError' })
-    );
-    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId).skills).toMatchObject({
-      candidates: [],
-      entries: [],
-      pins: [],
-      versions: [],
-    });
-  });
+  it.each(['foreign-private', 'revoked', 'changed-source'] as const)(
+    'refuses %s Artifact admission without a candidate or selection effect',
+    async (reason) => {
+      const f = await fixture(reason === 'foreign-private' ? allocateEntityId('usr') : undefined);
+      if (reason === 'revoked')
+        f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, LOCAL_USER_ID))();
+      if (reason === 'changed-source') f.selection.version += 1;
+      expect(() => submit(f)).toThrowError(
+        expect.objectContaining({ name: 'SkillCandidateArtifactError' })
+      );
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId).skills).toMatchObject({
+        candidates: [],
+        entries: [],
+        pins: [],
+        versions: [],
+      });
+    }
+  );
 
   it('rejects stale candidate promotion and a changed expected pin instead of following current values', async () => {
     const f = await fixture();

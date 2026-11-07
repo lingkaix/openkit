@@ -154,66 +154,66 @@ describe('displayed conversation receipts', () => {
       threadOwner: { kind: 'workspace' as const, workspaceId: 'workspace' },
       expectUnavailableBanner: true,
     },
-  ])('focus admission for $label with empty turns', async ({
-    threadOwner,
-    expectUnavailableBanner,
-  }) => {
-    const dashboard = vi.fn(async () => ({
-      thread: {
-        id: 'thread',
-        owner: threadOwner,
-        name: null,
-        preview: 'Thread preview',
-        status: 'active' as const,
-        entryPath: 'conversation' as const,
-        visibility: threadOwner.kind === 'server' ? ('server' as const) : ('workspace' as const),
-        createdAt: '2026-01-01T00:00:00.000Z',
-        updatedAt: '2026-01-01T00:00:00.000Z',
-      },
-      turns: [],
-      participants: [],
-      viewerUserId: 'viewer',
-    }));
-    const client = {
-      core: { meta: async () => ({}) },
-      operations: {
-        'thread.items': async () => ({
-          items: [
-            {
-              id: 'first',
-              owner: { kind: 'workspace', workspaceId: 'workspace' },
-              threadId: 'thread',
-              turnId: 'turn',
-              type: 'assistant-message',
-              status: 'completed',
-              text: 'first reply',
-            },
-          ],
-          nextCursor: null,
-        }),
-        'thread.dashboard': dashboard,
-        'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: ['first'] }),
-        'thread.mark-read': async () => ({ readItemIds: ['first'], unreadItemIds: [] }),
-      },
-    } as unknown as CoreClient;
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <CoreClientProvider client={client}>
-          <ThreadStream workspaceId="workspace" threadId="thread" focusTurnId="focus-turn" />
-        </CoreClientProvider>
-      </QueryClientProvider>
-    );
-    await screen.findByText('first reply');
-    await waitFor(() => expect(dashboard).toHaveBeenCalled());
-    const unavailableCopy = 'Recorded Turn is unavailable in this Thread.';
-    if (expectUnavailableBanner) {
-      expect(await screen.findByText(unavailableCopy)).toBeInTheDocument();
-    } else {
-      await waitFor(() => expect(screen.queryByText(unavailableCopy)).not.toBeInTheDocument());
+  ])(
+    'focus admission for $label with empty turns',
+    async ({ threadOwner, expectUnavailableBanner }) => {
+      const dashboard = vi.fn(async () => ({
+        thread: {
+          id: 'thread',
+          owner: threadOwner,
+          name: null,
+          preview: 'Thread preview',
+          status: 'active' as const,
+          entryPath: 'conversation' as const,
+          visibility: threadOwner.kind === 'server' ? ('server' as const) : ('workspace' as const),
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+        turns: [],
+        participants: [],
+        viewerUserId: 'viewer',
+      }));
+      const client = {
+        core: { meta: async () => ({}) },
+        operations: {
+          'thread.items': async () => ({
+            items: [
+              {
+                id: 'first',
+                owner: { kind: 'workspace', workspaceId: 'workspace' },
+                threadId: 'thread',
+                turnId: 'turn',
+                type: 'assistant-message',
+                status: 'completed',
+                text: 'first reply',
+              },
+            ],
+            nextCursor: null,
+          }),
+          'thread.dashboard': dashboard,
+          'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: ['first'] }),
+          'thread.mark-read': async () => ({ readItemIds: ['first'], unreadItemIds: [] }),
+        },
+      } as unknown as CoreClient;
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <CoreClientProvider client={client}>
+            <ThreadStream workspaceId="workspace" threadId="thread" focusTurnId="focus-turn" />
+          </CoreClientProvider>
+        </QueryClientProvider>
+      );
+      await screen.findByText('first reply');
+      await waitFor(() => expect(dashboard).toHaveBeenCalled());
+      const unavailableCopy = 'Recorded Turn is unavailable in this Thread.';
+      if (expectUnavailableBanner) {
+        expect(await screen.findByText(unavailableCopy)).toBeInTheDocument();
+      } else {
+        await waitFor(() => expect(screen.queryByText(unavailableCopy)).not.toBeInTheDocument());
+      }
+      queryClient.clear();
     }
-    queryClient.clear();
-  });
+  );
 });

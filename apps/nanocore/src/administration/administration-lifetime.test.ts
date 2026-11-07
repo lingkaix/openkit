@@ -412,129 +412,140 @@ describe('Administration admitted Turn lifetime', () => {
     expect(f.createResponses).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    false,
-    true,
-  ])('publishes exactly one review-only Policy candidate after client disconnect %s', async (disconnect) => {
-    const f = await fixture();
-    const channel = new AbortController();
-    const first = f.submit(channel.signal);
-    const inferenceSignal = await admittedInference(f.entered.promise, first);
-    expect(f.retained().turns).toHaveLength(1);
-    expect(f.retained().turns[0]?.status).toBe('running');
-    const duplicate = f.submit();
-    if (disconnect) channel.abort(new Error('Synthetic submitting connection closed.'));
-    f.release.resolve(f.toolResponse);
-    const [response, duplicateResponse] = await Promise.all([first, duplicate]);
-    const body = (await response.json()) as SubmitAdministrationConversationResponse;
-    const duplicateBody = await duplicateResponse.json();
+  it.each([false, true])(
+    'publishes exactly one review-only Policy candidate after client disconnect %s',
+    async (disconnect) => {
+      const f = await fixture();
+      const channel = new AbortController();
+      const first = f.submit(channel.signal);
+      const inferenceSignal = await admittedInference(f.entered.promise, first);
+      expect(f.retained().turns).toHaveLength(1);
+      expect(f.retained().turns[0]?.status).toBe('running');
+      const duplicate = f.submit();
+      if (disconnect) channel.abort(new Error('Synthetic submitting connection closed.'));
+      f.release.resolve(f.toolResponse);
+      const [response, duplicateResponse] = await Promise.all([first, duplicate]);
+      const body = (await response.json()) as SubmitAdministrationConversationResponse;
+      const duplicateBody = await duplicateResponse.json();
 
-    expect(response.status).toBe(200);
-    expect(body, JSON.stringify(body)).toMatchObject({
-      outcome: 'answered',
-      turn: { status: 'completed', error: null },
-    });
-    expect(duplicateResponse.status).toBe(200);
-    expect(duplicateBody).toEqual(body);
-    expect(inferenceSignal.aborted).toBe(false);
-    const artifacts = f.retained().artifacts;
-    expect(artifacts).toHaveLength(1);
-    const artifact = f.store.getArtifact(f.workspaceId, artifacts[0]!.id);
-    expect(artifact).toMatchObject({
-      version: 1,
-      threadId: f.thread.id,
-      turnId: body.turn.id,
-      origin: {
-        kind: 'turn-output',
+      expect(response.status).toBe(200);
+      expect(body, JSON.stringify(body)).toMatchObject({
+        outcome: 'answered',
+        turn: { status: 'completed', error: null },
+      });
+      expect(duplicateResponse.status).toBe(200);
+      expect(duplicateBody).toEqual(body);
+      expect(inferenceSignal.aborted).toBe(false);
+      const artifacts = f.retained().artifacts;
+      expect(artifacts).toHaveLength(1);
+      const artifact = f.store.getArtifact(f.workspaceId, artifacts[0]!.id);
+      expect(artifact).toMatchObject({
+        version: 1,
         threadId: f.thread.id,
         turnId: body.turn.id,
-        requestId: f.request.requestId,
-      },
-    });
-    expect(artifact.content.format).toBe('json');
-    if (artifact.content.format !== 'json') throw new Error('Expected immutable JSON candidate.');
-    expect(artifact.contentDigest).toBe(
-      `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
-    );
-    expect(JSON.parse(artifact.content.body)).toMatchObject({
-      kind: 'administration-configuration-candidate',
-      targetFamily: 'policy',
-      targetId: 'server',
-      expectedRevision: f.proposal.expectedRevision,
-      before: { schemaVersion: 1, statements: [] },
-      after: { schemaVersion: 1, statements: [{ id: 'review-only-tool-rule', state: 'inactive' }] },
-      policyProposal: {
-        proposer: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        validation: 'valid',
-      },
-    });
-    expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
-    expect(f.createResponses).toHaveBeenCalledTimes(2);
-    expect(f.retained().items.filter((item) => item.type === 'assistant-message')).toHaveLength(1);
-    expect(
-      f
-        .retained()
-        .receipts.filter((receipt) => receipt.command === 'administration.configuration.apply')
-    ).toHaveLength(0);
-    const settled = f.retained();
-    const replay = await f.submit();
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual(body);
-    const conflict = await f.submit(undefined, 'Different semantic input under the same request.');
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(f.retained()).toEqual(settled);
-    expect(f.createResponses).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([
-    1, 2,
-  ] as const)('turn.interrupt stops admitted inference %s and fences its late result', async (blockedCall) => {
-    const f = await fixture({ blockedCall });
-    const pending = f.submit();
-    const inferenceSignal = await admittedInference(f.entered.promise, pending);
-    const turn = f.retained().turns[0]!;
-    expect(turn.status).toBe('running');
-    expect(f.retained().artifacts).toHaveLength(blockedCall - 1);
-    const interruptRequest = {
-      workspaceId: f.workspaceId,
-      threadId: f.thread.id,
-      turnId: turn.id,
-      requestId: randomUUID(),
-    };
-    const interrupt = () =>
-      f.app.request(
-        ...operationRequest('turn.interrupt', interruptRequest, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(interruptRequest),
-        })
+        origin: {
+          kind: 'turn-output',
+          threadId: f.thread.id,
+          turnId: body.turn.id,
+          requestId: f.request.requestId,
+        },
+      });
+      expect(artifact.content.format).toBe('json');
+      if (artifact.content.format !== 'json') throw new Error('Expected immutable JSON candidate.');
+      expect(artifact.contentDigest).toBe(
+        `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
       );
-    const stopped = await interrupt();
-    const stoppedBody = await stopped.json();
-    const statusAtStop = f.store.getTurnById(turn.id).status;
-    const abortedAtStop = inferenceSignal.aborted;
-    f.release.resolve(blockedCall === 1 ? f.toolResponse : answer());
-    await pending;
-    await setImmediate();
+      expect(JSON.parse(artifact.content.body)).toMatchObject({
+        kind: 'administration-configuration-candidate',
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: f.proposal.expectedRevision,
+        before: { schemaVersion: 1, statements: [] },
+        after: {
+          schemaVersion: 1,
+          statements: [{ id: 'review-only-tool-rule', state: 'inactive' }],
+        },
+        policyProposal: {
+          proposer: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          validation: 'valid',
+        },
+      });
+      expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
+      expect(f.createResponses).toHaveBeenCalledTimes(2);
+      expect(f.retained().items.filter((item) => item.type === 'assistant-message')).toHaveLength(
+        1
+      );
+      expect(
+        f
+          .retained()
+          .receipts.filter((receipt) => receipt.command === 'administration.configuration.apply')
+      ).toHaveLength(0);
+      const settled = f.retained();
+      const replay = await f.submit();
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual(body);
+      const conflict = await f.submit(
+        undefined,
+        'Different semantic input under the same request.'
+      );
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(f.retained()).toEqual(settled);
+      expect(f.createResponses).toHaveBeenCalledTimes(2);
+    }
+  );
 
-    expect(stopped.status, JSON.stringify(stoppedBody)).toBe(200);
-    expect(stoppedBody).toMatchObject({ id: turn.id, status: 'interrupted' });
-    expect(statusAtStop).toBe('interrupted');
-    expect(abortedAtStop).toBe(true);
-    expect(f.store.getTurnById(turn.id).status).toBe('interrupted');
-    expect(f.retained().artifacts).toHaveLength(blockedCall - 1);
-    expect(f.retained().items.filter((item) => item.type === 'assistant-message')).toHaveLength(0);
-    expect(f.createResponses).toHaveBeenCalledTimes(blockedCall);
-    expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
-    const settled = f.retained();
-    const replay = await interrupt();
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual(stoppedBody);
-    expect((await f.submit()).status).toBe(200);
-    expect(f.retained()).toEqual(settled);
-    expect(f.createResponses).toHaveBeenCalledTimes(blockedCall);
-  });
+  it.each([1, 2] as const)(
+    'turn.interrupt stops admitted inference %s and fences its late result',
+    async (blockedCall) => {
+      const f = await fixture({ blockedCall });
+      const pending = f.submit();
+      const inferenceSignal = await admittedInference(f.entered.promise, pending);
+      const turn = f.retained().turns[0]!;
+      expect(turn.status).toBe('running');
+      expect(f.retained().artifacts).toHaveLength(blockedCall - 1);
+      const interruptRequest = {
+        workspaceId: f.workspaceId,
+        threadId: f.thread.id,
+        turnId: turn.id,
+        requestId: randomUUID(),
+      };
+      const interrupt = () =>
+        f.app.request(
+          ...operationRequest('turn.interrupt', interruptRequest, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(interruptRequest),
+          })
+        );
+      const stopped = await interrupt();
+      const stoppedBody = await stopped.json();
+      const statusAtStop = f.store.getTurnById(turn.id).status;
+      const abortedAtStop = inferenceSignal.aborted;
+      f.release.resolve(blockedCall === 1 ? f.toolResponse : answer());
+      await pending;
+      await setImmediate();
+
+      expect(stopped.status, JSON.stringify(stoppedBody)).toBe(200);
+      expect(stoppedBody).toMatchObject({ id: turn.id, status: 'interrupted' });
+      expect(statusAtStop).toBe('interrupted');
+      expect(abortedAtStop).toBe(true);
+      expect(f.store.getTurnById(turn.id).status).toBe('interrupted');
+      expect(f.retained().artifacts).toHaveLength(blockedCall - 1);
+      expect(f.retained().items.filter((item) => item.type === 'assistant-message')).toHaveLength(
+        0
+      );
+      expect(f.createResponses).toHaveBeenCalledTimes(blockedCall);
+      expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
+      const settled = f.retained();
+      const replay = await interrupt();
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual(stoppedBody);
+      expect((await f.submit()).status).toBe(200);
+      expect(f.retained()).toEqual(settled);
+      expect(f.createResponses).toHaveBeenCalledTimes(blockedCall);
+    }
+  );
 
   it('reports a stalled ordinary answer as an answer deadline, not continuation summary failure', async () => {
     // Retained local timing showed preparation can take over 1 second before model admission.

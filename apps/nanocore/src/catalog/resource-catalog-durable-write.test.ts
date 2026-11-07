@@ -357,96 +357,100 @@ describe('resource catalog durable publication', () => {
     expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(second.revision);
   });
 
-  it.each([
-    'import',
-    'portability',
-  ] as const)('syncs the complete %s snapshot before publication and preserves executable bytes on readback', (kind) => {
-    const f = snapshotFixture(kind);
-    f.publish();
-    const renameAt = durability.events.findIndex(
-      (event) => event.op === 'rename' && event.from?.endsWith('.staging')
-    );
-    expect(renameAt).toBeGreaterThan(0);
-    const publication = durability.events[renameAt];
-    const staged = publication.from as string;
-    const before = durability.events.slice(0, renameAt);
-    const fileAt = before.findLastIndex(
-      (event) =>
-        event.op === 'sync' && !event.directory && event.path === join(staged, 'scripts', 'run.sh')
-    );
-    const directoryAt = before.findLastIndex(
-      (event) => event.op === 'sync' && event.directory && event.path === join(staged, 'scripts')
-    );
-    const rootAt = before.findLastIndex(
-      (event) => event.op === 'sync' && event.directory && event.path === staged
-    );
-    expect(
-      before.some(
-        (event) =>
-          event.op === 'sync' && !event.directory && event.path === join(staged, 'SKILL.md')
-      )
-    ).toBe(true);
-    expect(fileAt).toBeGreaterThanOrEqual(0);
-    expect(directoryAt).toBeGreaterThan(fileAt);
-    expect(rootAt).toBeGreaterThan(directoryAt);
-    expect(
-      durability.events
-        .slice(renameAt + 1)
-        .some(
-          (event) =>
-            event.op === 'sync' && event.directory && event.path === dirname(publication.path)
-        )
-    ).toBe(true);
-    // A fresh entry directory must itself be reachable after a host crash.
-    expect(
-      durability.events.some(
+  it.each(['import', 'portability'] as const)(
+    'syncs the complete %s snapshot before publication and preserves executable bytes on readback',
+    (kind) => {
+      const f = snapshotFixture(kind);
+      f.publish();
+      const renameAt = durability.events.findIndex(
+        (event) => event.op === 'rename' && event.from?.endsWith('.staging')
+      );
+      expect(renameAt).toBeGreaterThan(0);
+      const publication = durability.events[renameAt];
+      const staged = publication.from as string;
+      const before = durability.events.slice(0, renameAt);
+      const fileAt = before.findLastIndex(
         (event) =>
           event.op === 'sync' &&
-          event.directory &&
-          event.path === dirname(dirname(publication.path))
-      )
-    ).toBe(true);
-    expect(statSync(join(publication.path, 'scripts', 'run.sh')).mode & 0o777).toBe(0o755);
-    expect(readFileSync(join(publication.path, 'scripts', 'run.sh'), 'utf8')).toBe(
-      '#!/bin/sh\nprintf retained\n'
-    );
-    expect(f.read().payloads[0].payload.tree).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: 'scripts/run.sh', executable: true }),
-      ])
-    );
-  });
-
-  it.each([
-    'import',
-    'portability',
-  ] as const)('does not publish a %s snapshot when a descendant sync fails', (kind) => {
-    const f = snapshotFixture(kind);
-    durability.fail = (path, directory) => !directory && path.endsWith('.staging/scripts/run.sh');
-    expect(f.publish).toThrow('Injected publication sync failure');
-    expect(
-      durability.events.some((event) => event.op === 'rename' && event.from?.endsWith('.staging'))
-    ).toBe(false);
-  });
-
-  it.each([
-    'import',
-    'portability',
-  ] as const)('rejects %s success when the snapshot parent sync fails after rename', (kind) => {
-    const f = snapshotFixture(kind);
-    durability.fail = (path, directory) =>
-      directory &&
-      durability.events.some(
-        (event) =>
-          event.op === 'rename' && event.from?.endsWith('.staging') && dirname(event.path) === path
+          !event.directory &&
+          event.path === join(staged, 'scripts', 'run.sh')
       );
-    expect(f.publish).toThrow('Injected publication sync failure');
-    const publication = durability.events.find(
-      (event) => event.op === 'rename' && event.from?.endsWith('.staging')
-    );
-    expect(publication).toBeDefined();
-    expect(existsSync(join(publication?.path as string, 'scripts', 'run.sh'))).toBe(true);
-  });
+      const directoryAt = before.findLastIndex(
+        (event) => event.op === 'sync' && event.directory && event.path === join(staged, 'scripts')
+      );
+      const rootAt = before.findLastIndex(
+        (event) => event.op === 'sync' && event.directory && event.path === staged
+      );
+      expect(
+        before.some(
+          (event) =>
+            event.op === 'sync' && !event.directory && event.path === join(staged, 'SKILL.md')
+        )
+      ).toBe(true);
+      expect(fileAt).toBeGreaterThanOrEqual(0);
+      expect(directoryAt).toBeGreaterThan(fileAt);
+      expect(rootAt).toBeGreaterThan(directoryAt);
+      expect(
+        durability.events
+          .slice(renameAt + 1)
+          .some(
+            (event) =>
+              event.op === 'sync' && event.directory && event.path === dirname(publication.path)
+          )
+      ).toBe(true);
+      // A fresh entry directory must itself be reachable after a host crash.
+      expect(
+        durability.events.some(
+          (event) =>
+            event.op === 'sync' &&
+            event.directory &&
+            event.path === dirname(dirname(publication.path))
+        )
+      ).toBe(true);
+      expect(statSync(join(publication.path, 'scripts', 'run.sh')).mode & 0o777).toBe(0o755);
+      expect(readFileSync(join(publication.path, 'scripts', 'run.sh'), 'utf8')).toBe(
+        '#!/bin/sh\nprintf retained\n'
+      );
+      expect(f.read().payloads[0].payload.tree).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: 'scripts/run.sh', executable: true }),
+        ])
+      );
+    }
+  );
+
+  it.each(['import', 'portability'] as const)(
+    'does not publish a %s snapshot when a descendant sync fails',
+    (kind) => {
+      const f = snapshotFixture(kind);
+      durability.fail = (path, directory) => !directory && path.endsWith('.staging/scripts/run.sh');
+      expect(f.publish).toThrow('Injected publication sync failure');
+      expect(
+        durability.events.some((event) => event.op === 'rename' && event.from?.endsWith('.staging'))
+      ).toBe(false);
+    }
+  );
+
+  it.each(['import', 'portability'] as const)(
+    'rejects %s success when the snapshot parent sync fails after rename',
+    (kind) => {
+      const f = snapshotFixture(kind);
+      durability.fail = (path, directory) =>
+        directory &&
+        durability.events.some(
+          (event) =>
+            event.op === 'rename' &&
+            event.from?.endsWith('.staging') &&
+            dirname(event.path) === path
+        );
+      expect(f.publish).toThrow('Injected publication sync failure');
+      const publication = durability.events.find(
+        (event) => event.op === 'rename' && event.from?.endsWith('.staging')
+      );
+      expect(publication).toBeDefined();
+      expect(existsSync(join(publication?.path as string, 'scripts', 'run.sh'))).toBe(true);
+    }
+  );
 });
 
 describe('resource snapshot acknowledgement recovery', () => {

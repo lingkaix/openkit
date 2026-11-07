@@ -112,21 +112,19 @@ it('refuses an approval decision from a foreign system actor', () => {
   ).toBe(false);
 });
 
-it.each(
-  publicTurnSchemas
-)('accepts a Turn $name whose Items inherit the Workspace owner and responsible User', ({
-  schema,
-}) => {
-  expect(schema.safeParse(workspaceTurn).success).toBe(true);
-});
+it.each(publicTurnSchemas)(
+  'accepts a Turn $name whose Items inherit the Workspace owner and responsible User',
+  ({ schema }) => {
+    expect(schema.safeParse(workspaceTurn).success).toBe(true);
+  }
+);
 
-it.each(
-  publicTurnSchemas
-)('accepts a Turn $name whose Items inherit the Server owner and responsible User', ({
-  schema,
-}) => {
-  expect(schema.safeParse(serverTurn).success).toBe(true);
-});
+it.each(publicTurnSchemas)(
+  'accepts a Turn $name whose Items inherit the Server owner and responsible User',
+  ({ schema }) => {
+    expect(schema.safeParse(serverTurn).success).toBe(true);
+  }
+);
 
 it.each(publicTurnSchemas)('refuses a Turn $name whose Item owner kind differs', ({ schema }) => {
   expect(
@@ -137,24 +135,28 @@ it.each(publicTurnSchemas)('refuses a Turn $name whose Item owner kind differs',
   ).toBe(false);
 });
 
-it.each(publicTurnSchemas)('refuses a Turn $name whose Item names another Workspace', ({
-  schema,
-}) => {
-  expect(
-    schema.safeParse({
-      ...workspaceTurn,
-      items: [{ ...userDecisionItem, owner: { kind: 'workspace', workspaceId: otherWorkspaceId } }],
-    }).success
-  ).toBe(false);
-});
+it.each(publicTurnSchemas)(
+  'refuses a Turn $name whose Item names another Workspace',
+  ({ schema }) => {
+    expect(
+      schema.safeParse({
+        ...workspaceTurn,
+        items: [
+          { ...userDecisionItem, owner: { kind: 'workspace', workspaceId: otherWorkspaceId } },
+        ],
+      }).success
+    ).toBe(false);
+  }
+);
 
-it.each(
-  publicTurnSchemas
-)('refuses a Turn $name whose user-input request names another responsible User', ({ schema }) => {
-  expect(
-    schema.safeParse({
-      ...workspaceTurn,
-      items: [{ ...userInputRequestItem, responsibleUserId: otherUserId }],
-    }).success
-  ).toBe(false);
-});
+it.each(publicTurnSchemas)(
+  'refuses a Turn $name whose user-input request names another responsible User',
+  ({ schema }) => {
+    expect(
+      schema.safeParse({
+        ...workspaceTurn,
+        items: [{ ...userInputRequestItem, responsibleUserId: otherUserId }],
+      }).success
+    ).toBe(false);
+  }
+);

@@ -230,58 +230,58 @@ afterEach(async () => {
 });
 
 describe('Notebook page commands retain current Source and request identity admission', () => {
-  it.each([
-    'new deletion',
-    'completed deletion replay',
-  ] as const)('rechecks the current originating Source audience for %s', async (stage) => {
-    const f = await fixture();
-    const origin = await f.store.createThread(f.workspaceId, 'Initially shared Source');
-    expect(origin.visibility).toBe('workspace');
-    const registered = await call(f, 'knowledge.source.register', {
-      requestId: randomUUID(),
-      kind: 'document',
-      title: 'Shared Source',
-      content: 'SOURCE-CONTROL-MARKER',
-      originatingThreadId: origin.id,
-    });
-    expect(registered.status, JSON.stringify(registered.body)).toBe(200);
-    expect(registered.body.source).toMatchObject({
-      originatingThreadId: origin.id,
-      contentDigest: digest('SOURCE-CONTROL-MARKER'),
-    });
-    const sourceRead = await call(f, 'knowledge.source.read', {
-      sourceId: registered.body.source.id,
-    });
-    expect(sourceRead.status, JSON.stringify(sourceRead.body)).toBe(200);
-    const created = await createPage(f, [
-      `source:${registered.body.source.id}@${registered.body.source.contentDigest}`,
-    ]);
-    const request = removal(created);
-    let expectedRevision = created.revision;
-    if (stage === 'completed deletion replay') {
-      const removed = await call(f, 'knowledge.notebook.delete', request);
-      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
-      expect(removed.body).toMatchObject({
-        outcome: 'published',
-        receiptRef: { operation: 'knowledge.notebook.delete', requestId: request.requestId },
+  it.each(['new deletion', 'completed deletion replay'] as const)(
+    'rechecks the current originating Source audience for %s',
+    async (stage) => {
+      const f = await fixture();
+      const origin = await f.store.createThread(f.workspaceId, 'Initially shared Source');
+      expect(origin.visibility).toBe('workspace');
+      const registered = await call(f, 'knowledge.source.register', {
+        requestId: randomUUID(),
+        kind: 'document',
+        title: 'Shared Source',
+        content: 'SOURCE-CONTROL-MARKER',
+        originatingThreadId: origin.id,
       });
-      expectedRevision = removed.body.notebookRevision;
-      expect(await call(f, 'knowledge.notebook.delete', request)).toEqual(removed);
+      expect(registered.status, JSON.stringify(registered.body)).toBe(200);
+      expect(registered.body.source).toMatchObject({
+        originatingThreadId: origin.id,
+        contentDigest: digest('SOURCE-CONTROL-MARKER'),
+      });
+      const sourceRead = await call(f, 'knowledge.source.read', {
+        sourceId: registered.body.source.id,
+      });
+      expect(sourceRead.status, JSON.stringify(sourceRead.body)).toBe(200);
+      const created = await createPage(f, [
+        `source:${registered.body.source.id}@${registered.body.source.contentDigest}`,
+      ]);
+      const request = removal(created);
+      let expectedRevision = created.revision;
+      if (stage === 'completed deletion replay') {
+        const removed = await call(f, 'knowledge.notebook.delete', request);
+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+        expect(removed.body).toMatchObject({
+          outcome: 'published',
+          receiptRef: { operation: 'knowledge.notebook.delete', requestId: request.requestId },
+        });
+        expectedRevision = removed.body.notebookRevision;
+        expect(await call(f, 'knowledge.notebook.delete', request)).toEqual(removed);
+        expect(
+          git(f, 'ls-tree', '-r', '--name-only', expectedRevision, 'pages/notes/admission.md')
+        ).toBe('');
+      }
+      await restrictSourceThread(f, origin.id);
+      expect(f.store.getThread(f.workspaceId, origin.id).visibility).toBe('workspace');
+      const denied = await call(f, 'knowledge.notebook.delete', request);
+      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+      expect(denied.body).toMatchObject({ code: 'workspace_access_denied' });
+      expect(JSON.stringify(denied.body)).not.toContain('SOURCE-BACKED-PAGE-MARKER');
       expect(
-        git(f, 'ls-tree', '-r', '--name-only', expectedRevision, 'pages/notes/admission.md')
-      ).toBe('');
+        readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit
+      ).toBe(expectedRevision);
+      expect(git(f, 'show', `${created.revision}:pages/${request.path}`)).toBe(created.content);
     }
-    await restrictSourceThread(f, origin.id);
-    expect(f.store.getThread(f.workspaceId, origin.id).visibility).toBe('workspace');
-    const denied = await call(f, 'knowledge.notebook.delete', request);
-    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
-    expect(denied.body).toMatchObject({ code: 'workspace_access_denied' });
-    expect(JSON.stringify(denied.body)).not.toContain('SOURCE-BACKED-PAGE-MARKER');
-    expect(readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit).toBe(
-      expectedRevision
-    );
-    expect(git(f, 'show', `${created.revision}:pages/${request.path}`)).toBe(created.content);
-  });
+  );
 
   it('returns the request identity conflict when a completed create collides with its now-existing path', async () => {
     const f = await fixture();

@@ -284,105 +284,109 @@ describe('local telemetry through the production SDK lifecycle', () => {
     for (const file of old) await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it.each([
-    'sink',
-    'ancestor',
-  ] as const)('preserves external bytes during idle cleanup after rejecting a pre-existing %s symlink', async (linkAt) => {
-    start();
-    withTurnDispatchTelemetry('turn-idle-confinement', () => {});
-    await shutdownTelemetry();
-    const produced = await segmentFiles();
-    expect(requestSpans(await readRequests(produced))).toHaveLength(1);
-    expect(produced).toHaveLength(1);
-    const segment = produced[0]!;
-    const bytes = await fs.readFile(segment);
-    const sink = dirname(segment);
-    await fs.unlink(segment);
+  it.each(['sink', 'ancestor'] as const)(
+    'preserves external bytes during idle cleanup after rejecting a pre-existing %s symlink',
+    async (linkAt) => {
+      start();
+      withTurnDispatchTelemetry('turn-idle-confinement', () => {});
+      await shutdownTelemetry();
+      const produced = await segmentFiles();
+      expect(requestSpans(await readRequests(produced))).toHaveLength(1);
+      expect(produced).toHaveLength(1);
+      const segment = produced[0]!;
+      const bytes = await fs.readFile(segment);
+      const sink = dirname(segment);
+      await fs.unlink(segment);
 
-    // Establish a live idle-pruning control, using a real producer's filename and bytes.
-    // Seed only after startup has read an empty directory, so startup cannot satisfy it.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    const scans = vi.spyOn(fs, 'readdir');
-    const env = { OPENKIT_TELEMETRY_LOCAL_MAX_AGE_SECONDS: '1' };
-    start(env);
-    await vi.waitFor(() => {
-      expect(scans).toHaveBeenCalledWith(sink, { withFileTypes: true });
-    });
-    const scanIndex = scans.mock.calls.findIndex(([path]) => path === sink);
-    const startupScan = scans.mock.results[scanIndex]!;
-    expect(startupScan.type).toBe('return');
-    expect(await startupScan.value).toEqual([]);
-    await fs.writeFile(segment, bytes);
-    await fs.utimes(segment, new Date(0), new Date(0));
-    await vi.advanceTimersByTimeAsync(1_000);
-    await vi.waitFor(async () => {
-      await expect(fs.stat(segment)).rejects.toMatchObject({ code: 'ENOENT' });
-    });
-    await shutdownTelemetry();
-
-    const outside = join(root, 'outside');
-    const externalSink = linkAt === 'sink' ? outside : join(outside, relative(logDirectory, sink));
-    await fs.mkdir(externalSink, { recursive: true });
-    const externalSegment = join(externalSink, basename(segment));
-    await fs.writeFile(externalSegment, bytes);
-    await fs.utimes(externalSegment, new Date(0), new Date(0));
-    const linkedPath = linkAt === 'sink' ? sink : logDirectory;
-    await fs.rm(linkedPath, { recursive: true });
-    await fs.symlink(outside, linkedPath, 'dir');
-    expect((await fs.lstat(linkedPath)).isSymbolicLink()).toBe(true);
-
-    const warnings = vi.mocked(console.warn).mockClear();
-    start(env);
-    await vi.waitFor(() => expect(warnings).toHaveBeenCalled());
-    expect(await fs.readFile(externalSegment), 'startup refusal preserves external bytes').toEqual(
-      bytes
-    );
-    // No export or path replacement occurs while this instance runs.
-    await vi.advanceTimersByTimeAsync(1_000);
-    await shutdownTelemetry();
-    const retained = await fs.readFile(externalSegment).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return undefined;
-      throw error;
-    });
-    expect(retained, 'idle cleanup must preserve exact bytes beyond the rejected symlink').toEqual(
-      bytes
-    );
-  });
-
-  it.each([
-    'bytes',
-    'inodes',
-    'unknown',
-  ] as const)('drops below-cap batches when filesystem headroom is unsafe: %s', async (failure) => {
-    start();
-    withTurnDispatchTelemetry('turn-before-pressure', () => {});
-    await shutdownTelemetry();
-    expect(
-      requestSpans(await readRequests(await segmentFiles())),
-      'healthy capture is the positive control'
-    ).toHaveLength(1);
-    const checked = vi
-      .mocked(fs.statfs)
-      .mockClear()
-      .mockImplementation(async (...args) => {
-        if (failure === 'unknown')
-          throw Object.assign(new Error('filesystem unavailable'), { code: 'EIO' });
-        const result = await finiteFilesystemStats(...args);
-        const zero = typeof result.bavail === 'bigint' ? 0n : 0;
-        if (failure === 'bytes') return Object.assign(result, { bavail: zero, bfree: zero });
-        // A positive finite total distinguishes exhaustion from absent inode accounting.
-        return Object.assign(result, { ffree: zero });
+      // Establish a live idle-pruning control, using a real producer's filename and bytes.
+      // Seed only after startup has read an empty directory, so startup cannot satisfy it.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      const scans = vi.spyOn(fs, 'readdir');
+      const env = { OPENKIT_TELEMETRY_LOCAL_MAX_AGE_SECONDS: '1' };
+      start(env);
+      await vi.waitFor(() => {
+        expect(scans).toHaveBeenCalledWith(sink, { withFileTypes: true });
       });
-    start();
-    expect((await productApp().request('/items/one', { method: 'POST' })).status).toBe(201);
-    await shutdownTelemetry();
-    expect(
-      checked,
-      'admission must inspect the actual filesystem, not just the telemetry cap'
-    ).toHaveBeenCalled();
-    const requests = await readRequests(await segmentFiles());
-    expect(requestSpans(requests).some((span) => span.name === 'http.server.request')).toBe(false);
-  });
+      const scanIndex = scans.mock.calls.findIndex(([path]) => path === sink);
+      const startupScan = scans.mock.results[scanIndex]!;
+      expect(startupScan.type).toBe('return');
+      expect(await startupScan.value).toEqual([]);
+      await fs.writeFile(segment, bytes);
+      await fs.utimes(segment, new Date(0), new Date(0));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(async () => {
+        await expect(fs.stat(segment)).rejects.toMatchObject({ code: 'ENOENT' });
+      });
+      await shutdownTelemetry();
+
+      const outside = join(root, 'outside');
+      const externalSink =
+        linkAt === 'sink' ? outside : join(outside, relative(logDirectory, sink));
+      await fs.mkdir(externalSink, { recursive: true });
+      const externalSegment = join(externalSink, basename(segment));
+      await fs.writeFile(externalSegment, bytes);
+      await fs.utimes(externalSegment, new Date(0), new Date(0));
+      const linkedPath = linkAt === 'sink' ? sink : logDirectory;
+      await fs.rm(linkedPath, { recursive: true });
+      await fs.symlink(outside, linkedPath, 'dir');
+      expect((await fs.lstat(linkedPath)).isSymbolicLink()).toBe(true);
+
+      const warnings = vi.mocked(console.warn).mockClear();
+      start(env);
+      await vi.waitFor(() => expect(warnings).toHaveBeenCalled());
+      expect(
+        await fs.readFile(externalSegment),
+        'startup refusal preserves external bytes'
+      ).toEqual(bytes);
+      // No export or path replacement occurs while this instance runs.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await shutdownTelemetry();
+      const retained = await fs.readFile(externalSegment).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      expect(
+        retained,
+        'idle cleanup must preserve exact bytes beyond the rejected symlink'
+      ).toEqual(bytes);
+    }
+  );
+
+  it.each(['bytes', 'inodes', 'unknown'] as const)(
+    'drops below-cap batches when filesystem headroom is unsafe: %s',
+    async (failure) => {
+      start();
+      withTurnDispatchTelemetry('turn-before-pressure', () => {});
+      await shutdownTelemetry();
+      expect(
+        requestSpans(await readRequests(await segmentFiles())),
+        'healthy capture is the positive control'
+      ).toHaveLength(1);
+      const checked = vi
+        .mocked(fs.statfs)
+        .mockClear()
+        .mockImplementation(async (...args) => {
+          if (failure === 'unknown')
+            throw Object.assign(new Error('filesystem unavailable'), { code: 'EIO' });
+          const result = await finiteFilesystemStats(...args);
+          const zero = typeof result.bavail === 'bigint' ? 0n : 0;
+          if (failure === 'bytes') return Object.assign(result, { bavail: zero, bfree: zero });
+          // A positive finite total distinguishes exhaustion from absent inode accounting.
+          return Object.assign(result, { ffree: zero });
+        });
+      start();
+      expect((await productApp().request('/items/one', { method: 'POST' })).status).toBe(201);
+      await shutdownTelemetry();
+      expect(
+        checked,
+        'admission must inspect the actual filesystem, not just the telemetry cap'
+      ).toHaveBeenCalled();
+      const requests = await readRequests(await segmentFiles());
+      expect(requestSpans(requests).some((span) => span.name === 'http.server.request')).toBe(
+        false
+      );
+    }
+  );
 
   it('applies only the byte reserve when the filesystem reports no inode limit', async () => {
     const checked = vi.mocked(fs.statfs).mockImplementation(async (...args) => {

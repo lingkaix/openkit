@@ -73,90 +73,90 @@ function event(notebookAdmission: KnowledgeNotebookAdmission) {
 }
 
 describe('notebook publication admission in the existing Audit owners', () => {
-  it.each([
-    'core',
-    'workspace',
-    'app',
-    'user',
-  ] as const)('carries predecessor %s rows through its incremental native migration once', (scope) => {
-    const predecessor = mkdtempSync(join(tmpdir(), 'notebook-audit-predecessor-'));
-    const sqlite = new Database(':memory:');
-    onTestFinished(() => {
-      sqlite.close();
-      rmSync(predecessor, { recursive: true, force: true });
-    });
-    const current = fileURLToPath(new URL(`../../drizzle/${scope}/`, import.meta.url));
-    const journal = JSON.parse(readFileSync(join(current, 'meta', '_journal.json'), 'utf8')) as {
-      entries: Array<{ tag: string }>;
-    };
-    const admissionIndex = journal.entries.findIndex(({ tag }) =>
-      tag.endsWith('_notebook_admission')
-    );
-    expect(admissionIndex).toBeGreaterThanOrEqual(0);
-    const previous = { ...journal, entries: journal.entries.slice(0, admissionIndex) };
-    mkdirSync(join(predecessor, 'meta'));
-    writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(previous));
-    for (const entry of previous.entries)
-      copyFileSync(join(current, `${entry.tag}.sql`), join(predecessor, `${entry.tag}.sql`));
-    applyNativeScopeMigrations(sqlite, scope, predecessor);
-    if (scope === 'user') {
-      sqlite
-        .prepare(
-          `INSERT INTO idempotency_requests (request_key, command_name, request_id, scope_json, input_hash, response_kind, response_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  it.each(['core', 'workspace', 'app', 'user'] as const)(
+    'carries predecessor %s rows through its incremental native migration once',
+    (scope) => {
+      const predecessor = mkdtempSync(join(tmpdir(), 'notebook-audit-predecessor-'));
+      const sqlite = new Database(':memory:');
+      onTestFinished(() => {
+        sqlite.close();
+        rmSync(predecessor, { recursive: true, force: true });
+      });
+      const current = fileURLToPath(new URL(`../../drizzle/${scope}/`, import.meta.url));
+      const journal = JSON.parse(readFileSync(join(current, 'meta', '_journal.json'), 'utf8')) as {
+        entries: Array<{ tag: string }>;
+      };
+      const admissionIndex = journal.entries.findIndex(({ tag }) =>
+        tag.endsWith('_notebook_admission')
+      );
+      expect(admissionIndex).toBeGreaterThanOrEqual(0);
+      const previous = { ...journal, entries: journal.entries.slice(0, admissionIndex) };
+      mkdirSync(join(predecessor, 'meta'));
+      writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(previous));
+      for (const entry of previous.entries)
+        copyFileSync(join(current, `${entry.tag}.sql`), join(predecessor, `${entry.tag}.sql`));
+      applyNativeScopeMigrations(sqlite, scope, predecessor);
+      if (scope === 'user') {
+        sqlite
+          .prepare(
+            `INSERT INTO idempotency_requests (request_key, command_name, request_id, scope_json, input_hash, response_kind, response_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            'retained',
+            'retained.command',
+            randomUUID(),
+            '{}',
+            'original-hash',
+            'retained',
+            'original-response',
+            '2026-10-15T00:00:00.000Z',
+            '2026-10-20T00:00:00.000Z'
+          );
+      } else {
+        sqlite
+          .prepare(
+            `INSERT INTO audit_events (audit_event_id, workspace_id, category, action, outcome, severity, summary, created_at, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            'aud_retained',
+            scope === 'core' ? null : workspaceId,
+            'knowledge',
+            'retained.admission',
+            'succeeded',
+            'info',
+            'Original retained summary.',
+            '2026-10-15T00:00:00.000Z',
+            '2026-10-15T00:00:00.000Z'
+          );
+      }
+      const table = scope === 'user' ? 'idempotency_requests' : 'audit_events';
+      const before = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+      const previousCount = Number(
+        (
+          sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get() as {
+            count: number;
+          }
+        ).count
+      );
+      // This regression owns the Notebook migration, not later reset-format cutovers.
+      const notebookJournal = { ...journal, entries: journal.entries.slice(0, admissionIndex + 1) };
+      for (const entry of notebookJournal.entries)
+        copyFileSync(join(current, `${entry.tag}.sql`), join(predecessor, `${entry.tag}.sql`));
+      writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(notebookJournal));
+      applyNativeScopeMigrations(sqlite, scope, predecessor);
+      applyNativeScopeMigrations(sqlite, scope, predecessor);
+      expect(sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get()).toEqual({
+        count: previousCount + 1,
+      });
+      const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+      expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(before);
+      expect(
+        (sqlite.pragma('table_info(audit_events)') as Array<{ name: string }>).map(
+          ({ name }) => name
         )
-        .run(
-          'retained',
-          'retained.command',
-          randomUUID(),
-          '{}',
-          'original-hash',
-          'retained',
-          'original-response',
-          '2026-10-15T00:00:00.000Z',
-          '2026-10-20T00:00:00.000Z'
-        );
-    } else {
-      sqlite
-        .prepare(
-          `INSERT INTO audit_events (audit_event_id, workspace_id, category, action, outcome, severity, summary, created_at, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          'aud_retained',
-          scope === 'core' ? null : workspaceId,
-          'knowledge',
-          'retained.admission',
-          'succeeded',
-          'info',
-          'Original retained summary.',
-          '2026-10-15T00:00:00.000Z',
-          '2026-10-15T00:00:00.000Z'
-        );
+      ).toContain('notebook_admission_json');
     }
-    const table = scope === 'user' ? 'idempotency_requests' : 'audit_events';
-    const before = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    const previousCount = Number(
-      (
-        sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get() as {
-          count: number;
-        }
-      ).count
-    );
-    // This regression owns the Notebook migration, not later reset-format cutovers.
-    const notebookJournal = { ...journal, entries: journal.entries.slice(0, admissionIndex + 1) };
-    for (const entry of notebookJournal.entries)
-      copyFileSync(join(current, `${entry.tag}.sql`), join(predecessor, `${entry.tag}.sql`));
-    writeFileSync(join(predecessor, 'meta', '_journal.json'), JSON.stringify(notebookJournal));
-    applyNativeScopeMigrations(sqlite, scope, predecessor);
-    applyNativeScopeMigrations(sqlite, scope, predecessor);
-    expect(sqlite.prepare('SELECT count(*) AS count FROM __drizzle_migrations').get()).toEqual({
-      count: previousCount + 1,
-    });
-    const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(before);
-    expect(
-      (sqlite.pragma('table_info(audit_events)') as Array<{ name: string }>).map(({ name }) => name)
-    ).toContain('notebook_admission_json');
-  });
+  );
 
   it('retains User facts in the original User database through reopen without changing the owner', () => {
     const f = fixture();

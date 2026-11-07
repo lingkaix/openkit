@@ -184,22 +184,25 @@ describe('Vault grant narrowing', () => {
     { expiresAt: '2000-01-01T00:00:00.000Z' },
     { expiresAt: 'not-a-timestamp' },
     { targetAgentId: '' },
-  ] satisfies NarrowVaultGrantConstraints[])('refuses non-reducing or invalid constraints without writes: %j', async (constraints) => {
-    const { db, grant } = await fixture();
-    try {
-      await expect(
-        narrowVaultGrant(db, {
-          grantId: grant.grantId,
-          replacementGrantId: allocateEntityId('grant'),
-          constraints,
-        })
-      ).rejects.toThrow('Grant constraints do not strictly reduce authority.');
-      expect(listVaultGrants(db)).toEqual([grant]);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.close();
+  ] satisfies NarrowVaultGrantConstraints[])(
+    'refuses non-reducing or invalid constraints without writes: %j',
+    async (constraints) => {
+      const { db, grant } = await fixture();
+      try {
+        await expect(
+          narrowVaultGrant(db, {
+            grantId: grant.grantId,
+            replacementGrantId: allocateEntityId('grant'),
+            constraints,
+          })
+        ).rejects.toThrow('Grant constraints do not strictly reduce authority.');
+        expect(listVaultGrants(db)).toEqual([grant]);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('retains existing targets and rolls back replacement when source revocation fails', async () => {
     const { db, grant } = await fixture();

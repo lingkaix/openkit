@@ -499,62 +499,60 @@ describe('central Workspace operation authorizer', () => {
     }
   });
 
-  it.each([
-    'user',
-    'unattributed Gateway',
-    'Workspace member',
-    'Workspace administrator',
-  ] as const)('requires the current Kernel decision after %s eligibility', async (scope) => {
-    if (scope === 'Workspace administrator') {
-      const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      fixture.actorState.current = {
-        kind: 'token',
-        userId: issued.record.ownerUserId,
-        tokenId: issued.record.tokenId,
-        tokenScope: 'server-admin',
-        tokenWorkspaceIds: [],
-      };
-    }
-    const send = () => {
-      if (scope === 'unattributed Gateway')
-        return fixture.app.request('/v1/responses', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: '{}',
+  it.each(['user', 'unattributed Gateway', 'Workspace member', 'Workspace administrator'] as const)(
+    'requires the current Kernel decision after %s eligibility',
+    async (scope) => {
+      if (scope === 'Workspace administrator') {
+        const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
         });
-      return fixture.app.request(
-        ...(scope === 'user'
-          ? operationRequest('caller.read', {})
-          : operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id }))
-      );
-    };
-    // Establish current eligibility with the real policy before replacing only its mandatory input.
-    expect((await send()).status).toBe(200);
-    const actualEvaluate = policyKernel.evaluateAccess;
-    const evaluate = vi.spyOn(policyKernel, 'evaluateAccess');
-    try {
-      evaluate.mockImplementation((policy, request) =>
-        actualEvaluate({ ...policy, associations: [] }, request)
-      );
-      const denied = await send();
-      expect(denied.status).toBe(403);
-      await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
-      expect(evaluate).toHaveBeenCalled();
-      evaluate.mockImplementation(() => {
-        throw new Error('Policy dependency unavailable.');
-      });
-      const failed = await send();
-      expect(failed.status).toBe(403);
-      await expect(failed.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
-    } finally {
-      evaluate.mockRestore();
+        fixture.actorState.current = {
+          kind: 'token',
+          userId: issued.record.ownerUserId,
+          tokenId: issued.record.tokenId,
+          tokenScope: 'server-admin',
+          tokenWorkspaceIds: [],
+        };
+      }
+      const send = () => {
+        if (scope === 'unattributed Gateway')
+          return fixture.app.request('/v1/responses', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          });
+        return fixture.app.request(
+          ...(scope === 'user'
+            ? operationRequest('caller.read', {})
+            : operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id }))
+        );
+      };
+      // Establish current eligibility with the real policy before replacing only its mandatory input.
+      expect((await send()).status).toBe(200);
+      const actualEvaluate = policyKernel.evaluateAccess;
+      const evaluate = vi.spyOn(policyKernel, 'evaluateAccess');
+      try {
+        evaluate.mockImplementation((policy, request) =>
+          actualEvaluate({ ...policy, associations: [] }, request)
+        );
+        const denied = await send();
+        expect(denied.status).toBe(403);
+        await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+        expect(evaluate).toHaveBeenCalled();
+        evaluate.mockImplementation(() => {
+          throw new Error('Policy dependency unavailable.');
+        });
+        const failed = await send();
+        expect(failed.status).toBe(403);
+        await expect(failed.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+      } finally {
+        evaluate.mockRestore();
+      }
     }
-  });
+  );
 
   it.each([
     {
@@ -624,22 +622,20 @@ describe('central Workspace operation authorizer', () => {
       name: 'missing effect authority',
       operation: 'runtime.launch',
     },
-  ])('composes current authority for $name', ({
-    actor,
-    effectAuthority,
-    expectedAuthority,
-    operation,
-  }) => {
-    expect(
-      currentWorkspaceAuthority(
-        fixture.coreDb,
-        fixture.workspace.id,
-        actor,
-        operation,
-        effectAuthority
-      )
-    ).toBe(expectedAuthority);
-  });
+  ])(
+    'composes current authority for $name',
+    ({ actor, effectAuthority, expectedAuthority, operation }) => {
+      expect(
+        currentWorkspaceAuthority(
+          fixture.coreDb,
+          fixture.workspace.id,
+          actor,
+          operation,
+          effectAuthority
+        )
+      ).toBe(expectedAuthority);
+    }
+  );
 
   it('preserves a presented readonly credential limit during current effect authority checks', () => {
     const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -1073,241 +1069,247 @@ describe('central Workspace operation authorizer', () => {
     expect(capture).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'member',
-    'administrator',
-  ] as const)('propagates unreadable %s authority only when strict dependency failures are requested', (authority) => {
-    const dataRoot = fixture.dataRoot;
-    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-    const actor = {
-      kind: 'user' as const,
-      id:
-        authority === 'member'
-          ? 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
-          : 'usr_00000000-0000-7000-8000-000000000001',
-    };
-    const token =
-      authority === 'administrator'
-        ? createOpenKitAccessTokenRecord(fixture.coreDb, {
-            expiresAt: '2099-01-01T00:00:00.000Z',
-            ownerUserId: actor.id,
-            scope: 'server-admin',
-            workspaceIds: [],
-          }).record
-        : null;
-    const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: 'queue_strict_authority',
-      triggerActor: actor,
-      serverAdminTokenId: token?.tokenId ?? null,
-      workspaceId: fixture.workspace.id,
-      threadId: fixture.turn.threadId,
-      turnId: fixture.turn.id,
-      turnInput: 'Check current tool authority',
-      requestedAgentId: 'agent_worker',
-    });
-    recordTestExecutionAttempt(fixture.coreDb, {
-      entry,
-      attemptId: testEntityId('attempt', 'strict_authority'),
-      agentSessionId: testEntityId('as', 'strict_authority'),
-      inputRef: 'snapshot_strict_authority',
-      bindingRef: 'binding_strict_authority',
-      sessionCompatibilityKey: 'sha256:strict-authority',
-      now: () => new Date().toISOString(),
-    });
-    const lineage = {
-      workspaceId: entry.workspaceId,
-      threadId: entry.threadId,
-      turnId: entry.turnId,
-      agentSessionId: testEntityId('as', 'strict_authority'),
-      packageSnapshotId: 'snapshot_strict_authority',
-      triggerActor: actor,
-    };
-    const requestActor = token
-      ? {
-          kind: 'token' as const,
-          tokenId: token.tokenId,
-          tokenScope: 'server-admin' as const,
-          userId: actor.id,
-        }
-      : undefined;
-    const strict = { dependencyFailure: 'throw' as const };
-    const evaluate = (options?: WorkspaceAuthorityOptions) => [
-      () =>
-        currentWorkspaceAuthority(
-          fixture.coreDb,
-          entry.workspaceId,
-          actor,
-          'tool.use',
-          true,
-          requestActor,
-          options
-        ),
-      () =>
-        currentSchedulerAdmissionWorkspaceAuthority(
-          fixture.coreDb,
-          entry,
-          'tool.use',
-          true,
-          options
-        ),
-      () =>
-        currentWorkerLineageWorkspaceAuthority(fixture.coreDb, lineage, 'tool.use', true, options),
-    ];
-    for (const check of evaluate(strict)) expect(check()).toBe(authority);
-    const capture = vi.fn<(event: WorkspaceAuthorityEvaluation) => void>();
-    const capturedOptions = { ...strict, onEvaluation: capture };
-    const membership = fixture.coreDb.sqlite
-      .prepare('SELECT revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(entry.workspaceId, actor.id) as { revision: number };
-    const expectedFacts = {
-      workspaceId: entry.workspaceId,
-      operation: 'tool.use',
-      responsibleUserId: actor.id,
-      relation: authority,
-      presentedTokenId: token?.tokenId ?? null,
-      membershipRevision: token ? null : membership.revision,
-      presentedTokenState: token
-        ? {
-            tokenId: token.tokenId,
-            ownerUserId: token.ownerUserId,
-            scope: token.scope,
-            workspaceIds: token.workspaceIds,
-            status: token.status,
-            expiresAt: token.expiresAt,
-            revokedAt: token.revokedAt,
-            predecessorTokenId: token.predecessorTokenId,
-            rotatedGraceExpiresAt: token.rotatedGraceExpiresAt,
-          }
-        : null,
-    };
-    for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
-    expect(capture).toHaveBeenCalledTimes(3);
-    for (const [event] of capture.mock.calls) {
-      expect(event.facts).toEqual(expectedFacts);
-      expect(event.decision.effect).toBe('allow');
-      expect(event.decision.reasons).toBeDefined();
-      expect(event.decision.trace).toBeDefined();
-    }
-    capture.mockClear();
-    if (token) {
-      const rotated = rotateOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId, {
-        graceSeconds: 3600,
-      });
-      if (!rotated) throw new Error('Expected the real Token rotation to succeed.');
-      expectedFacts.presentedTokenState = {
-        ...expectedFacts.presentedTokenState!,
-        status: rotated.rotatedRecord.status,
-        rotatedGraceExpiresAt: rotated.rotatedRecord.rotatedGraceExpiresAt,
+  it.each(['member', 'administrator'] as const)(
+    'propagates unreadable %s authority only when strict dependency failures are requested',
+    (authority) => {
+      const dataRoot = fixture.dataRoot;
+      onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+      const actor = {
+        kind: 'user' as const,
+        id:
+          authority === 'member'
+            ? 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
+            : 'usr_00000000-0000-7000-8000-000000000001',
       };
-    } else {
-      const left = fixture.coreDb.sqlite.transaction(() =>
-        leaveWorkspace({
-          coreDb: fixture.coreDb,
-          workspaceId: entry.workspaceId,
-          memberUserId: actor.id,
-          expectedRevision: membership.revision,
-        })
-      )();
-      expect(left.kind).toBe('removed');
+      const token =
+        authority === 'administrator'
+          ? createOpenKitAccessTokenRecord(fixture.coreDb, {
+              expiresAt: '2099-01-01T00:00:00.000Z',
+              ownerUserId: actor.id,
+              scope: 'server-admin',
+              workspaceIds: [],
+            }).record
+          : null;
+      const entry = createSchedulerAdmissionEntry(fixture.coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'queue_strict_authority',
+        triggerActor: actor,
+        serverAdminTokenId: token?.tokenId ?? null,
+        workspaceId: fixture.workspace.id,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        turnInput: 'Check current tool authority',
+        requestedAgentId: 'agent_worker',
+      });
+      recordTestExecutionAttempt(fixture.coreDb, {
+        entry,
+        attemptId: testEntityId('attempt', 'strict_authority'),
+        agentSessionId: testEntityId('as', 'strict_authority'),
+        inputRef: 'snapshot_strict_authority',
+        bindingRef: 'binding_strict_authority',
+        sessionCompatibilityKey: 'sha256:strict-authority',
+        now: () => new Date().toISOString(),
+      });
+      const lineage = {
+        workspaceId: entry.workspaceId,
+        threadId: entry.threadId,
+        turnId: entry.turnId,
+        agentSessionId: testEntityId('as', 'strict_authority'),
+        packageSnapshotId: 'snapshot_strict_authority',
+        triggerActor: actor,
+      };
+      const requestActor = token
+        ? {
+            kind: 'token' as const,
+            tokenId: token.tokenId,
+            tokenScope: 'server-admin' as const,
+            userId: actor.id,
+          }
+        : undefined;
+      const strict = { dependencyFailure: 'throw' as const };
+      const evaluate = (options?: WorkspaceAuthorityOptions) => [
+        () =>
+          currentWorkspaceAuthority(
+            fixture.coreDb,
+            entry.workspaceId,
+            actor,
+            'tool.use',
+            true,
+            requestActor,
+            options
+          ),
+        () =>
+          currentSchedulerAdmissionWorkspaceAuthority(
+            fixture.coreDb,
+            entry,
+            'tool.use',
+            true,
+            options
+          ),
+        () =>
+          currentWorkerLineageWorkspaceAuthority(
+            fixture.coreDb,
+            lineage,
+            'tool.use',
+            true,
+            options
+          ),
+      ];
+      for (const check of evaluate(strict)) expect(check()).toBe(authority);
+      const capture = vi.fn<(event: WorkspaceAuthorityEvaluation) => void>();
+      const capturedOptions = { ...strict, onEvaluation: capture };
+      const membership = fixture.coreDb.sqlite
+        .prepare('SELECT revision FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .get(entry.workspaceId, actor.id) as { revision: number };
+      const expectedFacts = {
+        workspaceId: entry.workspaceId,
+        operation: 'tool.use',
+        responsibleUserId: actor.id,
+        relation: authority,
+        presentedTokenId: token?.tokenId ?? null,
+        membershipRevision: token ? null : membership.revision,
+        presentedTokenState: token
+          ? {
+              tokenId: token.tokenId,
+              ownerUserId: token.ownerUserId,
+              scope: token.scope,
+              workspaceIds: token.workspaceIds,
+              status: token.status,
+              expiresAt: token.expiresAt,
+              revokedAt: token.revokedAt,
+              predecessorTokenId: token.predecessorTokenId,
+              rotatedGraceExpiresAt: token.rotatedGraceExpiresAt,
+            }
+          : null,
+      };
+      for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
+      expect(capture).toHaveBeenCalledTimes(3);
+      for (const [event] of capture.mock.calls) {
+        expect(event.facts).toEqual(expectedFacts);
+        expect(event.decision.effect).toBe('allow');
+        expect(event.decision.reasons).toBeDefined();
+        expect(event.decision.trace).toBeDefined();
+      }
+      capture.mockClear();
+      if (token) {
+        const rotated = rotateOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId, {
+          graceSeconds: 3600,
+        });
+        if (!rotated) throw new Error('Expected the real Token rotation to succeed.');
+        expectedFacts.presentedTokenState = {
+          ...expectedFacts.presentedTokenState!,
+          status: rotated.rotatedRecord.status,
+          rotatedGraceExpiresAt: rotated.rotatedRecord.rotatedGraceExpiresAt,
+        };
+      } else {
+        const left = fixture.coreDb.sqlite.transaction(() =>
+          leaveWorkspace({
+            coreDb: fixture.coreDb,
+            workspaceId: entry.workspaceId,
+            memberUserId: actor.id,
+            expectedRevision: membership.revision,
+          })
+        )();
+        expect(left.kind).toBe('removed');
+        for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+        expect(capture).not.toHaveBeenCalled();
+        const rejoined = fixture.coreDb.sqlite.transaction(() => {
+          const invited = createWorkspaceInvitation({
+            authorization: workspaceMembershipDecisionFixture(
+              fixture.coreDb,
+              'usr_00000000-0000-7000-8000-000000000001',
+              entry.workspaceId
+            ),
+            coreDb: fixture.coreDb,
+            workspaceId: entry.workspaceId,
+            inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            inviteeEmail: 'viewer-member@example.com',
+          });
+          if (invited.kind !== 'created') throw new Error('Expected a real rejoin invitation.');
+          return acceptWorkspaceInvitation({
+            coreDb: fixture.coreDb,
+            workspaceId: entry.workspaceId,
+            invitationId: invited.invitation.invitationId,
+            inviteeUserId: actor.id,
+            expectedRevision: invited.invitation.revision,
+          });
+        })();
+        if (rejoined.kind !== 'accepted') throw new Error('Expected a real membership rejoin.');
+        expect(rejoined.member.revision).toBeGreaterThan(membership.revision);
+        expectedFacts.membershipRevision = rejoined.member.revision;
+      }
+      for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
+      expect(capture).toHaveBeenCalledTimes(3);
+      for (const [event] of capture.mock.calls) expect(event.facts).toEqual(expectedFacts);
+      capture.mockClear();
+      const actualEvaluate = policyKernel.evaluateAccess;
+      const kernel = vi
+        .spyOn(policyKernel, 'evaluateAccess')
+        .mockImplementation((policy, request) =>
+          actualEvaluate({ ...policy, associations: [] }, request)
+        );
+      try {
+        for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
+        expect(capture).toHaveBeenCalledTimes(3);
+        for (const [index, [event]] of capture.mock.calls.entries()) {
+          expect(event.facts).toEqual(expectedFacts);
+          expect(event.decision).toEqual(kernel.mock.results[index]?.value);
+          expect(event.decision.effect).toBe('deny');
+        }
+        for (const check of evaluate({
+          ...strict,
+          onEvaluation: (event) => {
+            event.decision.effect = 'allow';
+          },
+        }))
+          expect(check()).toBeNull();
+      } finally {
+        kernel.mockRestore();
+      }
+      const callbackError = new Error('Evaluation capture unavailable');
+      const failedCapture = {
+        onEvaluation: () => {
+          throw callbackError;
+        },
+      };
+      for (const check of evaluate(failedCapture)) expect(check()).toBeNull();
+      for (const check of evaluate({ ...strict, ...failedCapture }))
+        expect(check).toThrow(callbackError);
+      capture.mockClear();
+      const table = token ? 'openkit_access_tokens' : 'workspace_members';
+      const readError = new Error(`Authority read unavailable: ${table}`);
+      const prepare = fixture.coreDb.sqlite.prepare.bind(fixture.coreDb.sqlite);
+      const unavailable = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+        if (sql.includes(table)) throw readError;
+        return prepare(sql);
+      });
+      try {
+        for (const check of evaluate()) expect(check()).toBeNull();
+        for (const check of evaluate(strict)) expect(check).toThrow(readError);
+      } finally {
+        unavailable.mockRestore();
+      }
+      if (token) {
+        revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId);
+      } else {
+        fixture.coreDb.sqlite
+          .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .run(entry.workspaceId, actor.id);
+      }
       for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
       expect(capture).not.toHaveBeenCalled();
-      const rejoined = fixture.coreDb.sqlite.transaction(() => {
-        const invited = createWorkspaceInvitation({
-          authorization: workspaceMembershipDecisionFixture(
-            fixture.coreDb,
-            'usr_00000000-0000-7000-8000-000000000001',
-            entry.workspaceId
-          ),
-          coreDb: fixture.coreDb,
-          workspaceId: entry.workspaceId,
-          inviterUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          inviteeEmail: 'viewer-member@example.com',
-        });
-        if (invited.kind !== 'created') throw new Error('Expected a real rejoin invitation.');
-        return acceptWorkspaceInvitation({
-          coreDb: fixture.coreDb,
-          workspaceId: entry.workspaceId,
-          invitationId: invited.invitation.invitationId,
-          inviteeUserId: actor.id,
-          expectedRevision: invited.invitation.revision,
-        });
-      })();
-      if (rejoined.kind !== 'accepted') throw new Error('Expected a real membership rejoin.');
-      expect(rejoined.member.revision).toBeGreaterThan(membership.revision);
-      expectedFacts.membershipRevision = rejoined.member.revision;
+      expect(
+        currentWorkerLineageWorkspaceAuthority(
+          fixture.coreDb,
+          { ...lineage, packageSnapshotId: 'missing_snapshot' },
+          'tool.use',
+          true,
+          capturedOptions
+        )
+      ).toBeNull();
+      expect(capture).not.toHaveBeenCalled();
     }
-    for (const check of evaluate(capturedOptions)) expect(check()).toBe(authority);
-    expect(capture).toHaveBeenCalledTimes(3);
-    for (const [event] of capture.mock.calls) expect(event.facts).toEqual(expectedFacts);
-    capture.mockClear();
-    const actualEvaluate = policyKernel.evaluateAccess;
-    const kernel = vi
-      .spyOn(policyKernel, 'evaluateAccess')
-      .mockImplementation((policy, request) =>
-        actualEvaluate({ ...policy, associations: [] }, request)
-      );
-    try {
-      for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
-      expect(capture).toHaveBeenCalledTimes(3);
-      for (const [index, [event]] of capture.mock.calls.entries()) {
-        expect(event.facts).toEqual(expectedFacts);
-        expect(event.decision).toEqual(kernel.mock.results[index]?.value);
-        expect(event.decision.effect).toBe('deny');
-      }
-      for (const check of evaluate({
-        ...strict,
-        onEvaluation: (event) => {
-          event.decision.effect = 'allow';
-        },
-      }))
-        expect(check()).toBeNull();
-    } finally {
-      kernel.mockRestore();
-    }
-    const callbackError = new Error('Evaluation capture unavailable');
-    const failedCapture = {
-      onEvaluation: () => {
-        throw callbackError;
-      },
-    };
-    for (const check of evaluate(failedCapture)) expect(check()).toBeNull();
-    for (const check of evaluate({ ...strict, ...failedCapture }))
-      expect(check).toThrow(callbackError);
-    capture.mockClear();
-    const table = token ? 'openkit_access_tokens' : 'workspace_members';
-    const readError = new Error(`Authority read unavailable: ${table}`);
-    const prepare = fixture.coreDb.sqlite.prepare.bind(fixture.coreDb.sqlite);
-    const unavailable = vi.spyOn(fixture.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
-      if (sql.includes(table)) throw readError;
-      return prepare(sql);
-    });
-    try {
-      for (const check of evaluate()) expect(check()).toBeNull();
-      for (const check of evaluate(strict)) expect(check).toThrow(readError);
-    } finally {
-      unavailable.mockRestore();
-    }
-    if (token) {
-      revokeOpenKitAccessTokenRecord(fixture.coreDb, token.tokenId);
-    } else {
-      fixture.coreDb.sqlite
-        .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .run(entry.workspaceId, actor.id);
-    }
-    for (const check of evaluate(capturedOptions)) expect(check()).toBeNull();
-    expect(capture).not.toHaveBeenCalled();
-    expect(
-      currentWorkerLineageWorkspaceAuthority(
-        fixture.coreDb,
-        { ...lineage, packageSnapshotId: 'missing_snapshot' },
-        'tool.use',
-        true,
-        capturedOptions
-      )
-    ).toBeNull();
-    expect(capture).not.toHaveBeenCalled();
-  });
+  );
 
   it('derives collection candidates from active Core memberships before loading content', async () => {
     const response = await fixture.app.request(...operationRequest('workspace.list', {}));
@@ -2310,165 +2312,171 @@ describe('canonical administration Workspace admission', () => {
     ['opaque-child-workspace', 'administrator'],
     ['body-workspace', 'non-administrator'],
     ['opaque-child-workspace', 'non-administrator'],
-  ] as const)('uses one primary admission for %s and %s on HTTP and MCP', async (strategy, authority) => {
-    const id = 'nanohost.runtime-target';
-    expect(Object.hasOwn(ADMINISTRATION_OPERATION_DEFINITIONS, id)).toBe(true);
-    expect(Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, id)).toBe(false);
-    const definition: OperationDefinition = {
-      ...OPERATION_DEFINITIONS[id],
-      credentials: ['deployment-administrator'],
-      policyOperation: 'workspace.read',
-      inputSchema: z.object({ workspaceId: z.string(), turnId: z.string() }).strict(),
-      scope:
-        strategy === 'body-workspace'
-          ? { kind: 'body-workspace', field: 'workspaceId' }
-          : {
-              kind: 'opaque-child-workspace',
-              field: 'workspaceId',
-              childField: 'turnId',
-              childOwner: 'turn',
-            },
-      target: { kind: 'workspace' },
-    };
-    const patches = [
-      [OPERATION_DEFINITIONS, definition],
-      [ADMINISTRATION_OPERATION_DEFINITIONS, definition],
-      [
-        PUBLIC_OPERATION_ACCESS,
-        {
-          scope: 'workspace',
-          resolver: strategy,
-          authentication: 'deployment-admin',
-          policyOperation: 'workspace.read',
-          mutating: false,
-        },
-      ],
-    ] as const;
-    const originals = patches.map(([table]) => Object.getOwnPropertyDescriptor(table, id)!);
-    const expected = {
-      identityId: 'fixture-host',
-      deploymentId: testEntityId('dep', 'fixture-deployment'),
-      connectionGeneration: 1,
-      predecessorFenced: true,
-      ready: true,
-      freshEmpty: true,
-      physicalEpoch: null,
-      observedAt: '2026-10-05T00:00:00.000Z',
-    };
-    const execute = vi.fn(() => expected);
-    const factory = nanoHostOperations.createNanoHostOperationImplementations;
-    vi.spyOn(nanoHostOperations, 'createNanoHostOperationImplementations').mockImplementation(
-      (dependencies) => ({ ...factory(dependencies), [id]: execute })
-    );
-    const admission = vi.spyOn(policyKernel, 'evaluateAccess');
-    try {
-      for (const [table, value] of patches)
-        Object.defineProperty(table, id, { ...Object.getOwnPropertyDescriptor(table, id), value });
-      createOpenKitAccessTokenRecord(fixture.coreDb, {
-        ownerUserId:
-          authority === 'administrator'
-            ? 'usr_00000000-0000-7241-80d8-0d46cb74b40d'
-            : 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
-        scope: authority === 'administrator' ? 'server-admin' : 'workspace',
-        workspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
-        tokenId: testEntityId('tok', 'token_administration_fixture'),
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      fixture.actorState.current = {
-        kind: 'token',
-        userId:
-          authority === 'administrator'
-            ? 'usr_00000000-0000-7241-80d8-0d46cb74b40d'
-            : 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
-        tokenId: testEntityId('tok', 'token_administration_fixture'),
-        tokenScope: authority === 'administrator' ? 'server-admin' : 'workspace',
-        tokenWorkspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
+  ] as const)(
+    'uses one primary admission for %s and %s on HTTP and MCP',
+    async (strategy, authority) => {
+      const id = 'nanohost.runtime-target';
+      expect(Object.hasOwn(ADMINISTRATION_OPERATION_DEFINITIONS, id)).toBe(true);
+      expect(Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, id)).toBe(false);
+      const definition: OperationDefinition = {
+        ...OPERATION_DEFINITIONS[id],
+        credentials: ['deployment-administrator'],
+        policyOperation: 'workspace.read',
+        inputSchema: z.object({ workspaceId: z.string(), turnId: z.string() }).strict(),
+        scope:
+          strategy === 'body-workspace'
+            ? { kind: 'body-workspace', field: 'workspaceId' }
+            : {
+                kind: 'opaque-child-workspace',
+                field: 'workspaceId',
+                childField: 'turnId',
+                childOwner: 'turn',
+              },
+        target: { kind: 'workspace' },
       };
-      const app = new Hono<{ Variables: AuthVariables }>();
-      app.use('*', async (c, next) => {
-        c.set('actor', fixture.actorState.current);
-        await next();
-      });
-      registerOperationAccessGuards({
-        app,
-        coreDb: fixture.coreDb,
-        store: fixture.store,
-        quickChatWorkspaceIdForUser,
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
-      });
-      const dependencies = {
-        app,
-        coreDb: fixture.coreDb,
-        store: fixture.store,
-        requestStore: () => fixture.store,
-        inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
-      };
-      registerOperationJsonRoutes(dependencies);
-      registerRemoteMcpRoutes({ ...dependencies, getBootReadiness: createBootReadinessSnapshot });
-      const input = { workspaceId: fixture.workspace.id, turnId: fixture.turn.id };
-      // MCP first establishes the same native result before HTTP exercises the legacy-guard exclusion.
-      for (const transport of ['MCP', 'HTTP'] as const) {
-        admission.mockClear();
-        execute.mockClear();
-        const response = await app.request(
-          transport === 'HTTP' ? `/api/app/operations/${id}` : '/mcp',
+      const patches = [
+        [OPERATION_DEFINITIONS, definition],
+        [ADMINISTRATION_OPERATION_DEFINITIONS, definition],
+        [
+          PUBLIC_OPERATION_ACCESS,
           {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              accept: 'application/json, text/event-stream',
-            },
-            body: JSON.stringify(
-              transport === 'HTTP'
-                ? input
-                : {
-                    jsonrpc: '2.0',
-                    id: 1,
-                    method: 'tools/call',
-                    params: { name: 'openkit_call', arguments: { operation: id, input } },
-                  }
-            ),
-          }
-        );
-        const json = await response.json();
-        const value = transport === 'HTTP' ? json : JSON.parse(json.result.content[0].text);
-        if (authority === 'administrator') {
-          expect(response.status, transport).toBe(200);
-          expect(value, transport).toEqual(expected);
-          if (strategy === 'body-workspace') {
-            expect(admission, transport).toHaveBeenCalledTimes(1);
-          } else {
-            // An opaque Turn requires primary Workspace admission and its exact Thread constraint.
-            expect(
-              admission.mock.calls.map(([, request]) => request),
-              transport
-            ).toEqual(
-              expect.arrayContaining(
-                [fixture.workspace.id, fixture.turn.threadId].map((targetId) =>
-                  expect.objectContaining({
-                    user: expect.stringContaining('usr_00000000-0000-7241-80d8-0d46cb74b40d'),
-                    operation: 'workspace.read',
-                    target: expect.stringContaining(targetId),
-                  })
+            scope: 'workspace',
+            resolver: strategy,
+            authentication: 'deployment-admin',
+            policyOperation: 'workspace.read',
+            mutating: false,
+          },
+        ],
+      ] as const;
+      const originals = patches.map(([table]) => Object.getOwnPropertyDescriptor(table, id)!);
+      const expected = {
+        identityId: 'fixture-host',
+        deploymentId: testEntityId('dep', 'fixture-deployment'),
+        connectionGeneration: 1,
+        predecessorFenced: true,
+        ready: true,
+        freshEmpty: true,
+        physicalEpoch: null,
+        observedAt: '2026-10-05T00:00:00.000Z',
+      };
+      const execute = vi.fn(() => expected);
+      const factory = nanoHostOperations.createNanoHostOperationImplementations;
+      vi.spyOn(nanoHostOperations, 'createNanoHostOperationImplementations').mockImplementation(
+        (dependencies) => ({ ...factory(dependencies), [id]: execute })
+      );
+      const admission = vi.spyOn(policyKernel, 'evaluateAccess');
+      try {
+        for (const [table, value] of patches)
+          Object.defineProperty(table, id, {
+            ...Object.getOwnPropertyDescriptor(table, id),
+            value,
+          });
+        createOpenKitAccessTokenRecord(fixture.coreDb, {
+          ownerUserId:
+            authority === 'administrator'
+              ? 'usr_00000000-0000-7241-80d8-0d46cb74b40d'
+              : 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+          scope: authority === 'administrator' ? 'server-admin' : 'workspace',
+          workspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
+          tokenId: testEntityId('tok', 'token_administration_fixture'),
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        fixture.actorState.current = {
+          kind: 'token',
+          userId:
+            authority === 'administrator'
+              ? 'usr_00000000-0000-7241-80d8-0d46cb74b40d'
+              : 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8',
+          tokenId: testEntityId('tok', 'token_administration_fixture'),
+          tokenScope: authority === 'administrator' ? 'server-admin' : 'workspace',
+          tokenWorkspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
+        };
+        const app = new Hono<{ Variables: AuthVariables }>();
+        app.use('*', async (c, next) => {
+          c.set('actor', fixture.actorState.current);
+          await next();
+        });
+        registerOperationAccessGuards({
+          app,
+          coreDb: fixture.coreDb,
+          store: fixture.store,
+          quickChatWorkspaceIdForUser,
+          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+        });
+        const dependencies = {
+          app,
+          coreDb: fixture.coreDb,
+          store: fixture.store,
+          requestStore: () => fixture.store,
+          inflightCommands: new WeakMap(),
+          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+        };
+        registerOperationJsonRoutes(dependencies);
+        registerRemoteMcpRoutes({ ...dependencies, getBootReadiness: createBootReadinessSnapshot });
+        const input = { workspaceId: fixture.workspace.id, turnId: fixture.turn.id };
+        // MCP first establishes the same native result before HTTP exercises the legacy-guard exclusion.
+        for (const transport of ['MCP', 'HTTP'] as const) {
+          admission.mockClear();
+          execute.mockClear();
+          const response = await app.request(
+            transport === 'HTTP' ? `/api/app/operations/${id}` : '/mcp',
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                accept: 'application/json, text/event-stream',
+              },
+              body: JSON.stringify(
+                transport === 'HTTP'
+                  ? input
+                  : {
+                      jsonrpc: '2.0',
+                      id: 1,
+                      method: 'tools/call',
+                      params: { name: 'openkit_call', arguments: { operation: id, input } },
+                    }
+              ),
+            }
+          );
+          const json = await response.json();
+          const value = transport === 'HTTP' ? json : JSON.parse(json.result.content[0].text);
+          if (authority === 'administrator') {
+            expect(response.status, transport).toBe(200);
+            expect(value, transport).toEqual(expected);
+            if (strategy === 'body-workspace') {
+              expect(admission, transport).toHaveBeenCalledTimes(1);
+            } else {
+              // An opaque Turn requires primary Workspace admission and its exact Thread constraint.
+              expect(
+                admission.mock.calls.map(([, request]) => request),
+                transport
+              ).toEqual(
+                expect.arrayContaining(
+                  [fixture.workspace.id, fixture.turn.threadId].map((targetId) =>
+                    expect.objectContaining({
+                      user: expect.stringContaining('usr_00000000-0000-7241-80d8-0d46cb74b40d'),
+                      operation: 'workspace.read',
+                      target: expect.stringContaining(targetId),
+                    })
+                  )
                 )
-              )
-            );
+              );
+            }
+            expect(execute, transport).toHaveBeenCalledTimes(1);
+          } else {
+            expect(response.status, transport).toBe(transport === 'HTTP' ? 403 : 200);
+            expect(value, transport).toMatchObject({ code: 'workspace_access_denied' });
+            if (transport === 'MCP') expect(json.result.isError).toBe(true);
+            expect(admission, transport).not.toHaveBeenCalled();
+            expect(execute, transport).not.toHaveBeenCalled();
           }
-          expect(execute, transport).toHaveBeenCalledTimes(1);
-        } else {
-          expect(response.status, transport).toBe(transport === 'HTTP' ? 403 : 200);
-          expect(value, transport).toMatchObject({ code: 'workspace_access_denied' });
-          if (transport === 'MCP') expect(json.result.isError).toBe(true);
-          expect(admission, transport).not.toHaveBeenCalled();
-          expect(execute, transport).not.toHaveBeenCalled();
         }
+      } finally {
+        patches.forEach(([table], index) => {
+          Object.defineProperty(table, id, originals[index]!);
+        });
+        vi.restoreAllMocks();
       }
-    } finally {
-      patches.forEach(([table], index) => {
-        Object.defineProperty(table, id, originals[index]!);
-      });
-      vi.restoreAllMocks();
     }
-  });
+  );
 });

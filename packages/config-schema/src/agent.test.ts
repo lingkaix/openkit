@@ -514,65 +514,59 @@ describe('authored native environment', () => {
     ).toBe(false);
   });
 
-  it.each([
-    'credentials',
-    'credentialRef',
-    'credentialDeclarations',
-    'token',
-    'process',
-  ])('strips optional authored runtime metadata named %s', (key) => {
-    const manifest = validAgentConfig();
-    expect(
-      AuthoredAgentConfigSchema.parse({
-        ...manifest,
-        runtime: { ...manifest.runtime, [key]: { description: 'inert metadata' } },
-      }).runtime
-    ).toEqual(manifest.runtime);
-  });
-  it.each([
-    'DSH_HOME',
-    'DSH_PERMISSION_MODE',
-    'DSH_TELEMETRY_MODE',
-    'DSH_TELEMETRY_OTLP_URL',
-  ])('refuses DeepSeek managed override or removal %s', (name) => {
-    const manifest = validAgentConfig();
-    for (const value of ['literal-canary', null]) {
-      const result = AuthoredAgentConfigSchema.safeParse({
-        ...manifest,
-        runtime: { ...manifest.runtime, adapter: 'deepseek', environment: { [name]: value } },
-      });
-      expect(result.success, `${name}=${value}`).toBe(false);
-      if (!result.success)
-        expect(result.error.issues).toContainEqual(
-          expect.objectContaining({
-            path: ['runtime', 'environment', name],
-            message: 'Native environment name is managed.',
-          })
-        );
+  it.each(['credentials', 'credentialRef', 'credentialDeclarations', 'token', 'process'])(
+    'strips optional authored runtime metadata named %s',
+    (key) => {
+      const manifest = validAgentConfig();
+      expect(
+        AuthoredAgentConfigSchema.parse({
+          ...manifest,
+          runtime: { ...manifest.runtime, [key]: { description: 'inert metadata' } },
+        }).runtime
+      ).toEqual(manifest.runtime);
     }
-  });
+  );
+  it.each(['DSH_HOME', 'DSH_PERMISSION_MODE', 'DSH_TELEMETRY_MODE', 'DSH_TELEMETRY_OTLP_URL'])(
+    'refuses DeepSeek managed override or removal %s',
+    (name) => {
+      const manifest = validAgentConfig();
+      for (const value of ['literal-canary', null]) {
+        const result = AuthoredAgentConfigSchema.safeParse({
+          ...manifest,
+          runtime: { ...manifest.runtime, adapter: 'deepseek', environment: { [name]: value } },
+        });
+        expect(result.success, `${name}=${value}`).toBe(false);
+        if (!result.success)
+          expect(result.error.issues).toContainEqual(
+            expect.objectContaining({
+              path: ['runtime', 'environment', name],
+              message: 'Native environment name is managed.',
+            })
+          );
+      }
+    }
+  );
 
-  it.each([
-    'CODEX_HOME',
-    'CODEX_SQLITE_HOME',
-    'CODEX_ROLLOUT_TRACE_ROOT',
-  ])('refuses Codex managed override or removal %s', (name) => {
-    const manifest = validAgentConfig();
-    for (const value of ['literal-canary', null]) {
-      const result = AuthoredAgentConfigSchema.safeParse({
-        ...manifest,
-        runtime: { ...manifest.runtime, adapter: 'codex', environment: { [name]: value } },
-      });
-      expect(result.success, `${name}=${value}`).toBe(false);
-      if (!result.success)
-        expect(result.error.issues).toContainEqual(
-          expect.objectContaining({
-            path: ['runtime', 'environment', name],
-            message: 'Native environment name is managed.',
-          })
-        );
+  it.each(['CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ROLLOUT_TRACE_ROOT'])(
+    'refuses Codex managed override or removal %s',
+    (name) => {
+      const manifest = validAgentConfig();
+      for (const value of ['literal-canary', null]) {
+        const result = AuthoredAgentConfigSchema.safeParse({
+          ...manifest,
+          runtime: { ...manifest.runtime, adapter: 'codex', environment: { [name]: value } },
+        });
+        expect(result.success, `${name}=${value}`).toBe(false);
+        if (!result.success)
+          expect(result.error.issues).toContainEqual(
+            expect.objectContaining({
+              path: ['runtime', 'environment', name],
+              message: 'Native environment name is managed.',
+            })
+          );
+      }
     }
-  });
+  );
 
   it('admits harmless Codex vendor names at authoring', () => {
     const manifest = validAgentConfig();
@@ -595,22 +589,19 @@ describe('authored native environment', () => {
       runtime.environment
     );
   });
-  it.each([
-    'HOME',
-    'OPENKIT_CONTROL',
-    'NODE_OPTIONS',
-    'NO_PROXY',
-    'BASH_ENV',
-  ])('refuses managed override or removal %s', (name) => {
-    const manifest = validAgentConfig();
-    for (const value of ['', null])
-      expect(
-        AuthoredAgentConfigSchema.safeParse({
-          ...manifest,
-          runtime: { ...manifest.runtime, environment: { [name]: value } },
-        }).success
-      ).toBe(false);
-  });
+  it.each(['HOME', 'OPENKIT_CONTROL', 'NODE_OPTIONS', 'NO_PROXY', 'BASH_ENV'])(
+    'refuses managed override or removal %s',
+    (name) => {
+      const manifest = validAgentConfig();
+      for (const value of ['', null])
+        expect(
+          AuthoredAgentConfigSchema.safeParse({
+            ...manifest,
+            runtime: { ...manifest.runtime, environment: { [name]: value } },
+          }).success
+        ).toBe(false);
+    }
+  );
 });
 
 it('admits canonical Agent and selected-profile effort defaults', () => {

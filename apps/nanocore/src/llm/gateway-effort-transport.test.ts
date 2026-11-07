@@ -296,41 +296,42 @@ describe('stock serialized canonical effort delivery', () => {
       else expect(entry.mock.calls[0]?.[0]).not.toHaveProperty('thinkingLevelMap');
     });
   }
-  it.each(
-    paths
-  )('custom stock subscription none uses its attempt model in $endpoint stream=$stream', async (path) => {
-    const f = await customTransport();
-    const handoff = vi.fn();
-    const stockAuth = vi.spyOn(f.models, 'getAuth');
-    const calls: unknown[][] = [];
-    const resolveInferenceAuth = vi.fn(async () => {
-      expect(handoff).toHaveBeenCalledTimes(1);
-      const provider = f.models.getProvider(f.config.id)!;
-      const original = provider.stream;
-      vi.spyOn(provider, 'stream').mockImplementation((...args) => {
-        calls.push(args);
-        return original.apply(provider, args);
+  it.each(paths)(
+    'custom stock subscription none uses its attempt model in $endpoint stream=$stream',
+    async (path) => {
+      const f = await customTransport();
+      const handoff = vi.fn();
+      const stockAuth = vi.spyOn(f.models, 'getAuth');
+      const calls: unknown[][] = [];
+      const resolveInferenceAuth = vi.fn(async () => {
+        expect(handoff).toHaveBeenCalledTimes(1);
+        const provider = f.models.getProvider(f.config.id)!;
+        const original = provider.stream;
+        vi.spyOn(provider, 'stream').mockImplementation((...args) => {
+          calls.push(args);
+          return original.apply(provider, args);
+        });
+        return {
+          auth: { apiKey: 'synthetic-secret' },
+          presented: { version: 'synthetic-material', auth: { apiKey: 'synthetic-secret' } },
+        };
       });
-      return {
-        auth: { apiKey: 'synthetic-secret' },
-        presented: { version: 'synthetic-material', auth: { apiKey: 'synthetic-secret' } },
-      };
-    });
-    vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
-      resolveInferenceAuth,
-      observeInference: vi.fn(async () => {}),
-    } as unknown as subscriptions.ProviderSubscriptionPairHandle);
-    const body = await send(f, path, 'none', false, handoff);
-    expect(body).toHaveProperty('reasoning_effort', 'none');
-    expect(body).toHaveProperty('max_completion_tokens', 1000);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.[0]).toHaveProperty('thinkingLevelMap.off', 'none');
-    expect(calls[0]?.[2]).not.toHaveProperty('reasoningEffort');
-    expect(f.models.getModel(f.config.id, 'custom-model')).not.toHaveProperty('thinkingLevelMap');
-    expect(stockAuth).not.toHaveBeenCalled();
-    expect(resolveInferenceAuth).toHaveBeenCalledTimes(1);
-    expect(handoff).toHaveBeenCalledTimes(1);
-  });
+      vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
+        resolveInferenceAuth,
+        observeInference: vi.fn(async () => {}),
+      } as unknown as subscriptions.ProviderSubscriptionPairHandle);
+      const body = await send(f, path, 'none', false, handoff);
+      expect(body).toHaveProperty('reasoning_effort', 'none');
+      expect(body).toHaveProperty('max_completion_tokens', 1000);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.[0]).toHaveProperty('thinkingLevelMap.off', 'none');
+      expect(calls[0]?.[2]).not.toHaveProperty('reasoningEffort');
+      expect(f.models.getModel(f.config.id, 'custom-model')).not.toHaveProperty('thinkingLevelMap');
+      expect(stockAuth).not.toHaveBeenCalled();
+      expect(resolveInferenceAuth).toHaveBeenCalledTimes(1);
+      expect(handoff).toHaveBeenCalledTimes(1);
+    }
+  );
   it.each([
     { model: '~anthropic/claude-sonnet-latest', off: null },
     { model: '~deepseek/deepseek-flash-latest', off: 'none' },
@@ -377,67 +378,70 @@ describe('stock serialized canonical effort delivery', () => {
       if (effort === 'none') expect(body).not.toHaveProperty('reasoning_effort');
       else expect(body).toHaveProperty('reasoning_effort', 'high');
     });
-    it.each(
-      paths
-    )(`shipped OpenRouter stock ${effort} control in $endpoint stream=$stream`, async (path) => {
-      const f = transport(openrouterProvider, 'poolside/laguna-s-2.1:free');
-      expect(f.models.getModel(f.provider.id, f.config.models[0]!)).toHaveProperty(
-        'api',
-        'openai-completions'
-      );
-      f.config.modelMetadata = {
-        [f.config.models[0]!]: { reasoning: true, limit: { context: 4096, output: 4000 } },
-      };
-      const body = await send(f, path, effort);
-      expect(body).toHaveProperty('max_completion_tokens', 1000);
-      expect(body).toHaveProperty('reasoning.effort', effort);
-    });
-    it.each(
-      paths
-    )(`shipped xAI stock ${effort} control in $endpoint stream=$stream`, async (path) => {
-      const f = transport(xaiProvider, 'grok-4.3');
-      expect(f.models.getModel(f.provider.id, f.config.models[0]!)).toHaveProperty(
-        'api',
-        'openai-responses'
-      );
-      const body = await send(f, path, effort);
-      expect(body).toHaveProperty('max_output_tokens', 1000);
-      expect(body).toHaveProperty('reasoning.effort', effort);
-    });
+    it.each(paths)(
+      `shipped OpenRouter stock ${effort} control in $endpoint stream=$stream`,
+      async (path) => {
+        const f = transport(openrouterProvider, 'poolside/laguna-s-2.1:free');
+        expect(f.models.getModel(f.provider.id, f.config.models[0]!)).toHaveProperty(
+          'api',
+          'openai-completions'
+        );
+        f.config.modelMetadata = {
+          [f.config.models[0]!]: { reasoning: true, limit: { context: 4096, output: 4000 } },
+        };
+        const body = await send(f, path, effort);
+        expect(body).toHaveProperty('max_completion_tokens', 1000);
+        expect(body).toHaveProperty('reasoning.effort', effort);
+      }
+    );
+    it.each(paths)(
+      `shipped xAI stock ${effort} control in $endpoint stream=$stream`,
+      async (path) => {
+        const f = transport(xaiProvider, 'grok-4.3');
+        expect(f.models.getModel(f.provider.id, f.config.models[0]!)).toHaveProperty(
+          'api',
+          'openai-responses'
+        );
+        const body = await send(f, path, effort);
+        expect(body).toHaveProperty('max_output_tokens', 1000);
+        expect(body).toHaveProperty('reasoning.effort', effort);
+      }
+    );
   }
-  it.each(
-    paths
-  )('DeepSeek subscription disabled options precede handoff in $endpoint stream=$stream', async (path) => {
-    const f = transport(deepseekProvider, 'deepseek-v4-pro');
-    f.config.modelMetadata = {
-      'deepseek-v4-pro': { reasoning: true, limit: { context: 4096, output: 4000 } },
-    };
-    const selected = vi.spyOn(f.provider, 'stream');
-    const simple = vi.spyOn(f.provider, 'streamSimple');
-    const stockAuth = vi.spyOn(f.models, 'getAuth');
-    const handoff = vi.fn(() => expect(selected).not.toHaveBeenCalled());
-    const resolveInferenceAuth = vi.fn(async () => {
-      expect(handoff).toHaveBeenCalledTimes(1);
-      return {
-        auth: { apiKey: 'synthetic-secret' },
-        presented: { version: 'synthetic-material', auth: { apiKey: 'synthetic-secret' } },
+  it.each(paths)(
+    'DeepSeek subscription disabled options precede handoff in $endpoint stream=$stream',
+    async (path) => {
+      const f = transport(deepseekProvider, 'deepseek-v4-pro');
+      f.config.modelMetadata = {
+        'deepseek-v4-pro': { reasoning: true, limit: { context: 4096, output: 4000 } },
       };
-    });
-    vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
-      resolveInferenceAuth,
-      observeInference: vi.fn(async () => {}),
-    } as unknown as subscriptions.ProviderSubscriptionPairHandle);
-    const body = await send(f, path, 'none', false, handoff);
-    expect(body).toHaveProperty('max_tokens', 1000);
-    expect(body).toHaveProperty('thinking.type', 'disabled');
-    expect(body).not.toHaveProperty('reasoning_effort');
-    expect(selected).toHaveBeenCalledTimes(1);
-    expect(selected.mock.calls[0]?.[2]).not.toHaveProperty('reasoningEffort');
-    expect(simple).not.toHaveBeenCalled();
-    expect(stockAuth).not.toHaveBeenCalled();
-    expect(resolveInferenceAuth).toHaveBeenCalledTimes(1);
-    expect(handoff).toHaveBeenCalledTimes(1);
-  });
+      const selected = vi.spyOn(f.provider, 'stream');
+      const simple = vi.spyOn(f.provider, 'streamSimple');
+      const stockAuth = vi.spyOn(f.models, 'getAuth');
+      const handoff = vi.fn(() => expect(selected).not.toHaveBeenCalled());
+      const resolveInferenceAuth = vi.fn(async () => {
+        expect(handoff).toHaveBeenCalledTimes(1);
+        return {
+          auth: { apiKey: 'synthetic-secret' },
+          presented: { version: 'synthetic-material', auth: { apiKey: 'synthetic-secret' } },
+        };
+      });
+      vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
+        resolveInferenceAuth,
+        observeInference: vi.fn(async () => {}),
+      } as unknown as subscriptions.ProviderSubscriptionPairHandle);
+      const body = await send(f, path, 'none', false, handoff);
+      expect(body).toHaveProperty('max_tokens', 1000);
+      expect(body).toHaveProperty('thinking.type', 'disabled');
+      expect(body).not.toHaveProperty('reasoning_effort');
+      expect(selected).toHaveBeenCalledTimes(1);
+      expect(selected.mock.calls[0]?.[2]).not.toHaveProperty('reasoningEffort');
+      expect(simple).not.toHaveBeenCalled();
+      expect(stockAuth).not.toHaveBeenCalled();
+      expect(resolveInferenceAuth).toHaveBeenCalledTimes(1);
+      expect(handoff).toHaveBeenCalledTimes(1);
+    }
+  );
   for (const api of [
     {
       name: 'openai-responses',
@@ -453,128 +457,132 @@ describe('stock serialized canonical effort delivery', () => {
     },
   ]) {
     for (const effort of ['none', 'high']) {
-      it.each(
-        paths
-      )(`${api.name} preserves near-context cap with ${effort} in $endpoint stream=$stream`, async (path) => {
-        const bodies: Record<string, unknown>[] = [];
-        for (const requested of [undefined, effort]) {
-          const f = transport(api.provider, 'gpt-5.1');
-          f.config.modelMetadata = {
-            'gpt-5.1': { reasoning: true, limit: { context: 4096, output: 4000 } },
-          };
-          expect(f.models.getModel(f.provider.id, 'gpt-5.1')).toHaveProperty('api', api.name);
-          bodies.push(await send(f, path, requested));
+      it.each(paths)(
+        `${api.name} preserves near-context cap with ${effort} in $endpoint stream=$stream`,
+        async (path) => {
+          const bodies: Record<string, unknown>[] = [];
+          for (const requested of [undefined, effort]) {
+            const f = transport(api.provider, 'gpt-5.1');
+            f.config.modelMetadata = {
+              'gpt-5.1': { reasoning: true, limit: { context: 4096, output: 4000 } },
+            };
+            expect(f.models.getModel(f.provider.id, 'gpt-5.1')).toHaveProperty('api', api.name);
+            bodies.push(await send(f, path, requested));
+          }
+          expect(bodies[0]).toHaveProperty(api.cap, 1000);
+          expect(bodies[1]).toHaveProperty(api.cap, 1000);
+          expect(bodies[1]).toHaveProperty(api.effort, effort);
         }
-        expect(bodies[0]).toHaveProperty(api.cap, 1000);
-        expect(bodies[1]).toHaveProperty(api.cap, 1000);
-        expect(bodies[1]).toHaveProperty(api.effort, effort);
-      });
+      );
     }
   }
   for (const effort of [undefined, 'high']) {
-    it.each(
-      paths
-    )(`observes handoff once before stock entry effort=${effort} $endpoint stream=$stream`, async (path) => {
-      const f = transport(openaiProvider, 'gpt-5.1');
-      const method = path.stream || path.endpoint === 'chat' ? 'stream' : 'complete';
-      const entry = vi.spyOn(f.models, method);
-      const handoff = vi.fn(() => expect(entry).not.toHaveBeenCalled());
-      await send(f, path, effort, false, handoff);
-      expect(handoff).toHaveBeenCalledTimes(1);
-      expect(entry).toHaveBeenCalledTimes(1);
-    });
+    it.each(paths)(
+      `observes handoff once before stock entry effort=${effort} $endpoint stream=$stream`,
+      async (path) => {
+        const f = transport(openaiProvider, 'gpt-5.1');
+        const method = path.stream || path.endpoint === 'chat' ? 'stream' : 'complete';
+        const entry = vi.spyOn(f.models, method);
+        const handoff = vi.fn(() => expect(entry).not.toHaveBeenCalled());
+        await send(f, path, effort, false, handoff);
+        expect(handoff).toHaveBeenCalledTimes(1);
+        expect(entry).toHaveBeenCalledTimes(1);
+      }
+    );
   }
   it.each([
     { stream: false, native: true },
     { stream: true, native: true },
     { stream: false, native: false },
     { stream: true, native: false },
-  ])('selects stock subscription entry native=$native without changing observation stream=$stream', async ({
-    stream,
-    native,
-  }) => {
-    const f = native
-      ? transport(openaiProvider, 'gpt-5.1')
-      : transport(anthropicProvider, 'claude-sonnet-4-6');
-    const selected = vi.spyOn(f.provider, native ? 'stream' : 'streamSimple');
-    const other = vi.spyOn(f.provider, native ? 'streamSimple' : 'stream');
-    const stockAuth = vi.spyOn(f.models, 'getAuth');
-    const handoff = vi.fn();
-    const presented = { version: 'synthetic-material', auth: { apiKey: 'synthetic-secret' } };
-    const resolveInferenceAuth = vi.fn(async (_signal?: AbortSignal) => {
-      expect(handoff).toHaveBeenCalledTimes(1);
-      return {
-        auth: {
-          apiKey: 'synthetic-secret',
-          headers: { 'x-synthetic-auth': 'retained' },
-          baseUrl: 'https://synthetic.invalid/v1',
-        },
-        env: { SYNTHETIC: 'retained' },
-        presented,
+  ])(
+    'selects stock subscription entry native=$native without changing observation stream=$stream',
+    async ({ stream, native }) => {
+      const f = native
+        ? transport(openaiProvider, 'gpt-5.1')
+        : transport(anthropicProvider, 'claude-sonnet-4-6');
+      const selected = vi.spyOn(f.provider, native ? 'stream' : 'streamSimple');
+      const other = vi.spyOn(f.provider, native ? 'streamSimple' : 'stream');
+      const stockAuth = vi.spyOn(f.models, 'getAuth');
+      const handoff = vi.fn();
+      const presented = { version: 'synthetic-material', auth: { apiKey: 'synthetic-secret' } };
+      const resolveInferenceAuth = vi.fn(async (_signal?: AbortSignal) => {
+        expect(handoff).toHaveBeenCalledTimes(1);
+        return {
+          auth: {
+            apiKey: 'synthetic-secret',
+            headers: { 'x-synthetic-auth': 'retained' },
+            baseUrl: 'https://synthetic.invalid/v1',
+          },
+          env: { SYNTHETIC: 'retained' },
+          presented,
+        };
+      });
+      const observeInference = vi.fn<
+        subscriptions.ProviderSubscriptionPairHandle['observeInference']
+      >(async () => {});
+      vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
+        resolveInferenceAuth,
+        observeInference,
+      } as unknown as subscriptions.ProviderSubscriptionPairHandle);
+      const cancellation = new AbortController();
+      const signal = cancellation.signal;
+      const request = {
+        model: f.config.models[0]!,
+        messages: [{ role: 'user' as const, content: 'Hello' }],
+        reasoning_effort: 'high',
       };
-    });
-    const observeInference = vi.fn<
-      subscriptions.ProviderSubscriptionPairHandle['observeInference']
-    >(async () => {});
-    vi.spyOn(subscriptions, 'subscriptionInferenceHandle').mockReturnValue({
-      resolveInferenceAuth,
-      observeInference,
-    } as unknown as subscriptions.ProviderSubscriptionPairHandle);
-    const cancellation = new AbortController();
-    const signal = cancellation.signal;
-    const request = {
-      model: f.config.models[0]!,
-      messages: [{ role: 'user' as const, content: 'Hello' }],
-      reasoning_effort: 'high',
-    };
-    const result = stream
-      ? await f.client.createChatCompletionStream(f.config, request, undefined, {
-          signal,
-          deadline: 777,
-          onProviderHandoff: handoff,
-        })
-      : await f.client.createChatCompletion(f.config, request, undefined, {
-          signal,
-          deadline: 777,
-          onProviderHandoff: handoff,
-        });
-    expect(
-      result instanceof ReadableStream ? await new Response(result).text() : JSON.stringify(result)
-    ).toContain('ok');
-    expect(resolveInferenceAuth).toHaveBeenCalledTimes(1);
-    expect(handoff).toHaveBeenCalledTimes(1);
-    expect(stockAuth).not.toHaveBeenCalled();
-    expect(selected).toHaveBeenCalledTimes(1);
-    expect(other).not.toHaveBeenCalled();
-    expect(selected.mock.calls[0]?.[0]).toHaveProperty('baseUrl', 'https://synthetic.invalid/v1');
-    expect(selected.mock.calls[0]?.[2]).toMatchObject({
-      ...(native ? { reasoningEffort: 'high' } : { reasoning: 'high' }),
-      headers: { 'x-synthetic-auth': 'retained' },
-      env: { SYNTHETIC: 'retained' },
-    });
-    expect(observeInference).toHaveBeenCalledExactlyOnceWith(
-      presented,
-      undefined,
-      777,
-      expect.any(AbortSignal)
-    );
-    const authSignal = resolveInferenceAuth.mock.calls[0]?.[0];
-    const observationSignal = observeInference.mock.calls[0]?.[3];
-    expect(authSignal).toBeInstanceOf(AbortSignal);
-    expect(selected.mock.calls[0]?.[2]).toHaveProperty('signal', authSignal);
-    // Auth and observation can use different composites, but both retain caller cancellation.
-    for (const carried of [authSignal, observationSignal]) expect(carried?.aborted).toBe(false);
-    const reason = new Error('Synthetic caller cancellation');
-    cancellation.abort(reason);
-    for (const carried of [authSignal, observationSignal]) {
-      expect(carried?.aborted).toBe(true);
-      expect(carried?.reason).toBe(reason);
+      const result = stream
+        ? await f.client.createChatCompletionStream(f.config, request, undefined, {
+            signal,
+            deadline: 777,
+            onProviderHandoff: handoff,
+          })
+        : await f.client.createChatCompletion(f.config, request, undefined, {
+            signal,
+            deadline: 777,
+            onProviderHandoff: handoff,
+          });
+      expect(
+        result instanceof ReadableStream
+          ? await new Response(result).text()
+          : JSON.stringify(result)
+      ).toContain('ok');
+      expect(resolveInferenceAuth).toHaveBeenCalledTimes(1);
+      expect(handoff).toHaveBeenCalledTimes(1);
+      expect(stockAuth).not.toHaveBeenCalled();
+      expect(selected).toHaveBeenCalledTimes(1);
+      expect(other).not.toHaveBeenCalled();
+      expect(selected.mock.calls[0]?.[0]).toHaveProperty('baseUrl', 'https://synthetic.invalid/v1');
+      expect(selected.mock.calls[0]?.[2]).toMatchObject({
+        ...(native ? { reasoningEffort: 'high' } : { reasoning: 'high' }),
+        headers: { 'x-synthetic-auth': 'retained' },
+        env: { SYNTHETIC: 'retained' },
+      });
+      expect(observeInference).toHaveBeenCalledExactlyOnceWith(
+        presented,
+        undefined,
+        777,
+        expect.any(AbortSignal)
+      );
+      const authSignal = resolveInferenceAuth.mock.calls[0]?.[0];
+      const observationSignal = observeInference.mock.calls[0]?.[3];
+      expect(authSignal).toBeInstanceOf(AbortSignal);
+      expect(selected.mock.calls[0]?.[2]).toHaveProperty('signal', authSignal);
+      // Auth and observation can use different composites, but both retain caller cancellation.
+      for (const carried of [authSignal, observationSignal]) expect(carried?.aborted).toBe(false);
+      const reason = new Error('Synthetic caller cancellation');
+      cancellation.abort(reason);
+      for (const carried of [authSignal, observationSignal]) {
+        expect(carried?.aborted).toBe(true);
+        expect(carried?.reason).toBe(reason);
+      }
+      expect(JSON.parse(f.bytes[0]!)).toHaveProperty(
+        native ? 'reasoning.effort' : 'output_config.effort',
+        'high'
+      );
     }
-    expect(JSON.parse(f.bytes[0]!)).toHaveProperty(
-      native ? 'reasoning.effort' : 'output_config.effort',
-      'high'
-    );
-  });
+  );
   for (const adapter of adapters) {
     it.each(paths)(`${adapter.name} delivers high in $endpoint stream=$stream`, async (path) => {
       const f = transport(adapter.provider, adapter.model);
@@ -584,86 +592,89 @@ describe('stock serialized canonical effort delivery', () => {
       else expect(body).toHaveProperty('reasoning.effort', 'high');
       if (adapter.kind === 'budget') expect(body).toHaveProperty('thinking.budget_tokens', 16360);
     });
-    it.each(
-      paths
-    )(`${adapter.name} serializes disabled effort in $endpoint stream=$stream`, async (path) => {
-      const body = await send(transport(adapter.provider, adapter.model), path, 'none');
-      if (adapter.kind === 'openai') expect(body).toHaveProperty('reasoning.effort', 'none');
-      else expect(body).toHaveProperty('thinking.type', 'disabled');
-      expect(body).not.toHaveProperty('output_config');
-    });
-    it.each(
-      paths
-    )(`${adapter.name} omitted effort preserves native serialization in $endpoint stream=$stream`, async (path) => {
-      const f = transport(adapter.provider, adapter.model);
-      const body = await send(f, path);
-      expect(f.bytes[0]).toMatchSnapshot();
-      if (adapter.kind === 'openai') {
-        expect(body).toHaveProperty('reasoning.effort', 'none');
-        expect(body).toHaveProperty('max_output_tokens', 1000);
-      } else {
-        expect(f.bytes[0]).toBe(
-          JSON.stringify({
-            model: adapter.model,
-            messages: [{ role: 'user', content: 'Hello' }],
-            max_tokens: 1000,
-            stream: true,
-            temperature: 0.5,
-          })
-        );
+    it.each(paths)(
+      `${adapter.name} serializes disabled effort in $endpoint stream=$stream`,
+      async (path) => {
+        const body = await send(transport(adapter.provider, adapter.model), path, 'none');
+        if (adapter.kind === 'openai') expect(body).toHaveProperty('reasoning.effort', 'none');
+        else expect(body).toHaveProperty('thinking.type', 'disabled');
+        expect(body).not.toHaveProperty('output_config');
       }
-      expect(body).not.toHaveProperty('thinking');
-    });
+    );
+    it.each(paths)(
+      `${adapter.name} omitted effort preserves native serialization in $endpoint stream=$stream`,
+      async (path) => {
+        const f = transport(adapter.provider, adapter.model);
+        const body = await send(f, path);
+        expect(f.bytes[0]).toMatchSnapshot();
+        if (adapter.kind === 'openai') {
+          expect(body).toHaveProperty('reasoning.effort', 'none');
+          expect(body).toHaveProperty('max_output_tokens', 1000);
+        } else {
+          expect(f.bytes[0]).toBe(
+            JSON.stringify({
+              model: adapter.model,
+              messages: [{ role: 'user', content: 'Hello' }],
+              max_tokens: 1000,
+              stream: true,
+              temperature: 0.5,
+            })
+          );
+        }
+        expect(body).not.toHaveProperty('thinking');
+      }
+    );
   }
-  it.each(
-    paths
-  )('pins accepted Anthropic cap/temperature consequence in $endpoint stream=$stream', async (path) => {
-    const body = await send(transport(anthropicProvider, 'claude-sonnet-4-5'), path, 'low');
-    expect(body).toHaveProperty('max_tokens', 3048);
-    expect(body).toHaveProperty('thinking.budget_tokens', 2024);
-    expect(body).not.toHaveProperty('temperature');
-  });
-  it.each([
-    false,
-    true,
-  ])('Anthropic tool-aware Responses carries stock thinking stream=%s', async (stream) => {
-    const body = await send(
-      transport(anthropicProvider, 'claude-sonnet-4-6'),
-      { endpoint: 'responses', stream },
-      'high',
-      true
-    );
-    expect(body).toHaveProperty('output_config.effort', 'high');
-    expect(body.tools).toHaveLength(1);
-  });
-  it.each([
-    false,
-    true,
-  ])('OpenAI tool-aware Responses retains native effort and cap stream=%s', async (stream) => {
-    const body = await send(
-      transport(openaiProvider, 'gpt-5.1'),
-      { endpoint: 'responses', stream },
-      'high',
-      true
-    );
-    expect(body).toHaveProperty('reasoning.effort', 'high');
-    expect(body).toHaveProperty('max_output_tokens', 1000);
-  });
+  it.each(paths)(
+    'pins accepted Anthropic cap/temperature consequence in $endpoint stream=$stream',
+    async (path) => {
+      const body = await send(transport(anthropicProvider, 'claude-sonnet-4-5'), path, 'low');
+      expect(body).toHaveProperty('max_tokens', 3048);
+      expect(body).toHaveProperty('thinking.budget_tokens', 2024);
+      expect(body).not.toHaveProperty('temperature');
+    }
+  );
+  it.each([false, true])(
+    'Anthropic tool-aware Responses carries stock thinking stream=%s',
+    async (stream) => {
+      const body = await send(
+        transport(anthropicProvider, 'claude-sonnet-4-6'),
+        { endpoint: 'responses', stream },
+        'high',
+        true
+      );
+      expect(body).toHaveProperty('output_config.effort', 'high');
+      expect(body.tools).toHaveLength(1);
+    }
+  );
+  it.each([false, true])(
+    'OpenAI tool-aware Responses retains native effort and cap stream=%s',
+    async (stream) => {
+      const body = await send(
+        transport(openaiProvider, 'gpt-5.1'),
+        { endpoint: 'responses', stream },
+        'high',
+        true
+      );
+      expect(body).toHaveProperty('reasoning.effort', 'high');
+      expect(body).toHaveProperty('max_output_tokens', 1000);
+    }
+  );
   it.each([
     { stream: false, effort: 'high' },
     { stream: true, effort: 'high' },
     { stream: false, effort: 'none' },
     { stream: true, effort: 'none' },
-  ])('Codex Responses retains native $effort and payload cap stream=$stream', async ({
-    stream,
-    effort,
-  }) => {
-    const body = await send(
-      transport(openaiCodexProvider, 'gpt-5.5'),
-      { endpoint: 'responses', stream },
-      effort
-    );
-    expect(body).toHaveProperty('reasoning.effort', effort);
-    expect(body).toHaveProperty('max_output_tokens', 1000);
-  });
+  ])(
+    'Codex Responses retains native $effort and payload cap stream=$stream',
+    async ({ stream, effort }) => {
+      const body = await send(
+        transport(openaiCodexProvider, 'gpt-5.5'),
+        { endpoint: 'responses', stream },
+        effort
+      );
+      expect(body).toHaveProperty('reasoning.effort', effort);
+      expect(body).toHaveProperty('max_output_tokens', 1000);
+    }
+  );
 });

@@ -323,72 +323,73 @@ function toolOutput(request: Request, callId: string): string {
 }
 
 // Real Gateway, Git publication and reopened-Store replay exceed the generic 30 s harness; the role retains its own 120 s execution deadline.
-it.each([
-  false,
-  true,
-])('runs real maintenance with required Review %s and replays its native result without another model call', async (reviewRequired) => {
-  const f = await fixture(reviewRequired);
-  const result = await runKnowledgeMaintenanceCommand(f.dependencies, f.input);
-  expect(result.outcome).toBe(reviewRequired ? 'review-required' : 'published');
-  expect(f.createResponses).toHaveBeenCalledTimes(3);
-  expect(
-    f.createResponses.mock.calls.every(([, request]) => request.model === 'maintenance-model')
-  ).toBe(true);
-  expect(f.observedReceipts.every((receipt) => receipt?.response.id === result.turnId)).toBe(true);
-  const edit = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'edit'));
-  expect(edit).toMatchObject({ exitCode: 0, stderr: '' });
-  expect(edit.stdout).toContain('The project uses cobalt labels.');
-  const publication = JSON.parse(toolOutput(f.createResponses.mock.calls[2]![1], 'publish'));
-  expect(publication.outcome).toBe(reviewRequired ? 'review_required' : 'published');
-  const selected = reviewRequired ? result.candidateRevision! : result.notebookRevision;
-  const committed = f.notebook.readRevision(selected);
-  const turn = f.store.getTurnById(result.turnId);
-  const runBaseRevision = turn.internalExecution!.knowledge!.baseRevision;
-  const capturedBase = f.notebook.readRevision(runBaseRevision);
-  expect(capturedBase.parentRevision).toBe(f.baseRevision);
-  expect(capturedBase.files).toEqual(f.notebook.readRevision(f.baseRevision).files);
-  expect(Object.keys(f.notebook.readSourcePointers(runBaseRevision))).toHaveLength(1);
-  expect(committed.parentRevision).toBe(runBaseRevision);
-  expect(committed.files['labels.md']).toContain('Human note: keep this sentence.');
-  expect(committed.files['labels.md']).toContain('The project uses cobalt labels.');
-  expect(committed.files['labels.md']).toContain(f.sourceReference());
-  expect(committed.files['index.md']).toContain('[Labels](labels.md)');
-  if (reviewRequired) {
-    expect(f.notebook.publishedRevision()).toBe(runBaseRevision);
-    expect(f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!)).toMatchObject(
-      { candidateRevision: selected }
+it.each([false, true])(
+  'runs real maintenance with required Review %s and replays its native result without another model call',
+  async (reviewRequired) => {
+    const f = await fixture(reviewRequired);
+    const result = await runKnowledgeMaintenanceCommand(f.dependencies, f.input);
+    expect(result.outcome).toBe(reviewRequired ? 'review-required' : 'published');
+    expect(f.createResponses).toHaveBeenCalledTimes(3);
+    expect(
+      f.createResponses.mock.calls.every(([, request]) => request.model === 'maintenance-model')
+    ).toBe(true);
+    expect(f.observedReceipts.every((receipt) => receipt?.response.id === result.turnId)).toBe(
+      true
     );
-  } else expect(f.notebook.publishedRevision()).toBe(selected);
-  expect(turn).toMatchObject({
-    status: 'completed',
-    internalExecution: {
-      logicalModelId: 'maintenance',
-      knowledge: {
-        purpose: 'maintenance',
-        baseRevision: runBaseRevision,
-        sourceRange: [{ turnId: f.sourceTurn.id }],
+    const edit = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'edit'));
+    expect(edit).toMatchObject({ exitCode: 0, stderr: '' });
+    expect(edit.stdout).toContain('The project uses cobalt labels.');
+    const publication = JSON.parse(toolOutput(f.createResponses.mock.calls[2]![1], 'publish'));
+    expect(publication.outcome).toBe(reviewRequired ? 'review_required' : 'published');
+    const selected = reviewRequired ? result.candidateRevision! : result.notebookRevision;
+    const committed = f.notebook.readRevision(selected);
+    const turn = f.store.getTurnById(result.turnId);
+    const runBaseRevision = turn.internalExecution!.knowledge!.baseRevision;
+    const capturedBase = f.notebook.readRevision(runBaseRevision);
+    expect(capturedBase.parentRevision).toBe(f.baseRevision);
+    expect(capturedBase.files).toEqual(f.notebook.readRevision(f.baseRevision).files);
+    expect(Object.keys(f.notebook.readSourcePointers(runBaseRevision))).toHaveLength(1);
+    expect(committed.parentRevision).toBe(runBaseRevision);
+    expect(committed.files['labels.md']).toContain('Human note: keep this sentence.');
+    expect(committed.files['labels.md']).toContain('The project uses cobalt labels.');
+    expect(committed.files['labels.md']).toContain(f.sourceReference());
+    expect(committed.files['index.md']).toContain('[Labels](labels.md)');
+    if (reviewRequired) {
+      expect(f.notebook.publishedRevision()).toBe(runBaseRevision);
+      expect(
+        f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!)
+      ).toMatchObject({ candidateRevision: selected });
+    } else expect(f.notebook.publishedRevision()).toBe(selected);
+    expect(turn).toMatchObject({
+      status: 'completed',
+      internalExecution: {
+        logicalModelId: 'maintenance',
+        knowledge: {
+          purpose: 'maintenance',
+          baseRevision: runBaseRevision,
+          sourceRange: [{ turnId: f.sourceTurn.id }],
+        },
       },
-    },
-  });
-  expect(turn.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)).toEqual([
-    'knowledge.notebook-workspace.update',
-    'knowledge.notebook.update',
-    'knowledge.result',
-  ]);
-  expect(await f.replay()).toEqual(result);
-  expect(f.createResponses).toHaveBeenCalledTimes(3);
-  await expect(f.replay('Changed maintenance instructions.')).rejects.toBeInstanceOf(
-    IdempotencyKeyConflictError
-  );
-  expect(f.createResponses).toHaveBeenCalledTimes(3);
-  expect(f.notebook.publishedRevision()).toBe(reviewRequired ? runBaseRevision : selected);
-  expect(
-    f.store
-      .listThreads(f.workspace.id)
-      .flatMap((thread) => f.store.listThreadTurns(f.workspace.id, thread.id))
-      .filter((work) => work.agentId === 'knowledge-manager')
-  ).toHaveLength(1);
-}, 120_000);
+    });
+    expect(turn.items.filter((item) => item.type === 'tool-call').map((item) => item.tool)).toEqual(
+      ['knowledge.notebook-workspace.update', 'knowledge.notebook.update', 'knowledge.result']
+    );
+    expect(await f.replay()).toEqual(result);
+    expect(f.createResponses).toHaveBeenCalledTimes(3);
+    await expect(f.replay('Changed maintenance instructions.')).rejects.toBeInstanceOf(
+      IdempotencyKeyConflictError
+    );
+    expect(f.createResponses).toHaveBeenCalledTimes(3);
+    expect(f.notebook.publishedRevision()).toBe(reviewRequired ? runBaseRevision : selected);
+    expect(
+      f.store
+        .listThreads(f.workspace.id)
+        .flatMap((thread) => f.store.listThreadTurns(f.workspace.id, thread.id))
+        .filter((work) => work.agentId === 'knowledge-manager')
+    ).toHaveLength(1);
+  },
+  120_000
+);
 
 it('retains publication before a late Provider failure and replays that published outcome from the same failed model Turn', async () => {
   const f = await fixture(false, true);

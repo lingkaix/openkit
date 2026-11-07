@@ -258,48 +258,48 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it.each([
-    'same-named-directory',
-    'unsafe-empty-session',
-  ] as const)('ignores an unrelated %s when selecting the exact regular record', async (fixture) => {
-    const db = createWorkspaceDb();
-    const named = await createEnvironmentPackage();
-    try {
-      const expected = await recordAgentEnvironmentPackageSnapshot(db, {
-        environmentPackage: named,
-        createdAt: '2026-07-06T00:00:01.000Z',
-      });
-      const otherRoot = join(
-        dirname(dirname(snapshotPath(db, named))),
-        '..',
-        fixture === 'unsafe-empty-session'
-          ? 'as_00000000-0000-71da-995d-2a1aa4a33448\\session'
-          : 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
-        'aep-snapshots'
-      );
-      mkdirSync(
-        fixture === 'same-named-directory'
-          ? join(otherRoot, `${named.snapshotId}.json`)
-          : otherRoot,
-        { recursive: true }
-      );
-      expect(
-        requireAgentEnvironmentPackageSnapshot(
-          db,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          named.snapshotId
-        )
-      ).toEqual(expected);
-      expect(
-        listExportableAgentEnvironmentPackageSnapshots(
-          db,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201'
-        )
-      ).toEqual([expected]);
-    } finally {
-      db.sqlite.close();
+  it.each(['same-named-directory', 'unsafe-empty-session'] as const)(
+    'ignores an unrelated %s when selecting the exact regular record',
+    async (fixture) => {
+      const db = createWorkspaceDb();
+      const named = await createEnvironmentPackage();
+      try {
+        const expected = await recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage: named,
+          createdAt: '2026-07-06T00:00:01.000Z',
+        });
+        const otherRoot = join(
+          dirname(dirname(snapshotPath(db, named))),
+          '..',
+          fixture === 'unsafe-empty-session'
+            ? 'as_00000000-0000-71da-995d-2a1aa4a33448\\session'
+            : 'as_00000000-0000-7436-9246-ac6dd3ca3fe4',
+          'aep-snapshots'
+        );
+        mkdirSync(
+          fixture === 'same-named-directory'
+            ? join(otherRoot, `${named.snapshotId}.json`)
+            : otherRoot,
+          { recursive: true }
+        );
+        expect(
+          requireAgentEnvironmentPackageSnapshot(
+            db,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            named.snapshotId
+          )
+        ).toEqual(expected);
+        expect(
+          listExportableAgentEnvironmentPackageSnapshots(
+            db,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201'
+          )
+        ).toEqual([expected]);
+      } finally {
+        db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('keeps distinct case-variant ids under case-insensitive path resolution', async () => {
     const db = createWorkspaceDb();
@@ -419,83 +419,86 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it.each([
-    'outcome',
-    'user-message',
-  ] as const)('preserves ordinary %s input through storage and public projections', async (kind) => {
-    const db = createWorkspaceDb();
-    const environmentPackage = await createEnvironmentPackage();
-    const literal = 'ghp_public-test-fixture';
-    const input =
-      kind === 'outcome'
-        ? JSON.stringify({
-            triggerInput: 'Deliver frozen result',
-            pendingOutcomes: [
-              {
-                request: {
-                  call: {
-                    toolName: 'push_files',
-                    arguments: {
-                      files: [{ content: `expect(value).toBe("${literal}");\n`.repeat(3000) }],
+  it.each(['outcome', 'user-message'] as const)(
+    'preserves ordinary %s input through storage and public projections',
+    async (kind) => {
+      const db = createWorkspaceDb();
+      const environmentPackage = await createEnvironmentPackage();
+      const literal = 'ghp_public-test-fixture';
+      const input =
+        kind === 'outcome'
+          ? JSON.stringify({
+              triggerInput: 'Deliver frozen result',
+              pendingOutcomes: [
+                {
+                  request: {
+                    call: {
+                      toolName: 'push_files',
+                      arguments: {
+                        files: [{ content: `expect(value).toBe("${literal}");\n`.repeat(3000) }],
+                      },
                     },
                   },
+                  result: { content: [{ type: 'text', text: 'Published fixture' }] },
                 },
-                result: { content: [{ type: 'text', text: 'Published fixture' }] },
-              },
-            ],
-          })
-        : `Explain this public test literal: ${literal}`;
-    environmentPackage.extensions.openkit = { turnInput: input, publicNote: literal };
-    try {
-      const record = await recordAgentEnvironmentPackageSnapshot(db, {
-        environmentPackage,
-        createdAt: '2026-07-06T00:00:01.000Z',
-      });
-      const path = snapshotPath(db, environmentPackage);
-      const stored = JSON.parse(readFileSync(path, 'utf8'));
-      expect(stored.snapshot.extensions.openkit.turnInput).toBe(input);
-      expect(snapshotDigest(stored.snapshot)).toBe(record.contentDigest);
-      const { dataRoot, workspaceId } = db;
-      db.sqlite.close();
-      const reopened = openWorkspaceDb(dataRoot, workspaceId);
+              ],
+            })
+          : `Explain this public test literal: ${literal}`;
+      environmentPackage.extensions.openkit = { turnInput: input, publicNote: literal };
       try {
-        const read = requireAgentEnvironmentPackageSnapshot(
-          reopened,
-          workspaceId,
-          environmentPackage.snapshotId
-        );
-        expect(read.snapshot.extensions.openkit).toEqual({ turnInput: input, publicNote: literal });
-        const operations = createEnvironmentOperationImplementations({
-          repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, workspaceId),
+        const record = await recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage,
+          createdAt: '2026-07-06T00:00:01.000Z',
         });
-        const publicRead = GetAgentEnvironmentPackageSnapshotResponseSchema.parse(
-          JSON.parse(
-            JSON.stringify(
-              operations['environment.snapshot-read']({
-                workspaceId,
-                snapshotId: environmentPackage.snapshotId,
-              })
-            )
-          )
-        );
-        const publicList = ListAgentEnvironmentPackageSnapshotsResponseSchema.parse(
-          operations['environment.snapshot-list']({ workspaceId })
-        );
-        for (const projected of [publicRead, publicList.items[0]!]) {
-          expect(projected.snapshot.extensions.openkit).toEqual({
+        const path = snapshotPath(db, environmentPackage);
+        const stored = JSON.parse(readFileSync(path, 'utf8'));
+        expect(stored.snapshot.extensions.openkit.turnInput).toBe(input);
+        expect(snapshotDigest(stored.snapshot)).toBe(record.contentDigest);
+        const { dataRoot, workspaceId } = db;
+        db.sqlite.close();
+        const reopened = openWorkspaceDb(dataRoot, workspaceId);
+        try {
+          const read = requireAgentEnvironmentPackageSnapshot(
+            reopened,
+            workspaceId,
+            environmentPackage.snapshotId
+          );
+          expect(read.snapshot.extensions.openkit).toEqual({
             turnInput: input,
             publicNote: literal,
           });
-          expect(projected.contentDigest).toBe(record.contentDigest);
-          expect(snapshotDigest(projected.snapshot)).toBe(record.contentDigest);
+          const operations = createEnvironmentOperationImplementations({
+            repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, workspaceId),
+          });
+          const publicRead = GetAgentEnvironmentPackageSnapshotResponseSchema.parse(
+            JSON.parse(
+              JSON.stringify(
+                operations['environment.snapshot-read']({
+                  workspaceId,
+                  snapshotId: environmentPackage.snapshotId,
+                })
+              )
+            )
+          );
+          const publicList = ListAgentEnvironmentPackageSnapshotsResponseSchema.parse(
+            operations['environment.snapshot-list']({ workspaceId })
+          );
+          for (const projected of [publicRead, publicList.items[0]!]) {
+            expect(projected.snapshot.extensions.openkit).toEqual({
+              turnInput: input,
+              publicNote: literal,
+            });
+            expect(projected.contentDigest).toBe(record.contentDigest);
+            expect(snapshotDigest(projected.snapshot)).toBe(record.contentDigest);
+          }
+        } finally {
+          reopened.sqlite.close();
         }
       } finally {
-        reopened.sqlite.close();
+        if (db.sqlite.open) db.sqlite.close();
       }
-    } finally {
-      if (db.sqlite.open) db.sqlite.close();
     }
-  });
+  );
 
   it('carries a large frozen captured call, answers and result exactly through AEP preparation', async () => {
     const db = createWorkspaceDb();
@@ -669,32 +672,32 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it.each([
-    'credential-field',
-    'native-environment',
-  ] as const)('rejects forbidden %s during preparation without writing', async (variant) => {
-    const db = createWorkspaceDb();
-    const environmentPackage = await createEnvironmentPackage();
-    if (variant === 'credential-field')
-      environmentPackage.extensions.fixture = { password: 'synthetic-value' };
-    else
-      environmentPackage.runtime.environment = {
-        imageDigest: 'invalid-native-digest',
-        defaultsDigest: 'invalid-native-digest',
-        values: {},
-      };
-    try {
-      expect(() =>
-        recordAgentEnvironmentPackageSnapshot(db, {
-          environmentPackage,
-          createdAt: '2026-07-06T00:00:01.000Z',
-        })
-      ).toThrow('The agent environment snapshot could not be prepared.');
-      expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
-    } finally {
-      db.sqlite.close();
+  it.each(['credential-field', 'native-environment'] as const)(
+    'rejects forbidden %s during preparation without writing',
+    async (variant) => {
+      const db = createWorkspaceDb();
+      const environmentPackage = await createEnvironmentPackage();
+      if (variant === 'credential-field')
+        environmentPackage.extensions.fixture = { password: 'synthetic-value' };
+      else
+        environmentPackage.runtime.environment = {
+          imageDigest: 'invalid-native-digest',
+          defaultsDigest: 'invalid-native-digest',
+          values: {},
+        };
+      try {
+        expect(() =>
+          recordAgentEnvironmentPackageSnapshot(db, {
+            environmentPackage,
+            createdAt: '2026-07-06T00:00:01.000Z',
+          })
+        ).toThrow('The agent environment snapshot could not be prepared.');
+        expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
+      } finally {
+        db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('preserves public snapshot read refusal code and fixed text for corrupt retained JSON', async () => {
     const db = createWorkspaceDb();
@@ -738,68 +741,68 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it.each([
-    'construction',
-    'record-validation',
-  ] as const)('publishes truthful fixed %s and retained-read messages through nested causes and aggregates', async (phase) => {
-    const db = createWorkspaceDb();
-    const environmentPackage = await createEnvironmentPackage();
-    const marker = 'ROW_SECRET_X9';
-    const caught = async (operation: () => unknown): Promise<Error> => {
-      try {
-        await operation();
-      } catch (error) {
-        return error as Error;
-      }
-      throw new Error('Expected failure');
-    };
-    try {
-      const invalid = { ...environmentPackage, schemaVersion: marker } as never;
-      const preparation = await caught(
-        async () =>
-          await recordAgentEnvironmentPackageSnapshot(db, {
-            environmentPackage: phase === 'construction' ? invalid : environmentPackage,
-            createdAt: phase === 'record-validation' ? '' : '2026-07-06T00:00:01.000Z',
-          })
-      );
-      expect(preparation.constructor.name).toBe('AgentEnvironmentSnapshotPreparationError');
-      expect(preparation.cause).toBeInstanceOf(Error);
-      expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
-      await recordAgentEnvironmentPackageSnapshot(db, {
-        environmentPackage,
-        createdAt: '2026-07-06T00:00:01.000Z',
-      });
-      const path = snapshotPath(db, environmentPackage);
-      writeFileSync(path, marker);
-      const read = await caught(() =>
-        requireAgentEnvironmentPackageSnapshot(
-          db,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          environmentPackage.snapshotId
-        )
-      );
-      for (const [error, message] of [
-        [preparation, 'The agent environment snapshot could not be prepared.'],
-        [read, 'The retained record could not be read.'],
-      ] as const) {
-        for (const wrapped of [
-          error,
-          new Error(marker, { cause: error }),
-          new AggregateError(
-            [new SyntaxError(marker), new Error(marker, { cause: error })],
-            marker
-          ),
-          new AggregateError([error, new SyntaxError(marker)], marker),
-        ]) {
-          expect(publishedErrorMessage(wrapped)).toBe(message);
-          expect(publishedErrorMessage(wrapped)).not.toContain(marker);
+  it.each(['construction', 'record-validation'] as const)(
+    'publishes truthful fixed %s and retained-read messages through nested causes and aggregates',
+    async (phase) => {
+      const db = createWorkspaceDb();
+      const environmentPackage = await createEnvironmentPackage();
+      const marker = 'ROW_SECRET_X9';
+      const caught = async (operation: () => unknown): Promise<Error> => {
+        try {
+          await operation();
+        } catch (error) {
+          return error as Error;
         }
+        throw new Error('Expected failure');
+      };
+      try {
+        const invalid = { ...environmentPackage, schemaVersion: marker } as never;
+        const preparation = await caught(
+          async () =>
+            await recordAgentEnvironmentPackageSnapshot(db, {
+              environmentPackage: phase === 'construction' ? invalid : environmentPackage,
+              createdAt: phase === 'record-validation' ? '' : '2026-07-06T00:00:01.000Z',
+            })
+        );
+        expect(preparation.constructor.name).toBe('AgentEnvironmentSnapshotPreparationError');
+        expect(preparation.cause).toBeInstanceOf(Error);
+        expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
+        await recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage,
+          createdAt: '2026-07-06T00:00:01.000Z',
+        });
+        const path = snapshotPath(db, environmentPackage);
+        writeFileSync(path, marker);
+        const read = await caught(() =>
+          requireAgentEnvironmentPackageSnapshot(
+            db,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            environmentPackage.snapshotId
+          )
+        );
+        for (const [error, message] of [
+          [preparation, 'The agent environment snapshot could not be prepared.'],
+          [read, 'The retained record could not be read.'],
+        ] as const) {
+          for (const wrapped of [
+            error,
+            new Error(marker, { cause: error }),
+            new AggregateError(
+              [new SyntaxError(marker), new Error(marker, { cause: error })],
+              marker
+            ),
+            new AggregateError([error, new SyntaxError(marker)], marker),
+          ]) {
+            expect(publishedErrorMessage(wrapped)).toBe(message);
+            expect(publishedErrorMessage(wrapped)).not.toContain(marker);
+          }
+        }
+        expect(readFileSync(path, 'utf8')).toBe(marker);
+      } finally {
+        db.sqlite.close();
       }
-      expect(readFileSync(path, 'utf8')).toBe(marker);
-    } finally {
-      db.sqlite.close();
     }
-  });
+  );
 
   it('persists and reloads the redacted record from its canonical session path', async () => {
     const workspaceDb = createWorkspaceDb();
@@ -964,45 +967,48 @@ describe('AEP snapshot ledger', () => {
     ['password', 'synthetic-review-password'],
     ['backendSessionId', 'synthetic-private-handle'],
     ['annotation', '/Users/synthetic/private-location'],
-  ])('refuses digest-valid unsafe original %s before read, publication or export', async (key, value) => {
-    const source = createWorkspaceDb();
-    const target = createWorkspaceDb();
-    const environmentPackage = await createEnvironmentPackage();
-    try {
-      await recordAgentEnvironmentPackageSnapshot(source, {
-        createdAt: '2026-07-06T00:00:01.000Z',
-        environmentPackage,
-      });
-      const path = snapshotPath(source, environmentPackage);
-      const retained = JSON.parse(readFileSync(path, 'utf8'));
-      retained.snapshot.scope[key] = value;
-      retained.contentDigest = snapshotDigest(retained.snapshot);
-      const unsafeBytes = JSON.stringify(retained);
-      writeFileSync(path, unsafeBytes);
-      expect(() =>
-        requireAgentEnvironmentPackageSnapshot(
-          source,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          environmentPackage.snapshotId
-        )
-      ).toThrow();
-      expect(() => importAgentEnvironmentPackageSnapshots(target, [retained])).toThrow();
-      expect(existsSync(snapshotPath(target, environmentPackage))).toBe(false);
-      expect(() =>
-        listExportableAgentEnvironmentPackageSnapshots(
-          source,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201'
-        )
-      ).toThrow();
-      expect(readFileSync(path, 'utf8')).toBe(unsafeBytes);
-      expect(snapshotDigest(JSON.parse(readFileSync(path, 'utf8')).snapshot)).toBe(
-        retained.contentDigest
-      );
-    } finally {
-      source.sqlite.close();
-      target.sqlite.close();
+  ])(
+    'refuses digest-valid unsafe original %s before read, publication or export',
+    async (key, value) => {
+      const source = createWorkspaceDb();
+      const target = createWorkspaceDb();
+      const environmentPackage = await createEnvironmentPackage();
+      try {
+        await recordAgentEnvironmentPackageSnapshot(source, {
+          createdAt: '2026-07-06T00:00:01.000Z',
+          environmentPackage,
+        });
+        const path = snapshotPath(source, environmentPackage);
+        const retained = JSON.parse(readFileSync(path, 'utf8'));
+        retained.snapshot.scope[key] = value;
+        retained.contentDigest = snapshotDigest(retained.snapshot);
+        const unsafeBytes = JSON.stringify(retained);
+        writeFileSync(path, unsafeBytes);
+        expect(() =>
+          requireAgentEnvironmentPackageSnapshot(
+            source,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201',
+            environmentPackage.snapshotId
+          )
+        ).toThrow();
+        expect(() => importAgentEnvironmentPackageSnapshots(target, [retained])).toThrow();
+        expect(existsSync(snapshotPath(target, environmentPackage))).toBe(false);
+        expect(() =>
+          listExportableAgentEnvironmentPackageSnapshots(
+            source,
+            'ws_00000000-0000-73c3-900f-8d310e4ba201'
+          )
+        ).toThrow();
+        expect(readFileSync(path, 'utf8')).toBe(unsafeBytes);
+        expect(snapshotDigest(JSON.parse(readFileSync(path, 'utf8')).snapshot)).toBe(
+          retained.contentDigest
+        );
+      } finally {
+        source.sqlite.close();
+        target.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each([
     ['root', 'password', 'synthetic-review-password'],

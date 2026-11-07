@@ -571,74 +571,74 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
     assertPrefix(f, original, snapshot(f), 'report');
   }, 120_000);
 
-  it.each([
-    'revoke',
-    'workspace',
-    'report',
-  ] as const)('rolls back the whole original %s SQL stage on a late native SQL fault and retains only preceding durable prefixes', async (stage) => {
-    const f = await fixture();
-    const original = snapshot(f);
-    const remove =
-      stage === 'workspace'
-        ? faultTrigger(
-            workspaceDbPath(f.dataRoot, workspaceId),
-            `
+  it.each(['revoke', 'workspace', 'report'] as const)(
+    'rolls back the whole original %s SQL stage on a late native SQL fault and retains only preceding durable prefixes',
+    async (stage) => {
+      const f = await fixture();
+      const original = snapshot(f);
+      const remove =
+        stage === 'workspace'
+          ? faultTrigger(
+              workspaceDbPath(f.dataRoot, workspaceId),
+              `
           CREATE TRIGGER reactivation_fault AFTER INSERT ON audit_events
           WHEN NEW.action='workspace.reactivate'
           BEGIN SELECT RAISE(ABORT,'deliberate late Workspace Audit fault'); END`
-          )
-        : faultTrigger(
-            coreDbPath(f.dataRoot),
-            stage === 'revoke'
-              ? `
+            )
+          : faultTrigger(
+              coreDbPath(f.dataRoot),
+              stage === 'revoke'
+                ? `
           CREATE TRIGGER reactivation_fault AFTER UPDATE ON workspace_recovery_admissions
           WHEN NEW.admission_id='${f.backupId}' AND NEW.state='abandoned' AND OLD.state='finished'
           BEGIN SELECT RAISE(ABORT,'deliberate late Core revocation fault'); END`
-              : `
+                : `
           CREATE TRIGGER reactivation_fault AFTER UPDATE OF proof_json ON workspace_recovery_admissions
           WHEN NEW.admission_id='${f.backupId}' AND json_extract(NEW.proof_json,'$.result.disposition')='reactivated'
           BEGIN SELECT RAISE(ABORT,'deliberate late Core result fault'); END`
-          );
-    const client = getControlStoreWorkerClient();
-    const actual = client.recoverySourceReactivation.bind(client);
-    let selectedFailure: unknown;
-    let selectedCalls = 0;
-    const publication = vi
-      .spyOn(client, 'recoverySourceReactivation')
-      .mockImplementation(async (...args) => {
-        if (args[1].stage === stage) selectedCalls++;
-        try {
-          return await actual(...args);
-        } catch (error) {
-          if (args[1].stage === stage) selectedFailure = error;
-          throw error;
-        }
-      });
-    try {
-      await expect(reactivateWorkspace(f.input)).rejects.toMatchObject({
-        code: 'recovery-required',
-      });
-      expect(selectedCalls).toBe(1);
-      expect(selectedFailure).toMatchObject({ code: 'constraint', commit: 'not-committed' });
-      const prefix =
-        stage === 'revoke' ? 'initial' : stage === 'workspace' ? 'retired' : 'workspace';
-      assertPrefix(f, original, snapshot(f), prefix);
-      remove();
-      publication.mockRestore();
-      await inspectRetryReplay(f, original, prefix);
-    } finally {
-      publication.mockRestore();
-      // Removal is deliberately idempotent only for fixture cleanup, never for a lifecycle retry.
-      const path =
-        stage === 'workspace' ? workspaceDbPath(f.dataRoot, workspaceId) : coreDbPath(f.dataRoot);
-      const db = new Database(path, { fileMustExist: true });
+            );
+      const client = getControlStoreWorkerClient();
+      const actual = client.recoverySourceReactivation.bind(client);
+      let selectedFailure: unknown;
+      let selectedCalls = 0;
+      const publication = vi
+        .spyOn(client, 'recoverySourceReactivation')
+        .mockImplementation(async (...args) => {
+          if (args[1].stage === stage) selectedCalls++;
+          try {
+            return await actual(...args);
+          } catch (error) {
+            if (args[1].stage === stage) selectedFailure = error;
+            throw error;
+          }
+        });
       try {
-        db.exec('DROP TRIGGER IF EXISTS reactivation_fault');
+        await expect(reactivateWorkspace(f.input)).rejects.toMatchObject({
+          code: 'recovery-required',
+        });
+        expect(selectedCalls).toBe(1);
+        expect(selectedFailure).toMatchObject({ code: 'constraint', commit: 'not-committed' });
+        const prefix =
+          stage === 'revoke' ? 'initial' : stage === 'workspace' ? 'retired' : 'workspace';
+        assertPrefix(f, original, snapshot(f), prefix);
+        remove();
+        publication.mockRestore();
+        await inspectRetryReplay(f, original, prefix);
       } finally {
-        db.close();
+        publication.mockRestore();
+        // Removal is deliberately idempotent only for fixture cleanup, never for a lifecycle retry.
+        const path =
+          stage === 'workspace' ? workspaceDbPath(f.dataRoot, workspaceId) : coreDbPath(f.dataRoot);
+        const db = new Database(path, { fileMustExist: true });
+        try {
+          db.exec('DROP TRIGGER IF EXISTS reactivation_fault');
+        } finally {
+          db.close();
+        }
       }
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 
   it('retains revocation and the real durable seal retirement when its acknowledgement crossing fails before Workspace SQL', async () => {
     const f = await fixture();

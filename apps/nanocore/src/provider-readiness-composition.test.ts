@@ -248,145 +248,150 @@ describe('live Provider readiness composition', () => {
     ['remote-mcp', 'subscription'],
     ['pending-outcome', 'api-key'],
     ['pending-outcome', 'subscription'],
-  ] as const)('refuses unavailable %s %s supply through real App admission before effects', async (entry, supply) => {
-    const f = await fixture(supply);
-    try {
-      if (supply === 'subscription') {
-        f.vault.unlock({ masterKey: Buffer.alloc(32, 7) });
-        await f.accounts.createAccount({
-          subscriptionProviderId: 'openai-codex',
-          accountSlotId: 'fixture',
-        });
-        expect(
-          f.accounts.gatewayUnavailableReason({
+  ] as const)(
+    'refuses unavailable %s %s supply through real App admission before effects',
+    async (entry, supply) => {
+      const f = await fixture(supply);
+      try {
+        if (supply === 'subscription') {
+          f.vault.unlock({ masterKey: Buffer.alloc(32, 7) });
+          await f.accounts.createAccount({
             subscriptionProviderId: 'openai-codex',
             accountSlotId: 'fixture',
-          })
-        ).toBe('subscription_account_logged_out');
-      }
-      const frozen =
-        entry === 'pending-outcome'
-          ? await f.store.createTurn(
-              'ws_00000000-0000-7000-8000-000000000001',
-              'th_00000000-0000-7000-8000-000000000001',
-              'Receive pending request outcomes.',
-              { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-              f.manager.current().version,
-              { agentId: f.preferred.id, status: 'pending', executorKind: 'worker' }
+          });
+          expect(
+            f.accounts.gatewayUnavailableReason({
+              subscriptionProviderId: 'openai-codex',
+              accountSlotId: 'fixture',
+            })
+          ).toBe('subscription_account_logged_out');
+        }
+        const frozen =
+          entry === 'pending-outcome'
+            ? await f.store.createTurn(
+                'ws_00000000-0000-7000-8000-000000000001',
+                'th_00000000-0000-7000-8000-000000000001',
+                'Receive pending request outcomes.',
+                { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                f.manager.current().version,
+                { agentId: f.preferred.id, status: 'pending', executorKind: 'worker' }
+              )
+            : undefined;
+        const before = {
+          turns: f.store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          ),
+          items: f.store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          ),
+          receipts: f.store.listCommandRequests(),
+        };
+        const requestId = '00000000-0000-4000-8000-000000000932';
+        const input = {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          requestId,
+          input: 'Use current supply.',
+          agentId: f.preferred.id,
+        };
+        if (entry === 'public-turn') {
+          const response = await f.app.request(
+            ...operationRequest(
+              'turn.start',
+              {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+              },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(input),
+              }
             )
-          : undefined;
-      const before = {
-        turns: f.store.listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        ),
-        items: f.store.listThreadItems(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        ),
-        receipts: f.store.listCommandRequests(),
-      };
-      const requestId = '00000000-0000-4000-8000-000000000932';
-      const input = {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        requestId,
-        input: 'Use current supply.',
-        agentId: f.preferred.id,
-      };
-      if (entry === 'public-turn') {
-        const response = await f.app.request(
-          ...operationRequest(
-            'turn.start',
-            {
+          );
+          expect(response.status, await response.clone().text()).toBe(409);
+          expect(await response.json()).toMatchObject({ code: 'agent_not_ready' });
+        } else if (entry === 'direct-mode') {
+          const start = f.registration.mock.calls.at(-1)![0].startModeWorkerTurn!;
+          await expect(
+            start({
+              store: f.store,
+              triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: 'th_00000000-0000-7000-8000-000000000001',
+              prompt: input.input,
+              requestId,
+              requestedAgentId: f.preferred.id,
+              onTurnCreated: () => {
+                throw new Error('Unexpected durable admission with unavailable supply.');
+              },
+            })
+          ).rejects.toMatchObject({ code: 'agent_not_ready' });
+        } else if (entry === 'remote-mcp') {
+          const token = createOpenKitAccessTokenRecord(f.coreDb, {
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            scope: 'workspace',
+            workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          });
+          const response = await f.app.request('http://127.0.0.1/mcp', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              accept: 'application/json, text/event-stream',
+              authorization: `Bearer ${token.secret}`,
             },
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(input),
-            }
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: { name: 'openkit_call', arguments: { operation: 'turn.start', input } },
+            }),
+          });
+          expect(response.status, await response.clone().text()).toBe(200);
+          const wire = await response.json();
+          expect(wire.result.isError).toBe(true);
+          expect(JSON.parse(wire.result.content[0].text)).toMatchObject({
+            code: 'agent_not_ready',
+          });
+        } else {
+          const delivery =
+            f.registration.mock.calls.at(-1)![0].pendingRequestServices!.workerDelivery!;
+          const result = delivery.startTurn(f.store, frozen!.id);
+          void result.catch(() => undefined);
+          await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
+        }
+        if (entry === 'direct-mode')
+          expect(f.productAdmission.mock.calls.at(-1)![0].triggerSource).toBeUndefined();
+        expect(f.productAdmission).toHaveBeenCalledTimes(1);
+        expect(
+          f.store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
           )
+        ).toEqual(before.turns);
+        expect(
+          f.store.listThreadItems(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(before.items);
+        expect(f.store.listCommandRequests()).toEqual(before.receipts);
+        expect(f.coreDb.sqlite.prepare('SELECT * FROM scheduler_admission_entries').all()).toEqual(
+          []
         );
-        expect(response.status, await response.clone().text()).toBe(409);
-        expect(await response.json()).toMatchObject({ code: 'agent_not_ready' });
-      } else if (entry === 'direct-mode') {
-        const start = f.registration.mock.calls.at(-1)![0].startModeWorkerTurn!;
-        await expect(
-          start({
-            store: f.store,
-            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            prompt: input.input,
-            requestId,
-            requestedAgentId: f.preferred.id,
-            onTurnCreated: () => {
-              throw new Error('Unexpected durable admission with unavailable supply.');
-            },
-          })
-        ).rejects.toMatchObject({ code: 'agent_not_ready' });
-      } else if (entry === 'remote-mcp') {
-        const token = createOpenKitAccessTokenRecord(f.coreDb, {
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          scope: 'workspace',
-          workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-          expiresAt: '2099-01-01T00:00:00.000Z',
-        });
-        const response = await f.app.request('http://127.0.0.1/mcp', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            accept: 'application/json, text/event-stream',
-            authorization: `Bearer ${token.secret}`,
-          },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'tools/call',
-            params: { name: 'openkit_call', arguments: { operation: 'turn.start', input } },
-          }),
-        });
-        expect(response.status, await response.clone().text()).toBe(200);
-        const wire = await response.json();
-        expect(wire.result.isError).toBe(true);
-        expect(JSON.parse(wire.result.content[0].text)).toMatchObject({ code: 'agent_not_ready' });
-      } else {
-        const delivery =
-          f.registration.mock.calls.at(-1)![0].pendingRequestServices!.workerDelivery!;
-        const result = delivery.startTurn(f.store, frozen!.id);
-        void result.catch(() => undefined);
-        await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
+        expect(f.prepare).not.toHaveBeenCalled();
+        expect(f.execute).not.toHaveBeenCalled();
+        expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+      } finally {
+        await setImmediate();
+        await Promise.allSettled([...getSchedulerPreparationClaims(f.coreDb).values()]);
+        f.cleanup();
       }
-      if (entry === 'direct-mode')
-        expect(f.productAdmission.mock.calls.at(-1)![0].triggerSource).toBeUndefined();
-      expect(f.productAdmission).toHaveBeenCalledTimes(1);
-      expect(
-        f.store.listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-      ).toEqual(before.turns);
-      expect(
-        f.store.listThreadItems(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )
-      ).toEqual(before.items);
-      expect(f.store.listCommandRequests()).toEqual(before.receipts);
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM scheduler_admission_entries').all()).toEqual(
-        []
-      );
-      expect(f.prepare).not.toHaveBeenCalled();
-      expect(f.execute).not.toHaveBeenCalled();
-      expect(listVaultUseRecords(f.coreDb)).toEqual([]);
-    } finally {
-      await setImmediate();
-      await Promise.allSettled([...getSchedulerPreparationClaims(f.coreDb).values()]);
-      f.cleanup();
     }
-  });
+  );
 
   it('rechecks restored and revoked API-key supply on public Turns without reloading App', async () => {
     const f = await fixture('api-key');

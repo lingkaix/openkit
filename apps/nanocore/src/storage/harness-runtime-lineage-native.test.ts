@@ -242,44 +242,46 @@ it.each([
   expect(await coldTuple(f)).toEqual(expected);
 });
 
-it.each([
-  'initialize',
-  'append',
-] as const)('%s refuses a stale exact value and each mismatched binding identity without row changes', async (stage) => {
-  const f = await fixture();
-  await initializeNanoHostRuntimeCheckVersions(f.db, {
-    ...identity,
-    expectedVersionsJson: retained(f.db),
-    versions: [f.file],
-  });
-  const current = retained(f.db)!;
-  const before = tuple(f.db);
-  // Equivalent parsed JSON is still a stale expected string. No normalization can authorize the CAS.
-  const mismatches = [
-    { ...identity, expectedVersionsJson: ` ${current}` },
-    {
+it.each(['initialize', 'append'] as const)(
+  '%s refuses a stale exact value and each mismatched binding identity without row changes',
+  async (stage) => {
+    const f = await fixture();
+    await initializeNanoHostRuntimeCheckVersions(f.db, {
       ...identity,
-      agentSessionRuntimeBindingId: 'different-binding',
-      expectedVersionsJson: current,
-    },
-    { ...identity, harnessInstanceId: 'different-harness', expectedVersionsJson: current },
-    {
-      ...identity,
-      agentSessionId: testEntityId('as', 'different-lineage-session'),
-      expectedVersionsJson: current,
-    },
-  ];
-  for (const input of mismatches) {
-    const operation =
-      stage === 'initialize'
-        ? initializeNanoHostRuntimeCheckVersions(f.db, { ...input, versions: [f.env] })
-        : appendNanoHostRuntimeCheckVersion(f.db, { ...input, version: f.replacement });
-    // Harness translates known domain refusals to Error(message); it exposes no commit property.
-    await expect(operation).rejects.toThrow('Original credential binding lineage is unavailable.');
-    expect(tuple(f.db)).toEqual(before);
+      expectedVersionsJson: retained(f.db),
+      versions: [f.file],
+    });
+    const current = retained(f.db)!;
+    const before = tuple(f.db);
+    // Equivalent parsed JSON is still a stale expected string. No normalization can authorize the CAS.
+    const mismatches = [
+      { ...identity, expectedVersionsJson: ` ${current}` },
+      {
+        ...identity,
+        agentSessionRuntimeBindingId: 'different-binding',
+        expectedVersionsJson: current,
+      },
+      { ...identity, harnessInstanceId: 'different-harness', expectedVersionsJson: current },
+      {
+        ...identity,
+        agentSessionId: testEntityId('as', 'different-lineage-session'),
+        expectedVersionsJson: current,
+      },
+    ];
+    for (const input of mismatches) {
+      const operation =
+        stage === 'initialize'
+          ? initializeNanoHostRuntimeCheckVersions(f.db, { ...input, versions: [f.env] })
+          : appendNanoHostRuntimeCheckVersion(f.db, { ...input, version: f.replacement });
+      // Harness translates known domain refusals to Error(message); it exposes no commit property.
+      await expect(operation).rejects.toThrow(
+        'Original credential binding lineage is unavailable.'
+      );
+      expect(tuple(f.db)).toEqual(before);
+    }
+    expect(await coldTuple(f)).toEqual(before);
   }
-  expect(await coldTuple(f)).toEqual(before);
-});
+);
 
 it('appends one replacement after every original entry and preserves descriptive retained additions', async () => {
   const f = await fixture();
@@ -322,41 +324,41 @@ it('appends one replacement after every original entry and preserves descriptive
   expect(await coldTuple(f)).toEqual(expected);
 });
 
-it.each([
-  'initialize',
-  'append',
-] as const)('%s rolls back an actual native SQL fault before acknowledgement', async (stage) => {
-  const f = await fixture();
-  if (stage === 'append')
-    await initializeNanoHostRuntimeCheckVersions(f.db, {
-      ...identity,
-      expectedVersionsJson: retained(f.db),
-      versions: [f.file],
-    });
-  const before = tuple(f.db);
-  const expectedVersionsJson = retained(f.db);
-  await fault(f, () =>
-    f.db.sqlite.exec(`CREATE TRIGGER fail_runtime_lineage
+it.each(['initialize', 'append'] as const)(
+  '%s rolls back an actual native SQL fault before acknowledgement',
+  async (stage) => {
+    const f = await fixture();
+    if (stage === 'append')
+      await initializeNanoHostRuntimeCheckVersions(f.db, {
+        ...identity,
+        expectedVersionsJson: retained(f.db),
+        versions: [f.file],
+      });
+    const before = tuple(f.db);
+    const expectedVersionsJson = retained(f.db);
+    await fault(f, () =>
+      f.db.sqlite.exec(`CREATE TRIGGER fail_runtime_lineage
     AFTER UPDATE OF runtime_env_check_versions_json ON agent_session_runtime_bindings
     BEGIN SELECT RAISE(ABORT, 'runtime lineage SQL fault'); END`)
-  );
-  const operation =
-    stage === 'initialize'
-      ? initializeNanoHostRuntimeCheckVersions(f.db, {
-          ...identity,
-          expectedVersionsJson,
-          versions: [f.file],
-        })
-      : appendNanoHostRuntimeCheckVersion(f.db, {
-          ...identity,
-          expectedVersionsJson: expectedVersionsJson!,
-          version: f.replacement,
-        });
-  // This is a real SQLite error on the native writer, not a fabricated domain result or Host fault.
-  await expect(operation).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
-  expect(tuple(f.db)).toEqual(before);
-  expect(await coldTuple(f)).toEqual(before);
-});
+    );
+    const operation =
+      stage === 'initialize'
+        ? initializeNanoHostRuntimeCheckVersions(f.db, {
+            ...identity,
+            expectedVersionsJson,
+            versions: [f.file],
+          })
+        : appendNanoHostRuntimeCheckVersion(f.db, {
+            ...identity,
+            expectedVersionsJson: expectedVersionsJson!,
+            version: f.replacement,
+          });
+    // This is a real SQLite error on the native writer, not a fabricated domain result or Host fault.
+    await expect(operation).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+    expect(tuple(f.db)).toEqual(before);
+    expect(await coldTuple(f)).toEqual(before);
+  }
+);
 
 it('refuses an unknown retained binding schema instead of rewriting its closed core', async () => {
   const f = await fixture();
@@ -397,37 +399,36 @@ it('rejects credential material and unknown command fields without retaining the
   expect(await coldTuple(f)).toEqual(before);
 });
 
-it.each([
-  'missing target',
-  'two targets',
-  'invalid version',
-] as const)('append refuses retained closed-core damage: %s', async (damage) => {
-  const f = await fixture();
-  await initializeNanoHostRuntimeCheckVersions(f.db, {
-    ...identity,
-    expectedVersionsJson: retained(f.db),
-    versions: [f.file],
-  });
-  const damaged = { ...f.file } as Record<string, unknown>;
-  if (damage === 'missing target') delete damaged.targetPath;
-  if (damage === 'two targets') damaged.targetEnvVarName = 'SYNTHETIC_SERVICE_TOKEN';
-  if (damage === 'invalid version') damaged.materialVersion = 0;
-  const raw = JSON.stringify([damaged]);
-  await fault(f, () =>
-    f.db.sqlite
-      .prepare(
-        'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
-      )
-      .run(raw, identity.agentSessionRuntimeBindingId)
-  );
-  const before = tuple(f.db);
-  await expect(
-    appendNanoHostRuntimeCheckVersion(f.db, {
+it.each(['missing target', 'two targets', 'invalid version'] as const)(
+  'append refuses retained closed-core damage: %s',
+  async (damage) => {
+    const f = await fixture();
+    await initializeNanoHostRuntimeCheckVersions(f.db, {
       ...identity,
-      expectedVersionsJson: raw,
-      version: f.replacement,
-    })
-  ).rejects.toThrow('Original credential binding lineage is unavailable.');
-  expect(tuple(f.db)).toEqual(before);
-  expect(await coldTuple(f)).toEqual(before);
-});
+      expectedVersionsJson: retained(f.db),
+      versions: [f.file],
+    });
+    const damaged = { ...f.file } as Record<string, unknown>;
+    if (damage === 'missing target') delete damaged.targetPath;
+    if (damage === 'two targets') damaged.targetEnvVarName = 'SYNTHETIC_SERVICE_TOKEN';
+    if (damage === 'invalid version') damaged.materialVersion = 0;
+    const raw = JSON.stringify([damaged]);
+    await fault(f, () =>
+      f.db.sqlite
+        .prepare(
+          'UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json = ? WHERE agent_session_runtime_binding_id = ?'
+        )
+        .run(raw, identity.agentSessionRuntimeBindingId)
+    );
+    const before = tuple(f.db);
+    await expect(
+      appendNanoHostRuntimeCheckVersion(f.db, {
+        ...identity,
+        expectedVersionsJson: raw,
+        version: f.replacement,
+      })
+    ).rejects.toThrow('Original credential binding lineage is unavailable.');
+    expect(tuple(f.db)).toEqual(before);
+    expect(await coldTuple(f)).toEqual(before);
+  }
+);

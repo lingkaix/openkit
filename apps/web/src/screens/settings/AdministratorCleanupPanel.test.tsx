@@ -269,43 +269,45 @@ describe('Administrator cleanup inspection', () => {
     ).not.toContain(POISON);
   });
 
-  it.each([
-    401, 403, 500,
-  ])('hides prior records after a %s refresh failure and explicitly retries', async (status) => {
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(response())
-      .mockRejectedValueOnce(new ApiCallError(status, POISON, { details: { secret: POISON } }))
-      .mockResolvedValueOnce({ ...response(), items: [] });
-    const { container, queryClient } = mount(read);
-    await screen.findByRole('article', { name: 'Workspace deletion record' });
-    await userEvent.click(screen.getByRole('button', { name: 'Refresh cleanup inspection' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      status === 500 ? 'Cleanup inspection failed.' : 'Administrator access required.'
-    );
-    expect(container.innerHTML).not.toContain('request-one');
-    expect(container.innerHTML).not.toContain(POISON);
-    expect(
-      JSON.stringify(
-        queryClient
-          .getQueryCache()
-          .getAll()
-          .map((query) => query.state.error)
-      )
-    ).not.toContain(POISON);
-    await userEvent.click(screen.getByRole('button', { name: 'Retry cleanup inspection' }));
-    expect(await screen.findAllByText('No records returned.')).toHaveLength(7);
-    expect(read).toHaveBeenCalledTimes(3);
-  });
+  it.each([401, 403, 500])(
+    'hides prior records after a %s refresh failure and explicitly retries',
+    async (status) => {
+      const read = vi
+        .fn()
+        .mockResolvedValueOnce(response())
+        .mockRejectedValueOnce(new ApiCallError(status, POISON, { details: { secret: POISON } }))
+        .mockResolvedValueOnce({ ...response(), items: [] });
+      const { container, queryClient } = mount(read);
+      await screen.findByRole('article', { name: 'Workspace deletion record' });
+      await userEvent.click(screen.getByRole('button', { name: 'Refresh cleanup inspection' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        status === 500 ? 'Cleanup inspection failed.' : 'Administrator access required.'
+      );
+      expect(container.innerHTML).not.toContain('request-one');
+      expect(container.innerHTML).not.toContain(POISON);
+      expect(
+        JSON.stringify(
+          queryClient
+            .getQueryCache()
+            .getAll()
+            .map((query) => query.state.error)
+        )
+      ).not.toContain(POISON);
+      await userEvent.click(screen.getByRole('button', { name: 'Retry cleanup inspection' }));
+      expect(await screen.findAllByText('No records returned.')).toHaveLength(7);
+      expect(read).toHaveBeenCalledTimes(3);
+    }
+  );
 
-  it.each([
-    401, 403,
-  ])('shows initial %s denial without exposing server error content', async (status) => {
-    const { container } = mount(vi.fn().mockRejectedValue(new ApiCallError(status, POISON)));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Administrator access required.');
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(POISON);
-  });
+  it.each([401, 403])(
+    'shows initial %s denial without exposing server error content',
+    async (status) => {
+      const { container } = mount(vi.fn().mockRejectedValue(new ApiCallError(status, POISON)));
+      expect(await screen.findByRole('alert')).toHaveTextContent('Administrator access required.');
+      expect(screen.queryByRole('article')).not.toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(POISON);
+    }
+  );
 
   it('shows loading, blocks repeated refresh, and replaces the observation after refresh', async () => {
     let settle: (value: ReturnType<typeof response>) => void = () => {};
@@ -384,28 +386,27 @@ describe('Administrator cleanup inspection', () => {
     ).toBeInTheDocument();
   });
 
-  it.each([
-    'unknown state',
-    'incorrect correlation',
-    'too many records',
-  ])('fails closed on %s instead of displaying untrusted content', async (invalid) => {
-    const data = response();
-    if (invalid === 'unknown state') Object.assign(data.items[0].state, { phase: POISON });
-    if (invalid === 'incorrect correlation')
-      Object.assign(data.items[0].nextInspection, {
-        target: { ...data.items[0].target, requestId: POISON },
-      });
-    if (invalid === 'too many records')
-      data.items = Array.from({ length: 101 }, () => data.items[0]);
-    const { container, queryClient } = mount(vi.fn().mockResolvedValue(data));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Cleanup inspection failed.');
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(POISON);
-    expect(
-      queryClient
-        .getQueryCache()
-        .getAll()
-        .every((query) => query.state.data === undefined)
-    ).toBe(true);
-  });
+  it.each(['unknown state', 'incorrect correlation', 'too many records'])(
+    'fails closed on %s instead of displaying untrusted content',
+    async (invalid) => {
+      const data = response();
+      if (invalid === 'unknown state') Object.assign(data.items[0].state, { phase: POISON });
+      if (invalid === 'incorrect correlation')
+        Object.assign(data.items[0].nextInspection, {
+          target: { ...data.items[0].target, requestId: POISON },
+        });
+      if (invalid === 'too many records')
+        data.items = Array.from({ length: 101 }, () => data.items[0]);
+      const { container, queryClient } = mount(vi.fn().mockResolvedValue(data));
+      expect(await screen.findByRole('alert')).toHaveTextContent('Cleanup inspection failed.');
+      expect(screen.queryByRole('article')).not.toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(POISON);
+      expect(
+        queryClient
+          .getQueryCache()
+          .getAll()
+          .every((query) => query.state.data === undefined)
+      ).toBe(true);
+    }
+  );
 });

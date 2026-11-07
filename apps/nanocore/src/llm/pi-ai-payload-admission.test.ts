@@ -132,65 +132,64 @@ const request = {
 };
 
 describe('final serialized text request admission', () => {
-  it.each([
-    'responses',
-    'chat',
-    'codex',
-  ] as const)('awaits the final %s payload and preserves the wire with no count endpoint', async (api) => {
-    const f = await fixture(api);
-    const held = barrier();
-    const entered = barrier();
-    let captured: FinalRequest | undefined;
-    const completion = f.client.createResponses(
-      f.provider,
-      { ...request, model: f.model.id },
-      undefined,
-      {
-        ...(api === 'codex' ? { codexTurnState: 'retained-native-state' } : {}),
-        finalRequestAdmission: async (final) => {
-          captured = final;
-          admitModelRequest({
-            payload: final.payload,
-            continuity: final.codexTurnState,
-            contextWindowTokens: final.contextWindowTokens,
-            outputReserveTokens: final.outputReserveTokens,
-          });
-          entered.release();
-          await held.pending;
-        },
+  it.each(['responses', 'chat', 'codex'] as const)(
+    'awaits the final %s payload and preserves the wire with no count endpoint',
+    async (api) => {
+      const f = await fixture(api);
+      const held = barrier();
+      const entered = barrier();
+      let captured: FinalRequest | undefined;
+      const completion = f.client.createResponses(
+        f.provider,
+        { ...request, model: f.model.id },
+        undefined,
+        {
+          ...(api === 'codex' ? { codexTurnState: 'retained-native-state' } : {}),
+          finalRequestAdmission: async (final) => {
+            captured = final;
+            admitModelRequest({
+              payload: final.payload,
+              continuity: final.codexTurnState,
+              contextWindowTokens: final.contextWindowTokens,
+              outputReserveTokens: final.outputReserveTokens,
+            });
+            entered.release();
+            await held.pending;
+          },
+        }
+      );
+      try {
+        await Promise.race([
+          entered.pending,
+          completion.then(() => {
+            throw new Error('Serializer skipped final admission.');
+          }),
+        ]);
+        expect(f.requests).toEqual([]);
+        expect(captured).toMatchObject({ contextWindowTokens: 131_072, outputReserveTokens: 32 });
+      } finally {
+        held.release();
       }
-    );
-    try {
-      await Promise.race([
-        entered.pending,
-        completion.then(() => {
-          throw new Error('Serializer skipped final admission.');
-        }),
-      ]);
-      expect(f.requests).toEqual([]);
-      expect(captured).toMatchObject({ contextWindowTokens: 131_072, outputReserveTokens: 32 });
-    } finally {
-      held.release();
+      await completion;
+      expect(f.requests).toHaveLength(1);
+      expect(f.requests[0]!.payload).toEqual(captured!.payload);
+      const wire = JSON.stringify(f.requests[0]!.payload);
+      expect(wire).toContain('Preserve complete system instructions.');
+      expect(wire).toContain('漢字 JSON');
+      expect(wire).toContain('Read exact bytes.');
+      if (api === 'codex') {
+        expect(captured!.codexTurnState).toBe('retained-native-state');
+        expect(f.requests[0]!.continuity).toBe('retained-native-state');
+      }
+      expect(f.requests[0]!.path).toBe(
+        api === 'chat'
+          ? '/v1/chat/completions'
+          : api === 'codex'
+            ? '/v1/codex/responses'
+            : '/v1/responses'
+      );
     }
-    await completion;
-    expect(f.requests).toHaveLength(1);
-    expect(f.requests[0]!.payload).toEqual(captured!.payload);
-    const wire = JSON.stringify(f.requests[0]!.payload);
-    expect(wire).toContain('Preserve complete system instructions.');
-    expect(wire).toContain('漢字 JSON');
-    expect(wire).toContain('Read exact bytes.');
-    if (api === 'codex') {
-      expect(captured!.codexTurnState).toBe('retained-native-state');
-      expect(f.requests[0]!.continuity).toBe('retained-native-state');
-    }
-    expect(f.requests[0]!.path).toBe(
-      api === 'chat'
-        ? '/v1/chat/completions'
-        : api === 'codex'
-          ? '/v1/codex/responses'
-          : '/v1/responses'
-    );
-  });
+  );
 
   it('uses the same final callback for direct Chat and its streaming entry', async () => {
     const f = await fixture('chat');

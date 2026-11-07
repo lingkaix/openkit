@@ -47,18 +47,17 @@ const trace = {
 };
 
 describe('Knowledge page-reference boundaries', () => {
-  it.each([
-    `page/user/${userId}/${knowledgeBaseId}`,
-    scopeId,
-    `page/server/${knowledgeBaseId}`,
-  ])('retains the exact Knowledge Base in a scoped page: %s', (scope) => {
-    const page = { ...reference, scopeId: scope };
-    expect(KnowledgePageReferenceSchema.parse(page)).toEqual(page);
-    expect(
-      RetrieveKnowledgeRequestSchema.parse({ query: 'release', pinnedReferences: [page] })
-        .pinnedReferences
-    ).toEqual([page]);
-  });
+  it.each([`page/user/${userId}/${knowledgeBaseId}`, scopeId, `page/server/${knowledgeBaseId}`])(
+    'retains the exact Knowledge Base in a scoped page: %s',
+    (scope) => {
+      const page = { ...reference, scopeId: scope };
+      expect(KnowledgePageReferenceSchema.parse(page)).toEqual(page);
+      expect(
+        RetrieveKnowledgeRequestSchema.parse({ query: 'release', pinnedReferences: [page] })
+          .pinnedReferences
+      ).toEqual([page]);
+    }
+  );
 
   it.each([
     `page/user/${userId}`,

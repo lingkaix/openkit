@@ -11,22 +11,20 @@ describe('resolveBindHost', () => {
     expect(resolveBindHost({ OPENKIT_BIND_HOST: '0.0.0.0' }, 'server')).toBe('0.0.0.0');
   });
 
-  it.each([
-    '0.0.0.0',
-    '::',
-    '192.0.2.10',
-    'core.example',
-  ])('rejects local non-loopback bind %s even when TLS material is configured', (host) => {
-    const tlsEnv = {
-      PORT: '4317',
-      OPENKIT_TLS_CERT_FILE: '/fixture/server.crt',
-      OPENKIT_TLS_KEY_FILE: '/fixture/server.key',
-    };
-    expect(() => resolveBindHost({ ...tlsEnv, OPENKIT_BIND_HOST: host }, 'local')).toThrow();
-    expect(() =>
-      resolveBindHost(tlsEnv, 'local', { server: { bind: { host, port: 4317 } } })
-    ).toThrow();
-  });
+  it.each(['0.0.0.0', '::', '192.0.2.10', 'core.example'])(
+    'rejects local non-loopback bind %s even when TLS material is configured',
+    (host) => {
+      const tlsEnv = {
+        PORT: '4317',
+        OPENKIT_TLS_CERT_FILE: '/fixture/server.crt',
+        OPENKIT_TLS_KEY_FILE: '/fixture/server.key',
+      };
+      expect(() => resolveBindHost({ ...tlsEnv, OPENKIT_BIND_HOST: host }, 'local')).toThrow();
+      expect(() =>
+        resolveBindHost(tlsEnv, 'local', { server: { bind: { host, port: 4317 } } })
+      ).toThrow();
+    }
+  );
 
   it('uses configured bind values when environment overrides are absent', () => {
     const config = { server: { bind: { host: '10.0.0.8', port: 4310 } } };

@@ -445,34 +445,34 @@ describe('runtime config loading and reload planning', () => {
     ).toEqual(snapshot.gatewayConfig.logicalModels.map((model) => model.routes));
   });
 
-  it.each([
-    'absent',
-    'delisted',
-  ])('reloads a retained tier with a warning for its %s route', async (kind) => {
-    const dataRoot = createDataRoot();
-    writeServerConfig(dataRoot, '{ "schemaVersion": 1 }');
-    writeProviderConfig(dataRoot, 'openai/gpt-5.1');
-    writeGatewayConfig(dataRoot);
-    const manager = createRuntimeConfigManager({ dataRoot });
-    writeGatewayConfig(dataRoot, kind === 'delisted' ? 'removed-model' : 'openai/gpt-5.1');
-    if (kind === 'absent') {
-      const path = join(dataRoot, 'config', 'gateway.jsonc');
-      writeFileSync(
-        path,
-        readFileSync(path, 'utf8').replace('agent-openrouter', 'absent-provider')
+  it.each(['absent', 'delisted'])(
+    'reloads a retained tier with a warning for its %s route',
+    async (kind) => {
+      const dataRoot = createDataRoot();
+      writeServerConfig(dataRoot, '{ "schemaVersion": 1 }');
+      writeProviderConfig(dataRoot, 'openai/gpt-5.1');
+      writeGatewayConfig(dataRoot);
+      const manager = createRuntimeConfigManager({ dataRoot });
+      writeGatewayConfig(dataRoot, kind === 'delisted' ? 'removed-model' : 'openai/gpt-5.1');
+      if (kind === 'absent') {
+        const path = join(dataRoot, 'config', 'gateway.jsonc');
+        writeFileSync(
+          path,
+          readFileSync(path, 'utf8').replace('agent-openrouter', 'absent-provider')
+        );
+      }
+      const reload = await manager.reload({ mode: 'safe' });
+      expect(reload.status).toBe('applied');
+      expect(manager.current().gatewayConfig.logicalModels[0]?.id).toBe('reasoning');
+      expect(manager.current().diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: 'gateway.unavailable_member',
+          severity: 'warning',
+          message: expect.stringContaining('primary'),
+        })
       );
     }
-    const reload = await manager.reload({ mode: 'safe' });
-    expect(reload.status).toBe('applied');
-    expect(manager.current().gatewayConfig.logicalModels[0]?.id).toBe('reasoning');
-    expect(manager.current().diagnostics).toContainEqual(
-      expect.objectContaining({
-        code: 'gateway.unavailable_member',
-        severity: 'warning',
-        message: expect.stringContaining('primary'),
-      })
-    );
-  });
+  );
 
   it('warns and ignores an additive routing key on reload', async () => {
     const dataRoot = createDataRoot();

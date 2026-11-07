@@ -15,88 +15,88 @@ import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-it.each([
-  'syntax',
-  'unknown-key',
-] as const)('bounds %s retained evidence errors without changing source bytes', async (variant) => {
-  const marker = 'ROW_SECRET_X9';
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-error-'));
-  const coreDb = openCoreDb(dataRoot);
-  let db: ReturnType<typeof openWorkspaceDb> | undefined;
-  try {
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const app = createApp({ coreDb, dataRoot, store });
-    recordWorkspaceEvidenceBundle(db, {
-      id: 'evb_probe',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: 'tu_00000000-0000-7413-b755-be192286c951',
-      goalId: null,
-      agentSessionId: null,
-      backendType: null,
-      sourceKind: 'worker-runtime',
-      summary: 'Evidence control',
-      rawEvidenceRefs: [],
-      redactedEvidenceRefs: [],
-      contentDigests: [],
-      retentionClass: 'restricted-raw',
-      sensitivityClass: 'restricted',
-      importStatus: 'promoted',
-      requiredFeatures: [],
-      createdAt: '2026-07-18T01:00:07.000Z',
-    });
-    const healthy = await app.request(
-      ...operationRequest(
-        'evidence.bundle-list',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        {}
-      )
-    );
-    expect(healthy.status).toBe(200);
-    expect(await healthy.json()).toMatchObject({ evidenceBundles: [{ id: 'evb_probe' }] });
-    const bytes =
-      variant === 'syntax'
-        ? marker
-        : JSON.stringify([
-            {
-              kind: 'artifact',
-              ref: 'artifact:ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
-              [marker]: 'private',
-            },
-          ]);
-    db.sqlite.prepare('UPDATE evidence_bundles SET raw_evidence_refs_json = ?').run(bytes);
-    const response = await app.request(
-      ...operationRequest(
-        'evidence.bundle-list',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        {}
-      )
-    );
-    expect(response.status).toBe(404);
-    const body = await response.json();
-    expect(body).toMatchObject({
-      code: 'not_found',
-      message: 'The retained record could not be read.',
-    });
-    expect(JSON.stringify(body)).not.toContain(marker);
-    expect(
-      db.sqlite.prepare('SELECT raw_evidence_refs_json AS bytes FROM evidence_bundles').get()
-    ).toEqual({ bytes });
-  } finally {
-    db?.sqlite.close();
-    coreDb.sqlite.close();
-    await disposeTestStore(dataRoot);
+it.each(['syntax', 'unknown-key'] as const)(
+  'bounds %s retained evidence errors without changing source bytes',
+  async (variant) => {
+    const marker = 'ROW_SECRET_X9';
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-error-'));
+    const coreDb = openCoreDb(dataRoot);
+    let db: ReturnType<typeof openWorkspaceDb> | undefined;
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const app = createApp({ coreDb, dataRoot, store });
+      recordWorkspaceEvidenceBundle(db, {
+        id: 'evb_probe',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7413-b755-be192286c951',
+        goalId: null,
+        agentSessionId: null,
+        backendType: null,
+        sourceKind: 'worker-runtime',
+        summary: 'Evidence control',
+        rawEvidenceRefs: [],
+        redactedEvidenceRefs: [],
+        contentDigests: [],
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: 'promoted',
+        requiredFeatures: [],
+        createdAt: '2026-07-18T01:00:07.000Z',
+      });
+      const healthy = await app.request(
+        ...operationRequest(
+          'evidence.bundle-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {}
+        )
+      );
+      expect(healthy.status).toBe(200);
+      expect(await healthy.json()).toMatchObject({ evidenceBundles: [{ id: 'evb_probe' }] });
+      const bytes =
+        variant === 'syntax'
+          ? marker
+          : JSON.stringify([
+              {
+                kind: 'artifact',
+                ref: 'artifact:ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
+                [marker]: 'private',
+              },
+            ]);
+      db.sqlite.prepare('UPDATE evidence_bundles SET raw_evidence_refs_json = ?').run(bytes);
+      const response = await app.request(
+        ...operationRequest(
+          'evidence.bundle-list',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          {}
+        )
+      );
+      expect(response.status).toBe(404);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        code: 'not_found',
+        message: 'The retained record could not be read.',
+      });
+      expect(JSON.stringify(body)).not.toContain(marker);
+      expect(
+        db.sqlite.prepare('SELECT raw_evidence_refs_json AS bytes FROM evidence_bundles').get()
+      ).toEqual({ bytes });
+    } finally {
+      db?.sqlite.close();
+      coreDb.sqlite.close();
+      await disposeTestStore(dataRoot);
+    }
   }
-});
+);
 
 it('lists a Workspace grant runtime-env injection plan through the public route', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-injection-plan-list-'));

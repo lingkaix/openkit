@@ -597,109 +597,111 @@ function originalEvent(f: Fixture, s: Scenario) {
 it.each([
   { label: 'positive', correct: true },
   { label: 'negative', correct: false },
-])('$label calibrates actual existing admission with SAME target 1 and gate 1', async ({
-  correct,
-}) => {
-  const f = await fixture();
-  const tree = [
-    {
-      kind: 'file' as const,
-      path: 'SKILL.md',
-      contentBase64: Buffer.from(
-        '---\nname: native-control\ndescription: Real control.\n---\nSynthetic only.\n'
-      ).toString('base64'),
-    },
-  ];
-  const submitted = submitWorkspaceSkillCandidate({
-    baseDigest: null,
-    createdAt: new Date().toISOString(),
-    entryId: 'native-control',
-    expectedRevision: f.catalog().revision,
-    dataRoot: f.dataRoot,
-    workspaceId: f.workspaceId,
-    tree,
-    producer: { kind: 'user', id: f.userId },
-    summary: 'Observer calibration only.',
-  });
-  const requestId = randomUUID();
-  const publication = {
-    path: f.path,
-    revision: f.catalog().revision,
-    knownHash: correct
-      ? createHash('sha256').update(readFileSync(f.path)).digest('hex')
-      : '0'.repeat(64),
-  };
-  arm(
-    'catalog.skill-candidate-decide.admit',
-    requestId,
-    `skill-candidate:${submitted.candidate.id}`,
-    publication
-  );
-  const result = f.start(() =>
-    prepareCatalogSkillDecision(
-      f.dependencies,
+])(
+  '$label calibrates actual existing admission with SAME target 1 and gate 1',
+  async ({ correct }) => {
+    const f = await fixture();
+    const tree = [
       {
-        candidateId: submitted.candidate.id,
-        decision: 'rejected',
-        expectedRevision: f.catalog().revision,
-        operation: 'catalog.skill-candidate-decide',
-        requestId,
-        workspaceId: f.workspaceId,
+        kind: 'file' as const,
+        path: 'SKILL.md',
+        contentBase64: Buffer.from(
+          '---\nname: native-control\ndescription: Real control.\n---\nSynthetic only.\n'
+        ).toString('base64'),
       },
-      f.context
-    )
-  );
-  if (correct) await held(f, result);
-  else {
-    await expect(held(f, result)).rejects.toThrow(
-      'Exact expected physical publication must precede actual native SQL'
+    ];
+    const submitted = submitWorkspaceSkillCandidate({
+      baseDigest: null,
+      createdAt: new Date().toISOString(),
+      entryId: 'native-control',
+      expectedRevision: f.catalog().revision,
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspaceId,
+      tree,
+      producer: { kind: 'user', id: f.userId },
+      summary: 'Observer calibration only.',
+    });
+    const requestId = randomUUID();
+    const publication = {
+      path: f.path,
+      revision: f.catalog().revision,
+      knownHash: correct
+        ? createHash('sha256').update(readFileSync(f.path)).digest('hex')
+        : '0'.repeat(64),
+    };
+    arm(
+      'catalog.skill-candidate-decide.admit',
+      requestId,
+      `skill-candidate:${submitted.candidate.id}`,
+      publication
     );
-    expect(Atomics.load(new Int32Array(fault.gate), 6)).toBe(-2);
-    expect(Atomics.load(new Int32Array(fault.gate), 9)).toBe(2);
-    expect(Atomics.load(new Int32Array(fault.gate), 11)).toBe(1);
-    expect(fault.workers[Atomics.load(new Int32Array(fault.gate), 10)]?.threadId).toBeGreaterThan(
-      0
+    const result = f.start(() =>
+      prepareCatalogSkillDecision(
+        f.dependencies,
+        {
+          candidateId: submitted.candidate.id,
+          decision: 'rejected',
+          expectedRevision: f.catalog().revision,
+          operation: 'catalog.skill-candidate-decide',
+          requestId,
+          workspaceId: f.workspaceId,
+        },
+        f.context
+      )
     );
+    if (correct) await held(f, result);
+    else {
+      await expect(held(f, result)).rejects.toThrow(
+        'Exact expected physical publication must precede actual native SQL'
+      );
+      expect(Atomics.load(new Int32Array(fault.gate), 6)).toBe(-2);
+      expect(Atomics.load(new Int32Array(fault.gate), 9)).toBe(2);
+      expect(Atomics.load(new Int32Array(fault.gate), 11)).toBe(1);
+      expect(fault.workers[Atomics.load(new Int32Array(fault.gate), 10)]?.threadId).toBeGreaterThan(
+        0
+      );
+    }
+    expect(
+      f.events().filter((event) => event.action === 'catalog.skill-candidate-decide.admit')
+    ).toHaveLength(1);
+    expect(targetPosts(requestId)).toBe(1);
+    expect(f.reload).not.toHaveBeenCalled();
+    release();
+    expect((await result).ok).toBe(true);
   }
-  expect(
-    f.events().filter((event) => event.action === 'catalog.skill-candidate-decide.admit')
-  ).toHaveLength(1);
-  expect(targetPosts(requestId)).toBe(1);
-  expect(f.reload).not.toHaveBeenCalled();
-  release();
-  expect((await result).ok).toBe(true);
-});
+);
 
-it.each(
-  actions
-)('%s publishes exact original completion before native FULL and ACK before refresh/result/close', async (action) => {
-  const f = await fixture(),
-    s = scenario(f, action);
-  arm(action, s.requestId, s.resource, s.publication);
-  const result = f.start(s.run);
-  await held(f, result);
-  expect(f.catalog().revision).toBe(s.publication.revision);
-  expect(f.borrowed).toHaveLength(1);
-  expect(f.borrowed[0]!.sqlite.open).toBe(true);
-  expect(f.reload).not.toHaveBeenCalled();
-  const event = originalEvent(f, s),
-    bytes = readFileSync(f.path);
-  if (action === 'catalog.plugin-import') {
-    expect(f.scratch()).toHaveLength(1);
-    expect(fs.existsSync(f.scratch()[0]!)).toBe(true);
-    expect(readFileSync(s.publication.files![0]!.path, 'utf8')).toBe(pluginBytes);
+it.each(actions)(
+  '%s publishes exact original completion before native FULL and ACK before refresh/result/close',
+  async (action) => {
+    const f = await fixture(),
+      s = scenario(f, action);
+    arm(action, s.requestId, s.resource, s.publication);
+    const result = f.start(s.run);
+    await held(f, result);
+    expect(f.catalog().revision).toBe(s.publication.revision);
+    expect(f.borrowed).toHaveLength(1);
+    expect(f.borrowed[0]!.sqlite.open).toBe(true);
+    expect(f.reload).not.toHaveBeenCalled();
+    const event = originalEvent(f, s),
+      bytes = readFileSync(f.path);
+    if (action === 'catalog.plugin-import') {
+      expect(f.scratch()).toHaveLength(1);
+      expect(fs.existsSync(f.scratch()[0]!)).toBe(true);
+      expect(readFileSync(s.publication.files![0]!.path, 'utf8')).toBe(pluginBytes);
+    }
+    release();
+    const outcome = await result;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.value).toMatchObject({ revision: s.publication.revision });
+    expect(f.reload).toHaveBeenCalledExactlyOnceWith({ dryRun: false, mode: 'safe' });
+    expect(f.borrowed[0]!.sqlite.open).toBe(false);
+    expect(readFileSync(f.path)).toEqual(bytes);
+    expect(f.events().find((row) => row.id === event.id)).toEqual(event);
+    for (const path of f.scratch()) expect(fs.existsSync(path)).toBe(false);
+    expect(await f.coldEvents()).toEqual(f.events());
   }
-  release();
-  const outcome = await result;
-  expect(outcome.ok).toBe(true);
-  if (outcome.ok) expect(outcome.value).toMatchObject({ revision: s.publication.revision });
-  expect(f.reload).toHaveBeenCalledExactlyOnceWith({ dryRun: false, mode: 'safe' });
-  expect(f.borrowed[0]!.sqlite.open).toBe(false);
-  expect(readFileSync(f.path)).toEqual(bytes);
-  expect(f.events().find((row) => row.id === event.id)).toEqual(event);
-  for (const path of f.scratch()) expect(fs.existsSync(path)).toBe(false);
-  expect(await f.coldEvents()).toEqual(f.events());
-});
+);
 
 it('lost Plugin ACK retains the original physical package and cold prefix without refresh, repost or repair', async () => {
   const f = await fixture(),

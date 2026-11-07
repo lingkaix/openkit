@@ -79,44 +79,43 @@ function listDirectories(root: string): string[] {
 }
 
 describe('ensureLayout', () => {
-  it.each([
-    'user',
-    'workspace',
-    'server',
-  ] as const)('accepts retained %s Source registry envelopes on the next boot', async (ownerScope) => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-source-'));
-    const ownerRoot =
-      ownerScope === 'user'
-        ? join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001')
-        : ownerScope === 'workspace'
-          ? join(root, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001')
-          : join(root, 'server');
-    const directory = join(ownerRoot, 'sources', 'registry');
-    try {
-      mkdirSync(directory, { recursive: true });
-      const path = join(directory, 'ks_00000000-0000-7000-8000-000000000001.json');
-      const content = JSON.stringify({
-        schemaVersion: 1,
-        recordType: 'source',
-        id: 'ks_00000000-0000-7000-8000-000000000001',
-        ownerScope,
-        lineage: {},
-        createdAt: '2026-10-19T00:00:00.000Z',
-        updatedAt: '2026-10-19T00:00:00.000Z',
-        contentDigest: 'sha256:source',
-        redactionLevel: 'none',
-        sensitivity: 'internal',
-        requiredFeatures: ['openkit.knowledge-owner-scope.v1'],
-        extensions: {},
-        futureOptionalField: 'retained',
-      });
-      writeFileSync(path, content);
-      expect(() => ensureLayout(root)).not.toThrow();
-      expect(readFileSync(path, 'utf8')).toBe(content);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+  it.each(['user', 'workspace', 'server'] as const)(
+    'accepts retained %s Source registry envelopes on the next boot',
+    async (ownerScope) => {
+      const root = await mkdtemp(join(tmpdir(), 'openkit-layout-source-'));
+      const ownerRoot =
+        ownerScope === 'user'
+          ? join(root, 'users', 'usr_00000000-0000-7000-8000-000000000001')
+          : ownerScope === 'workspace'
+            ? join(root, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001')
+            : join(root, 'server');
+      const directory = join(ownerRoot, 'sources', 'registry');
+      try {
+        mkdirSync(directory, { recursive: true });
+        const path = join(directory, 'ks_00000000-0000-7000-8000-000000000001.json');
+        const content = JSON.stringify({
+          schemaVersion: 1,
+          recordType: 'source',
+          id: 'ks_00000000-0000-7000-8000-000000000001',
+          ownerScope,
+          lineage: {},
+          createdAt: '2026-10-19T00:00:00.000Z',
+          updatedAt: '2026-10-19T00:00:00.000Z',
+          contentDigest: 'sha256:source',
+          redactionLevel: 'none',
+          sensitivity: 'internal',
+          requiredFeatures: ['openkit.knowledge-owner-scope.v1'],
+          extensions: {},
+          futureOptionalField: 'retained',
+        });
+        writeFileSync(path, content);
+        expect(() => ensureLayout(root)).not.toThrow();
+        expect(readFileSync(path, 'utf8')).toBe(content);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('creates v0.0.3 runtime directories', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
@@ -519,31 +518,34 @@ describe('ensureLayout', () => {
       'workspaces/ws_00000000-0000-7c7e-8bee-4b823f4bb792/catalog/plugin-snapshots/plugin_demo/deadbeef/plugin.json',
     ],
     ['server-plugin-snapshot', 'server/catalog/plugin-snapshots/plugin_server/babe/plugin.json'],
-  ] as const)('allows a data-root mention in %s content during verification and Workspace open', async (kind, relativePath) => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    ensureWorkspaceLayout(root, 'ws_00000000-0000-7c7e-8bee-4b823f4bb792');
-    const record = join(root, relativePath);
-    const content =
-      kind === 'aep-snapshot'
-        ? JSON.stringify({
-            snapshot: {
-              extensions: { openkit: { turnInput: `The deployment data root is ${root}.` } },
-            },
-          })
-        : relativePath.endsWith('.md')
-          ? `# Deployment\nThe deployment data root is ${root}.\n`
-          : `${JSON.stringify({ cwd: root })}\n`;
-    mkdirSync(join(record, '..'), { recursive: true });
-    writeFileSync(record, content);
-    expect(() => ensureLayout(root)).not.toThrow();
-    const db = openWorkspaceDb(root, 'ws_00000000-0000-7c7e-8bee-4b823f4bb792');
-    try {
-      expect(db.sqlite.prepare('SELECT 1 AS ready').get()).toEqual({ ready: 1 });
-      expect(readFileSync(record, 'utf8')).toBe(content);
-    } finally {
-      db.sqlite.close();
+  ] as const)(
+    'allows a data-root mention in %s content during verification and Workspace open',
+    async (kind, relativePath) => {
+      const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
+      ensureWorkspaceLayout(root, 'ws_00000000-0000-7c7e-8bee-4b823f4bb792');
+      const record = join(root, relativePath);
+      const content =
+        kind === 'aep-snapshot'
+          ? JSON.stringify({
+              snapshot: {
+                extensions: { openkit: { turnInput: `The deployment data root is ${root}.` } },
+              },
+            })
+          : relativePath.endsWith('.md')
+            ? `# Deployment\nThe deployment data root is ${root}.\n`
+            : `${JSON.stringify({ cwd: root })}\n`;
+      mkdirSync(join(record, '..'), { recursive: true });
+      writeFileSync(record, content);
+      expect(() => ensureLayout(root)).not.toThrow();
+      const db = openWorkspaceDb(root, 'ws_00000000-0000-7c7e-8bee-4b823f4bb792');
+      try {
+        expect(db.sqlite.prepare('SELECT 1 AS ready').get()).toEqual({ ready: 1 });
+        expect(readFileSync(record, 'utf8')).toBe(content);
+      } finally {
+        db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('creates the target server-owned runtime tree', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
@@ -833,25 +835,25 @@ describe('workspace layout symbolic-link boundaries', () => {
     expect(readFileSync(join(outsideRoot, 'store.json'), 'utf8')).toBe('{"external":true}\n');
   });
 
-  it.each([
-    'logs',
-    'evidence',
-  ] as const)('rejects a linked workspace %s directory without creating outside children', async (name) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-write-'));
-    roots.push(dataRoot);
-    const store = createTestStore({ dataRoot });
-    const workspace = await store.createWorkspace('Linked workspace write');
-    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-layout-outside-'));
-    roots.push(outsideRoot);
+  it.each(['logs', 'evidence'] as const)(
+    'rejects a linked workspace %s directory without creating outside children',
+    async (name) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-write-'));
+      roots.push(dataRoot);
+      const store = createTestStore({ dataRoot });
+      const workspace = await store.createWorkspace('Linked workspace write');
+      const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+      const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-layout-outside-'));
+      roots.push(outsideRoot);
 
-    writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched');
-    rmSync(join(workspaceRoot, name), { recursive: true });
-    symlinkSync(outsideRoot, join(workspaceRoot, name), 'dir');
+      writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched');
+      rmSync(join(workspaceRoot, name), { recursive: true });
+      symlinkSync(outsideRoot, join(workspaceRoot, name), 'dir');
 
-    // Layout creation owns the logs/evidence child writes; native Workspace metadata no longer does.
-    expect(() => ensureWorkspaceLayout(dataRoot, workspace.id)).toThrow(/symbolic link/i);
-    expect(readdirSync(outsideRoot)).toEqual(['sentinel.txt']);
-    expect(readFileSync(join(outsideRoot, 'sentinel.txt'), 'utf8')).toBe('untouched');
-  });
+      // Layout creation owns the logs/evidence child writes; native Workspace metadata no longer does.
+      expect(() => ensureWorkspaceLayout(dataRoot, workspace.id)).toThrow(/symbolic link/i);
+      expect(readdirSync(outsideRoot)).toEqual(['sentinel.txt']);
+      expect(readFileSync(join(outsideRoot, 'sentinel.txt'), 'utf8')).toBe('untouched');
+    }
+  );
 });

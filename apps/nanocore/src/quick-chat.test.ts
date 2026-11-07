@@ -383,249 +383,249 @@ async function corruptStoppedChatItem(
 }
 
 describe('quick chat app API', () => {
-  it.each([
-    'resolve',
-    'reject',
-  ] as const)('interrupts internal Chat without a worker and ignores a late provider %s', async (lateOutcome) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-interrupt-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    onTestFinished(() => {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const admitted = Promise.withResolvers<AbortSignal>();
-    const provider = Promise.withResolvers<unknown>();
-    const executor = new ThrowingTurnExecutor();
-    executor.capabilities.interrupts = false;
-    const interruptWorker = vi.spyOn(executor, 'interruptTurn');
-    const answer = {
-      id: 'chatcmpl_cancel_test',
-      object: 'response',
-      status: 'completed',
-      model: 'openai/gpt-5.2',
-      output: [
-        {
-          type: 'message',
-          role: 'assistant',
-          status: 'completed',
-          content: [{ type: 'output_text', text: 'A fresh answer.' }],
-        },
-      ],
-    };
-    let calls = 0;
-    const appOptions = {
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      store,
-      turnExecutor: executor,
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async (_provider, _request, _onUsage, transport) => {
-          calls += 1;
-          if (calls > 1) return answer;
-          admitted.resolve(transport.signal!);
-          return provider.promise;
-        },
-      }),
-    };
-    const app = createAppWithWorkspaceAuthority(appOptions);
-    const submit = (requestId: string) =>
-      app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(conversationRequest('Explain a short concept.', requestId)),
-          }
-        )
-      );
-    const pending = submit('00000000-0000-4000-8000-000000144000');
-    const signal = await admitted.promise;
-    const turn = store.listThreadTurns(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001'
-    )[0]!;
-    expect(turn.status).toBe('running');
-    const interrupt = (threadId = 'th_00000000-0000-7000-8000-000000000001') =>
-      app.request(
-        ...operationRequest(
-          'turn.interrupt',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: threadId,
-            turnId: turn.id,
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000901',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId,
-              turnId: turn.id,
-            }),
-          }
-        )
-      );
-    try {
-      const wrongThread = await interrupt('th_00000000-0000-7e9e-8ca1-a96ae30af5d8');
-      expect(wrongThread.status).toBe(404);
-      expect(signal.aborted).toBe(false);
-      const stopped = await interrupt();
-      expect(stopped.status, await stopped.clone().text()).toBe(200);
-      await expect(stopped.json()).resolves.toMatchObject({
-        id: turn.id,
-        status: 'interrupted',
-        error: { code: 'provider_call_aborted' },
+  it.each(['resolve', 'reject'] as const)(
+    'interrupts internal Chat without a worker and ignores a late provider %s',
+    async (lateOutcome) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-interrupt-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      onTestFinished(() => {
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       });
-      expect(signal.aborted).toBe(true);
-      expect(interruptWorker).not.toHaveBeenCalled();
-      const submitted = await pending;
-      expect(submitted.status).toBe(499);
-      await expect(submitted.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
-      const retained = structuredClone(store.getTurnById(turn.id));
-      const replay = await interrupt();
-      expect(replay.status).toBe(200);
-      const freshStop = await app.request(
-        ...operationRequest(
-          'turn.interrupt',
+      const store = await createDemoStore({ dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const admitted = Promise.withResolvers<AbortSignal>();
+      const provider = Promise.withResolvers<unknown>();
+      const executor = new ThrowingTurnExecutor();
+      executor.capabilities.interrupts = false;
+      const interruptWorker = vi.spyOn(executor, 'interruptTurn');
+      const answer = {
+        id: 'chatcmpl_cancel_test',
+        object: 'response',
+        status: 'completed',
+        model: 'openai/gpt-5.2',
+        output: [
           {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: turn.id,
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'A fresh answer.' }],
           },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000903',
+        ],
+      };
+      let calls = 0;
+      const appOptions = {
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        store,
+        turnExecutor: executor,
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async (_provider, _request, _onUsage, transport) => {
+            calls += 1;
+            if (calls > 1) return answer;
+            admitted.resolve(transport.signal!);
+            return provider.promise;
+          },
+        }),
+      };
+      const app = createAppWithWorkspaceAuthority(appOptions);
+      const submit = (requestId: string) =>
+        app.request(
+          ...operationRequest(
+            'conversation.submit',
+            {
               workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-            }),
-          }
-        )
-      );
-      expect(freshStop.status).toBe(409);
-      await expect(freshStop.json()).resolves.toMatchObject({
-        code: 'turn_not_interruptible',
-      });
-      expect(store.getTurnById(turn.id)).toEqual(retained);
-      expect(
-        store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000903', {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: turn.id,
-        })
-      ).toBeNull();
-      expect(interruptWorker).not.toHaveBeenCalled();
-      const submitReplay = await submit('00000000-0000-4000-8000-000000144000');
-      expect(submitReplay.status).toBe(499);
-      await expect(submitReplay.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
-      const coldReplay = await createAppWithWorkspaceAuthority({
-        ...appOptions,
-        store: new FsStore({ dataRoot }),
-      }).request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(
-              conversationRequest(
-                'Explain a short concept.',
-                '00000000-0000-4000-8000-000000144000'
-              )
-            ),
-          }
-        )
-      );
-      expect(coldReplay.status).toBe(499);
-      const coldInterrupt = await createAppWithWorkspaceAuthority({
-        ...appOptions,
-        store: new FsStore({ dataRoot }),
-      }).request(
-        ...operationRequest(
-          'turn.interrupt',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            turnId: turn.id,
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000901',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-            }),
-          }
-        )
-      );
-      expect(coldInterrupt.status).toBe(200);
-      await expect(coldInterrupt.json()).resolves.toMatchObject({
-        id: turn.id,
-        status: 'interrupted',
-      });
-      const changedInput = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(
-              conversationRequest('A changed request.', '00000000-0000-4000-8000-000000144000')
-            ),
-          }
-        )
-      );
-      expect(changedInput.status).toBe(409);
-      await expect(changedInput.json()).resolves.toMatchObject({
-        code: 'idempotency_key_conflict',
-      });
-      const fresh = await submit('00000000-0000-4000-8000-000000144001');
-      expect(fresh.status).toBe(200);
-      if (lateOutcome === 'resolve') provider.resolve(answer);
-      else provider.reject(new Error('private late provider failure'));
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(store.getTurnById(turn.id)).toEqual(retained);
-      expect(
-        store
-          .listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(conversationRequest('Explain a short concept.', requestId)),
+            }
           )
-          .filter((item) => item.turnId === turn.id)
-      ).toEqual([expect.objectContaining({ type: 'user-message' })]);
-      expect(new FsStore({ dataRoot }).getTurnById(turn.id)).toEqual(retained);
-      expect(calls).toBe(2);
-    } finally {
-      provider.resolve(answer);
-      await pending;
+        );
+      const pending = submit('00000000-0000-4000-8000-000000144000');
+      const signal = await admitted.promise;
+      const turn = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )[0]!;
+      expect(turn.status).toBe('running');
+      const interrupt = (threadId = 'th_00000000-0000-7000-8000-000000000001') =>
+        app.request(
+          ...operationRequest(
+            'turn.interrupt',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: threadId,
+              turnId: turn.id,
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000901',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId,
+                turnId: turn.id,
+              }),
+            }
+          )
+        );
+      try {
+        const wrongThread = await interrupt('th_00000000-0000-7e9e-8ca1-a96ae30af5d8');
+        expect(wrongThread.status).toBe(404);
+        expect(signal.aborted).toBe(false);
+        const stopped = await interrupt();
+        expect(stopped.status, await stopped.clone().text()).toBe(200);
+        await expect(stopped.json()).resolves.toMatchObject({
+          id: turn.id,
+          status: 'interrupted',
+          error: { code: 'provider_call_aborted' },
+        });
+        expect(signal.aborted).toBe(true);
+        expect(interruptWorker).not.toHaveBeenCalled();
+        const submitted = await pending;
+        expect(submitted.status).toBe(499);
+        await expect(submitted.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
+        const retained = structuredClone(store.getTurnById(turn.id));
+        const replay = await interrupt();
+        expect(replay.status).toBe(200);
+        const freshStop = await app.request(
+          ...operationRequest(
+            'turn.interrupt',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000903',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                turnId: turn.id,
+              }),
+            }
+          )
+        );
+        expect(freshStop.status).toBe(409);
+        await expect(freshStop.json()).resolves.toMatchObject({
+          code: 'turn_not_interruptible',
+        });
+        expect(store.getTurnById(turn.id)).toEqual(retained);
+        expect(
+          store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000903', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+          })
+        ).toBeNull();
+        expect(interruptWorker).not.toHaveBeenCalled();
+        const submitReplay = await submit('00000000-0000-4000-8000-000000144000');
+        expect(submitReplay.status).toBe(499);
+        await expect(submitReplay.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
+        const coldReplay = await createAppWithWorkspaceAuthority({
+          ...appOptions,
+          store: new FsStore({ dataRoot }),
+        }).request(
+          ...operationRequest(
+            'conversation.submit',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(
+                conversationRequest(
+                  'Explain a short concept.',
+                  '00000000-0000-4000-8000-000000144000'
+                )
+              ),
+            }
+          )
+        );
+        expect(coldReplay.status).toBe(499);
+        const coldInterrupt = await createAppWithWorkspaceAuthority({
+          ...appOptions,
+          store: new FsStore({ dataRoot }),
+        }).request(
+          ...operationRequest(
+            'turn.interrupt',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000901',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                turnId: turn.id,
+              }),
+            }
+          )
+        );
+        expect(coldInterrupt.status).toBe(200);
+        await expect(coldInterrupt.json()).resolves.toMatchObject({
+          id: turn.id,
+          status: 'interrupted',
+        });
+        const changedInput = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(
+                conversationRequest('A changed request.', '00000000-0000-4000-8000-000000144000')
+              ),
+            }
+          )
+        );
+        expect(changedInput.status).toBe(409);
+        await expect(changedInput.json()).resolves.toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+        const fresh = await submit('00000000-0000-4000-8000-000000144001');
+        expect(fresh.status).toBe(200);
+        if (lateOutcome === 'resolve') provider.resolve(answer);
+        else provider.reject(new Error('private late provider failure'));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(store.getTurnById(turn.id)).toEqual(retained);
+        expect(
+          store
+            .listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+            .filter((item) => item.turnId === turn.id)
+        ).toEqual([expect.objectContaining({ type: 'user-message' })]);
+        expect(new FsStore({ dataRoot }).getTurnById(turn.id)).toEqual(retained);
+        expect(calls).toBe(2);
+      } finally {
+        provider.resolve(answer);
+        await pending;
+      }
     }
-  });
+  );
 
   it('keeps internal Chat running when its HTTP transport disconnects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-disconnect-'));
@@ -707,169 +707,41 @@ describe('quick chat app API', () => {
     ).toBe('completed');
   });
 
-  it.each([
-    'Turn',
-    'receipt',
-    'interrupt receipt',
-  ] as const)('reports recovery_required when Chat Stop cannot persist its %s', async (failure) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-stop-persistence-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const admitted = Promise.withResolvers<AbortSignal>();
-    const provider = Promise.withResolvers<unknown>();
-    const createResponses = vi.fn<PiAiGatewayClient['createResponses']>(
-      async (_provider, _request, _onUsage, options) => {
-        admitted.resolve(options!.signal!);
-        return provider.promise;
-      }
-    );
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
-    });
-    const submit = () =>
-      app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(
-              conversationRequest(
-                'Explain a short concept.',
-                '00000000-0000-4000-8000-000000144003'
-              )
-            ),
-          }
-        )
+  it.each(['Turn', 'receipt', 'interrupt receipt'] as const)(
+    'reports recovery_required when Chat Stop cannot persist its %s',
+    async (failure) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-stop-persistence-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      });
+      const store = await createDemoStore({ dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const admitted = Promise.withResolvers<AbortSignal>();
+      const provider = Promise.withResolvers<unknown>();
+      const createResponses = vi.fn<PiAiGatewayClient['createResponses']>(
+        async (_provider, _request, _onUsage, options) => {
+          admitted.resolve(options!.signal!);
+          return provider.promise;
+        }
       );
-    const pending = submit();
-    const signal = await admitted.promise;
-    const turn = store.listThreadTurns(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001'
-    )[0]!;
-    const { getControlStoreWorkerClient } = await import(
-      './storage/control-store-worker-client.js'
-    );
-    const { workspaceDbPath } = await import('./storage/fs-layout.js');
-    const client = getControlStoreWorkerClient();
-    const database = `workspace:${workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')}`;
-    // The real owner installs a connection-local fault in this private fixture database.
-    // No product row is written by Main, and the ordinary native savepoint must roll back.
-    await client.write(database, [
-      {
-        mode: 'run',
-        sql:
-          failure === 'Turn'
-            ? "CREATE TEMP TRIGGER refuse_chat_stop BEFORE UPDATE OF status ON control_turns WHEN NEW.status='interrupted' BEGIN SELECT RAISE(ABORT, 'private persist refusal'); END"
-            : `CREATE TEMP TRIGGER refuse_chat_stop BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='${failure === 'receipt' ? 'conversation.submit' : 'turn.interrupt'}' AND NEW.request_id='${failure === 'receipt' ? '00000000-0000-4000-8000-000000144003' : '00000000-0000-4000-8000-000000000902'}' BEGIN SELECT RAISE(ABORT, 'private receipt refusal'); END`,
-        parameters: [],
-      },
-    ]);
-    const terminal = vi.spyOn(client, 'terminal');
-    try {
-      const stop = () =>
+      const app = createAppWithWorkspaceAuthority({
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
+      });
+      const submit = () =>
         app.request(
-          ...operationRequest(
-            'turn.interrupt',
-            {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-            },
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: '00000000-0000-4000-8000-000000000902',
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                threadId: 'th_00000000-0000-7000-8000-000000000001',
-                turnId: turn.id,
-              }),
-            }
-          )
-        );
-      const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
-      const [stopped, concurrent] = await Promise.all(requests);
-      // Both original commands settle in the same terminal transaction.
-      expect(terminal).toHaveBeenCalledTimes(1);
-      // Observe the real native rejection, not a Promise treated as proof of a write.
-      await expect(terminal.mock.results[0]!.value).rejects.toMatchObject({
-        code: 'constraint',
-        commit: 'not-committed',
-      });
-      expect(store.getTurnById(turn.id).status).toBe('running');
-      expect(signal.aborted).toBe(true);
-      expect(stopped.status).toBe(409);
-      const stopBody = await stopped.json();
-      expect(stopBody).toMatchObject({ code: 'recovery_required' });
-      expect(JSON.stringify(stopBody)).not.toContain('private');
-      if (concurrent) {
-        expect(concurrent.status).toBe(409);
-        const concurrentBody = await concurrent.json();
-        expect(concurrentBody).toMatchObject({ code: 'recovery_required' });
-        expect(JSON.stringify(concurrentBody)).not.toContain('private');
-      }
-      const response = await pending;
-      expect(response.status).toBe(409);
-      const body = await response.json();
-      expect(body).toMatchObject({
-        code: 'recovery_required',
-      });
-      expect(JSON.stringify(body)).not.toContain('private');
-      expect(
-        store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000902', {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: turn.id,
-        })
-      ).toBeNull();
-      terminal.mockRestore();
-      await client.write(database, [
-        {
-          mode: 'run',
-          sql: 'DROP TRIGGER IF EXISTS refuse_chat_stop',
-          parameters: [],
-        },
-      ]);
-      const replay = await submit();
-      expect(replay.status).toBe(409);
-      await expect(replay.json()).resolves.toMatchObject({
-        code: 'recovery_required',
-      });
-      const retainedTurns = store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      );
-      const retainedItems = store.listThreadItems(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      );
-      for (const change of [
-        { input: 'Search the web for updates' },
-        { targetRef: 'internal-role:knowledge-manager' },
-      ]) {
-        const changed = await app.request(
           ...operationRequest(
             'conversation.submit',
             {
@@ -879,84 +751,211 @@ describe('quick chat app API', () => {
             {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                ...conversationRequest(
+              body: JSON.stringify(
+                conversationRequest(
                   'Explain a short concept.',
                   '00000000-0000-4000-8000-000000144003'
-                ),
-                ...change,
-              }),
+                )
+              ),
             }
           )
         );
-        expect(changed.status, await changed.clone().text()).toBe(409);
-        await expect(changed.json()).resolves.toMatchObject({ code: 'recovery_required' });
-        expect(
-          store.listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-        ).toEqual(retainedTurns);
-        expect(
-          store.listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-        ).toEqual(retainedItems);
-        expect(
-          store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000144003', {
-            actorId: 'usr_00000000-0000-7000-8000-000000000001',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          })
-        ).toBeNull();
-      }
-      if (failure === 'interrupt receipt') {
-        const stopReplay = await app.request(
-          ...operationRequest(
-            'turn.interrupt',
-            {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-            },
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: '00000000-0000-4000-8000-000000000902',
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                threadId: 'th_00000000-0000-7000-8000-000000000001',
-                turnId: turn.id,
-              }),
-            }
-          )
-        );
-        expect(stopReplay.status).toBe(409);
-        await expect(stopReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      }
-      expect(createResponses).toHaveBeenCalledTimes(1);
-      expect(
-        store
-          .listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .every((item) => item.type !== 'assistant-message')
-      ).toBe(true);
-    } finally {
-      terminal.mockRestore();
+      const pending = submit();
+      const signal = await admitted.promise;
+      const turn = store.listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )[0]!;
+      const { getControlStoreWorkerClient } = await import(
+        './storage/control-store-worker-client.js'
+      );
+      const { workspaceDbPath } = await import('./storage/fs-layout.js');
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')}`;
+      // The real owner installs a connection-local fault in this private fixture database.
+      // No product row is written by Main, and the ordinary native savepoint must roll back.
       await client.write(database, [
         {
           mode: 'run',
-          sql: 'DROP TRIGGER IF EXISTS refuse_chat_stop',
+          sql:
+            failure === 'Turn'
+              ? "CREATE TEMP TRIGGER refuse_chat_stop BEFORE UPDATE OF status ON control_turns WHEN NEW.status='interrupted' BEGIN SELECT RAISE(ABORT, 'private persist refusal'); END"
+              : `CREATE TEMP TRIGGER refuse_chat_stop BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='${failure === 'receipt' ? 'conversation.submit' : 'turn.interrupt'}' AND NEW.request_id='${failure === 'receipt' ? '00000000-0000-4000-8000-000000144003' : '00000000-0000-4000-8000-000000000902'}' BEGIN SELECT RAISE(ABORT, 'private receipt refusal'); END`,
           parameters: [],
         },
       ]);
-      provider.resolve({ choices: [] });
-      await pending;
+      const terminal = vi.spyOn(client, 'terminal');
+      try {
+        const stop = () =>
+          app.request(
+            ...operationRequest(
+              'turn.interrupt',
+              {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                turnId: turn.id,
+              },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  requestId: '00000000-0000-4000-8000-000000000902',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                  turnId: turn.id,
+                }),
+              }
+            )
+          );
+        const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
+        const [stopped, concurrent] = await Promise.all(requests);
+        // Both original commands settle in the same terminal transaction.
+        expect(terminal).toHaveBeenCalledTimes(1);
+        // Observe the real native rejection, not a Promise treated as proof of a write.
+        await expect(terminal.mock.results[0]!.value).rejects.toMatchObject({
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+        expect(store.getTurnById(turn.id).status).toBe('running');
+        expect(signal.aborted).toBe(true);
+        expect(stopped.status).toBe(409);
+        const stopBody = await stopped.json();
+        expect(stopBody).toMatchObject({ code: 'recovery_required' });
+        expect(JSON.stringify(stopBody)).not.toContain('private');
+        if (concurrent) {
+          expect(concurrent.status).toBe(409);
+          const concurrentBody = await concurrent.json();
+          expect(concurrentBody).toMatchObject({ code: 'recovery_required' });
+          expect(JSON.stringify(concurrentBody)).not.toContain('private');
+        }
+        const response = await pending;
+        expect(response.status).toBe(409);
+        const body = await response.json();
+        expect(body).toMatchObject({
+          code: 'recovery_required',
+        });
+        expect(JSON.stringify(body)).not.toContain('private');
+        expect(
+          store.getCommandRequest('turn.interrupt', '00000000-0000-4000-8000-000000000902', {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+          })
+        ).toBeNull();
+        terminal.mockRestore();
+        await client.write(database, [
+          {
+            mode: 'run',
+            sql: 'DROP TRIGGER IF EXISTS refuse_chat_stop',
+            parameters: [],
+          },
+        ]);
+        const replay = await submit();
+        expect(replay.status).toBe(409);
+        await expect(replay.json()).resolves.toMatchObject({
+          code: 'recovery_required',
+        });
+        const retainedTurns = store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        );
+        const retainedItems = store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        );
+        for (const change of [
+          { input: 'Search the web for updates' },
+          { targetRef: 'internal-role:knowledge-manager' },
+        ]) {
+          const changed = await app.request(
+            ...operationRequest(
+              'conversation.submit',
+              {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+              },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  ...conversationRequest(
+                    'Explain a short concept.',
+                    '00000000-0000-4000-8000-000000144003'
+                  ),
+                  ...change,
+                }),
+              }
+            )
+          );
+          expect(changed.status, await changed.clone().text()).toBe(409);
+          await expect(changed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+          expect(
+            store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual(retainedTurns);
+          expect(
+            store.listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual(retainedItems);
+          expect(
+            store.getCommandRequest('conversation.submit', '00000000-0000-4000-8000-000000144003', {
+              actorId: 'usr_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            })
+          ).toBeNull();
+        }
+        if (failure === 'interrupt receipt') {
+          const stopReplay = await app.request(
+            ...operationRequest(
+              'turn.interrupt',
+              {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                turnId: turn.id,
+              },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  requestId: '00000000-0000-4000-8000-000000000902',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7000-8000-000000000001',
+                  turnId: turn.id,
+                }),
+              }
+            )
+          );
+          expect(stopReplay.status).toBe(409);
+          await expect(stopReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        }
+        expect(createResponses).toHaveBeenCalledTimes(1);
+        expect(
+          store
+            .listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+            .every((item) => item.type !== 'assistant-message')
+        ).toBe(true);
+      } finally {
+        terminal.mockRestore();
+        await client.write(database, [
+          {
+            mode: 'run',
+            sql: 'DROP TRIGGER IF EXISTS refuse_chat_stop',
+            parameters: [],
+          },
+        ]);
+        provider.resolve({ choices: [] });
+        await pending;
+      }
     }
-  });
+  );
 
   it('scopes existing Worker targets to this conversation and preserves truthful availability', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-worker-targets-'));
@@ -2903,148 +2902,153 @@ describe('quick chat app API', () => {
     }
   });
 
-  it.each([
-    'private-thread',
-    'private-artifact',
-  ] as const)('keeps %s out of shared Goal work until exact confirmation', async (source) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'goal-private-handoff-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    onTestFinished(() => {
-      if (coreDb.sqlite.open) coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    const store = await createDemoStore({ dataRoot });
-    const thread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Private assistant',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
-    const marker = 'PRIVATE-GOAL-MARKER';
-    const old = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Private source.',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
-    const at = old.startedAt!;
-    const artifactId = allocateEntityId('ar');
-    if (source === 'private-artifact') {
-      const mutationId = randomUUID();
-      await store.createArtifact({
-        id: artifactId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: thread.id,
-        turnId: old.id,
-        kind: 'report',
-        title: 'Private plan',
-        status: 'ready',
-        summary: 'Private',
-        version: 1,
-        content: { format: 'markdown', body: marker },
-        contentDigest: `sha256:${createHash('sha256').update(marker).digest('hex')}`,
-        lastMutationRequestId: mutationId,
-        origin: { kind: 'turn-output', threadId: thread.id, turnId: old.id, requestId: mutationId },
-        createdAt: at,
-        updatedAt: at,
+  it.each(['private-thread', 'private-artifact'] as const)(
+    'keeps %s out of shared Goal work until exact confirmation',
+    async (source) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'goal-private-handoff-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      onTestFinished(() => {
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       });
-    } else
-      await store.createItem({
-        id: allocateEntityId('it'),
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        threadId: thread.id,
-        turnId: old.id,
-        type: 'user-message',
-        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        text: marker,
-        status: 'completed',
-        createdAt: at,
-        completedAt: at,
-      });
-    await store.updateTurn(old.id, { status: 'completed', completedAt: at });
-    const intent = 'Prepare a public release documentation plan.';
-    const provider = goalProposalProvider(intent);
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      agentManifests: [createTestAgentSetup().manifest],
-      coreDb,
-      dataRoot,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: provider.client,
-    });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const sharedBefore = store
-      .listThreads('ws_00000000-0000-7000-8000-000000000001')
-      .filter((entry) => entry.visibility === 'workspace')
-      .map((entry) => ({
-        thread: entry,
-        turns: store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', entry.id),
-      }));
-    const requestId = randomUUID();
-    const submit = () =>
-      app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
-          {
-            body: JSON.stringify({
-              ...conversationRequest('Consider the next planning step.', requestId),
-              artifactRefs:
-                source === 'private-artifact' ? [{ artifactId, artifactVersion: 1 }] : [],
-            }),
-          }
-        )
+      const store = await createDemoStore({ dataRoot });
+      const thread = await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Private assistant',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        }
       );
-    const response = await submit();
-    expect(response.status, await response.clone().text()).toBe(202);
-    const accepted = SubmitConversationResponseSchema.parse(await response.json());
-    expect(accepted.item).toMatchObject({
-      type: 'user-input-request',
-      assistantHandoff: {
-        kind: 'goal',
-        targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        intent,
-      },
-    });
-    expect(provider.assistantCalls()).toBe(2);
-    expect(JSON.stringify(provider.calls[0]!.input)).toContain(marker);
-    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([]);
-    } finally {
-      db.sqlite.close();
+      const marker = 'PRIVATE-GOAL-MARKER';
+      const old = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        thread.id,
+        'Private source.',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
+      const at = old.startedAt!;
+      const artifactId = allocateEntityId('ar');
+      if (source === 'private-artifact') {
+        const mutationId = randomUUID();
+        await store.createArtifact({
+          id: artifactId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          turnId: old.id,
+          kind: 'report',
+          title: 'Private plan',
+          status: 'ready',
+          summary: 'Private',
+          version: 1,
+          content: { format: 'markdown', body: marker },
+          contentDigest: `sha256:${createHash('sha256').update(marker).digest('hex')}`,
+          lastMutationRequestId: mutationId,
+          origin: {
+            kind: 'turn-output',
+            threadId: thread.id,
+            turnId: old.id,
+            requestId: mutationId,
+          },
+          createdAt: at,
+          updatedAt: at,
+        });
+      } else
+        await store.createItem({
+          id: allocateEntityId('it'),
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          threadId: thread.id,
+          turnId: old.id,
+          type: 'user-message',
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          text: marker,
+          status: 'completed',
+          createdAt: at,
+          completedAt: at,
+        });
+      await store.updateTurn(old.id, { status: 'completed', completedAt: at });
+      const intent = 'Prepare a public release documentation plan.';
+      const provider = goalProposalProvider(intent);
+      const app = createAppWithWorkspaceAuthority({
+        ...createQuickChatProviderOptions(),
+        agentManifests: [createTestAgentSetup().manifest],
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: provider.client,
+      });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const sharedBefore = store
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .filter((entry) => entry.visibility === 'workspace')
+        .map((entry) => ({
+          thread: entry,
+          turns: store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', entry.id),
+        }));
+      const requestId = randomUUID();
+      const submit = () =>
+        app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId: thread.id },
+            {
+              body: JSON.stringify({
+                ...conversationRequest('Consider the next planning step.', requestId),
+                artifactRefs:
+                  source === 'private-artifact' ? [{ artifactId, artifactVersion: 1 }] : [],
+              }),
+            }
+          )
+        );
+      const response = await submit();
+      expect(response.status, await response.clone().text()).toBe(202);
+      const accepted = SubmitConversationResponseSchema.parse(await response.json());
+      expect(accepted.item).toMatchObject({
+        type: 'user-input-request',
+        assistantHandoff: {
+          kind: 'goal',
+          targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          intent,
+        },
+      });
+      expect(provider.assistantCalls()).toBe(2);
+      expect(JSON.stringify(provider.calls[0]!.input)).toContain(marker);
+      const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([]);
+      } finally {
+        db.sqlite.close();
+      }
+      expect(
+        store.listCommandRequests().filter((record) => record.command === 'goal.create')
+      ).toEqual([]);
+      const sharedAfter = store
+        .listThreads('ws_00000000-0000-7000-8000-000000000001')
+        .filter((entry) => entry.visibility === 'workspace')
+        .map((entry) => ({
+          thread: entry,
+          turns: store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', entry.id),
+        }));
+      expect(sharedAfter).toEqual(sharedBefore);
+      expect(JSON.stringify(sharedAfter)).not.toContain(marker);
+      const replay = await submit();
+      expect(replay.status, await replay.clone().text()).toBe(202);
+      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
+      expect(provider.assistantCalls()).toBe(2);
     }
-    expect(
-      store.listCommandRequests().filter((record) => record.command === 'goal.create')
-    ).toEqual([]);
-    const sharedAfter = store
-      .listThreads('ws_00000000-0000-7000-8000-000000000001')
-      .filter((entry) => entry.visibility === 'workspace')
-      .map((entry) => ({
-        thread: entry,
-        turns: store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', entry.id),
-      }));
-    expect(sharedAfter).toEqual(sharedBefore);
-    expect(JSON.stringify(sharedAfter)).not.toContain(marker);
-    const replay = await submit();
-    expect(replay.status, await replay.clone().text()).toBe(202);
-    expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
-    expect(provider.assistantCalls()).toBe(2);
-  });
+  );
   it('keeps personal shared work eligible but refuses an ordinary Assistant conversation outside the private Timeline', async () => {
     const createResponses = vi.fn(async () => providerAnswer('This answer must not be published.'));
     const fixture = await createTimelineFixture({

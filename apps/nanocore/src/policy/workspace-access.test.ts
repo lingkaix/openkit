@@ -200,41 +200,46 @@ function registerServerAccessTests() {
       { family: 'mcp', operation: 'api.call', right: 'ar:core-api-call' },
       { family: 'knowledge', operation: 'knowledge.read', right: 'ar:knowledge-read' },
       { family: 'knowledge', operation: 'knowledge.write', right: 'ar:knowledge-write' },
-    ] as const)('evaluates current administrator allow and deny for $family/$operation', (input) => {
-      const request = {
-        facts,
-        target: { kind: 'server' as const, family: input.family },
-        operation: input.operation,
-        mutating: false,
-      };
-      const allowed = evaluateProductAccess(request);
-      expect(allowed.effect).toBe('allow');
-      expect(allowed.trace.user).toBe(`user:${facts.userId}`);
-      expect(allowed.trace.requiredAccessRights).toEqual([input.right]);
-      const denied = evaluateProductAccess({
-        ...request,
-        facts: { ...facts, administrator: false },
-      });
-      expect(denied.effect).toBe('deny');
-      expect(denied.reasons).toContainEqual(expect.objectContaining({ code: 'missing-privilege' }));
-      const actualEvaluate = policyKernel.evaluateAccess;
-      const evaluate = vi
-        .spyOn(policyKernel, 'evaluateAccess')
-        .mockImplementation((policy, access) =>
-          actualEvaluate({ ...policy, associations: [] }, access)
-        );
-      try {
-        const noGrant = evaluateProductAccess(request);
-        expect(noGrant.effect).toBe('deny');
-        expect(noGrant.reasons).toContainEqual(
+    ] as const)(
+      'evaluates current administrator allow and deny for $family/$operation',
+      (input) => {
+        const request = {
+          facts,
+          target: { kind: 'server' as const, family: input.family },
+          operation: input.operation,
+          mutating: false,
+        };
+        const allowed = evaluateProductAccess(request);
+        expect(allowed.effect).toBe('allow');
+        expect(allowed.trace.user).toBe(`user:${facts.userId}`);
+        expect(allowed.trace.requiredAccessRights).toEqual([input.right]);
+        const denied = evaluateProductAccess({
+          ...request,
+          facts: { ...facts, administrator: false },
+        });
+        expect(denied.effect).toBe('deny');
+        expect(denied.reasons).toContainEqual(
           expect.objectContaining({ code: 'missing-privilege' })
         );
-        // Accepted QP-2 brief13e: alternatives belong inside one evaluated graph.
-        expect(evaluate).toHaveBeenCalledTimes(1);
-      } finally {
-        evaluate.mockRestore();
+        const actualEvaluate = policyKernel.evaluateAccess;
+        const evaluate = vi
+          .spyOn(policyKernel, 'evaluateAccess')
+          .mockImplementation((policy, access) =>
+            actualEvaluate({ ...policy, associations: [] }, access)
+          );
+        try {
+          const noGrant = evaluateProductAccess(request);
+          expect(noGrant.effect).toBe('deny');
+          expect(noGrant.reasons).toContainEqual(
+            expect.objectContaining({ code: 'missing-privilege' })
+          );
+          // Accepted QP-2 brief13e: alternatives belong inside one evaluated graph.
+          expect(evaluate).toHaveBeenCalledTimes(1);
+        } finally {
+          evaluate.mockRestore();
+        }
       }
-    });
+    );
 
     it('rejects an unknown family and does not borrow another family association', () => {
       for (const target of [

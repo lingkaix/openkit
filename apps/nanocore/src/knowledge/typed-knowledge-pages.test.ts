@@ -71,29 +71,27 @@ function validate(content: string, schema = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT)
 }
 
 describe('governed domain page fields', () => {
-  it.each([
-    'Rule',
-    'Effect',
-    'Objective',
-  ])('admits the official %s type with required fields', (type) => {
-    expect(validate(page('domain', type)).errors).toEqual([]);
-  });
-  it.each([
-    'Rule',
-    'Effect',
-    'Objective',
-  ])('refuses missing or malformed %s applicability under an authored schema', (type) => {
-    const schema = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
-      /allowed_types: .*/,
-      `allowed_types: [${type}]`
-    );
-    for (const applies_to of [undefined, [], [''], [1], 'tool:invoice.check']) {
-      expect(validate(page('domain', type, workspaceId, { applies_to }), schema).errors).toEqual([
-        { pageId: 'domain', code: 'notebook.invalid_page' },
-        { pageId: 'domain', code: 'scope_schema.invalid_applies_to' },
-      ]);
+  it.each(['Rule', 'Effect', 'Objective'])(
+    'admits the official %s type with required fields',
+    (type) => {
+      expect(validate(page('domain', type)).errors).toEqual([]);
     }
-  });
+  );
+  it.each(['Rule', 'Effect', 'Objective'])(
+    'refuses missing or malformed %s applicability under an authored schema',
+    (type) => {
+      const schema = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
+        /allowed_types: .*/,
+        `allowed_types: [${type}]`
+      );
+      for (const applies_to of [undefined, [], [''], [1], 'tool:invoice.check']) {
+        expect(validate(page('domain', type, workspaceId, { applies_to }), schema).errors).toEqual([
+          { pageId: 'domain', code: 'notebook.invalid_page' },
+          { pageId: 'domain', code: 'scope_schema.invalid_applies_to' },
+        ]);
+      }
+    }
+  );
   it('refuses an Effect without descriptive basis or an actual offset last-check timestamp', () => {
     const schema = DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
       /allowed_types: .*/,

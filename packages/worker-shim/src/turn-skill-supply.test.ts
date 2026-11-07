@@ -76,19 +76,18 @@ describe('complete installed Skill verification', () => {
     expect(existsSync(f.workSlot)).toBe(true);
   });
 
-  it.each([
-    'supporting bytes',
-    'empty directory',
-    'executable flag',
-  ] as const)('refuses changed %s before workspace setup', async (changed) => {
-    const f = skillFixture();
-    if (changed === 'supporting bytes')
-      writeFileSync(join(f.targetPath, 'message.txt'), 'Changed.');
-    if (changed === 'empty directory') rmSync(join(f.targetPath, 'empty'), { recursive: true });
-    if (changed === 'executable flag') chmodSync(join(f.targetPath, 'run.sh'), 0o600);
-    await expect(
-      initializeSessionWorkspace(f.packagePath, join(f.root, 'session'), f.identity)
-    ).rejects.toThrow('Installed Skill tree does not match its admitted digest.');
-    expect(existsSync(f.workSlot)).toBe(false);
-  });
+  it.each(['supporting bytes', 'empty directory', 'executable flag'] as const)(
+    'refuses changed %s before workspace setup',
+    async (changed) => {
+      const f = skillFixture();
+      if (changed === 'supporting bytes')
+        writeFileSync(join(f.targetPath, 'message.txt'), 'Changed.');
+      if (changed === 'empty directory') rmSync(join(f.targetPath, 'empty'), { recursive: true });
+      if (changed === 'executable flag') chmodSync(join(f.targetPath, 'run.sh'), 0o600);
+      await expect(
+        initializeSessionWorkspace(f.packagePath, join(f.root, 'session'), f.identity)
+      ).rejects.toThrow('Installed Skill tree does not match its admitted digest.');
+      expect(existsSync(f.workSlot)).toBe(false);
+    }
+  );
 });

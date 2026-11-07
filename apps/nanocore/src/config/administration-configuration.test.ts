@@ -762,98 +762,101 @@ describe('administration catalog configuration', () => {
     expect(f.reload).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    'prohibit',
-    'require_approval',
-  ] as const)('prepares and applies unobserved %s with a digest-bound warning and later exact-name enforcement', async (effect) => {
-    const f = await mcpPolicyFixture(false);
-    const proposal = await f.service.propose(f.policyRequest('future-tool', effect), f.home);
-    const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
-    if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
-    const body = JSON.parse(artifact.content.body);
-    const message = `MCP Tool issues/future-tool has not been observed in Workspace ${f.workspaceId}; the statement applies when a Tool with this exact name is exposed.`;
-    expect(body.warnings).toEqual([
-      {
-        code: 'mcp_tool_unobserved',
-        workspaceId: f.workspaceId,
-        serverId: 'issues',
-        toolName: 'future-tool',
-        message,
-      },
-    ]);
-    expect(body.policyProposal).not.toHaveProperty('warnings');
-    expect(artifact.contentDigest).toBe(
-      `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
-    );
-    expect(proposal.confirmation.contentDigest).toBe(artifact.contentDigest);
-    expect(proposal).toMatchObject({
-      plan: {
-        warnings: expect.arrayContaining([{ code: 'mcp_tool_unobserved', message }]),
-      },
-    });
-    const confirmed = f.confirm(proposal);
-    expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true, reload: 'applied' });
-    const serverPath = join(f.dataRoot, 'config/server.jsonc');
-    const admittedBytes = readFileSync(serverPath, 'utf8');
-    const document = readAdmittedPolicyDocument(
-      f.coreDb,
-      f.manager.current().openKitConfig.policy?.mediation
-    );
-    await f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
-    const select = (toolName: string) =>
-      selectMcpToolPermissions({
-        document,
-        proposal: {
+  it.each(['prohibit', 'require_approval'] as const)(
+    'prepares and applies unobserved %s with a digest-bound warning and later exact-name enforcement',
+    async (effect) => {
+      const f = await mcpPolicyFixture(false);
+      const proposal = await f.service.propose(f.policyRequest('future-tool', effect), f.home);
+      const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
+      if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
+      const body = JSON.parse(artifact.content.body);
+      const message = `MCP Tool issues/future-tool has not been observed in Workspace ${f.workspaceId}; the statement applies when a Tool with this exact name is exposed.`;
+      expect(body.warnings).toEqual([
+        {
+          code: 'mcp_tool_unobserved',
           workspaceId: f.workspaceId,
           serverId: 'issues',
-          toolName,
-          subject: {
-            principal: { kind: 'human', id: f.actor.userId },
-            onBehalfOf: null,
-            actor: { kind: 'user', id: f.actor.userId },
-            process: null,
-            credentialKind: 'token',
-            responsibleHumanId: f.actor.userId,
-          },
+          toolName: 'future-tool',
+          message,
         },
-        authorCurrent: (id) => isCurrentServerPolicyAuthor(f.coreDb, id),
+      ]);
+      expect(body.policyProposal).not.toHaveProperty('warnings');
+      expect(artifact.contentDigest).toBe(
+        `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
+      );
+      expect(proposal.confirmation.contentDigest).toBe(artifact.contentDigest);
+      expect(proposal).toMatchObject({
+        plan: {
+          warnings: expect.arrayContaining([{ code: 'mcp_tool_unobserved', message }]),
+        },
       });
-    expect(select('future-tool')).toMatchObject([{ id: 'human-tool-condition', effect }]);
-    expect(select('future-tool-typo')).toEqual([]);
-    if (effect === 'prohibit')
-      expect(
-        applyMcpToolProhibitions(
-          {
-            effect: 'allow',
-            reasons: [],
-            trace: {
-              requiredAccessRights: ['use'],
-              userClosure: [],
-              targetClosure: [],
-              policyClasses: [],
-              matchedAssociations: [],
-              matchedProhibitions: [],
+      const confirmed = f.confirm(proposal);
+      expect(await f.service.apply(confirmed)).toMatchObject({
+        persisted: true,
+        reload: 'applied',
+      });
+      const serverPath = join(f.dataRoot, 'config/server.jsonc');
+      const admittedBytes = readFileSync(serverPath, 'utf8');
+      const document = readAdmittedPolicyDocument(
+        f.coreDb,
+        f.manager.current().openKitConfig.policy?.mediation
+      );
+      await f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
+      const select = (toolName: string) =>
+        selectMcpToolPermissions({
+          document,
+          proposal: {
+            workspaceId: f.workspaceId,
+            serverId: 'issues',
+            toolName,
+            subject: {
+              principal: { kind: 'human', id: f.actor.userId },
+              onBehalfOf: null,
+              actor: { kind: 'user', id: f.actor.userId },
+              process: null,
+              credentialKind: 'token',
+              responsibleHumanId: f.actor.userId,
             },
           },
-          select('future-tool')
-        ).effect
-      ).toBe('deny');
-    expect(readFileSync(serverPath, 'utf8')).toBe(admittedBytes);
-    expect(f.reload).toHaveBeenCalledTimes(1);
-    expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true });
-    expect(f.reload).toHaveBeenCalledTimes(1);
-  });
+          authorCurrent: (id) => isCurrentServerPolicyAuthor(f.coreDb, id),
+        });
+      expect(select('future-tool')).toMatchObject([{ id: 'human-tool-condition', effect }]);
+      expect(select('future-tool-typo')).toEqual([]);
+      if (effect === 'prohibit')
+        expect(
+          applyMcpToolProhibitions(
+            {
+              effect: 'allow',
+              reasons: [],
+              trace: {
+                requiredAccessRights: ['use'],
+                userClosure: [],
+                targetClosure: [],
+                policyClasses: [],
+                matchedAssociations: [],
+                matchedProhibitions: [],
+              },
+            },
+            select('future-tool')
+          ).effect
+        ).toBe('deny');
+      expect(readFileSync(serverPath, 'utf8')).toBe(admittedBytes);
+      expect(f.reload).toHaveBeenCalledTimes(1);
+      expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true });
+      expect(f.reload).toHaveBeenCalledTimes(1);
+    }
+  );
 
-  it.each([
-    'prohibit',
-    'require_approval',
-  ] as const)('does not warn for observed %s', async (effect) => {
-    const f = await mcpPolicyFixture();
-    const proposal = await f.service.propose(f.policyRequest('read', effect), f.home);
-    expect(('warnings' in proposal.preview ? proposal.preview.warnings : undefined) ?? []).toEqual(
-      []
-    );
-  });
+  it.each(['prohibit', 'require_approval'] as const)(
+    'does not warn for observed %s',
+    async (effect) => {
+      const f = await mcpPolicyFixture();
+      const proposal = await f.service.propose(f.policyRequest('read', effect), f.home);
+      expect(
+        ('warnings' in proposal.preview ? proposal.preview.warnings : undefined) ?? []
+      ).toEqual([]);
+    }
+  );
 
   it('applies the confirmed warning unchanged when the Tool becomes observed', async () => {
     const f = await mcpPolicyFixture(false);

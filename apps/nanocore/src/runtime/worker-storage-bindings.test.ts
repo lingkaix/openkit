@@ -311,26 +311,33 @@ describe('Worker storage bindings', () => {
     { initialized: null },
     { target: 'relative-path' },
     { requiredFeatures: ['future-attachment'] },
-  ])('refuses invalid or unsupported required retained target semantics %# without changing bytes', async (change) => {
-    const coreDb = createCoreDb();
-    try {
-      const original = await createBinding(coreDb);
-      const retained = JSON.stringify(original.targets.map((target) => ({ ...target, ...change })));
-      coreDb.sqlite
-        .prepare('UPDATE worker_storage_bindings SET targets_json = ? WHERE storage_ref = ?')
-        .run(retained, original.storageRef);
-      expect(() => getWorkerStorageBinding(coreDb, { storageRef: original.storageRef })).toThrow();
-      expect(
+  ])(
+    'refuses invalid or unsupported required retained target semantics %# without changing bytes',
+    async (change) => {
+      const coreDb = createCoreDb();
+      try {
+        const original = await createBinding(coreDb);
+        const retained = JSON.stringify(
+          original.targets.map((target) => ({ ...target, ...change }))
+        );
         coreDb.sqlite
-          .prepare(
-            'SELECT targets_json AS bytes FROM worker_storage_bindings WHERE storage_ref = ?'
-          )
-          .get(original.storageRef)
-      ).toEqual({ bytes: retained });
-    } finally {
-      await closeCoreDb(coreDb);
+          .prepare('UPDATE worker_storage_bindings SET targets_json = ? WHERE storage_ref = ?')
+          .run(retained, original.storageRef);
+        expect(() =>
+          getWorkerStorageBinding(coreDb, { storageRef: original.storageRef })
+        ).toThrow();
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT targets_json AS bytes FROM worker_storage_bindings WHERE storage_ref = ?'
+            )
+            .get(original.storageRef)
+        ).toEqual({ bytes: retained });
+      } finally {
+        await closeCoreDb(coreDb);
+      }
     }
-  });
+  );
 
   it('refuses attachment generation exhaustion before changing storage or contributors', async () => {
     const coreDb = createCoreDb();

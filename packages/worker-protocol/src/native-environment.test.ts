@@ -14,16 +14,13 @@ describe('native environment core', () => {
     expect(canonicalNativeEnvironment({ B: '', A: 'x=y\n' })).toBe('{"A":"x=y\\n","B":""}');
     expect(NativeEnvironmentValuesSchema.safeParse({ Z: null }).success).toBe(false);
   });
-  it.each([
-    '',
-    'BAD-NAME',
-    '1BAD',
-    'é',
-    'A'.repeat(129),
-  ])('refuses consumed invalid name %j', (name) => {
-    expect(AuthoredNativeEnvironmentSchema.safeParse({ [name]: 'value' }).success).toBe(false);
-    expect(NativeEnvironmentValuesSchema.safeParse({ [name]: 'value' }).success).toBe(false);
-  });
+  it.each(['', 'BAD-NAME', '1BAD', 'é', 'A'.repeat(129)])(
+    'refuses consumed invalid name %j',
+    (name) => {
+      expect(AuthoredNativeEnvironmentSchema.safeParse({ [name]: 'value' }).success).toBe(false);
+      expect(NativeEnvironmentValuesSchema.safeParse({ [name]: 'value' }).success).toBe(false);
+    }
+  );
   it('admits exact name/count/UTF-8 boundaries and refuses one byte or entry over them', () => {
     expect(NativeEnvironmentValuesSchema.safeParse({ ['A'.repeat(128)]: '' }).success).toBe(true);
     const entries = Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`NAME_${i}`, '']));
@@ -119,33 +116,28 @@ describe('native environment core', () => {
     for (const adapter of ['codex', 'pi', 'opencode', 'deepseek', 'future-adapter'])
       expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(true);
   });
-  it.each([
-    'DSH_HOME',
-    'DSH_PERMISSION_MODE',
-    'DSH_TELEMETRY_MODE',
-    'DSH_TELEMETRY_OTLP_URL',
-  ])('protects the DeepSeek binding %s only for DeepSeek', (name) => {
-    expect(isProtectedNativeEnvironmentName(name, 'deepseek')).toBe(true);
-    for (const adapter of ['codex', 'pi', 'opencode', 'future-adapter'])
-      expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(false);
-  });
-  it.each([
-    'CODEX_HOME',
-    'CODEX_SQLITE_HOME',
-    'CODEX_ROLLOUT_TRACE_ROOT',
-  ])('protects the pinned Codex binding %s only for Codex', (name) => {
-    expect(isProtectedNativeEnvironmentName(name, 'codex')).toBe(true);
-    for (const adapter of ['deepseek', 'pi', 'opencode', 'future-adapter'])
-      expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(false);
-  });
-  it.each([
-    'OPENAI_LOG',
-    'CODEX_BIN',
-    'CODEX_ARGS',
-    'CODEX_EXECUTABLE',
-  ])('admits unused Codex name %s', (name) => {
-    expect(isProtectedNativeEnvironmentName(name, 'codex')).toBe(false);
-  });
+  it.each(['DSH_HOME', 'DSH_PERMISSION_MODE', 'DSH_TELEMETRY_MODE', 'DSH_TELEMETRY_OTLP_URL'])(
+    'protects the DeepSeek binding %s only for DeepSeek',
+    (name) => {
+      expect(isProtectedNativeEnvironmentName(name, 'deepseek')).toBe(true);
+      for (const adapter of ['codex', 'pi', 'opencode', 'future-adapter'])
+        expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(false);
+    }
+  );
+  it.each(['CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ROLLOUT_TRACE_ROOT'])(
+    'protects the pinned Codex binding %s only for Codex',
+    (name) => {
+      expect(isProtectedNativeEnvironmentName(name, 'codex')).toBe(true);
+      for (const adapter of ['deepseek', 'pi', 'opencode', 'future-adapter'])
+        expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(false);
+    }
+  );
+  it.each(['OPENAI_LOG', 'CODEX_BIN', 'CODEX_ARGS', 'CODEX_EXECUTABLE'])(
+    'admits unused Codex name %s',
+    (name) => {
+      expect(isProtectedNativeEnvironmentName(name, 'codex')).toBe(false);
+    }
+  );
   it('keeps Codex home protection specific to Codex', () => {
     expect(isProtectedNativeEnvironmentName('CODEX_HOME', 'codex')).toBe(true);
     for (const adapter of ['deepseek', 'pi', 'opencode', 'future-adapter'])

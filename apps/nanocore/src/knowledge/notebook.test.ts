@@ -156,35 +156,35 @@ describe('KnowledgeNotebook real Git content publication', () => {
     await expect(notebook.publishedRevisionAsync()).resolves.toBe(revision);
   });
 
-  it.each([
-    'a.md',
-    'b.md',
-  ])('async selected reads verify addressed bytes with %s damaged', async (damaged) => {
-    const content = page('A', 'Exact selected body');
-    const { notebook, repositoryPath, revision } = await fixture({
-      'a.md': content,
-      'b.md': page('B', 'Unrelated body'),
-    });
-    const object = await git(repositoryPath, ['rev-parse', `${revision}:pages/${damaged}`]);
-    const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
-    const changed = Buffer.from(page('Damaged', 'Valid encoding, false Git identity'));
-    await chmod(objectPath, 0o600);
-    await writeFile(
-      objectPath,
-      deflateSync(Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed]))
-    );
-    if (damaged === 'a.md')
-      await expect(notebook.readRevisionAsync(revision, ['a.md'])).rejects.toMatchObject({
+  it.each(['a.md', 'b.md'])(
+    'async selected reads verify addressed bytes with %s damaged',
+    async (damaged) => {
+      const content = page('A', 'Exact selected body');
+      const { notebook, repositoryPath, revision } = await fixture({
+        'a.md': content,
+        'b.md': page('B', 'Unrelated body'),
+      });
+      const object = await git(repositoryPath, ['rev-parse', `${revision}:pages/${damaged}`]);
+      const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+      const changed = Buffer.from(page('Damaged', 'Valid encoding, false Git identity'));
+      await chmod(objectPath, 0o600);
+      await writeFile(
+        objectPath,
+        deflateSync(Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed]))
+      );
+      if (damaged === 'a.md')
+        await expect(notebook.readRevisionAsync(revision, ['a.md'])).rejects.toMatchObject({
+          code: 'recovery_required',
+        });
+      else
+        expect((await notebook.readRevisionAsync(revision, ['a.md'])).files).toEqual({
+          'a.md': content,
+        });
+      await expect(notebook.readRevisionAsync(revision)).rejects.toMatchObject({
         code: 'recovery_required',
       });
-    else
-      expect((await notebook.readRevisionAsync(revision, ['a.md'])).files).toEqual({
-        'a.md': content,
-      });
-    await expect(notebook.readRevisionAsync(revision)).rejects.toMatchObject({
-      code: 'recovery_required',
-    });
-  });
+    }
+  );
 
   it('async current-head reads refuse a missing initialized ref without replacing it', async () => {
     const { notebook, repositoryPath, revision } = await fixture({ 'a.md': page('A', 'Retained') });
@@ -617,37 +617,36 @@ describe('KnowledgeNotebook real Git content publication', () => {
     expect(await notebook.publishedRevision()).toBe(revision);
   });
 
-  it.each([
-    '120000',
-    '100755',
-    '160000',
-  ])('refuses non-page Git mode %s on retained reads', async (mode) => {
-    const { notebook, repositoryPath, revision } = await fixture();
-    const object =
-      mode === '160000'
-        ? revision
-        : await git(repositoryPath, ['hash-object', '-w', '--stdin'], '../../outside');
-    const index = await git(repositoryPath, ['hash-object', '-w', '--stdin'], ROOT_INDEX);
-    const pagesTree = await git(
-      repositoryPath,
-      ['mktree'],
-      `100644 blob ${index}\tindex.md\n${mode} ${mode === '160000' ? 'commit' : 'blob'} ${object}\tunsafe.md\n`
-    );
-    const tree = await git(repositoryPath, ['mktree'], `040000 tree ${pagesTree}\tpages\n`);
-    const corrupt = await rawCommit(
-      repositoryPath,
-      revision,
-      JSON.stringify(metadata('special-file')),
-      tree
-    );
+  it.each(['120000', '100755', '160000'])(
+    'refuses non-page Git mode %s on retained reads',
+    async (mode) => {
+      const { notebook, repositoryPath, revision } = await fixture();
+      const object =
+        mode === '160000'
+          ? revision
+          : await git(repositoryPath, ['hash-object', '-w', '--stdin'], '../../outside');
+      const index = await git(repositoryPath, ['hash-object', '-w', '--stdin'], ROOT_INDEX);
+      const pagesTree = await git(
+        repositoryPath,
+        ['mktree'],
+        `100644 blob ${index}\tindex.md\n${mode} ${mode === '160000' ? 'commit' : 'blob'} ${object}\tunsafe.md\n`
+      );
+      const tree = await git(repositoryPath, ['mktree'], `040000 tree ${pagesTree}\tpages\n`);
+      const corrupt = await rawCommit(
+        repositoryPath,
+        revision,
+        JSON.stringify(metadata('special-file')),
+        tree
+      );
 
-    await expect(
-      Promise.resolve().then(() => notebook.readRevision(corrupt))
-    ).rejects.toMatchObject({
-      code: 'recovery_required',
-    });
-    expect(await notebook.publishedRevision()).toBe(revision);
-  });
+      await expect(
+        Promise.resolve().then(() => notebook.readRevision(corrupt))
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(await notebook.publishedRevision()).toBe(revision);
+    }
+  );
 
   it('refuses a candidate whose actual parent is not the asserted publication base', async () => {
     const { notebook, revision } = await fixture();
@@ -725,41 +724,44 @@ describe('KnowledgeNotebook real Git content publication', () => {
     ['tree', 'corrupt'],
     ['blob', 'missing'],
     ['blob', 'corrupt'],
-  ])('reports recovery for a %s object that is %s and preserves the broken ref', async (kind, fault) => {
-    const { repositoryPath, revision } = await fixture({ 'a.md': page('A', 'retained') });
-    const object =
-      kind === 'commit'
-        ? revision
-        : await git(repositoryPath, [
-            'rev-parse',
-            kind === 'tree' ? `${revision}^{tree}` : `${revision}:pages/a.md`,
-          ]);
-    const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
-    const originalBytes = await readFile(objectPath);
-    if (fault === 'missing') await unlink(objectPath);
-    else {
-      await chmod(objectPath, 0o600);
-      await writeFile(objectPath, 'not a Git object');
-    }
-    const reopened = new KnowledgeNotebook({ repositoryPath });
+  ])(
+    'reports recovery for a %s object that is %s and preserves the broken ref',
+    async (kind, fault) => {
+      const { repositoryPath, revision } = await fixture({ 'a.md': page('A', 'retained') });
+      const object =
+        kind === 'commit'
+          ? revision
+          : await git(repositoryPath, [
+              'rev-parse',
+              kind === 'tree' ? `${revision}^{tree}` : `${revision}:pages/a.md`,
+            ]);
+      const objectPath = path.join(repositoryPath, 'objects', object.slice(0, 2), object.slice(2));
+      const originalBytes = await readFile(objectPath);
+      if (fault === 'missing') await unlink(objectPath);
+      else {
+        await chmod(objectPath, 0o600);
+        await writeFile(objectPath, 'not a Git object');
+      }
+      const reopened = new KnowledgeNotebook({ repositoryPath });
 
-    await expect(
-      Promise.resolve().then(() => reopened.readRevision(revision))
-    ).rejects.toMatchObject({
-      code: 'recovery_required',
-    });
-    await expect(
-      Promise.resolve().then(() => reopened.initialize({ metadata: metadata('repair') }))
-    ).rejects.toMatchObject({
-      code: 'recovery_required',
-    });
-    expect((await readFile(path.join(repositoryPath, 'refs/heads/published'), 'utf8')).trim()).toBe(
-      revision
-    );
-    // Restore only the test-owned fault so cleanup never leaves a deliberately corrupt repository.
-    await writeFile(objectPath, originalBytes);
-    expect((await reopened.readRevision(revision)).files['a.md']).toBe(page('A', 'retained'));
-  });
+      await expect(
+        Promise.resolve().then(() => reopened.readRevision(revision))
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+      await expect(
+        Promise.resolve().then(() => reopened.initialize({ metadata: metadata('repair') }))
+      ).rejects.toMatchObject({
+        code: 'recovery_required',
+      });
+      expect(
+        (await readFile(path.join(repositoryPath, 'refs/heads/published'), 'utf8')).trim()
+      ).toBe(revision);
+      // Restore only the test-owned fault so cleanup never leaves a deliberately corrupt repository.
+      await writeFile(objectPath, originalBytes);
+      expect((await reopened.readRevision(revision)).files['a.md']).toBe(page('A', 'retained'));
+    }
+  );
 });
 
 describe('KnowledgeNotebook complete same-deployment graph validation', () => {
@@ -855,41 +857,40 @@ describe('KnowledgeNotebook complete same-deployment graph validation', () => {
     );
   });
 
-  it.each([
-    'metadata',
-    'utf8',
-    'mode',
-  ] as const)('rejects unreferenced %s corruption even though fsck alone accepts the objects', async (fault) => {
-    const { repositoryPath, notebook, revision } = await fixture();
-    let tree: string | undefined;
-    if (fault !== 'metadata') {
-      const index = await git(repositoryPath, ['hash-object', '-w', '--stdin'], ROOT_INDEX);
-      const blob = await git(
+  it.each(['metadata', 'utf8', 'mode'] as const)(
+    'rejects unreferenced %s corruption even though fsck alone accepts the objects',
+    async (fault) => {
+      const { repositoryPath, notebook, revision } = await fixture();
+      let tree: string | undefined;
+      if (fault !== 'metadata') {
+        const index = await git(repositoryPath, ['hash-object', '-w', '--stdin'], ROOT_INDEX);
+        const blob = await git(
+          repositoryPath,
+          ['hash-object', '-w', '--stdin'],
+          fault === 'utf8' ? Buffer.from([0xff]) : '../../outside'
+        );
+        const pages = await git(
+          repositoryPath,
+          ['mktree'],
+          `100644 blob ${index}\tindex.md\n${fault === 'mode' ? '120000' : '100644'} blob ${blob}\tinvalid.md\n`
+        );
+        tree = await git(repositoryPath, ['mktree'], `040000 tree ${pages}\tpages\n`);
+      }
+      const unreferenced = await rawCommit(
         repositoryPath,
-        ['hash-object', '-w', '--stdin'],
-        fault === 'utf8' ? Buffer.from([0xff]) : '../../outside'
+        revision,
+        fault === 'metadata' ? 'not service metadata' : JSON.stringify(metadata('invalid')),
+        tree
       );
-      const pages = await git(
-        repositoryPath,
-        ['mktree'],
-        `100644 blob ${index}\tindex.md\n${fault === 'mode' ? '120000' : '100644'} blob ${blob}\tinvalid.md\n`
+      await git(repositoryPath, ['fsck', '--strict', '--full', '--no-reflogs', '--no-dangling']);
+      expect(() => notebook.validateRetainedGraph()).toThrowError(
+        expect.objectContaining({ code: 'recovery_required' })
       );
-      tree = await git(repositoryPath, ['mktree'], `040000 tree ${pages}\tpages\n`);
+      expect(notebook.history().revisions.map((record) => record.revision)).not.toContain(
+        unreferenced
+      );
     }
-    const unreferenced = await rawCommit(
-      repositoryPath,
-      revision,
-      fault === 'metadata' ? 'not service metadata' : JSON.stringify(metadata('invalid')),
-      tree
-    );
-    await git(repositoryPath, ['fsck', '--strict', '--full', '--no-reflogs', '--no-dangling']);
-    expect(() => notebook.validateRetainedGraph()).toThrowError(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
-    expect(notebook.history().revisions.map((record) => record.revision)).not.toContain(
-      unreferenced
-    );
-  });
+  );
 });
 
 describe('KnowledgeNotebook history immutable inspection work', () => {
@@ -900,88 +901,91 @@ describe('KnowledgeNotebook history immutable inspection work', () => {
     ['sql', 'default'],
     ['sql', 'published'],
     ['sql', 'ancestor'],
-  ] as const)('inspects each required record once for %s selection and %s cursor', async (selection, cursor) => {
-    const { repositoryPath, notebook, revision } = await fixture();
-    const versions = [revision];
-    const facts = [metadata()];
-    for (let index = 1; index <= 3; index += 1) {
-      const baseRevision = versions.at(-1)!;
-      const commitMetadata = metadata(`inspection-${index}`, `History revision ${index}`);
-      const candidateRevision = notebook.prepare({
-        baseRevision,
-        changes: { 'a.md': page('A', `Retained body ${index}`) },
-        metadata: commitMetadata,
+  ] as const)(
+    'inspects each required record once for %s selection and %s cursor',
+    async (selection, cursor) => {
+      const { repositoryPath, notebook, revision } = await fixture();
+      const versions = [revision];
+      const facts = [metadata()];
+      for (let index = 1; index <= 3; index += 1) {
+        const baseRevision = versions.at(-1)!;
+        const commitMetadata = metadata(`inspection-${index}`, `History revision ${index}`);
+        const candidateRevision = notebook.prepare({
+          baseRevision,
+          changes: { 'a.md': page('A', `Retained body ${index}`) },
+          metadata: commitMetadata,
+        });
+        notebook.publish({ baseRevision, candidateRevision });
+        versions.push(candidateRevision);
+        facts.push(commitMetadata);
+      }
+      // SQL selection must remain authoritative even when the Git ref names a newer commit.
+      const selectedIndex = selection === 'sql' ? 2 : 3;
+      const selected = new KnowledgeNotebook({
+        repositoryPath,
+        ...(selection === 'sql' ? { selectedRevision: versions[selectedIndex]! } : {}),
       });
-      notebook.publish({ baseRevision, candidateRevision });
-      versions.push(candidateRevision);
-      facts.push(commitMetadata);
-    }
-    // SQL selection must remain authoritative even when the Git ref names a newer commit.
-    const selectedIndex = selection === 'sql' ? 2 : 3;
-    const selected = new KnowledgeNotebook({
-      repositoryPath,
-      ...(selection === 'sql' ? { selectedRevision: versions[selectedIndex]! } : {}),
-    });
-    const firstIndex = cursor === 'ancestor' ? selectedIndex - 1 : selectedIndex;
-    const limit = cursor === 'ancestor' ? 1 : 2;
-    const expected = {
-      revisions: Array.from({ length: limit }, (_, offset) => {
-        const index = firstIndex - offset;
-        return {
-          revision: versions[index],
-          parentRevision: versions[index - 1] ?? null,
-          metadata: facts[index],
-        };
-      }),
-      nextRevision: versions[firstIndex - limit] ?? null,
-    };
-    const { vi } = await import('vitest');
-    const { default: childProcess } = await import('node:child_process');
-    const { syncBuiltinESMExports } = await import('node:module');
-    // Call through to native Git; no Notebook method or object result is replaced.
-    const reads = vi.spyOn(childProcess, 'execFileSync');
-    syncBuiltinESMExports();
-    try {
-      expect(
-        selected.history({
-          ...(cursor === 'default' ? {} : { revision: versions[firstIndex]! }),
-          limit,
-        })
-      ).toEqual(expected);
-      const repositoryArgument = `--git-dir=${repositoryPath}`;
-      const commands = reads.mock.calls.flatMap(([file, args]) =>
-        file === 'git' && Array.isArray(args) && args.includes(repositoryArgument)
-          ? [args.slice(args.indexOf(repositoryArgument) + 1)]
-          : []
-      );
-      const requiredRevisions = [
-        ...new Set([
-          versions[selectedIndex]!,
-          ...expected.revisions.map((record) => record.revision!),
-        ]),
-      ].sort();
-      // Engineer's performance criterion: validate each required immutable record once per call.
-      // Notebook spec, Content, Revisions And History: exact metadata and tree validation remain required.
-      expect(
-        commands
-          .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
-          .map((args) => args[2])
-          .sort()
-      ).toEqual(requiredRevisions);
-      expect(
-        commands
-          .filter((args) => args[0] === 'ls-tree')
-          .map((args) => args.at(-1))
-          .sort()
-      ).toEqual(requiredRevisions);
-      expect(commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')).toHaveLength(
-        0
-      );
-    } finally {
-      reads.mockRestore();
+      const firstIndex = cursor === 'ancestor' ? selectedIndex - 1 : selectedIndex;
+      const limit = cursor === 'ancestor' ? 1 : 2;
+      const expected = {
+        revisions: Array.from({ length: limit }, (_, offset) => {
+          const index = firstIndex - offset;
+          return {
+            revision: versions[index],
+            parentRevision: versions[index - 1] ?? null,
+            metadata: facts[index],
+          };
+        }),
+        nextRevision: versions[firstIndex - limit] ?? null,
+      };
+      const { vi } = await import('vitest');
+      const { default: childProcess } = await import('node:child_process');
+      const { syncBuiltinESMExports } = await import('node:module');
+      // Call through to native Git; no Notebook method or object result is replaced.
+      const reads = vi.spyOn(childProcess, 'execFileSync');
       syncBuiltinESMExports();
+      try {
+        expect(
+          selected.history({
+            ...(cursor === 'default' ? {} : { revision: versions[firstIndex]! }),
+            limit,
+          })
+        ).toEqual(expected);
+        const repositoryArgument = `--git-dir=${repositoryPath}`;
+        const commands = reads.mock.calls.flatMap(([file, args]) =>
+          file === 'git' && Array.isArray(args) && args.includes(repositoryArgument)
+            ? [args.slice(args.indexOf(repositoryArgument) + 1)]
+            : []
+        );
+        const requiredRevisions = [
+          ...new Set([
+            versions[selectedIndex]!,
+            ...expected.revisions.map((record) => record.revision!),
+          ]),
+        ].sort();
+        // Engineer's performance criterion: validate each required immutable record once per call.
+        // Notebook spec, Content, Revisions And History: exact metadata and tree validation remain required.
+        expect(
+          commands
+            .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
+            .map((args) => args[2])
+            .sort()
+        ).toEqual(requiredRevisions);
+        expect(
+          commands
+            .filter((args) => args[0] === 'ls-tree')
+            .map((args) => args.at(-1))
+            .sort()
+        ).toEqual(requiredRevisions);
+        expect(
+          commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')
+        ).toHaveLength(0);
+      } finally {
+        reads.mockRestore();
+        syncBuiltinESMExports();
+      }
     }
-  });
+  );
 });
 
 // Append-only draft for apps/nanocore/src/knowledge/notebook.test.ts.
@@ -992,150 +996,148 @@ describe('KnowledgeNotebook history immutable inspection work', () => {
 // strict metadata/tree/Source validation, fresh public reads and no publication by preparation.
 
 describe('KnowledgeNotebook synchronous Page and Source inspection work', () => {
-  it.each([
-    'readSourcePointers',
-    'readContent',
-    'prepareSourcePointers',
-    'prepare',
-  ] as const)('loads one immutable tree in %s without changing retained Page or Source bytes', async (operation) => {
-    const before = page('Edited', 'Original authored page.\r\n\t  ');
-    const after = page('Edited', 'Explicit replacement page.\r\n');
-    const untouched = page('Untouched', 'Unknown descriptive bytes remain.\r\n\t  ');
-    const sourceBytes = '\uFEFF# Source pointer\r\nExact retained Source bytes.\r\n';
-    const addedBytes = '# Another Source pointer\r\nExact new Source bytes.\r\n';
-    const { notebook, repositoryPath, revision } = await fixture({
-      'edited.md': before,
-      'untouched.md': untouched,
-    });
-    const sourceId = allocateEntityId('ks');
-    const addedId = allocateEntityId('ks');
-    const baseFacts = metadata('sync-source-base');
-    const baseRevision = notebook.prepareSourcePointers({
-      baseRevision: revision,
-      changes: { [sourceId]: sourceBytes },
-      metadata: baseFacts,
-    });
-    notebook.publish({ baseRevision: revision, candidateRevision: baseRevision });
-    const facts = metadata(`sync-${operation}`);
-    const { vi } = await import('vitest');
-    const { default: childProcess } = await import('node:child_process');
-    const { syncBuiltinESMExports } = await import('node:module');
-    // Observe the real public operation's native processes; the spy calls through unchanged.
-    const processes = vi.spyOn(childProcess, 'execFileSync');
-    syncBuiltinESMExports();
-    let result: string | Readonly<Record<string, string>> | undefined;
-    let commands: string[][] = [];
-    try {
-      switch (operation) {
-        case 'readSourcePointers':
-          result = notebook.readSourcePointers(baseRevision);
-          break;
-        case 'readContent':
-          result = notebook.readContent(baseRevision);
-          break;
-        case 'prepareSourcePointers':
-          result = notebook.prepareSourcePointers({
-            baseRevision,
-            changes: { [addedId]: addedBytes },
-            metadata: facts,
-          });
-          break;
-        case 'prepare':
-          result = notebook.prepare({
-            baseRevision,
-            changes: { 'edited.md': after },
-            metadata: facts,
-          });
-          break;
-      }
-    } finally {
-      const repositoryArgument = `--git-dir=${repositoryPath}`;
-      commands = processes.mock.calls.flatMap(([file, args]) =>
-        file === 'git' && Array.isArray(args) && args.includes(repositoryArgument)
-          ? [args.slice(args.indexOf(repositoryArgument) + 1)]
-          : []
-      );
-      processes.mockRestore();
-      syncBuiltinESMExports();
-    }
-
-    const original: Record<string, string> = {
-      'pages/index.md': ROOT_INDEX,
-      'pages/edited.md': before,
-      'pages/untouched.md': untouched,
-      [`sources/${sourceId}.md`]: sourceBytes,
-    };
-    const expected = { ...original };
-    if (operation === 'prepare') expected['pages/edited.md'] = after;
-    if (operation === 'prepareSourcePointers') expected[`sources/${addedId}.md`] = addedBytes;
-    if (operation === 'readSourcePointers') expect(result).toEqual({ [sourceId]: sourceBytes });
-    if (operation === 'readContent') {
-      expect(result).toEqual({
-        'index.md': ROOT_INDEX,
+  it.each(['readSourcePointers', 'readContent', 'prepareSourcePointers', 'prepare'] as const)(
+    'loads one immutable tree in %s without changing retained Page or Source bytes',
+    async (operation) => {
+      const before = page('Edited', 'Original authored page.\r\n\t  ');
+      const after = page('Edited', 'Explicit replacement page.\r\n');
+      const untouched = page('Untouched', 'Unknown descriptive bytes remain.\r\n\t  ');
+      const sourceBytes = '\uFEFF# Source pointer\r\nExact retained Source bytes.\r\n';
+      const addedBytes = '# Another Source pointer\r\nExact new Source bytes.\r\n';
+      const { notebook, repositoryPath, revision } = await fixture({
         'edited.md': before,
         'untouched.md': untouched,
-        [`@sources/${sourceId}.md`]: sourceBytes,
       });
-    }
-    const observedRevision = typeof result === 'string' ? result : baseRevision;
-    if (operation === 'prepare' || operation === 'prepareSourcePointers') {
-      expect(typeof result).toBe('string');
-      expect(observedRevision).not.toBe(baseRevision);
-      expect(notebook.inspectRevision(observedRevision)).toMatchObject({
-        revision: observedRevision,
-        parentRevision: baseRevision,
-        metadata: facts,
+      const sourceId = allocateEntityId('ks');
+      const addedId = allocateEntityId('ks');
+      const baseFacts = metadata('sync-source-base');
+      const baseRevision = notebook.prepareSourcePointers({
+        baseRevision: revision,
+        changes: { [sourceId]: sourceBytes },
+        metadata: baseFacts,
       });
-    }
-    const inspected = notebook.inspectRevision(baseRevision);
-    // The public inspection result remains Page-only, with no new Source result field.
-    expect(Object.keys(inspected).sort()).toEqual([
-      'entries',
-      'metadata',
-      'parentRevision',
-      'revision',
-    ]);
-    expect(Object.keys(inspected.entries).sort()).toEqual([
-      'edited.md',
-      'index.md',
-      'untouched.md',
-    ]);
-    expect(inspected).toMatchObject({ parentRevision: revision, metadata: baseFacts });
-    expect(notebook.publishedRevision()).toBe(baseRevision);
-    expect(await git(repositoryPath, ['rev-parse', 'refs/heads/published'])).toBe(baseRevision);
-    // Independent raw Git observations retain every byte, including BOM, CRLF and final whitespace.
-    for (const [commit, files] of [
-      [baseRevision, original],
-      [observedRevision, expected],
-    ] as const) {
-      expect(await git(repositoryPath, ['ls-tree', '-r', '--name-only', commit])).toBe(
-        Object.keys(files).sort().join('\n')
-      );
-      for (const [filePath, bytes] of Object.entries(files)) {
-        const raw = await execFileAsync('git', [
-          '--git-dir',
-          repositoryPath,
-          'cat-file',
-          'blob',
-          `${commit}:${filePath}`,
-        ]);
-        expect(raw.stdout).toBe(bytes);
+      notebook.publish({ baseRevision: revision, candidateRevision: baseRevision });
+      const facts = metadata(`sync-${operation}`);
+      const { vi } = await import('vitest');
+      const { default: childProcess } = await import('node:child_process');
+      const { syncBuiltinESMExports } = await import('node:module');
+      // Observe the real public operation's native processes; the spy calls through unchanged.
+      const processes = vi.spyOn(childProcess, 'execFileSync');
+      syncBuiltinESMExports();
+      let result: string | Readonly<Record<string, string>> | undefined;
+      let commands: string[][] = [];
+      try {
+        switch (operation) {
+          case 'readSourcePointers':
+            result = notebook.readSourcePointers(baseRevision);
+            break;
+          case 'readContent':
+            result = notebook.readContent(baseRevision);
+            break;
+          case 'prepareSourcePointers':
+            result = notebook.prepareSourcePointers({
+              baseRevision,
+              changes: { [addedId]: addedBytes },
+              metadata: facts,
+            });
+            break;
+          case 'prepare':
+            result = notebook.prepare({
+              baseRevision,
+              changes: { 'edited.md': after },
+              metadata: facts,
+            });
+            break;
+        }
+      } finally {
+        const repositoryArgument = `--git-dir=${repositoryPath}`;
+        commands = processes.mock.calls.flatMap(([file, args]) =>
+          file === 'git' && Array.isArray(args) && args.includes(repositoryArgument)
+            ? [args.slice(args.indexOf(repositoryArgument) + 1)]
+            : []
+        );
+        processes.mockRestore();
+        syncBuiltinESMExports();
       }
+
+      const original: Record<string, string> = {
+        'pages/index.md': ROOT_INDEX,
+        'pages/edited.md': before,
+        'pages/untouched.md': untouched,
+        [`sources/${sourceId}.md`]: sourceBytes,
+      };
+      const expected = { ...original };
+      if (operation === 'prepare') expected['pages/edited.md'] = after;
+      if (operation === 'prepareSourcePointers') expected[`sources/${addedId}.md`] = addedBytes;
+      if (operation === 'readSourcePointers') expect(result).toEqual({ [sourceId]: sourceBytes });
+      if (operation === 'readContent') {
+        expect(result).toEqual({
+          'index.md': ROOT_INDEX,
+          'edited.md': before,
+          'untouched.md': untouched,
+          [`@sources/${sourceId}.md`]: sourceBytes,
+        });
+      }
+      const observedRevision = typeof result === 'string' ? result : baseRevision;
+      if (operation === 'prepare' || operation === 'prepareSourcePointers') {
+        expect(typeof result).toBe('string');
+        expect(observedRevision).not.toBe(baseRevision);
+        expect(notebook.inspectRevision(observedRevision)).toMatchObject({
+          revision: observedRevision,
+          parentRevision: baseRevision,
+          metadata: facts,
+        });
+      }
+      const inspected = notebook.inspectRevision(baseRevision);
+      // The public inspection result remains Page-only, with no new Source result field.
+      expect(Object.keys(inspected).sort()).toEqual([
+        'entries',
+        'metadata',
+        'parentRevision',
+        'revision',
+      ]);
+      expect(Object.keys(inspected.entries).sort()).toEqual([
+        'edited.md',
+        'index.md',
+        'untouched.md',
+      ]);
+      expect(inspected).toMatchObject({ parentRevision: revision, metadata: baseFacts });
+      expect(notebook.publishedRevision()).toBe(baseRevision);
+      expect(await git(repositoryPath, ['rev-parse', 'refs/heads/published'])).toBe(baseRevision);
+      // Independent raw Git observations retain every byte, including BOM, CRLF and final whitespace.
+      for (const [commit, files] of [
+        [baseRevision, original],
+        [observedRevision, expected],
+      ] as const) {
+        expect(await git(repositoryPath, ['ls-tree', '-r', '--name-only', commit])).toBe(
+          Object.keys(files).sort().join('\n')
+        );
+        for (const [filePath, bytes] of Object.entries(files)) {
+          const raw = await execFileAsync('git', [
+            '--git-dir',
+            repositoryPath,
+            'cat-file',
+            'blob',
+            `${commit}:${filePath}`,
+          ]);
+          expect(raw.stdout).toBe(bytes);
+        }
+      }
+      // Omitted Page bodies are not loaded by Source reads or either preparation operation.
+      expect(commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')).toHaveLength(
+        operation === 'readContent' ? 4 : operation === 'readSourcePointers' ? 1 : 0
+      );
+      expect(
+        commands
+          .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
+          .map((args) => args[2])
+      ).toEqual([baseRevision]);
+      // Expected RED on the baseline: all four operations perform two real ls-tree processes.
+      const trees = commands.filter((args) => args[0] === 'ls-tree');
+      expect(trees).toHaveLength(1);
+      expect(trees[0]).toContain(baseRevision);
     }
-    // Omitted Page bodies are not loaded by Source reads or either preparation operation.
-    expect(commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')).toHaveLength(
-      operation === 'readContent' ? 4 : operation === 'readSourcePointers' ? 1 : 0
-    );
-    expect(
-      commands
-        .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
-        .map((args) => args[2])
-    ).toEqual([baseRevision]);
-    // Expected RED on the baseline: all four operations perform two real ls-tree processes.
-    const trees = commands.filter((args) => args[0] === 'ls-tree');
-    expect(trees).toHaveLength(1);
-    expect(trees[0]).toContain(baseRevision);
-  });
+  );
 
   it.each([
     'unsupported metadata',
@@ -1485,86 +1487,89 @@ function registerRetainedFormatMarkerTests() {
       ['wrong-version', 'openkit-knowledge-notebook-commit-v2'],
       ['null', null],
       ['wrong-type', 1],
-    ])('M1 explicit %s fails metadata validation and cold inspectRevision without repair', (_label, schemaVersion) => {
-      const message = `${JSON.stringify({ schemaVersion, ...facts })}\n`;
-      expect(KnowledgeNotebookCommitMetadataSchema.safeParse(JSON.parse(message)).success).toBe(
-        false
-      );
-      const f = fixture();
-      const revision = f.retain(message);
-      const before = git(f.repositoryPath, ['cat-file', 'commit', revision]);
-      const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
-      expect(() => reopened.inspectRevision(revision)).toThrowError(
-        expect.objectContaining({ code: 'recovery_required' })
-      );
-      expect(git(f.repositoryPath, ['cat-file', 'commit', revision])).toBe(before);
-      expect(git(f.repositoryPath, ['rev-parse', 'refs/heads/published']).trim()).toBe(revision);
-    });
-
-    it.each([
-      'historical',
-      'marked',
-    ] as const)('Content, Revisions And History: %s canonical commit JSON and duplicate-key refusals still hold', (format) => {
-      const f = fixture();
-      // Use the real writer's field order for marked v1; no new order is prescribed by M1.
-      const base = f.notebook.publishedRevision();
-      const object = git(f.repositoryPath, ['cat-file', 'commit', base]);
-      const message =
-        format === 'historical' ? historicalMessage : object.slice(object.indexOf('\n\n') + 2);
-      if (format === 'marked') {
-        expect(JSON.parse(message).schemaVersion).toBe('openkit-knowledge-notebook-commit-v1');
+    ])(
+      'M1 explicit %s fails metadata validation and cold inspectRevision without repair',
+      (_label, schemaVersion) => {
+        const message = `${JSON.stringify({ schemaVersion, ...facts })}\n`;
+        expect(KnowledgeNotebookCommitMetadataSchema.safeParse(JSON.parse(message)).success).toBe(
+          false
+        );
+        const f = fixture();
+        const revision = f.retain(message);
+        const before = git(f.repositoryPath, ['cat-file', 'commit', revision]);
+        const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
+        expect(() => reopened.inspectRevision(revision)).toThrowError(
+          expect.objectContaining({ code: 'recovery_required' })
+        );
+        expect(git(f.repositoryPath, ['cat-file', 'commit', revision])).toBe(before);
+        expect(git(f.repositoryPath, ['rev-parse', 'refs/heads/published']).trim()).toBe(revision);
       }
-      const valid = f.retain(message);
-      expect(f.notebook.inspectRevision(valid).metadata).toEqual(facts);
-      const faults = [
-        ['noncanonical whitespace', message.replace('{', '{ ')],
-        [
-          'noncanonical field order',
-          `${JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(message)).reverse()))}\n`,
-        ],
-        [
-          'duplicate authority',
-          message.replace(
-            '"authority":',
-            '"authority":{"kind":"direct","instructionReference":"item:forged"},"authority":'
-          ),
-        ],
-        [
-          'duplicate nested key',
-          message.replace('"kind":"direct"', '"kind":"proposal","kind":"direct"'),
-        ],
-        ['trailing second object', `${message}{}`],
-      ];
-      if (format === 'marked') {
-        faults.push(
+    );
+
+    it.each(['historical', 'marked'] as const)(
+      'Content, Revisions And History: %s canonical commit JSON and duplicate-key refusals still hold',
+      (format) => {
+        const f = fixture();
+        // Use the real writer's field order for marked v1; no new order is prescribed by M1.
+        const base = f.notebook.publishedRevision();
+        const object = git(f.repositoryPath, ['cat-file', 'commit', base]);
+        const message =
+          format === 'historical' ? historicalMessage : object.slice(object.indexOf('\n\n') + 2);
+        if (format === 'marked') {
+          expect(JSON.parse(message).schemaVersion).toBe('openkit-knowledge-notebook-commit-v1');
+        }
+        const valid = f.retain(message);
+        expect(f.notebook.inspectRevision(valid).metadata).toEqual(facts);
+        const faults = [
+          ['noncanonical whitespace', message.replace('{', '{ ')],
           [
-            'duplicate version',
+            'noncanonical field order',
+            `${JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(message)).reverse()))}\n`,
+          ],
+          [
+            'duplicate authority',
             message.replace(
-              '"schemaVersion":',
-              '"schemaVersion":"openkit-knowledge-notebook-commit-v1","schemaVersion":'
+              '"authority":',
+              '"authority":{"kind":"direct","instructionReference":"item:forged"},"authority":'
             ),
           ],
           [
-            'shadowed wrong version',
-            message.replace(
-              '"schemaVersion":',
-              '"schemaVersion":"openkit-knowledge-notebook-commit-v2","schemaVersion":'
-            ),
-          ]
-        );
+            'duplicate nested key',
+            message.replace('"kind":"direct"', '"kind":"proposal","kind":"direct"'),
+          ],
+          ['trailing second object', `${message}{}`],
+        ];
+        if (format === 'marked') {
+          faults.push(
+            [
+              'duplicate version',
+              message.replace(
+                '"schemaVersion":',
+                '"schemaVersion":"openkit-knowledge-notebook-commit-v1","schemaVersion":'
+              ),
+            ],
+            [
+              'shadowed wrong version',
+              message.replace(
+                '"schemaVersion":',
+                '"schemaVersion":"openkit-knowledge-notebook-commit-v2","schemaVersion":'
+              ),
+            ]
+          );
+        }
+        for (const [label, invalid] of faults) {
+          const revision = f.retain(invalid!);
+          const before = git(f.repositoryPath, ['cat-file', 'commit', revision]);
+          expect(() => f.notebook.inspectRevision(revision), label).toThrowError(
+            expect.objectContaining({ code: 'recovery_required' })
+          );
+          expect(git(f.repositoryPath, ['cat-file', 'commit', revision]), label).toBe(before);
+          expect(git(f.repositoryPath, ['rev-parse', 'refs/heads/published']).trim(), label).toBe(
+            revision
+          );
+        }
       }
-      for (const [label, invalid] of faults) {
-        const revision = f.retain(invalid!);
-        const before = git(f.repositoryPath, ['cat-file', 'commit', revision]);
-        expect(() => f.notebook.inspectRevision(revision), label).toThrowError(
-          expect.objectContaining({ code: 'recovery_required' })
-        );
-        expect(git(f.repositoryPath, ['cat-file', 'commit', revision]), label).toBe(before);
-        expect(git(f.repositoryPath, ['rev-parse', 'refs/heads/published']).trim(), label).toBe(
-          revision
-        );
-      }
-    });
+    );
   });
 }
 registerRetainedFormatMarkerTests();

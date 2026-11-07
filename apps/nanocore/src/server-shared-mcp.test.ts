@@ -1037,130 +1037,128 @@ describe('Server-shared MCP through governed Worker routes', () => {
     expect(JSON.stringify(f.outputs)).not.toContain(canary);
   });
 
-  it.each([
-    'rotate',
-    'rotate-canonical-only',
-    'lock',
-  ] as const)('rechecks %s material after asynchronous discovery and sends no tools/call', async (change) => {
-    const f = await fixture();
-    const { reference } = await sharedSetup(f);
-    const worker = await f.worker(f.workspaces[0]!.id);
-    const entered = f.upstream.holdDiscovery();
-    const pending = worker.call('must-not-use-stale-material');
-    try {
-      await Promise.race([
-        entered,
-        pending.then(() => {
-          throw new Error('Worker request settled before the discovery gate.');
-        }),
-      ]);
-      let mutation: Promise<unknown> = Promise.resolve();
-      if (change === 'lock') {
-        f.vaultUnlockState.lock();
-      } else if (change === 'rotate-canonical-only') {
-        // Keep the connection alive to isolate the final material identity check from teardown.
-        const rotated = f.vaultUnlockState.backend().rotate({
-          referenceId: reference.referenceId,
-          material: 'synthetic-rotated-shared-material',
-        });
-        await advanceActiveVaultReferenceVersion(f.coreDb, {
-          referenceId: reference.referenceId,
-          currentVersion: rotated.currentVersion,
-        });
-      } else {
-        mutation = f.call('vault.server-mcp-secret-rotate', {
-          referenceId: reference.referenceId,
-          material: 'synthetic-rotated-shared-material',
-        });
-        await vi.waitFor(() => {
-          expect(
-            f.vaultUnlockState
-              .backend()
-              .listReferences()
-              .find((item) => item.referenceId === reference.referenceId)?.currentVersion
-          ).toBe(2);
-        });
-      }
-      f.upstream.releaseDiscovery();
-      await mutation;
-      expectRefusal(await pending);
-      expect(f.upstream.methods).not.toContain('tools/call');
-    } finally {
-      f.upstream.releaseDiscovery();
-      await pending;
-    }
-  });
-
-  it.each([
-    'grant-revoke',
-    'server-disable',
-    'server-disable-canonical-only',
-  ] as const)('rechecks %s after asynchronous discovery and sends no tools/call', async (change) => {
-    const f = await fixture();
-    const { grant } = await sharedSetup(f);
-    const workspaceId = f.workspaces[0]!.id;
-    const worker = await f.worker(workspaceId);
-    const entered = f.upstream.holdDiscovery();
-    const pending = worker.call('must-not-dispatch');
-    try {
-      await Promise.race([
-        entered,
-        pending.then(() => {
-          throw new Error('Worker request settled before the discovery gate.');
-        }),
-      ]);
-      const mutation =
-        change === 'grant-revoke'
-          ? f.call('vault.server-mcp-grant-revoke', { grantId: grant.grantId })
-          : (() => {
-              const catalog = loadResourceCatalog(f.dataRoot, { kind: 'server' });
-              const binding = catalog.mcp.bindings.find((entry) => entry.entryId === serverId)!;
-              if (change === 'server-disable-canonical-only') {
-                // Keep the transport alive and loaded config unchanged to isolate the final canonical effect check.
-                return Promise.resolve(
-                  updateMcpBinding({
-                    dataRoot: f.dataRoot,
-                    owner: { kind: 'server' },
-                    entryId: serverId,
-                    expectedRevision: catalog.revision,
-                    binding: { ...binding, enabled: false },
-                  })
-                );
-              }
-              return f.call('administration.server-mcp-update-binding', {
-                mcpId: serverId,
-                expectedRevision: catalog.revision,
-                bindingRevision: binding.revision,
-                enabled: false,
-                allowedTools: ['echo'],
-                schemaPolicy: 'tracking',
-              });
-            })();
-      // The catalog/Vault mutation may also await connection cleanup; release after authority commits.
-      await vi.waitFor(() => {
-        if (change !== 'grant-revoke') {
-          expect(
-            loadResourceCatalog(f.dataRoot, { kind: 'server' }).mcp.bindings.find(
-              (entry) => entry.entryId === serverId
-            )?.enabled
-          ).toBe(false);
+  it.each(['rotate', 'rotate-canonical-only', 'lock'] as const)(
+    'rechecks %s material after asynchronous discovery and sends no tools/call',
+    async (change) => {
+      const f = await fixture();
+      const { reference } = await sharedSetup(f);
+      const worker = await f.worker(f.workspaces[0]!.id);
+      const entered = f.upstream.holdDiscovery();
+      const pending = worker.call('must-not-use-stale-material');
+      try {
+        await Promise.race([
+          entered,
+          pending.then(() => {
+            throw new Error('Worker request settled before the discovery gate.');
+          }),
+        ]);
+        let mutation: Promise<unknown> = Promise.resolve();
+        if (change === 'lock') {
+          f.vaultUnlockState.lock();
+        } else if (change === 'rotate-canonical-only') {
+          // Keep the connection alive to isolate the final material identity check from teardown.
+          const rotated = f.vaultUnlockState.backend().rotate({
+            referenceId: reference.referenceId,
+            material: 'synthetic-rotated-shared-material',
+          });
+          await advanceActiveVaultReferenceVersion(f.coreDb, {
+            referenceId: reference.referenceId,
+            currentVersion: rotated.currentVersion,
+          });
         } else {
-          expect(
-            f.coreDb.sqlite
-              .prepare('SELECT status FROM vault_grants WHERE grant_id = ?')
-              .get(grant.grantId)
-          ).toEqual({ status: 'revoked' });
+          mutation = f.call('vault.server-mcp-secret-rotate', {
+            referenceId: reference.referenceId,
+            material: 'synthetic-rotated-shared-material',
+          });
+          await vi.waitFor(() => {
+            expect(
+              f.vaultUnlockState
+                .backend()
+                .listReferences()
+                .find((item) => item.referenceId === reference.referenceId)?.currentVersion
+            ).toBe(2);
+          });
         }
-      });
-      f.upstream.releaseDiscovery();
-      await mutation;
-      expectRefusal(await pending);
-      expect(f.upstream.methods).not.toContain('tools/call');
-    } finally {
-      f.upstream.releaseDiscovery();
-      await pending;
+        f.upstream.releaseDiscovery();
+        await mutation;
+        expectRefusal(await pending);
+        expect(f.upstream.methods).not.toContain('tools/call');
+      } finally {
+        f.upstream.releaseDiscovery();
+        await pending;
+      }
     }
-  });
+  );
+
+  it.each(['grant-revoke', 'server-disable', 'server-disable-canonical-only'] as const)(
+    'rechecks %s after asynchronous discovery and sends no tools/call',
+    async (change) => {
+      const f = await fixture();
+      const { grant } = await sharedSetup(f);
+      const workspaceId = f.workspaces[0]!.id;
+      const worker = await f.worker(workspaceId);
+      const entered = f.upstream.holdDiscovery();
+      const pending = worker.call('must-not-dispatch');
+      try {
+        await Promise.race([
+          entered,
+          pending.then(() => {
+            throw new Error('Worker request settled before the discovery gate.');
+          }),
+        ]);
+        const mutation =
+          change === 'grant-revoke'
+            ? f.call('vault.server-mcp-grant-revoke', { grantId: grant.grantId })
+            : (() => {
+                const catalog = loadResourceCatalog(f.dataRoot, { kind: 'server' });
+                const binding = catalog.mcp.bindings.find((entry) => entry.entryId === serverId)!;
+                if (change === 'server-disable-canonical-only') {
+                  // Keep the transport alive and loaded config unchanged to isolate the final canonical effect check.
+                  return Promise.resolve(
+                    updateMcpBinding({
+                      dataRoot: f.dataRoot,
+                      owner: { kind: 'server' },
+                      entryId: serverId,
+                      expectedRevision: catalog.revision,
+                      binding: { ...binding, enabled: false },
+                    })
+                  );
+                }
+                return f.call('administration.server-mcp-update-binding', {
+                  mcpId: serverId,
+                  expectedRevision: catalog.revision,
+                  bindingRevision: binding.revision,
+                  enabled: false,
+                  allowedTools: ['echo'],
+                  schemaPolicy: 'tracking',
+                });
+              })();
+        // The catalog/Vault mutation may also await connection cleanup; release after authority commits.
+        await vi.waitFor(() => {
+          if (change !== 'grant-revoke') {
+            expect(
+              loadResourceCatalog(f.dataRoot, { kind: 'server' }).mcp.bindings.find(
+                (entry) => entry.entryId === serverId
+              )?.enabled
+            ).toBe(false);
+          } else {
+            expect(
+              f.coreDb.sqlite
+                .prepare('SELECT status FROM vault_grants WHERE grant_id = ?')
+                .get(grant.grantId)
+            ).toEqual({ status: 'revoked' });
+          }
+        });
+        f.upstream.releaseDiscovery();
+        await mutation;
+        expectRefusal(await pending);
+        expect(f.upstream.methods).not.toContain('tools/call');
+      } finally {
+        f.upstream.releaseDiscovery();
+        await pending;
+      }
+    }
+  );
 });
 
 describe.skipIf(process.platform === 'win32')(
@@ -1173,152 +1171,157 @@ describe.skipIf(process.platform === 'win32')(
       ['grant', 'initializing', 'current-binding'],
       ['grant', 'in-flight', 'current-binding'],
       ['grant', 'resident', 'signal-refused'],
-    ] as const)('joins %s revocation to %s physical closure (%s)', async (target, phase, condition) => {
-      const f = await workspaceStdioFixture(phase === 'initializing');
-      let childPid = 0;
-      let activity: Promise<unknown> | undefined;
-      let gatewayOutcome: Promise<unknown> | undefined;
-      let mutation: Promise<unknown> | undefined;
-      let deadline: ReturnType<typeof setTimeout> | undefined;
-      let refusedSignal: ReturnType<typeof vi.spyOn> | undefined;
-      const kill = process.kill.bind(process);
-      try {
-        let pending: ReturnType<typeof f.worker.call> | undefined;
-        if (phase !== 'initializing') {
-          // Reuse exactly the input admitted by successful real Worker discovery. The Gateway
-          // owns this retained session and tool call without an unrelated native Worker ledger.
-          const discovery = vi.spyOn(f.workerMcpGateway, 'listTools');
-          expect((await f.worker.list()).status).toBe(200);
-          const admitted = discovery.mock.calls[0]![0];
-          discovery.mockRestore();
-          // Discovery closed its prior child. Both paths need fresh physical-session evidence.
-          for (const marker of [f.pidFile, f.descendantFile, f.requestFile])
-            rmSync(marker, { force: true });
-          if (phase === 'in-flight') {
-            gatewayOutcome = f.workerMcpGateway
-              .callTool({
-                ...admitted,
-                signal: undefined,
-                toolName: 'echo',
-                arguments: { message: 'timeout' },
-              })
-              .then(
-                () => null,
-                (error: unknown) => error
-              );
-            activity = gatewayOutcome.then(() => undefined);
+    ] as const)(
+      'joins %s revocation to %s physical closure (%s)',
+      async (target, phase, condition) => {
+        const f = await workspaceStdioFixture(phase === 'initializing');
+        let childPid = 0;
+        let activity: Promise<unknown> | undefined;
+        let gatewayOutcome: Promise<unknown> | undefined;
+        let mutation: Promise<unknown> | undefined;
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        let refusedSignal: ReturnType<typeof vi.spyOn> | undefined;
+        const kill = process.kill.bind(process);
+        try {
+          let pending: ReturnType<typeof f.worker.call> | undefined;
+          if (phase !== 'initializing') {
+            // Reuse exactly the input admitted by successful real Worker discovery. The Gateway
+            // owns this retained session and tool call without an unrelated native Worker ledger.
+            const discovery = vi.spyOn(f.workerMcpGateway, 'listTools');
+            expect((await f.worker.list()).status).toBe(200);
+            const admitted = discovery.mock.calls[0]![0];
+            discovery.mockRestore();
+            // Discovery closed its prior child. Both paths need fresh physical-session evidence.
+            for (const marker of [f.pidFile, f.descendantFile, f.requestFile])
+              rmSync(marker, { force: true });
+            if (phase === 'in-flight') {
+              gatewayOutcome = f.workerMcpGateway
+                .callTool({
+                  ...admitted,
+                  signal: undefined,
+                  toolName: 'echo',
+                  arguments: { message: 'timeout' },
+                })
+                .then(
+                  () => null,
+                  (error: unknown) => error
+                );
+              activity = gatewayOutcome.then(() => undefined);
+            } else {
+              await f.workerMcpGateway.listTools({ ...admitted, signal: undefined });
+            }
           } else {
-            await f.workerMcpGateway.listTools({ ...admitted, signal: undefined });
+            pending = f.worker.call('resident');
+            activity = pending.then(
+              () => undefined,
+              () => undefined
+            );
           }
-        } else {
-          pending = f.worker.call('resident');
-          activity = pending.then(
+          await vi.waitFor(() => expect(existsSync(f.pidFile)).toBe(true));
+          childPid = Number(readFileSync(f.pidFile, 'utf8'));
+          expect(Number.isInteger(childPid) && childPid > 1).toBe(true);
+          expect(kill(childPid, 0)).toBe(true);
+          if (phase === 'in-flight') {
+            await vi.waitFor(() => {
+              expect(existsSync(f.requestFile)).toBe(true);
+              expect(readFileSync(f.requestFile, 'utf8')).toContain('timeout');
+            });
+          }
+          const descendant =
+            phase === 'initializing'
+              ? undefined
+              : (JSON.parse(readFileSync(f.descendantFile, 'utf8')) as {
+                  pid: number;
+                  supervisorPid: number;
+                });
+          if (condition === 'removed-binding') {
+            const current = loadResourceCatalog(f.dataRoot, f.owner);
+            removeMcpEntry({
+              dataRoot: f.dataRoot,
+              owner: f.owner,
+              mcpId: serverId,
+              expectedRevision: current.revision,
+            });
+            expect(kill(childPid, 0)).toBe(true);
+          }
+          if (condition === 'signal-refused') {
+            const groupId = descendant!.supervisorPid;
+            refusedSignal = vi.spyOn(process, 'kill').mockImplementation(((
+              pid: number,
+              signal?: NodeJS.Signals | number
+            ) => {
+              if (pid === -groupId || pid === groupId) {
+                throw Object.assign(new Error('Fixture-owned group signal refused.'), {
+                  code: 'EPERM',
+                });
+              }
+              return kill(pid, signal);
+            }) as typeof process.kill);
+          }
+          const operation =
+            target === 'reference'
+              ? 'vault.secret-revoke'
+              : target === 'narrow'
+                ? 'vault.grant-narrow'
+                : 'vault.grant-revoke';
+          const input = {
+            workspaceId: f.workspaceId,
+            ...(target === 'reference'
+              ? { referenceId: f.reference.referenceId }
+              : { grantId: f.grant.grantId }),
+            ...(target === 'narrow'
+              ? { constraints: { targetCapabilityId: 'mcp.call-tool' } }
+              : {}),
+          };
+          const revoking = f.send(operation, input);
+          mutation = revoking.then(
             () => undefined,
             () => undefined
           );
-        }
-        await vi.waitFor(() => expect(existsSync(f.pidFile)).toBe(true));
-        childPid = Number(readFileSync(f.pidFile, 'utf8'));
-        expect(Number.isInteger(childPid) && childPid > 1).toBe(true);
-        expect(kill(childPid, 0)).toBe(true);
-        if (phase === 'in-flight') {
-          await vi.waitFor(() => {
-            expect(existsSync(f.requestFile)).toBe(true);
-            expect(readFileSync(f.requestFile, 'utf8')).toContain('timeout');
-          });
-        }
-        const descendant =
-          phase === 'initializing'
-            ? undefined
-            : (JSON.parse(readFileSync(f.descendantFile, 'utf8')) as {
-                pid: number;
-                supervisorPid: number;
-              });
-        if (condition === 'removed-binding') {
-          const current = loadResourceCatalog(f.dataRoot, f.owner);
-          removeMcpEntry({
-            dataRoot: f.dataRoot,
-            owner: f.owner,
-            mcpId: serverId,
-            expectedRevision: current.revision,
-          });
-          expect(kill(childPid, 0)).toBe(true);
-        }
-        if (condition === 'signal-refused') {
-          const groupId = descendant!.supervisorPid;
-          refusedSignal = vi.spyOn(process, 'kill').mockImplementation(((
-            pid: number,
-            signal?: NodeJS.Signals | number
-          ) => {
-            if (pid === -groupId || pid === groupId) {
-              throw Object.assign(new Error('Fixture-owned group signal refused.'), {
-                code: 'EPERM',
-              });
-            }
-            return kill(pid, signal);
-          }) as typeof process.kill);
-        }
-        const operation =
-          target === 'reference'
-            ? 'vault.secret-revoke'
-            : target === 'narrow'
-              ? 'vault.grant-narrow'
-              : 'vault.grant-revoke';
-        const input = {
-          workspaceId: f.workspaceId,
-          ...(target === 'reference'
-            ? { referenceId: f.reference.referenceId }
-            : { grantId: f.grant.grantId }),
-          ...(target === 'narrow' ? { constraints: { targetCapabilityId: 'mcp.call-tool' } } : {}),
-        };
-        const revoking = f.send(operation, input);
-        mutation = revoking.then(
-          () => undefined,
-          () => undefined
-        );
-        const response = await Promise.race([
-          revoking,
-          new Promise<never>((_, reject) => {
-            deadline = setTimeout(
-              () => reject(new Error('Revocation waited for the normal MCP request timeout.')),
-              4_000
-            );
-          }),
-        ]);
-        expect(getVaultGrant(f.coreDb, f.grant.grantId)?.status).toBe('revoked');
-        if (condition === 'signal-refused') {
-          expect(response.status).toBe(409);
-          await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
-          expect(kill(childPid, 0)).toBe(true);
-          expect(kill(descendant!.pid, 0)).toBe(true);
-        } else {
-          expect(response.status).toBe(200);
-          expect(() => kill(childPid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
-          if (descendant)
-            expect(() => kill(descendant.pid, 0)).toThrow(
-              expect.objectContaining({ code: 'ESRCH' })
-            );
-          if (pending) expectRefusal(await pending);
-          if (gatewayOutcome)
-            await expect(gatewayOutcome).resolves.toMatchObject({ code: 'mcp-call-failed' });
-        }
-      } finally {
-        if (deadline) clearTimeout(deadline);
-        refusedSignal?.mockRestore();
-        // Release an unadmitted initializer before asking the real owner to reap the whole group.
-        if (phase === 'initializing' && (childPid || existsSync(f.pidFile))) {
-          const pid = childPid || Number(readFileSync(f.pidFile, 'utf8'));
-          try {
-            kill(pid, 'SIGTERM');
-          } catch (error) {
-            expect(error).toHaveProperty('code', 'ESRCH');
+          const response = await Promise.race([
+            revoking,
+            new Promise<never>((_, reject) => {
+              deadline = setTimeout(
+                () => reject(new Error('Revocation waited for the normal MCP request timeout.')),
+                4_000
+              );
+            }),
+          ]);
+          expect(getVaultGrant(f.coreDb, f.grant.grantId)?.status).toBe('revoked');
+          if (condition === 'signal-refused') {
+            expect(response.status).toBe(409);
+            await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+            expect(kill(childPid, 0)).toBe(true);
+            expect(kill(descendant!.pid, 0)).toBe(true);
+          } else {
+            expect(response.status).toBe(200);
+            expect(() => kill(childPid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+            if (descendant)
+              expect(() => kill(descendant.pid, 0)).toThrow(
+                expect.objectContaining({ code: 'ESRCH' })
+              );
+            if (pending) expectRefusal(await pending);
+            if (gatewayOutcome)
+              await expect(gatewayOutcome).resolves.toMatchObject({ code: 'mcp-call-failed' });
           }
+        } finally {
+          if (deadline) clearTimeout(deadline);
+          refusedSignal?.mockRestore();
+          // Release an unadmitted initializer before asking the real owner to reap the whole group.
+          if (phase === 'initializing' && (childPid || existsSync(f.pidFile))) {
+            const pid = childPid || Number(readFileSync(f.pidFile, 'utf8'));
+            try {
+              kill(pid, 'SIGTERM');
+            } catch (error) {
+              expect(error).toHaveProperty('code', 'ESRCH');
+            }
+          }
+          await f.workerMcpGateway.closeWorkspace(f.workspaceId);
+          await activity;
+          await mutation;
         }
-        await f.workerMcpGateway.closeWorkspace(f.workspaceId);
-        await activity;
-        await mutation;
       }
-    });
+    );
 
     it('rechecks a grant revoked after material resolution before registering a new child', async () => {
       const f = await workspaceStdioFixture();

@@ -440,43 +440,44 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
   ]);
 });
 
-it.each([
-  0, 1,
-] as const)('lost original stage %i FULL ACK preserves its prefix without host replay', async (stage) => {
-  const f = await fixture({ refuseStart: stage === 1 });
-  arm(f.requestId, [stage]);
-  const result = f.start();
-  const worker = await held(stage, result);
-  const prefix = f.rows();
-  expect(prefix.audits).toHaveLength(stage + 1);
-  expect(prefix.receipts).toEqual([]);
-  const events = f.events();
-  expectOriginal(
-    events.find((event) => event.action === 'app.update.start')!,
-    f.requestId,
-    f.userId,
-    'app.update.start'
-  );
-  if (stage === 1)
+it.each([0, 1] as const)(
+  'lost original stage %i FULL ACK preserves its prefix without host replay',
+  async (stage) => {
+    const f = await fixture({ refuseStart: stage === 1 });
+    arm(f.requestId, [stage]);
+    const result = f.start();
+    const worker = await held(stage, result);
+    const prefix = f.rows();
+    expect(prefix.audits).toHaveLength(stage + 1);
+    expect(prefix.receipts).toEqual([]);
+    const events = f.events();
     expectOriginal(
-      events.find((event) => event.action === 'app.update.start.handoff')!,
+      events.find((event) => event.action === 'app.update.start')!,
       f.requestId,
       f.userId,
-      'app.update.start.handoff',
-      true
+      'app.update.start'
     );
-  expect(f.commands.filter((command) => command.op === 'start').length).toBe(stage);
-  const posts = fault.messages.length;
-  const workers = fault.workers.length;
-  await worker.terminate(); // Exact owner recorded at the selected real COMMIT, never workers.at(-1).
-  const response = await result;
-  expect(response.status).toBe(500); // Existing HTTP boundary for an unclassified unknown native error.
-  expect(f.commands.filter((command) => command.op === 'start').length).toBe(stage);
-  expect(fault.messages.length).toBe(posts);
-  expect(fault.workers.length).toBe(workers);
-  expect(f.rows()).toEqual(prefix);
-  expect(await f.coldRows()).toEqual(prefix);
-});
+    if (stage === 1)
+      expectOriginal(
+        events.find((event) => event.action === 'app.update.start.handoff')!,
+        f.requestId,
+        f.userId,
+        'app.update.start.handoff',
+        true
+      );
+    expect(f.commands.filter((command) => command.op === 'start').length).toBe(stage);
+    const posts = fault.messages.length;
+    const workers = fault.workers.length;
+    await worker.terminate(); // Exact owner recorded at the selected real COMMIT, never workers.at(-1).
+    const response = await result;
+    expect(response.status).toBe(500); // Existing HTTP boundary for an unclassified unknown native error.
+    expect(f.commands.filter((command) => command.op === 'start').length).toBe(stage);
+    expect(fault.messages.length).toBe(posts);
+    expect(fault.workers.length).toBe(workers);
+    expect(f.rows()).toEqual(prefix);
+    expect(await f.coldRows()).toEqual(prefix);
+  }
+);
 
 it('rechecks the actual administrator token after the first Audit ACK and before host contact', async () => {
   const f = await fixture({ server: true });

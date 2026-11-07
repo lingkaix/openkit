@@ -352,48 +352,53 @@ describe('public Workspace tell intake framing', () => {
     expect(assembled.humanEdits).toEqual({ truncated: false, changes: [] });
   }, 120_000);
 
-  it.each([
-    'authored-index',
-    'authored-page',
-  ] as const)('retains %s root content and genuine later human edits as inputs', async (initial) => {
-    const f = await fixture(initial);
-    const root = f.notebook.readRevision(f.notebook.publishedRevision());
-    const later = page(f.workspace.id, 'Later human note', 'Preserve this later human correction.');
-    await f.invoke(
-      'knowledge.notebook.update',
-      {
-        workspaceId: f.workspace.id,
-        requestId: randomUUID(),
-        baseRevision: root.revision,
-        changes: [{ path: 'later.md', content: later }],
-        summary: 'Record a real later human correction.',
-      },
-      f.context
-    );
-    const result = await f.invoke(
-      'knowledge.tell',
-      {
-        workspaceId: f.workspace.id,
-        requestId: randomUUID(),
-        content: 'Inspect these human notebook changes.',
-        sources: [],
-      },
-      f.context
-    );
-    expect(result.outcome).toBe('no-change');
-    expect(f.run).toHaveBeenCalledTimes(1);
-    const assembled = payload(f.run.mock.calls[0]![0]);
-    expect(assembled.humanEdits.truncated).toBe(false);
-    expect(assembled.humanEdits.changes).toContainEqual({
-      path: 'later.md',
-      before: null,
-      after: later,
-    });
-    for (const [path, content] of Object.entries(root.files))
-      expect(assembled.humanEdits.changes).toContainEqual({ path, before: null, after: content });
-    expect(f.notebook.readRevision(result.notebookRevision).files).toEqual({
-      ...root.files,
-      'later.md': later,
-    });
-  }, 120_000);
+  it.each(['authored-index', 'authored-page'] as const)(
+    'retains %s root content and genuine later human edits as inputs',
+    async (initial) => {
+      const f = await fixture(initial);
+      const root = f.notebook.readRevision(f.notebook.publishedRevision());
+      const later = page(
+        f.workspace.id,
+        'Later human note',
+        'Preserve this later human correction.'
+      );
+      await f.invoke(
+        'knowledge.notebook.update',
+        {
+          workspaceId: f.workspace.id,
+          requestId: randomUUID(),
+          baseRevision: root.revision,
+          changes: [{ path: 'later.md', content: later }],
+          summary: 'Record a real later human correction.',
+        },
+        f.context
+      );
+      const result = await f.invoke(
+        'knowledge.tell',
+        {
+          workspaceId: f.workspace.id,
+          requestId: randomUUID(),
+          content: 'Inspect these human notebook changes.',
+          sources: [],
+        },
+        f.context
+      );
+      expect(result.outcome).toBe('no-change');
+      expect(f.run).toHaveBeenCalledTimes(1);
+      const assembled = payload(f.run.mock.calls[0]![0]);
+      expect(assembled.humanEdits.truncated).toBe(false);
+      expect(assembled.humanEdits.changes).toContainEqual({
+        path: 'later.md',
+        before: null,
+        after: later,
+      });
+      for (const [path, content] of Object.entries(root.files))
+        expect(assembled.humanEdits.changes).toContainEqual({ path, before: null, after: content });
+      expect(f.notebook.readRevision(result.notebookRevision).files).toEqual({
+        ...root.files,
+        'later.md': later,
+      });
+    },
+    120_000
+  );
 });

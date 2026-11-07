@@ -390,117 +390,126 @@ describe('Target admission original preparation boundaries', () => {
     expect(existsSync(owned.candidate_ref)).toBe(false);
   }, 120_000);
 
-  it.each([
-    'prepare',
-    'proof',
-  ] as const)('keeps committed %s truth after actual native-host reply loss and resolves only by inspection', async (kind) => {
-    const f = await fixture();
-    const gate = new Int32Array(new SharedArrayBuffer(16));
-    interception.selected = {
-      corePath: coreDbPath(f.dataRoot),
-      admissionId: f.input.requestId,
-      workspaceId: f.input.workspaceId,
-      kind,
-      gate: gate.buffer as SharedArrayBuffer,
-    };
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
-    const actual = client.recoveryTargetPreparation.bind(client);
-    let nativeFailure: unknown;
-    const publication = vi
-      .spyOn(client, 'recoveryTargetPreparation')
-      .mockImplementation(async (...args) => {
-        if (args[1].kind === 'proof') {
-          // Finish this checkpoint before posting: the selected host will be
-          // synchronously held after its actual proof COMMIT.
-          await closeCanonicalAtBoundary(
-            f,
-            readRecoveryAdmission(f.owner.core, f.input.requestId)!
-          );
-          expect(
-            inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))
-          ).toEqual(canonical);
+  it.each(['prepare', 'proof'] as const)(
+    'keeps committed %s truth after actual native-host reply loss and resolves only by inspection',
+    async (kind) => {
+      const f = await fixture();
+      const gate = new Int32Array(new SharedArrayBuffer(16));
+      interception.selected = {
+        corePath: coreDbPath(f.dataRoot),
+        admissionId: f.input.requestId,
+        workspaceId: f.input.workspaceId,
+        kind,
+        gate: gate.buffer as SharedArrayBuffer,
+      };
+      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const actual = client.recoveryTargetPreparation.bind(client);
+      let nativeFailure: unknown;
+      const publication = vi
+        .spyOn(client, 'recoveryTargetPreparation')
+        .mockImplementation(async (...args) => {
+          if (args[1].kind === 'proof') {
+            // Finish this checkpoint before posting: the selected host will be
+            // synchronously held after its actual proof COMMIT.
+            await closeCanonicalAtBoundary(
+              f,
+              readRecoveryAdmission(f.owner.core, f.input.requestId)!
+            );
+            expect(
+              inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))
+            ).toEqual(canonical);
+          }
+          try {
+            return await actual(...args);
+          } catch (error) {
+            if (args[1].kind === kind) nativeFailure = error;
+            throw error;
+          }
+        });
+      const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
+      f.owner.core.sqlite.pragma('query_only = ON');
+      let settled = false;
+      const command = admitWorkspaceBackupAtCore(f.owner, f.input).then(
+        (result) => {
+          settled = true;
+          return { result };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { error };
         }
-        try {
-          return await actual(...args);
-        } catch (error) {
-          if (args[1].kind === kind) nativeFailure = error;
-          throw error;
-        }
-      });
-    const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
-    f.owner.core.sqlite.pragma('query_only = ON');
-    let settled = false;
-    const command = admitWorkspaceBackupAtCore(f.owner, f.input).then(
-      (result) => {
-        settled = true;
-        return { result };
-      },
-      (error: unknown) => {
-        settled = true;
-        return { error };
-      }
-    );
-    try {
-      while (Atomics.load(gate, 0) === 0 && !settled) await nextTurn();
-      expect(
-        Atomics.load(gate, 0),
-        'Actual selected preparation COMMIT gate was not reached.'
-      ).toBe(1);
-      expect(Atomics.load(gate, 3)).toBe(2);
-      expect(settled).toBe(false);
-      expect(interception.replied).toBe(false);
-      const committed = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
-      expect(committed).toMatchObject({ state: 'prepared', revision: 1 });
-      if (kind === 'prepare') expect(committed.proof.candidateDigest).toBeUndefined();
-      else
-        expect(committed.proof.candidateDigest).toBe(
-          createHash('sha256')
-            .update(JSON.stringify(inventoryRegularFiles(committed.candidate_ref)))
-            .digest('hex')
-        );
-      expect(interception.worker).toBeDefined();
-      await interception.worker!.terminate();
-      expect(await command).toHaveProperty('error');
-      expect(nativeFailure).toMatchObject({ code: 'unavailable', commit: 'unknown' });
-      expect(interception.replied).toBe(false);
-      expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(committed);
-      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
-        canonical
       );
-      expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(true);
-      interception.selected = undefined;
-      await shutdownControlStoreWorkerClient();
-      expect(inspectWorkspaceRecoveryAtCore(f.owner.core, selection(f))).toMatchObject({
-        disposition: 'quarantined',
-        nextAction: 'finish',
-      });
-      if (kind === 'prepare') {
-        await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toMatchObject({
-          code: 'recovery-required',
-        });
+      try {
+        while (Atomics.load(gate, 0) === 0 && !settled) await nextTurn();
+        expect(
+          Atomics.load(gate, 0),
+          'Actual selected preparation COMMIT gate was not reached.'
+        ).toBe(1);
+        expect(Atomics.load(gate, 3)).toBe(2);
+        expect(settled).toBe(false);
+        expect(interception.replied).toBe(false);
+        const committed = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+        expect(committed).toMatchObject({ state: 'prepared', revision: 1 });
+        if (kind === 'prepare') expect(committed.proof.candidateDigest).toBeUndefined();
+        else
+          expect(committed.proof.candidateDigest).toBe(
+            createHash('sha256')
+              .update(JSON.stringify(inventoryRegularFiles(committed.candidate_ref)))
+              .digest('hex')
+          );
+        expect(interception.worker).toBeDefined();
+        await interception.worker!.terminate();
+        expect(await command).toHaveProperty('error');
+        expect(nativeFailure).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+        expect(interception.replied).toBe(false);
         expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(committed);
-        await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
-          disposition: 'abandoned',
+        expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
+          canonical
+        );
+        expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(
+          true
+        );
+        interception.selected = undefined;
+        await shutdownControlStoreWorkerClient();
+        expect(inspectWorkspaceRecoveryAtCore(f.owner.core, selection(f))).toMatchObject({
+          disposition: 'quarantined',
+          nextAction: 'finish',
         });
-      } else {
-        await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
-          disposition: 'restored',
-        });
-        const terminal = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
-        const registry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
-        await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
-          disposition: 'restored',
-        });
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(terminal);
-        expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
+        if (kind === 'prepare') {
+          await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toMatchObject({
+            code: 'recovery-required',
+          });
+          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(committed);
+          await expect(
+            abandonWorkspaceRecoveryAtCore(f.owner, selection(f))
+          ).resolves.toMatchObject({
+            disposition: 'abandoned',
+          });
+        } else {
+          await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject(
+            {
+              disposition: 'restored',
+            }
+          );
+          const terminal = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+          const registry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+          await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject(
+            {
+              disposition: 'restored',
+            }
+          );
+          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(terminal);
+          expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
+        }
+      } finally {
+        Atomics.store(gate, 1, 1);
+        Atomics.notify(gate, 1);
+        await command;
+        publication.mockRestore();
       }
-    } finally {
-      Atomics.store(gate, 1, 1);
-      Atomics.notify(gate, 1);
-      await command;
-      publication.mockRestore();
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 
   it('retains the actual restrictedRecovery fact in the whole proof before placement', async () => {
     const f = await fixture();
@@ -614,104 +623,105 @@ describe('Target admission original preparation boundaries', () => {
     });
   }, 120_000);
 
-  it.each([
-    'abandon',
-    'abandon-result',
-  ] as const)('keeps the original partial-abandon SQL and durable retirement order on late %s failure', async (kind) => {
-    const f = await fixture();
-    const owned = await partialPreparation(f);
-    const candidate = inventoryRegularFiles(owned.candidate_ref);
-    const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
-    physical.completedDirectorySyncs.length = 0;
-    const condition =
-      kind === 'abandon'
-        ? "OLD.state='prepared' AND NEW.state='abandoned'"
-        : "json_extract(NEW.proof_json,'$.result.disposition')='abandoned'";
-    f.owner.core.sqlite.exec(`CREATE TRIGGER target_abandon_fault AFTER UPDATE ON workspace_recovery_admissions
+  it.each(['abandon', 'abandon-result'] as const)(
+    'keeps the original partial-abandon SQL and durable retirement order on late %s failure',
+    async (kind) => {
+      const f = await fixture();
+      const owned = await partialPreparation(f);
+      const candidate = inventoryRegularFiles(owned.candidate_ref);
+      const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
+      physical.completedDirectorySyncs.length = 0;
+      const condition =
+        kind === 'abandon'
+          ? "OLD.state='prepared' AND NEW.state='abandoned'"
+          : "json_extract(NEW.proof_json,'$.result.disposition')='abandoned'";
+      f.owner.core.sqlite.exec(`CREATE TRIGGER target_abandon_fault AFTER UPDATE ON workspace_recovery_admissions
         WHEN ${condition} BEGIN SELECT RAISE(ABORT, 'TARGET_ABANDON_LATE_FAULT'); END`);
-    f.owner.core.sqlite.pragma('query_only = ON');
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
-    const actual = client.recoveryTargetPreparation.bind(client);
-    const publication = vi
-      .spyOn(client, 'recoveryTargetPreparation')
-      .mockImplementation(async (...args) => {
-        if (args[1].kind === 'abandon') {
-          expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
-          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
-        } else if (args[1].kind === 'abandon-result') {
-          expect(existsSync(owned.candidate_ref)).toBe(false);
-          expect(inventoryRegularFiles(join(dirname(owned.candidate_ref), 'abandoned'))).toEqual(
-            candidate
-          );
-          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
-            state: 'abandoned',
-            revision: 2,
-            proof: { result: { disposition: 'quarantined' } },
-          });
-          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)?.proof).toEqual(
-            owned.proof
-          );
-          expect(physical.completedDirectorySyncs).toEqual(
-            expect.arrayContaining([join(f.dataRoot, 'workspaces'), dirname(owned.candidate_ref)])
-          );
-        }
-        return actual(...args);
+      f.owner.core.sqlite.pragma('query_only = ON');
+      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const actual = client.recoveryTargetPreparation.bind(client);
+      const publication = vi
+        .spyOn(client, 'recoveryTargetPreparation')
+        .mockImplementation(async (...args) => {
+          if (args[1].kind === 'abandon') {
+            expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
+            expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
+          } else if (args[1].kind === 'abandon-result') {
+            expect(existsSync(owned.candidate_ref)).toBe(false);
+            expect(inventoryRegularFiles(join(dirname(owned.candidate_ref), 'abandoned'))).toEqual(
+              candidate
+            );
+            expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
+              state: 'abandoned',
+              revision: 2,
+              proof: { result: { disposition: 'quarantined' } },
+            });
+            expect(readRecoveryAdmission(f.owner.core, f.input.requestId)?.proof).toEqual(
+              owned.proof
+            );
+            expect(physical.completedDirectorySyncs).toEqual(
+              expect.arrayContaining([join(f.dataRoot, 'workspaces'), dirname(owned.candidate_ref)])
+            );
+          }
+          return actual(...args);
+        });
+      await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toBeInstanceOf(
+        Error
+      );
+      expect(publication.mock.calls.some(([, input]) => input.kind === kind)).toBe(true);
+      if (kind === 'abandon') {
+        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
+        expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
+      } else {
+        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
+          state: 'abandoned',
+          revision: 2,
+          proof: { result: { disposition: 'quarantined' } },
+        });
+        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)?.proof).toEqual(owned.proof);
+        expect(existsSync(owned.candidate_ref)).toBe(false);
+      }
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
+        canonical
+      );
+      publication.mockRestore();
+      const writer = openCoreDb(f.dataRoot);
+      try {
+        writer.sqlite.exec('DROP TRIGGER target_abandon_fault');
+      } finally {
+        writer.sqlite.close();
+      }
+      await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
+        disposition: 'abandoned',
       });
-    await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toBeInstanceOf(
-      Error
-    );
-    expect(publication.mock.calls.some(([, input]) => input.kind === kind)).toBe(true);
-    if (kind === 'abandon') {
-      expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
-      expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
-    } else {
-      expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
+      const terminal = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+      expect(terminal).toMatchObject({
         state: 'abandoned',
         revision: 2,
-        proof: { result: { disposition: 'quarantined' } },
+        proof: { result: { disposition: 'abandoned' } },
       });
-      expect(readRecoveryAdmission(f.owner.core, f.input.requestId)?.proof).toEqual(owned.proof);
-      expect(existsSync(owned.candidate_ref)).toBe(false);
-    }
-    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
-      canonical
-    );
-    publication.mockRestore();
-    const writer = openCoreDb(f.dataRoot);
-    try {
-      writer.sqlite.exec('DROP TRIGGER target_abandon_fault');
-    } finally {
-      writer.sqlite.close();
-    }
-    await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
-      disposition: 'abandoned',
-    });
-    const terminal = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
-    expect(terminal).toMatchObject({
-      state: 'abandoned',
-      revision: 2,
-      proof: { result: { disposition: 'abandoned' } },
-    });
-    expect(terminal.proof).toEqual({
-      ...owned.proof,
-      result: {
-        ...owned.proof.result,
-        command: 'abandon',
-        disposition: 'abandoned',
-        selection: selection(f).selection,
-        nextAction: 'none',
-      },
-    });
-    expect(inventoryRegularFiles(join(dirname(owned.candidate_ref), 'abandoned'))).toEqual(
-      candidate
-    );
-    await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toEqual(
-      terminal.proof.result
-    );
-    await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toMatchObject({
-      code: 'request-conflict',
-    });
-  }, 120_000);
+      expect(terminal.proof).toEqual({
+        ...owned.proof,
+        result: {
+          ...owned.proof.result,
+          command: 'abandon',
+          disposition: 'abandoned',
+          selection: selection(f).selection,
+          nextAction: 'none',
+        },
+      });
+      expect(inventoryRegularFiles(join(dirname(owned.candidate_ref), 'abandoned'))).toEqual(
+        candidate
+      );
+      await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toEqual(
+        terminal.proof.result
+      );
+      await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toMatchObject({
+        code: 'request-conflict',
+      });
+    },
+    120_000
+  );
 
   it.each([
     ['prepare', 'credential-revoked'],
@@ -836,71 +846,72 @@ describe('Target admission original preparation boundaries', () => {
     120_000
   );
 
-  it.each([
-    'digest-mismatch',
-    'wrong-root',
-  ] as const)('refuses actual native immutable input with %s before creating admission authority', async (fault) => {
-    const f = await fixture();
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
-    const actual = client.recoveryTargetPreparation.bind(client);
-    const container = `${f.dataRoot}.workspace-recovery-${f.input.requestId}`;
-    const displaced = `${container}-retained`;
-    let substituted = false;
-    const publication = vi
-      .spyOn(client, 'recoveryTargetPreparation')
-      .mockImplementation(async (...args) => {
-        if (args[1].kind !== 'prepare') return actual(...args);
-        const input = args[1];
-        if (fault === 'digest-mismatch')
-          return actual(
-            args[0],
-            { ...input, file: { ...input.file, digest: `sha256:${'0'.repeat(64)}` } },
-            args[2]
-          );
-        const outside = join(f.root, 'outside-operation');
-        mkdirSync(outside);
-        const bytes = readFileSync(join(container, input.file.name));
-        await publishDurableFile({ destinationPath: join(outside, input.file.name), bytes });
-        renameSync(container, displaced);
-        symlinkSync(outside, container, 'dir');
-        substituted = true;
-        try {
-          return await actual(...args);
-        } finally {
+  it.each(['digest-mismatch', 'wrong-root'] as const)(
+    'refuses actual native immutable input with %s before creating admission authority',
+    async (fault) => {
+      const f = await fixture();
+      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const actual = client.recoveryTargetPreparation.bind(client);
+      const container = `${f.dataRoot}.workspace-recovery-${f.input.requestId}`;
+      const displaced = `${container}-retained`;
+      let substituted = false;
+      const publication = vi
+        .spyOn(client, 'recoveryTargetPreparation')
+        .mockImplementation(async (...args) => {
+          if (args[1].kind !== 'prepare') return actual(...args);
+          const input = args[1];
+          if (fault === 'digest-mismatch')
+            return actual(
+              args[0],
+              { ...input, file: { ...input.file, digest: `sha256:${'0'.repeat(64)}` } },
+              args[2]
+            );
+          const outside = join(f.root, 'outside-operation');
+          mkdirSync(outside);
+          const bytes = readFileSync(join(container, input.file.name));
+          await publishDurableFile({ destinationPath: join(outside, input.file.name), bytes });
+          renameSync(container, displaced);
+          symlinkSync(outside, container, 'dir');
+          substituted = true;
+          try {
+            return await actual(...args);
+          } finally {
+            rmSync(container);
+            renameSync(displaced, container);
+            substituted = false;
+          }
+        });
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      const source = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
+      f.owner.core.sqlite.pragma('query_only = ON');
+      try {
+        await expect(admitWorkspaceBackupAtCore(f.owner, f.input)).rejects.toBeInstanceOf(Error);
+        expect(publication.mock.calls.filter(([, input]) => input.kind === 'prepare')).toHaveLength(
+          1
+        );
+        expect(
+          post.mock.calls.filter(
+            ([message]) =>
+              message.operation === 'recovery-target-preparation' &&
+              message.input?.admissionId === f.input.requestId &&
+              message.input?.kind === 'prepare'
+          )
+        ).toHaveLength(1);
+        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toBeUndefined();
+        expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
+          source
+        );
+      } finally {
+        if (substituted) {
           rmSync(container);
           renameSync(displaced, container);
-          substituted = false;
         }
-      });
-    const post = vi.spyOn(Worker.prototype, 'postMessage');
-    const source = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
-    f.owner.core.sqlite.pragma('query_only = ON');
-    try {
-      await expect(admitWorkspaceBackupAtCore(f.owner, f.input)).rejects.toBeInstanceOf(Error);
-      expect(publication.mock.calls.filter(([, input]) => input.kind === 'prepare')).toHaveLength(
-        1
-      );
-      expect(
-        post.mock.calls.filter(
-          ([message]) =>
-            message.operation === 'recovery-target-preparation' &&
-            message.input?.admissionId === f.input.requestId &&
-            message.input?.kind === 'prepare'
-        )
-      ).toHaveLength(1);
-      expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toBeUndefined();
-      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
-        source
-      );
-    } finally {
-      if (substituted) {
-        rmSync(container);
-        renameSync(displaced, container);
+        publication.mockRestore();
+        post.mockRestore();
       }
-      publication.mockRestore();
-      post.mockRestore();
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 
   it('transports a scaled proof larger than 64 MiB through the real immutable file and native SQL owner', async () => {
     const f = await fixture();

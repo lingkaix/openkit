@@ -161,36 +161,36 @@ describe('startTurn orchestrator', () => {
     expect(turnExecutor.calls).toEqual([]);
   });
 
-  it.each([
-    'agent_pi',
-    'agent_fourth_runtime',
-  ])('starts opaque manifest agent %s without a duplicate Store catalog entry', async (agentId) => {
-    const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(storeRoot);
-      rmSync(storeRoot, { recursive: true, force: true });
-    });
-    const store = await createDemoStore({ dataRoot: storeRoot });
-    const turnExecutor = new RecordingTurnExecutor();
-    const configuredManifest = manifest(agentId);
-    const handle = await startTurn({
-      gatewayConfig: createTestGatewayConfig(),
-      defaultAgentId: 'agent_codex_host',
-      triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      agentId,
-      agentManifests: [configuredManifest],
-      input: 'Run tests',
-      providerRegistry: localProviderRegistry(),
-      store,
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnExecutor,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
+  it.each(['agent_pi', 'agent_fourth_runtime'])(
+    'starts opaque manifest agent %s without a duplicate Store catalog entry',
+    async (agentId) => {
+      const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(storeRoot);
+        rmSync(storeRoot, { recursive: true, force: true });
+      });
+      const store = await createDemoStore({ dataRoot: storeRoot });
+      const turnExecutor = new RecordingTurnExecutor();
+      const configuredManifest = manifest(agentId);
+      const handle = await startTurn({
+        gatewayConfig: createTestGatewayConfig(),
+        defaultAgentId: 'agent_codex_host',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        agentId,
+        agentManifests: [configuredManifest],
+        input: 'Run tests',
+        providerRegistry: localProviderRegistry(),
+        store,
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnExecutor,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
 
-    expect(handle.agent).toBe(configuredManifest);
-    expect(handle.turn.agentId).toBe(agentId);
-  });
+      expect(handle.agent).toBe(configuredManifest);
+      expect(handle.turn.agentId).toBe(agentId);
+    }
+  );
 
   it('selects an agent before creating and starting a turn', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-setup-'));
@@ -248,51 +248,50 @@ describe('startTurn orchestrator', () => {
     ]);
   });
 
-  it.each([
-    'disabled',
-    'blocked',
-    'unknown',
-  ] as const)('rejects %s agent readiness before creating a turn or starting the executor', async (status) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    const store = await createDemoStore({ dataRoot });
-    const turnExecutor = new RecordingTurnExecutor();
+  it.each(['disabled', 'blocked', 'unknown'] as const)(
+    'rejects %s agent readiness before creating a turn or starting the executor',
+    async (status) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(dataRoot);
+        rmSync(dataRoot, { recursive: true, force: true });
+      });
+      const store = await createDemoStore({ dataRoot });
+      const turnExecutor = new RecordingTurnExecutor();
 
-    await expect(
-      startTurn({
-        gatewayConfig: createTestGatewayConfig(),
-        defaultAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        agentManifests: [
-          {
-            ...manifest('agent_codex_host'),
-            readiness: { status },
-          },
-        ],
-        input: 'Run tests',
-        providerRegistry: localProviderRegistry(),
-        store,
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnExecutor,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    ).rejects.toMatchObject({
-      code: 'agent_not_ready',
-      message: `Agent agent_codex_host readiness is ${status}.`,
-      status: 409,
-    });
-    expect(turnExecutor.calls).toEqual([]);
-    expect(
-      store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )
-    ).toEqual([]);
-  });
+      await expect(
+        startTurn({
+          gatewayConfig: createTestGatewayConfig(),
+          defaultAgentId: 'agent_codex_host',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          agentManifests: [
+            {
+              ...manifest('agent_codex_host'),
+              readiness: { status },
+            },
+          ],
+          input: 'Run tests',
+          providerRegistry: localProviderRegistry(),
+          store,
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnExecutor,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      ).rejects.toMatchObject({
+        code: 'agent_not_ready',
+        message: `Agent agent_codex_host readiness is ${status}.`,
+        status: 409,
+      });
+      expect(turnExecutor.calls).toEqual([]);
+      expect(
+        store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+      ).toEqual([]);
+    }
+  );
 
   it('rejects generic degraded readiness before creating a turn or starting the executor', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-orchestrator-catalog-'));

@@ -1216,35 +1216,34 @@ describe('Action Center (board 07)', () => {
     );
   });
 
-  it.each([
-    'resolved',
-    'inspect-only',
-    'read-only',
-  ])('keeps attention approval controls closed for %s authority/state', async (state) => {
-    const client = makeClient({
-      operations: {
-        'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+  it.each(['resolved', 'inspect-only', 'read-only'])(
+    'keeps attention approval controls closed for %s authority/state',
+    async (state) => {
+      const client = makeClient({
+        operations: {
+          'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
 
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          pendingRequests: [
-            {
-              requestId: 'ap1',
-              state: state === 'read-only' ? 'pending' : state,
-              canRespond: state !== 'read-only',
-              approvalEffect: { status: 'available', summary: 'Summary', detail: '{}' },
-            },
-          ],
-        }),
-      },
-    });
-    renderApp('/attention', client);
-    expect(
-      await screen.findByText('Scout asks to sign in to the vendor portal')
-    ).toBeInTheDocument();
-    expect(await screen.findByText('{}')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
-  });
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            pendingRequests: [
+              {
+                requestId: 'ap1',
+                state: state === 'read-only' ? 'pending' : state,
+                canRespond: state !== 'read-only',
+                approvalEffect: { status: 'available', summary: 'Summary', detail: '{}' },
+              },
+            ],
+          }),
+        },
+      });
+      renderApp('/attention', client);
+      expect(
+        await screen.findByText('Scout asks to sign in to the vendor portal')
+      ).toBeInTheDocument();
+      expect(await screen.findByText('{}')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
+    }
+  );
 
   it('renders Needs-you rows longest-waiting first and decides approvals inline', async () => {
     const user = userEvent.setup();
@@ -1299,32 +1298,36 @@ describe('Action Center (board 07)', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });
 
-  it.each([
-    'workspace_review',
-    'workspace_recovery',
-  ] as const)('opens workspace changes for a %s row without a Thread', async (type) => {
-    const row = {
-      id: `${type}:review1`,
-      kind: type,
-      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-      title: 'Review workspace changes',
-      createdAt: TIMESTAMP_OLD,
-      source: { type, workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201', reviewId: 'review1' },
-      actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
-    };
-    renderApp(
-      '/attention',
-      makeClient({
-        operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [row] }) },
-      })
-    );
-    expect(await screen.findByText(row.title)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open workspace changes' })).toHaveAttribute(
-      'href',
-      '/workspace-changes'
-    );
-    expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument();
-  });
+  it.each(['workspace_review', 'workspace_recovery'] as const)(
+    'opens workspace changes for a %s row without a Thread',
+    async (type) => {
+      const row = {
+        id: `${type}:review1`,
+        kind: type,
+        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        title: 'Review workspace changes',
+        createdAt: TIMESTAMP_OLD,
+        source: {
+          type,
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          reviewId: 'review1',
+        },
+        actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
+      };
+      renderApp(
+        '/attention',
+        makeClient({
+          operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [row] }) },
+        })
+      );
+      expect(await screen.findByText(row.title)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Open workspace changes' })).toHaveAttribute(
+        'href',
+        '/workspace-changes'
+      );
+      expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument();
+    }
+  );
 
   it('shows an error banner with retry when the queue fails', async () => {
     const user = userEvent.setup();
@@ -1429,47 +1432,53 @@ describe('Action Center (board 07)', () => {
   it.each([
     ['task', 'Open task', '/tasks/ws%2Fspace%20%3F%23%25/th%2Fspace%20%3F%23%25'],
     ['goal', 'Open goal', '/goals/ws%2Fspace%20%3F%23%25/th%2Fspace%20%3F%23%25'],
-  ] as const)('encodes ongoing %s owner identifiers in its registered destination', async (activity, label, href) => {
-    const workspaceId = 'ws/space ?#%';
-    const item = overviewConversation({
-      id: 'th/space ?#%',
-      name: 'Encoded work',
-      preview: '',
-      activity,
-      state: 'working',
-    });
-    renderApp(
-      '/attention',
-      makeClient({
-        core: {},
-        app: {},
+  ] as const)(
+    'encodes ongoing %s owner identifiers in its registered destination',
+    async (activity, label, href) => {
+      const workspaceId = 'ws/space ?#%';
+      const item = overviewConversation({
+        id: 'th/space ?#%',
+        name: 'Encoded work',
+        preview: '',
+        activity,
+        state: 'working',
+      });
+      renderApp(
+        '/attention',
+        makeClient({
+          core: {},
+          app: {},
 
-        operations: {
-          'conversation.navigation': vi.fn().mockResolvedValue({
-            items: [
-              {
-                ...item,
-                thread: { ...item.thread, owner: { kind: 'workspace', workspaceId: workspaceId } },
-              },
-            ],
-          }),
+          operations: {
+            'conversation.navigation': vi.fn().mockResolvedValue({
+              items: [
+                {
+                  ...item,
+                  thread: {
+                    ...item.thread,
+                    owner: { kind: 'workspace', workspaceId: workspaceId },
+                  },
+                },
+              ],
+            }),
 
-          'workspace.list': vi.fn().mockResolvedValue({
-            items: [{ ...WORKSPACE_A, id: workspaceId }].map((workspace) => ({
-              membershipStatus: 'active' as const,
-              accessCause: 'membership' as const,
-              workspace,
-              isOwner: true,
-              membershipRevision: 1,
-              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-              registryRevision: 1,
-            })),
-          }),
-        },
-      })
-    );
-    expect(await screen.findByRole('link', { name: label })).toHaveAttribute('href', href);
-  });
+            'workspace.list': vi.fn().mockResolvedValue({
+              items: [{ ...WORKSPACE_A, id: workspaceId }].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
+                workspace,
+                isOwner: true,
+                membershipRevision: 1,
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+                registryRevision: 1,
+              })),
+            }),
+          },
+        })
+      );
+      expect(await screen.findByRole('link', { name: label })).toHaveAttribute('href', href);
+    }
+  );
 
   it('does not use an unnamed Task raw input as its display title', async () => {
     const item = overviewConversation({
@@ -1805,82 +1814,81 @@ describe('Action Center (board 07)', () => {
     expect(screen.queryByRole('button', { name: 'Abort goal' })).not.toBeInTheDocument();
   });
 
-  it.each([
-    'plain',
-    '/?#%',
-    '%2F%3F%23%25',
-  ])('preserves the attention owner tuple through the Artifact review route for %s identifiers', async (suffix) => {
-    const user = userEvent.setup();
-    const workspaceId = `ws_${suffix}`;
-    const threadId = `th_${suffix}`;
-    const artifactId = `ar_${suffix}`;
-    const row = {
-      ...ARTIFACT_INSPECTION_ROW,
-      workspaceId,
-      threadId,
-      artifactId,
-      source: { ...ARTIFACT_INSPECTION_ROW.source, workspaceId, threadId, artifactId },
-    };
-    const readArtifact = vi.fn().mockResolvedValue({
-      id: artifactId,
-      workspaceId,
-      threadId,
-      version: 1,
-      contentDigest: `sha256:${'a'.repeat(64)}`,
-      title: 'Exact worker output',
-      content: { format: 'text', body: 'Exact output bytes.' },
-    });
-    const readReviews = vi.fn().mockResolvedValue({
-      reviews: [
-        {
-          ...row.source,
-          sourceThreadId: threadId,
-          sourceTurnId: 'turn1',
-          contentDigest: `sha256:${'a'.repeat(64)}`,
-          decision: null,
-          materialProposal: null,
+  it.each(['plain', '/?#%', '%2F%3F%23%25'])(
+    'preserves the attention owner tuple through the Artifact review route for %s identifiers',
+    async (suffix) => {
+      const user = userEvent.setup();
+      const workspaceId = `ws_${suffix}`;
+      const threadId = `th_${suffix}`;
+      const artifactId = `ar_${suffix}`;
+      const row = {
+        ...ARTIFACT_INSPECTION_ROW,
+        workspaceId,
+        threadId,
+        artifactId,
+        source: { ...ARTIFACT_INSPECTION_ROW.source, workspaceId, threadId, artifactId },
+      };
+      const readArtifact = vi.fn().mockResolvedValue({
+        id: artifactId,
+        workspaceId,
+        threadId,
+        version: 1,
+        contentDigest: `sha256:${'a'.repeat(64)}`,
+        title: 'Exact worker output',
+        content: { format: 'text', body: 'Exact output bytes.' },
+      });
+      const readReviews = vi.fn().mockResolvedValue({
+        reviews: [
+          {
+            ...row.source,
+            sourceThreadId: threadId,
+            sourceTurnId: 'turn1',
+            contentDigest: `sha256:${'a'.repeat(64)}`,
+            decision: null,
+            materialProposal: null,
+          },
+        ],
+      });
+      const readGoal = vi.fn().mockResolvedValue({ goal: null });
+      const client = makeClient({
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [
+              {
+                workspace: { ...WORKSPACE_A, id: workspaceId },
+                isOwner: true,
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              },
+            ],
+          }),
+          'attention.list': vi.fn().mockResolvedValue({ items: [row] }),
+          'artifact.read': readArtifact,
+          'artifact.review-list': readReviews,
+          'goal.read': readGoal,
         },
-      ],
-    });
-    const readGoal = vi.fn().mockResolvedValue({ goal: null });
-    const client = makeClient({
-      operations: {
-        'workspace.list': vi.fn().mockResolvedValue({
-          items: [
-            {
-              workspace: { ...WORKSPACE_A, id: workspaceId },
-              isOwner: true,
-              membershipRevision: 1,
-              ownerUserId: 'user_local',
-              registryRevision: 1,
-            },
-          ],
-        }),
-        'attention.list': vi.fn().mockResolvedValue({ items: [row] }),
-        'artifact.read': readArtifact,
-        'artifact.review-list': readReviews,
-        'goal.read': readGoal,
-      },
-    });
-    useWorkspaceStore.setState({ currentWorkspaceId: workspaceId });
-    renderApp('/attention', client);
+      });
+      useWorkspaceStore.setState({ currentWorkspaceId: workspaceId });
+      renderApp('/attention', client);
 
-    await user.click(await screen.findByRole('link', { name: 'Open goal' }));
+      await user.click(await screen.findByRole('link', { name: 'Open goal' }));
 
-    expect(await screen.findByText('Exact output bytes.')).toBeInTheDocument();
-    expect(readArtifact.mock.calls).toEqual([[{ workspaceId, artifactId }]]);
-    expect(readReviews.mock.calls).toEqual([[{ workspaceId, artifactId }]]);
-    expect(screen.getByRole('link', { name: /back to goal/i })).toHaveAttribute(
-      'href',
-      `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}?lens=plan`
-    );
-    const provenance = screen.getByRole('complementary', { name: 'Provenance and review' });
-    expect(within(provenance).getByText(threadId, { exact: true })).toBeInTheDocument();
-    expect(client.operations['artifact.review.decide']).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('link', { name: /back to goal/i }));
-    expect(await screen.findByRole('heading', { name: 'Create Goal' })).toBeInTheDocument();
-    expect(readGoal.mock.calls).toEqual([[{ workspaceId, threadId }]]);
-  });
+      expect(await screen.findByText('Exact output bytes.')).toBeInTheDocument();
+      expect(readArtifact.mock.calls).toEqual([[{ workspaceId, artifactId }]]);
+      expect(readReviews.mock.calls).toEqual([[{ workspaceId, artifactId }]]);
+      expect(screen.getByRole('link', { name: /back to goal/i })).toHaveAttribute(
+        'href',
+        `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}?lens=plan`
+      );
+      const provenance = screen.getByRole('complementary', { name: 'Provenance and review' });
+      expect(within(provenance).getByText(threadId, { exact: true })).toBeInTheDocument();
+      expect(client.operations['artifact.review.decide']).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('link', { name: /back to goal/i }));
+      expect(await screen.findByRole('heading', { name: 'Create Goal' })).toBeInTheDocument();
+      expect(readGoal.mock.calls).toEqual([[{ workspaceId, threadId }]]);
+    }
+  );
 });
 
 describe('Agents (board 08)', () => {
@@ -3948,199 +3956,198 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() => expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument());
   });
 
-  it.each([
-    'update',
-    'delete',
-  ] as const)('keeps authoritative entry bytes and an explicit retry after a failed %s', async (operation) => {
-    const user = userEvent.setup();
-    const mutation = vi.fn().mockRejectedValue(new Error(`${operation} failed`));
-    renderApp(
-      '/knowledge',
-      makeClient({
-        core: {
-          'knowledge.notebook.list': vi.fn().mockResolvedValue({
-            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
-            notebookRevision: 'notebook-fixture-revision',
-            pages: [KNOWLEDGE_LIST_PAGE],
-          }),
-          [operation === 'update' ? 'knowledge.notebook.update' : 'knowledge.notebook.delete']:
-            mutation,
-        },
-      })
-    );
+  it.each(['update', 'delete'] as const)(
+    'keeps authoritative entry bytes and an explicit retry after a failed %s',
+    async (operation) => {
+      const user = userEvent.setup();
+      const mutation = vi.fn().mockRejectedValue(new Error(`${operation} failed`));
+      renderApp(
+        '/knowledge',
+        makeClient({
+          core: {
+            'knowledge.notebook.list': vi.fn().mockResolvedValue({
+              knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+              notebookRevision: 'notebook-fixture-revision',
+              pages: [KNOWLEDGE_LIST_PAGE],
+            }),
+            [operation === 'update' ? 'knowledge.notebook.update' : 'knowledge.notebook.delete']:
+              mutation,
+          },
+        })
+      );
 
-    if (operation === 'update') {
-      await user.click(
-        await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` })
-      );
-      const title = screen.getByRole('textbox', { name: 'Title' });
-      await user.clear(title);
-      await user.click(title);
-      await user.paste('Unsaved local wording');
-      await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    } else {
-      await user.click(
-        await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
-      );
-      await user.click(
-        within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
-          'button',
-          { name: 'Remove' }
-        )
-      );
+      if (operation === 'update') {
+        await user.click(
+          await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` })
+        );
+        const title = screen.getByRole('textbox', { name: 'Title' });
+        await user.clear(title);
+        await user.click(title);
+        await user.paste('Unsaved local wording');
+        await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      } else {
+        await user.click(
+          await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
+        );
+        await user.click(
+          within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
+            'button',
+            { name: 'Remove' }
+          )
+        );
+      }
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(/couldn't|failed/i);
+      expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
+      expect(screen.getByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
+      expect(screen.getByText(KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
+      expect(mutation).toHaveBeenCalledTimes(1);
+      await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
     }
+  );
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't|failed/i);
-    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-    expect(screen.getByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
-    expect(screen.getByText(KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
-    expect(mutation).toHaveBeenCalledTimes(1);
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
-  });
-
-  it.each([
-    'create',
-    'update',
-    'delete',
-  ] as const)('replays the exact Workspace-bound %s command and requestId after an unknown failure', async (operation) => {
-    const user = userEvent.setup();
-    const privateText = `${operation} failed.`;
-    const secondEntry = knowledgeNotebookPageFixture({
-      id: 'mem2',
-      title: 'Second preference',
-      body: 'A later memo.',
-      workspaceId: WORKSPACE_A.id,
-      timestamp: TIMESTAMP_OLD,
-    });
-    const laterEntry = knowledgeNotebookPageFixture({
-      id: 'mem3',
-      title: 'Later preference',
-      body: 'A fresh semantic edit.',
-      workspaceId: WORKSPACE_A.id,
-      timestamp: TIMESTAMP_OLD,
-    });
-    const mutation = vi
-      .fn()
-      .mockRejectedValueOnce(operationFailed(privateText))
-      .mockResolvedValueOnce(
-        operation === 'delete'
-          ? undefined
-          : operation === 'update'
-            ? UPDATED_KNOWLEDGE_ENTRY
-            : KNOWLEDGE_ENTRY
-      )
-      .mockResolvedValue(operation === 'delete' ? undefined : laterEntry);
-    const listKnowledge = vi.fn().mockImplementation(() =>
-      Promise.resolve({
-        knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
-        notebookRevision: 'notebook-fixture-revision',
-        pages:
+  it.each(['create', 'update', 'delete'] as const)(
+    'replays the exact Workspace-bound %s command and requestId after an unknown failure',
+    async (operation) => {
+      const user = userEvent.setup();
+      const privateText = `${operation} failed.`;
+      const secondEntry = knowledgeNotebookPageFixture({
+        id: 'mem2',
+        title: 'Second preference',
+        body: 'A later memo.',
+        workspaceId: WORKSPACE_A.id,
+        timestamp: TIMESTAMP_OLD,
+      });
+      const laterEntry = knowledgeNotebookPageFixture({
+        id: 'mem3',
+        title: 'Later preference',
+        body: 'A fresh semantic edit.',
+        workspaceId: WORKSPACE_A.id,
+        timestamp: TIMESTAMP_OLD,
+      });
+      const mutation = vi
+        .fn()
+        .mockRejectedValueOnce(operationFailed(privateText))
+        .mockResolvedValueOnce(
           operation === 'delete'
-            ? mutation.mock.calls.length >= 2
-              ? [secondEntry]
-              : [KNOWLEDGE_LIST_PAGE, secondEntry]
-            : operation === 'create' && mutation.mock.calls.length >= 2
-              ? [KNOWLEDGE_LIST_PAGE]
-              : operation === 'create'
-                ? []
-                : [KNOWLEDGE_LIST_PAGE],
-      })
-    );
-    renderApp(
-      '/knowledge',
-      makeClient({
-        core: {
-          'knowledge.notebook.list': listKnowledge,
-          [`knowledge.notebook.${operation}`]: mutation,
-        },
-      })
-    );
-
-    if (operation === 'create') {
-      await screen.findByText(/No notebook pages yet/i);
-      await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-      await user.click(screen.getByRole('textbox', { name: 'Title' }));
-      await user.paste('Prefer concise memos');
-      await user.click(screen.getByRole('textbox', { name: 'Content' }));
-      await user.paste('Keep it short.');
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-    } else if (operation === 'update') {
-      await user.click(
-        await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` })
-      );
-      const title = screen.getByRole('textbox', { name: 'Title' });
-      await user.clear(title);
-      await user.click(title);
-      await user.paste('Unsaved local wording');
-      await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    } else {
-      await user.click(
-        await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
-      );
-      await user.click(
-        within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
-          'button',
-          { name: 'Remove' }
+            ? undefined
+            : operation === 'update'
+              ? UPDATED_KNOWLEDGE_ENTRY
+              : KNOWLEDGE_ENTRY
         )
+        .mockResolvedValue(operation === 'delete' ? undefined : laterEntry);
+      const listKnowledge = vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+          notebookRevision: 'notebook-fixture-revision',
+          pages:
+            operation === 'delete'
+              ? mutation.mock.calls.length >= 2
+                ? [secondEntry]
+                : [KNOWLEDGE_LIST_PAGE, secondEntry]
+              : operation === 'create' && mutation.mock.calls.length >= 2
+                ? [KNOWLEDGE_LIST_PAGE]
+                : operation === 'create'
+                  ? []
+                  : [KNOWLEDGE_LIST_PAGE],
+        })
       );
+      renderApp(
+        '/knowledge',
+        makeClient({
+          core: {
+            'knowledge.notebook.list': listKnowledge,
+            [`knowledge.notebook.${operation}`]: mutation,
+          },
+        })
+      );
+
+      if (operation === 'create') {
+        await screen.findByText(/No notebook pages yet/i);
+        await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
+        await user.click(screen.getByRole('textbox', { name: 'Title' }));
+        await user.paste('Prefer concise memos');
+        await user.click(screen.getByRole('textbox', { name: 'Content' }));
+        await user.paste('Keep it short.');
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+      } else if (operation === 'update') {
+        await user.click(
+          await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` })
+        );
+        const title = screen.getByRole('textbox', { name: 'Title' });
+        await user.clear(title);
+        await user.click(title);
+        await user.paste('Unsaved local wording');
+        await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      } else {
+        await user.click(
+          await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
+        );
+        await user.click(
+          within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
+            'button',
+            { name: 'Remove' }
+          )
+        );
+      }
+
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
+      const firstCall = mutation.mock.calls[0];
+      const firstRequestId = requestIdFromCall(firstCall);
+      expect(firstCall?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
+      expect(typeof firstRequestId).toBe('string');
+      await retryScopedAlert(
+        user,
+        document.body,
+        /couldn't (save that entry|save those changes|remove that entry)/i,
+        privateText
+      );
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
+      expect(mutation.mock.calls[1]).toEqual(firstCall);
+      expect(requestIdFromCall(mutation.mock.calls[1])).toBe(firstRequestId);
+
+      if (operation === 'create') {
+        await waitFor(() =>
+          expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+        );
+        await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
+        await user.click(screen.getByRole('textbox', { name: 'Title' }));
+        await user.paste(laterEntry.title);
+        await user.click(screen.getByRole('textbox', { name: 'Content' }));
+        await user.paste(laterEntry.content);
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+      } else if (operation === 'update') {
+        await waitFor(() =>
+          expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+        );
+        await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
+        const title = screen.getByRole('textbox', { name: 'Title' });
+        await user.clear(title);
+        await user.click(title);
+        await user.paste(laterEntry.title);
+        await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      } else {
+        await waitFor(() =>
+          expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument()
+        );
+        await user.click(screen.getByRole('button', { name: `Remove ${secondEntry.title}` }));
+        await user.click(
+          within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
+            'button',
+            { name: 'Remove' }
+          )
+        );
+      }
+
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(3));
+      expect(mutation.mock.calls[2]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
+      const laterRequestId = requestIdFromCall(mutation.mock.calls[2]);
+      expect(typeof laterRequestId).toBe('string');
+      expect(laterRequestId).not.toBe(firstRequestId);
     }
-
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
-    const firstCall = mutation.mock.calls[0];
-    const firstRequestId = requestIdFromCall(firstCall);
-    expect(firstCall?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
-    expect(typeof firstRequestId).toBe('string');
-    await retryScopedAlert(
-      user,
-      document.body,
-      /couldn't (save that entry|save those changes|remove that entry)/i,
-      privateText
-    );
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
-    expect(mutation.mock.calls[1]).toEqual(firstCall);
-    expect(requestIdFromCall(mutation.mock.calls[1])).toBe(firstRequestId);
-
-    if (operation === 'create') {
-      await waitFor(() =>
-        expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
-      );
-      await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-      await user.click(screen.getByRole('textbox', { name: 'Title' }));
-      await user.paste(laterEntry.title);
-      await user.click(screen.getByRole('textbox', { name: 'Content' }));
-      await user.paste(laterEntry.content);
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-    } else if (operation === 'update') {
-      await waitFor(() =>
-        expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
-      );
-      await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
-      const title = screen.getByRole('textbox', { name: 'Title' });
-      await user.clear(title);
-      await user.click(title);
-      await user.paste(laterEntry.title);
-      await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    } else {
-      await waitFor(() =>
-        expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument()
-      );
-      await user.click(screen.getByRole('button', { name: `Remove ${secondEntry.title}` }));
-      await user.click(
-        within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
-          'button',
-          { name: 'Remove' }
-        )
-      );
-    }
-
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(3));
-    expect(mutation.mock.calls[2]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
-    const laterRequestId = requestIdFromCall(mutation.mock.calls[2]);
-    expect(typeof laterRequestId).toBe('string');
-    expect(laterRequestId).not.toBe(firstRequestId);
-  });
+  );
 
   it('blocks a failed mutation retry while a different Knowledge mutation is pending', async () => {
     const user = userEvent.setup();
@@ -4188,88 +4195,87 @@ describe('Knowledge (board 14)', () => {
     expect(deleteKnowledge).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    'checking',
-    'failed',
-  ] as const)('disables every exposed Knowledge write while the connection is %s', async (connection) => {
-    const meta =
-      connection === 'checking'
-        ? vi.fn().mockReturnValue(new Promise(() => {}))
-        : vi.fn().mockRejectedValue(new Error('offline'));
-    renderApp(
-      '/knowledge',
-      makeClient({
-        core: {
-          meta,
-          'knowledge.notebook.list': vi.fn().mockResolvedValue({
-            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
-            notebookRevision: 'notebook-fixture-revision',
-            pages: [KNOWLEDGE_LIST_PAGE],
-          }),
-        },
-      })
-    );
-
-    await screen.findByText(KNOWLEDGE_ENTRY.title);
-    const writes = screen
-      .getAllByRole('button')
-      .filter((button) => /^(Add knowledge|Edit |Remove )/.test(button.textContent ?? ''));
-    expect(writes).toHaveLength(3);
-    for (const write of writes) expect(write).toBeDisabled();
-  });
-
-  it.each([
-    'create',
-    'update',
-    'delete',
-  ] as const)('disables all Knowledge writes while a %s mutation is pending', async (operation) => {
-    const user = userEvent.setup();
-    const pending = createDeferred<unknown>();
-    renderApp(
-      '/knowledge',
-      makeClient({
-        core: {
-          'knowledge.notebook.list': vi.fn().mockResolvedValue({
-            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
-            notebookRevision: 'notebook-fixture-revision',
-            pages: [KNOWLEDGE_LIST_PAGE],
-          }),
-          [`knowledge.notebook.${operation}`]: vi.fn().mockReturnValue(pending.promise),
-        },
-      })
-    );
-
-    await screen.findByText(KNOWLEDGE_ENTRY.title);
-    if (operation === 'create') {
-      await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-      await user.click(screen.getByRole('textbox', { name: 'Title' }));
-      await user.paste('New preference');
-      await user.click(screen.getByRole('textbox', { name: 'Content' }));
-      await user.paste('New content');
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-    } else if (operation === 'update') {
-      await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
-      const title = screen.getByRole('textbox', { name: 'Title' });
-      await user.clear(title);
-      await user.click(title);
-      await user.paste('Changed preference');
-      await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    } else {
-      await user.click(screen.getByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` }));
-      await user.click(
-        within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
-          'button',
-          { name: 'Remove' }
-        )
+  it.each(['checking', 'failed'] as const)(
+    'disables every exposed Knowledge write while the connection is %s',
+    async (connection) => {
+      const meta =
+        connection === 'checking'
+          ? vi.fn().mockReturnValue(new Promise(() => {}))
+          : vi.fn().mockRejectedValue(new Error('offline'));
+      renderApp(
+        '/knowledge',
+        makeClient({
+          core: {
+            meta,
+            'knowledge.notebook.list': vi.fn().mockResolvedValue({
+              knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+              notebookRevision: 'notebook-fixture-revision',
+              pages: [KNOWLEDGE_LIST_PAGE],
+            }),
+          },
+        })
       );
-    }
 
-    const writes = screen
-      .getAllByRole('button')
-      .filter((button) => /^(Add knowledge|Edit |Remove|Save)/.test(button.textContent ?? ''));
-    expect(writes.length).toBeGreaterThan(1);
-    for (const write of writes) expect(write).toBeDisabled();
-  });
+      await screen.findByText(KNOWLEDGE_ENTRY.title);
+      const writes = screen
+        .getAllByRole('button')
+        .filter((button) => /^(Add knowledge|Edit |Remove )/.test(button.textContent ?? ''));
+      expect(writes).toHaveLength(3);
+      for (const write of writes) expect(write).toBeDisabled();
+    }
+  );
+
+  it.each(['create', 'update', 'delete'] as const)(
+    'disables all Knowledge writes while a %s mutation is pending',
+    async (operation) => {
+      const user = userEvent.setup();
+      const pending = createDeferred<unknown>();
+      renderApp(
+        '/knowledge',
+        makeClient({
+          core: {
+            'knowledge.notebook.list': vi.fn().mockResolvedValue({
+              knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+              notebookRevision: 'notebook-fixture-revision',
+              pages: [KNOWLEDGE_LIST_PAGE],
+            }),
+            [`knowledge.notebook.${operation}`]: vi.fn().mockReturnValue(pending.promise),
+          },
+        })
+      );
+
+      await screen.findByText(KNOWLEDGE_ENTRY.title);
+      if (operation === 'create') {
+        await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
+        await user.click(screen.getByRole('textbox', { name: 'Title' }));
+        await user.paste('New preference');
+        await user.click(screen.getByRole('textbox', { name: 'Content' }));
+        await user.paste('New content');
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+      } else if (operation === 'update') {
+        await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
+        const title = screen.getByRole('textbox', { name: 'Title' });
+        await user.clear(title);
+        await user.click(title);
+        await user.paste('Changed preference');
+        await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      } else {
+        await user.click(screen.getByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` }));
+        await user.click(
+          within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
+            'button',
+            { name: 'Remove' }
+          )
+        );
+      }
+
+      const writes = screen
+        .getAllByRole('button')
+        .filter((button) => /^(Add knowledge|Edit |Remove|Save)/.test(button.textContent ?? ''));
+      expect(writes.length).toBeGreaterThan(1);
+      for (const write of writes) expect(write).toBeDisabled();
+    }
+  );
 
   it('reads and renders the bounded live Source projection', async () => {
     const listKnowledgeSources = vi.fn().mockResolvedValue({ items: [KNOWLEDGE_SOURCE] });
@@ -4374,46 +4380,49 @@ describe('Knowledge (board 14)', () => {
     ['Accept', 'accept_knowledge', 'accepted'],
     ['Reject', 'reject_knowledge', 'rejected'],
     ['Defer', 'defer', 'deferred'],
-  ] as const)('maps only the exact %s action from the Knowledge attention row', async (label, actionKind, decision) => {
-    const user = userEvent.setup();
-    const submitKnowledgeProposalDecision = vi.fn().mockResolvedValue({});
-    const row = {
-      ...KNOWLEDGE_PROPOSAL_ROW,
-      actions: [{ kind: actionKind, label, method: 'POST' }],
-    };
-    renderApp(
-      '/knowledge',
-      makeClient({
-        operations: {
-          'attention.list': vi
-            .fn()
-            .mockResolvedValue({ items: [NON_KNOWLEDGE_PROPOSAL_DECOY, row] }),
-        },
-        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
-      })
-    );
+  ] as const)(
+    'maps only the exact %s action from the Knowledge attention row',
+    async (label, actionKind, decision) => {
+      const user = userEvent.setup();
+      const submitKnowledgeProposalDecision = vi.fn().mockResolvedValue({});
+      const row = {
+        ...KNOWLEDGE_PROPOSAL_ROW,
+        actions: [{ kind: actionKind, label, method: 'POST' }],
+      };
+      renderApp(
+        '/knowledge',
+        makeClient({
+          operations: {
+            'attention.list': vi
+              .fn()
+              .mockResolvedValue({ items: [NON_KNOWLEDGE_PROPOSAL_DECOY, row] }),
+          },
+          app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
+        })
+      );
 
-    const action = await screen.findByRole('button', { name: label });
-    for (const absentLabel of ['Accept', 'Reject', 'Defer'].filter((item) => item !== label)) {
-      expect(screen.queryByRole('button', { name: absentLabel })).not.toBeInTheDocument();
+      const action = await screen.findByRole('button', { name: label });
+      for (const absentLabel of ['Accept', 'Reject', 'Defer'].filter((item) => item !== label)) {
+        expect(screen.queryByRole('button', { name: absentLabel })).not.toBeInTheDocument();
+      }
+      if (decision === 'accepted') await inspectKnowledgeProposal(user);
+      await user.click(action);
+      await waitFor(() =>
+        expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          proposalId: 'kp_exact',
+          proposalDigest: KNOWLEDGE_PROPOSAL_ROW.source.proposalDigest,
+          baseRevision: KNOWLEDGE_PROPOSAL_ROW.source.baseRevision,
+          candidateRevision: KNOWLEDGE_PROPOSAL_ROW.source.candidateRevision,
+          ...{
+            decision,
+            requestId: expect.any(String),
+          },
+        })
+      );
+      expect(screen.queryByText(NON_KNOWLEDGE_PROPOSAL_DECOY.title)).not.toBeInTheDocument();
     }
-    if (decision === 'accepted') await inspectKnowledgeProposal(user);
-    await user.click(action);
-    await waitFor(() =>
-      expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
-        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        proposalId: 'kp_exact',
-        proposalDigest: KNOWLEDGE_PROPOSAL_ROW.source.proposalDigest,
-        baseRevision: KNOWLEDGE_PROPOSAL_ROW.source.baseRevision,
-        candidateRevision: KNOWLEDGE_PROPOSAL_ROW.source.candidateRevision,
-        ...{
-          decision,
-          requestId: expect.any(String),
-        },
-      })
-    );
-    expect(screen.queryByText(NON_KNOWLEDGE_PROPOSAL_DECOY.title)).not.toBeInTheDocument();
-  });
+  );
 
   it('omits unsupported proposal actions and exposes the disabled action reason', async () => {
     const user = userEvent.setup();
@@ -4611,32 +4620,32 @@ describe('Knowledge (board 14)', () => {
     expect(callsOn(submitKnowledgeProposalDecision, WORKSPACE_B.id)).toHaveLength(0);
   });
 
-  it.each([
-    'checking',
-    'failed',
-  ] as const)('disables proposal decisions while the connection is %s', async (connection) => {
-    const meta =
-      connection === 'checking'
-        ? vi.fn().mockReturnValue(new Promise(() => {}))
-        : vi.fn().mockRejectedValue(new Error('offline'));
-    renderApp(
-      '/knowledge',
-      makeClient({
-        operations: {
-          'attention.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
-        },
+  it.each(['checking', 'failed'] as const)(
+    'disables proposal decisions while the connection is %s',
+    async (connection) => {
+      const meta =
+        connection === 'checking'
+          ? vi.fn().mockReturnValue(new Promise(() => {}))
+          : vi.fn().mockRejectedValue(new Error('offline'));
+      renderApp(
+        '/knowledge',
+        makeClient({
+          operations: {
+            'attention.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
+          },
 
-        core: { meta },
-      })
-    );
+          core: { meta },
+        })
+      );
 
-    await screen.findByText(KNOWLEDGE_PROPOSAL_ROW.title);
-    await waitFor(() => {
-      for (const label of ['Accept', 'Reject', 'Defer']) {
-        expect(screen.getByRole('button', { name: label })).toBeDisabled();
-      }
-    });
-  });
+      await screen.findByText(KNOWLEDGE_PROPOSAL_ROW.title);
+      await waitFor(() => {
+        for (const label of ['Accept', 'Reject', 'Defer']) {
+          expect(screen.getByRole('button', { name: label })).toBeDisabled();
+        }
+      });
+    }
+  );
 
   it('registers a source from the Sources panel, refetches the list, and reads the selected source', async () => {
     const user = userEvent.setup();
@@ -4972,47 +4981,50 @@ describe('Knowledge (board 14)', () => {
   it.each([
     { name: 'access denial', error: accessDenied('Private permission details') },
     { name: 'read failure', error: operationFailed('Private storage details') },
-  ])('does not compose cached retrieval content after current Knowledge $name', async ({
-    error,
-  }) => {
-    const user = userEvent.setup();
-    const listKnowledge = vi
-      .fn()
-      .mockResolvedValueOnce({
+  ])(
+    'does not compose cached retrieval content after current Knowledge $name',
+    async ({ error }) => {
+      const user = userEvent.setup();
+      const listKnowledge = vi
+        .fn()
+        .mockResolvedValueOnce({
+          knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+          notebookRevision: 'notebook-fixture-revision',
+          pages: [KNOWLEDGE_LIST_PAGE],
+        })
+        .mockRejectedValue(error);
+      const queryClient = renderApp(
+        '/knowledge',
+        makeClient({
+          core: { 'knowledge.notebook.list': listKnowledge },
+          app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL) },
+        })
+      );
+      await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
+      const retrieval = knowledgePanel('Retrieval');
+      await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
+      await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
+      expect(await within(retrieval).findByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: workspaceKeys.knowledge(WORKSPACE_A.id) });
+      });
+
+      // TanStack retains the previous data on a failed refetch; it is not current read authority.
+      expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
         pages: [KNOWLEDGE_LIST_PAGE],
-      })
-      .mockRejectedValue(error);
-    const queryClient = renderApp(
-      '/knowledge',
-      makeClient({
-        core: { 'knowledge.notebook.list': listKnowledge },
-        app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL) },
-      })
-    );
-    await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
-    const retrieval = knowledgePanel('Retrieval');
-    await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
-    await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
-    expect(await within(retrieval).findByText(KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
-    await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: workspaceKeys.knowledge(WORKSPACE_A.id) });
-    });
-
-    // TanStack retains the previous data on a failed refetch; it is not current read authority.
-    expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual({
-      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
-      notebookRevision: 'notebook-fixture-revision',
-      pages: [KNOWLEDGE_LIST_PAGE],
-    });
-    expect(await within(retrieval).findByText('Current content unavailable.')).toBeInTheDocument();
-    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
-    expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
-    expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
-    expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent(error.message);
-  });
+      });
+      expect(
+        await within(retrieval).findByText('Current content unavailable.')
+      ).toBeInTheDocument();
+      expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+      expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.content)).not.toBeInTheDocument();
+      expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
+      expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
+      expect(document.body).not.toHaveTextContent(error.message);
+    }
+  );
 
   it('does not compose a late Workspace A retrieval with Workspace B current content', async () => {
     const user = userEvent.setup();
@@ -5638,132 +5650,139 @@ describe('Knowledge (board 14)', () => {
       echo: undefined,
       settled: [] as (typeof KNOWLEDGE_LIST_PAGE)[],
     },
-  ])('rereads only the Workspace A knowledge query when an in-flight A $operation completes in B', async (testCase) => {
-    const user = userEvent.setup();
-    const pending = createDeferred<unknown>();
-    const authoritativeA = createDeferred<{
-      knowledgeBaseId: string;
-      notebookRevision: string;
-      pages: (typeof KNOWLEDGE_LIST_PAGE)[];
-    }>();
-    let aReads = 0;
-    let bReads = 0;
-    const listKnowledge = vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) => {
-      if (workspaceId === WORKSPACE_B.id) {
-        bReads += 1;
-        return Promise.resolve({
-          knowledgeBaseId: WORKSPACE_B_KNOWLEDGE_BASE_ID,
-          notebookRevision: 'notebook-fixture-revision',
-          pages:
-            bReads > 1
-              ? [
-                  knowledgeNotebookPageWithEdits(KNOWLEDGE_LIST_PAGE_B, {
-                    title: 'B must not reread after A settlement',
-                  }),
-                ]
-              : [KNOWLEDGE_LIST_PAGE_B],
+  ])(
+    'rereads only the Workspace A knowledge query when an in-flight A $operation completes in B',
+    async (testCase) => {
+      const user = userEvent.setup();
+      const pending = createDeferred<unknown>();
+      const authoritativeA = createDeferred<{
+        knowledgeBaseId: string;
+        notebookRevision: string;
+        pages: (typeof KNOWLEDGE_LIST_PAGE)[];
+      }>();
+      let aReads = 0;
+      let bReads = 0;
+      const listKnowledge = vi
+        .fn()
+        .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+          if (workspaceId === WORKSPACE_B.id) {
+            bReads += 1;
+            return Promise.resolve({
+              knowledgeBaseId: WORKSPACE_B_KNOWLEDGE_BASE_ID,
+              notebookRevision: 'notebook-fixture-revision',
+              pages:
+                bReads > 1
+                  ? [
+                      knowledgeNotebookPageWithEdits(KNOWLEDGE_LIST_PAGE_B, {
+                        title: 'B must not reread after A settlement',
+                      }),
+                    ]
+                  : [KNOWLEDGE_LIST_PAGE_B],
+            });
+          }
+          aReads += 1;
+          if (aReads > 1) return authoritativeA.promise;
+          return Promise.resolve({
+            knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+            notebookRevision: 'notebook-fixture-revision',
+            pages: [KNOWLEDGE_LIST_PAGE],
+          });
         });
+      const mutation = vi.fn().mockReturnValue(pending.promise);
+      renderApp(
+        '/knowledge',
+        makeClient({
+          core: {
+            'knowledge.notebook.list': listKnowledge,
+            [testCase.operation === 'update'
+              ? 'knowledge.notebook.update'
+              : 'knowledge.notebook.delete']: mutation,
+          },
+
+          operations: {
+            'workspace.list': vi.fn().mockResolvedValue({
+              items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
+                workspace,
+                isOwner: true,
+                membershipRevision: 1,
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+                registryRevision: 1,
+              })),
+            }),
+          },
+        })
+      );
+      if (testCase.operation === 'update') {
+        await user.click(
+          await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` })
+        );
+        const title = screen.getByRole('textbox', { name: 'Title' });
+        await user.clear(title);
+        await user.click(title);
+        await user.paste('Prefer concise release notes');
+        await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      } else {
+        await user.click(
+          await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
+        );
+        await user.click(
+          within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
+            'button',
+            { name: 'Remove' }
+          )
+        );
       }
-      aReads += 1;
-      if (aReads > 1) return authoritativeA.promise;
-      return Promise.resolve({
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
+      expect(mutation.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
+
+      act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Knowledge' })
+      ).toBeInTheDocument();
+      expect(await screen.findByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
+      expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+      await fillWorkspaceBSourceDraft(user);
+      const aReadsBefore = callsOn(listKnowledge, WORKSPACE_A.id).length;
+      const bReadsBefore = callsOn(listKnowledge, WORKSPACE_B.id).length;
+      pending.resolve(
+        testCase.operation === 'update' ? { ...KNOWLEDGE_ENTRY, title: testCase.echo } : undefined
+      );
+      await waitFor(() =>
+        expect(listKnowledge.mock.calls.length).toBeGreaterThan(aReadsBefore + bReadsBefore)
+      );
+      expect(callsOn(listKnowledge, WORKSPACE_A.id)).toHaveLength(aReadsBefore + 1);
+      expect(callsOn(listKnowledge, WORKSPACE_B.id)).toHaveLength(bReadsBefore);
+      expect(screen.getByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
+      expect(screen.queryByText('B must not reread after A settlement')).not.toBeInTheDocument();
+      if (testCase.echo) {
+        expect(screen.queryByText(testCase.echo)).not.toBeInTheDocument();
+      }
+      expectWorkspaceBSourceDraftRetained();
+
+      authoritativeA.resolve({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        pages: [KNOWLEDGE_LIST_PAGE],
+        pages: testCase.settled,
       });
-    });
-    const mutation = vi.fn().mockReturnValue(pending.promise);
-    renderApp(
-      '/knowledge',
-      makeClient({
-        core: {
-          'knowledge.notebook.list': listKnowledge,
-          [testCase.operation === 'update'
-            ? 'knowledge.notebook.update'
-            : 'knowledge.notebook.delete']: mutation,
-        },
+      expect(screen.getByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
+      expectWorkspaceBSourceDraftRetained();
+      expect(callsOn(listKnowledge, WORKSPACE_B.id)).toHaveLength(bReadsBefore);
+      expect(callsOn(mutation, WORKSPACE_B.id)).toHaveLength(0);
 
-        operations: {
-          'workspace.list': vi.fn().mockResolvedValue({
-            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
-              membershipStatus: 'active' as const,
-              accessCause: 'membership' as const,
-              workspace,
-              isOwner: true,
-              membershipRevision: 1,
-              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-              registryRevision: 1,
-            })),
-          }),
-        },
-      })
-    );
-    if (testCase.operation === 'update') {
-      await user.click(
-        await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` })
-      );
-      const title = screen.getByRole('textbox', { name: 'Title' });
-      await user.clear(title);
-      await user.click(title);
-      await user.paste('Prefer concise release notes');
-      await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    } else {
-      await user.click(
-        await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
-      );
-      await user.click(
-        within(await screen.findByRole('dialog', { name: 'Remove knowledge' })).getByRole(
-          'button',
-          { name: 'Remove' }
-        )
-      );
+      act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
+      if (testCase.operation === 'update') {
+        expect(await screen.findByText(UPDATED_KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
+        expect(screen.getByText(UPDATED_KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
+        expect(screen.queryByText(testCase.echo ?? '')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+      } else {
+        expect(await screen.findByText(/No notebook pages yet/i)).toBeInTheDocument();
+        expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
+      }
     }
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
-    expect(mutation.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
-
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
-    expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
-    expect(await screen.findByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
-    expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
-    await fillWorkspaceBSourceDraft(user);
-    const aReadsBefore = callsOn(listKnowledge, WORKSPACE_A.id).length;
-    const bReadsBefore = callsOn(listKnowledge, WORKSPACE_B.id).length;
-    pending.resolve(
-      testCase.operation === 'update' ? { ...KNOWLEDGE_ENTRY, title: testCase.echo } : undefined
-    );
-    await waitFor(() =>
-      expect(listKnowledge.mock.calls.length).toBeGreaterThan(aReadsBefore + bReadsBefore)
-    );
-    expect(callsOn(listKnowledge, WORKSPACE_A.id)).toHaveLength(aReadsBefore + 1);
-    expect(callsOn(listKnowledge, WORKSPACE_B.id)).toHaveLength(bReadsBefore);
-    expect(screen.getByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
-    expect(screen.queryByText('B must not reread after A settlement')).not.toBeInTheDocument();
-    if (testCase.echo) {
-      expect(screen.queryByText(testCase.echo)).not.toBeInTheDocument();
-    }
-    expectWorkspaceBSourceDraftRetained();
-
-    authoritativeA.resolve({
-      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
-      notebookRevision: 'notebook-fixture-revision',
-      pages: testCase.settled,
-    });
-    expect(screen.getByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
-    expectWorkspaceBSourceDraftRetained();
-    expect(callsOn(listKnowledge, WORKSPACE_B.id)).toHaveLength(bReadsBefore);
-    expect(callsOn(mutation, WORKSPACE_B.id)).toHaveLength(0);
-
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
-    if (testCase.operation === 'update') {
-      expect(await screen.findByText(UPDATED_KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
-      expect(screen.getByText(UPDATED_KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
-      expect(screen.queryByText(testCase.echo ?? '')).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
-    } else {
-      expect(await screen.findByText(/No notebook pages yet/i)).toBeInTheDocument();
-      expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
-    }
-  });
+  );
 
   it('rereads only the Workspace A attention query when an in-flight A proposal decision completes in B', async () => {
     const user = userEvent.setup();
@@ -5950,71 +5969,76 @@ describe('Knowledge (board 14)', () => {
         }),
       ],
     },
-  ])('locks a new $method submit after a successful write whose authoritative refetch rejects', async (testCase) => {
-    const user = userEvent.setup();
-    const method = vi.fn().mockResolvedValue(testCase.success);
-    const owner = vi
-      .fn()
-      .mockResolvedValueOnce(testCase.owner.initial)
-      .mockRejectedValueOnce(operationFailed('authoritative read failed'))
-      .mockResolvedValue(testCase.owner.after);
-    renderApp(
-      '/knowledge',
-      makeClient({
-        app: {
-          [testCase.owner.method]: owner,
-          [testCase.method]: method,
-        },
-      })
-    );
+  ])(
+    'locks a new $method submit after a successful write whose authoritative refetch rejects',
+    async (testCase) => {
+      const user = userEvent.setup();
+      const method = vi.fn().mockResolvedValue(testCase.success);
+      const owner = vi
+        .fn()
+        .mockResolvedValueOnce(testCase.owner.initial)
+        .mockRejectedValueOnce(operationFailed('authoritative read failed'))
+        .mockResolvedValue(testCase.owner.after);
+      renderApp(
+        '/knowledge',
+        makeClient({
+          app: {
+            [testCase.owner.method]: owner,
+            [testCase.method]: method,
+          },
+        })
+      );
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
-    const panel = knowledgePanel(testCase.panel);
-    if ('selects' in testCase && testCase.selects) {
-      for (const item of testCase.selects) {
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Knowledge' })
+      ).toBeInTheDocument();
+      const panel = knowledgePanel(testCase.panel);
+      if ('selects' in testCase && testCase.selects) {
+        for (const item of testCase.selects) {
+          await selectListedOption(user, panel, item.name, item.option);
+        }
+      }
+      if ('fields' in testCase && testCase.fields) {
+        await fillKnowledgeFields(user, panel, [...testCase.fields]);
+      }
+      await user.click(within(panel).getByRole('button', { name: testCase.action }));
+      await waitFor(() => expect(method).toHaveBeenCalledTimes(1));
+      const firstRequestId = requestIdFromCall(method.mock.calls[0]);
+      expect(typeof firstRequestId).toBe('string');
+      await waitFor(() => expect(owner).toHaveBeenCalledTimes(2));
+
+      const submit = within(panel).getByRole('button', { name: testCase.action });
+      await waitFor(() => expect(submit).toBeDisabled());
+      await user.click(submit);
+      expect(method).toHaveBeenCalledTimes(1);
+      expect(requestIdFromCall(method.mock.calls[0])).toBe(firstRequestId);
+
+      await retryScopedAlert(user, panel, testCase.message, 'authoritative read failed');
+      await waitFor(() => expect(owner).toHaveBeenCalledTimes(3));
+      expect(method).toHaveBeenCalledTimes(1);
+      expect(requestIdFromCall(method.mock.calls[0])).toBe(firstRequestId);
+      await proveScopedRetrySettled(panel, testCase.result, testCase.echo);
+      expectKnowledgeDraftCleared(panel, testCase.clearedFields, [...testCase.clearedSelects]);
+      const settledSubmit = within(panel).getByRole('button', { name: testCase.action });
+      expect(settledSubmit).toBeDisabled();
+      await user.click(settledSubmit);
+      expect(method).toHaveBeenCalledTimes(1);
+      expect(requestIdFromCall(method.mock.calls[0])).toBe(firstRequestId);
+
+      for (const item of testCase.nextSelects) {
         await selectListedOption(user, panel, item.name, item.option);
       }
+      await fillKnowledgeFields(user, panel, [...testCase.nextFields]);
+      const nextSubmit = within(panel).getByRole('button', { name: testCase.action });
+      await waitFor(() => expect(nextSubmit).toBeEnabled());
+      await user.click(nextSubmit);
+      await waitFor(() => expect(method).toHaveBeenCalledTimes(2));
+      const secondRequestId = requestIdFromCall(method.mock.calls[1]);
+      expect(typeof secondRequestId).toBe('string');
+      expect(secondRequestId).not.toBe(firstRequestId);
+      expect(method.mock.calls[1]).toEqual(testCase.nextExpected);
     }
-    if ('fields' in testCase && testCase.fields) {
-      await fillKnowledgeFields(user, panel, [...testCase.fields]);
-    }
-    await user.click(within(panel).getByRole('button', { name: testCase.action }));
-    await waitFor(() => expect(method).toHaveBeenCalledTimes(1));
-    const firstRequestId = requestIdFromCall(method.mock.calls[0]);
-    expect(typeof firstRequestId).toBe('string');
-    await waitFor(() => expect(owner).toHaveBeenCalledTimes(2));
-
-    const submit = within(panel).getByRole('button', { name: testCase.action });
-    await waitFor(() => expect(submit).toBeDisabled());
-    await user.click(submit);
-    expect(method).toHaveBeenCalledTimes(1);
-    expect(requestIdFromCall(method.mock.calls[0])).toBe(firstRequestId);
-
-    await retryScopedAlert(user, panel, testCase.message, 'authoritative read failed');
-    await waitFor(() => expect(owner).toHaveBeenCalledTimes(3));
-    expect(method).toHaveBeenCalledTimes(1);
-    expect(requestIdFromCall(method.mock.calls[0])).toBe(firstRequestId);
-    await proveScopedRetrySettled(panel, testCase.result, testCase.echo);
-    expectKnowledgeDraftCleared(panel, testCase.clearedFields, [...testCase.clearedSelects]);
-    const settledSubmit = within(panel).getByRole('button', { name: testCase.action });
-    expect(settledSubmit).toBeDisabled();
-    await user.click(settledSubmit);
-    expect(method).toHaveBeenCalledTimes(1);
-    expect(requestIdFromCall(method.mock.calls[0])).toBe(firstRequestId);
-
-    for (const item of testCase.nextSelects) {
-      await selectListedOption(user, panel, item.name, item.option);
-    }
-    await fillKnowledgeFields(user, panel, [...testCase.nextFields]);
-    const nextSubmit = within(panel).getByRole('button', { name: testCase.action });
-    await waitFor(() => expect(nextSubmit).toBeEnabled());
-    await user.click(nextSubmit);
-    await waitFor(() => expect(method).toHaveBeenCalledTimes(2));
-    const secondRequestId = requestIdFromCall(method.mock.calls[1]);
-    expect(typeof secondRequestId).toBe('string');
-    expect(secondRequestId).not.toBe(firstRequestId);
-    expect(method.mock.calls[1]).toEqual(testCase.nextExpected);
-  });
+  );
 
   it.each([
     {

@@ -391,21 +391,20 @@ describe('durable Context Package trace publication', () => {
     expect(readFileSync(f.path)).toEqual(bytes);
   });
 
-  it.each([
-    'partial',
-    'file-sync',
-    'publish',
-  ] as const)('propagates %s failure without a canonical trace', async (mode) => {
-    const f = await fixture();
-    fault.mode = mode;
-    expect(() => f.write()).toThrow(/injected/);
-    expect(fault.injections).toBe(1);
-    expect(existsSync(f.path)).toBe(false);
-    expect(() => f.read()).toThrow(/unavailable/);
-    fault.mode = '';
-    expect(f.write()).toEqual(f.trace);
-    expect(f.read()).toEqual(f.trace);
-  });
+  it.each(['partial', 'file-sync', 'publish'] as const)(
+    'propagates %s failure without a canonical trace',
+    async (mode) => {
+      const f = await fixture();
+      fault.mode = mode;
+      expect(() => f.write()).toThrow(/injected/);
+      expect(fault.injections).toBe(1);
+      expect(existsSync(f.path)).toBe(false);
+      expect(() => f.read()).toThrow(/unavailable/);
+      fault.mode = '';
+      expect(f.write()).toEqual(f.trace);
+      expect(f.read()).toEqual(f.trace);
+    }
+  );
 
   it('refuses directory-sync failure and retries synchronization for complete identical bytes', async () => {
     const f = await fixture();
@@ -419,26 +418,26 @@ describe('durable Context Package trace publication', () => {
     expect(f.read()).toEqual(f.trace);
   });
 
-  it.each([
-    'same',
-    'different',
-  ] as const)('preserves a %s racing immutable winner', async (race) => {
-    const f = await fixture();
-    fault.race = race;
-    if (race === 'same') {
-      expect(f.write()).toEqual(f.trace);
-      expect(fault.race).toBe('');
-      expect(f.read()).toEqual(f.trace);
-      expect(fault.events.indexOf('file-sync')).toBeGreaterThanOrEqual(0);
-      expect(fault.events.indexOf('file-sync')).toBeLessThan(fault.events.indexOf('publish'));
-      expect(fault.events.lastIndexOf('directory-sync')).toBeGreaterThan(
-        fault.events.indexOf('publish')
-      );
-    } else {
-      expect(() => f.write()).toThrow();
-      expect(readFileSync(f.path, 'utf8')).toBe('a conflicting racing winner');
+  it.each(['same', 'different'] as const)(
+    'preserves a %s racing immutable winner',
+    async (race) => {
+      const f = await fixture();
+      fault.race = race;
+      if (race === 'same') {
+        expect(f.write()).toEqual(f.trace);
+        expect(fault.race).toBe('');
+        expect(f.read()).toEqual(f.trace);
+        expect(fault.events.indexOf('file-sync')).toBeGreaterThanOrEqual(0);
+        expect(fault.events.indexOf('file-sync')).toBeLessThan(fault.events.indexOf('publish'));
+        expect(fault.events.lastIndexOf('directory-sync')).toBeGreaterThan(
+          fault.events.indexOf('publish')
+        );
+      } else {
+        expect(() => f.write()).toThrow();
+        expect(readFileSync(f.path, 'utf8')).toBe('a conflicting racing winner');
+      }
     }
-  });
+  );
 
   it('rejects conflicting retained bytes without replacing their immutable identity', async () => {
     const f = await fixture();

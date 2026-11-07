@@ -280,159 +280,161 @@ function decision(
   };
 }
 
-it.each([
-  'workspace',
-  'server',
-] as const)('issues one reviewed %s grant with exact lineage and preserves the original after narrowing', async (scope) => {
-  const f = fixture();
-  try {
-    const source = await prepare(f, scope);
-    const raised = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
-    expect(raised.status).toBe(200);
-    const request = await raised.json();
-    expect(f.store.getTurnById(request.raisingTurnId).status).toBe('completed');
-    expect(JSON.parse(request.effect.detail)).toMatchObject({
-      operation: 'vault.grant-issue',
-      terms: source.terms,
-    });
-    const unapproved = await f.send('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(unapproved.status).toBe(409);
-    const approved = await f.send('approval.respond', decision(request, 'granted'));
-    expect(approved.status).toBe(200);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
-    const input = {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    };
-    const issued = await f.send('vault.grant-issue', input);
-    expect(issued.status).toBe(200);
-    const result = await issued.json();
-    expect(result).toMatchObject({
-      state: 'resolved',
-      resolution: 'granted',
-      claim: 'finished',
-      disposition: 'approved-executed',
-      terms: source.terms,
-      decidingActorId: FIXTURE_LOCAL_USER_ID,
-    });
-    const actual = getVaultGrant(f.coreDb, result.grantId)!;
-    expect(actual).toMatchObject({
-      vaultReferenceId: source.terms.referenceId,
-      ownerScope: scope,
-      lifetime: scope,
-      allowedInjectionPaths: ['gateway-only'],
-      targetCapabilityId: 'mcp.call-tool',
-      expiresAt: source.terms.expiresAt,
-      approvalId: request.approvalRequestId,
-      status: 'active',
-    });
-    expect(actual.policyDecisionId).toBeTruthy();
-    const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+it.each(['workspace', 'server'] as const)(
+  'issues one reviewed %s grant with exact lineage and preserves the original after narrowing',
+  async (scope) => {
+    const f = fixture();
     try {
-      // Policy Enforcement Mapping, Version-One Retained Projection: migrated producers use the real mediated record.
-      const decisions = await readReviewedIssueDecisions(db);
-      expect(decisions).toHaveLength(1);
-      expect(decisions[0]).toMatchObject({
-        decisionId: actual.policyDecisionId,
-        result: 'allow',
-        approvalId: request.approvalRequestId,
-        policyEngineVersion: 'nanocore-policy:v1',
-        policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
-        reasonCode: 'granted',
-        enforcementPoint: 'vault.grant-issue@decide',
-        mediation: { operation: 'vault.grant-issue', stage: 'decide', role: 'final' },
+      const source = await prepare(f, scope);
+      const raised = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
+      expect(raised.status).toBe(200);
+      const request = await raised.json();
+      expect(f.store.getTurnById(request.raisingTurnId).status).toBe('completed');
+      expect(JSON.parse(request.effect.detail)).toMatchObject({
+        operation: 'vault.grant-issue',
+        terms: source.terms,
       });
-    } finally {
-      db.sqlite.close();
-    }
-    const again = await f.send('vault.grant-issue', input);
-    expect(again.status).toBe(200);
-    expect((await again.json()).grantId).toBe(result.grantId);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
-    const audit = f.coreDb.sqlite
-      .prepare(
-        "SELECT actor_json, vault_grant_id, resource FROM audit_events WHERE action = 'vault.grant-issue'"
-      )
-      .all();
-    expect(audit).toEqual([
-      {
-        actor_json: JSON.stringify({ kind: 'user', id: FIXTURE_LOCAL_USER_ID }),
-        vault_grant_id: result.grantId,
-        resource: `approval:${request.approvalRequestId}`,
-      },
-    ]);
-    const narrower = await f.send(
-      scope === 'workspace' ? 'vault.grant-narrow' : 'vault.server-mcp-grant-narrow',
-      {
-        ...(scope === 'workspace'
-          ? { workspaceId: source.workspaceId }
-          : { requestId: randomUUID() }),
-        grantId: result.grantId,
-        constraints: { targetAgentId: randomUUID() },
+      const unapproved = await f.send('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(unapproved.status).toBe(409);
+      const approved = await f.send('approval.respond', decision(request, 'granted'));
+      expect(approved.status).toBe(200);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
+      const input = {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      };
+      const issued = await f.send('vault.grant-issue', input);
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(result).toMatchObject({
+        state: 'resolved',
+        resolution: 'granted',
+        claim: 'finished',
+        disposition: 'approved-executed',
+        terms: source.terms,
+        decidingActorId: FIXTURE_LOCAL_USER_ID,
+      });
+      const actual = getVaultGrant(f.coreDb, result.grantId)!;
+      expect(actual).toMatchObject({
+        vaultReferenceId: source.terms.referenceId,
+        ownerScope: scope,
+        lifetime: scope,
+        allowedInjectionPaths: ['gateway-only'],
+        targetCapabilityId: 'mcp.call-tool',
+        expiresAt: source.terms.expiresAt,
+        approvalId: request.approvalRequestId,
+        status: 'active',
+      });
+      expect(actual.policyDecisionId).toBeTruthy();
+      const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        // Policy Enforcement Mapping, Version-One Retained Projection: migrated producers use the real mediated record.
+        const decisions = await readReviewedIssueDecisions(db);
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]).toMatchObject({
+          decisionId: actual.policyDecisionId,
+          result: 'allow',
+          approvalId: request.approvalRequestId,
+          policyEngineVersion: 'nanocore-policy:v1',
+          policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
+          reasonCode: 'granted',
+          enforcementPoint: 'vault.grant-issue@decide',
+          mediation: { operation: 'vault.grant-issue', stage: 'decide', role: 'final' },
+        });
+      } finally {
+        db.sqlite.close();
       }
-    );
-    expect(narrower.status).toBe(200);
-    const replacement = await narrower.json();
-    expect(replacement.grant.grantId).not.toBe(result.grantId);
-    expect(getVaultGrant(f.coreDb, result.grantId)?.status).toBe('revoked');
-    const observed = await f.send('vault.grant-request-list', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-    });
-    expect(observed.status).toBe(200);
-    expect((await observed.json()).items[0].grantId).toBe(result.grantId);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
-    expect(JSON.stringify([result, actual, audit])).not.toContain('synthetic-resolution-canary');
-  } finally {
-    await f.cleanup();
+      const again = await f.send('vault.grant-issue', input);
+      expect(again.status).toBe(200);
+      expect((await again.json()).grantId).toBe(result.grantId);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
+      const audit = f.coreDb.sqlite
+        .prepare(
+          "SELECT actor_json, vault_grant_id, resource FROM audit_events WHERE action = 'vault.grant-issue'"
+        )
+        .all();
+      expect(audit).toEqual([
+        {
+          actor_json: JSON.stringify({ kind: 'user', id: FIXTURE_LOCAL_USER_ID }),
+          vault_grant_id: result.grantId,
+          resource: `approval:${request.approvalRequestId}`,
+        },
+      ]);
+      const narrower = await f.send(
+        scope === 'workspace' ? 'vault.grant-narrow' : 'vault.server-mcp-grant-narrow',
+        {
+          ...(scope === 'workspace'
+            ? { workspaceId: source.workspaceId }
+            : { requestId: randomUUID() }),
+          grantId: result.grantId,
+          constraints: { targetAgentId: randomUUID() },
+        }
+      );
+      expect(narrower.status).toBe(200);
+      const replacement = await narrower.json();
+      expect(replacement.grant.grantId).not.toBe(result.grantId);
+      expect(getVaultGrant(f.coreDb, result.grantId)?.status).toBe('revoked');
+      const observed = await f.send('vault.grant-request-list', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+      });
+      expect(observed.status).toBe(200);
+      expect((await observed.json()).items[0].grantId).toBe(result.grantId);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(
+        0
+      );
+      expect(JSON.stringify([result, actual, audit])).not.toContain('synthetic-resolution-canary');
+    } finally {
+      await f.cleanup();
+    }
   }
-});
+);
 
-it.each([
-  'denied',
-  'withdrawn',
-] as const)('keeps a %s request non-authorizing after late review', async (ending) => {
-  const f = fixture();
-  try {
-    const source = await prepare(f);
-    const raised = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
-    expect(raised.status).toBe(200);
-    const request = await raised.json();
-    const resolved =
-      ending === 'denied'
-        ? await f.send('approval.respond', decision(request, 'denied'))
-        : await f.send('pending-request.withdraw', {
-            workspaceId: source.workspaceId,
-            threadId: source.threadId,
-            pendingRequestId: request.approvalRequestId,
-            requestId: randomUUID(),
-          });
-    expect(resolved.status).toBe(200);
-    const issue = await f.send('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issue.status).toBe(409);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
-    const list = await f.send('vault.grant-request-list', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-    });
-    const record = (await list.json()).items[0];
-    expect(record.grantId).toBeNull();
-    expect(record.resolution ?? record.ending).toBe(ending);
-    expect(record.delivery).toBe('delivered');
-  } finally {
-    await f.cleanup();
+it.each(['denied', 'withdrawn'] as const)(
+  'keeps a %s request non-authorizing after late review',
+  async (ending) => {
+    const f = fixture();
+    try {
+      const source = await prepare(f);
+      const raised = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
+      expect(raised.status).toBe(200);
+      const request = await raised.json();
+      const resolved =
+        ending === 'denied'
+          ? await f.send('approval.respond', decision(request, 'denied'))
+          : await f.send('pending-request.withdraw', {
+              workspaceId: source.workspaceId,
+              threadId: source.threadId,
+              pendingRequestId: request.approvalRequestId,
+              requestId: randomUUID(),
+            });
+      expect(resolved.status).toBe(200);
+      const issue = await f.send('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issue.status).toBe(409);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
+      const list = await f.send('vault.grant-request-list', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+      });
+      const record = (await list.json()).items[0];
+      expect(record.grantId).toBeNull();
+      expect(record.resolution ?? record.ending).toBe(ending);
+      expect(record.delivery).toBe('delivered');
+    } finally {
+      await f.cleanup();
+    }
   }
-});
+);
 
 it('refuses a revoked deciding credential even when another administrator consumes the request', async () => {
   const f = fixture();
@@ -782,409 +784,412 @@ it('permits deny and withdraw when exact disclosure is unavailable and prevents 
   }
 });
 
-it.each([
-  'workspace',
-  'server',
-  'revoked-agent',
-] as const)('binds a Worker %s request to its exact package and current canonical MCP slot', async (selection) => {
-  const ownerScope = selection === 'revoked-agent' ? 'workspace' : selection;
-  const f = fixture();
-  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
-  const admittedTurns: string[] = [];
-  let successorCloseout: Promise<unknown> | undefined;
-  const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-  try {
-    const source = await prepare(f, ownerScope, 'workspace');
-    const existingGrantId = allocateEntityId('grant');
-    await createVaultGrant(f.coreDb, {
-      grantId: existingGrantId,
-      vaultReferenceId: source.terms.referenceId,
-      ownerScope,
-      ...(ownerScope === 'workspace' ? { workspaceId: source.workspaceId } : {}),
-      lifetime: ownerScope,
-      allowedInjectionPaths: ['gateway-only'],
-    });
-    const owner =
-      ownerScope === 'server'
-        ? { kind: 'server' as const }
-        : { kind: 'workspace' as const, workspaceId: source.workspaceId };
-    const server = createMcpConfig({
-      dataRoot: f.dataRoot,
-      owner,
-      expectedRevision: 0,
-      id: 'review-echo',
-      displayName: 'Synthetic MCP',
-      declaration: { kind: 'http', endpoint: 'https://example.invalid/mcp', headers: {} },
-      allowedTools: ['echo'],
-      selectCurrent: true,
-      createdAt: new Date().toISOString(),
-    });
-    updateMcpBinding({
-      dataRoot: f.dataRoot,
-      owner,
-      entryId: 'review-echo',
-      expectedRevision: server.catalog.revision,
-      binding: {
-        ...server.catalog.mcp.bindings[0]!,
-        enabled: true,
-        credentialBindings: [
+it.each(['workspace', 'server', 'revoked-agent'] as const)(
+  'binds a Worker %s request to its exact package and current canonical MCP slot',
+  async (selection) => {
+    const ownerScope = selection === 'revoked-agent' ? 'workspace' : selection;
+    const f = fixture();
+    let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+    let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+    const admittedTurns: string[] = [];
+    let successorCloseout: Promise<unknown> | undefined;
+    const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    try {
+      const source = await prepare(f, ownerScope, 'workspace');
+      const existingGrantId = allocateEntityId('grant');
+      await createVaultGrant(f.coreDb, {
+        grantId: existingGrantId,
+        vaultReferenceId: source.terms.referenceId,
+        ownerScope,
+        ...(ownerScope === 'workspace' ? { workspaceId: source.workspaceId } : {}),
+        lifetime: ownerScope,
+        allowedInjectionPaths: ['gateway-only'],
+      });
+      const owner =
+        ownerScope === 'server'
+          ? { kind: 'server' as const }
+          : { kind: 'workspace' as const, workspaceId: source.workspaceId };
+      const server = createMcpConfig({
+        dataRoot: f.dataRoot,
+        owner,
+        expectedRevision: 0,
+        id: 'review-echo',
+        displayName: 'Synthetic MCP',
+        declaration: { kind: 'http', endpoint: 'https://example.invalid/mcp', headers: {} },
+        allowedTools: ['echo'],
+        selectCurrent: true,
+        createdAt: new Date().toISOString(),
+      });
+      updateMcpBinding({
+        dataRoot: f.dataRoot,
+        owner,
+        entryId: 'review-echo',
+        expectedRevision: server.catalog.revision,
+        binding: {
+          ...server.catalog.mcp.bindings[0]!,
+          enabled: true,
+          credentialBindings: [
+            {
+              slot: 'token',
+              vaultGrantId: existingGrantId,
+              sink: { kind: 'header', name: 'Authorization' },
+            },
+          ],
+        },
+      });
+      const catalog = composeWorkspaceMcpCatalog({
+        dataRoot: f.dataRoot,
+        workspaceId: source.workspaceId,
+      });
+      const current = resolveWorkspaceMcpServer({ catalog, serverId: 'review-echo' });
+      let snapshot = createInMemoryRuntimeConfigSnapshot({
+        dataRoot: f.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
           {
-            slot: 'token',
-            vaultGrantId: existingGrantId,
-            sink: { kind: 'header', name: 'Authorization' },
+            id: 'agent-openrouter',
+            displayName: 'Fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
+        agentManifests: [
+          createTestAgentSetup({
+            mcpIds: ['review-echo'],
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          }).manifest,
+        ],
+        workspaceMcpServerCatalogs: [
+          {
+            catalog,
+            path: join(f.dataRoot, 'catalog/catalog.json'),
+            workspaceId: source.workspaceId,
           },
         ],
-      },
-    });
-    const catalog = composeWorkspaceMcpCatalog({
-      dataRoot: f.dataRoot,
-      workspaceId: source.workspaceId,
-    });
-    const current = resolveWorkspaceMcpServer({ catalog, serverId: 'review-echo' });
-    let snapshot = createInMemoryRuntimeConfigSnapshot({
-      dataRoot: f.dataRoot,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
-      agentManifests: [
-        createTestAgentSetup({
-          mcpIds: ['review-echo'],
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        }).manifest,
-      ],
-      workspaceMcpServerCatalogs: [
-        {
-          catalog,
-          path: join(f.dataRoot, 'catalog/catalog.json'),
-          workspaceId: source.workspaceId,
-        },
-      ],
-    });
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: null,
-      initialSnapshot: snapshot,
-    });
-    vi.spyOn(runtimeConfigManager, 'current').mockImplementation(() => snapshot);
-    native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
-      readRuntimeConfig: () => snapshot,
-    });
-    const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
-    const results = vi.spyOn(native.runtime, 'acceptNanoHostHarnessResult');
-    const app = createApp({
-      coreDb: f.coreDb,
-      store: f.store,
-      vaultUnlockState: f.vaultUnlockState,
-      fileAdmission: native.fileAdmission,
-      turnExecutor: native.executor,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager,
-    });
-    const started = await app.request(
-      ...operationRequest(
-        'task.start',
-        { workspaceId: source.workspaceId, threadId: source.threadId },
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            input: 'Request selected credential authority',
-            requestId: randomUUID(),
-          }),
-        }
-      )
-    );
-    expect(started.status).toBe(202);
-    const { turn } = StartTaskModeResponseSchema.parse(await started.json());
-    admittedTurns.push(turn.id);
-    const first = native.executionFor(turn.id);
-    await first.launched.promise;
-    await native.waitForStartup(turn.id);
-    const pkg = native.workerControlGateway.authenticatePackageToken(
-      `Bearer ${native.executor.capabilityToken}`,
-      { tokenFamily: 'capability' }
-    );
-    const sessionId = pkg.scope.agentSessionId;
-    expect(pkg.scope).toMatchObject({
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      turnId: turn.id,
-    });
-    expect(pkg.supply.mcpServers).toContainEqual(
-      expect.objectContaining({ id: current.id, catalogDigest: current.catalogDigest })
-    );
-    workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
-    const context = {
-      coreDb: f.coreDb,
-      store: f.store,
-      workspaceDb,
-      dataRoot: f.dataRoot,
-      vaultUnlockState: f.vaultUnlockState,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-      packageSnapshotId: pkg.snapshotId,
-      protocolRequestId: randomUUID(),
-      inflightCommands: new WeakMap(),
-      workspaceId: source.workspaceId,
-      actor: pkg.scope.triggerActor,
-      scope: pkg.scope,
-    };
-    expect(createOpenkitGenerativeMcpSupply().allowedTools).toContain('vault_grant-request');
-    const terms = { ...source.terms, mcpSource: { serverId: 'review-echo', slot: 'token' } };
-    const response = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request', { terms });
-    expect(response.structuredContent).toMatchObject({
-      requesterKind: 'worker',
-      agentId: 'agent_codex_host',
-      agentSessionId: sessionId,
-      raisingTurnId: turn.id,
-      terms,
-      grantId: null,
-    });
-    expect(f.store.getTurnById(turn.id).status).toBe('running');
-    const list = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request-list', {});
-    expect((list.structuredContent as { items: unknown[] }).items).toHaveLength(1);
-    for (const changed of [
-      { ...terms, referenceId: allocateEntityId('vault') },
-      { ...terms, mcpSource: { serverId: 'review-echo', slot: 'unselected' } },
-      {
-        ...terms,
-        ownerScope: ownerScope === 'server' ? 'workspace' : 'server',
-        lifetime: ownerScope === 'server' ? 'workspace' : 'server',
-      },
-    ]) {
-      await expect(
-        dispatchOpenkitGenerativeTool(
-          { ...context, protocolRequestId: randomUUID() },
-          'vault_grant-request',
-          { terms: changed }
+      });
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      });
+      vi.spyOn(runtimeConfigManager, 'current').mockImplementation(() => snapshot);
+      native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+        readRuntimeConfig: () => snapshot,
+      });
+      const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+      const results = vi.spyOn(native.runtime, 'acceptNanoHostHarnessResult');
+      const app = createApp({
+        coreDb: f.coreDb,
+        store: f.store,
+        vaultUnlockState: f.vaultUnlockState,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager,
+      });
+      const started = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: source.workspaceId, threadId: source.threadId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              input: 'Request selected credential authority',
+              requestId: randomUUID(),
+            }),
+          }
         )
-      ).rejects.toMatchObject({ code: 'workspace_access_denied' });
-    }
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
-    const request = response.structuredContent as {
-      workspaceId: string;
-      threadId: string;
-      raisingTurnId: string;
-      approvalRequestId: string;
-    };
-    expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    if (selection === 'revoked-agent') {
-      const requestingAgent = {
-        kind: 'agent' as const,
-        userId: FIXTURE_LOCAL_USER_ID,
-        agentId: pkg.agent.agentId,
-        processId: sessionId,
-      };
-      const policy = managedThreadPolicy({
+      );
+      expect(started.status).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+      admittedTurns.push(turn.id);
+      const first = native.executionFor(turn.id);
+      await first.launched.promise;
+      await native.waitForStartup(turn.id);
+      const pkg = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      const sessionId = pkg.scope.agentSessionId;
+      expect(pkg.scope).toMatchObject({
         workspaceId: source.workspaceId,
         threadId: source.threadId,
-        userId: FIXTURE_LOCAL_USER_ID,
-        operations: WORKSPACE_MEMBER_OPERATIONS,
+        turnId: turn.id,
       });
-      const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
-      policy.statements.push({
-        ...permission,
-        id: `${permission.id}-agent`,
-        scope: { ...permission.scope, actions: ['thread.read'] },
-        grant: { kind: 'agent-process', agentId: requestingAgent.agentId },
+      expect(pkg.supply.mcpServers).toContainEqual(
+        expect.objectContaining({ id: current.id, catalogDigest: current.catalogDigest })
+      );
+      workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      const context = {
+        coreDb: f.coreDb,
+        store: f.store,
+        workspaceDb,
+        dataRoot: f.dataRoot,
+        vaultUnlockState: f.vaultUnlockState,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        packageSnapshotId: pkg.snapshotId,
+        protocolRequestId: randomUUID(),
+        inflightCommands: new WeakMap(),
+        workspaceId: source.workspaceId,
+        actor: pkg.scope.triggerActor,
+        scope: pkg.scope,
+      };
+      expect(createOpenkitGenerativeMcpSupply().allowedTools).toContain('vault_grant-request');
+      const terms = { ...source.terms, mcpSource: { serverId: 'review-echo', slot: 'token' } };
+      const response = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request', {
+        terms,
       });
-      f.store.setWorkspaceResourcePolicyProjection(() => policy);
-      expect(
-        isThreadIdVisible(f.store, source.workspaceId, source.threadId, FIXTURE_LOCAL_USER_ID)
-      ).toBe(true);
-      expect(
-        isThreadIdVisible(
-          f.store,
-          source.workspaceId,
-          source.threadId,
-          FIXTURE_LOCAL_USER_ID,
-          false,
-          'thread.read',
-          requestingAgent
-        )
-      ).toBe(true);
-      expect(
-        isThreadIdVisible(
-          f.store,
-          source.workspaceId,
-          source.threadId,
-          FIXTURE_LOCAL_USER_ID,
-          false,
-          'workspace.write',
-          requestingAgent
-        )
-      ).toBe(false);
-      const refused = await f.send('vault.grant-issue', {
+      expect(response.structuredContent).toMatchObject({
+        requesterKind: 'worker',
+        agentId: 'agent_codex_host',
+        agentSessionId: sessionId,
+        raisingTurnId: turn.id,
+        terms,
+        grantId: null,
+      });
+      expect(f.store.getTurnById(turn.id).status).toBe('running');
+      const list = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request-list', {});
+      expect((list.structuredContent as { items: unknown[] }).items).toHaveLength(1);
+      for (const changed of [
+        { ...terms, referenceId: allocateEntityId('vault') },
+        { ...terms, mcpSource: { serverId: 'review-echo', slot: 'unselected' } },
+        {
+          ...terms,
+          ownerScope: ownerScope === 'server' ? 'workspace' : 'server',
+          lifetime: ownerScope === 'server' ? 'workspace' : 'server',
+        },
+      ]) {
+        await expect(
+          dispatchOpenkitGenerativeTool(
+            { ...context, protocolRequestId: randomUUID() },
+            'vault_grant-request',
+            { terms: changed }
+          )
+        ).rejects.toMatchObject({ code: 'workspace_access_denied' });
+      }
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
+      const request = response.structuredContent as {
+        workspaceId: string;
+        threadId: string;
+        raisingTurnId: string;
+        approvalRequestId: string;
+      };
+      expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+      if (selection === 'revoked-agent') {
+        const requestingAgent = {
+          kind: 'agent' as const,
+          userId: FIXTURE_LOCAL_USER_ID,
+          agentId: pkg.agent.agentId,
+          processId: sessionId,
+        };
+        const policy = managedThreadPolicy({
+          workspaceId: source.workspaceId,
+          threadId: source.threadId,
+          userId: FIXTURE_LOCAL_USER_ID,
+          operations: WORKSPACE_MEMBER_OPERATIONS,
+        });
+        const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
+        policy.statements.push({
+          ...permission,
+          id: `${permission.id}-agent`,
+          scope: { ...permission.scope, actions: ['thread.read'] },
+          grant: { kind: 'agent-process', agentId: requestingAgent.agentId },
+        });
+        f.store.setWorkspaceResourcePolicyProjection(() => policy);
+        expect(
+          isThreadIdVisible(f.store, source.workspaceId, source.threadId, FIXTURE_LOCAL_USER_ID)
+        ).toBe(true);
+        expect(
+          isThreadIdVisible(
+            f.store,
+            source.workspaceId,
+            source.threadId,
+            FIXTURE_LOCAL_USER_ID,
+            false,
+            'thread.read',
+            requestingAgent
+          )
+        ).toBe(true);
+        expect(
+          isThreadIdVisible(
+            f.store,
+            source.workspaceId,
+            source.threadId,
+            FIXTURE_LOCAL_USER_ID,
+            false,
+            'workspace.write',
+            requestingAgent
+          )
+        ).toBe(false);
+        const refused = await f.send('vault.grant-issue', {
+          workspaceId: source.workspaceId,
+          threadId: source.threadId,
+          approvalRequestId: request.approvalRequestId,
+        });
+        expect(refused.status).toBe(403);
+        expect((await refused.json()).code).toBe('workspace_access_denied');
+        expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
+        return;
+      }
+      const issue = await f.send('vault.grant-issue', {
         workspaceId: source.workspaceId,
         threadId: source.threadId,
         approvalRequestId: request.approvalRequestId,
       });
-      expect(refused.status).toBe(403);
-      expect((await refused.json()).code).toBe('workspace_access_denied');
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
-      return;
-    }
-    const issue = await f.send('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issue.status).toBe(200);
-    const issued = await issue.json();
-    expect(getVaultGrant(f.coreDb, issued.grantId)).toMatchObject({
-      ownerScope,
-      approvalId: request.approvalRequestId,
-      lifetime: ownerScope,
-      allowedInjectionPaths: ['gateway-only'],
-    });
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(2);
-    expect(f.store.getTurnById(turn.id).status).toBe('running');
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
-    expect(JSON.stringify(response)).not.toContain('synthetic-resolution-canary');
-    // A native process setting requires genuine replacement without changing the MCP selection.
-    const manifest = snapshot.agentManifests[0]!;
-    snapshot = createInMemoryRuntimeConfigSnapshot({
-      ...snapshot,
-      agentManifests: [
-        {
-          ...manifest,
-          runtime: {
-            ...manifest.runtime,
-            environment: { VAULT_FIXTURE_BINDING: 'successor' },
+      expect(issue.status).toBe(200);
+      const issued = await issue.json();
+      expect(getVaultGrant(f.coreDb, issued.grantId)).toMatchObject({
+        ownerScope,
+        approvalId: request.approvalRequestId,
+        lifetime: ownerScope,
+        allowedInjectionPaths: ['gateway-only'],
+      });
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(2);
+      expect(f.store.getTurnById(turn.id).status).toBe('running');
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all()).toHaveLength(0);
+      expect(JSON.stringify(response)).not.toContain('synthetic-resolution-canary');
+      // A native process setting requires genuine replacement without changing the MCP selection.
+      const manifest = snapshot.agentManifests[0]!;
+      snapshot = createInMemoryRuntimeConfigSnapshot({
+        ...snapshot,
+        agentManifests: [
+          {
+            ...manifest,
+            runtime: {
+              ...manifest.runtime,
+              environment: { VAULT_FIXTURE_BINDING: 'successor' },
+            },
           },
-        },
-      ],
-    });
-    // The next admission must follow the actual first execution and its owning Task closeout.
-    first.completion.resolve();
-    await first.execution;
-    await Promise.all(
-      admissions.mock.results
-        .filter((result) => result.type === 'return')
-        .map((result) => result.value.closeout)
-    );
-    // The ready approval outcome owns the next Worker Turn at the terminal barrier.
-    const outcome = readPendingRequest(workspaceDb.sqlite, request.approvalRequestId);
-    expect(outcome?.deliveryTurnId).toEqual(expect.any(String));
-    const laterTurn = f.store.getTurnById(outcome!.deliveryTurnId!);
-    expect(laterTurn.triggerSource?.kind).toBe('approval-resolution');
-    admittedTurns.push(laterTurn.id);
-    // Boot's scheduler retries queued outcomes after the preceding native attempt releases.
-    const dispatch = runSchedulerDispatchLoop({
-      coreDb: f.coreDb,
-      store: f.store,
-      turnExecutor: native.executor,
-      executionBackend: native.executor.executionBackend!,
-      agentManifests: snapshot.agentManifests,
-      gatewayConfig: snapshot.gatewayConfig,
-      providerRegistry: snapshot.providerRegistry,
-      workspaceConfigs: snapshot.workspaceConfigs,
-      workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
-      maxDispatches: 1,
-    });
-    successorCloseout = dispatch.then((result) => {
-      const entry = result.startedTurns.find(
-        (started) => started.dispatch.entry.turnId === laterTurn.id
-      );
-      if (entry)
-        return getSchedulerPreparationClaims(f.coreDb).get(entry.dispatch.entry.queueEntryId);
-    });
-    void successorCloseout.catch(() => undefined);
-    await Promise.race([
-      native.executionFor(laterTurn.id).launched.promise,
-      dispatch.then((result) => {
-        if (!result.startedTurns.some((started) => started.dispatch.entry.turnId === laterTurn.id))
-          throw new Error(
-            `Outcome dispatch did not launch its Turn: ${JSON.stringify(result.terminalResult)}`
-          );
-        return native!.executionFor(laterTurn.id).launched.promise;
-      }),
-    ]);
-    await native.waitForStartup(laterTurn.id);
-    const laterPackage = native.workerControlGateway.authenticatePackageToken(
-      `Bearer ${native.executor.capabilityToken}`,
-      { tokenFamily: 'capability' }
-    );
-    expect(laterTurn.id).not.toBe(turn.id);
-    expect(laterPackage.scope.agentSessionId).not.toBe(sessionId);
-    const closes = commands.mock.calls
-      .map(([command]) => command)
-      .filter(
-        (command) =>
-          command.operation === 'session.close' && command.body.agentSessionId === sessionId
-      );
-    expect(closes).toHaveLength(1);
-    expect(results.mock.calls.map(([result]) => result)).toContainEqual(
-      expect.objectContaining({
-        harnessInstanceId: closes[0]!.harnessInstanceId,
-        operationId: closes[0]!.operationId,
-        sequence: closes[0]!.sequence,
-        disposition: 'succeeded',
-        body: expect.objectContaining({ state: 'closed', privateState: 'absent' }),
-      })
-    );
-    expect(native.executor.launches).toBe(2);
-    expect(f.store.listThreadAgentSessions(source.workspaceId, source.threadId)).toHaveLength(2);
-    expect(laterPackage.scope).toMatchObject({
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      turnId: laterTurn.id,
-    });
-    const readback = await dispatchOpenkitGenerativeTool(
-      {
-        ...context,
-        store: f.store,
-        scope: laterPackage.scope,
-        actor: laterPackage.scope.triggerActor,
-        packageSnapshotId: laterPackage.snapshotId,
-        protocolRequestId: randomUUID(),
-      },
-      'vault_grant-request-list',
-      {}
-    );
-    expect(readback.structuredContent).toMatchObject({
-      items: [
-        {
-          approvalRequestId: request.approvalRequestId,
-          grantId: issued.grantId,
-          agentSessionId: sessionId,
-          raisingTurnId: turn.id,
-        },
-      ],
-    });
-    expect(f.store.getAgentSession(sessionId).status).toBe('closed');
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(2);
-  } finally {
-    try {
-      native?.executor.completion.resolve();
-      for (const turnId of admittedTurns) native?.executionFor(turnId).completion.resolve();
-      const closeouts = [
-        ...admittedTurns.map((turnId) => native!.executionFor(turnId).execution),
-        successorCloseout,
-      ];
-      // Settle every owner before propagating an execution or dispatcher rejection.
-      await Promise.allSettled(closeouts);
-      await Promise.all(closeouts);
+        ],
+      });
+      // The next admission must follow the actual first execution and its owning Task closeout.
+      first.completion.resolve();
+      await first.execution;
       await Promise.all(
         admissions.mock.results
           .filter((result) => result.type === 'return')
           .map((result) => result.value.closeout)
       );
+      // The ready approval outcome owns the next Worker Turn at the terminal barrier.
+      const outcome = readPendingRequest(workspaceDb.sqlite, request.approvalRequestId);
+      expect(outcome?.deliveryTurnId).toEqual(expect.any(String));
+      const laterTurn = f.store.getTurnById(outcome!.deliveryTurnId!);
+      expect(laterTurn.triggerSource?.kind).toBe('approval-resolution');
+      admittedTurns.push(laterTurn.id);
+      // Boot's scheduler retries queued outcomes after the preceding native attempt releases.
+      const dispatch = runSchedulerDispatchLoop({
+        coreDb: f.coreDb,
+        store: f.store,
+        turnExecutor: native.executor,
+        executionBackend: native.executor.executionBackend!,
+        agentManifests: snapshot.agentManifests,
+        gatewayConfig: snapshot.gatewayConfig,
+        providerRegistry: snapshot.providerRegistry,
+        workspaceConfigs: snapshot.workspaceConfigs,
+        workspaceMcpServerCatalogs: snapshot.workspaceMcpServerCatalogs,
+        maxDispatches: 1,
+      });
+      successorCloseout = dispatch.then((result) => {
+        const entry = result.startedTurns.find(
+          (started) => started.dispatch.entry.turnId === laterTurn.id
+        );
+        if (entry)
+          return getSchedulerPreparationClaims(f.coreDb).get(entry.dispatch.entry.queueEntryId);
+      });
+      void successorCloseout.catch(() => undefined);
+      await Promise.race([
+        native.executionFor(laterTurn.id).launched.promise,
+        dispatch.then((result) => {
+          if (
+            !result.startedTurns.some((started) => started.dispatch.entry.turnId === laterTurn.id)
+          )
+            throw new Error(
+              `Outcome dispatch did not launch its Turn: ${JSON.stringify(result.terminalResult)}`
+            );
+          return native!.executionFor(laterTurn.id).launched.promise;
+        }),
+      ]);
+      await native.waitForStartup(laterTurn.id);
+      const laterPackage = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(laterTurn.id).not.toBe(turn.id);
+      expect(laterPackage.scope.agentSessionId).not.toBe(sessionId);
+      const closes = commands.mock.calls
+        .map(([command]) => command)
+        .filter(
+          (command) =>
+            command.operation === 'session.close' && command.body.agentSessionId === sessionId
+        );
+      expect(closes).toHaveLength(1);
+      expect(results.mock.calls.map(([result]) => result)).toContainEqual(
+        expect.objectContaining({
+          harnessInstanceId: closes[0]!.harnessInstanceId,
+          operationId: closes[0]!.operationId,
+          sequence: closes[0]!.sequence,
+          disposition: 'succeeded',
+          body: expect.objectContaining({ state: 'closed', privateState: 'absent' }),
+        })
+      );
+      expect(native.executor.launches).toBe(2);
+      expect(f.store.listThreadAgentSessions(source.workspaceId, source.threadId)).toHaveLength(2);
+      expect(laterPackage.scope).toMatchObject({
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        turnId: laterTurn.id,
+      });
+      const readback = await dispatchOpenkitGenerativeTool(
+        {
+          ...context,
+          store: f.store,
+          scope: laterPackage.scope,
+          actor: laterPackage.scope.triggerActor,
+          packageSnapshotId: laterPackage.snapshotId,
+          protocolRequestId: randomUUID(),
+        },
+        'vault_grant-request-list',
+        {}
+      );
+      expect(readback.structuredContent).toMatchObject({
+        items: [
+          {
+            approvalRequestId: request.approvalRequestId,
+            grantId: issued.grantId,
+            agentSessionId: sessionId,
+            raisingTurnId: turn.id,
+          },
+        ],
+      });
+      expect(f.store.getAgentSession(sessionId).status).toBe('closed');
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(2);
     } finally {
-      admissions.mockRestore();
-      await native?.restore();
-      vi.restoreAllMocks();
-      workspaceDb?.sqlite.close();
-      await f.cleanup();
+      try {
+        native?.executor.completion.resolve();
+        for (const turnId of admittedTurns) native?.executionFor(turnId).completion.resolve();
+        const closeouts = [
+          ...admittedTurns.map((turnId) => native!.executionFor(turnId).execution),
+          successorCloseout,
+        ];
+        // Settle every owner before propagating an execution or dispatcher rejection.
+        await Promise.allSettled(closeouts);
+        await Promise.all(closeouts);
+        await Promise.all(
+          admissions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value.closeout)
+        );
+      } finally {
+        admissions.mockRestore();
+        await native?.restore();
+        vi.restoreAllMocks();
+        workspaceDb?.sqlite.close();
+        await f.cleanup();
+      }
     }
   }
-});
+);
 
 it('reads only retained Server shared-MCP delivery lineage, separately from request/grant metadata', async () => {
   const f = fixture();
@@ -1350,357 +1355,361 @@ it('does not substitute a session replacement Token for the credential that deci
   }
 });
 
-it.each([
-  'workspace',
-  'server',
-] as const)('records exact nonmember administrator session review and provenance for %s', async (scope) => {
-  const reviewerId = allocateEntityId('usr');
-  const f = fixture(reviewerId);
-  try {
-    const source = await prepare(f, scope);
-    const request = await (
-      await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
-    ).json();
-    f.coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, display_name, email, email_verified, kind, created_at, updated_at, status) VALUES (?, 'Synthetic reviewer', ?, 0, 'human', ?, ?, 'active')"
-      )
-      .run(reviewerId, randomUUID(), Date.now(), Date.now());
-    const reviewer = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: reviewerId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    expect(setDefaultServerAdminTokenId(f.coreDb, reviewerId, reviewer.tokenId)).toBe(true);
-    const listed = await f.sessionSend('vault.grant-request-list', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-    });
-    expect(listed.status).toBe(200);
-    const observed = (await listed.json()).items[0];
-    expect(observed).toMatchObject({ canApprove: true, effect: { status: 'available' } });
-    expect(JSON.parse(observed.effect.detail)).toMatchObject({
-      operation: 'vault.grant-issue',
-      terms: source.terms,
-    });
-    expect((await f.sessionSend('approval.respond', decision(request, 'granted'))).status).toBe(
-      200
-    );
-    const issued = await f.sessionSend('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issued.status).toBe(200);
-    const result = await issued.json();
-    expect(result).toMatchObject({
-      responsibleUserId: FIXTURE_LOCAL_USER_ID,
-      decidingActorId: reviewerId,
-      disposition: 'approved-executed',
-    });
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .all(source.workspaceId, reviewerId)
-    ).toEqual([]);
-    const grant = getVaultGrant(f.coreDb, result.grantId)!;
-    expect(grant.approvalId).toBe(request.approvalRequestId);
-    const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+it.each(['workspace', 'server'] as const)(
+  'records exact nonmember administrator session review and provenance for %s',
+  async (scope) => {
+    const reviewerId = allocateEntityId('usr');
+    const f = fixture(reviewerId);
     try {
-      expect(readPendingRequest(db.sqlite, request.approvalRequestId)).toMatchObject({
-        decidingActor: { kind: 'user', id: reviewerId },
-        decidingActorContext: {
-          kind: 'session',
-          userId: reviewerId,
-          adminTokenId: reviewer.tokenId,
-        },
+      const source = await prepare(f, scope);
+      const request = await (
+        await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
+      ).json();
+      f.coreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id, display_name, email, email_verified, kind, created_at, updated_at, status) VALUES (?, 'Synthetic reviewer', ?, 0, 'human', ?, ?, 'active')"
+        )
+        .run(reviewerId, randomUUID(), Date.now(), Date.now());
+      const reviewer = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: reviewerId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      // The specialized producer is migrated in place, with one final authorizer and truthful actual actor.
-      const decisions = await readReviewedIssueDecisions(db);
-      expect(decisions).toHaveLength(1);
-      expect(decisions[0]).toMatchObject({
-        decisionId: grant.policyDecisionId,
-        policyEngineVersion: 'nanocore-policy:v1',
-        policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
-        result: 'allow',
-        reasonCode: 'granted',
-        enforcementPoint: 'vault.grant-issue@decide',
-        subjectSummary: {
-          principal: { kind: 'human', id: reviewerId },
-          actor: { kind: 'user', id: reviewerId },
-          responsibleHumanId: reviewerId,
-        },
-        approvalId: request.approvalRequestId,
-        mediation: {
-          operation: 'vault.grant-issue',
-          stage: 'decide',
-          role: 'final',
-          subject: {
+      expect(setDefaultServerAdminTokenId(f.coreDb, reviewerId, reviewer.tokenId)).toBe(true);
+      const listed = await f.sessionSend('vault.grant-request-list', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+      });
+      expect(listed.status).toBe(200);
+      const observed = (await listed.json()).items[0];
+      expect(observed).toMatchObject({ canApprove: true, effect: { status: 'available' } });
+      expect(JSON.parse(observed.effect.detail)).toMatchObject({
+        operation: 'vault.grant-issue',
+        terms: source.terms,
+      });
+      expect((await f.sessionSend('approval.respond', decision(request, 'granted'))).status).toBe(
+        200
+      );
+      const issued = await f.sessionSend('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(result).toMatchObject({
+        responsibleUserId: FIXTURE_LOCAL_USER_ID,
+        decidingActorId: reviewerId,
+        disposition: 'approved-executed',
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .all(source.workspaceId, reviewerId)
+      ).toEqual([]);
+      const grant = getVaultGrant(f.coreDb, result.grantId)!;
+      expect(grant.approvalId).toBe(request.approvalRequestId);
+      const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        expect(readPendingRequest(db.sqlite, request.approvalRequestId)).toMatchObject({
+          decidingActor: { kind: 'user', id: reviewerId },
+          decidingActorContext: {
+            kind: 'session',
+            userId: reviewerId,
+            adminTokenId: reviewer.tokenId,
+          },
+        });
+        // The specialized producer is migrated in place, with one final authorizer and truthful actual actor.
+        const decisions = await readReviewedIssueDecisions(db);
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]).toMatchObject({
+          decisionId: grant.policyDecisionId,
+          policyEngineVersion: 'nanocore-policy:v1',
+          policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
+          result: 'allow',
+          reasonCode: 'granted',
+          enforcementPoint: 'vault.grant-issue@decide',
+          subjectSummary: {
             principal: { kind: 'human', id: reviewerId },
             actor: { kind: 'user', id: reviewerId },
             responsibleHumanId: reviewerId,
           },
-          kernel: { effect: 'allow' },
-        },
-      });
-      expect(decisions[0]!.contextSummary).toMatchObject({
-        requestId: request.approvalRequestId,
-        threadId: source.threadId,
-        turnId: request.raisingTurnId,
-        issuingActorId: reviewerId,
-        requesterId: FIXTURE_LOCAL_USER_ID,
-        approvalRequestId: request.approvalRequestId,
-      });
-      expect(
-        db.sqlite
-          .prepare(
-            'SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?'
-          )
-          .get(decisions[0]!.auditEventId)
-      ).toEqual({
+          approvalId: request.approvalRequestId,
+          mediation: {
+            operation: 'vault.grant-issue',
+            stage: 'decide',
+            role: 'final',
+            subject: {
+              principal: { kind: 'human', id: reviewerId },
+              actor: { kind: 'user', id: reviewerId },
+              responsibleHumanId: reviewerId,
+            },
+            kernel: { effect: 'allow' },
+          },
+        });
+        expect(decisions[0]!.contextSummary).toMatchObject({
+          requestId: request.approvalRequestId,
+          threadId: source.threadId,
+          turnId: request.raisingTurnId,
+          issuingActorId: reviewerId,
+          requesterId: FIXTURE_LOCAL_USER_ID,
+          approvalRequestId: request.approvalRequestId,
+        });
+        expect(
+          db.sqlite
+            .prepare(
+              'SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?'
+            )
+            .get(decisions[0]!.auditEventId)
+        ).toEqual({
+          actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
+          permission_decision_id: grant.policyDecisionId,
+          request_id: request.approvalRequestId,
+        });
+      } finally {
+        db.sqlite.close();
+      }
+      const audit = f.coreDb.sqlite
+        .prepare(
+          "SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'"
+        )
+        .get();
+      expect(audit).toEqual({
         actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
-        permission_decision_id: grant.policyDecisionId,
         request_id: request.approvalRequestId,
       });
     } finally {
-      db.sqlite.close();
+      await f.cleanup();
     }
-    const audit = f.coreDb.sqlite
-      .prepare("SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'")
-      .get();
-    expect(audit).toEqual({
-      actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
-      request_id: request.approvalRequestId,
-    });
-  } finally {
-    await f.cleanup();
   }
-});
+);
 
-it.each([
-  'workspace',
-  'server',
-] as const)('delivers an actually reviewed %s grant through the real Gateway sink and retains truthful completion lineage', async (ownerScope) => {
-  const f = fixture();
-  const upstream = await createMcpHttpStub();
-  const gateway = createDefaultWorkerMcpGateway(f.coreDb);
-  const client = new Client({ name: 'reviewed-grant-sink-fixture', version: '1.0.0' });
-  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
-  const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-  try {
-    const source = await prepare(f, ownerScope, 'workspace');
-    const { targetCapabilityId: _capability, ...terms } = source.terms;
-    const raised = await f.send('vault.grant-request', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      requestId: randomUUID(),
-      terms,
-    });
-    expect(raised.status).toBe(200);
-    const request = await raised.json();
-    expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    const issue = await f.send('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issue.status).toBe(200);
-    const issued = await issue.json();
-    const owner =
-      ownerScope === 'server'
-        ? { kind: 'server' as const }
-        : { kind: 'workspace' as const, workspaceId: source.workspaceId };
-    const configured = createMcpConfig({
-      dataRoot: f.dataRoot,
-      owner,
-      expectedRevision: 0,
-      id: 'reviewed-sink',
-      displayName: 'Synthetic reviewed sink',
-      declaration: { kind: 'http', endpoint: upstream.url, headers: {} },
-      allowedTools: ['echo'],
-      selectCurrent: true,
-      createdAt: new Date().toISOString(),
-    });
-    updateMcpBinding({
-      dataRoot: f.dataRoot,
-      owner,
-      expectedRevision: configured.catalog.revision,
-      entryId: 'reviewed-sink',
-      binding: {
-        ...configured.catalog.mcp.bindings[0]!,
-        enabled: true,
-        credentialBindings: [
+it.each(['workspace', 'server'] as const)(
+  'delivers an actually reviewed %s grant through the real Gateway sink and retains truthful completion lineage',
+  async (ownerScope) => {
+    const f = fixture();
+    const upstream = await createMcpHttpStub();
+    const gateway = createDefaultWorkerMcpGateway(f.coreDb);
+    const client = new Client({ name: 'reviewed-grant-sink-fixture', version: '1.0.0' });
+    let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+    let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+    const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    try {
+      const source = await prepare(f, ownerScope, 'workspace');
+      const { targetCapabilityId: _capability, ...terms } = source.terms;
+      const raised = await f.send('vault.grant-request', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        requestId: randomUUID(),
+        terms,
+      });
+      expect(raised.status).toBe(200);
+      const request = await raised.json();
+      expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+      const issue = await f.send('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issue.status).toBe(200);
+      const issued = await issue.json();
+      const owner =
+        ownerScope === 'server'
+          ? { kind: 'server' as const }
+          : { kind: 'workspace' as const, workspaceId: source.workspaceId };
+      const configured = createMcpConfig({
+        dataRoot: f.dataRoot,
+        owner,
+        expectedRevision: 0,
+        id: 'reviewed-sink',
+        displayName: 'Synthetic reviewed sink',
+        declaration: { kind: 'http', endpoint: upstream.url, headers: {} },
+        allowedTools: ['echo'],
+        selectCurrent: true,
+        createdAt: new Date().toISOString(),
+      });
+      updateMcpBinding({
+        dataRoot: f.dataRoot,
+        owner,
+        expectedRevision: configured.catalog.revision,
+        entryId: 'reviewed-sink',
+        binding: {
+          ...configured.catalog.mcp.bindings[0]!,
+          enabled: true,
+          credentialBindings: [
+            {
+              slot: 'token',
+              vaultGrantId: issued.grantId,
+              sink: { kind: 'header', name: 'Authorization' },
+            },
+          ],
+        },
+      });
+      const catalog = composeWorkspaceMcpCatalog({
+        dataRoot: f.dataRoot,
+        workspaceId: source.workspaceId,
+      });
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        dataRoot: f.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
           {
-            slot: 'token',
-            vaultGrantId: issued.grantId,
-            sink: { kind: 'header', name: 'Authorization' },
+            id: 'agent-openrouter',
+            displayName: 'Fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
+        agentManifests: [
+          createTestAgentSetup({
+            mcpIds: ['reviewed-sink'],
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+          }).manifest,
+        ],
+        workspaceMcpServerCatalogs: [
+          {
+            workspaceId: source.workspaceId,
+            path: join(f.dataRoot, 'catalog/catalog.json'),
+            catalog,
           },
         ],
-      },
-    });
-    const catalog = composeWorkspaceMcpCatalog({
-      dataRoot: f.dataRoot,
-      workspaceId: source.workspaceId,
-    });
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      dataRoot: f.dataRoot,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
+      });
+      native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+        readRuntimeConfig: () => snapshot,
+      });
+      const app = createApp({
+        coreDb: f.coreDb,
+        store: f.store,
+        vaultUnlockState: f.vaultUnlockState,
+        workerMcpGateway: gateway,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: snapshot,
+        }),
+      });
+      const started = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: source.workspaceId, threadId: source.threadId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              input: 'Use the reviewed credential through the Gateway',
+              requestId: randomUUID(),
+            }),
+          }
+        )
+      );
+      expect(started.status).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+      await native.executionFor(turn.id).launched.promise;
+      await native.waitForStartup(turn.id);
+      workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      const transport = new StreamableHTTPClientTransport(
+        new URL('http://nanocore.test/api/worker-capabilities/mcp/reviewed-sink'),
         {
-          id: 'agent-openrouter',
-          displayName: 'Fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
-      agentManifests: [
-        createTestAgentSetup({
-          mcpIds: ['reviewed-sink'],
-          requiredCapabilities: ['trusted-worker-inference-relay'],
-        }).manifest,
-      ],
-      workspaceMcpServerCatalogs: [
-        {
-          workspaceId: source.workspaceId,
-          path: join(f.dataRoot, 'catalog/catalog.json'),
-          catalog,
-        },
-      ],
-    });
-    native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
-      readRuntimeConfig: () => snapshot,
-    });
-    const app = createApp({
-      coreDb: f.coreDb,
-      store: f.store,
-      vaultUnlockState: f.vaultUnlockState,
-      workerMcpGateway: gateway,
-      fileAdmission: native.fileAdmission,
-      turnExecutor: native.executor,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager: createRuntimeConfigManager({
-        dataRoot: null,
-        initialSnapshot: snapshot,
-      }),
-    });
-    const started = await app.request(
-      ...operationRequest(
-        'task.start',
-        { workspaceId: source.workspaceId, threadId: source.threadId },
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            input: 'Use the reviewed credential through the Gateway',
-            requestId: randomUUID(),
-          }),
+          fetch: (url, init) => app.fetch(new Request(url, init)),
+          requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
         }
-      )
-    );
-    expect(started.status).toBe(202);
-    const { turn } = StartTaskModeResponseSchema.parse(await started.json());
-    await native.executionFor(turn.id).launched.promise;
-    await native.waitForStartup(turn.id);
-    workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
-    const transport = new StreamableHTTPClientTransport(
-      new URL('http://nanocore.test/api/worker-capabilities/mcp/reviewed-sink'),
-      {
-        fetch: (url, init) => app.fetch(new Request(url, init)),
-        requestInit: { headers: { authorization: `Bearer ${native.executor.capabilityToken}` } },
+      );
+      await client.connect(transport);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(
+        0
+      );
+      const result = await client.callTool({
+        name: 'echo',
+        arguments: { message: 'Safe reviewed result' },
+      });
+      expect(result).toMatchObject({ content: [{ text: 'Safe reviewed result' }] });
+      expect(
+        upstream.observedHeaders.some(
+          (headers) => headers.get('authorization') === 'synthetic-resolution-canary'
+        )
+      ).toBe(true);
+      const receipts = f.coreDb.sqlite
+        .prepare(
+          'SELECT plan_id, grant_id, capability_call_id, revocation_status FROM vault_injection_receipts'
+        )
+        .all() as {
+        plan_id: string;
+        grant_id: string;
+        capability_call_id: string;
+        revocation_status: string;
+      }[];
+      expect(receipts.length).toBeGreaterThan(0);
+      const useDb = ownerScope === 'server' ? f.coreDb : workspaceDb;
+      for (const receipt of receipts) {
+        expect(receipt.grant_id).toBe(issued.grantId);
+        expect(receipt.revocation_status).toBe('active');
+        expect(
+          useDb.sqlite
+            .prepare(
+              'SELECT grant_id, outcome FROM vault_use_records WHERE plan_id = ? AND capability_call_id = ?'
+            )
+            .get(receipt.plan_id, receipt.capability_call_id)
+        ).toEqual({ grant_id: issued.grantId, outcome: 'succeeded' });
+        expect(
+          workspaceDb.sqlite
+            .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
+            .get(receipt.capability_call_id)
+        ).toEqual({ status: 'succeeded' });
       }
-    );
-    await client.connect(transport);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
-    const result = await client.callTool({
-      name: 'echo',
-      arguments: { message: 'Safe reviewed result' },
-    });
-    expect(result).toMatchObject({ content: [{ text: 'Safe reviewed result' }] });
-    expect(
-      upstream.observedHeaders.some(
-        (headers) => headers.get('authorization') === 'synthetic-resolution-canary'
-      )
-    ).toBe(true);
-    const receipts = f.coreDb.sqlite
-      .prepare(
-        'SELECT plan_id, grant_id, capability_call_id, revocation_status FROM vault_injection_receipts'
-      )
-      .all() as {
-      plan_id: string;
-      grant_id: string;
-      capability_call_id: string;
-      revocation_status: string;
-    }[];
-    expect(receipts.length).toBeGreaterThan(0);
-    const useDb = ownerScope === 'server' ? f.coreDb : workspaceDb;
-    for (const receipt of receipts) {
-      expect(receipt.grant_id).toBe(issued.grantId);
-      expect(receipt.revocation_status).toBe('active');
+      const durable = [
+        f.coreDb.sqlite.prepare('SELECT * FROM audit_events').all(),
+        f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all(),
+        f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all(),
+        useDb.sqlite.prepare('SELECT * FROM vault_use_records').all(),
+        f.store.listThreadItems(source.workspaceId, source.threadId),
+        issued,
+        result,
+      ];
+      expect(JSON.stringify(durable)).not.toContain('synthetic-resolution-canary');
+      const revoke = await f.send(
+        ownerScope === 'server' ? 'vault.server-mcp-grant-revoke' : 'vault.grant-revoke',
+        {
+          ...(ownerScope === 'server'
+            ? { requestId: randomUUID() }
+            : { workspaceId: source.workspaceId }),
+          grantId: issued.grantId,
+        }
+      );
+      expect(revoke.status).toBe(200);
+      const toolContacts = () =>
+        upstream.observed.filter((entry) => entry.endsWith('|tools/call')).length;
+      const contacts = toolContacts();
+      await expect(
+        client.callTool({ name: 'echo', arguments: { message: 'Must not reach the sink' } })
+      ).rejects.toThrow();
+      expect(toolContacts()).toBe(contacts);
       expect(
-        useDb.sqlite
-          .prepare(
-            'SELECT grant_id, outcome FROM vault_use_records WHERE plan_id = ? AND capability_call_id = ?'
-          )
-          .get(receipt.plan_id, receipt.capability_call_id)
-      ).toEqual({ grant_id: issued.grantId, outcome: 'succeeded' });
-      expect(
-        workspaceDb.sqlite
-          .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
-          .get(receipt.capability_call_id)
-      ).toEqual({ status: 'succeeded' });
+        f.coreDb.sqlite
+          .prepare('SELECT DISTINCT revocation_status FROM vault_injection_receipts')
+          .all()
+      ).toEqual([{ revocation_status: 'revoked' }]);
+    } finally {
+      await client.close();
+      native?.executor.completion.resolve();
+      await Promise.all(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      admissions.mockRestore();
+      await native?.restore();
+      await gateway.close();
+      await upstream.close();
+      workspaceDb?.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      await f.cleanup();
     }
-    const durable = [
-      f.coreDb.sqlite.prepare('SELECT * FROM audit_events').all(),
-      f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_plans').all(),
-      f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all(),
-      useDb.sqlite.prepare('SELECT * FROM vault_use_records').all(),
-      f.store.listThreadItems(source.workspaceId, source.threadId),
-      issued,
-      result,
-    ];
-    expect(JSON.stringify(durable)).not.toContain('synthetic-resolution-canary');
-    const revoke = await f.send(
-      ownerScope === 'server' ? 'vault.server-mcp-grant-revoke' : 'vault.grant-revoke',
-      {
-        ...(ownerScope === 'server'
-          ? { requestId: randomUUID() }
-          : { workspaceId: source.workspaceId }),
-        grantId: issued.grantId,
-      }
-    );
-    expect(revoke.status).toBe(200);
-    const toolContacts = () =>
-      upstream.observed.filter((entry) => entry.endsWith('|tools/call')).length;
-    const contacts = toolContacts();
-    await expect(
-      client.callTool({ name: 'echo', arguments: { message: 'Must not reach the sink' } })
-    ).rejects.toThrow();
-    expect(toolContacts()).toBe(contacts);
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT DISTINCT revocation_status FROM vault_injection_receipts')
-        .all()
-    ).toEqual([{ revocation_status: 'revoked' }]);
-  } finally {
-    await client.close();
-    native?.executor.completion.resolve();
-    await Promise.all(
-      admissions.mock.results
-        .filter((result) => result.type === 'return')
-        .map((result) => result.value.closeout)
-    );
-    admissions.mockRestore();
-    await native?.restore();
-    await gateway.close();
-    await upstream.close();
-    workspaceDb?.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    await f.cleanup();
   }
-});
+);
 
 it('issues an explicitly Worker-visible GitHub grant with exact Agent and AgentSession bounds', async () => {
   const f = fixture();
@@ -1758,39 +1767,41 @@ it('issues an explicitly Worker-visible GitHub grant with exact Agent and AgentS
   }
 });
 
-it.each([
-  'pending',
-  'approved',
-] as const)('cannot issue a %s request after Thread archival', async (state) => {
-  const f = fixture();
-  try {
-    const source = await prepare(f);
-    const request = await (
-      await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
-    ).json();
-    if (state === 'approved')
-      expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    expect(
-      (
-        await f.send('thread.archive', {
-          workspaceId: source.workspaceId,
-          threadId: source.threadId,
-          requestId: randomUUID(),
-        })
-      ).status
-    ).toBe(200);
-    const issue = await f.send('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issue.status).toBeGreaterThanOrEqual(400);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
-  } finally {
-    await f.cleanup();
+it.each(['pending', 'approved'] as const)(
+  'cannot issue a %s request after Thread archival',
+  async (state) => {
+    const f = fixture();
+    try {
+      const source = await prepare(f);
+      const request = await (
+        await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
+      ).json();
+      if (state === 'approved')
+        expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+      expect(
+        (
+          await f.send('thread.archive', {
+            workspaceId: source.workspaceId,
+            threadId: source.threadId,
+            requestId: randomUUID(),
+          })
+        ).status
+      ).toBe(200);
+      const issue = await f.send('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issue.status).toBeGreaterThanOrEqual(400);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(
+        0
+      );
+    } finally {
+      await f.cleanup();
+    }
   }
-});
+);
 
 it('refuses a now-expired approved request without issuing or resolving material', async () => {
   const f = fixture();
@@ -1818,48 +1829,50 @@ it('refuses a now-expired approved request without issuing or resolving material
   }
 });
 
-it.each([
-  'workspace',
-  'server',
-] as const)('refuses an approved %s request after reference revocation', async (ownerScope) => {
-  const f = fixture();
-  try {
-    const source = await prepare(f, ownerScope);
-    const request = await (
-      await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
-    ).json();
-    expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    const revoked = await f.send(
-      ownerScope === 'server' ? 'vault.server-mcp-secret-revoke' : 'vault.secret-revoke',
-      {
-        ...(ownerScope === 'server'
-          ? { requestId: randomUUID() }
-          : { workspaceId: source.workspaceId }),
-        referenceId: source.terms.referenceId,
-      }
-    );
-    expect(revoked.status).toBe(200);
-    const issue = await f.send('vault.grant-issue', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issue.status).toBe(409);
-    expect((await issue.json()).code).toBe('vault_reference_not_active');
-    const observed = await f.send('vault.grant-request-list', {
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-    });
-    expect((await observed.json()).items[0]).toMatchObject({
-      disposition: 'denied-not-executed',
-      grantId: null,
-    });
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
-    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
-  } finally {
-    await f.cleanup();
+it.each(['workspace', 'server'] as const)(
+  'refuses an approved %s request after reference revocation',
+  async (ownerScope) => {
+    const f = fixture();
+    try {
+      const source = await prepare(f, ownerScope);
+      const request = await (
+        await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
+      ).json();
+      expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+      const revoked = await f.send(
+        ownerScope === 'server' ? 'vault.server-mcp-secret-revoke' : 'vault.secret-revoke',
+        {
+          ...(ownerScope === 'server'
+            ? { requestId: randomUUID() }
+            : { workspaceId: source.workspaceId }),
+          referenceId: source.terms.referenceId,
+        }
+      );
+      expect(revoked.status).toBe(200);
+      const issue = await f.send('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issue.status).toBe(409);
+      expect((await issue.json()).code).toBe('vault_reference_not_active');
+      const observed = await f.send('vault.grant-request-list', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+      });
+      expect((await observed.json()).items[0]).toMatchObject({
+        disposition: 'denied-not-executed',
+        grantId: null,
+      });
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(
+        0
+      );
+    } finally {
+      await f.cleanup();
+    }
   }
-});
+);
 
 /** Establishes ordinary Users and a real active User Login before any request feature is called. */
 async function loginShareFixture(quarantined = false) {
@@ -2180,81 +2193,81 @@ function expectLoginShareNoDelivery(
 }
 
 describe('governed User Login Workspace sharing', () => {
-  it.each([
-    false,
-    true,
-  ])('shares an explicit Login with exact owner session consent (quarantined=%s)', async (quarantined) => {
-    const f = await loginShareFixture(quarantined);
-    try {
-      const request = await f.raise();
-      expect(request).toMatchObject({
-        requesterKind: 'person',
-        responsibleUserId: f.owner.id,
-        state: 'pending',
-        terms: f.terms,
-        grantId: null,
-      });
-      expect(JSON.parse(request.effect.detail).terms).toEqual(f.terms);
-      const input = { ...f.command, approvalRequestId: request.approvalRequestId };
-      expect((await f.sendAs(f.owner.id, 'vault.grant-issue', input)).status).toBe(409);
-      expect(listVaultGrants(f.coreDb)).toEqual([]);
-      expect(
-        (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
-      ).toBe(200);
-      expect(listVaultGrants(f.coreDb)).toEqual([]);
-      const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
-      expect(issued.status).toBe(200);
-      const result = await issued.json();
-      expect(result).toMatchObject({
-        decidingActorId: f.owner.id,
-        responsibleUserId: f.owner.id,
-        disposition: 'approved-executed',
-        terms: f.terms,
-      });
-      const grant = getVaultGrant(f.coreDb, result.grantId)!;
-      expect(grant).toMatchObject({
-        issuance: 'target',
-        vaultReferenceId: f.reference.referenceId,
-        ownerScope: 'workspace',
-        workspaceId: f.command.workspaceId,
-        lifetime: 'workspace',
-        allowedInjectionPaths: ['runtime-token'],
-        targetAgentId: f.terms.targetAgentId,
-        targetAgentSessionId: null,
-        targetCapabilityId: null,
-        expiresAt: f.terms.expiresAt,
-        approvalId: request.approvalRequestId,
-        status: 'active',
-      });
-      expect(grant.policyDecisionId).toBeTruthy();
-      const { getVaultReference } = await import('./vault-references.js');
-      expect(getVaultReference(f.coreDb, f.reference.referenceId)).toEqual(f.reference);
-      const again = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
-      expect(again.status).toBe(200);
-      expect((await again.json()).grantId).toBe(result.grantId);
-      expect(listVaultGrants(f.coreDb)).toHaveLength(1);
-      const audit = f.coreDb.sqlite
-        .prepare(
-          "SELECT actor_json, vault_grant_id FROM audit_events WHERE action = 'vault.grant-issue'"
-        )
-        .all();
-      expect(audit).toEqual([
-        {
-          actor_json: JSON.stringify({ kind: 'user', id: f.owner.id }),
-          vault_grant_id: result.grantId,
-        },
-      ]);
-      expectLoginShareNoDelivery(f, [
-        request,
-        result,
-        audit,
-        f.store.listThreadItems(f.command.workspaceId, f.command.threadId),
-      ]);
-    } finally {
-      vi.restoreAllMocks();
-      await f.cleanup();
+  it.each([false, true])(
+    'shares an explicit Login with exact owner session consent (quarantined=%s)',
+    async (quarantined) => {
+      const f = await loginShareFixture(quarantined);
+      try {
+        const request = await f.raise();
+        expect(request).toMatchObject({
+          requesterKind: 'person',
+          responsibleUserId: f.owner.id,
+          state: 'pending',
+          terms: f.terms,
+          grantId: null,
+        });
+        expect(JSON.parse(request.effect.detail).terms).toEqual(f.terms);
+        const input = { ...f.command, approvalRequestId: request.approvalRequestId };
+        expect((await f.sendAs(f.owner.id, 'vault.grant-issue', input)).status).toBe(409);
+        expect(listVaultGrants(f.coreDb)).toEqual([]);
+        expect(
+          (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
+        ).toBe(200);
+        expect(listVaultGrants(f.coreDb)).toEqual([]);
+        const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
+        expect(issued.status).toBe(200);
+        const result = await issued.json();
+        expect(result).toMatchObject({
+          decidingActorId: f.owner.id,
+          responsibleUserId: f.owner.id,
+          disposition: 'approved-executed',
+          terms: f.terms,
+        });
+        const grant = getVaultGrant(f.coreDb, result.grantId)!;
+        expect(grant).toMatchObject({
+          issuance: 'target',
+          vaultReferenceId: f.reference.referenceId,
+          ownerScope: 'workspace',
+          workspaceId: f.command.workspaceId,
+          lifetime: 'workspace',
+          allowedInjectionPaths: ['runtime-token'],
+          targetAgentId: f.terms.targetAgentId,
+          targetAgentSessionId: null,
+          targetCapabilityId: null,
+          expiresAt: f.terms.expiresAt,
+          approvalId: request.approvalRequestId,
+          status: 'active',
+        });
+        expect(grant.policyDecisionId).toBeTruthy();
+        const { getVaultReference } = await import('./vault-references.js');
+        expect(getVaultReference(f.coreDb, f.reference.referenceId)).toEqual(f.reference);
+        const again = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
+        expect(again.status).toBe(200);
+        expect((await again.json()).grantId).toBe(result.grantId);
+        expect(listVaultGrants(f.coreDb)).toHaveLength(1);
+        const audit = f.coreDb.sqlite
+          .prepare(
+            "SELECT actor_json, vault_grant_id FROM audit_events WHERE action = 'vault.grant-issue'"
+          )
+          .all();
+        expect(audit).toEqual([
+          {
+            actor_json: JSON.stringify({ kind: 'user', id: f.owner.id }),
+            vault_grant_id: result.grantId,
+          },
+        ]);
+        expectLoginShareNoDelivery(f, [
+          request,
+          result,
+          audit,
+          f.store.listThreadItems(f.command.workspaceId, f.command.threadId),
+        ]);
+      } finally {
+        vi.restoreAllMocks();
+        await f.cleanup();
+      }
     }
-  });
+  );
 
   it('records the actual nonmember administrator without inventing owner or membership facts', async () => {
     const f = await loginShareFixture();
@@ -2364,161 +2377,154 @@ describe('governed User Login Workspace sharing', () => {
     }
   });
 
-  it.each([
-    'denied',
-    'changed-terms',
-    'expired',
-    'revoked-decider',
-    'member-left',
-  ] as const)('keeps a %s share request non-authorizing', async (reason) => {
-    const f = await loginShareFixture();
-    try {
-      const request = await f.raise();
-      const decider = reason === 'revoked-decider' ? f.admin.id : f.owner.id;
-      expect(
-        (
-          await f.sendAs(
-            decider,
-            'approval.respond',
-            decision(request, reason === 'denied' ? 'denied' : 'granted')
-          )
-        ).status
-      ).toBe(200);
-      const input = { ...f.command, approvalRequestId: request.approvalRequestId };
-      if (reason === 'expired')
-        vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.terms.expiresAt) + 1);
-      if (reason === 'revoked-decider')
-        revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
-      if (reason === 'member-left') {
-        const { getWorkspaceMember } = await import('../workspace-sharing.js');
-        const member = getWorkspaceMember(f.coreDb, f.command.workspaceId, f.owner.id)!;
+  it.each(['denied', 'changed-terms', 'expired', 'revoked-decider', 'member-left'] as const)(
+    'keeps a %s share request non-authorizing',
+    async (reason) => {
+      const f = await loginShareFixture();
+      try {
+        const request = await f.raise();
+        const decider = reason === 'revoked-decider' ? f.admin.id : f.owner.id;
         expect(
           (
-            await f.sendAs(f.owner.id, 'workspace.leave', {
-              workspaceId: f.command.workspaceId,
-              expectedRevision: member.revision,
-              requestId: randomUUID(),
-            })
+            await f.sendAs(
+              decider,
+              'approval.respond',
+              decision(request, reason === 'denied' ? 'denied' : 'granted')
+            )
           ).status
         ).toBe(200);
-      }
-      const issued = await f.sendAs(
-        reason === 'member-left' ? f.admin.id : f.owner.id,
-        'vault.grant-issue',
-        {
-          ...input,
-          ...(reason === 'changed-terms'
-            ? { terms: { ...f.terms, targetAgentId: 'other-agent' } }
-            : {}),
+        const input = { ...f.command, approvalRequestId: request.approvalRequestId };
+        if (reason === 'expired')
+          vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.terms.expiresAt) + 1);
+        if (reason === 'revoked-decider')
+          revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+        if (reason === 'member-left') {
+          const { getWorkspaceMember } = await import('../workspace-sharing.js');
+          const member = getWorkspaceMember(f.coreDb, f.command.workspaceId, f.owner.id)!;
+          expect(
+            (
+              await f.sendAs(f.owner.id, 'workspace.leave', {
+                workspaceId: f.command.workspaceId,
+                expectedRevision: member.revision,
+                requestId: randomUUID(),
+              })
+            ).status
+          ).toBe(200);
         }
-      );
-      expect(issued.status).toBeGreaterThanOrEqual(400);
-      expect(listVaultGrants(f.coreDb)).toEqual([]);
-      expectLoginShareNoDelivery(f, request);
-    } finally {
-      vi.restoreAllMocks();
-      await f.cleanup();
-    }
-  });
-
-  it.each([
-    'locked',
-    'ordinary',
-    'revoked',
-    'wrong-sink',
-    'material-version-mismatch',
-  ] as const)('rejects %s Login selections without capture or material resolution', async (reason) => {
-    const f = await loginShareFixture();
-    try {
-      const { createVaultReference, advanceActiveVaultReferenceVersion, revokeVaultReference } =
-        await import('./vault-references.js');
-      let terms = f.terms;
-      if (reason === 'ordinary') {
-        const referenceId = allocateEntityId('vault');
-        f.backend.store({
-          referenceId,
-          material: 'synthetic-ordinary-user-material',
-          metadata: { ownerScope: 'user', userId: f.owner.id },
-        });
-        await createVaultReference(f.coreDb, {
-          referenceId,
-          ownerScope: 'user',
-          userId: f.owner.id,
-          displayName: 'Ordinary User reference',
-          secretKind: 'opaque',
-          backendKind: 'encrypted-file',
-        });
-        terms = { ...terms, referenceId };
-      }
-      if (reason === 'locked') f.vaultUnlockState.lock();
-      if (reason === 'revoked')
-        await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
-      if (reason === 'material-version-mismatch')
-        await advanceActiveVaultReferenceVersion(f.coreDb, {
-          referenceId: f.reference.referenceId,
-          currentVersion: 2,
-        });
-      const response = await f.sendAs(f.owner.id, 'vault.grant-request', {
-        ...f.command,
-        terms: reason === 'wrong-sink' ? { ...terms, injectionPath: 'runtime-env' } : terms,
-        requestId: randomUUID(),
-      });
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(listVaultGrants(f.coreDb)).toEqual([]);
-      expect(f.store.listThreadTurns(f.command.workspaceId, f.command.threadId)).toEqual([]);
-      expectLoginShareNoDelivery(f, await response.json());
-    } finally {
-      vi.restoreAllMocks();
-      await f.cleanup();
-    }
-  });
-
-  it.each([
-    'deny',
-    'version',
-    'revoked',
-    'credential',
-  ] as const)('uses real User Policy and rejects %s after awaited evaluation', async (change) => {
-    const f = await loginShareFixture();
-    try {
-      const request = await f.raise();
-      const caller = change === 'credential' ? f.admin.id : f.owner.id;
-      expect(
-        (await f.sendAs(caller, 'approval.respond', decision(request, 'granted'))).status
-      ).toBe(200);
-      await installLoginSharePolicy(f, caller);
-      f.participant.mockImplementation(async () => {
-        const { advanceActiveVaultReferenceVersion, revokeVaultReference } = await import(
-          './vault-references.js'
+        const issued = await f.sendAs(
+          reason === 'member-left' ? f.admin.id : f.owner.id,
+          'vault.grant-issue',
+          {
+            ...input,
+            ...(reason === 'changed-terms'
+              ? { terms: { ...f.terms, targetAgentId: 'other-agent' } }
+              : {}),
+          }
         );
-        if (change === 'version')
+        expect(issued.status).toBeGreaterThanOrEqual(400);
+        expect(listVaultGrants(f.coreDb)).toEqual([]);
+        expectLoginShareNoDelivery(f, request);
+      } finally {
+        vi.restoreAllMocks();
+        await f.cleanup();
+      }
+    }
+  );
+
+  it.each(['locked', 'ordinary', 'revoked', 'wrong-sink', 'material-version-mismatch'] as const)(
+    'rejects %s Login selections without capture or material resolution',
+    async (reason) => {
+      const f = await loginShareFixture();
+      try {
+        const { createVaultReference, advanceActiveVaultReferenceVersion, revokeVaultReference } =
+          await import('./vault-references.js');
+        let terms = f.terms;
+        if (reason === 'ordinary') {
+          const referenceId = allocateEntityId('vault');
+          f.backend.store({
+            referenceId,
+            material: 'synthetic-ordinary-user-material',
+            metadata: { ownerScope: 'user', userId: f.owner.id },
+          });
+          await createVaultReference(f.coreDb, {
+            referenceId,
+            ownerScope: 'user',
+            userId: f.owner.id,
+            displayName: 'Ordinary User reference',
+            secretKind: 'opaque',
+            backendKind: 'encrypted-file',
+          });
+          terms = { ...terms, referenceId };
+        }
+        if (reason === 'locked') f.vaultUnlockState.lock();
+        if (reason === 'revoked')
+          await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
+        if (reason === 'material-version-mismatch')
           await advanceActiveVaultReferenceVersion(f.coreDb, {
             referenceId: f.reference.referenceId,
             currentVersion: 2,
           });
-        if (change === 'revoked')
-          await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
-        if (change === 'credential') revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
-        return { decision: change === 'deny' ? 'deny' : 'allow' };
-      });
-      const issued = await f.sendAs(caller, 'vault.grant-issue', {
-        ...f.command,
-        approvalRequestId: request.approvalRequestId,
-      });
-      expect(issued.status).toBeGreaterThanOrEqual(400);
-      expect(f.participant).toHaveBeenCalledOnce();
-      expect(f.participant.mock.calls[0]![0].proposal).toMatchObject({
-        operation: 'vault.grant-issue',
-        workspaceId: null,
-        subject: { actor: { kind: 'user', id: caller }, process: null },
-      });
-      expect(listVaultGrants(f.coreDb)).toEqual([]);
-      expectLoginShareNoDelivery(f, request);
-    } finally {
-      vi.restoreAllMocks();
-      await f.cleanup();
+        const response = await f.sendAs(f.owner.id, 'vault.grant-request', {
+          ...f.command,
+          terms: reason === 'wrong-sink' ? { ...terms, injectionPath: 'runtime-env' } : terms,
+          requestId: randomUUID(),
+        });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(listVaultGrants(f.coreDb)).toEqual([]);
+        expect(f.store.listThreadTurns(f.command.workspaceId, f.command.threadId)).toEqual([]);
+        expectLoginShareNoDelivery(f, await response.json());
+      } finally {
+        vi.restoreAllMocks();
+        await f.cleanup();
+      }
     }
-  });
+  );
+
+  it.each(['deny', 'version', 'revoked', 'credential'] as const)(
+    'uses real User Policy and rejects %s after awaited evaluation',
+    async (change) => {
+      const f = await loginShareFixture();
+      try {
+        const request = await f.raise();
+        const caller = change === 'credential' ? f.admin.id : f.owner.id;
+        expect(
+          (await f.sendAs(caller, 'approval.respond', decision(request, 'granted'))).status
+        ).toBe(200);
+        await installLoginSharePolicy(f, caller);
+        f.participant.mockImplementation(async () => {
+          const { advanceActiveVaultReferenceVersion, revokeVaultReference } = await import(
+            './vault-references.js'
+          );
+          if (change === 'version')
+            await advanceActiveVaultReferenceVersion(f.coreDb, {
+              referenceId: f.reference.referenceId,
+              currentVersion: 2,
+            });
+          if (change === 'revoked')
+            await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
+          if (change === 'credential')
+            revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+          return { decision: change === 'deny' ? 'deny' : 'allow' };
+        });
+        const issued = await f.sendAs(caller, 'vault.grant-issue', {
+          ...f.command,
+          approvalRequestId: request.approvalRequestId,
+        });
+        expect(issued.status).toBeGreaterThanOrEqual(400);
+        expect(f.participant).toHaveBeenCalledOnce();
+        expect(f.participant.mock.calls[0]![0].proposal).toMatchObject({
+          operation: 'vault.grant-issue',
+          workspaceId: null,
+          subject: { actor: { kind: 'user', id: caller }, process: null },
+        });
+        expect(listVaultGrants(f.coreDb)).toEqual([]);
+        expectLoginShareNoDelivery(f, request);
+      } finally {
+        vi.restoreAllMocks();
+        await f.cleanup();
+      }
+    }
+  );
 
   it('consumes one finite User Policy use and records actual-owner decision and Audit at the same home', async () => {
     const f = await loginShareFixture();
@@ -2583,224 +2589,225 @@ describe('governed User Login Workspace sharing', () => {
   });
 });
 
-it.each([
-  'live',
-  'revoked-agent',
-] as const)('keeps a %s Worker own-Login request bound to its package and human consent', async (lineage) => {
-  const f = await loginShareFixture();
-  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
-  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  let turnId: string | undefined;
-  const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-  try {
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      dataRoot: f.dataRoot,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
+it.each(['live', 'revoked-agent'] as const)(
+  'keeps a %s Worker own-Login request bound to its package and human consent',
+  async (lineage) => {
+    const f = await loginShareFixture();
+    let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+    let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+    let turnId: string | undefined;
+    const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    try {
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        dataRoot: f.dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
+        agentManifests: [
+          createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] })
+            .manifest,
+        ],
+      });
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: null,
+        initialSnapshot: snapshot,
+      });
+      native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+        readRuntimeConfig: () => snapshot,
+      });
+      const app = createApp({
+        coreDb: f.coreDb,
+        store: f.store,
+        vaultUnlockState: f.vaultUnlockState,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        runtimeConfigManager,
+        mode: 'server',
+        auth: {
+          api: {
+            getSession: async () => ({
+              session: { id: allocateEntityId('auth') },
+              user: { id: f.owner.id },
+            }),
+          },
+          handler: async () => Response.json({}),
         },
-      ]),
-      workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
-      agentManifests: [
-        createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] }).manifest,
-      ],
-    });
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: null,
-      initialSnapshot: snapshot,
-    });
-    native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
-      readRuntimeConfig: () => snapshot,
-    });
-    const app = createApp({
-      coreDb: f.coreDb,
-      store: f.store,
-      vaultUnlockState: f.vaultUnlockState,
-      fileAdmission: native.fileAdmission,
-      turnExecutor: native.executor,
-      workerControlGateway: native.workerControlGateway,
-      runtimeConfigManager,
-      mode: 'server',
-      auth: {
-        api: {
-          getSession: async () => ({
-            session: { id: allocateEntityId('auth') },
-            user: { id: f.owner.id },
+      });
+      const started = await app.request(
+        ...operationRequest('task.start', f.command, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Request my own selected personal Login share',
+            requestId: randomUUID(),
           }),
-        },
-        handler: async () => Response.json({}),
-      },
-    });
-    const started = await app.request(
-      ...operationRequest('task.start', f.command, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          input: 'Request my own selected personal Login share',
-          requestId: randomUUID(),
-        }),
-      })
-    );
-    expect(started.status).toBe(202);
-    const { turn } = StartTaskModeResponseSchema.parse(await started.json());
-    turnId = turn.id;
-    await native.executionFor(turn.id).launched.promise;
-    await native.waitForStartup(turn.id);
-    const pkg = native.workerControlGateway.authenticatePackageToken(
-      `Bearer ${native.executor.capabilityToken}`,
-      { tokenFamily: 'capability' }
-    );
-    expect(pkg.scope).toMatchObject({
-      ...f.command,
-      turnId: turn.id,
-      triggerActor: { kind: 'user', id: f.owner.id },
-    });
-    workspaceDb = openWorkspaceDb(f.dataRoot, f.command.workspaceId);
-    const context = {
-      coreDb: f.coreDb,
-      store: f.store,
-      workspaceDb,
-      dataRoot: f.dataRoot,
-      vaultUnlockState: f.vaultUnlockState,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-      packageSnapshotId: pkg.snapshotId,
-      protocolRequestId: randomUUID(),
-      inflightCommands: new WeakMap(),
-      workspaceId: f.command.workspaceId,
-      actor: pkg.scope.triggerActor,
-      scope: pkg.scope,
-    };
-    for (const changed of [
-      { ...context, packageSnapshotId: randomUUID() },
-      { ...context, actor: { kind: 'user' as const, id: f.other.id } },
-    ])
-      await expect(
-        dispatchOpenkitGenerativeTool(changed, 'vault_grant-request', { terms: f.terms })
-      ).rejects.toMatchObject({ code: 'workspace_access_denied' });
-    const response = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request', {
-      terms: f.terms,
-    });
-    const request = response.structuredContent as {
-      workspaceId: string;
-      threadId: string;
-      raisingTurnId: string;
-      approvalRequestId: string;
-    };
-    expect(request).toMatchObject({
-      ...f.command,
-      requesterKind: 'worker',
-      responsibleUserId: f.owner.id,
-      raisingTurnId: turn.id,
-      agentId: pkg.agent.agentId,
-      agentSessionId: pkg.scope.agentSessionId,
-      state: 'pending',
-      grantId: null,
-      terms: f.terms,
-    });
-    expect(listVaultGrants(f.coreDb)).toEqual([]);
-    expect(
-      (await f.sendAs(f.other.id, 'approval.respond', decision(request, 'granted'))).status
-    ).toBe(403);
-    expect(
-      (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
-    ).toBe(200);
-    expect(listVaultGrants(f.coreDb)).toEqual([]);
-    if (lineage === 'revoked-agent') {
-      const requestingAgent = {
-        kind: 'agent' as const,
-        userId: f.owner.id,
-        agentId: pkg.agent.agentId,
-        processId: pkg.scope.agentSessionId,
-      };
-      const policy = managedThreadPolicy({
+        })
+      );
+      expect(started.status).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+      turnId = turn.id;
+      await native.executionFor(turn.id).launched.promise;
+      await native.waitForStartup(turn.id);
+      const pkg = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(pkg.scope).toMatchObject({
         ...f.command,
-        userId: f.owner.id,
-        operations: WORKSPACE_MEMBER_OPERATIONS,
+        turnId: turn.id,
+        triggerActor: { kind: 'user', id: f.owner.id },
       });
-      const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
-      policy.statements.push({
-        ...permission,
-        id: `${permission.id}-agent`,
-        scope: { ...permission.scope, actions: ['thread.read'] },
-        grant: { kind: 'agent-process', agentId: requestingAgent.agentId },
+      workspaceDb = openWorkspaceDb(f.dataRoot, f.command.workspaceId);
+      const context = {
+        coreDb: f.coreDb,
+        store: f.store,
+        workspaceDb,
+        dataRoot: f.dataRoot,
+        vaultUnlockState: f.vaultUnlockState,
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        packageSnapshotId: pkg.snapshotId,
+        protocolRequestId: randomUUID(),
+        inflightCommands: new WeakMap(),
+        workspaceId: f.command.workspaceId,
+        actor: pkg.scope.triggerActor,
+        scope: pkg.scope,
+      };
+      for (const changed of [
+        { ...context, packageSnapshotId: randomUUID() },
+        { ...context, actor: { kind: 'user' as const, id: f.other.id } },
+      ])
+        await expect(
+          dispatchOpenkitGenerativeTool(changed, 'vault_grant-request', { terms: f.terms })
+        ).rejects.toMatchObject({ code: 'workspace_access_denied' });
+      const response = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request', {
+        terms: f.terms,
       });
-      f.store.setWorkspaceResourcePolicyProjection(() => policy);
+      const request = response.structuredContent as {
+        workspaceId: string;
+        threadId: string;
+        raisingTurnId: string;
+        approvalRequestId: string;
+      };
+      expect(request).toMatchObject({
+        ...f.command,
+        requesterKind: 'worker',
+        responsibleUserId: f.owner.id,
+        raisingTurnId: turn.id,
+        agentId: pkg.agent.agentId,
+        agentSessionId: pkg.scope.agentSessionId,
+        state: 'pending',
+        grantId: null,
+        terms: f.terms,
+      });
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
       expect(
-        isThreadIdVisible(
-          f.store,
-          f.command.workspaceId,
-          f.command.threadId,
-          f.owner.id,
-          false,
-          'thread.read',
-          requestingAgent
-        )
-      ).toBe(true);
+        (await f.sendAs(f.other.id, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(403);
       expect(
-        isThreadIdVisible(
-          f.store,
-          f.command.workspaceId,
-          f.command.threadId,
-          f.owner.id,
-          false,
-          'workspace.write',
-          requestingAgent
-        )
-      ).toBe(false);
-      const refused = await f.sendAs(f.owner.id, 'vault.grant-issue', {
+        (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      if (lineage === 'revoked-agent') {
+        const requestingAgent = {
+          kind: 'agent' as const,
+          userId: f.owner.id,
+          agentId: pkg.agent.agentId,
+          processId: pkg.scope.agentSessionId,
+        };
+        const policy = managedThreadPolicy({
+          ...f.command,
+          userId: f.owner.id,
+          operations: WORKSPACE_MEMBER_OPERATIONS,
+        });
+        const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
+        policy.statements.push({
+          ...permission,
+          id: `${permission.id}-agent`,
+          scope: { ...permission.scope, actions: ['thread.read'] },
+          grant: { kind: 'agent-process', agentId: requestingAgent.agentId },
+        });
+        f.store.setWorkspaceResourcePolicyProjection(() => policy);
+        expect(
+          isThreadIdVisible(
+            f.store,
+            f.command.workspaceId,
+            f.command.threadId,
+            f.owner.id,
+            false,
+            'thread.read',
+            requestingAgent
+          )
+        ).toBe(true);
+        expect(
+          isThreadIdVisible(
+            f.store,
+            f.command.workspaceId,
+            f.command.threadId,
+            f.owner.id,
+            false,
+            'workspace.write',
+            requestingAgent
+          )
+        ).toBe(false);
+        const refused = await f.sendAs(f.owner.id, 'vault.grant-issue', {
+          ...f.command,
+          approvalRequestId: request.approvalRequestId,
+        });
+        expect(refused.status).toBe(403);
+        expect(listVaultGrants(f.coreDb)).toEqual([]);
+        expectLoginShareNoDelivery(f, request);
+        return;
+      }
+      const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', {
         ...f.command,
         approvalRequestId: request.approvalRequestId,
       });
-      expect(refused.status).toBe(403);
-      expect(listVaultGrants(f.coreDb)).toEqual([]);
-      expectLoginShareNoDelivery(f, request);
-      return;
-    }
-    const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', {
-      ...f.command,
-      approvalRequestId: request.approvalRequestId,
-    });
-    expect(issued.status).toBe(200);
-    const result = await issued.json();
-    expect(result).toMatchObject({
-      requesterKind: 'worker',
-      decidingActorId: f.owner.id,
-      responsibleUserId: f.owner.id,
-      disposition: 'approved-executed',
-      terms: f.terms,
-    });
-    expect(getVaultGrant(f.coreDb, result.grantId)).toMatchObject({
-      vaultReferenceId: f.reference.referenceId,
-      ownerScope: 'workspace',
-      workspaceId: f.command.workspaceId,
-      allowedInjectionPaths: ['runtime-token'],
-    });
-    expectLoginShareNoDelivery(f, [request, result]);
-  } finally {
-    try {
-      native?.executor.completion.resolve();
-      if (turnId && native) {
-        native.executionFor(turnId).completion.resolve();
-        await native.executionFor(turnId).execution;
-      }
-      await Promise.all(
-        admissions.mock.results
-          .filter((result) => result.type === 'return')
-          .map((result) => result.value.closeout)
-      );
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(result).toMatchObject({
+        requesterKind: 'worker',
+        decidingActorId: f.owner.id,
+        responsibleUserId: f.owner.id,
+        disposition: 'approved-executed',
+        terms: f.terms,
+      });
+      expect(getVaultGrant(f.coreDb, result.grantId)).toMatchObject({
+        vaultReferenceId: f.reference.referenceId,
+        ownerScope: 'workspace',
+        workspaceId: f.command.workspaceId,
+        allowedInjectionPaths: ['runtime-token'],
+      });
+      expectLoginShareNoDelivery(f, [request, result]);
     } finally {
-      admissions.mockRestore();
-      await native?.restore();
-      vi.restoreAllMocks();
-      workspaceDb?.sqlite.close();
-      await f.cleanup();
+      try {
+        native?.executor.completion.resolve();
+        if (turnId && native) {
+          native.executionFor(turnId).completion.resolve();
+          await native.executionFor(turnId).execution;
+        }
+        await Promise.all(
+          admissions.mock.results
+            .filter((result) => result.type === 'return')
+            .map((result) => result.value.closeout)
+        );
+      } finally {
+        admissions.mockRestore();
+        await native?.restore();
+        vi.restoreAllMocks();
+        workspaceDb?.sqlite.close();
+        await f.cleanup();
+      }
     }
   }
-});
+);
 
 /** Reads both historical specialized and mediated issue records so a duplicate producer cannot hide. */
 async function readReviewedIssueDecisions(db: ReturnType<typeof openWorkspaceDb>) {
@@ -2968,358 +2975,363 @@ describe('reviewed grant issue mediated producer migration', () => {
     ['workspace', 'different-issuer'],
     ['server', 'different-issuer'],
     ['user', 'different-issuer'],
-  ] as const)('uses the real %s home for %s and retains one final issue authorizer', async (referenceOwner, outcome) => {
-    const f = await loginShareFixture();
-    try {
-      const source =
-        referenceOwner === 'user'
-          ? { ...f.command, terms: f.terms }
-          : await prepare(f, referenceOwner);
-      const callerId =
-        referenceOwner === 'user' || outcome === 'different-issuer' ? f.owner.id : f.admin.id;
-      if (referenceOwner !== 'user' && outcome === 'different-issuer') {
-        const issuerToken = createOpenKitAccessTokenRecord(f.coreDb, {
-          ownerUserId: callerId,
-          scope: 'server-admin',
-          workspaceIds: [],
-          expiresAt: '2099-01-01T00:00:00.000Z',
-        });
-        expect(setDefaultServerAdminTokenId(f.coreDb, callerId, issuerToken.tokenId)).toBe(true);
-      }
-      const deciderId = outcome === 'different-issuer' ? f.admin.id : callerId;
-      const home = referenceOwner === 'user' ? 'user' : 'workspace';
-      const requestInput = { ...source, requestId: randomUUID() };
-      const raised =
-        referenceOwner === 'user'
-          ? await f.sendAs(f.owner.id, 'vault.grant-request', requestInput)
-          : await f.send('vault.grant-request', requestInput);
-      expect(raised.status).toBe(200);
-      const request = await raised.json();
-      expect(
-        (await f.sendAs(deciderId, 'approval.respond', decision(request, 'granted'))).status
-      ).toBe(200);
-      const resource = await installReviewedIssueMediationPolicy(
-        f,
-        callerId,
-        source.workspaceId,
-        home
-      );
-      f.participant.mockImplementation(async (input) => {
-        if (input.binding.mode === 'observe') return { observed: true };
-        await Promise.resolve();
-        if (outcome === 'current') {
-          if (referenceOwner === 'user') {
-            const { advanceActiveVaultReferenceVersion } = await import('./vault-references.js');
-            await advanceActiveVaultReferenceVersion(f.coreDb, {
-              referenceId: f.reference.referenceId,
-              currentVersion: 2,
-            });
-          } else revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
-        }
-        return { decision: outcome === 'deny' ? 'deny' : 'allow' };
-      });
-      const input = {
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        approvalRequestId: request.approvalRequestId,
-      };
-      const issued = await f.sendAs(callerId, 'vault.grant-issue', input);
-      const calls = f.participant.mock.calls.map(([call]) => call);
-      expect(calls.filter((call) => call.binding.mode === 'gate')).toHaveLength(1);
-      expect(calls[0]!.proposal).toMatchObject({
-        operation: 'vault.grant-issue',
-        workspaceId: home === 'user' ? null : source.workspaceId,
-        resource,
-        subject: {
-          principal: { kind: 'human', id: callerId },
-          actor: { kind: 'user', id: callerId },
-          responsibleHumanId: callerId,
-        },
-      });
-      const { openUserDb } = await import('../storage/db.js');
-      const db =
-        home === 'user'
-          ? openUserDb(f.dataRoot, callerId)
-          : openWorkspaceDb(f.dataRoot, source.workspaceId);
+  ] as const)(
+    'uses the real %s home for %s and retains one final issue authorizer',
+    async (referenceOwner, outcome) => {
+      const f = await loginShareFixture();
       try {
-        const { readPermissionDecisionRowV1 } = await import('../policy/retained-records-v1.js');
-        const rows = db.sqlite
-          .prepare('SELECT * FROM permission_decisions')
-          .all()
-          .map(readPermissionDecisionRowV1)
-          .filter(
-            (row) =>
-              row.enforcementPoint === 'vault.grant-issue' ||
-              row.mediation?.operation === 'vault.grant-issue'
-          );
-        expect(rows.every((row) => row.mediation?.operation === 'vault.grant-issue')).toBe(true);
-        const finals = rows.filter((row) => row.mediation?.role === 'final');
-        expect(finals).toHaveLength(1);
-        expect(finals[0]).toMatchObject({
-          ownerScope: home,
-          workspaceId: home === 'user' ? null : source.workspaceId,
-          policyEngineVersion: 'nanocore-policy:v1',
-          policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
-          enforcementPoint: 'vault.grant-issue@decide',
-          approvalId: request.approvalRequestId,
-          mediation: {
-            stage: 'decide',
-            role: 'final',
-            subject: { actor: { kind: 'user', id: callerId }, responsibleHumanId: callerId },
-          },
-          contextSummary: {
-            requestId: request.approvalRequestId,
-            approvalRequestId: request.approvalRequestId,
-            threadId: source.threadId,
-            turnId: request.raisingTurnId,
-            issuingActorId: callerId,
-            requesterId: referenceOwner === 'user' ? f.owner.id : FIXTURE_LOCAL_USER_ID,
-          },
+        const source =
+          referenceOwner === 'user'
+            ? { ...f.command, terms: f.terms }
+            : await prepare(f, referenceOwner);
+        const callerId =
+          referenceOwner === 'user' || outcome === 'different-issuer' ? f.owner.id : f.admin.id;
+        if (referenceOwner !== 'user' && outcome === 'different-issuer') {
+          const issuerToken = createOpenKitAccessTokenRecord(f.coreDb, {
+            ownerUserId: callerId,
+            scope: 'server-admin',
+            workspaceIds: [],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          });
+          expect(setDefaultServerAdminTokenId(f.coreDb, callerId, issuerToken.tokenId)).toBe(true);
+        }
+        const deciderId = outcome === 'different-issuer' ? f.admin.id : callerId;
+        const home = referenceOwner === 'user' ? 'user' : 'workspace';
+        const requestInput = { ...source, requestId: randomUUID() };
+        const raised =
+          referenceOwner === 'user'
+            ? await f.sendAs(f.owner.id, 'vault.grant-request', requestInput)
+            : await f.send('vault.grant-request', requestInput);
+        expect(raised.status).toBe(200);
+        const request = await raised.json();
+        expect(
+          (await f.sendAs(deciderId, 'approval.respond', decision(request, 'granted'))).status
+        ).toBe(200);
+        const resource = await installReviewedIssueMediationPolicy(
+          f,
+          callerId,
+          source.workspaceId,
+          home
+        );
+        f.participant.mockImplementation(async (input) => {
+          if (input.binding.mode === 'observe') return { observed: true };
+          await Promise.resolve();
+          if (outcome === 'current') {
+            if (referenceOwner === 'user') {
+              const { advanceActiveVaultReferenceVersion } = await import('./vault-references.js');
+              await advanceActiveVaultReferenceVersion(f.coreDb, {
+                referenceId: f.reference.referenceId,
+                currentVersion: 2,
+              });
+            } else revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+          }
+          return { decision: outcome === 'deny' ? 'deny' : 'allow' };
         });
-        const { listSqliteAuditEvents } = await import('../audit-events.js');
-        const events = listSqliteAuditEvents(db.sqlite);
-        expect(events.find((event) => event.id === finals[0]!.auditEventId)).toMatchObject({
-          action: 'permission.decision',
-          actor: { kind: 'user', id: callerId },
-          permissionDecisionId: finals[0]!.decisionId,
-          requestId: request.approvalRequestId,
+        const input = {
+          workspaceId: source.workspaceId,
           threadId: source.threadId,
-          turnId: request.raisingTurnId,
+          approvalRequestId: request.approvalRequestId,
+        };
+        const issued = await f.sendAs(callerId, 'vault.grant-issue', input);
+        const calls = f.participant.mock.calls.map(([call]) => call);
+        expect(calls.filter((call) => call.binding.mode === 'gate')).toHaveLength(1);
+        expect(calls[0]!.proposal).toMatchObject({
+          operation: 'vault.grant-issue',
+          workspaceId: home === 'user' ? null : source.workspaceId,
+          resource,
+          subject: {
+            principal: { kind: 'human', id: callerId },
+            actor: { kind: 'user', id: callerId },
+            responsibleHumanId: callerId,
+          },
         });
-        if (outcome === 'allow' || outcome === 'different-issuer') {
-          expect(issued.status).toBe(200);
-          const result = await issued.json();
-          const grant = getVaultGrant(f.coreDb, result.grantId)!;
-          expect(grant).toMatchObject({
-            policyDecisionId: finals[0]!.decisionId,
-            approvalId: request.approvalRequestId,
-          });
-          expect(finals[0]).toMatchObject({
-            result: 'allow',
-            reasonCode: 'granted',
-            mediation: { kernel: { effect: 'allow' } },
-          });
-          expect(rows.filter((row) => row.mediation?.role === 'gate')).toHaveLength(1);
-          expect(calls.filter((call) => call.binding.mode === 'observe')).toHaveLength(1);
-          expect(events).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                policyInvocation: expect.objectContaining({
-                  operation: 'vault.grant-issue',
-                  stage: 'completed',
-                  mode: 'observe',
-                  outcome: 'completed',
-                }),
-              }),
-            ])
-          );
-          expect(
-            f.coreDb.sqlite
-              .prepare(
-                "SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'"
-              )
-              .all()
-          ).toEqual([
-            {
-              actor_json: JSON.stringify({ kind: 'user', id: callerId }),
-              request_id: request.approvalRequestId,
-            },
-          ]);
-          expect((await f.sendAs(callerId, 'vault.grant-issue', input)).status).toBe(200);
-          expect(listVaultGrants(f.coreDb)).toHaveLength(1);
-          const after = db.sqlite
+        const { openUserDb } = await import('../storage/db.js');
+        const db =
+          home === 'user'
+            ? openUserDb(f.dataRoot, callerId)
+            : openWorkspaceDb(f.dataRoot, source.workspaceId);
+        try {
+          const { readPermissionDecisionRowV1 } = await import('../policy/retained-records-v1.js');
+          const rows = db.sqlite
             .prepare('SELECT * FROM permission_decisions')
             .all()
             .map(readPermissionDecisionRowV1)
             .filter(
               (row) =>
-                row.mediation?.operation === 'vault.grant-issue' && row.mediation.role === 'final'
+                row.enforcementPoint === 'vault.grant-issue' ||
+                row.mediation?.operation === 'vault.grant-issue'
             );
-          expect(after).toEqual(finals);
-        } else {
-          expect(issued.status).toBeGreaterThanOrEqual(400);
-          expect(listVaultGrants(f.coreDb)).toEqual([]);
-          expect(calls.filter((call) => call.binding.mode === 'observe')).toEqual([]);
-          if (outcome === 'deny')
+          expect(rows.every((row) => row.mediation?.operation === 'vault.grant-issue')).toBe(true);
+          const finals = rows.filter((row) => row.mediation?.role === 'final');
+          expect(finals).toHaveLength(1);
+          expect(finals[0]).toMatchObject({
+            ownerScope: home,
+            workspaceId: home === 'user' ? null : source.workspaceId,
+            policyEngineVersion: 'nanocore-policy:v1',
+            policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
+            enforcementPoint: 'vault.grant-issue@decide',
+            approvalId: request.approvalRequestId,
+            mediation: {
+              stage: 'decide',
+              role: 'final',
+              subject: { actor: { kind: 'user', id: callerId }, responsibleHumanId: callerId },
+            },
+            contextSummary: {
+              requestId: request.approvalRequestId,
+              approvalRequestId: request.approvalRequestId,
+              threadId: source.threadId,
+              turnId: request.raisingTurnId,
+              issuingActorId: callerId,
+              requesterId: referenceOwner === 'user' ? f.owner.id : FIXTURE_LOCAL_USER_ID,
+            },
+          });
+          const { listSqliteAuditEvents } = await import('../audit-events.js');
+          const events = listSqliteAuditEvents(db.sqlite);
+          expect(events.find((event) => event.id === finals[0]!.auditEventId)).toMatchObject({
+            action: 'permission.decision',
+            actor: { kind: 'user', id: callerId },
+            permissionDecisionId: finals[0]!.decisionId,
+            requestId: request.approvalRequestId,
+            threadId: source.threadId,
+            turnId: request.raisingTurnId,
+          });
+          if (outcome === 'allow' || outcome === 'different-issuer') {
+            expect(issued.status).toBe(200);
+            const result = await issued.json();
+            const grant = getVaultGrant(f.coreDb, result.grantId)!;
+            expect(grant).toMatchObject({
+              policyDecisionId: finals[0]!.decisionId,
+              approvalId: request.approvalRequestId,
+            });
             expect(finals[0]).toMatchObject({
-              result: 'deny',
+              result: 'allow',
+              reasonCode: 'granted',
               mediation: { kernel: { effect: 'allow' } },
             });
-          else expect(finals[0]!.result).not.toBe('allow');
-        }
-      } finally {
-        db.sqlite.close();
-      }
-      const requestDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
-      try {
-        expect(readPendingRequest(requestDb.sqlite, request.approvalRequestId)).toMatchObject({
-          requestId: request.approvalRequestId,
-          responsibleUserId: referenceOwner === 'user' ? f.owner.id : FIXTURE_LOCAL_USER_ID,
-          decidingActor: { kind: 'user', id: deciderId },
-          decidingActorContext: { kind: 'session', userId: deciderId },
-        });
-      } finally {
-        requestDb.sqlite.close();
-      }
-      if (home === 'user') {
-        const workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
-        try {
-          expect(await readReviewedIssueDecisions(workspaceDb)).toEqual([]);
+            expect(rows.filter((row) => row.mediation?.role === 'gate')).toHaveLength(1);
+            expect(calls.filter((call) => call.binding.mode === 'observe')).toHaveLength(1);
+            expect(events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  policyInvocation: expect.objectContaining({
+                    operation: 'vault.grant-issue',
+                    stage: 'completed',
+                    mode: 'observe',
+                    outcome: 'completed',
+                  }),
+                }),
+              ])
+            );
+            expect(
+              f.coreDb.sqlite
+                .prepare(
+                  "SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'"
+                )
+                .all()
+            ).toEqual([
+              {
+                actor_json: JSON.stringify({ kind: 'user', id: callerId }),
+                request_id: request.approvalRequestId,
+              },
+            ]);
+            expect((await f.sendAs(callerId, 'vault.grant-issue', input)).status).toBe(200);
+            expect(listVaultGrants(f.coreDb)).toHaveLength(1);
+            const after = db.sqlite
+              .prepare('SELECT * FROM permission_decisions')
+              .all()
+              .map(readPermissionDecisionRowV1)
+              .filter(
+                (row) =>
+                  row.mediation?.operation === 'vault.grant-issue' && row.mediation.role === 'final'
+              );
+            expect(after).toEqual(finals);
+          } else {
+            expect(issued.status).toBeGreaterThanOrEqual(400);
+            expect(listVaultGrants(f.coreDb)).toEqual([]);
+            expect(calls.filter((call) => call.binding.mode === 'observe')).toEqual([]);
+            if (outcome === 'deny')
+              expect(finals[0]).toMatchObject({
+                result: 'deny',
+                mediation: { kernel: { effect: 'allow' } },
+              });
+            else expect(finals[0]!.result).not.toBe('allow');
+          }
         } finally {
-          workspaceDb.sqlite.close();
+          db.sqlite.close();
         }
+        const requestDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+        try {
+          expect(readPendingRequest(requestDb.sqlite, request.approvalRequestId)).toMatchObject({
+            requestId: request.approvalRequestId,
+            responsibleUserId: referenceOwner === 'user' ? f.owner.id : FIXTURE_LOCAL_USER_ID,
+            decidingActor: { kind: 'user', id: deciderId },
+            decidingActorContext: { kind: 'session', userId: deciderId },
+          });
+        } finally {
+          requestDb.sqlite.close();
+        }
+        if (home === 'user') {
+          const workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+          try {
+            expect(await readReviewedIssueDecisions(workspaceDb)).toEqual([]);
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        }
+      } finally {
+        vi.restoreAllMocks();
+        await f.cleanup();
       }
-    } finally {
-      vi.restoreAllMocks();
-      await f.cleanup();
     }
-  });
+  );
 });
 
 // Vault Secret Injection, Reviewed User Login Sharing and Supported Grant Request And Review:
 // one approved exact intent has one final issue authorizer, including during concurrent calls.
 describe('reviewed grant issue concurrent approved-intent consumption', () => {
-  it.each([
-    'user',
-    'workspace',
-  ] as const)('retains one final allow for competing issues in the %s decision home', async (home) => {
-    const f = await loginShareFixture();
-    let releaseFirst!: () => void;
-    const firstHeld = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let signalFirstEntered!: () => void;
-    const firstEntered = new Promise<void>((resolve) => {
-      signalFirstEntered = resolve;
-    });
-    const issues: Promise<Response>[] = [];
-    try {
-      const source =
-        home === 'user' ? { ...f.command, terms: f.terms } : await prepare(f, 'workspace');
-      const callerId = home === 'user' ? f.owner.id : f.admin.id;
-      const raised =
-        home === 'user'
-          ? await f.sendAs(f.owner.id, 'vault.grant-request', {
-              ...source,
-              requestId: randomUUID(),
-            })
-          : await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
-      expect(raised.status).toBe(200);
-      const request = await raised.json();
-      expect(
-        (await f.sendAs(callerId, 'approval.respond', decision(request, 'granted'))).status
-      ).toBe(200);
-      if (home === 'user') {
-        // Two available uses keep a duplicate authorizer observable as consumption of two.
-        await installLoginSharePolicy(f, callerId, 2);
-      } else {
-        await installReviewedIssueMediationPolicy(f, callerId, source.workspaceId, home);
-      }
-      f.participant.mockImplementation(async (input) => {
-        if (input.binding.mode === 'observe') return { observed: true };
-        return { decision: 'allow' };
+  it.each(['user', 'workspace'] as const)(
+    'retains one final allow for competing issues in the %s decision home',
+    async (home) => {
+      const f = await loginShareFixture();
+      let releaseFirst!: () => void;
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
       });
-      const decide = f.interception.decide.bind(f.interception);
-      let issueDecisions = 0;
-      // Pause before real Policy evaluation. Do not spend its participant deadline
-      // waiting for the competing public command and native acknowledgement.
-      vi.spyOn(f.interception, 'decide').mockImplementation(async (policyInput) => {
-        if (policyInput.proposal.operation === 'vault.grant-issue') {
-          issueDecisions += 1;
-          if (issueDecisions === 1) {
-            signalFirstEntered();
-            await firstHeld;
-          }
-        }
-        return decide(policyInput);
+      let signalFirstEntered!: () => void;
+      const firstEntered = new Promise<void>((resolve) => {
+        signalFirstEntered = resolve;
       });
-      const input = {
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        approvalRequestId: request.approvalRequestId,
-      };
-      const firstIssue = Promise.resolve(f.sendAs(callerId, 'vault.grant-issue', input));
-      issues.push(firstIssue);
-      await Promise.race([
-        firstEntered,
-        firstIssue.then(() => {
-          throw new Error('The first issue completed before entering its required Policy gate.');
-        }),
-      ]);
-      // Vault Secret Injection, Supported Grant Request And Review: the winning
-      // single-use reservation precedes actual Policy interception and final authorization.
-      const reservationDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      const issues: Promise<Response>[] = [];
       try {
-        expect(readPendingRequest(reservationDb.sqlite, request.approvalRequestId)).toMatchObject({
-          requestId: request.approvalRequestId,
-          state: 'resolved',
-          resolution: 'granted',
-          claim: 'claimed',
-          disposition: null,
+        const source =
+          home === 'user' ? { ...f.command, terms: f.terms } : await prepare(f, 'workspace');
+        const callerId = home === 'user' ? f.owner.id : f.admin.id;
+        const raised =
+          home === 'user'
+            ? await f.sendAs(f.owner.id, 'vault.grant-request', {
+                ...source,
+                requestId: randomUUID(),
+              })
+            : await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
+        expect(raised.status).toBe(200);
+        const request = await raised.json();
+        expect(
+          (await f.sendAs(callerId, 'approval.respond', decision(request, 'granted'))).status
+        ).toBe(200);
+        if (home === 'user') {
+          // Two available uses keep a duplicate authorizer observable as consumption of two.
+          await installLoginSharePolicy(f, callerId, 2);
+        } else {
+          await installReviewedIssueMediationPolicy(f, callerId, source.workspaceId, home);
+        }
+        f.participant.mockImplementation(async (input) => {
+          if (input.binding.mode === 'observe') return { observed: true };
+          return { decision: 'allow' };
         });
-      } finally {
-        reservationDb.sqlite.close();
-      }
-      const secondIssue = Promise.resolve(f.sendAs(callerId, 'vault.grant-issue', input));
-      issues.push(secondIssue);
-      const second = await secondIssue;
-      releaseFirst();
-      const first = await firstIssue;
-      const succeeded = first.status === 200 ? first : second;
-      expect(succeeded.status).toBe(200);
-      const result = await succeeded.json();
-      const grants = listVaultGrants(f.coreDb);
-      expect(grants).toHaveLength(1);
-      expect(grants[0]).toMatchObject({
-        grantId: result.grantId,
-        approvalId: request.approvalRequestId,
-      });
-      const { openUserDb } = await import('../storage/db.js');
-      const { listUserPermissionDecisions, readPolicyStatementUseCount } = await import(
-        '../policy/permission-decisions.js'
-      );
-      const db =
-        home === 'user'
-          ? openUserDb(f.dataRoot, callerId)
-          : openWorkspaceDb(f.dataRoot, source.workspaceId);
-      try {
-        const rows =
-          'userId' in db ? listUserPermissionDecisions(db) : await readReviewedIssueDecisions(db);
-        const finalAllows = rows.filter(
-          (row) =>
-            row.approvalId === request.approvalRequestId &&
-            row.mediation?.operation === 'vault.grant-issue' &&
-            row.mediation.role === 'final' &&
-            row.result === 'allow'
-        );
-        expect(finalAllows).toHaveLength(1);
-        expect(grants[0]!.policyDecisionId).toBe(finalAllows[0]!.decisionId);
-        if ('userId' in db) {
-          const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
-          const { policyDigest } = await import('../policy/statements.js');
-          const statement = readAdmittedPolicyDocument(
-            f.coreDb,
-            f.manager.current().openKitConfig.policy?.mediation
-          ).statements.find((row) => row.id === 'login-share-policy')!;
-          // Core Policy, Delegated Goal Domain And Statement Lifetime: an allowing
-          // decision consumes its finite use atomically; the losing issue adds none.
-          expect(
-            readPolicyStatementUseCount(db, { id: statement.id, digest: policyDigest(statement) })
-          ).toBe(1);
+        const decide = f.interception.decide.bind(f.interception);
+        let issueDecisions = 0;
+        // Pause before real Policy evaluation. Do not spend its participant deadline
+        // waiting for the competing public command and native acknowledgement.
+        vi.spyOn(f.interception, 'decide').mockImplementation(async (policyInput) => {
+          if (policyInput.proposal.operation === 'vault.grant-issue') {
+            issueDecisions += 1;
+            if (issueDecisions === 1) {
+              signalFirstEntered();
+              await firstHeld;
+            }
+          }
+          return decide(policyInput);
+        });
+        const input = {
+          workspaceId: source.workspaceId,
+          threadId: source.threadId,
+          approvalRequestId: request.approvalRequestId,
+        };
+        const firstIssue = Promise.resolve(f.sendAs(callerId, 'vault.grant-issue', input));
+        issues.push(firstIssue);
+        await Promise.race([
+          firstEntered,
+          firstIssue.then(() => {
+            throw new Error('The first issue completed before entering its required Policy gate.');
+          }),
+        ]);
+        // Vault Secret Injection, Supported Grant Request And Review: the winning
+        // single-use reservation precedes actual Policy interception and final authorization.
+        const reservationDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+        try {
+          expect(readPendingRequest(reservationDb.sqlite, request.approvalRequestId)).toMatchObject(
+            {
+              requestId: request.approvalRequestId,
+              state: 'resolved',
+              resolution: 'granted',
+              claim: 'claimed',
+              disposition: null,
+            }
+          );
+        } finally {
+          reservationDb.sqlite.close();
         }
-        expectLoginShareNoDelivery(f, [request, result, grants, finalAllows]);
+        const secondIssue = Promise.resolve(f.sendAs(callerId, 'vault.grant-issue', input));
+        issues.push(secondIssue);
+        const second = await secondIssue;
+        releaseFirst();
+        const first = await firstIssue;
+        const succeeded = first.status === 200 ? first : second;
+        expect(succeeded.status).toBe(200);
+        const result = await succeeded.json();
+        const grants = listVaultGrants(f.coreDb);
+        expect(grants).toHaveLength(1);
+        expect(grants[0]).toMatchObject({
+          grantId: result.grantId,
+          approvalId: request.approvalRequestId,
+        });
+        const { openUserDb } = await import('../storage/db.js');
+        const { listUserPermissionDecisions, readPolicyStatementUseCount } = await import(
+          '../policy/permission-decisions.js'
+        );
+        const db =
+          home === 'user'
+            ? openUserDb(f.dataRoot, callerId)
+            : openWorkspaceDb(f.dataRoot, source.workspaceId);
+        try {
+          const rows =
+            'userId' in db ? listUserPermissionDecisions(db) : await readReviewedIssueDecisions(db);
+          const finalAllows = rows.filter(
+            (row) =>
+              row.approvalId === request.approvalRequestId &&
+              row.mediation?.operation === 'vault.grant-issue' &&
+              row.mediation.role === 'final' &&
+              row.result === 'allow'
+          );
+          expect(finalAllows).toHaveLength(1);
+          expect(grants[0]!.policyDecisionId).toBe(finalAllows[0]!.decisionId);
+          if ('userId' in db) {
+            const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
+            const { policyDigest } = await import('../policy/statements.js');
+            const statement = readAdmittedPolicyDocument(
+              f.coreDb,
+              f.manager.current().openKitConfig.policy?.mediation
+            ).statements.find((row) => row.id === 'login-share-policy')!;
+            // Core Policy, Delegated Goal Domain And Statement Lifetime: an allowing
+            // decision consumes its finite use atomically; the losing issue adds none.
+            expect(
+              readPolicyStatementUseCount(db, { id: statement.id, digest: policyDigest(statement) })
+            ).toBe(1);
+          }
+          expectLoginShareNoDelivery(f, [request, result, grants, finalAllows]);
+        } finally {
+          db.sqlite.close();
+        }
+        expect(first.status).toBe(200);
+        expect(second.status).toBeGreaterThanOrEqual(400);
       } finally {
-        db.sqlite.close();
+        releaseFirst();
+        await Promise.allSettled(issues);
+        vi.restoreAllMocks();
+        await f.cleanup();
       }
-      expect(first.status).toBe(200);
-      expect(second.status).toBeGreaterThanOrEqual(400);
-    } finally {
-      releaseFirst();
-      await Promise.allSettled(issues);
-      vi.restoreAllMocks();
-      await f.cleanup();
     }
-  });
+  );
 });
 
 // Reviewed User Login Sharing: preserve actual browser Session provenance through capture and native issue.

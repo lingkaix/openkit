@@ -18,25 +18,25 @@ function digest(content: string): string {
 }
 
 describe('Workspace canonical page source proof', () => {
-  it.each([
-    undefined,
-    digest(page()),
-  ])('uses the exact retained owner and base with pin %s', async (contentDigest) => {
-    const reference = formatReferenceUri(
-      { scopeId: pageScopeId, objectId: targetId },
-      contentDigest
-    );
-    const { proofs, admit } = await fixture([reference]);
-    expect(proofs().get('a')?.sourceReferences).toEqual([reference]);
-    expect(proofs().get('a')?.resolvedReferences.has(reference)).toBe(true);
-    expect(admit()).toMatchObject({
-      pageScopeId,
-      resolvedReferences: new Map([
-        ['a', new Set([reference])],
-        [targetId, new Set()],
-      ]),
-    });
-  });
+  it.each([undefined, digest(page())])(
+    'uses the exact retained owner and base with pin %s',
+    async (contentDigest) => {
+      const reference = formatReferenceUri(
+        { scopeId: pageScopeId, objectId: targetId },
+        contentDigest
+      );
+      const { proofs, admit } = await fixture([reference]);
+      expect(proofs().get('a')?.sourceReferences).toEqual([reference]);
+      expect(proofs().get('a')?.resolvedReferences.has(reference)).toBe(true);
+      expect(admit()).toMatchObject({
+        pageScopeId,
+        resolvedReferences: new Map([
+          ['a', new Set([reference])],
+          [targetId, new Set()],
+        ]),
+      });
+    }
+  );
 
   it.each([
     formatReferenceUri({

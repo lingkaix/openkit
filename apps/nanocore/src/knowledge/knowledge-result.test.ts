@@ -338,241 +338,248 @@ function observeNotebookTools() {
 }
 
 // meta-silent-refusal RED 1: an unspecified submission refusal must still have one safe category.
-it.each([
-  'malformed summary',
-  'non-admitted Source',
-] as const)('diagnostic floor RED 1: categorizes %s without candidate or publication effects', async (failure) => {
-  const f = await fixture(true);
-  const observed = observeNotebookTools();
-  const repositoryPath = join(
-    f.dataRoot,
-    'workspaces',
-    DEMO_WORKSPACE_ID,
-    'knowledge',
-    'notebook.git'
-  );
-  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
-    .notebookCommit;
-  // Include unreachable commits: unchanged refs alone cannot rule out a prepared candidate.
-  const commits = () =>
-    execFileSync(
-      'git',
-      ['--git-dir', repositoryPath, 'cat-file', '--batch-all-objects', '--batch-check'],
-      { encoding: 'utf8' }
-    )
-      .trim()
-      .split('\n')
-      .filter((line) => line.split(' ')[1] === 'commit')
-      .sort();
-  const beforeCommits = commits();
-  const marker = 'UNADMITTED-SUBMISSION-CONTENT';
-  const sourceReference = `source:ks_00000000-0000-7000-8000-000000000001@sha256:${'a'.repeat(64)}`;
-  const content = serializeKnowledgePageFixture(
-    {
-      title: 'Unadmitted Source fixture',
-      content: `${marker} ${f.dataRoot}`,
-      sourceReferences: [sourceReference],
-      createdAt: '2026-10-21T00:00:00.000Z',
-      updatedAt: '2026-10-21T00:00:00.000Z',
-    },
-    { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
-  );
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  onTestFinished(() => warn.mockRestore());
-  let feedback = '';
-  f.createResponses.mockImplementation(async () => {
-    if (f.createResponses.mock.calls.length === 1) {
-      // A string over the summary bound passes Tool schema admission and reaches the native refusal.
-      if (failure === 'malformed summary')
-        return call('knowledge.notebook.update', {
-          summary: `${marker} ${f.dataRoot}${'x'.repeat(4096)}`,
-        });
-      return calls([
-        [
-          'knowledge.notebook-workspace.update',
-          { script: `cat > unadmitted.md <<'PAGE'\n${content}PAGE\n` },
-        ],
-        ['knowledge.notebook.update', { summary: 'Submit the Source reference fixture.' }],
-      ]);
-    }
-    feedback = latestToolOutput(f);
-    throw new Error('The deterministic refusal feedback probe is complete.');
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      { workspaceId: DEMO_WORKSPACE_ID },
-      {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          instruction: 'Curate only the admitted notebook and Sources.',
-          pageIds: ['index'],
-        }),
-      }
-    )
-  );
-  const body = (await response.json()) as { turnId: string };
-  expect(response.status, JSON.stringify(body)).toBe(200);
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
-  const submission = observed.filter(({ name }) => name === 'knowledge.notebook.update');
-  expect(submission).toHaveLength(1);
-  expect(submission[0]!.result.isError).toBe(true);
-  if (failure === 'non-admitted Source')
-    expect(observed[0]).toMatchObject({
-      name: 'knowledge.notebook-workspace.update',
-      result: { content: [{ type: 'text', text: expect.stringContaining('"exitCode":0') }] },
-    });
-  const detail = JSON.parse(feedback);
-  expect(detail.code).toBe('invalid_request');
-  expect(detail).not.toHaveProperty('linkDiagnostics');
-  expect(
-    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
-  ).toBe(before);
-  expect(commits()).toEqual(beforeCommits);
-  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
-  expect(
-    f.store
-      .getTurnById(body.turnId)
-      .items.filter(
-        (item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook.update'
+it.each(['malformed summary', 'non-admitted Source'] as const)(
+  'diagnostic floor RED 1: categorizes %s without candidate or publication effects',
+  async (failure) => {
+    const f = await fixture(true);
+    const observed = observeNotebookTools();
+    const repositoryPath = join(
+      f.dataRoot,
+      'workspaces',
+      DEMO_WORKSPACE_ID,
+      'knowledge',
+      'notebook.git'
+    );
+    const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+      .notebookCommit;
+    // Include unreachable commits: unchanged refs alone cannot rule out a prepared candidate.
+    const commits = () =>
+      execFileSync(
+        'git',
+        ['--git-dir', repositoryPath, 'cat-file', '--batch-all-objects', '--batch-check'],
+        { encoding: 'utf8' }
       )
-  ).toEqual([expect.objectContaining({ status: 'failed' })]);
-  for (const text of [feedback, JSON.stringify(body), JSON.stringify(warn.mock.calls)]) {
-    for (const forbidden of [marker, f.dataRoot, sourceReference, 'unadmitted.md', 'stack'])
-      expect(text).not.toContain(forbidden);
-    expect(text).not.toMatch(/(?:SyntaxError|TypeError|NotebookError):|\bat .+:\d+:\d+/);
-  }
-  // This exact assertion is the expected RED on the unchanged implementation.
-  expect(detail.diagnostics).toEqual(['notebook.submission_refused']);
-}, 120_000);
+        .trim()
+        .split('\n')
+        .filter((line) => line.split(' ')[1] === 'commit')
+        .sort();
+    const beforeCommits = commits();
+    const marker = 'UNADMITTED-SUBMISSION-CONTENT';
+    const sourceReference = `source:ks_00000000-0000-7000-8000-000000000001@sha256:${'a'.repeat(64)}`;
+    const content = serializeKnowledgePageFixture(
+      {
+        title: 'Unadmitted Source fixture',
+        content: `${marker} ${f.dataRoot}`,
+        sourceReferences: [sourceReference],
+        createdAt: '2026-10-21T00:00:00.000Z',
+        updatedAt: '2026-10-21T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    onTestFinished(() => warn.mockRestore());
+    let feedback = '';
+    f.createResponses.mockImplementation(async () => {
+      if (f.createResponses.mock.calls.length === 1) {
+        // A string over the summary bound passes Tool schema admission and reaches the native refusal.
+        if (failure === 'malformed summary')
+          return call('knowledge.notebook.update', {
+            summary: `${marker} ${f.dataRoot}${'x'.repeat(4096)}`,
+          });
+        return calls([
+          [
+            'knowledge.notebook-workspace.update',
+            { script: `cat > unadmitted.md <<'PAGE'\n${content}PAGE\n` },
+          ],
+          ['knowledge.notebook.update', { summary: 'Submit the Source reference fixture.' }],
+        ]);
+      }
+      feedback = latestToolOutput(f);
+      throw new Error('The deterministic refusal feedback probe is complete.');
+    });
+    const response = await f.app.request(
+      ...operationRequest(
+        'knowledge.maintain',
+        { workspaceId: DEMO_WORKSPACE_ID },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            instruction: 'Curate only the admitted notebook and Sources.',
+            pageIds: ['index'],
+          }),
+        }
+      )
+    );
+    const body = (await response.json()) as { turnId: string };
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(f.createResponses).toHaveBeenCalledTimes(2);
+    const submission = observed.filter(({ name }) => name === 'knowledge.notebook.update');
+    expect(submission).toHaveLength(1);
+    expect(submission[0]!.result.isError).toBe(true);
+    if (failure === 'non-admitted Source')
+      expect(observed[0]).toMatchObject({
+        name: 'knowledge.notebook-workspace.update',
+        result: { content: [{ type: 'text', text: expect.stringContaining('"exitCode":0') }] },
+      });
+    const detail = JSON.parse(feedback);
+    expect(detail.code).toBe('invalid_request');
+    expect(detail).not.toHaveProperty('linkDiagnostics');
+    expect(
+      readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+    ).toBe(before);
+    expect(commits()).toEqual(beforeCommits);
+    expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
+    expect(
+      f.store
+        .getTurnById(body.turnId)
+        .items.filter(
+          (item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook.update'
+        )
+    ).toEqual([expect.objectContaining({ status: 'failed' })]);
+    for (const text of [feedback, JSON.stringify(body), JSON.stringify(warn.mock.calls)]) {
+      for (const forbidden of [marker, f.dataRoot, sourceReference, 'unadmitted.md', 'stack'])
+        expect(text).not.toContain(forbidden);
+      expect(text).not.toMatch(/(?:SyntaxError|TypeError|NotebookError):|\bat .+:\d+:\d+/);
+    }
+    // This exact assertion is the expected RED on the unchanged implementation.
+    expect(detail.diagnostics).toEqual(['notebook.submission_refused']);
+  },
+  120_000
+);
 
 // meta-silent-refusal RED 2: specific script categories must not acquire a submission fallback.
 it.each([
   { category: 'notebook.script_syntax_error', script: 'if true; then' },
   { category: 'notebook.script_limit_exceeded', script: `#${'x'.repeat(64 * 1024)}` },
-])('diagnostic floor RED 2: preserves $category exactly', async ({ category, script }) => {
-  const f = await fixture();
-  const observed = observeNotebookTools();
-  let feedback = '';
-  f.createResponses.mockImplementation(async () => {
-    if (f.createResponses.mock.calls.length === 1)
-      return call('knowledge.notebook-workspace.update', { script });
-    feedback = latestToolOutput(f);
-    throw new Error('The deterministic script category probe is complete.');
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      { workspaceId: DEMO_WORKSPACE_ID },
-      {
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          instruction: 'Inspect the admitted notebook.',
-        }),
-      }
-    )
-  );
-  expect(response.status).toBe(200);
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
-  expect(observed).toHaveLength(1);
-  expect(observed[0]!.result.isError).toBe(true);
-  expect(JSON.parse(feedback)).toMatchObject({
-    code: 'invalid_request',
-    diagnostics: [category],
-  });
-  expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
-  expect(feedback).not.toContain('notebook.submission_refused');
-}, 120_000);
+])(
+  'diagnostic floor RED 2: preserves $category exactly',
+  async ({ category, script }) => {
+    const f = await fixture();
+    const observed = observeNotebookTools();
+    let feedback = '';
+    f.createResponses.mockImplementation(async () => {
+      if (f.createResponses.mock.calls.length === 1)
+        return call('knowledge.notebook-workspace.update', { script });
+      feedback = latestToolOutput(f);
+      throw new Error('The deterministic script category probe is complete.');
+    });
+    const response = await f.app.request(
+      ...operationRequest(
+        'knowledge.maintain',
+        { workspaceId: DEMO_WORKSPACE_ID },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            instruction: 'Inspect the admitted notebook.',
+          }),
+        }
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(f.createResponses).toHaveBeenCalledTimes(2);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]!.result.isError).toBe(true);
+    expect(JSON.parse(feedback)).toMatchObject({
+      code: 'invalid_request',
+      diagnostics: [category],
+    });
+    expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
+    expect(feedback).not.toContain('notebook.submission_refused');
+  },
+  120_000
+);
 
-it.each([
-  'Rule',
-  'Effect',
-  'Objective',
-])('repairs typed %s applicability after an actual submission refusal', async (type) => {
-  const f = await fixture();
-  const observed = observeNotebookTools();
-  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
-    .notebookCommit;
-  const content = updateOkfFrontmatter({
-    path: 'typed.md',
-    content: serializeKnowledgePageFixture(
-      {
-        title: 'Synthetic domain page',
-        content: 'UNPUBLISHED-DOMAIN-CONTENT',
-        sourceReferences: [],
-        createdAt: '2026-10-20T00:00:00.000Z',
-        updatedAt: '2026-10-20T00:00:00.000Z',
+it.each(['Rule', 'Effect', 'Objective'])(
+  'repairs typed %s applicability after an actual submission refusal',
+  async (type) => {
+    const f = await fixture();
+    const observed = observeNotebookTools();
+    const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+      .notebookCommit;
+    const content = updateOkfFrontmatter({
+      path: 'typed.md',
+      content: serializeKnowledgePageFixture(
+        {
+          title: 'Synthetic domain page',
+          content: 'UNPUBLISHED-DOMAIN-CONTENT',
+          sourceReferences: [],
+          createdAt: '2026-10-20T00:00:00.000Z',
+          updatedAt: '2026-10-20T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      ),
+      updates: {
+        type,
+        ...(type === 'Effect'
+          ? { basis: 'Supplied fixture evidence.', last_checked_at: '2026-10-20T00:00:00Z' }
+          : {}),
       },
-      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
-    ),
-    updates: {
-      type,
-      ...(type === 'Effect'
-        ? { basis: 'Supplied fixture evidence.', last_checked_at: '2026-10-20T00:00:00Z' }
-        : {}),
-    },
-  });
-  const corrected = updateOkfFrontmatter({
-    path: 'typed.md',
-    content,
-    updates: { applies_to: ['step:report-review'] },
-  });
-  let feedback = '';
-  let beforeRepair: { revision: string; proposalCount: number } | undefined;
-  f.createResponses.mockImplementation(async () => {
-    if (f.createResponses.mock.calls.length === 1)
+    });
+    const corrected = updateOkfFrontmatter({
+      path: 'typed.md',
+      content,
+      updates: { applies_to: ['step:report-review'] },
+    });
+    let feedback = '';
+    let beforeRepair: { revision: string; proposalCount: number } | undefined;
+    f.createResponses.mockImplementation(async () => {
+      if (f.createResponses.mock.calls.length === 1)
+        return calls([
+          [
+            'knowledge.notebook-workspace.update',
+            { script: `cat > typed.md <<'PAGE'\n${content}PAGE\n` },
+          ],
+          ['knowledge.notebook.update', { summary: 'Submit the domain page.' }],
+        ]);
+      feedback = latestToolOutput(f);
+      beforeRepair = {
+        revision: readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+          .notebookCommit,
+        proposalCount: f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID).length,
+      };
       return calls([
         [
           'knowledge.notebook-workspace.update',
-          { script: `cat > typed.md <<'PAGE'\n${content}PAGE\n` },
+          { script: `cat > typed.md <<'PAGE'\n${corrected}PAGE\n` },
         ],
-        ['knowledge.notebook.update', { summary: 'Submit the domain page.' }],
+        ['knowledge.notebook.update', { summary: 'Submit the corrected applicability.' }],
+        ['knowledge.result', { summary: 'The corrected domain page requires human Review.' }],
       ]);
-    feedback = latestToolOutput(f);
-    beforeRepair = {
-      revision: readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
-        .notebookCommit,
-      proposalCount: f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID).length,
-    };
-    return calls([
-      [
-        'knowledge.notebook-workspace.update',
-        { script: `cat > typed.md <<'PAGE'\n${corrected}PAGE\n` },
-      ],
-      ['knowledge.notebook.update', { summary: 'Submit the corrected applicability.' }],
-      ['knowledge.result', { summary: 'The corrected domain page requires human Review.' }],
-    ]);
-  });
-  const response = await f.app.request(
-    ...operationRequest(
-      'knowledge.maintain',
-      { workspaceId: DEMO_WORKSPACE_ID },
-      { body: JSON.stringify({ requestId: randomUUID(), instruction: 'Curate the domain page.' }) }
-    )
-  );
-  const body = (await response.json()) as { outcome: string; turnId: string };
-  expect(response.status, JSON.stringify(body)).toBe(200);
-  expect(f.createResponses).toHaveBeenCalledTimes(2);
-  expect(beforeRepair).toEqual({ revision: before, proposalCount: 0 });
-  const submissions = observed.filter(({ name }) => name === 'knowledge.notebook.update');
-  expect(submissions).toHaveLength(2);
-  expect(submissions[0]!.result.isError).toBe(true);
-  expect(submissions[1]!.result.isError).not.toBe(true);
-  expect(feedback).not.toContain('UNPUBLISHED-DOMAIN-CONTENT');
-  expect(feedback).not.toContain(f.dataRoot);
-  expect(JSON.parse(feedback)).toEqual({
-    code: 'invalid_request',
-    diagnostics: ['notebook.invalid_page', 'scope_schema.invalid_applies_to'],
-    message:
-      "Rule, Effect and Objective require applies_to as a nonempty YAML list of nonblank tool or work-step identifiers, for example applies_to: [step:report-review]. Use the supplied work's identifiers. Correct these pages, resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.",
-  });
-  expect(body.outcome).toBe('review-required');
-  expect(f.store.getTurnById(body.turnId).status).toBe('completed');
-  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toHaveLength(1);
-  expect(
-    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
-  ).toBe(before);
-}, 120_000);
+    });
+    const response = await f.app.request(
+      ...operationRequest(
+        'knowledge.maintain',
+        { workspaceId: DEMO_WORKSPACE_ID },
+        {
+          body: JSON.stringify({ requestId: randomUUID(), instruction: 'Curate the domain page.' }),
+        }
+      )
+    );
+    const body = (await response.json()) as { outcome: string; turnId: string };
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(f.createResponses).toHaveBeenCalledTimes(2);
+    expect(beforeRepair).toEqual({ revision: before, proposalCount: 0 });
+    const submissions = observed.filter(({ name }) => name === 'knowledge.notebook.update');
+    expect(submissions).toHaveLength(2);
+    expect(submissions[0]!.result.isError).toBe(true);
+    expect(submissions[1]!.result.isError).not.toBe(true);
+    expect(feedback).not.toContain('UNPUBLISHED-DOMAIN-CONTENT');
+    expect(feedback).not.toContain(f.dataRoot);
+    expect(JSON.parse(feedback)).toEqual({
+      code: 'invalid_request',
+      diagnostics: ['notebook.invalid_page', 'scope_schema.invalid_applies_to'],
+      message:
+        "Rule, Effect and Objective require applies_to as a nonempty YAML list of nonblank tool or work-step identifiers, for example applies_to: [step:report-review]. Use the supplied work's identifiers. Correct these pages, resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.",
+    });
+    expect(body.outcome).toBe('review-required');
+    expect(f.store.getTurnById(body.turnId).status).toBe('completed');
+    expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toHaveLength(1);
+    expect(
+      readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+    ).toBe(before);
+  },
+  120_000
+);
 
 it('makes the actual script path refusal actionable with exact native feedback', async () => {
   const f = await fixture();

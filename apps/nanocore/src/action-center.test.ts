@@ -1891,89 +1891,87 @@ describe('action center app API', () => {
       reviewId: 'swr_imported_origin',
       expectOriginIds: false,
     },
-  ])('retains the workspace-review row and actions for $origin backing Artifact origin', async ({
-    origin,
-    artifactId,
-    reviewId,
-    expectOriginIds,
-  }) => {
-    const coreDb = createCoreDb();
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(coreDb.dataRoot);
-      if (coreDb.sqlite.open) coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { recursive: true, force: true });
-    });
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = await store.createWorkspace(`${origin} workspace review origin`);
-
-    try {
-      const backing = await createWorkspaceReviewBackingArtifact(store, workspace.id, {
-        artifactId,
-        origin,
+  ])(
+    'retains the workspace-review row and actions for $origin backing Artifact origin',
+    async ({ origin, artifactId, reviewId, expectOriginIds }) => {
+      const coreDb = createCoreDb();
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(coreDb.dataRoot);
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { recursive: true, force: true });
       });
-      const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const workspace = await store.createWorkspace(`${origin} workspace review origin`);
+
       try {
-        recordPendingWorkspaceReview(workspaceDb, {
-          workspaceId: workspace.id,
+        const backing = await createWorkspaceReviewBackingArtifact(store, workspace.id, {
           artifactId,
-          reviewId,
-          path: `docs/${origin}.md`,
-          turnRef: backing.turnRef,
+          origin,
         });
+        const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
+        try {
+          recordPendingWorkspaceReview(workspaceDb, {
+            workspaceId: workspace.id,
+            artifactId,
+            reviewId,
+            path: `docs/${origin}.md`,
+            turnRef: backing.turnRef,
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+
+        ensureLocalUser(coreDb);
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          workspaceId: workspace.id,
+        });
+        const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+        const memberToken = createOpenKitAccessTokenRecord(coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: 'workspace',
+          workspaceIds: [workspace.id],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        }).secret;
+        const res = await app.request(
+          ...operationRequest(
+            'attention.list',
+            { workspaceId: workspace.id },
+            { headers: { authorization: `Bearer ${memberToken}` } }
+          )
+        );
+        const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
+          (item) => item.id === `workspace-review:${reviewId}`
+        );
+        const reviewHref = '/api/app/operations/sync.review-read';
+        const decisionHref = '/api/app/operations/sync.review-decide';
+
+        expect(row).toMatchObject({
+          kind: 'workspace_review',
+          artifactId,
+          source: { type: 'workspace_review', reviewId, status: 'pending' },
+        });
+        if (expectOriginIds) {
+          expect(row).toMatchObject({ threadId: backing.threadId, turnId: backing.turnId });
+        } else {
+          expect(row).not.toHaveProperty('threadId');
+          expect(row).not.toHaveProperty('turnId');
+        }
+        expect(row?.actions).toEqual([
+          expect.objectContaining({ kind: 'open_artifact', href: reviewHref }),
+          { kind: 'accepted', label: 'Accept', method: 'POST', href: decisionHref },
+          { kind: 'needs_refinement', label: 'Refine', method: 'POST', href: decisionHref },
+          { kind: 'rejected', label: 'Reject', method: 'POST', href: decisionHref },
+          { kind: 'blocked', label: 'Block', method: 'POST', href: decisionHref },
+        ]);
+        expect(row?.actions.some((action) => action.disabled)).toBe(false);
       } finally {
-        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
       }
-
-      ensureLocalUser(coreDb);
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        workspaceId: workspace.id,
-      });
-      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
-      const memberToken = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'workspace',
-        workspaceIds: [workspace.id],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      }).secret;
-      const res = await app.request(
-        ...operationRequest(
-          'attention.list',
-          { workspaceId: workspace.id },
-          { headers: { authorization: `Bearer ${memberToken}` } }
-        )
-      );
-      const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
-        (item) => item.id === `workspace-review:${reviewId}`
-      );
-      const reviewHref = '/api/app/operations/sync.review-read';
-      const decisionHref = '/api/app/operations/sync.review-decide';
-
-      expect(row).toMatchObject({
-        kind: 'workspace_review',
-        artifactId,
-        source: { type: 'workspace_review', reviewId, status: 'pending' },
-      });
-      if (expectOriginIds) {
-        expect(row).toMatchObject({ threadId: backing.threadId, turnId: backing.turnId });
-      } else {
-        expect(row).not.toHaveProperty('threadId');
-        expect(row).not.toHaveProperty('turnId');
-      }
-      expect(row?.actions).toEqual([
-        expect.objectContaining({ kind: 'open_artifact', href: reviewHref }),
-        { kind: 'accepted', label: 'Accept', method: 'POST', href: decisionHref },
-        { kind: 'needs_refinement', label: 'Refine', method: 'POST', href: decisionHref },
-        { kind: 'rejected', label: 'Reject', method: 'POST', href: decisionHref },
-        { kind: 'blocked', label: 'Block', method: 'POST', href: decisionHref },
-      ]);
-      expect(row?.actions.some((action) => action.disabled)).toBe(false);
-    } finally {
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('keeps contradictory Review owners inspect-only after the workspace review is resolved', async () => {
     const coreDb = createCoreDb();

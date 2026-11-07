@@ -1484,34 +1484,32 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it.each([
-    'codex',
-    'pi',
-    'opencode',
-    'deepseek',
-  ])('keys %s native continuity by its opaque adapter identity', (adapterId) => {
-    const input = {
-      adapterId,
-      adapterVersion: 'fixture-version',
-      harnessCompatibilityKey: 'b'.repeat(64),
-      sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
-      threadId: testEntityId('th', 'thread-mode-fixture'),
-    };
-    const expected = createHash('sha256')
-      .update(
-        JSON.stringify({
-          nativeConversation: {
-            adapterId,
-            adapterVersion: input.adapterVersion,
-            harnessCompatibilityKey: input.harnessCompatibilityKey,
-          },
-          sessionCompatibilityKey: input.sessionCompatibilityKey,
-          threadId: input.threadId,
-        })
-      )
-      .digest('hex');
-    expect(deriveNanoHostAgentSessionCompatibilityKey(input)).toBe(expected);
-  });
+  it.each(['codex', 'pi', 'opencode', 'deepseek'])(
+    'keys %s native continuity by its opaque adapter identity',
+    (adapterId) => {
+      const input = {
+        adapterId,
+        adapterVersion: 'fixture-version',
+        harnessCompatibilityKey: 'b'.repeat(64),
+        sessionCompatibilityKey: `sha256:${'c'.repeat(64)}`,
+        threadId: testEntityId('th', 'thread-mode-fixture'),
+      };
+      const expected = createHash('sha256')
+        .update(
+          JSON.stringify({
+            nativeConversation: {
+              adapterId,
+              adapterVersion: input.adapterVersion,
+              harnessCompatibilityKey: input.harnessCompatibilityKey,
+            },
+            sessionCompatibilityKey: input.sessionCompatibilityKey,
+            threadId: input.threadId,
+          })
+        )
+        .digest('hex');
+      expect(deriveNanoHostAgentSessionCompatibilityKey(input)).toBe(expected);
+    }
+  );
 
   it('expires a never-polled command from its enqueue time and never delivers it late', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-enqueue-budget-')));
@@ -1737,385 +1735,74 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it.each([
-    'closed',
-    'failed',
-  ] as const)('keeps an unproved %s native inspect on the Thread uniqueness selector', async (state) => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-unproved-inspect-')));
-    try {
-      applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: '0.153.4',
-        harnessBindingRef: 'harness-binding-1',
-        harnessCompatibilityKey: 'd'.repeat(64),
-        harnessInstanceId: 'harness-1',
-        imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: physicalEpoch,
-        sandboxBindingRef: 'sandbox-binding-1',
-        sandboxCompatibilityKey: 'a'.repeat(64),
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        sandboxRuntimeId: 'sandbox-runtime-1',
-        runtimeTargetId: 'nanohost-a1',
-        timestamp: now,
-      });
-      await openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: testEntityId('as', 'agent-session-1'),
-        agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-1',
-        threadId: testEntityId('th', 'thread-1'),
-        timestamp: now,
-        workspaceId: testEntityId('ws', 'workspace-1'),
-      });
-      await seedSubmittedAttempt(coreDb);
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          aepRef: 'sandbox://aep/1',
+  it.each(['closed', 'failed'] as const)(
+    'keeps an unproved %s native inspect on the Thread uniqueness selector',
+    async (state) => {
+      const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-unproved-inspect-')));
+      try {
+        applyMigrations(coreDb);
+        seedRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: '0.153.4',
+          harnessBindingRef: 'harness-binding-1',
+          harnessCompatibilityKey: 'd'.repeat(64),
+          harnessInstanceId: 'harness-1',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: physicalEpoch,
+          sandboxBindingRef: 'sandbox-binding-1',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          sandboxRuntimeId: 'sandbox-runtime-1',
+          runtimeTargetId: 'nanohost-a1',
+          timestamp: now,
+        });
+        await openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
-          contextPackageId: 'context-package-1',
-          contextRef: 'sandbox://context/1',
-          deadline: '2099-01-01T00:00:00.000Z',
-          leaseId: testEntityId('attempt', 'lease-1'),
-          packageSnapshotId: 'package-snapshot-1',
-          threadId: testEntityId('th', 'thread-1'),
-          turnId: testEntityId('tu', 'turn-1'),
-          turnSequence: 0,
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'turn.start',
-        timestamp: now,
-      });
-      const started = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-      });
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        result: {
-          body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
-          disposition: 'succeeded',
-          harnessInstanceId: 'harness-1',
-          operationId: started!.operationId,
-          schemaVersion: 2,
-          sequence: 0,
-        },
-        timestamp: now,
-      });
-      await consumeFixtureWorkspaceResult(coreDb);
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          agentSessionId: testEntityId('as', 'agent-session-1'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.inspect',
-        timestamp: now,
-      });
-      const inspect = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-      });
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        result: {
-          body: {
-            childState: 'running',
-            cleanupState: 'pending',
-            nativeHandleDigest: null,
-            nativeHandleState: 'pending',
-            state,
-          },
-          disposition: 'succeeded',
-          harnessInstanceId: 'harness-1',
-          operationId: inspect!.operationId,
-          schemaVersion: 2,
-          sequence: 1,
-        },
-        timestamp: now,
-      });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
-                      current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
-                      cleanup_state AS cleanupState
-               FROM agent_session_runtime_bindings
-               WHERE agent_session_runtime_binding_id = ?`
-          )
-          .get('agent-session-binding-1')
-      ).toEqual({
-        agentSessionId: testEntityId('as', 'agent-session-1'),
-        cleanupState: 'clean',
-        currentAttemptId: testEntityId('attempt', 'lease-1'),
-        currentTurnId: testEntityId('tu', 'turn-1'),
-        lifecycleState: state,
-      });
-      await expect(
-        openNanoHostAgentSessionBinding(coreDb, {
-          agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: testEntityId('as', 'agent-session-2'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-2',
           effectiveSetupGeneration: 1,
           harnessInstanceId: 'harness-1',
           threadId: testEntityId('th', 'thread-1'),
           timestamp: now,
           workspaceId: testEntityId('ws', 'workspace-1'),
-        })
-      ).rejects.toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
-      expect(
-        readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: testEntityId('th', 'thread-1'),
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        })
-      ).toEqual({ agentSessionId: testEntityId('as', 'agent-session-1') });
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO agent_session_runtime_bindings (
-               agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
-               workspace_id, thread_id, agent_session_compatibility_key,
-               effective_setup_generation, native_handle_state, native_handle_digest,
-               lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
-               created_at, updated_at, image_digest
-             ) VALUES (?, 'harness-1', ?, ?, ?, ?, 1, 'pending', NULL,
-                       'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
-        )
-        .run(
-          'agent-session-binding-2',
-          testEntityId('as', 'agent-session-2'),
-          testEntityId('ws', 'workspace-1'),
-          testEntityId('th', 'thread-1'),
-          'c'.repeat(64),
-          now,
-          now,
-          `sha256:${'f'.repeat(64)}`
-        );
-      expect(() =>
-        readNanoHostThreadAgentSessionBinding(coreDb, {
-          threadId: testEntityId('th', 'thread-1'),
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        })
-      ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'succeeded',
-    'refused',
-  ] as const)('binds token hashes and settles exact %s results with closed diagnostics', async (disposition) => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-sequence-')));
-    try {
-      applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: '0.153.4',
-        harnessBindingRef: 'harness-binding-1',
-        harnessCompatibilityKey: 'd'.repeat(64),
-        harnessInstanceId: 'harness-1',
-        imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: physicalEpoch,
-        sandboxBindingRef: 'sandbox-binding-1',
-        sandboxCompatibilityKey: 'a'.repeat(64),
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        sandboxRuntimeId: 'sandbox-runtime-1',
-        runtimeTargetId: 'nanohost-a1',
-        timestamp: now,
-      });
-      await openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: testEntityId('as', 'agent-session-1'),
-        agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-1',
-        threadId: testEntityId('th', 'thread-1'),
-        timestamp: now,
-        workspaceId: testEntityId('ws', 'workspace-1'),
-      });
-      await seedSubmittedAttempt(coreDb);
-      const workerControlToken = Buffer.alloc(32, 1).toString('base64url');
-      const inferenceToken = Buffer.alloc(32, 2).toString('base64url');
-      const capabilityToken = Buffer.alloc(32, 3).toString('base64url');
-      const tokens = [workerControlToken, inferenceToken, capabilityToken];
-      const operationInput = {
-        body: {
-          aepRef: 'sandbox://aep/1',
-          agentSessionId: testEntityId('as', 'agent-session-1'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-1',
-          contextPackageId: 'context-package-1',
-          contextRef: 'sandbox://context/1',
-          deadline: '2099-01-01T00:00:00.000Z',
-          leaseId: testEntityId('attempt', 'lease-1'),
-          packageSnapshotId: 'package-snapshot-1',
-          threadId: testEntityId('th', 'thread-1'),
-          turnId: testEntityId('tu', 'turn-1'),
-          turnSequence: 0,
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'turn.start',
-        timestamp: now,
-      } satisfies Parameters<typeof prepareNanoHostHarnessOperation>[1];
-      const prepared = prepareNanoHostHarnessOperation(coreDb, {
-        ...operationInput,
-        routeToken: () => tokens.shift()!,
-      });
-      await queueNanoHostHarnessOperation(coreDb, { ...operationInput, prepared });
-
-      const command = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        now: () => now,
-      });
-      expect(command).toEqual(prepared.command);
-      expect({ ...prepared.command, body: prepared.wireBody }).toMatchObject({
-        body: {
-          capabilityToken,
-          inferenceToken,
-          workerControlToken,
-        },
-        operation: 'turn.start',
-        schemaVersion: 2,
-        sequence: 0,
-      });
-      expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
-      const attempt = observeExecutionAttempts(coreDb).find(
-        (row) => row.turn_id === testEntityId('tu', 'turn-1')
-      );
-      expect(attempt).toMatchObject({
-        worker_control_token_hash: createHash('sha256')
-          .update(Buffer.from(workerControlToken, 'base64url'))
-          .digest('hex'),
-        worker_inference_token_hash: createHash('sha256')
-          .update(Buffer.from(inferenceToken, 'base64url'))
-          .digest('hex'),
-        worker_capability_token_hash: createHash('sha256')
-          .update(Buffer.from(capabilityToken, 'base64url'))
-          .digest('hex'),
-      });
-      expect(
-        new Set([
-          attempt?.worker_control_token_hash,
-          attempt?.worker_inference_token_hash,
-          attempt?.worker_capability_token_hash,
-        ]).size
-      ).toBe(3);
-      for (const token of [workerControlToken, inferenceToken, capabilityToken])
-        expect(JSON.stringify(attempt)).not.toContain(token);
-      const durableHarness = JSON.stringify(
-        coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()
-      );
-      expect(durableHarness).not.toContain(workerControlToken);
-      expect(durableHarness).not.toContain(inferenceToken);
-      expect(durableHarness).not.toContain(capabilityToken);
-      expect(
-        await dispatchNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-        })
-      ).toBeNull();
-
-      const result = {
-        body:
-          disposition === 'succeeded'
-            ? { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' }
-            : {
-                reasonCode: 'dependency_failed',
-                startupFailure: {
-                  stage: 'workspace_materialization',
-                  reason: 'retained_baseline_unavailable',
-                },
-              },
-        disposition,
-        harnessInstanceId: 'harness-1',
-        operationId: command!.operationId,
-        schemaVersion: 2 as const,
-        sequence: 0,
-      };
-      const explanation = {
-        code: 'git_fetch_http_refused',
-        stage: 'workspace_materialization',
-        operation: 'git.fetch',
-        dependency: 'git_remote',
-        producer: 'worker-shim',
-        observedAt: '2026-09-22T00:00:00.000Z',
-        basis: 'direct_observation',
-        subprocess: 'exit',
-        httpStatus: 403,
-        enforcement: 'unavailable',
-        evidence: { availability: 'partial', outputTruncated: false },
-      } as const;
-      for (const startupFailure of [
-        {
-          stage: 'workspace_materialization',
-          reason: 'git_fetch_http_refused',
-          explanation: { ...explanation, observedAt: `2026-09-22T00:00:00.${'0'.repeat(20000)}Z` },
-        },
-        { stage: 'workspace_materialization', reason: 'git_fetch_tls_failed', explanation },
-        { stage: 'workspace_materialization', reason: 'secret-canary' },
-        { stage: 'unknown_stage', reason: 'failed' },
-      ]) {
-        await expect(
-          settleNanoHostHarnessOperation(coreDb, {
-            sandboxIntegrationBindingRef: 'integration-binding-1',
-            result: {
-              ...result,
-              disposition: 'refused',
-              body: { reasonCode: 'dependency_failed', startupFailure },
-            },
-            timestamp: now,
-          })
-        ).rejects.toThrow('startup failure is invalid');
-      }
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        result:
-          disposition === 'refused'
-            ? {
-                ...result,
-                note: 'ignored',
-                body: {
-                  ...result.body,
-                  note: 'ignored',
-                  startupFailure: {
-                    stage: 'workspace_materialization',
-                    reason: 'retained_baseline_unavailable',
-                    note: 'ignored',
-                  },
-                },
-              }
-            : result,
-        timestamp: now,
-      });
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        result,
-        timestamp: now,
-      });
-      const receipt = coreDb.sqlite
-        .prepare('SELECT result_json FROM harness_instance_records')
-        .get() as { result_json: string };
-      expect(JSON.parse(receipt.result_json)).toEqual(result);
-      await expect(
-        settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result: { ...result, body: { reasonCode: 'busy' }, disposition: 'refused' },
+        });
+        await seedSubmittedAttempt(coreDb);
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: {
+            aepRef: 'sandbox://aep/1',
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+            contextPackageId: 'context-package-1',
+            contextRef: 'sandbox://context/1',
+            deadline: '2099-01-01T00:00:00.000Z',
+            leaseId: testEntityId('attempt', 'lease-1'),
+            packageSnapshotId: 'package-snapshot-1',
+            threadId: testEntityId('th', 'thread-1'),
+            turnId: testEntityId('tu', 'turn-1'),
+            turnSequence: 0,
+            workspaceId: testEntityId('ws', 'workspace-1'),
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'turn.start',
           timestamp: now,
-        })
-      ).rejects.toThrow(/conflict|replay|result/i);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT next_sequence AS nextSequence, operation_state AS operationState FROM harness_instance_records'
-          )
-          .get()
-      ).toEqual({ nextSequence: 1, operationState: 'settled' });
-
-      // docs/specs/20261019-durable_execution_and_control_store.md:301-305 requires receipt retention and blocked dispatch.
-      // Enqueue still accepts settled state without clearing its receipt (nanohost-harness-records.ts:877-905).
-      expect(
+        });
+        const started = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+        });
+        await settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result: {
+            body: { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' },
+            disposition: 'succeeded',
+            harnessInstanceId: 'harness-1',
+            operationId: started!.operationId,
+            schemaVersion: 2,
+            sequence: 0,
+          },
+          timestamp: now,
+        });
+        await consumeFixtureWorkspaceResult(coreDb);
         await queueNanoHostHarnessOperation(coreDb, {
           body: {
             agentSessionId: testEntityId('as', 'agent-session-1'),
@@ -2124,19 +1811,333 @@ describe('private NanoHost Harness records', () => {
           harnessInstanceId: 'harness-1',
           operation: 'session.inspect',
           timestamp: now,
-        })
-      ).toBe(1);
-      const inspect = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-      });
-      expect(inspect).toBeNull();
-      expect(
-        coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
-      ).toEqual(receipt);
-    } finally {
-      coreDb.sqlite.close();
+        });
+        const inspect = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+        });
+        await settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result: {
+            body: {
+              childState: 'running',
+              cleanupState: 'pending',
+              nativeHandleDigest: null,
+              nativeHandleState: 'pending',
+              state,
+            },
+            disposition: 'succeeded',
+            harnessInstanceId: 'harness-1',
+            operationId: inspect!.operationId,
+            schemaVersion: 2,
+            sequence: 1,
+          },
+          timestamp: now,
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT agent_session_id AS agentSessionId, lifecycle_state AS lifecycleState,
+                      current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
+                      cleanup_state AS cleanupState
+               FROM agent_session_runtime_bindings
+               WHERE agent_session_runtime_binding_id = ?`
+            )
+            .get('agent-session-binding-1')
+        ).toEqual({
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          cleanupState: 'clean',
+          currentAttemptId: testEntityId('attempt', 'lease-1'),
+          currentTurnId: testEntityId('tu', 'turn-1'),
+          lifecycleState: state,
+        });
+        await expect(
+          openNanoHostAgentSessionBinding(coreDb, {
+            agentSessionCompatibilityKey: 'c'.repeat(64),
+            agentSessionId: testEntityId('as', 'agent-session-2'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-2',
+            effectiveSetupGeneration: 1,
+            harnessInstanceId: 'harness-1',
+            threadId: testEntityId('th', 'thread-1'),
+            timestamp: now,
+            workspaceId: testEntityId('ws', 'workspace-1'),
+          })
+        ).rejects.toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
+        expect(
+          readNanoHostThreadAgentSessionBinding(coreDb, {
+            threadId: testEntityId('th', 'thread-1'),
+            workspaceId: testEntityId('ws', 'workspace-1'),
+          })
+        ).toEqual({ agentSessionId: testEntityId('as', 'agent-session-1') });
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO agent_session_runtime_bindings (
+               agent_session_runtime_binding_id, harness_instance_id, agent_session_id,
+               workspace_id, thread_id, agent_session_compatibility_key,
+               effective_setup_generation, native_handle_state, native_handle_digest,
+               lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
+               created_at, updated_at, image_digest
+             ) VALUES (?, 'harness-1', ?, ?, ?, ?, 1, 'pending', NULL,
+                       'opening', NULL, NULL, 0, 'clean', ?, ?, ?)`
+          )
+          .run(
+            'agent-session-binding-2',
+            testEntityId('as', 'agent-session-2'),
+            testEntityId('ws', 'workspace-1'),
+            testEntityId('th', 'thread-1'),
+            'c'.repeat(64),
+            now,
+            now,
+            `sha256:${'f'.repeat(64)}`
+          );
+        expect(() =>
+          readNanoHostThreadAgentSessionBinding(coreDb, {
+            threadId: testEntityId('th', 'thread-1'),
+            workspaceId: testEntityId('ws', 'workspace-1'),
+          })
+        ).toThrow('NanoHost Harness already has a current AgentSession for this Thread.');
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(['succeeded', 'refused'] as const)(
+    'binds token hashes and settles exact %s results with closed diagnostics',
+    async (disposition) => {
+      const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-sequence-')));
+      try {
+        applyMigrations(coreDb);
+        seedRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: '0.153.4',
+          harnessBindingRef: 'harness-binding-1',
+          harnessCompatibilityKey: 'd'.repeat(64),
+          harnessInstanceId: 'harness-1',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: physicalEpoch,
+          sandboxBindingRef: 'sandbox-binding-1',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          sandboxRuntimeId: 'sandbox-runtime-1',
+          runtimeTargetId: 'nanohost-a1',
+          timestamp: now,
+        });
+        await openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'b'.repeat(64),
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness-1',
+          threadId: testEntityId('th', 'thread-1'),
+          timestamp: now,
+          workspaceId: testEntityId('ws', 'workspace-1'),
+        });
+        await seedSubmittedAttempt(coreDb);
+        const workerControlToken = Buffer.alloc(32, 1).toString('base64url');
+        const inferenceToken = Buffer.alloc(32, 2).toString('base64url');
+        const capabilityToken = Buffer.alloc(32, 3).toString('base64url');
+        const tokens = [workerControlToken, inferenceToken, capabilityToken];
+        const operationInput = {
+          body: {
+            aepRef: 'sandbox://aep/1',
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+            contextPackageId: 'context-package-1',
+            contextRef: 'sandbox://context/1',
+            deadline: '2099-01-01T00:00:00.000Z',
+            leaseId: testEntityId('attempt', 'lease-1'),
+            packageSnapshotId: 'package-snapshot-1',
+            threadId: testEntityId('th', 'thread-1'),
+            turnId: testEntityId('tu', 'turn-1'),
+            turnSequence: 0,
+            workspaceId: testEntityId('ws', 'workspace-1'),
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'turn.start',
+          timestamp: now,
+        } satisfies Parameters<typeof prepareNanoHostHarnessOperation>[1];
+        const prepared = prepareNanoHostHarnessOperation(coreDb, {
+          ...operationInput,
+          routeToken: () => tokens.shift()!,
+        });
+        await queueNanoHostHarnessOperation(coreDb, { ...operationInput, prepared });
+
+        const command = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        });
+        expect(command).toEqual(prepared.command);
+        expect({ ...prepared.command, body: prepared.wireBody }).toMatchObject({
+          body: {
+            capabilityToken,
+            inferenceToken,
+            workerControlToken,
+          },
+          operation: 'turn.start',
+          schemaVersion: 2,
+          sequence: 0,
+        });
+        expect(command?.operationId).toMatch(/^[0-9a-f]{64}$/);
+        const attempt = observeExecutionAttempts(coreDb).find(
+          (row) => row.turn_id === testEntityId('tu', 'turn-1')
+        );
+        expect(attempt).toMatchObject({
+          worker_control_token_hash: createHash('sha256')
+            .update(Buffer.from(workerControlToken, 'base64url'))
+            .digest('hex'),
+          worker_inference_token_hash: createHash('sha256')
+            .update(Buffer.from(inferenceToken, 'base64url'))
+            .digest('hex'),
+          worker_capability_token_hash: createHash('sha256')
+            .update(Buffer.from(capabilityToken, 'base64url'))
+            .digest('hex'),
+        });
+        expect(
+          new Set([
+            attempt?.worker_control_token_hash,
+            attempt?.worker_inference_token_hash,
+            attempt?.worker_capability_token_hash,
+          ]).size
+        ).toBe(3);
+        for (const token of [workerControlToken, inferenceToken, capabilityToken])
+          expect(JSON.stringify(attempt)).not.toContain(token);
+        const durableHarness = JSON.stringify(
+          coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()
+        );
+        expect(durableHarness).not.toContain(workerControlToken);
+        expect(durableHarness).not.toContain(inferenceToken);
+        expect(durableHarness).not.toContain(capabilityToken);
+        expect(
+          await dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+          })
+        ).toBeNull();
+
+        const result = {
+          body:
+            disposition === 'succeeded'
+              ? { nativeHandleDigest: null, nativeHandleState: 'pending', state: 'started' }
+              : {
+                  reasonCode: 'dependency_failed',
+                  startupFailure: {
+                    stage: 'workspace_materialization',
+                    reason: 'retained_baseline_unavailable',
+                  },
+                },
+          disposition,
+          harnessInstanceId: 'harness-1',
+          operationId: command!.operationId,
+          schemaVersion: 2 as const,
+          sequence: 0,
+        };
+        const explanation = {
+          code: 'git_fetch_http_refused',
+          stage: 'workspace_materialization',
+          operation: 'git.fetch',
+          dependency: 'git_remote',
+          producer: 'worker-shim',
+          observedAt: '2026-09-22T00:00:00.000Z',
+          basis: 'direct_observation',
+          subprocess: 'exit',
+          httpStatus: 403,
+          enforcement: 'unavailable',
+          evidence: { availability: 'partial', outputTruncated: false },
+        } as const;
+        for (const startupFailure of [
+          {
+            stage: 'workspace_materialization',
+            reason: 'git_fetch_http_refused',
+            explanation: {
+              ...explanation,
+              observedAt: `2026-09-22T00:00:00.${'0'.repeat(20000)}Z`,
+            },
+          },
+          { stage: 'workspace_materialization', reason: 'git_fetch_tls_failed', explanation },
+          { stage: 'workspace_materialization', reason: 'secret-canary' },
+          { stage: 'unknown_stage', reason: 'failed' },
+        ]) {
+          await expect(
+            settleNanoHostHarnessOperation(coreDb, {
+              sandboxIntegrationBindingRef: 'integration-binding-1',
+              result: {
+                ...result,
+                disposition: 'refused',
+                body: { reasonCode: 'dependency_failed', startupFailure },
+              },
+              timestamp: now,
+            })
+          ).rejects.toThrow('startup failure is invalid');
+        }
+        await settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result:
+            disposition === 'refused'
+              ? {
+                  ...result,
+                  note: 'ignored',
+                  body: {
+                    ...result.body,
+                    note: 'ignored',
+                    startupFailure: {
+                      stage: 'workspace_materialization',
+                      reason: 'retained_baseline_unavailable',
+                      note: 'ignored',
+                    },
+                  },
+                }
+              : result,
+          timestamp: now,
+        });
+        await settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result,
+          timestamp: now,
+        });
+        const receipt = coreDb.sqlite
+          .prepare('SELECT result_json FROM harness_instance_records')
+          .get() as { result_json: string };
+        expect(JSON.parse(receipt.result_json)).toEqual(result);
+        await expect(
+          settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: { ...result, body: { reasonCode: 'busy' }, disposition: 'refused' },
+            timestamp: now,
+          })
+        ).rejects.toThrow(/conflict|replay|result/i);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT next_sequence AS nextSequence, operation_state AS operationState FROM harness_instance_records'
+            )
+            .get()
+        ).toEqual({ nextSequence: 1, operationState: 'settled' });
+
+        // docs/specs/20261019-durable_execution_and_control_store.md:301-305 requires receipt retention and blocked dispatch.
+        // Enqueue still accepts settled state without clearing its receipt (nanohost-harness-records.ts:877-905).
+        expect(
+          await queueNanoHostHarnessOperation(coreDb, {
+            body: {
+              agentSessionId: testEntityId('as', 'agent-session-1'),
+              agentSessionRuntimeBindingId: 'agent-session-binding-1',
+            },
+            harnessInstanceId: 'harness-1',
+            operation: 'session.inspect',
+            timestamp: now,
+          })
+        ).toBe(1);
+        const inspect = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+        });
+        expect(inspect).toBeNull();
+        expect(
+          coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
+        ).toEqual(receipt);
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
 
   it('removes only the closed AgentSession binding and decrements open_session_count', async () => {
     let coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-session-close-')));
@@ -2304,210 +2305,211 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it.each([
-    1, 2,
-  ])('releases only the occupancy owned by closed binding %i', async (closedSession) => {
-    const coreDb = await openActiveTurnDb('openkit-harness-close-occupancy-');
-    try {
-      recordFinalStatus(coreDb, 'failed', 'error');
-      await openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: testEntityId('as', 'agent-session-2'),
-        agentSessionRuntimeBindingId: 'agent-session-binding-2',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-1',
-        threadId: testEntityId('th', 'thread-2'),
-        timestamp: now,
-        workspaceId: testEntityId('ws', 'workspace-1'),
-      });
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          agentSessionId: testEntityId('as', `agent-session-${closedSession}`),
-          agentSessionRuntimeBindingId: `agent-session-binding-${closedSession}`,
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.close',
-        timestamp: now,
-      });
-      const command = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-      });
-      const result = {
-        body: { childState: 'absent', privateState: 'absent', state: 'closed' },
-        disposition: 'succeeded',
-        harnessInstanceId: 'harness-1',
-        operationId: command!.operationId,
-        schemaVersion: 2,
-        sequence: command!.sequence,
-      } as const;
-      expect(
-        await settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result: { ...result, note: 'ignored', body: { ...result.body, note: 'ignored' } },
+  it.each([1, 2])(
+    'releases only the occupancy owned by closed binding %i',
+    async (closedSession) => {
+      const coreDb = await openActiveTurnDb('openkit-harness-close-occupancy-');
+      try {
+        recordFinalStatus(coreDb, 'failed', 'error');
+        await openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: testEntityId('as', 'agent-session-2'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-2',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness-1',
+          threadId: testEntityId('th', 'thread-2'),
           timestamp: now,
-        })
-      ).toBe('settled');
-      const stored = coreDb.sqlite
-        .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
-        .get() as { result_json: string; result_fingerprint: string };
-      const retained = JSON.parse(stored.result_json) as Record<string, unknown>;
-      const { consumerContext, consumption, ...retainedResult } = retained;
-      // DX Physical Receipt Consumption retains the removed binding's namespace and Core idle proof.
-      expect(retainedResult).toEqual(result);
-      expect(consumerContext).toEqual({
-        workspaceId: testEntityId('ws', 'workspace-1'),
-        threadId: testEntityId('th', `thread-${closedSession}`),
-      });
-      // Session 1 still owns Turn occupancy; session 2 is idle and consumes in the Core transaction.
-      expect(consumption !== undefined).toBe(closedSession === 2);
-      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(closedSession === 2);
-      expect(stored.result_fingerprint).toBe(
-        createHash('sha256').update(stored.result_json).digest('hex')
-      );
-      const retainedBytes = JSON.stringify({
-        ...retained,
-        note: 'retained extension',
-        body: { ...result.body, note: 'retained extension' },
-      });
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-        .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
-      expect(
-        await settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result: { ...result, note: 'ignored', body: { ...result.body, note: 'ignored' } },
-          timestamp: now,
-        })
-      ).toBe('replayed');
-      expect(
-        (
-          coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get() as {
-            result_json: string;
-          }
-        ).result_json
-      ).toBe(retainedBytes);
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
-        .run('0'.repeat(64));
-      await expect(
-        settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result,
-          timestamp: now,
-        })
-      ).rejects.toThrow(/fingerprint/);
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
-        .run(createHash('sha256').update(retainedBytes).digest('hex'));
-      await expect(
-        settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result: { ...result, body: { ...result.body, childState: 'running' } },
-          timestamp: now,
-        })
-      ).rejects.toThrow(/replay|conflict/);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount,
-                    operation_state AS operationState FROM harness_instance_records`
-          )
-          .get()
-      ).toEqual({
-        activeTurnCount: closedSession === 1 ? 0 : 1,
-        openSessionCount: 1,
-        operationState: 'settled',
-      });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT agent_session_id AS agentSessionId, current_turn_id AS currentTurnId,
-                    current_attempt_id AS currentAttemptId FROM agent_session_runtime_bindings`
-          )
-          .all()
-      ).toEqual([
-        closedSession === 1
-          ? {
-              agentSessionId: testEntityId('as', 'agent-session-2'),
-              currentTurnId: null,
-              currentAttemptId: null,
-            }
-          : {
-              agentSessionId: testEntityId('as', 'agent-session-1'),
-              currentTurnId: testEntityId('tu', 'turn-1'),
-              currentAttemptId: testEntityId('attempt', 'lease-1'),
-            },
-      ]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'refused',
-    'unknown',
-  ] as const)('preserves active binding occupancy after %s session.close', async (disposition) => {
-    const coreDb = await openActiveTurnDb('openkit-harness-close-unproved-');
-    try {
-      recordFinalStatus(coreDb, 'failed', 'error');
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          agentSessionId: testEntityId('as', 'agent-session-1'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.close',
-        timestamp: now,
-      });
-      const command = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-      });
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        result: {
+          workspaceId: testEntityId('ws', 'workspace-1'),
+        });
+        await queueNanoHostHarnessOperation(coreDb, {
           body: {
-            reasonCode: disposition === 'unknown' ? 'outcome_unknown' : 'cleanup_required',
+            agentSessionId: testEntityId('as', `agent-session-${closedSession}`),
+            agentSessionRuntimeBindingId: `agent-session-binding-${closedSession}`,
           },
-          disposition,
+          harnessInstanceId: 'harness-1',
+          operation: 'session.close',
+          timestamp: now,
+        });
+        const command = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+        });
+        const result = {
+          body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+          disposition: 'succeeded',
           harnessInstanceId: 'harness-1',
           operationId: command!.operationId,
           schemaVersion: 2,
           sequence: command!.sequence,
-        },
-        timestamp: now,
-      });
-      expect(
+        } as const;
+        expect(
+          await settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: { ...result, note: 'ignored', body: { ...result.body, note: 'ignored' } },
+            timestamp: now,
+          })
+        ).toBe('settled');
+        const stored = coreDb.sqlite
+          .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
+          .get() as { result_json: string; result_fingerprint: string };
+        const retained = JSON.parse(stored.result_json) as Record<string, unknown>;
+        const { consumerContext, consumption, ...retainedResult } = retained;
+        // DX Physical Receipt Consumption retains the removed binding's namespace and Core idle proof.
+        expect(retainedResult).toEqual(result);
+        expect(consumerContext).toEqual({
+          workspaceId: testEntityId('ws', 'workspace-1'),
+          threadId: testEntityId('th', `thread-${closedSession}`),
+        });
+        // Session 1 still owns Turn occupancy; session 2 is idle and consumes in the Core transaction.
+        expect(consumption !== undefined).toBe(closedSession === 2);
+        expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(closedSession === 2);
+        expect(stored.result_fingerprint).toBe(
+          createHash('sha256').update(stored.result_json).digest('hex')
+        );
+        const retainedBytes = JSON.stringify({
+          ...retained,
+          note: 'retained extension',
+          body: { ...result.body, note: 'retained extension' },
+        });
         coreDb.sqlite
-          .prepare(
-            `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount
-               FROM harness_instance_records`
-          )
-          .get()
-      ).toEqual({ activeTurnCount: 1, openSessionCount: 1 });
-      // cleanup_required fences admission without releasing the Turn. Unknown already drains.
-      expect(
+          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+          .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
+        expect(
+          await settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: { ...result, note: 'ignored', body: { ...result.body, note: 'ignored' } },
+            timestamp: now,
+          })
+        ).toBe('replayed');
+        expect(
+          (
+            coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get() as {
+              result_json: string;
+            }
+          ).result_json
+        ).toBe(retainedBytes);
         coreDb.sqlite
-          .prepare(
-            `SELECT drain_state AS drainState, lifecycle_state AS lifecycleState
-               FROM harness_instance_records`
-          )
-          .get()
-      ).toEqual({ drainState: 'draining', lifecycleState: 'failed' });
-      expect(
+          .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
+          .run('0'.repeat(64));
+        await expect(
+          settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result,
+            timestamp: now,
+          })
+        ).rejects.toThrow(/fingerprint/);
         coreDb.sqlite
-          .prepare(
-            `SELECT current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
-               FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
-          )
-          .get('agent-session-binding-1')
-      ).toEqual({
-        currentTurnId: testEntityId('tu', 'turn-1'),
-        currentAttemptId: testEntityId('attempt', 'lease-1'),
-      });
-    } finally {
-      coreDb.sqlite.close();
+          .prepare('UPDATE harness_instance_records SET result_fingerprint = ?')
+          .run(createHash('sha256').update(retainedBytes).digest('hex'));
+        await expect(
+          settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: { ...result, body: { ...result.body, childState: 'running' } },
+            timestamp: now,
+          })
+        ).rejects.toThrow(/replay|conflict/);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount,
+                    operation_state AS operationState FROM harness_instance_records`
+            )
+            .get()
+        ).toEqual({
+          activeTurnCount: closedSession === 1 ? 0 : 1,
+          openSessionCount: 1,
+          operationState: 'settled',
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT agent_session_id AS agentSessionId, current_turn_id AS currentTurnId,
+                    current_attempt_id AS currentAttemptId FROM agent_session_runtime_bindings`
+            )
+            .all()
+        ).toEqual([
+          closedSession === 1
+            ? {
+                agentSessionId: testEntityId('as', 'agent-session-2'),
+                currentTurnId: null,
+                currentAttemptId: null,
+              }
+            : {
+                agentSessionId: testEntityId('as', 'agent-session-1'),
+                currentTurnId: testEntityId('tu', 'turn-1'),
+                currentAttemptId: testEntityId('attempt', 'lease-1'),
+              },
+        ]);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(['refused', 'unknown'] as const)(
+    'preserves active binding occupancy after %s session.close',
+    async (disposition) => {
+      const coreDb = await openActiveTurnDb('openkit-harness-close-unproved-');
+      try {
+        recordFinalStatus(coreDb, 'failed', 'error');
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.close',
+          timestamp: now,
+        });
+        const command = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+        });
+        await settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result: {
+            body: {
+              reasonCode: disposition === 'unknown' ? 'outcome_unknown' : 'cleanup_required',
+            },
+            disposition,
+            harnessInstanceId: 'harness-1',
+            operationId: command!.operationId,
+            schemaVersion: 2,
+            sequence: command!.sequence,
+          },
+          timestamp: now,
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT active_turn_count AS activeTurnCount, open_session_count AS openSessionCount
+               FROM harness_instance_records`
+            )
+            .get()
+        ).toEqual({ activeTurnCount: 1, openSessionCount: 1 });
+        // cleanup_required fences admission without releasing the Turn. Unknown already drains.
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT drain_state AS drainState, lifecycle_state AS lifecycleState
+               FROM harness_instance_records`
+            )
+            .get()
+        ).toEqual({ drainState: 'draining', lifecycleState: 'failed' });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId
+               FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?`
+            )
+            .get('agent-session-binding-1')
+        ).toEqual({
+          currentTurnId: testEntityId('tu', 'turn-1'),
+          currentAttemptId: testEntityId('attempt', 'lease-1'),
+        });
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
 
   it.each([
     {
@@ -2644,193 +2646,192 @@ describe('private NanoHost Harness records', () => {
     { state: 'open', queued: true, retainedCollision: true },
     { state: 'closed', queued: true, retainedCollision: false },
     { state: 'open', queued: true, retainedCollision: false },
-  ])('keeps $state inspection core on replay (queued=$queued, retained collision=$retainedCollision)', async ({
-    state,
-    queued,
-    retainedCollision,
-  }) => {
-    const coreDb = await openOpeningBindingDb('openkit-harness-inspection-replay-');
-    try {
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          agentSessionId: testEntityId('as', 'agent-session-1'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.inspect',
-        timestamp: now,
-      });
-      const command = (await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        now: () => now,
-      }))!;
-      const body = {
-        state,
-        nativeHandleState: state === 'closed' ? 'absent' : 'pending',
-        nativeHandleDigest: null,
-        childState: 'absent',
-        cleanupState: 'clean',
-      };
-      const collision = state === 'closed' ? { privateState: 'absent' } : { maxActiveTurns: 1 };
-      const result = {
-        body,
-        disposition: 'succeeded' as const,
-        harnessInstanceId: 'harness-1',
-        operationId: command.operationId,
-        schemaVersion: 2 as const,
-        sequence: command.sequence,
-      };
-      const settle = async (replayBody: Record<string, unknown>) =>
-        await settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result: { ...result, body: replayBody },
+  ])(
+    'keeps $state inspection core on replay (queued=$queued, retained collision=$retainedCollision)',
+    async ({ state, queued, retainedCollision }) => {
+      const coreDb = await openOpeningBindingDb('openkit-harness-inspection-replay-');
+      try {
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.inspect',
           timestamp: now,
         });
-      expect(await settle(body)).toBe('settled');
-      const retainedBytes = JSON.stringify({
-        ...result,
-        body: {
-          ...body,
-          ...(retainedCollision ? collision : {}),
-          note: 'retained inert addition',
-        },
-      });
-      coreDb.sqlite
-        .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-        .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
-      if (queued)
+        const command = (await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        }))!;
+        const body = {
+          state,
+          nativeHandleState: state === 'closed' ? 'absent' : 'pending',
+          nativeHandleDigest: null,
+          childState: 'absent',
+          cleanupState: 'clean',
+        };
+        const collision = state === 'closed' ? { privateState: 'absent' } : { maxActiveTurns: 1 };
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: 'harness-1',
+          operationId: command.operationId,
+          schemaVersion: 2 as const,
+          sequence: command.sequence,
+        };
+        const settle = async (replayBody: Record<string, unknown>) =>
+          await settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: { ...result, body: replayBody },
+            timestamp: now,
+          });
+        expect(await settle(body)).toBe('settled');
+        const retainedBytes = JSON.stringify({
+          ...result,
+          body: {
+            ...body,
+            ...(retainedCollision ? collision : {}),
+            note: 'retained inert addition',
+          },
+        });
+        coreDb.sqlite
+          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+          .run(retainedBytes, createHash('sha256').update(retainedBytes).digest('hex'));
+        if (queued)
+          await queueNanoHostHarnessOperation(coreDb, {
+            body: {},
+            harnessInstanceId: 'harness-1',
+            operation: 'harness.drain',
+            timestamp: now,
+          });
+        // Buffer.equals compares every SQLite byte without deep equality enumerating byte indexes.
+        const before = coreDb.sqlite.serialize();
+        const extended = { ...body, ...collision, note: 'different inert addition' };
+        expect(await settle(extended)).toBe('replayed');
+        if (queued && retainedCollision) {
+          // The close/open interpretation still requires the colliding core on incoming replay.
+          await expect(settle(body)).rejects.toThrow(/result.*match|conflict/i);
+        } else {
+          // Even a collision in incoming metadata cannot affect the trusted predecessor reader.
+          expect(await settle(body)).toBe('replayed');
+        }
+        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        for (const cleanupState of ['unknown', 'future']) {
+          await expect(settle({ ...extended, cleanupState })).rejects.toThrow();
+          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        }
+        for (const missing of [
+          'cleanupState',
+          'childState',
+          'nativeHandleState',
+          'nativeHandleDigest',
+        ]) {
+          const incomplete: Record<string, unknown> = { ...extended };
+          delete incomplete[missing];
+          await expect(settle(incomplete)).rejects.toThrow();
+          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        }
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['plain', 'workspace'] as const)(
+    'acknowledges a lost %s refusal receipt with a queued successor and exact retained consumption',
+    async (kind) => {
+      const coreDb = await openOpeningBindingDb('openkit-harness-refusal-replay-');
+      try {
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: sessionOpenBody(),
+          harnessInstanceId: 'harness-1',
+          operation: 'session.open',
+          timestamp: now,
+        });
+        const command = (await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        }))!;
+        const body: Record<string, unknown> =
+          kind === 'plain'
+            ? { reasonCode: 'busy' }
+            : {
+                reasonCode: 'dependency_failed',
+                startupFailure: { stage: 'workspace_materialization', reason: 'git_fetch_failed' },
+              };
+        const result = {
+          body,
+          disposition: 'refused' as const,
+          harnessInstanceId: 'harness-1',
+          operationId: command.operationId,
+          schemaVersion: 2 as const,
+          sequence: command.sequence,
+        };
+        const settle = async (replayBody: Record<string, unknown>) =>
+          await settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: { ...result, body: replayBody },
+            timestamp: now,
+          });
+        expect(await settle(body)).toBe('settled');
+        const consumption = await consumeFixtureWorkspaceResult(coreDb);
+        expect(consumption).toMatchObject({
+          operationId: command.operationId,
+          sequence: command.sequence,
+          consumerReceipt: expect.any(String),
+        });
         await queueNanoHostHarnessOperation(coreDb, {
           body: {},
           harnessInstanceId: 'harness-1',
           operation: 'harness.drain',
           timestamp: now,
         });
-      // Buffer.equals compares every SQLite byte without deep equality enumerating byte indexes.
-      const before = coreDb.sqlite.serialize();
-      const extended = { ...body, ...collision, note: 'different inert addition' };
-      expect(await settle(extended)).toBe('replayed');
-      if (queued && retainedCollision) {
-        // The close/open interpretation still requires the colliding core on incoming replay.
-        await expect(settle(body)).rejects.toThrow(/result.*match|conflict/i);
-      } else {
-        // Even a collision in incoming metadata cannot affect the trusted predecessor reader.
+        const before = coreDb.sqlite.serialize();
         expect(await settle(body)).toBe('replayed');
-      }
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
-      for (const cleanupState of ['unknown', 'future']) {
-        await expect(settle({ ...extended, cleanupState })).rejects.toThrow();
-        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
-      }
-      for (const missing of [
-        'cleanupState',
-        'childState',
-        'nativeHandleState',
-        'nativeHandleDigest',
-      ]) {
-        const incomplete: Record<string, unknown> = { ...extended };
-        delete incomplete[missing];
-        await expect(settle(incomplete)).rejects.toThrow();
-        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'plain',
-    'workspace',
-  ] as const)('acknowledges a lost %s refusal receipt with a queued successor and exact retained consumption', async (kind) => {
-    const coreDb = await openOpeningBindingDb('openkit-harness-refusal-replay-');
-    try {
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: sessionOpenBody(),
-        harnessInstanceId: 'harness-1',
-        operation: 'session.open',
-        timestamp: now,
-      });
-      const command = (await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        now: () => now,
-      }))!;
-      const body: Record<string, unknown> =
-        kind === 'plain'
-          ? { reasonCode: 'busy' }
-          : {
-              reasonCode: 'dependency_failed',
-              startupFailure: { stage: 'workspace_materialization', reason: 'git_fetch_failed' },
-            };
-      const result = {
-        body,
-        disposition: 'refused' as const,
-        harnessInstanceId: 'harness-1',
-        operationId: command.operationId,
-        schemaVersion: 2 as const,
-        sequence: command.sequence,
-      };
-      const settle = async (replayBody: Record<string, unknown>) =>
-        await settleNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: 'integration-binding-1',
-          result: { ...result, body: replayBody },
-          timestamp: now,
-        });
-      expect(await settle(body)).toBe('settled');
-      const consumption = await consumeFixtureWorkspaceResult(coreDb);
-      expect(consumption).toMatchObject({
-        operationId: command.operationId,
-        sequence: command.sequence,
-        consumerReceipt: expect.any(String),
-      });
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {},
-        harnessInstanceId: 'harness-1',
-        operation: 'harness.drain',
-        timestamp: now,
-      });
-      const before = coreDb.sqlite.serialize();
-      expect(await settle(body)).toBe('replayed');
-      expect(
-        await settle({
-          ...body,
-          note: 'ignored',
-          ...(kind === 'workspace'
-            ? {
-                startupFailure: {
-                  ...(body.startupFailure as Record<string, unknown>),
-                  note: 'ignored',
-                },
-              }
-            : {}),
-        })
-      ).toBe('replayed');
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
-      expect(readFixtureWorkspaceConsumption(coreDb)).toEqual(consumption);
-      const changedBodies = [
-        { ...body, reasonCode: 'conflict' },
-        { ...body, reasonCode: 'future' },
-        ...(kind === 'workspace'
-          ? [
-              {
-                ...body,
-                startupFailure: {
-                  stage: 'workspace_materialization',
-                  reason: 'git_checkout_failed',
-                },
-              },
-              { ...body, startupFailure: { stage: 'native_spawn', reason: 'git_fetch_failed' } },
-              { reasonCode: 'dependency_failed' },
-            ]
-          : []),
-      ];
-      for (const changed of changedBodies) {
-        await expect(settle(changed)).rejects.toThrow();
+        expect(
+          await settle({
+            ...body,
+            note: 'ignored',
+            ...(kind === 'workspace'
+              ? {
+                  startupFailure: {
+                    ...(body.startupFailure as Record<string, unknown>),
+                    note: 'ignored',
+                  },
+                }
+              : {}),
+          })
+        ).toBe('replayed');
         expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
         expect(readFixtureWorkspaceConsumption(coreDb)).toEqual(consumption);
+        const changedBodies = [
+          { ...body, reasonCode: 'conflict' },
+          { ...body, reasonCode: 'future' },
+          ...(kind === 'workspace'
+            ? [
+                {
+                  ...body,
+                  startupFailure: {
+                    stage: 'workspace_materialization',
+                    reason: 'git_checkout_failed',
+                  },
+                },
+                { ...body, startupFailure: { stage: 'native_spawn', reason: 'git_fetch_failed' } },
+                { reasonCode: 'dependency_failed' },
+              ]
+            : []),
+        ];
+        for (const changed of changedBodies) {
+          await expect(settle(changed)).rejects.toThrow();
+          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+          expect(readFixtureWorkspaceConsumption(coreDb)).toEqual(consumption);
+        }
+      } finally {
+        coreDb.sqlite.close();
       }
-    } finally {
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('refuses an unmatched queued predecessor without rewriting its fingerprint-valid receipt', async () => {
     const coreDb = await openOpeningBindingDb('openkit-harness-unmatched-replay-');
@@ -2894,143 +2895,145 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('checks queued session.close replay without selector priority (inspection collision=%s)', async (inspectionCollision) => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-close-replay-queued-')));
-    try {
-      applyMigrations(coreDb);
-      seedRuntimeTarget(coreDb);
-      await createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: '0.153.4',
-        harnessBindingRef: 'harness-binding-1',
-        harnessCompatibilityKey: 'd'.repeat(64),
-        harnessInstanceId: 'harness-1',
-        imageDigest: `sha256:${'f'.repeat(64)}`,
-        originPhysicalEpoch: physicalEpoch,
-        sandboxBindingRef: 'sandbox-binding-1',
-        sandboxCompatibilityKey: 'a'.repeat(64),
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        sandboxRuntimeId: 'sandbox-runtime-1',
-        runtimeTargetId: 'nanohost-a1',
-        timestamp: now,
-      });
-      await openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'b'.repeat(64),
-        agentSessionId: testEntityId('as', 'agent-session-1'),
-        agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-1',
-        threadId: testEntityId('th', 'thread-1'),
-        timestamp: now,
-        workspaceId: testEntityId('ws', 'workspace-1'),
-      });
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
+  it.each([false, true])(
+    'checks queued session.close replay without selector priority (inspection collision=%s)',
+    async (inspectionCollision) => {
+      const coreDb = openCoreDb(
+        mkdtempSync(join(tmpdir(), 'openkit-harness-close-replay-queued-'))
+      );
+      try {
+        applyMigrations(coreDb);
+        seedRuntimeTarget(coreDb);
+        await createNanoHostHarnessRuntime(coreDb, {
+          adapterId: 'codex',
+          adapterVersion: '0.153.4',
+          harnessBindingRef: 'harness-binding-1',
+          harnessCompatibilityKey: 'd'.repeat(64),
+          harnessInstanceId: 'harness-1',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          originPhysicalEpoch: physicalEpoch,
+          sandboxBindingRef: 'sandbox-binding-1',
+          sandboxCompatibilityKey: 'a'.repeat(64),
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          sandboxRuntimeId: 'sandbox-runtime-1',
+          runtimeTargetId: 'nanohost-a1',
+          timestamp: now,
+        });
+        await openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'b'.repeat(64),
           agentSessionId: testEntityId('as', 'agent-session-1'),
           agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.close',
-        timestamp: now,
-      });
-      const command = await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-      });
-      const closeResult = {
-        body: { childState: 'absent', privateState: 'absent', state: 'closed' },
-        disposition: 'succeeded' as const,
-        harnessInstanceId: 'harness-1',
-        operationId: command!.operationId,
-        schemaVersion: 2 as const,
-        sequence: 0,
-      };
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        result: closeResult,
-        timestamp: now,
-      });
-      await openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: 'c'.repeat(64),
-        agentSessionId: testEntityId('as', 'agent-session-2'),
-        agentSessionRuntimeBindingId: 'agent-session-binding-2',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-1',
-        threadId: testEntityId('th', 'thread-2'),
-        timestamp: now,
-        workspaceId: testEntityId('ws', 'workspace-1'),
-      });
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          adapterId: 'codex',
-          agentSessionCompatibilityKey: 'c'.repeat(64),
-          agentSessionId: testEntityId('as', 'agent-session-2'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-2',
           effectiveSetupGeneration: 1,
-          resume: null,
-          threadId: testEntityId('th', 'thread-2'),
+          harnessInstanceId: 'harness-1',
+          threadId: testEntityId('th', 'thread-1'),
+          timestamp: now,
           workspaceId: testEntityId('ws', 'workspace-1'),
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.open',
-        timestamp: now,
-      });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT operation AS operation, operation_id AS operationId,
-                    operation_state AS operationState FROM harness_instance_records
-             WHERE harness_instance_id = ?`
-          )
-          .get('harness-1')
-      ).toEqual({
-        operation: 'session.open',
-        operationId: expect.stringMatching(/^[0-9a-f]{64}$/),
-        operationState: 'queued',
-      });
-      if (inspectionCollision) {
-        const bytes = JSON.stringify({
-          ...closeResult,
-          body: {
-            ...closeResult.body,
-            nativeHandleState: 'absent',
-            nativeHandleDigest: null,
-            cleanupState: 'clean',
-          },
         });
-        coreDb.sqlite
-          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
-          .run(bytes, createHash('sha256').update(bytes).digest('hex'));
-      }
-      const before = coreDb.sqlite.serialize();
-      const replay = async () =>
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.close',
+          timestamp: now,
+        });
+        const command = await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+        });
+        const closeResult = {
+          body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+          disposition: 'succeeded' as const,
+          harnessInstanceId: 'harness-1',
+          operationId: command!.operationId,
+          schemaVersion: 2 as const,
+          sequence: 0,
+        };
         await settleNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
           result: closeResult,
           timestamp: now,
         });
-      if (inspectionCollision) await expect(replay()).rejects.toThrow(/result.*match|conflict/i);
-      else expect(await replay()).toBe('replayed');
-      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
-      expect(
-        coreDb.sqlite
-          .prepare(
-            `SELECT operation AS operation, operation_id AS operationId,
+        await openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: testEntityId('as', 'agent-session-2'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-2',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness-1',
+          threadId: testEntityId('th', 'thread-2'),
+          timestamp: now,
+          workspaceId: testEntityId('ws', 'workspace-1'),
+        });
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: {
+            adapterId: 'codex',
+            agentSessionCompatibilityKey: 'c'.repeat(64),
+            agentSessionId: testEntityId('as', 'agent-session-2'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-2',
+            effectiveSetupGeneration: 1,
+            resume: null,
+            threadId: testEntityId('th', 'thread-2'),
+            workspaceId: testEntityId('ws', 'workspace-1'),
+          },
+          harnessInstanceId: 'harness-1',
+          operation: 'session.open',
+          timestamp: now,
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT operation AS operation, operation_id AS operationId,
                     operation_state AS operationState FROM harness_instance_records
              WHERE harness_instance_id = ?`
-          )
-          .get('harness-1')
-      ).toEqual({
-        operation: 'session.open',
-        operationId: expect.stringMatching(/^[0-9a-f]{64}$/),
-        operationState: 'queued',
-      });
-    } finally {
-      coreDb.sqlite.close();
+            )
+            .get('harness-1')
+        ).toEqual({
+          operation: 'session.open',
+          operationId: expect.stringMatching(/^[0-9a-f]{64}$/),
+          operationState: 'queued',
+        });
+        if (inspectionCollision) {
+          const bytes = JSON.stringify({
+            ...closeResult,
+            body: {
+              ...closeResult.body,
+              nativeHandleState: 'absent',
+              nativeHandleDigest: null,
+              cleanupState: 'clean',
+            },
+          });
+          coreDb.sqlite
+            .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+            .run(bytes, createHash('sha256').update(bytes).digest('hex'));
+        }
+        const before = coreDb.sqlite.serialize();
+        const replay = async () =>
+          await settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            result: closeResult,
+            timestamp: now,
+          });
+        if (inspectionCollision) await expect(replay()).rejects.toThrow(/result.*match|conflict/i);
+        else expect(await replay()).toBe('replayed');
+        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              `SELECT operation AS operation, operation_id AS operationId,
+                    operation_state AS operationState FROM harness_instance_records
+             WHERE harness_instance_id = ?`
+            )
+            .get('harness-1')
+        ).toEqual({
+          operation: 'session.open',
+          operationId: expect.stringMatching(/^[0-9a-f]{64}$/),
+          operationState: 'queued',
+        });
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('records unknown session.close without inferring binding removal', async () => {
     const coreDb = openCoreDb(

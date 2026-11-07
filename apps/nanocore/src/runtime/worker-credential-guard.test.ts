@@ -43,22 +43,23 @@ describe('worker credential byte guard', () => {
     ).toEqual([]);
   });
 
-  it.each([
-    17, 34, 51,
-  ])('checks decoded route hash %s in a longer alphabet run without accepting alternative spellings', (byte) => {
-    const raw = Buffer.alloc(32, byte);
-    const token = raw.toString('base64url');
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-    const alternate = `${token.slice(0, -1)}${alphabet[alphabet.indexOf(token.at(-1) as string) + 1]}`;
-    expect(Buffer.from(alternate, 'base64url')).toEqual(raw);
-    expect(findWorkerCredentialMatches(Buffer.from(`prefix_${token}_suffix`), evidence())).toEqual([
-      { start: 7, end: 50 },
-    ]);
-    expect(findWorkerCredentialMatches(Buffer.from(alternate), evidence())).toEqual([]);
-    expect(createHash('sha256').update(token).digest('hex')).not.toBe(
-      createHash('sha256').update(raw).digest('hex')
-    );
-  });
+  it.each([17, 34, 51])(
+    'checks decoded route hash %s in a longer alphabet run without accepting alternative spellings',
+    (byte) => {
+      const raw = Buffer.alloc(32, byte);
+      const token = raw.toString('base64url');
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+      const alternate = `${token.slice(0, -1)}${alphabet[alphabet.indexOf(token.at(-1) as string) + 1]}`;
+      expect(Buffer.from(alternate, 'base64url')).toEqual(raw);
+      expect(
+        findWorkerCredentialMatches(Buffer.from(`prefix_${token}_suffix`), evidence())
+      ).toEqual([{ start: 7, end: 50 }]);
+      expect(findWorkerCredentialMatches(Buffer.from(alternate), evidence())).toEqual([]);
+      expect(createHash('sha256').update(token).digest('hex')).not.toBe(
+        createHash('sha256').update(raw).digest('hex')
+      );
+    }
+  );
 
   it.each(['a', 'b'])('checks loopback text digest %s in a longer alphabet run', (character) => {
     expect(
@@ -84,9 +85,12 @@ describe('worker credential byte guard', () => {
     { ...evidence(), loopbackDigests: [] },
     { ...evidence(), loopbackDigests: ['a'.repeat(64), 'a'.repeat(64)] },
     { ...evidence(), routeTokenHashes: { ...evidence().routeTokenHashes, inference: '' } },
-  ])('refuses unavailable or contradictory evidence even for empty candidate bytes (%#)', (proof) => {
-    expect(() =>
-      findWorkerCredentialMatches(Buffer.alloc(0), proof as WorkerCredentialCheckValues)
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-  });
+  ])(
+    'refuses unavailable or contradictory evidence even for empty candidate bytes (%#)',
+    (proof) => {
+      expect(() =>
+        findWorkerCredentialMatches(Buffer.alloc(0), proof as WorkerCredentialCheckValues)
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    }
+  );
 });

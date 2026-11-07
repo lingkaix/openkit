@@ -89,25 +89,25 @@ describe('confined telemetry segment inventory', () => {
     }
   });
 
-  it.each([
-    'sink',
-    'ancestor',
-  ] as const)('revalidates a replaced %s directory and preserves bytes beyond its symlink', async (linkAt) => {
-    const { root, directory } = await fixture();
-    await listTelemetrySegments(directory);
-    const outside = join(root, 'outside');
-    const target = linkAt === 'sink' ? outside : join(outside, 'telemetry');
-    await fs.mkdir(target, { recursive: true });
-    const sentinel = join(target, 'traces-1-a.jsonl');
-    const bytes = Buffer.from('external diagnostic bytes');
-    await fs.writeFile(sentinel, bytes);
-    const linkedPath = linkAt === 'sink' ? directory : join(root, 'logs');
-    await fs.rm(linkedPath, { recursive: true });
-    await fs.symlink(outside, linkedPath, 'dir');
-    await expect(listTelemetrySegments(directory)).rejects.toThrow();
-    await expect(listTelemetrySegments(directory)).rejects.toThrow();
-    expect(await fs.readFile(sentinel)).toEqual(bytes);
-  });
+  it.each(['sink', 'ancestor'] as const)(
+    'revalidates a replaced %s directory and preserves bytes beyond its symlink',
+    async (linkAt) => {
+      const { root, directory } = await fixture();
+      await listTelemetrySegments(directory);
+      const outside = join(root, 'outside');
+      const target = linkAt === 'sink' ? outside : join(outside, 'telemetry');
+      await fs.mkdir(target, { recursive: true });
+      const sentinel = join(target, 'traces-1-a.jsonl');
+      const bytes = Buffer.from('external diagnostic bytes');
+      await fs.writeFile(sentinel, bytes);
+      const linkedPath = linkAt === 'sink' ? directory : join(root, 'logs');
+      await fs.rm(linkedPath, { recursive: true });
+      await fs.symlink(outside, linkedPath, 'dir');
+      await expect(listTelemetrySegments(directory)).rejects.toThrow();
+      await expect(listTelemetrySegments(directory)).rejects.toThrow();
+      expect(await fs.readFile(sentinel)).toEqual(bytes);
+    }
+  );
 
   it('refuses a regular file in a required directory position without changing its bytes', async () => {
     const { root, directory } = await fixture();
@@ -117,22 +117,21 @@ describe('confined telemetry segment inventory', () => {
     expect(await fs.readFile(join(root, 'logs'))).toEqual(bytes);
   });
 
-  it.each([
-    'unrecognized file',
-    'nested directory',
-    'segment symlink',
-  ] as const)('refuses an inventory containing a %s before exposing disposable paths', async (kind) => {
-    const { root, directory } = await fixture();
-    await listTelemetrySegments(directory);
-    const sentinel = join(root, 'canonical');
-    await fs.writeFile(sentinel, 'canonical bytes');
-    if (kind === 'unrecognized file')
-      await fs.writeFile(join(directory, 'unowned'), 'unowned bytes');
-    else if (kind === 'nested directory') await fs.mkdir(join(directory, 'traces-1-a.jsonl'));
-    else await fs.symlink(sentinel, join(directory, 'traces-1-a.jsonl'));
-    await expect(listTelemetrySegments(directory)).rejects.toThrow();
-    expect(await fs.readFile(sentinel, 'utf8')).toBe('canonical bytes');
-  });
+  it.each(['unrecognized file', 'nested directory', 'segment symlink'] as const)(
+    'refuses an inventory containing a %s before exposing disposable paths',
+    async (kind) => {
+      const { root, directory } = await fixture();
+      await listTelemetrySegments(directory);
+      const sentinel = join(root, 'canonical');
+      await fs.writeFile(sentinel, 'canonical bytes');
+      if (kind === 'unrecognized file')
+        await fs.writeFile(join(directory, 'unowned'), 'unowned bytes');
+      else if (kind === 'nested directory') await fs.mkdir(join(directory, 'traces-1-a.jsonl'));
+      else await fs.symlink(sentinel, join(directory, 'traces-1-a.jsonl'));
+      await expect(listTelemetrySegments(directory)).rejects.toThrow();
+      expect(await fs.readFile(sentinel, 'utf8')).toBe('canonical bytes');
+    }
+  );
 });
 
 describe('current telemetry filesystem headroom', () => {
@@ -223,19 +222,19 @@ describe('telemetry descriptor effects', () => {
     await expect(fs.lstat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it.each([
-    'existing file',
-    'existing symlink',
-  ] as const)('refuses an %s instead of overwriting or following its bytes', async (kind) => {
-    const { root } = await fixture();
-    const original = join(root, 'original');
-    const path = kind === 'existing file' ? original : join(root, 'linked');
-    const bytes = Buffer.from('retained bytes');
-    await fs.writeFile(original, bytes);
-    if (kind === 'existing symlink') await fs.symlink(original, path);
-    await expect(createTelemetrySegment(path)).rejects.toThrow();
-    expect(await fs.readFile(original)).toEqual(bytes);
-  });
+  it.each(['existing file', 'existing symlink'] as const)(
+    'refuses an %s instead of overwriting or following its bytes',
+    async (kind) => {
+      const { root } = await fixture();
+      const original = join(root, 'original');
+      const path = kind === 'existing file' ? original : join(root, 'linked');
+      const bytes = Buffer.from('retained bytes');
+      await fs.writeFile(original, bytes);
+      if (kind === 'existing symlink') await fs.symlink(original, path);
+      await expect(createTelemetrySegment(path)).rejects.toThrow();
+      expect(await fs.readFile(original)).toEqual(bytes);
+    }
+  );
 
   it('refuses a real short append without retrying it or advancing the complete-byte counter', async () => {
     // Operational Telemetry / Built-in Local Sink: abandon a partial append; do not repair its tail.
@@ -270,27 +269,25 @@ describe('telemetry descriptor effects', () => {
     expect(await fs.readFile(path)).toEqual(prefix);
   });
 
-  it.each([
-    'missing',
-    'replaced file',
-    'directory',
-    'symlink',
-  ] as const)('requires close when the active path becomes %s while its original descriptor remains open', async (kind) => {
-    const { root } = await fixture();
-    const path = join(root, 'traces-1-a.jsonl');
-    const handle = await openSegment(path);
-    const active = { path, handle, bytes: 0 };
-    const bytes = Buffer.from('old diagnostic bytes');
-    await appendTelemetrySegment(active, bytes);
-    const retained = join(root, 'old-segment');
-    await fs.rename(path, retained);
-    if (kind === 'replaced file') await fs.writeFile(path, 'replacement');
-    else if (kind === 'directory') await fs.mkdir(path);
-    else if (kind === 'symlink') await fs.symlink(retained, path);
-    expect(await telemetrySegmentNeedsClose(active)).toBe(true);
-    expect((await handle.stat()).size).toBe(bytes.length);
-    expect(await fs.readFile(retained)).toEqual(bytes);
-  });
+  it.each(['missing', 'replaced file', 'directory', 'symlink'] as const)(
+    'requires close when the active path becomes %s while its original descriptor remains open',
+    async (kind) => {
+      const { root } = await fixture();
+      const path = join(root, 'traces-1-a.jsonl');
+      const handle = await openSegment(path);
+      const active = { path, handle, bytes: 0 };
+      const bytes = Buffer.from('old diagnostic bytes');
+      await appendTelemetrySegment(active, bytes);
+      const retained = join(root, 'old-segment');
+      await fs.rename(path, retained);
+      if (kind === 'replaced file') await fs.writeFile(path, 'replacement');
+      else if (kind === 'directory') await fs.mkdir(path);
+      else if (kind === 'symlink') await fs.symlink(retained, path);
+      expect(await telemetrySegmentNeedsClose(active)).toBe(true);
+      expect((await handle.stat()).size).toBe(bytes.length);
+      expect(await fs.readFile(retained)).toEqual(bytes);
+    }
+  );
 
   it('preserves a failed descriptor observation even when the pathname is absent', async () => {
     const { root } = await fixture();

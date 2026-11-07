@@ -1048,874 +1048,891 @@ describe('email/password session operations', () => {
     { operation: 'signOut', outcome: 'non-401 failure' },
   ] as const;
 
-  it.each(transitions)('$operation waits for its protected read before settling $outcome', async ({
-    operation,
-    outcome,
-  }) => {
-    const initialFailure = AUTH_REQUIRED();
-    const protectedRead = deferred<typeof PRODUCT_WORKSPACES>();
-    const retryRead = deferred<typeof PRODUCT_WORKSPACES>();
-    const authResponse =
-      operation === 'signOut'
-        ? { success: true }
-        : operation === 'signIn'
-          ? { redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER }
-          : { token: RESPONSE_TOKEN, user: AUTH_USER };
-    const authOperation = deferred<typeof authResponse>();
-    const auth = vi.fn().mockReturnValue(authOperation.promise);
-    const listAuthorizedWorkspaces =
-      operation === 'signOut'
-        ? vi
-            .fn()
-            .mockResolvedValueOnce(PRODUCT_WORKSPACES)
-            .mockResolvedValueOnce(PRODUCT_WORKSPACES)
-            .mockReturnValueOnce(protectedRead.promise)
-            .mockReturnValueOnce(retryRead.promise)
-        : vi
-            .fn()
-            .mockRejectedValueOnce(initialFailure)
-            .mockReturnValueOnce(protectedRead.promise)
-            .mockReturnValueOnce(retryRead.promise);
-    const { client, forbidden } = makeClient({
-      listAuthorizedWorkspaces,
-      [operation]: auth,
-    });
-    const { queryClient } = renderApp(operation === 'signOut' ? '/settings/account' : '/', client);
-
-    if (operation === 'signOut') {
-      const signOut = await screen.findByRole('button', { name: /sign out/i });
-      expectSettledAccountQuery(queryClient, 'success', PRODUCT_WORKSPACES);
-      expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 0);
-      await userEvent.click(signOut);
-      expect(auth).toHaveBeenCalledWith();
-    } else {
-      await screen.findByRole('form', { name: /account access/i });
-      expectSettledAccountQuery(queryClient, 'error', initialFailure);
-      expect(forbidden.meta).not.toHaveBeenCalled();
-      await submitAuth(operation);
-      expect(auth).toHaveBeenCalledWith(
-        operation === 'signIn'
-          ? { email: EMAIL, password: PASSWORD }
-          : { email: EMAIL, name: 'Account User', password: PASSWORD }
-      );
-    }
-
-    const metaCallsBeforeAuthSettlement = forbidden.meta.mock.calls.length;
-    expectAccountMutation(queryClient, 'pending');
-    expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
-    authOperation.resolve(authResponse);
-    await waitFor(() =>
-      expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 3 : 2)
-    );
-    await waitFor(expectProtectedReadPending);
-    expectFetchingAccountQuery(queryClient);
-    expectSanitizedAccountMutation(queryClient, 'success', [
-      EMAIL,
-      PASSWORD,
-      RESPONSE_EMAIL,
-      RESPONSE_TOKEN,
-    ]);
-    expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
-    expect(auth.mock.invocationCallOrder[0]).toBeLessThan(
-      listAuthorizedWorkspaces.mock.invocationCallOrder[operation === 'signOut' ? 2 : 1] as number
-    );
-
-    if (outcome === 'success') {
-      const response = { items: [] };
-      protectedRead.resolve(response);
-      expect(await screen.findByRole('navigation')).toBeInTheDocument();
-      expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
-      expectSettledAccountQuery(queryClient, 'success', response);
-      expectMetaAfterProtectedRead(
-        forbidden,
+  it.each(transitions)(
+    '$operation waits for its protected read before settling $outcome',
+    async ({ operation, outcome }) => {
+      const initialFailure = AUTH_REQUIRED();
+      const protectedRead = deferred<typeof PRODUCT_WORKSPACES>();
+      const retryRead = deferred<typeof PRODUCT_WORKSPACES>();
+      const authResponse =
+        operation === 'signOut'
+          ? { success: true }
+          : operation === 'signIn'
+            ? { redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER }
+            : { token: RESPONSE_TOKEN, user: AUTH_USER };
+      const authOperation = deferred<typeof authResponse>();
+      const auth = vi.fn().mockReturnValue(authOperation.promise);
+      const listAuthorizedWorkspaces =
+        operation === 'signOut'
+          ? vi
+              .fn()
+              .mockResolvedValueOnce(PRODUCT_WORKSPACES)
+              .mockResolvedValueOnce(PRODUCT_WORKSPACES)
+              .mockReturnValueOnce(protectedRead.promise)
+              .mockReturnValueOnce(retryRead.promise)
+          : vi
+              .fn()
+              .mockRejectedValueOnce(initialFailure)
+              .mockReturnValueOnce(protectedRead.promise)
+              .mockReturnValueOnce(retryRead.promise);
+      const { client, forbidden } = makeClient({
         listAuthorizedWorkspaces,
-        operation === 'signOut' ? 2 : 1,
-        metaCallsBeforeAuthSettlement
+        [operation]: auth,
+      });
+      const { queryClient } = renderApp(
+        operation === 'signOut' ? '/settings/account' : '/',
+        client
       );
-    } else if (outcome === 'typed unauthenticated') {
-      const failure = AUTH_REQUIRED();
-      protectedRead.reject(failure);
-      await waitFor(expectAccountGate);
-      expectSettledAccountQuery(queryClient, 'error', failure);
+
+      if (operation === 'signOut') {
+        const signOut = await screen.findByRole('button', { name: /sign out/i });
+        expectSettledAccountQuery(queryClient, 'success', PRODUCT_WORKSPACES);
+        expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 0);
+        await userEvent.click(signOut);
+        expect(auth).toHaveBeenCalledWith();
+      } else {
+        await screen.findByRole('form', { name: /account access/i });
+        expectSettledAccountQuery(queryClient, 'error', initialFailure);
+        expect(forbidden.meta).not.toHaveBeenCalled();
+        await submitAuth(operation);
+        expect(auth).toHaveBeenCalledWith(
+          operation === 'signIn'
+            ? { email: EMAIL, password: PASSWORD }
+            : { email: EMAIL, name: 'Account User', password: PASSWORD }
+        );
+      }
+
+      const metaCallsBeforeAuthSettlement = forbidden.meta.mock.calls.length;
+      expectAccountMutation(queryClient, 'pending');
       expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
-    } else {
-      const failure = new TypeError('Failed to fetch');
-      protectedRead.reject(failure);
-      const retry = await screen.findByRole('button', { name: /try again|retry/i });
-      expect(screen.getByRole('alert')).toHaveTextContent(/couldn.t|failed|try again/i);
-      expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
-      expectSettledAccountQuery(queryClient, 'error', failure);
-      expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
-      await userEvent.click(retry);
+      authOperation.resolve(authResponse);
       await waitFor(() =>
-        expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 4 : 3)
+        expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 3 : 2)
       );
       await waitFor(expectProtectedReadPending);
       expectFetchingAccountQuery(queryClient);
+      expectSanitizedAccountMutation(queryClient, 'success', [
+        EMAIL,
+        PASSWORD,
+        RESPONSE_EMAIL,
+        RESPONSE_TOKEN,
+      ]);
       expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
+      expect(auth.mock.invocationCallOrder[0]).toBeLessThan(
+        listAuthorizedWorkspaces.mock.invocationCallOrder[operation === 'signOut' ? 2 : 1] as number
+      );
+
+      if (outcome === 'success') {
+        const response = { items: [] };
+        protectedRead.resolve(response);
+        expect(await screen.findByRole('navigation')).toBeInTheDocument();
+        expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
+        expectSettledAccountQuery(queryClient, 'success', response);
+        expectMetaAfterProtectedRead(
+          forbidden,
+          listAuthorizedWorkspaces,
+          operation === 'signOut' ? 2 : 1,
+          metaCallsBeforeAuthSettlement
+        );
+      } else if (outcome === 'typed unauthenticated') {
+        const failure = AUTH_REQUIRED();
+        protectedRead.reject(failure);
+        await waitFor(expectAccountGate);
+        expectSettledAccountQuery(queryClient, 'error', failure);
+        expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
+      } else {
+        const failure = new TypeError('Failed to fetch');
+        protectedRead.reject(failure);
+        const retry = await screen.findByRole('button', { name: /try again|retry/i });
+        expect(screen.getByRole('alert')).toHaveTextContent(/couldn.t|failed|try again/i);
+        expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
+        expectSettledAccountQuery(queryClient, 'error', failure);
+        expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
+        await userEvent.click(retry);
+        await waitFor(() =>
+          expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 4 : 3)
+        );
+        await waitFor(expectProtectedReadPending);
+        expectFetchingAccountQuery(queryClient);
+        expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
+        expect(auth).toHaveBeenCalledTimes(1);
+        const retryResponse = { items: [] };
+        retryRead.resolve(retryResponse);
+        expect(await screen.findByRole('navigation')).toBeInTheDocument();
+        expectSettledAccountQuery(queryClient, 'success', retryResponse);
+        expectMetaAfterProtectedRead(
+          forbidden,
+          listAuthorizedWorkspaces,
+          operation === 'signOut' ? 3 : 2,
+          metaCallsBeforeAuthSettlement
+        );
+      }
+
       expect(auth).toHaveBeenCalledTimes(1);
-      const retryResponse = { items: [] };
-      retryRead.resolve(retryResponse);
-      expect(await screen.findByRole('navigation')).toBeInTheDocument();
-      expectSettledAccountQuery(queryClient, 'success', retryResponse);
-      expectMetaAfterProtectedRead(
-        forbidden,
-        listAuthorizedWorkspaces,
-        operation === 'signOut' ? 3 : 2,
-        metaCallsBeforeAuthSettlement
-      );
+      expectNoDeploymentAdmissionProbes(forbidden);
     }
+  );
 
-    expect(auth).toHaveBeenCalledTimes(1);
-    expectNoDeploymentAdmissionProbes(forbidden);
-  });
+  it.each(['signIn', 'signUp'] as const)(
+    '%s clears a failed password and retains no credential-bearing error field',
+    async (mode) => {
+      const poisonValues = [EMAIL, PASSWORD, RESPONSE_EMAIL, RESPONSE_TOKEN];
+      const guards = guardSensitiveSinks(poisonValues);
+      const failure = poisonAuthFailure();
+      const inspectedFailure = inspectRetained(failure);
+      expect(inspectedFailure).toContain('status:422');
+      expect(inspectedFailure).toContain(`code:auth.failed.${PASSWORD}`);
+      expect(inspectedFailure).toContain('details:credential:');
+      expect(inspectedFailure).toContain(`path:credentials|${EMAIL}`);
+      expect(inspectedFailure).toContain(`requestId:request-${RESPONSE_TOKEN}`);
+      expect(inspectedFailure).toContain(`email:${RESPONSE_EMAIL}`);
 
-  it.each([
-    'signIn',
-    'signUp',
-  ] as const)('%s clears a failed password and retains no credential-bearing error field', async (mode) => {
-    const poisonValues = [EMAIL, PASSWORD, RESPONSE_EMAIL, RESPONSE_TOKEN];
-    const guards = guardSensitiveSinks(poisonValues);
-    const failure = poisonAuthFailure();
-    const inspectedFailure = inspectRetained(failure);
-    expect(inspectedFailure).toContain('status:422');
-    expect(inspectedFailure).toContain(`code:auth.failed.${PASSWORD}`);
-    expect(inspectedFailure).toContain('details:credential:');
-    expect(inspectedFailure).toContain(`path:credentials|${EMAIL}`);
-    expect(inspectedFailure).toContain(`requestId:request-${RESPONSE_TOKEN}`);
-    expect(inspectedFailure).toContain(`email:${RESPONSE_EMAIL}`);
-
-    const initialFailure = AUTH_REQUIRED();
-    const authPending = deferred<never>();
-    const auth = vi.fn().mockReturnValue(authPending.promise);
-    const { client, forbidden } = makeClient({
-      listAuthorizedWorkspaces: vi.fn().mockRejectedValue(initialFailure),
-      [mode]: auth,
-    });
-    const { queryClient } = renderApp('/', client);
-    await screen.findByRole('form', { name: /account access/i });
-    expectSettledAccountQuery(queryClient, 'error', initialFailure);
-    expect(forbidden.meta).not.toHaveBeenCalled();
-    const inputs = await submitAuth(mode);
-
-    expectAccountMutation(queryClient, 'pending');
-    expect(
-      screen.getByRole('button', { name: mode === 'signIn' ? /sign in/i : /sign up/i })
-    ).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent(/signing in|signing up|working/i);
-    expect(inputs.password).toBeDisabled();
-    authPending.reject(failure);
-    await waitFor(() => expect(inputs.password).toHaveValue(''));
-    expect(inputs.email).toHaveValue(EMAIL);
-    expect(screen.getByRole('alert')).toHaveTextContent(/couldn.t|failed|try again/i);
-    expect(auth).toHaveBeenCalledWith(
-      mode === 'signIn'
-        ? { email: EMAIL, password: PASSWORD }
-        : { email: EMAIL, name: 'Account User', password: PASSWORD }
-    );
-    expectSanitizedAccountMutation(queryClient, 'error', poisonValues);
-
-    const retained = retainedAccountSurfaces(queryClient, guards);
-    for (const poison of poisonValues) {
-      expect(retained).not.toContain(poison);
-    }
-    expect(guards.getItem).not.toHaveBeenCalledWith(expect.stringMatching(/auth|session/i));
-    expect(guards.setItem).not.toHaveBeenCalledWith(
-      expect.stringMatching(/auth|session/i),
-      expect.anything()
-    );
-    expect(forbidden.meta).not.toHaveBeenCalled();
-    expectNoDeploymentAdmissionProbes(forbidden);
-  });
-
-  it.each([
-    'signIn',
-    'signUp',
-  ] as const)('%s retains neither credentials nor its auth response while the protected read is pending or settled', async (mode) => {
-    const poisonValues = [EMAIL, PASSWORD, RESPONSE_EMAIL, RESPONSE_TOKEN];
-    const guards = guardSensitiveSinks(poisonValues);
-    const initialFailure = AUTH_REQUIRED();
-    const protectedRead = deferred<typeof PRODUCT_WORKSPACES>();
-    const authResponse =
-      mode === 'signIn'
-        ? { redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER }
-        : { token: RESPONSE_TOKEN, user: AUTH_USER };
-    const authOperation = deferred<typeof authResponse>();
-    const auth = vi.fn().mockReturnValue(authOperation.promise);
-    const listAuthorizedWorkspaces = vi
-      .fn()
-      .mockRejectedValueOnce(initialFailure)
-      .mockReturnValueOnce(protectedRead.promise);
-    const { client, forbidden } = makeClient({
-      listAuthorizedWorkspaces,
-      [mode]: auth,
-    });
-    const { queryClient } = renderApp('/', client);
-
-    await screen.findByRole('form', { name: /account access/i });
-    expectSettledAccountQuery(queryClient, 'error', initialFailure);
-    expect(forbidden.meta).not.toHaveBeenCalled();
-    await submitAuth(mode);
-    expectAccountMutation(queryClient, 'pending');
-    authOperation.resolve(authResponse);
-    await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
-    await waitFor(expectProtectedReadPending);
-    expectFetchingAccountQuery(queryClient);
-    expectSanitizedAccountMutation(queryClient, 'success', poisonValues);
-    expect(forbidden.meta).not.toHaveBeenCalled();
-    expect(auth).toHaveBeenCalledWith(
-      mode === 'signIn'
-        ? { email: EMAIL, password: PASSWORD }
-        : { email: EMAIL, name: 'Account User', password: PASSWORD }
-    );
-    for (const poison of poisonValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(poison);
-    }
-
-    const response = { items: [] };
-    protectedRead.resolve(response);
-    expect(await screen.findByRole('navigation')).toBeInTheDocument();
-    expectSettledAccountQuery(queryClient, 'success', response);
-    expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 1);
-    for (const poison of poisonValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(poison);
-    }
-    expectNoDeploymentAdmissionProbes(forbidden);
-  });
-
-  it.each([
-    'signIn',
-    'signUp',
-    'signOut',
-  ] as const)('%s independently isolates My invitations before admission refetch on one QueryClient', async (operation) => {
-    const actorAInvitation = {
-      ...PENDING_INVITATION,
-      invitationId: 'inv_00000000-0000-7b87-a43d-43110c5af97d',
-      inviteeUserId: 'usr_00000000-0000-754f-a2d3-9b6be9284dc4',
-      workspaceId: 'ws_00000000-0000-7722-a92c-91dbcdd3cc2b',
-    };
-    const actorBInvitation = {
-      ...PENDING_INVITATION,
-      invitationId: 'inv_00000000-0000-7a8c-af79-5ac14b8eeadc',
-      inviteeUserId: 'usr_00000000-0000-706e-9d8d-e7df35cc2ab2',
-      workspaceId: 'ws_00000000-0000-7d56-970a-929068c925db',
-    };
-    const actorAValues = [
-      actorAInvitation.invitationId,
-      actorAInvitation.inviteeUserId,
-      actorAInvitation.workspaceId,
-      'ws_00000000-0000-78af-bc8c-cfa7324da1ab',
-      'usr_00000000-0000-7ff3-9f32-dc25d3615313',
-      'actor-a-only-outward-activity',
-    ];
-    const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
-    let actorBMountStarted = false;
-    let actorBReadStartedAfterMount = false;
-    const listMyWorkspaceInvitations = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [actorAInvitation] })
-      .mockImplementationOnce(() => {
-        actorBReadStartedAfterMount = actorBMountStarted;
-        return Promise.resolve({ items: [actorBInvitation] });
+      const initialFailure = AUTH_REQUIRED();
+      const authPending = deferred<never>();
+      const auth = vi.fn().mockReturnValue(authPending.promise);
+      const { client, forbidden } = makeClient({
+        listAuthorizedWorkspaces: vi.fn().mockRejectedValue(initialFailure),
+        [mode]: auth,
       });
-    const { client, listAuthorizedWorkspaces } = makeSharingClient({
-      methods: { listMyWorkspaceInvitations },
-    });
-    let queryClient!: QueryClient;
-    let queriesAtAdmissionStart: string | undefined;
-    let unrelatedQueryAtAdmissionStart: unknown;
-    let unrelatedStateAtAdmissionStart: unknown;
-    let unrelatedObserversAtAdmissionStart: number | undefined;
-    listAuthorizedWorkspaces.mockReset().mockResolvedValueOnce(PRODUCT_WORKSPACES);
-    listAuthorizedWorkspaces.mockImplementationOnce(() => {
-      queriesAtAdmissionStart = inspectRetained(
-        queryClient
-          .getQueryCache()
-          .getAll()
-          .map((query) => ({ key: query.queryKey, state: query.state }))
-      );
-      unrelatedQueryAtAdmissionStart = queryClient
-        .getQueryCache()
-        .find({ exact: true, queryKey: ['account', 's22-q-unrelated'] });
-      unrelatedStateAtAdmissionStart = (
-        unrelatedQueryAtAdmissionStart as { state?: unknown } | undefined
-      )?.state;
-      unrelatedObserversAtAdmissionStart = (
-        unrelatedQueryAtAdmissionStart as { getObserversCount?: () => number } | undefined
-      )?.getObserversCount?.();
-      return transitionAdmission.promise;
-    });
-    listAuthorizedWorkspaces.mockResolvedValue(PRODUCT_WORKSPACES);
-    const signIn = client.auth.email.signIn as ReturnType<typeof vi.fn>;
-    const signOut = client.auth.email.signOut as ReturnType<typeof vi.fn>;
-    const signUp = client.auth.email.signUp as ReturnType<typeof vi.fn>;
-    signIn.mockResolvedValue({ redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER });
-    signOut.mockResolvedValue({ success: true });
-    signUp.mockResolvedValue({ token: RESPONSE_TOKEN, user: AUTH_USER });
-    const unrelatedKey = ['account', 's22-q-unrelated'] as const;
-    const unrelatedValue = { retained: true };
-    const unrelatedRead = vi.fn().mockResolvedValue(unrelatedValue);
-    queryClient = new QueryClient({
-      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-    });
-    queryClient.setQueryData(unrelatedKey, unrelatedValue);
-    queryClient.setQueryData(['workspaces'], [{ id: 'ws_00000000-0000-78af-bc8c-cfa7324da1ab' }]);
-    queryClient.setQueryData(
-      ['workspaces', 'summaries'],
-      [{ ownerUserId: 'usr_00000000-0000-754f-a2d3-9b6be9284dc4' }]
-    );
-    queryClient.setQueryData(
-      ['account', 'session-user'],
-      'usr_00000000-0000-754f-a2d3-9b6be9284dc4'
-    );
-    queryClient.setQueryData(
-      ['thread-dashboard', 'ws_00000000-0000-7b10-9af8-12fd37a880e0', 'th1'],
-      {
-        viewerUserId: 'usr_00000000-0000-7ff3-9f32-dc25d3615313',
-        participants: [],
-        runtimeActivity: [
-          {
-            turnId: 'tu_00000000-0000-7ac2-90bc-b76f463334e2',
-            contentCapture: 'on',
-            coverage: 'partial',
-            omittedEntryCount: 0,
-            entries: [
-              {
-                sequence: 1,
-                observedAt: '2026-09-22T00:00:00.000Z',
-                kind: 'result',
-                text: 'actor-a-only-outward-activity',
-                textTruncated: false,
-              },
-            ],
-          },
-        ],
-      }
-    );
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-78af-bc8c-cfa7324da1ab' });
-    const guards = guardSensitiveSinks(actorAValues);
-    const unrelatedQuery = queryClient
-      .getQueryCache()
-      .find({ exact: true, queryKey: unrelatedKey });
-    expect(unrelatedQuery).toBeDefined();
-    const unrelatedState = unrelatedQuery?.state;
-    const mountHarness = () =>
-      render(
-        <QueryClientProvider client={queryClient}>
-          <CoreClientProvider client={client}>
-            <AccountCacheTransitionHarness unrelatedRead={unrelatedRead} />
-          </CoreClientProvider>
-        </QueryClientProvider>
-      );
-    const actorAView = mountHarness();
+      const { queryClient } = renderApp('/', client);
+      await screen.findByRole('form', { name: /account access/i });
+      expectSettledAccountQuery(queryClient, 'error', initialFailure);
+      expect(forbidden.meta).not.toHaveBeenCalled();
+      const inputs = await submitAuth(mode);
 
-    await screen.findByText(
-      /inv_00000000-0000-7b87-a43d-43110c5af97d.*usr_00000000-0000-754f-a2d3-9b6be9284dc4.*ws_00000000-0000-7722-a92c-91dbcdd3cc2b/i
-    );
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).toContain(actorAValue);
-    }
-    await userEvent.click(screen.getByRole('button', { name: operation }));
-
-    await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
-    expect(queryClient.getQueryData(['workspaces', 'summaries'])).toBeUndefined();
-    expect(queryClient.getQueryData(['account', 'session-user'])).toBeUndefined();
-    const auth = operation === 'signIn' ? signIn : operation === 'signUp' ? signUp : signOut;
-    expect(auth).toHaveBeenCalledTimes(1);
-    expect(auth.mock.invocationCallOrder[0]).toBeLessThan(
-      listAuthorizedWorkspaces.mock.invocationCallOrder[1] as number
-    );
-    expect(unrelatedQueryAtAdmissionStart).toBe(unrelatedQuery);
-    expect(unrelatedStateAtAdmissionStart).toBe(unrelatedState);
-    expect(unrelatedObserversAtAdmissionStart).toBe(1);
-    expect(unrelatedRead).not.toHaveBeenCalled();
-    for (const actorAValue of actorAValues) {
-      expect(queriesAtAdmissionStart).not.toContain(actorAValue);
-    }
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    transitionAdmission.resolve(PRODUCT_WORKSPACES);
-    actorAView.unmount();
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    expect(queryClient.getQueryCache().find({ exact: true, queryKey: unrelatedKey })).toBe(
-      unrelatedQuery
-    );
-    expect(unrelatedQuery?.state).toBe(unrelatedState);
-    expect(unrelatedRead).not.toHaveBeenCalled();
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
-    }
-
-    actorBMountStarted = true;
-    mountHarness();
-    await screen.findByText(
-      /inv_00000000-0000-7a8c-af79-5ac14b8eeadc.*usr_00000000-0000-706e-9d8d-e7df35cc2ab2.*ws_00000000-0000-7d56-970a-929068c925db/i
-    );
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
-    expect(actorBReadStartedAfterMount).toBe(true);
-    expect(queryClient.getQueryCache().find({ exact: true, queryKey: unrelatedKey })).toBe(
-      unrelatedQuery
-    );
-    expect(unrelatedQuery?.state).toBe(unrelatedState);
-    expect(unrelatedQuery?.getObserversCount()).toBe(1);
-    expect(unrelatedRead).not.toHaveBeenCalled();
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
-    }
-  });
-
-  it.each(
-    (['signIn', 'signUp', 'signOut'] as const).flatMap((operation) =>
-      (['success', 'error'] as const).map(
-        (decisionOutcome) => [operation, decisionOutcome] as const
-      )
-    )
-  )('%s removes only the settled My-invitation %s mutation before admission refetch', async (operation, decisionOutcome) => {
-    const actorAInvitation = {
-      ...PENDING_INVITATION,
-      invitationId: 'inv_00000000-0000-770d-9f70-2e25f1e20157',
-      inviteeUserId: 'usr_00000000-0000-71af-b726-a4a47581cdb1',
-      workspaceId: 'ws_00000000-0000-778d-8646-db72befa34f6',
-    };
-    const actorASettled = {
-      ...actorAInvitation,
-      acceptedAt: MEMBER_UPDATED_AT,
-      effectiveStatus: 'accepted' as const,
-      revision: 22,
-    };
-    const actorBInvitation = {
-      ...PENDING_INVITATION,
-      invitationId: 'inv_00000000-0000-7c75-a340-c02f9717d692',
-      inviteeUserId: 'usr_00000000-0000-790b-8ffe-f5509f5ff9e9',
-      workspaceId: 'ws_00000000-0000-760a-be30-3eb166082eed',
-    };
-    const actorAValues = [
-      actorAInvitation.invitationId,
-      actorAInvitation.inviteeUserId,
-      actorAInvitation.workspaceId,
-    ];
-    const guards = guardSensitiveSinks(actorAValues);
-    const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
-    let actorBMountStarted = false;
-    let actorBReadStartedAfterMount = false;
-    let queriesAtAdmissionStart: string | undefined;
-    let mutationsAtAdmissionStart: unknown[] | undefined;
-    const listMyWorkspaceInvitations = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [actorAInvitation] })
-      .mockImplementationOnce(() => {
-        actorBReadStartedAfterMount = actorBMountStarted;
-        return Promise.resolve({ items: [actorBInvitation] });
-      });
-    const decisionFailure = new ApiCallError(409, 'Invitation changed.', {
-      code: 'revision_conflict',
-      details: { current: { ...actorAInvitation, revision: 23 }, resource: 'invitation' },
-    });
-    const acceptWorkspaceInvitation =
-      decisionOutcome === 'success'
-        ? vi.fn().mockResolvedValue({ invitation: actorASettled })
-        : vi.fn().mockRejectedValue(decisionFailure);
-    const { client, listAuthorizedWorkspaces } = makeSharingClient({
-      methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
-    });
-    let queryClient!: QueryClient;
-    listAuthorizedWorkspaces.mockReset().mockResolvedValueOnce(PRODUCT_WORKSPACES);
-    listAuthorizedWorkspaces.mockImplementationOnce(() => {
-      queriesAtAdmissionStart = inspectRetained(
-        queryClient
-          .getQueryCache()
-          .getAll()
-          .map((query) => ({ key: query.queryKey, state: query.state }))
-      );
-      mutationsAtAdmissionStart = queryClient.getMutationCache().getAll();
-      return transitionAdmission.promise;
-    });
-    listAuthorizedWorkspaces.mockResolvedValue(PRODUCT_WORKSPACES);
-    queryClient = new QueryClient({
-      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-    });
-    const unrelatedKey = ['account', 's22-q-unrelated-mutation'] as const;
-    const unrelatedValue = { retained: true };
-    const unrelatedMutation = queryClient.getMutationCache().build(queryClient, {
-      mutationFn: async () => unrelatedValue,
-      mutationKey: unrelatedKey,
-    });
-    await unrelatedMutation.execute(undefined);
-    const mountHarness = () =>
-      render(
-        <QueryClientProvider client={queryClient}>
-          <CoreClientProvider client={client}>
-            <AccountDecisionCacheTransitionHarness operation={operation} />
-          </CoreClientProvider>
-        </QueryClientProvider>
-      );
-    const actorAView = mountHarness();
-    await screen.findByText(
-      /inv_00000000-0000-770d-9f70-2e25f1e20157.*usr_00000000-0000-71af-b726-a4a47581cdb1.*ws_00000000-0000-778d-8646-db72befa34f6/i
-    );
-    await userEvent.click(screen.getByRole('button', { name: 'settle invitation decision' }));
-    await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1));
-    const decisionMutation = await waitFor(() => {
-      const mutations = queryClient
-        .getMutationCache()
-        .getAll()
-        .filter((candidate) => candidate !== unrelatedMutation);
-      expect(mutations).toHaveLength(1);
-      expect(mutations[0]?.state.status).toBe(decisionOutcome);
-      return mutations[0];
-    });
-    const decisionKey = decisionMutation?.options.mutationKey;
-    expect(inspectRetained(decisionMutation?.state.variables)).toContain(
-      actorAInvitation.invitationId
-    );
-    if (decisionOutcome === 'success') {
-      for (const actorAValue of actorAValues) {
-        expect(inspectRetained(decisionMutation?.state.data)).toContain(actorAValue);
-      }
-      expect(decisionMutation?.state.error).toBeNull();
-    } else {
-      expect(decisionMutation?.state.data).toBeUndefined();
-      expect(decisionMutation?.state.error).toMatchObject({
-        code: 'revision_conflict',
-        current: {
-          invitationId: actorAInvitation.invitationId,
-          inviteeUserId: actorAInvitation.inviteeUserId,
-          workspaceId: actorAInvitation.workspaceId,
-        },
-        resource: 'invitation',
-      });
-      for (const actorAValue of actorAValues) {
-        expect(inspectRetained(decisionMutation?.state.error)).toContain(actorAValue);
-      }
-    }
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).toContain(actorAValue);
-    }
-    await userEvent.click(screen.getByRole('button', { name: operation }));
-    await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
-    expect(mutationsAtAdmissionStart).not.toContain(decisionMutation);
-    expect(mutationsAtAdmissionStart).toContain(unrelatedMutation);
-    expect(decisionKey).toEqual(expect.any(Array));
-    expect(decisionKey).not.toHaveLength(0);
-    expect(decisionKey).not.toEqual(unrelatedKey);
-    expect(unrelatedMutation.state).toMatchObject({ data: unrelatedValue, status: 'success' });
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    for (const actorAValue of actorAValues) {
-      expect(queriesAtAdmissionStart).not.toContain(actorAValue);
-    }
-    transitionAdmission.resolve(PRODUCT_WORKSPACES);
-    actorAView.unmount();
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
-    }
-
-    actorBMountStarted = true;
-    mountHarness();
-    await screen.findByText(
-      /inv_00000000-0000-7c75-a340-c02f9717d692.*usr_00000000-0000-790b-8ffe-f5509f5ff9e9.*ws_00000000-0000-760a-be30-3eb166082eed/i
-    );
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
-    expect(actorBReadStartedAfterMount).toBe(true);
-    expect(queryClient.getMutationCache().getAll()).toContain(unrelatedMutation);
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
-    }
-  });
-
-  it.each(
-    (['signIn', 'signUp', 'signOut'] as const).flatMap((operation) =>
-      (['success', 'error'] as const).map(
-        (decisionOutcome) => [operation, decisionOutcome] as const
-      )
-    )
-  )('%s detaches a pending My-invitation mutation through late %s settlement', async (operation, decisionOutcome) => {
-    const actorAInvitation = {
-      ...PENDING_INVITATION,
-      invitationId: 'inv_00000000-0000-7357-b6d9-17d13db784a2',
-      inviteeUserId: 'usr_00000000-0000-76c0-a71e-a4adac054a50',
-      workspaceId: 'ws_00000000-0000-7d62-a07c-c544c1e4e1eb',
-    };
-    const actorASettled = {
-      ...actorAInvitation,
-      acceptedAt: MEMBER_UPDATED_AT,
-      effectiveStatus: 'accepted' as const,
-      revision: 22,
-    };
-    const actorBInvitation = {
-      ...PENDING_INVITATION,
-      invitationId: 'inv_00000000-0000-7061-b221-49e0c19ef2b2',
-      inviteeUserId: 'usr_00000000-0000-7c9c-b1a5-dce445bd2166',
-      workspaceId: 'ws_00000000-0000-7b7d-b55e-92dd4c91d877',
-    };
-    const actorAValues = [
-      actorAInvitation.invitationId,
-      actorAInvitation.inviteeUserId,
-      actorAInvitation.workspaceId,
-    ];
-    const guards = guardSensitiveSinks(actorAValues);
-    const decisionSettlement = deferred<{ invitation: typeof actorASettled }>();
-    const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
-    const unrelatedPendingQuerySettlement = deferred<{ retained: 'pending-query' }>();
-    const unrelatedPendingMutationSettlement = deferred<{ retained: 'pending-mutation' }>();
-    let actorBMountStarted = false;
-    let actorBReadStartedAfterMount = false;
-    let decisionKey: readonly unknown[] | undefined;
-    let invitationsKey: readonly unknown[] | undefined;
-    let featureMutationsAtAdmissionStart: unknown[] | undefined;
-    let invitationsQueryAtAdmissionStart: unknown;
-    let unrelatedQueriesAtAdmissionStart:
-      | { pending: unknown; pendingState: unknown; settled: unknown; settledState: unknown }
-      | undefined;
-    let unrelatedMutationsAtAdmissionStart:
-      | { pending: unknown[]; pendingState: unknown; settled: unknown[]; settledState: unknown }
-      | undefined;
-    const listMyWorkspaceInvitations = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [actorAInvitation] })
-      .mockImplementationOnce(() => {
-        actorBReadStartedAfterMount = actorBMountStarted;
-        return Promise.resolve({ items: [actorBInvitation] });
-      });
-    const decisionFailure = new ApiCallError(409, 'Invitation changed.', {
-      code: 'revision_conflict',
-      details: { current: { ...actorAInvitation, revision: 23 }, resource: 'invitation' },
-    });
-    const acceptWorkspaceInvitation = vi.fn().mockReturnValue(decisionSettlement.promise);
-    const { client, listAuthorizedWorkspaces } = makeSharingClient({
-      methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
-    });
-    const unrelatedPendingQueryKey = ['account', 's22-q-p-unrelated-pending-query'] as const;
-    const unrelatedSettledQueryKey = ['account', 's22-q-p-unrelated-settled-query'] as const;
-    const unrelatedPendingMutationKey = ['account', 's22-q-p-unrelated-pending-mutation'] as const;
-    const unrelatedSettledMutationKey = ['account', 's22-q-p-unrelated-settled-mutation'] as const;
-    let queryClient!: QueryClient;
-    listAuthorizedWorkspaces.mockReset().mockResolvedValueOnce(PRODUCT_WORKSPACES);
-    listAuthorizedWorkspaces.mockImplementationOnce(() => {
-      featureMutationsAtAdmissionStart = decisionKey
-        ? queryClient.getMutationCache().findAll({ exact: true, mutationKey: decisionKey })
-        : undefined;
-      invitationsQueryAtAdmissionStart = invitationsKey
-        ? queryClient.getQueryCache().find({ exact: true, queryKey: invitationsKey })
-        : undefined;
-      const pendingQuery = queryClient
-        .getQueryCache()
-        .find({ exact: true, queryKey: unrelatedPendingQueryKey });
-      const settledQuery = queryClient
-        .getQueryCache()
-        .find({ exact: true, queryKey: unrelatedSettledQueryKey });
-      const pendingMutations = queryClient
-        .getMutationCache()
-        .findAll({ exact: true, mutationKey: unrelatedPendingMutationKey });
-      const settledMutations = queryClient
-        .getMutationCache()
-        .findAll({ exact: true, mutationKey: unrelatedSettledMutationKey });
-      unrelatedQueriesAtAdmissionStart = {
-        pending: pendingQuery,
-        pendingState: pendingQuery?.state,
-        settled: settledQuery,
-        settledState: settledQuery?.state,
-      };
-      unrelatedMutationsAtAdmissionStart = {
-        pending: pendingMutations,
-        pendingState: pendingMutations[0]?.state,
-        settled: settledMutations,
-        settledState: settledMutations[0]?.state,
-      };
-      return transitionAdmission.promise;
-    });
-    listAuthorizedWorkspaces.mockResolvedValue(PRODUCT_WORKSPACES);
-    const signIn = client.auth.email.signIn as ReturnType<typeof vi.fn>;
-    const signOut = client.auth.email.signOut as ReturnType<typeof vi.fn>;
-    const signUp = client.auth.email.signUp as ReturnType<typeof vi.fn>;
-    signIn.mockResolvedValue({ redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER });
-    signOut.mockResolvedValue({ success: true });
-    signUp.mockResolvedValue({ token: RESPONSE_TOKEN, user: AUTH_USER });
-    queryClient = new QueryClient({
-      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-    });
-    const unrelatedPendingQueryRead = vi.fn(() => unrelatedPendingQuerySettlement.promise);
-    void queryClient.fetchQuery({
-      queryFn: unrelatedPendingQueryRead,
-      queryKey: unrelatedPendingQueryKey,
-    });
-    queryClient.setQueryData(unrelatedSettledQueryKey, { retained: 'settled-query' });
-    const unrelatedPendingQuery = queryClient.getQueryCache().find({
-      exact: true,
-      queryKey: unrelatedPendingQueryKey,
-    });
-    const unrelatedSettledQuery = queryClient.getQueryCache().find({
-      exact: true,
-      queryKey: unrelatedSettledQueryKey,
-    });
-    expect(unrelatedPendingQuery).toBeDefined();
-    expect(unrelatedSettledQuery).toBeDefined();
-    const unrelatedPendingMutation = queryClient.getMutationCache().build(queryClient, {
-      mutationFn: () => unrelatedPendingMutationSettlement.promise,
-      mutationKey: unrelatedPendingMutationKey,
-    });
-    const unrelatedPendingMutationPromise = unrelatedPendingMutation.execute(undefined);
-    const unrelatedSettledMutation = queryClient.getMutationCache().build(queryClient, {
-      mutationFn: async () => ({ retained: 'settled-mutation' }),
-      mutationKey: unrelatedSettledMutationKey,
-    });
-    await unrelatedSettledMutation.execute(undefined);
-    const unrelatedPendingQueryState = unrelatedPendingQuery?.state;
-    const unrelatedSettledQueryState = unrelatedSettledQuery?.state;
-    const unrelatedPendingMutationState = unrelatedPendingMutation.state;
-    const unrelatedSettledMutationState = unrelatedSettledMutation.state;
-    const mountHarness = () =>
-      render(
-        <QueryClientProvider client={queryClient}>
-          <CoreClientProvider client={client}>
-            <AccountDecisionCacheTransitionHarness operation={operation} />
-          </CoreClientProvider>
-        </QueryClientProvider>
-      );
-    const actorAView = mountHarness();
-    await screen.findByText(
-      /inv_00000000-0000-7357-b6d9-17d13db784a2.*usr_00000000-0000-76c0-a71e-a4adac054a50.*ws_00000000-0000-7d62-a07c-c544c1e4e1eb/i
-    );
-    const invitationsQuery = queryClient
-      .getQueryCache()
-      .getAll()
-      .find((query) => inspectRetained(query.state.data).includes(actorAInvitation.invitationId));
-    invitationsKey = invitationsQuery?.queryKey;
-    expect(invitationsKey).toEqual(expect.any(Array));
-    expect(invitationsKey).not.toHaveLength(0);
-    await userEvent.click(screen.getByRole('button', { name: 'settle invitation decision' }));
-    await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1));
-    const decisionMutation = queryClient
-      .getMutationCache()
-      .getAll()
-      .find((mutation) =>
-        inspectRetained(mutation.state.variables).includes(actorAInvitation.invitationId)
-      );
-    expect(decisionMutation?.state.status).toBe('pending');
-    decisionKey = decisionMutation?.options.mutationKey;
-    expect(decisionKey).toEqual(expect.any(Array));
-    expect(decisionKey).not.toHaveLength(0);
-    const featureMutationsBeforeAuth = queryClient
-      .getMutationCache()
-      .findAll({ exact: true, mutationKey: decisionKey });
-    expect(featureMutationsBeforeAuth).toHaveLength(1);
-    expect(featureMutationsBeforeAuth[0]).toBe(decisionMutation);
-    expect(inspectRetained(decisionMutation?.state.variables)).toContain(
-      actorAInvitation.invitationId
-    );
-
-    await userEvent.click(screen.getByRole('button', { name: operation }));
-    await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
-    expect(featureMutationsAtAdmissionStart).toHaveLength(0);
-    expect(invitationsQueryAtAdmissionStart).toBeUndefined();
-    expect(unrelatedQueriesAtAdmissionStart?.pending).toBe(unrelatedPendingQuery);
-    expect(unrelatedQueriesAtAdmissionStart?.pendingState).toBe(unrelatedPendingQueryState);
-    expect(unrelatedQueriesAtAdmissionStart?.settled).toBe(unrelatedSettledQuery);
-    expect(unrelatedQueriesAtAdmissionStart?.settledState).toBe(unrelatedSettledQueryState);
-    expect(unrelatedMutationsAtAdmissionStart?.pending).toHaveLength(1);
-    expect(unrelatedMutationsAtAdmissionStart?.pending[0]).toBe(unrelatedPendingMutation);
-    expect(unrelatedMutationsAtAdmissionStart?.pendingState).toBe(unrelatedPendingMutationState);
-    expect(unrelatedMutationsAtAdmissionStart?.settled).toHaveLength(1);
-    expect(unrelatedMutationsAtAdmissionStart?.settled[0]).toBe(unrelatedSettledMutation);
-    expect(unrelatedMutationsAtAdmissionStart?.settledState).toBe(unrelatedSettledMutationState);
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    expect(unrelatedPendingQueryRead).toHaveBeenCalledTimes(1);
-
-    if (decisionOutcome === 'success') {
-      decisionSettlement.resolve({ invitation: actorASettled });
-    } else {
-      decisionSettlement.reject(decisionFailure);
-    }
-    await waitFor(() => expect(decisionMutation?.state.status).toBe(decisionOutcome));
-    if (decisionOutcome === 'success') {
-      expect(decisionMutation?.state.data).toEqual({ invitation: actorASettled });
-    } else {
-      expect(decisionMutation?.state.error).toMatchObject({
-        code: 'revision_conflict',
-        current: {
-          invitationId: actorAInvitation.invitationId,
-          inviteeUserId: actorAInvitation.inviteeUserId,
-          workspaceId: actorAInvitation.workspaceId,
-        },
-        resource: 'invitation',
-      });
-    }
-    expect(queryClient.getMutationCache().getAll()).not.toContain(decisionMutation);
-    for (const actorAValue of actorAValues) {
+      expectAccountMutation(queryClient, 'pending');
       expect(
-        inspectRetained(
+        screen.getByRole('button', { name: mode === 'signIn' ? /sign in/i : /sign up/i })
+      ).toBeDisabled();
+      expect(screen.getByRole('status')).toHaveTextContent(/signing in|signing up|working/i);
+      expect(inputs.password).toBeDisabled();
+      authPending.reject(failure);
+      await waitFor(() => expect(inputs.password).toHaveValue(''));
+      expect(inputs.email).toHaveValue(EMAIL);
+      expect(screen.getByRole('alert')).toHaveTextContent(/couldn.t|failed|try again/i);
+      expect(auth).toHaveBeenCalledWith(
+        mode === 'signIn'
+          ? { email: EMAIL, password: PASSWORD }
+          : { email: EMAIL, name: 'Account User', password: PASSWORD }
+      );
+      expectSanitizedAccountMutation(queryClient, 'error', poisonValues);
+
+      const retained = retainedAccountSurfaces(queryClient, guards);
+      for (const poison of poisonValues) {
+        expect(retained).not.toContain(poison);
+      }
+      expect(guards.getItem).not.toHaveBeenCalledWith(expect.stringMatching(/auth|session/i));
+      expect(guards.setItem).not.toHaveBeenCalledWith(
+        expect.stringMatching(/auth|session/i),
+        expect.anything()
+      );
+      expect(forbidden.meta).not.toHaveBeenCalled();
+      expectNoDeploymentAdmissionProbes(forbidden);
+    }
+  );
+
+  it.each(['signIn', 'signUp'] as const)(
+    '%s retains neither credentials nor its auth response while the protected read is pending or settled',
+    async (mode) => {
+      const poisonValues = [EMAIL, PASSWORD, RESPONSE_EMAIL, RESPONSE_TOKEN];
+      const guards = guardSensitiveSinks(poisonValues);
+      const initialFailure = AUTH_REQUIRED();
+      const protectedRead = deferred<typeof PRODUCT_WORKSPACES>();
+      const authResponse =
+        mode === 'signIn'
+          ? { redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER }
+          : { token: RESPONSE_TOKEN, user: AUTH_USER };
+      const authOperation = deferred<typeof authResponse>();
+      const auth = vi.fn().mockReturnValue(authOperation.promise);
+      const listAuthorizedWorkspaces = vi
+        .fn()
+        .mockRejectedValueOnce(initialFailure)
+        .mockReturnValueOnce(protectedRead.promise);
+      const { client, forbidden } = makeClient({
+        listAuthorizedWorkspaces,
+        [mode]: auth,
+      });
+      const { queryClient } = renderApp('/', client);
+
+      await screen.findByRole('form', { name: /account access/i });
+      expectSettledAccountQuery(queryClient, 'error', initialFailure);
+      expect(forbidden.meta).not.toHaveBeenCalled();
+      await submitAuth(mode);
+      expectAccountMutation(queryClient, 'pending');
+      authOperation.resolve(authResponse);
+      await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
+      await waitFor(expectProtectedReadPending);
+      expectFetchingAccountQuery(queryClient);
+      expectSanitizedAccountMutation(queryClient, 'success', poisonValues);
+      expect(forbidden.meta).not.toHaveBeenCalled();
+      expect(auth).toHaveBeenCalledWith(
+        mode === 'signIn'
+          ? { email: EMAIL, password: PASSWORD }
+          : { email: EMAIL, name: 'Account User', password: PASSWORD }
+      );
+      for (const poison of poisonValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(poison);
+      }
+
+      const response = { items: [] };
+      protectedRead.resolve(response);
+      expect(await screen.findByRole('navigation')).toBeInTheDocument();
+      expectSettledAccountQuery(queryClient, 'success', response);
+      expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 1);
+      for (const poison of poisonValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(poison);
+      }
+      expectNoDeploymentAdmissionProbes(forbidden);
+    }
+  );
+
+  it.each(['signIn', 'signUp', 'signOut'] as const)(
+    '%s independently isolates My invitations before admission refetch on one QueryClient',
+    async (operation) => {
+      const actorAInvitation = {
+        ...PENDING_INVITATION,
+        invitationId: 'inv_00000000-0000-7b87-a43d-43110c5af97d',
+        inviteeUserId: 'usr_00000000-0000-754f-a2d3-9b6be9284dc4',
+        workspaceId: 'ws_00000000-0000-7722-a92c-91dbcdd3cc2b',
+      };
+      const actorBInvitation = {
+        ...PENDING_INVITATION,
+        invitationId: 'inv_00000000-0000-7a8c-af79-5ac14b8eeadc',
+        inviteeUserId: 'usr_00000000-0000-706e-9d8d-e7df35cc2ab2',
+        workspaceId: 'ws_00000000-0000-7d56-970a-929068c925db',
+      };
+      const actorAValues = [
+        actorAInvitation.invitationId,
+        actorAInvitation.inviteeUserId,
+        actorAInvitation.workspaceId,
+        'ws_00000000-0000-78af-bc8c-cfa7324da1ab',
+        'usr_00000000-0000-7ff3-9f32-dc25d3615313',
+        'actor-a-only-outward-activity',
+      ];
+      const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
+      let actorBMountStarted = false;
+      let actorBReadStartedAfterMount = false;
+      const listMyWorkspaceInvitations = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [actorAInvitation] })
+        .mockImplementationOnce(() => {
+          actorBReadStartedAfterMount = actorBMountStarted;
+          return Promise.resolve({ items: [actorBInvitation] });
+        });
+      const { client, listAuthorizedWorkspaces } = makeSharingClient({
+        methods: { listMyWorkspaceInvitations },
+      });
+      let queryClient!: QueryClient;
+      let queriesAtAdmissionStart: string | undefined;
+      let unrelatedQueryAtAdmissionStart: unknown;
+      let unrelatedStateAtAdmissionStart: unknown;
+      let unrelatedObserversAtAdmissionStart: number | undefined;
+      listAuthorizedWorkspaces.mockReset().mockResolvedValueOnce(PRODUCT_WORKSPACES);
+      listAuthorizedWorkspaces.mockImplementationOnce(() => {
+        queriesAtAdmissionStart = inspectRetained(
           queryClient
             .getQueryCache()
             .getAll()
-            .map((query) => query.state.data)
-        )
-      ).not.toContain(actorAValue);
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
-    }
+            .map((query) => ({ key: query.queryKey, state: query.state }))
+        );
+        unrelatedQueryAtAdmissionStart = queryClient
+          .getQueryCache()
+          .find({ exact: true, queryKey: ['account', 's22-q-unrelated'] });
+        unrelatedStateAtAdmissionStart = (
+          unrelatedQueryAtAdmissionStart as { state?: unknown } | undefined
+        )?.state;
+        unrelatedObserversAtAdmissionStart = (
+          unrelatedQueryAtAdmissionStart as { getObserversCount?: () => number } | undefined
+        )?.getObserversCount?.();
+        return transitionAdmission.promise;
+      });
+      listAuthorizedWorkspaces.mockResolvedValue(PRODUCT_WORKSPACES);
+      const signIn = client.auth.email.signIn as ReturnType<typeof vi.fn>;
+      const signOut = client.auth.email.signOut as ReturnType<typeof vi.fn>;
+      const signUp = client.auth.email.signUp as ReturnType<typeof vi.fn>;
+      signIn.mockResolvedValue({ redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER });
+      signOut.mockResolvedValue({ success: true });
+      signUp.mockResolvedValue({ token: RESPONSE_TOKEN, user: AUTH_USER });
+      const unrelatedKey = ['account', 's22-q-unrelated'] as const;
+      const unrelatedValue = { retained: true };
+      const unrelatedRead = vi.fn().mockResolvedValue(unrelatedValue);
+      queryClient = new QueryClient({
+        defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+      });
+      queryClient.setQueryData(unrelatedKey, unrelatedValue);
+      queryClient.setQueryData(['workspaces'], [{ id: 'ws_00000000-0000-78af-bc8c-cfa7324da1ab' }]);
+      queryClient.setQueryData(
+        ['workspaces', 'summaries'],
+        [{ ownerUserId: 'usr_00000000-0000-754f-a2d3-9b6be9284dc4' }]
+      );
+      queryClient.setQueryData(
+        ['account', 'session-user'],
+        'usr_00000000-0000-754f-a2d3-9b6be9284dc4'
+      );
+      queryClient.setQueryData(
+        ['thread-dashboard', 'ws_00000000-0000-7b10-9af8-12fd37a880e0', 'th1'],
+        {
+          viewerUserId: 'usr_00000000-0000-7ff3-9f32-dc25d3615313',
+          participants: [],
+          runtimeActivity: [
+            {
+              turnId: 'tu_00000000-0000-7ac2-90bc-b76f463334e2',
+              contentCapture: 'on',
+              coverage: 'partial',
+              omittedEntryCount: 0,
+              entries: [
+                {
+                  sequence: 1,
+                  observedAt: '2026-09-22T00:00:00.000Z',
+                  kind: 'result',
+                  text: 'actor-a-only-outward-activity',
+                  textTruncated: false,
+                },
+              ],
+            },
+          ],
+        }
+      );
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-78af-bc8c-cfa7324da1ab' });
+      const guards = guardSensitiveSinks(actorAValues);
+      const unrelatedQuery = queryClient
+        .getQueryCache()
+        .find({ exact: true, queryKey: unrelatedKey });
+      expect(unrelatedQuery).toBeDefined();
+      const unrelatedState = unrelatedQuery?.state;
+      const mountHarness = () =>
+        render(
+          <QueryClientProvider client={queryClient}>
+            <CoreClientProvider client={client}>
+              <AccountCacheTransitionHarness unrelatedRead={unrelatedRead} />
+            </CoreClientProvider>
+          </QueryClientProvider>
+        );
+      const actorAView = mountHarness();
 
-    transitionAdmission.resolve(PRODUCT_WORKSPACES);
-    actorAView.unmount();
-    actorBMountStarted = true;
-    mountHarness();
-    await screen.findByText(
-      /inv_00000000-0000-7061-b221-49e0c19ef2b2.*usr_00000000-0000-7c9c-b1a5-dce445bd2166.*ws_00000000-0000-7b7d-b55e-92dd4c91d877/i
-    );
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
-    expect(actorBReadStartedAfterMount).toBe(true);
-    expect(queryClient.getMutationCache().getAll()).not.toContain(decisionMutation);
-    for (const actorAValue of actorAValues) {
-      expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      await screen.findByText(
+        /inv_00000000-0000-7b87-a43d-43110c5af97d.*usr_00000000-0000-754f-a2d3-9b6be9284dc4.*ws_00000000-0000-7722-a92c-91dbcdd3cc2b/i
+      );
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).toContain(actorAValue);
+      }
+      await userEvent.click(screen.getByRole('button', { name: operation }));
+
+      await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
+      expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
+      expect(queryClient.getQueryData(['workspaces', 'summaries'])).toBeUndefined();
+      expect(queryClient.getQueryData(['account', 'session-user'])).toBeUndefined();
+      const auth = operation === 'signIn' ? signIn : operation === 'signUp' ? signUp : signOut;
+      expect(auth).toHaveBeenCalledTimes(1);
+      expect(auth.mock.invocationCallOrder[0]).toBeLessThan(
+        listAuthorizedWorkspaces.mock.invocationCallOrder[1] as number
+      );
+      expect(unrelatedQueryAtAdmissionStart).toBe(unrelatedQuery);
+      expect(unrelatedStateAtAdmissionStart).toBe(unrelatedState);
+      expect(unrelatedObserversAtAdmissionStart).toBe(1);
+      expect(unrelatedRead).not.toHaveBeenCalled();
+      for (const actorAValue of actorAValues) {
+        expect(queriesAtAdmissionStart).not.toContain(actorAValue);
+      }
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      transitionAdmission.resolve(PRODUCT_WORKSPACES);
+      actorAView.unmount();
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      expect(queryClient.getQueryCache().find({ exact: true, queryKey: unrelatedKey })).toBe(
+        unrelatedQuery
+      );
+      expect(unrelatedQuery?.state).toBe(unrelatedState);
+      expect(unrelatedRead).not.toHaveBeenCalled();
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      }
+
+      actorBMountStarted = true;
+      mountHarness();
+      await screen.findByText(
+        /inv_00000000-0000-7a8c-af79-5ac14b8eeadc.*usr_00000000-0000-706e-9d8d-e7df35cc2ab2.*ws_00000000-0000-7d56-970a-929068c925db/i
+      );
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
+      expect(actorBReadStartedAfterMount).toBe(true);
+      expect(queryClient.getQueryCache().find({ exact: true, queryKey: unrelatedKey })).toBe(
+        unrelatedQuery
+      );
+      expect(unrelatedQuery?.state).toBe(unrelatedState);
+      expect(unrelatedQuery?.getObserversCount()).toBe(1);
+      expect(unrelatedRead).not.toHaveBeenCalled();
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      }
     }
-    unrelatedPendingQuerySettlement.resolve({ retained: 'pending-query' });
-    unrelatedPendingMutationSettlement.resolve({ retained: 'pending-mutation' });
-    await unrelatedPendingMutationPromise;
-  });
+  );
+
+  it.each(
+    (['signIn', 'signUp', 'signOut'] as const).flatMap((operation) =>
+      (['success', 'error'] as const).map(
+        (decisionOutcome) => [operation, decisionOutcome] as const
+      )
+    )
+  )(
+    '%s removes only the settled My-invitation %s mutation before admission refetch',
+    async (operation, decisionOutcome) => {
+      const actorAInvitation = {
+        ...PENDING_INVITATION,
+        invitationId: 'inv_00000000-0000-770d-9f70-2e25f1e20157',
+        inviteeUserId: 'usr_00000000-0000-71af-b726-a4a47581cdb1',
+        workspaceId: 'ws_00000000-0000-778d-8646-db72befa34f6',
+      };
+      const actorASettled = {
+        ...actorAInvitation,
+        acceptedAt: MEMBER_UPDATED_AT,
+        effectiveStatus: 'accepted' as const,
+        revision: 22,
+      };
+      const actorBInvitation = {
+        ...PENDING_INVITATION,
+        invitationId: 'inv_00000000-0000-7c75-a340-c02f9717d692',
+        inviteeUserId: 'usr_00000000-0000-790b-8ffe-f5509f5ff9e9',
+        workspaceId: 'ws_00000000-0000-760a-be30-3eb166082eed',
+      };
+      const actorAValues = [
+        actorAInvitation.invitationId,
+        actorAInvitation.inviteeUserId,
+        actorAInvitation.workspaceId,
+      ];
+      const guards = guardSensitiveSinks(actorAValues);
+      const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
+      let actorBMountStarted = false;
+      let actorBReadStartedAfterMount = false;
+      let queriesAtAdmissionStart: string | undefined;
+      let mutationsAtAdmissionStart: unknown[] | undefined;
+      const listMyWorkspaceInvitations = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [actorAInvitation] })
+        .mockImplementationOnce(() => {
+          actorBReadStartedAfterMount = actorBMountStarted;
+          return Promise.resolve({ items: [actorBInvitation] });
+        });
+      const decisionFailure = new ApiCallError(409, 'Invitation changed.', {
+        code: 'revision_conflict',
+        details: { current: { ...actorAInvitation, revision: 23 }, resource: 'invitation' },
+      });
+      const acceptWorkspaceInvitation =
+        decisionOutcome === 'success'
+          ? vi.fn().mockResolvedValue({ invitation: actorASettled })
+          : vi.fn().mockRejectedValue(decisionFailure);
+      const { client, listAuthorizedWorkspaces } = makeSharingClient({
+        methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
+      });
+      let queryClient!: QueryClient;
+      listAuthorizedWorkspaces.mockReset().mockResolvedValueOnce(PRODUCT_WORKSPACES);
+      listAuthorizedWorkspaces.mockImplementationOnce(() => {
+        queriesAtAdmissionStart = inspectRetained(
+          queryClient
+            .getQueryCache()
+            .getAll()
+            .map((query) => ({ key: query.queryKey, state: query.state }))
+        );
+        mutationsAtAdmissionStart = queryClient.getMutationCache().getAll();
+        return transitionAdmission.promise;
+      });
+      listAuthorizedWorkspaces.mockResolvedValue(PRODUCT_WORKSPACES);
+      queryClient = new QueryClient({
+        defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+      });
+      const unrelatedKey = ['account', 's22-q-unrelated-mutation'] as const;
+      const unrelatedValue = { retained: true };
+      const unrelatedMutation = queryClient.getMutationCache().build(queryClient, {
+        mutationFn: async () => unrelatedValue,
+        mutationKey: unrelatedKey,
+      });
+      await unrelatedMutation.execute(undefined);
+      const mountHarness = () =>
+        render(
+          <QueryClientProvider client={queryClient}>
+            <CoreClientProvider client={client}>
+              <AccountDecisionCacheTransitionHarness operation={operation} />
+            </CoreClientProvider>
+          </QueryClientProvider>
+        );
+      const actorAView = mountHarness();
+      await screen.findByText(
+        /inv_00000000-0000-770d-9f70-2e25f1e20157.*usr_00000000-0000-71af-b726-a4a47581cdb1.*ws_00000000-0000-778d-8646-db72befa34f6/i
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'settle invitation decision' }));
+      await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1));
+      const decisionMutation = await waitFor(() => {
+        const mutations = queryClient
+          .getMutationCache()
+          .getAll()
+          .filter((candidate) => candidate !== unrelatedMutation);
+        expect(mutations).toHaveLength(1);
+        expect(mutations[0]?.state.status).toBe(decisionOutcome);
+        return mutations[0];
+      });
+      const decisionKey = decisionMutation?.options.mutationKey;
+      expect(inspectRetained(decisionMutation?.state.variables)).toContain(
+        actorAInvitation.invitationId
+      );
+      if (decisionOutcome === 'success') {
+        for (const actorAValue of actorAValues) {
+          expect(inspectRetained(decisionMutation?.state.data)).toContain(actorAValue);
+        }
+        expect(decisionMutation?.state.error).toBeNull();
+      } else {
+        expect(decisionMutation?.state.data).toBeUndefined();
+        expect(decisionMutation?.state.error).toMatchObject({
+          code: 'revision_conflict',
+          current: {
+            invitationId: actorAInvitation.invitationId,
+            inviteeUserId: actorAInvitation.inviteeUserId,
+            workspaceId: actorAInvitation.workspaceId,
+          },
+          resource: 'invitation',
+        });
+        for (const actorAValue of actorAValues) {
+          expect(inspectRetained(decisionMutation?.state.error)).toContain(actorAValue);
+        }
+      }
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).toContain(actorAValue);
+      }
+      await userEvent.click(screen.getByRole('button', { name: operation }));
+      await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
+      expect(mutationsAtAdmissionStart).not.toContain(decisionMutation);
+      expect(mutationsAtAdmissionStart).toContain(unrelatedMutation);
+      expect(decisionKey).toEqual(expect.any(Array));
+      expect(decisionKey).not.toHaveLength(0);
+      expect(decisionKey).not.toEqual(unrelatedKey);
+      expect(unrelatedMutation.state).toMatchObject({ data: unrelatedValue, status: 'success' });
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      for (const actorAValue of actorAValues) {
+        expect(queriesAtAdmissionStart).not.toContain(actorAValue);
+      }
+      transitionAdmission.resolve(PRODUCT_WORKSPACES);
+      actorAView.unmount();
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      }
+
+      actorBMountStarted = true;
+      mountHarness();
+      await screen.findByText(
+        /inv_00000000-0000-7c75-a340-c02f9717d692.*usr_00000000-0000-790b-8ffe-f5509f5ff9e9.*ws_00000000-0000-760a-be30-3eb166082eed/i
+      );
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
+      expect(actorBReadStartedAfterMount).toBe(true);
+      expect(queryClient.getMutationCache().getAll()).toContain(unrelatedMutation);
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      }
+    }
+  );
+
+  it.each(
+    (['signIn', 'signUp', 'signOut'] as const).flatMap((operation) =>
+      (['success', 'error'] as const).map(
+        (decisionOutcome) => [operation, decisionOutcome] as const
+      )
+    )
+  )(
+    '%s detaches a pending My-invitation mutation through late %s settlement',
+    async (operation, decisionOutcome) => {
+      const actorAInvitation = {
+        ...PENDING_INVITATION,
+        invitationId: 'inv_00000000-0000-7357-b6d9-17d13db784a2',
+        inviteeUserId: 'usr_00000000-0000-76c0-a71e-a4adac054a50',
+        workspaceId: 'ws_00000000-0000-7d62-a07c-c544c1e4e1eb',
+      };
+      const actorASettled = {
+        ...actorAInvitation,
+        acceptedAt: MEMBER_UPDATED_AT,
+        effectiveStatus: 'accepted' as const,
+        revision: 22,
+      };
+      const actorBInvitation = {
+        ...PENDING_INVITATION,
+        invitationId: 'inv_00000000-0000-7061-b221-49e0c19ef2b2',
+        inviteeUserId: 'usr_00000000-0000-7c9c-b1a5-dce445bd2166',
+        workspaceId: 'ws_00000000-0000-7b7d-b55e-92dd4c91d877',
+      };
+      const actorAValues = [
+        actorAInvitation.invitationId,
+        actorAInvitation.inviteeUserId,
+        actorAInvitation.workspaceId,
+      ];
+      const guards = guardSensitiveSinks(actorAValues);
+      const decisionSettlement = deferred<{ invitation: typeof actorASettled }>();
+      const transitionAdmission = deferred<typeof PRODUCT_WORKSPACES>();
+      const unrelatedPendingQuerySettlement = deferred<{ retained: 'pending-query' }>();
+      const unrelatedPendingMutationSettlement = deferred<{ retained: 'pending-mutation' }>();
+      let actorBMountStarted = false;
+      let actorBReadStartedAfterMount = false;
+      let decisionKey: readonly unknown[] | undefined;
+      let invitationsKey: readonly unknown[] | undefined;
+      let featureMutationsAtAdmissionStart: unknown[] | undefined;
+      let invitationsQueryAtAdmissionStart: unknown;
+      let unrelatedQueriesAtAdmissionStart:
+        | { pending: unknown; pendingState: unknown; settled: unknown; settledState: unknown }
+        | undefined;
+      let unrelatedMutationsAtAdmissionStart:
+        | { pending: unknown[]; pendingState: unknown; settled: unknown[]; settledState: unknown }
+        | undefined;
+      const listMyWorkspaceInvitations = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [actorAInvitation] })
+        .mockImplementationOnce(() => {
+          actorBReadStartedAfterMount = actorBMountStarted;
+          return Promise.resolve({ items: [actorBInvitation] });
+        });
+      const decisionFailure = new ApiCallError(409, 'Invitation changed.', {
+        code: 'revision_conflict',
+        details: { current: { ...actorAInvitation, revision: 23 }, resource: 'invitation' },
+      });
+      const acceptWorkspaceInvitation = vi.fn().mockReturnValue(decisionSettlement.promise);
+      const { client, listAuthorizedWorkspaces } = makeSharingClient({
+        methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
+      });
+      const unrelatedPendingQueryKey = ['account', 's22-q-p-unrelated-pending-query'] as const;
+      const unrelatedSettledQueryKey = ['account', 's22-q-p-unrelated-settled-query'] as const;
+      const unrelatedPendingMutationKey = [
+        'account',
+        's22-q-p-unrelated-pending-mutation',
+      ] as const;
+      const unrelatedSettledMutationKey = [
+        'account',
+        's22-q-p-unrelated-settled-mutation',
+      ] as const;
+      let queryClient!: QueryClient;
+      listAuthorizedWorkspaces.mockReset().mockResolvedValueOnce(PRODUCT_WORKSPACES);
+      listAuthorizedWorkspaces.mockImplementationOnce(() => {
+        featureMutationsAtAdmissionStart = decisionKey
+          ? queryClient.getMutationCache().findAll({ exact: true, mutationKey: decisionKey })
+          : undefined;
+        invitationsQueryAtAdmissionStart = invitationsKey
+          ? queryClient.getQueryCache().find({ exact: true, queryKey: invitationsKey })
+          : undefined;
+        const pendingQuery = queryClient
+          .getQueryCache()
+          .find({ exact: true, queryKey: unrelatedPendingQueryKey });
+        const settledQuery = queryClient
+          .getQueryCache()
+          .find({ exact: true, queryKey: unrelatedSettledQueryKey });
+        const pendingMutations = queryClient
+          .getMutationCache()
+          .findAll({ exact: true, mutationKey: unrelatedPendingMutationKey });
+        const settledMutations = queryClient
+          .getMutationCache()
+          .findAll({ exact: true, mutationKey: unrelatedSettledMutationKey });
+        unrelatedQueriesAtAdmissionStart = {
+          pending: pendingQuery,
+          pendingState: pendingQuery?.state,
+          settled: settledQuery,
+          settledState: settledQuery?.state,
+        };
+        unrelatedMutationsAtAdmissionStart = {
+          pending: pendingMutations,
+          pendingState: pendingMutations[0]?.state,
+          settled: settledMutations,
+          settledState: settledMutations[0]?.state,
+        };
+        return transitionAdmission.promise;
+      });
+      listAuthorizedWorkspaces.mockResolvedValue(PRODUCT_WORKSPACES);
+      const signIn = client.auth.email.signIn as ReturnType<typeof vi.fn>;
+      const signOut = client.auth.email.signOut as ReturnType<typeof vi.fn>;
+      const signUp = client.auth.email.signUp as ReturnType<typeof vi.fn>;
+      signIn.mockResolvedValue({ redirect: false, token: RESPONSE_TOKEN, user: AUTH_USER });
+      signOut.mockResolvedValue({ success: true });
+      signUp.mockResolvedValue({ token: RESPONSE_TOKEN, user: AUTH_USER });
+      queryClient = new QueryClient({
+        defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+      });
+      const unrelatedPendingQueryRead = vi.fn(() => unrelatedPendingQuerySettlement.promise);
+      void queryClient.fetchQuery({
+        queryFn: unrelatedPendingQueryRead,
+        queryKey: unrelatedPendingQueryKey,
+      });
+      queryClient.setQueryData(unrelatedSettledQueryKey, { retained: 'settled-query' });
+      const unrelatedPendingQuery = queryClient.getQueryCache().find({
+        exact: true,
+        queryKey: unrelatedPendingQueryKey,
+      });
+      const unrelatedSettledQuery = queryClient.getQueryCache().find({
+        exact: true,
+        queryKey: unrelatedSettledQueryKey,
+      });
+      expect(unrelatedPendingQuery).toBeDefined();
+      expect(unrelatedSettledQuery).toBeDefined();
+      const unrelatedPendingMutation = queryClient.getMutationCache().build(queryClient, {
+        mutationFn: () => unrelatedPendingMutationSettlement.promise,
+        mutationKey: unrelatedPendingMutationKey,
+      });
+      const unrelatedPendingMutationPromise = unrelatedPendingMutation.execute(undefined);
+      const unrelatedSettledMutation = queryClient.getMutationCache().build(queryClient, {
+        mutationFn: async () => ({ retained: 'settled-mutation' }),
+        mutationKey: unrelatedSettledMutationKey,
+      });
+      await unrelatedSettledMutation.execute(undefined);
+      const unrelatedPendingQueryState = unrelatedPendingQuery?.state;
+      const unrelatedSettledQueryState = unrelatedSettledQuery?.state;
+      const unrelatedPendingMutationState = unrelatedPendingMutation.state;
+      const unrelatedSettledMutationState = unrelatedSettledMutation.state;
+      const mountHarness = () =>
+        render(
+          <QueryClientProvider client={queryClient}>
+            <CoreClientProvider client={client}>
+              <AccountDecisionCacheTransitionHarness operation={operation} />
+            </CoreClientProvider>
+          </QueryClientProvider>
+        );
+      const actorAView = mountHarness();
+      await screen.findByText(
+        /inv_00000000-0000-7357-b6d9-17d13db784a2.*usr_00000000-0000-76c0-a71e-a4adac054a50.*ws_00000000-0000-7d62-a07c-c544c1e4e1eb/i
+      );
+      const invitationsQuery = queryClient
+        .getQueryCache()
+        .getAll()
+        .find((query) => inspectRetained(query.state.data).includes(actorAInvitation.invitationId));
+      invitationsKey = invitationsQuery?.queryKey;
+      expect(invitationsKey).toEqual(expect.any(Array));
+      expect(invitationsKey).not.toHaveLength(0);
+      await userEvent.click(screen.getByRole('button', { name: 'settle invitation decision' }));
+      await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1));
+      const decisionMutation = queryClient
+        .getMutationCache()
+        .getAll()
+        .find((mutation) =>
+          inspectRetained(mutation.state.variables).includes(actorAInvitation.invitationId)
+        );
+      expect(decisionMutation?.state.status).toBe('pending');
+      decisionKey = decisionMutation?.options.mutationKey;
+      expect(decisionKey).toEqual(expect.any(Array));
+      expect(decisionKey).not.toHaveLength(0);
+      const featureMutationsBeforeAuth = queryClient
+        .getMutationCache()
+        .findAll({ exact: true, mutationKey: decisionKey });
+      expect(featureMutationsBeforeAuth).toHaveLength(1);
+      expect(featureMutationsBeforeAuth[0]).toBe(decisionMutation);
+      expect(inspectRetained(decisionMutation?.state.variables)).toContain(
+        actorAInvitation.invitationId
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: operation }));
+      await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
+      expect(featureMutationsAtAdmissionStart).toHaveLength(0);
+      expect(invitationsQueryAtAdmissionStart).toBeUndefined();
+      expect(unrelatedQueriesAtAdmissionStart?.pending).toBe(unrelatedPendingQuery);
+      expect(unrelatedQueriesAtAdmissionStart?.pendingState).toBe(unrelatedPendingQueryState);
+      expect(unrelatedQueriesAtAdmissionStart?.settled).toBe(unrelatedSettledQuery);
+      expect(unrelatedQueriesAtAdmissionStart?.settledState).toBe(unrelatedSettledQueryState);
+      expect(unrelatedMutationsAtAdmissionStart?.pending).toHaveLength(1);
+      expect(unrelatedMutationsAtAdmissionStart?.pending[0]).toBe(unrelatedPendingMutation);
+      expect(unrelatedMutationsAtAdmissionStart?.pendingState).toBe(unrelatedPendingMutationState);
+      expect(unrelatedMutationsAtAdmissionStart?.settled).toHaveLength(1);
+      expect(unrelatedMutationsAtAdmissionStart?.settled[0]).toBe(unrelatedSettledMutation);
+      expect(unrelatedMutationsAtAdmissionStart?.settledState).toBe(unrelatedSettledMutationState);
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      expect(unrelatedPendingQueryRead).toHaveBeenCalledTimes(1);
+
+      if (decisionOutcome === 'success') {
+        decisionSettlement.resolve({ invitation: actorASettled });
+      } else {
+        decisionSettlement.reject(decisionFailure);
+      }
+      await waitFor(() => expect(decisionMutation?.state.status).toBe(decisionOutcome));
+      if (decisionOutcome === 'success') {
+        expect(decisionMutation?.state.data).toEqual({ invitation: actorASettled });
+      } else {
+        expect(decisionMutation?.state.error).toMatchObject({
+          code: 'revision_conflict',
+          current: {
+            invitationId: actorAInvitation.invitationId,
+            inviteeUserId: actorAInvitation.inviteeUserId,
+            workspaceId: actorAInvitation.workspaceId,
+          },
+          resource: 'invitation',
+        });
+      }
+      expect(queryClient.getMutationCache().getAll()).not.toContain(decisionMutation);
+      for (const actorAValue of actorAValues) {
+        expect(
+          inspectRetained(
+            queryClient
+              .getQueryCache()
+              .getAll()
+              .map((query) => query.state.data)
+          )
+        ).not.toContain(actorAValue);
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      }
+
+      transitionAdmission.resolve(PRODUCT_WORKSPACES);
+      actorAView.unmount();
+      actorBMountStarted = true;
+      mountHarness();
+      await screen.findByText(
+        /inv_00000000-0000-7061-b221-49e0c19ef2b2.*usr_00000000-0000-7c9c-b1a5-dce445bd2166.*ws_00000000-0000-7b7d-b55e-92dd4c91d877/i
+      );
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2);
+      expect(actorBReadStartedAfterMount).toBe(true);
+      expect(queryClient.getMutationCache().getAll()).not.toContain(decisionMutation);
+      for (const actorAValue of actorAValues) {
+        expect(retainedAccountSurfaces(queryClient, guards)).not.toContain(actorAValue);
+      }
+      unrelatedPendingQuerySettlement.resolve({ retained: 'pending-query' });
+      unrelatedPendingMutationSettlement.resolve({ retained: 'pending-mutation' });
+      await unrelatedPendingMutationPromise;
+    }
+  );
 });
 
 describe('selected-Workspace member management', () => {
   it.each([
     ['Remove', /remove member/i],
     ['Transfer', /transfer ownership/i],
-  ] as const)('closes %s confirmation when the same member is selected in another cached Workspace', async (_operation, action) => {
-    const firstWorkspaceId = OWNER_WORKSPACES.items[0]!.workspace.id;
-    const secondWorkspaceId = OWNER_WORKSPACES.items[1]!.workspace.id;
-    const listWorkspaceMembers = vi
-      .fn()
-      .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+  ] as const)(
+    'closes %s confirmation when the same member is selected in another cached Workspace',
+    async (_operation, action) => {
+      const firstWorkspaceId = OWNER_WORKSPACES.items[0]!.workspace.id;
+      const secondWorkspaceId = OWNER_WORKSPACES.items[1]!.workspace.id;
+      const listWorkspaceMembers = vi
+        .fn()
+        .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+          items: [
+            { ...OWNER_MEMBER, workspaceId },
+            { ...EDITOR_MEMBER, workspaceId },
+          ],
+        }));
+      const { client, methods } = makeSharingClient({ methods: { listWorkspaceMembers } });
+      useWorkspaceStore.setState({ currentWorkspaceId: firstWorkspaceId });
+      const { queryClient } = renderApp('/settings/account', client);
+      const members = await screen.findByRole('region', { name: 'Workspace members' });
+      const member = await within(members).findByRole('row', {
+        name: new RegExp(`${EDITOR_MEMBER.userId}.*member`, 'i'),
+      });
+      queryClient.setQueryData(['account', 'workspace-members', secondWorkspaceId], {
         items: [
-          { ...OWNER_MEMBER, workspaceId },
-          { ...EDITOR_MEMBER, workspaceId },
+          { ...OWNER_MEMBER, workspaceId: secondWorkspaceId },
+          { ...EDITOR_MEMBER, workspaceId: secondWorkspaceId },
         ],
-      }));
-    const { client, methods } = makeSharingClient({ methods: { listWorkspaceMembers } });
-    useWorkspaceStore.setState({ currentWorkspaceId: firstWorkspaceId });
-    const { queryClient } = renderApp('/settings/account', client);
-    const members = await screen.findByRole('region', { name: 'Workspace members' });
-    const member = await within(members).findByRole('row', {
-      name: new RegExp(`${EDITOR_MEMBER.userId}.*member`, 'i'),
-    });
-    queryClient.setQueryData(['account', 'workspace-members', secondWorkspaceId], {
-      items: [
-        { ...OWNER_MEMBER, workspaceId: secondWorkspaceId },
-        { ...EDITOR_MEMBER, workspaceId: secondWorkspaceId },
-      ],
-    });
-    queryClient.setQueryData(['account', 'workspace-invitations', secondWorkspaceId], {
-      items: [],
-    });
-    const user = userEvent.setup();
-    await user.click(await revealRowAction(user, member, action));
-    const oldDialog = screen.getByRole('dialog', { name: /confirm/i });
-    act(() => useWorkspaceStore.setState({ currentWorkspaceId: secondWorkspaceId }));
-    await waitFor(() =>
-      expect(listWorkspaceMembers).toHaveBeenCalledWith({ workspaceId: secondWorkspaceId })
-    );
-    expect(methods.removeWorkspaceMember).not.toHaveBeenCalled();
-    expect(methods.transferWorkspaceOwnership).not.toHaveBeenCalled();
-    await waitFor(() => expect(oldDialog).not.toBeInTheDocument());
-    expect(screen.queryByRole('dialog', { name: /confirm/i })).not.toBeInTheDocument();
-  });
+      });
+      queryClient.setQueryData(['account', 'workspace-invitations', secondWorkspaceId], {
+        items: [],
+      });
+      const user = userEvent.setup();
+      await user.click(await revealRowAction(user, member, action));
+      const oldDialog = screen.getByRole('dialog', { name: /confirm/i });
+      act(() => useWorkspaceStore.setState({ currentWorkspaceId: secondWorkspaceId }));
+      await waitFor(() =>
+        expect(listWorkspaceMembers).toHaveBeenCalledWith({ workspaceId: secondWorkspaceId })
+      );
+      expect(methods.removeWorkspaceMember).not.toHaveBeenCalled();
+      expect(methods.transferWorkspaceOwnership).not.toHaveBeenCalled();
+      await waitFor(() => expect(oldDialog).not.toBeInTheDocument());
+      expect(screen.queryByRole('dialog', { name: /confirm/i })).not.toBeInTheDocument();
+    }
+  );
 
   it('reads only the selected Workspace and renders ownership identity and invitation lifecycle without email', async () => {
     const memberRead = deferred<typeof WORKSPACE_MEMBERS>();
@@ -2091,49 +2108,55 @@ describe('selected-Workspace member management', () => {
       stableResponse: WORKSPACE_INVITATIONS,
       stableRow: /usr_00000000-0000-7be5-be91-ebcf883846d3.*pending/i,
     },
-  ] as const)('retries only failed owner read $failedMethod and preserves the other collection', async ({
-    empty,
-    failedMethod,
-    failedRegion,
-    recoveredRow,
-    retryResponse,
-    stableMethod,
-    stableRegion,
-    stableResponse,
-    stableRow,
-  }) => {
-    const failure = new ApiCallError(503, `${failedRegion} unavailable.`, {
-      code: 'core.unavailable',
-    });
-    const failedRead = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(retryResponse);
-    const stableRead = vi.fn().mockResolvedValue(stableResponse);
-    const { client } = makeSharingClient({
-      methods: { [failedMethod]: failedRead, [stableMethod]: stableRead },
-    });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
-    renderApp('/settings/account', client);
+  ] as const)(
+    'retries only failed owner read $failedMethod and preserves the other collection',
+    async ({
+      empty,
+      failedMethod,
+      failedRegion,
+      recoveredRow,
+      retryResponse,
+      stableMethod,
+      stableRegion,
+      stableResponse,
+      stableRow,
+    }) => {
+      const failure = new ApiCallError(503, `${failedRegion} unavailable.`, {
+        code: 'core.unavailable',
+      });
+      const failedRead = vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce(retryResponse);
+      const stableRead = vi.fn().mockResolvedValue(stableResponse);
+      const { client } = makeSharingClient({
+        methods: { [failedMethod]: failedRead, [stableMethod]: stableRead },
+      });
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
+      renderApp('/settings/account', client);
 
-    await screen.findByText(/Workspace access:/i);
-    const stableCollection = screen.getByRole('region', { name: stableRegion });
-    const stableRecord = await within(stableCollection).findByRole('row', { name: stableRow });
-    const failedCollection = screen.getByRole('region', { name: failedRegion });
-    const alert = await within(failedCollection).findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn.t|failed|unavailable/i);
-    const stableReads = stableRead.mock.calls.length;
-    expect(failedRead).toHaveBeenCalledTimes(1);
-    await userEvent.click(within(alert).getByRole('button', { name: /try again|retry/i }));
+      await screen.findByText(/Workspace access:/i);
+      const stableCollection = screen.getByRole('region', { name: stableRegion });
+      const stableRecord = await within(stableCollection).findByRole('row', { name: stableRow });
+      const failedCollection = screen.getByRole('region', { name: failedRegion });
+      const alert = await within(failedCollection).findByRole('alert');
+      expect(alert).toHaveTextContent(/couldn.t|failed|unavailable/i);
+      const stableReads = stableRead.mock.calls.length;
+      expect(failedRead).toHaveBeenCalledTimes(1);
+      await userEvent.click(within(alert).getByRole('button', { name: /try again|retry/i }));
 
-    await waitFor(() => expect(failedRead).toHaveBeenCalledTimes(2));
-    if (empty) {
-      expect(await within(failedCollection).findByText(empty)).toBeInTheDocument();
-    } else {
-      expect(
-        await within(failedCollection).findByRole('row', { name: recoveredRow })
-      ).toBeInTheDocument();
+      await waitFor(() => expect(failedRead).toHaveBeenCalledTimes(2));
+      if (empty) {
+        expect(await within(failedCollection).findByText(empty)).toBeInTheDocument();
+      } else {
+        expect(
+          await within(failedCollection).findByRole('row', { name: recoveredRow })
+        ).toBeInTheDocument();
+      }
+      expect(stableRead).toHaveBeenCalledTimes(stableReads);
+      expect(stableRecord).toBeInTheDocument();
     }
-    expect(stableRead).toHaveBeenCalledTimes(stableReads);
-    expect(stableRecord).toBeInTheDocument();
-  });
+  );
 
   it('allows an active non-owner member to manage membership without any access-tier control', async () => {
     const { client, methods } = makeSharingClient({
@@ -2337,111 +2360,116 @@ describe('selected-Workspace member management', () => {
       statusName: /workspace ownership transfer/i,
       statusState: /ownership transferred.*usr_00000000-0000-74e6-acb7-da1cb380abb8/i,
     },
-  ] as const)('requires confirmation and sends the exact revision command once', async ({
-    action,
-    applicableCollection,
-    expected,
-    method,
-    response,
-    row,
-    settlementIdentity,
-    settlementState,
-    statusName,
-    statusState,
-  }) => {
-    const pending = deferred<unknown>();
-    const operation = vi.fn().mockReturnValue(pending.promise);
-    const targetUserId = method === 'transferWorkspaceOwnership' ? expected[0].targetUserId : null;
-    const settledMembers =
-      method === 'removeWorkspaceMember'
-        ? [OWNER_MEMBER, response.member, VIEWER_MEMBER, REMOVED_MEMBER]
-        : method === 'transferWorkspaceOwnership'
-          ? [
-              { ...OWNER_MEMBER, isOwner: false },
-              {
-                ...EDITOR_MEMBER,
-                isOwner: targetUserId === 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
-              },
-              {
-                ...VIEWER_MEMBER,
-
-                isOwner: targetUserId === 'usr_00000000-0000-74e6-acb7-da1cb380abb8',
-              },
-              REMOVED_MEMBER,
-            ]
-          : WORKSPACE_MEMBERS.items;
-    const settledInvitations =
-      method === 'revokeWorkspaceInvitation'
-        ? [response.invitation, ...WORKSPACE_INVITATIONS.items.slice(1)]
-        : WORKSPACE_INVITATIONS.items;
-    const listWorkspaceMembers = vi
-      .fn()
-      .mockResolvedValueOnce(WORKSPACE_MEMBERS)
-      .mockResolvedValue({ items: settledMembers });
-    const listWorkspaceInvitations = vi
-      .fn()
-      .mockResolvedValueOnce(WORKSPACE_INVITATIONS)
-      .mockResolvedValue({ items: settledInvitations });
-    const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
-      methods: {
-        [method]: operation,
-        listWorkspaceInvitations,
-        listWorkspaceMembers,
-      },
-    });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
-    renderApp('/settings/account', client);
-
-    await screen.findByText(/Workspace access:/i);
-    const region = screen.getByRole('region', {
-      name: method === 'revokeWorkspaceInvitation' ? 'Workspace invitations' : 'Workspace members',
-    });
-    const target = await within(region).findByRole('row', { name: row });
-    expect(target).not.toHaveTextContent(settlementState);
-    expect(screen.queryByRole('status', { name: statusName })).not.toBeInTheDocument();
-    const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
-    const user = userEvent.setup();
-    await user.click(await revealRowAction(user, target, action));
-    expect(operation).not.toHaveBeenCalled();
-    const dialog = screen.getByRole('dialog', { name: /confirm/i });
-    await user.click(within(dialog).getByRole('button', { name: /cancel/i }));
-    expect(operation).not.toHaveBeenCalled();
-    await user.click(await revealRowAction(user, target, action));
-    const reopened = screen.getByRole('dialog', { name: /confirm/i });
-    const confirm = within(reopened).getByRole('button', { name: /confirm/i });
-    await user.click(confirm);
-
-    await waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
-    expect(operation).toHaveBeenCalledWith(...expected);
-    await waitFor(() =>
-      expect(!confirm.isConnected || (confirm as HTMLButtonElement).disabled).toBe(true)
-    );
-    expect(methods.leaveWorkspace).not.toHaveBeenCalled();
-    const collection =
-      applicableCollection === 'invitations'
-        ? methods.listWorkspaceInvitations
-        : methods.listWorkspaceMembers;
-    const unrelatedCollection =
-      applicableCollection === 'invitations'
-        ? methods.listWorkspaceMembers
-        : methods.listWorkspaceInvitations;
-    const collectionReads = collection.mock.calls.length;
-    const unrelatedReads = unrelatedCollection.mock.calls.length;
-    const workspaceReads = listAuthorizedWorkspaces.mock.calls.length;
-    pending.resolve(response);
-    await expectScopedOperationSettlement({
-      regionName:
-        method === 'revokeWorkspaceInvitation' ? 'Workspace invitations' : 'Workspace members',
-      rowIdentity: settlementIdentity,
-      rowState: settlementState,
+  ] as const)(
+    'requires confirmation and sends the exact revision command once',
+    async ({
+      action,
+      applicableCollection,
+      expected,
+      method,
+      response,
+      row,
+      settlementIdentity,
+      settlementState,
       statusName,
       statusState,
-    });
-    expect(collection.mock.calls.length).toBeLessThanOrEqual(collectionReads + 1);
-    expect(unrelatedCollection).toHaveBeenCalledTimes(unrelatedReads);
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(workspaceReads);
-    expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
-  });
+    }) => {
+      const pending = deferred<unknown>();
+      const operation = vi.fn().mockReturnValue(pending.promise);
+      const targetUserId =
+        method === 'transferWorkspaceOwnership' ? expected[0].targetUserId : null;
+      const settledMembers =
+        method === 'removeWorkspaceMember'
+          ? [OWNER_MEMBER, response.member, VIEWER_MEMBER, REMOVED_MEMBER]
+          : method === 'transferWorkspaceOwnership'
+            ? [
+                { ...OWNER_MEMBER, isOwner: false },
+                {
+                  ...EDITOR_MEMBER,
+                  isOwner: targetUserId === 'usr_00000000-0000-7b55-a9d9-1852a5d31d88',
+                },
+                {
+                  ...VIEWER_MEMBER,
+
+                  isOwner: targetUserId === 'usr_00000000-0000-74e6-acb7-da1cb380abb8',
+                },
+                REMOVED_MEMBER,
+              ]
+            : WORKSPACE_MEMBERS.items;
+      const settledInvitations =
+        method === 'revokeWorkspaceInvitation'
+          ? [response.invitation, ...WORKSPACE_INVITATIONS.items.slice(1)]
+          : WORKSPACE_INVITATIONS.items;
+      const listWorkspaceMembers = vi
+        .fn()
+        .mockResolvedValueOnce(WORKSPACE_MEMBERS)
+        .mockResolvedValue({ items: settledMembers });
+      const listWorkspaceInvitations = vi
+        .fn()
+        .mockResolvedValueOnce(WORKSPACE_INVITATIONS)
+        .mockResolvedValue({ items: settledInvitations });
+      const { client, listAuthorizedWorkspaces, methods } = makeSharingClient({
+        methods: {
+          [method]: operation,
+          listWorkspaceInvitations,
+          listWorkspaceMembers,
+        },
+      });
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
+      renderApp('/settings/account', client);
+
+      await screen.findByText(/Workspace access:/i);
+      const region = screen.getByRole('region', {
+        name:
+          method === 'revokeWorkspaceInvitation' ? 'Workspace invitations' : 'Workspace members',
+      });
+      const target = await within(region).findByRole('row', { name: row });
+      expect(target).not.toHaveTextContent(settlementState);
+      expect(screen.queryByRole('status', { name: statusName })).not.toBeInTheDocument();
+      const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
+      const user = userEvent.setup();
+      await user.click(await revealRowAction(user, target, action));
+      expect(operation).not.toHaveBeenCalled();
+      const dialog = screen.getByRole('dialog', { name: /confirm/i });
+      await user.click(within(dialog).getByRole('button', { name: /cancel/i }));
+      expect(operation).not.toHaveBeenCalled();
+      await user.click(await revealRowAction(user, target, action));
+      const reopened = screen.getByRole('dialog', { name: /confirm/i });
+      const confirm = within(reopened).getByRole('button', { name: /confirm/i });
+      await user.click(confirm);
+
+      await waitFor(() => expect(operation).toHaveBeenCalledTimes(1));
+      expect(operation).toHaveBeenCalledWith(...expected);
+      await waitFor(() =>
+        expect(!confirm.isConnected || (confirm as HTMLButtonElement).disabled).toBe(true)
+      );
+      expect(methods.leaveWorkspace).not.toHaveBeenCalled();
+      const collection =
+        applicableCollection === 'invitations'
+          ? methods.listWorkspaceInvitations
+          : methods.listWorkspaceMembers;
+      const unrelatedCollection =
+        applicableCollection === 'invitations'
+          ? methods.listWorkspaceMembers
+          : methods.listWorkspaceInvitations;
+      const collectionReads = collection.mock.calls.length;
+      const unrelatedReads = unrelatedCollection.mock.calls.length;
+      const workspaceReads = listAuthorizedWorkspaces.mock.calls.length;
+      pending.resolve(response);
+      await expectScopedOperationSettlement({
+        regionName:
+          method === 'revokeWorkspaceInvitation' ? 'Workspace invitations' : 'Workspace members',
+        rowIdentity: settlementIdentity,
+        rowState: settlementState,
+        statusName,
+        statusState,
+      });
+      expect(collection.mock.calls.length).toBeLessThanOrEqual(collectionReads + 1);
+      expect(unrelatedCollection).toHaveBeenCalledTimes(unrelatedReads);
+      expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(workspaceReads);
+      expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
+    }
+  );
 
   it('preserves member controls and current ownership identity after transfer and navigation', async () => {
     const guards = guardSensitiveSinks([EMAIL]);
@@ -2715,109 +2743,115 @@ describe('selected-Workspace member management', () => {
       statusState:
         /usr_00000000-0000-7b55-a9d9-1852a5d31d88.*owner|owner.*usr_00000000-0000-7b55-a9d9-1852a5d31d88/i,
     },
-  ] as const)('uses the safe current record for $code from $method instead of synthesizing success', async ({
-    action,
-    code,
-    currentEvidence,
-    currentIdentity,
-    currentState,
-    details,
-    expectedCall,
-    method,
-    outcome,
-    precludedState,
-    region,
-    row,
-    statusState,
-  }) => {
-    const guards = guardSensitiveSinks([EMAIL]);
-    const failure = new ApiCallError(409, 'Workspace sharing conflict.', {
+  ] as const)(
+    'uses the safe current record for $code from $method instead of synthesizing success',
+    async ({
+      action,
       code,
+      currentEvidence,
+      currentIdentity,
+      currentState,
       details,
-    });
-    expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
-    const operation = vi.fn().mockRejectedValue(failure);
-    const { client, methods } = makeSharingClient({ methods: { [method]: operation } });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
-    const { queryClient } = renderApp('/settings/account', client);
-
-    await screen.findByText(/Workspace access:/i);
-    const ownerRegion = screen.getByRole('region', { name: region });
-    const target = await within(ownerRegion).findByRole('row', { name: row });
-    if (precludedState) expect(target).not.toHaveTextContent(precludedState);
-    expect(
-      screen.queryByRole('status', { name: /workspace sharing conflict/i })
-    ).not.toBeInTheDocument();
-    const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
-    const user = userEvent.setup();
-    await user.click(await revealRowAction(user, target, action));
-    const dialog = screen.getByRole('dialog', { name: /confirm/i });
-    await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(outcome);
-    await expectScopedOperationSettlement({
-      regionName: region,
-      rowIdentity: currentIdentity,
-      rowState: currentState,
-      statusName: /workspace sharing conflict/i,
+      expectedCall,
+      method,
+      outcome,
+      precludedState,
+      region,
+      row,
       statusState,
-    });
-    expect(operation).toHaveBeenCalledTimes(1);
-    expect(operation).toHaveBeenCalledWith(...expectedCall);
-    expect(
-      inspectRetained(
-        queryClient
-          .getQueryCache()
-          .getAll()
-          .map((query) => query.state.data)
-      )
-    ).toContain(currentEvidence);
-    expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
-    expectNoRetainedInviteEmail(queryClient, guards);
-  });
+    }) => {
+      const guards = guardSensitiveSinks([EMAIL]);
+      const failure = new ApiCallError(409, 'Workspace sharing conflict.', {
+        code,
+        details,
+      });
+      expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
+      const operation = vi.fn().mockRejectedValue(failure);
+      const { client, methods } = makeSharingClient({ methods: { [method]: operation } });
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
+      const { queryClient } = renderApp('/settings/account', client);
+
+      await screen.findByText(/Workspace access:/i);
+      const ownerRegion = screen.getByRole('region', { name: region });
+      const target = await within(ownerRegion).findByRole('row', { name: row });
+      if (precludedState) expect(target).not.toHaveTextContent(precludedState);
+      expect(
+        screen.queryByRole('status', { name: /workspace sharing conflict/i })
+      ).not.toBeInTheDocument();
+      const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
+      const user = userEvent.setup();
+      await user.click(await revealRowAction(user, target, action));
+      const dialog = screen.getByRole('dialog', { name: /confirm/i });
+      await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(outcome);
+      await expectScopedOperationSettlement({
+        regionName: region,
+        rowIdentity: currentIdentity,
+        rowState: currentState,
+        statusName: /workspace sharing conflict/i,
+        statusState,
+      });
+      expect(operation).toHaveBeenCalledTimes(1);
+      expect(operation).toHaveBeenCalledWith(...expectedCall);
+      expect(
+        inspectRetained(
+          queryClient
+            .getQueryCache()
+            .getAll()
+            .map((query) => query.state.data)
+        )
+      ).toContain(currentEvidence);
+      expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
+      expectNoRetainedInviteEmail(queryClient, guards);
+    }
+  );
 
   it.each([
     ['workspace_access_denied', 403, /access denied/i],
     ['idempotency_key_conflict', 409, /request conflict/i],
     ['recovery_required', 500, /recovery required/i],
-  ] as const)('keeps typed invite failure %s visible without automatic replay or email retention', async (code, status, label) => {
-    const guards = guardSensitiveSinks([EMAIL]);
-    const failure = new ApiCallError(status, 'Workspace invitation failed.', {
-      code,
-    });
-    if (code === 'workspace_access_denied') {
-      expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
-    } else {
-      expect(parseWorkspaceSharingError(failure)).toBeNull();
-    }
-    const createWorkspaceInvitation = vi.fn().mockRejectedValue(failure);
-    const { client, methods } = makeSharingClient({ methods: { createWorkspaceInvitation } });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
-    const { queryClient } = renderApp('/settings/account', client);
+  ] as const)(
+    'keeps typed invite failure %s visible without automatic replay or email retention',
+    async (code, status, label) => {
+      const guards = guardSensitiveSinks([EMAIL]);
+      const failure = new ApiCallError(status, 'Workspace invitation failed.', {
+        code,
+      });
+      if (code === 'workspace_access_denied') {
+        expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
+      } else {
+        expect(parseWorkspaceSharingError(failure)).toBeNull();
+      }
+      const createWorkspaceInvitation = vi.fn().mockRejectedValue(failure);
+      const { client, methods } = makeSharingClient({ methods: { createWorkspaceInvitation } });
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
+      const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByText(/Workspace access:/i);
-    const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
-    const email = (await within(invitations).findByRole('textbox', {
-      name: /invitee email/i,
-    })) as HTMLInputElement;
-    const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
-    await userEvent.type(email, EMAIL);
-    await userEvent.click(
-      within(invitations).getByRole('button', { name: /create invitation|invite/i })
-    );
-    const alert = await within(invitations).findByRole('alert');
-    expect(alert).toHaveTextContent(label);
-    expect(createWorkspaceInvitation).toHaveBeenCalledTimes(1);
-    expect(createWorkspaceInvitation).toHaveBeenCalledWith({
-      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-      ...{
-        inviteeEmail: EMAIL,
-      },
-    });
-    await waitFor(() => expect(email).toHaveValue(''));
-    expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
-    expectNoRetainedInviteEmail(queryClient, guards, email);
-  });
+      await screen.findByText(/Workspace access:/i);
+      const invitations = screen.getByRole('region', { name: 'Workspace invitations' });
+      const email = (await within(invitations).findByRole('textbox', {
+        name: /invitee email/i,
+      })) as HTMLInputElement;
+      const myInvitationReads = methods.listMyWorkspaceInvitations.mock.calls.length;
+      await userEvent.type(email, EMAIL);
+      await userEvent.click(
+        within(invitations).getByRole('button', { name: /create invitation|invite/i })
+      );
+      const alert = await within(invitations).findByRole('alert');
+      expect(alert).toHaveTextContent(label);
+      expect(createWorkspaceInvitation).toHaveBeenCalledTimes(1);
+      expect(createWorkspaceInvitation).toHaveBeenCalledWith({
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        ...{
+          inviteeEmail: EMAIL,
+        },
+      });
+      await waitFor(() => expect(email).toHaveValue(''));
+      expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
+      expectNoRetainedInviteEmail(queryClient, guards, email);
+    }
+  );
 });
 
 describe('account-level My invitations', () => {
@@ -2977,60 +3011,63 @@ describe('account-level My invitations', () => {
       },
       /declined/i,
     ],
-  ] as const)('sends the exact current revision through %s and replaces the row from authoritative success', async (method, action, settledInvitation, settledState) => {
-    const guards = guardSensitiveSinks([EMAIL]);
-    const operation = deferred<{ invitation: typeof settledInvitation }>();
-    const decision = vi.fn().mockReturnValue(operation.promise);
-    const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
-      items: [PENDING_INVITATION, OTHER_PENDING_INVITATION],
-    });
-    const { client } = makeSharingClient({
-      authorizedWorkspaces: { items: [] },
-      coreWorkspaces: [],
-      methods: { [method]: decision, listMyWorkspaceInvitations },
-    });
-    const { queryClient } = renderApp('/settings/account', client);
+  ] as const)(
+    'sends the exact current revision through %s and replaces the row from authoritative success',
+    async (method, action, settledInvitation, settledState) => {
+      const guards = guardSensitiveSinks([EMAIL]);
+      const operation = deferred<{ invitation: typeof settledInvitation }>();
+      const decision = vi.fn().mockReturnValue(operation.promise);
+      const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
+        items: [PENDING_INVITATION, OTHER_PENDING_INVITATION],
+      });
+      const { client } = makeSharingClient({
+        authorizedWorkspaces: { items: [] },
+        coreWorkspaces: [],
+        methods: { [method]: decision, listMyWorkspaceInvitations },
+      });
+      const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
-    const invitations = screen.getByRole('region', { name: 'My invitations' });
-    const pending = await within(invitations).findByRole('row', {
-      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
-    });
-    const user = userEvent.setup();
-    await user.click(await revealRowAction(user, pending, action));
-    const dialog = screen.queryByRole('dialog', { name: /confirm/i });
-    if (dialog) {
-      await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
-    }
+      await screen.findByRole('heading', { name: 'Account' });
+      const invitations = screen.getByRole('region', { name: 'My invitations' });
+      const pending = await within(invitations).findByRole('row', {
+        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+      });
+      const user = userEvent.setup();
+      await user.click(await revealRowAction(user, pending, action));
+      const dialog = screen.queryByRole('dialog', { name: /confirm/i });
+      if (dialog) {
+        await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
+      }
 
-    expect(decision.mock.calls).toEqual([
-      [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', expectedRevision: 21 }],
-    ]);
-    const invitationReads = listMyWorkspaceInvitations.mock.calls.length;
-    operation.resolve({ invitation: settledInvitation });
-    expect(
-      await within(invitations).findByRole('row', {
-        name: new RegExp(
+      expect(decision.mock.calls).toEqual([
+        [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', expectedRevision: 21 }],
+      ]);
+      const invitationReads = listMyWorkspaceInvitations.mock.calls.length;
+      operation.resolve({ invitation: settledInvitation });
+      expect(
+        await within(invitations).findByRole('row', {
+          name: new RegExp(
+            `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${settledState.source}|${settledState.source}.*ws1`,
+            'i'
+          ),
+        })
+      ).toBeInTheDocument();
+      const settledRows = within(invitations).getAllByRole('row');
+      expect(settledRows).toHaveLength(2);
+      expect(settledRows[0]).toHaveTextContent(
+        new RegExp(
           `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${settledState.source}|${settledState.source}.*ws1`,
           'i'
-        ),
-      })
-    ).toBeInTheDocument();
-    const settledRows = within(invitations).getAllByRole('row');
-    expect(settledRows).toHaveLength(2);
-    expect(settledRows[0]).toHaveTextContent(
-      new RegExp(
-        `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${settledState.source}|${settledState.source}.*ws1`,
-        'i'
-      )
-    );
-    expect(settledRows[1]).toHaveTextContent(
-      /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
-    );
-    expect(decision).toHaveBeenCalledTimes(1);
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
-    expectNoRetainedInviteEmail(queryClient, guards);
-  });
+        )
+      );
+      expect(settledRows[1]).toHaveTextContent(
+        /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
+      );
+      expect(decision).toHaveBeenCalledTimes(1);
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
+      expectNoRetainedInviteEmail(queryClient, guards);
+    }
+  );
 
   it.each([
     [
@@ -3052,196 +3089,203 @@ describe('account-level My invitations', () => {
       /conflict|changed/i,
       /pending/i,
     ],
-  ] as const)('replaces the exact My invitation from safe current %s without a collection scan', async (code, current, detailPrefix, outcome, currentState) => {
-    const guards = guardSensitiveSinks([EMAIL]);
-    const details = code === 'invitation_not_pending' ? { current } : { ...detailPrefix, current };
-    const failure = new ApiCallError(409, `Invitation conflict for ${EMAIL}.`, {
-      code,
-      details,
-    });
-    expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
-    const acceptWorkspaceInvitation = vi.fn().mockRejectedValue(failure);
-    const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
-      items: [PENDING_INVITATION, OTHER_PENDING_INVITATION],
-    });
-    const { client } = makeSharingClient({
-      authorizedWorkspaces: { items: [] },
-      coreWorkspaces: [],
-      methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
-    });
-    const { queryClient } = renderApp('/settings/account', client);
+  ] as const)(
+    'replaces the exact My invitation from safe current %s without a collection scan',
+    async (code, current, detailPrefix, outcome, currentState) => {
+      const guards = guardSensitiveSinks([EMAIL]);
+      const details =
+        code === 'invitation_not_pending' ? { current } : { ...detailPrefix, current };
+      const failure = new ApiCallError(409, `Invitation conflict for ${EMAIL}.`, {
+        code,
+        details,
+      });
+      expect(parseWorkspaceSharingError(failure)?.code).toBe(code);
+      const acceptWorkspaceInvitation = vi.fn().mockRejectedValue(failure);
+      const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
+        items: [PENDING_INVITATION, OTHER_PENDING_INVITATION],
+      });
+      const { client } = makeSharingClient({
+        authorizedWorkspaces: { items: [] },
+        coreWorkspaces: [],
+        methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
+      });
+      const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
-    const invitations = screen.getByRole('region', { name: 'My invitations' });
-    const pending = await within(invitations).findByRole('row', {
-      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
-    });
-    const user = userEvent.setup();
-    await user.click(await revealRowAction(user, pending, /^accept/i));
-    const dialog = screen.queryByRole('dialog', { name: /confirm/i });
-    if (dialog) {
-      await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
-    }
+      await screen.findByRole('heading', { name: 'Account' });
+      const invitations = screen.getByRole('region', { name: 'My invitations' });
+      const pending = await within(invitations).findByRole('row', {
+        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+      });
+      const user = userEvent.setup();
+      await user.click(await revealRowAction(user, pending, /^accept/i));
+      const dialog = screen.queryByRole('dialog', { name: /confirm/i });
+      if (dialog) {
+        await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
+      }
 
-    expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
-    expect(
-      await within(invitations).findByRole('row', {
-        name: new RegExp(
+      expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
+      expect(
+        await within(invitations).findByRole('row', {
+          name: new RegExp(
+            `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${currentState.source}|${currentState.source}.*ws1`,
+            'i'
+          ),
+        })
+      ).toBeInTheDocument();
+      const currentRows = within(invitations).getAllByRole('row');
+      expect(currentRows).toHaveLength(2);
+      expect(currentRows[0]).toHaveTextContent(
+        new RegExp(
           `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${currentState.source}|${currentState.source}.*ws1`,
           'i'
-        ),
-      })
-    ).toBeInTheDocument();
-    const currentRows = within(invitations).getAllByRole('row');
-    expect(currentRows).toHaveLength(2);
-    expect(currentRows[0]).toHaveTextContent(
-      new RegExp(
-        `ws_00000000-0000-7b10-9af8-12fd37a880e0.*${currentState.source}|${currentState.source}.*ws1`,
-        'i'
-      )
-    );
-    expect(currentRows[1]).toHaveTextContent(
-      /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
-    );
-    expect(acceptWorkspaceInvitation.mock.calls).toEqual([
-      [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 21 } }],
-    ]);
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
-    expect(
-      inspectRetained(
-        queryClient
-          .getQueryCache()
-          .getAll()
-          .map((query) => query.state.data)
-      )
-    ).toContain(`revision:${current.revision}`);
-    if (code === 'invitation_not_pending') {
-      const terminal = within(invitations).getByRole('row', {
-        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*revoked|revoked.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
-      });
-      await expectNoRowAction(user, terminal, /accept|decline/i);
+        )
+      );
+      expect(currentRows[1]).toHaveTextContent(
+        /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
+      );
+      expect(acceptWorkspaceInvitation.mock.calls).toEqual([
+        [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 21 } }],
+      ]);
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+      expect(
+        inspectRetained(
+          queryClient
+            .getQueryCache()
+            .getAll()
+            .map((query) => query.state.data)
+        )
+      ).toContain(`revision:${current.revision}`);
+      if (code === 'invitation_not_pending') {
+        const terminal = within(invitations).getByRole('row', {
+          name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*revoked|revoked.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+        });
+        await expectNoRowAction(user, terminal, /accept|decline/i);
+      }
+      expectNoRetainedInviteEmail(queryClient, guards);
     }
-    expectNoRetainedInviteEmail(queryClient, guards);
-  });
+  );
 
   it.each([
     ['workspace_access_denied', 403, /access denied/i, false],
     ['idempotency_key_conflict', 409, /request conflict/i, false],
     ['recovery_required', 500, /recovery required/i, true],
-  ] as const)('rereads My invitations before exposing an explicit new-request retry for %s', async (code, status, outcome, rereadFails) => {
-    const guards = guardSensitiveSinks([EMAIL]);
-    const current = { ...PENDING_INVITATION, revision: 29 };
-    const accepted = {
-      ...current,
-      acceptedAt: MEMBER_UPDATED_AT,
-      effectiveStatus: 'accepted' as const,
-      revision: 30,
-    };
-    const reread = deferred<{ items: (typeof current | typeof OTHER_PENDING_INVITATION)[] }>();
-    const listMyWorkspaceInvitations = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [PENDING_INVITATION, OTHER_PENDING_INVITATION] })
-      .mockReturnValueOnce(reread.promise);
-    if (rereadFails) {
-      listMyWorkspaceInvitations.mockResolvedValueOnce({
-        items: [current, OTHER_PENDING_INVITATION],
+  ] as const)(
+    'rereads My invitations before exposing an explicit new-request retry for %s',
+    async (code, status, outcome, rereadFails) => {
+      const guards = guardSensitiveSinks([EMAIL]);
+      const current = { ...PENDING_INVITATION, revision: 29 };
+      const accepted = {
+        ...current,
+        acceptedAt: MEMBER_UPDATED_AT,
+        effectiveStatus: 'accepted' as const,
+        revision: 30,
+      };
+      const reread = deferred<{ items: (typeof current | typeof OTHER_PENDING_INVITATION)[] }>();
+      const listMyWorkspaceInvitations = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [PENDING_INVITATION, OTHER_PENDING_INVITATION] })
+        .mockReturnValueOnce(reread.promise);
+      if (rereadFails) {
+        listMyWorkspaceInvitations.mockResolvedValueOnce({
+          items: [current, OTHER_PENDING_INVITATION],
+        });
+      }
+      const failure = new ApiCallError(status, `Invitation failed for ${EMAIL}.`, { code });
+      const acceptWorkspaceInvitation = vi
+        .fn()
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce({ invitation: accepted });
+      const { client } = makeSharingClient({
+        authorizedWorkspaces: { items: [] },
+        coreWorkspaces: [],
+        methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
       });
-    }
-    const failure = new ApiCallError(status, `Invitation failed for ${EMAIL}.`, { code });
-    const acceptWorkspaceInvitation = vi
-      .fn()
-      .mockRejectedValueOnce(failure)
-      .mockResolvedValueOnce({ invitation: accepted });
-    const { client } = makeSharingClient({
-      authorizedWorkspaces: { items: [] },
-      coreWorkspaces: [],
-      methods: { acceptWorkspaceInvitation, listMyWorkspaceInvitations },
-    });
-    const { queryClient } = renderApp('/settings/account', client);
+      const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByRole('heading', { name: 'Account' });
-    const invitations = screen.getByRole('region', { name: 'My invitations' });
-    const pending = await within(invitations).findByRole('row', {
-      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
-    });
-    const user = userEvent.setup();
-    await user.click(await revealRowAction(user, pending, /^accept/i));
-    const dialog = screen.queryByRole('dialog', { name: /confirm/i });
-    if (dialog) {
-      await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
-    }
-
-    expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
-    await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2));
-    expect(acceptWorkspaceInvitation.mock.calls).toEqual([
-      [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 21 } }],
-    ]);
-    const prematureRetry = within(invitations).queryByRole('button', {
-      name: /try again|retry/i,
-    });
-    expect(prematureRetry === null || (prematureRetry as HTMLButtonElement).disabled).toBe(true);
-    expectNoRetainedInviteEmail(queryClient, guards);
-
-    if (rereadFails) {
-      reread.reject(
-        new ApiCallError(503, `My invitations reread failed for ${EMAIL}.`, {
-          code: 'core.unavailable',
-        })
-      );
-      const collectionFailure = (
-        await within(invitations).findByText("Couldn't load My invitations.")
-      ).closest('[role="alert"]');
-      expect(collectionFailure).not.toBeNull();
-      const collectionRetry = within(collectionFailure as HTMLElement).getByRole('button', {
-        name: /try again|retry/i,
-      });
-      const decisionFailure = (await within(invitations).findByText(outcome)).closest(
-        '[role="alert"]'
-      );
-      expect(decisionFailure).not.toBeNull();
-      const decisionRetry = within(decisionFailure as HTMLElement).queryByRole('button', {
-        name: /try again|retry/i,
-      });
-      expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1);
-      expect(decisionRetry === null || (decisionRetry as HTMLButtonElement).disabled).toBe(true);
-      expectNoRetainedInviteEmail(queryClient, guards);
-
-      await user.click(collectionRetry);
-      await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(3));
-      const refreshed = within(invitations).getByRole('row', {
+      await screen.findByRole('heading', { name: 'Account' });
+      const invitations = screen.getByRole('region', { name: 'My invitations' });
+      const pending = await within(invitations).findByRole('row', {
         name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
       });
-      await user.click(await revealRowAction(user, refreshed, /^accept/i));
-      const refreshedDialog = screen.queryByRole('dialog', { name: /confirm/i });
-      if (refreshedDialog) {
-        await user.click(within(refreshedDialog).getByRole('button', { name: /confirm/i }));
+      const user = userEvent.setup();
+      await user.click(await revealRowAction(user, pending, /^accept/i));
+      const dialog = screen.queryByRole('dialog', { name: /confirm/i });
+      if (dialog) {
+        await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
       }
-    } else {
-      reread.resolve({ items: [current, OTHER_PENDING_INVITATION] });
-      const retry = await within(invitations).findByRole('button', { name: /try again|retry/i });
-      await user.click(retry);
-    }
 
-    await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(2));
-    expect(acceptWorkspaceInvitation.mock.calls[1]).toEqual([
-      { invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 29 } },
-    ]);
-    expect(
-      await within(invitations).findByRole('row', {
-        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*accepted|accepted.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
-      })
-    ).toBeInTheDocument();
-    const settledRows = within(invitations).getAllByRole('row');
-    expect(settledRows).toHaveLength(2);
-    expect(settledRows[0]).toHaveTextContent(
-      /ws_00000000-0000-7b10-9af8-12fd37a880e0.*accepted|accepted.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i
-    );
-    expect(settledRows[1]).toHaveTextContent(
-      /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
-    );
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(rereadFails ? 3 : 2);
-    expectNoRetainedInviteEmail(queryClient, guards);
-  });
+      expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
+      await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2));
+      expect(acceptWorkspaceInvitation.mock.calls).toEqual([
+        [{ invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 21 } }],
+      ]);
+      const prematureRetry = within(invitations).queryByRole('button', {
+        name: /try again|retry/i,
+      });
+      expect(prematureRetry === null || (prematureRetry as HTMLButtonElement).disabled).toBe(true);
+      expectNoRetainedInviteEmail(queryClient, guards);
+
+      if (rereadFails) {
+        reread.reject(
+          new ApiCallError(503, `My invitations reread failed for ${EMAIL}.`, {
+            code: 'core.unavailable',
+          })
+        );
+        const collectionFailure = (
+          await within(invitations).findByText("Couldn't load My invitations.")
+        ).closest('[role="alert"]');
+        expect(collectionFailure).not.toBeNull();
+        const collectionRetry = within(collectionFailure as HTMLElement).getByRole('button', {
+          name: /try again|retry/i,
+        });
+        const decisionFailure = (await within(invitations).findByText(outcome)).closest(
+          '[role="alert"]'
+        );
+        expect(decisionFailure).not.toBeNull();
+        const decisionRetry = within(decisionFailure as HTMLElement).queryByRole('button', {
+          name: /try again|retry/i,
+        });
+        expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(1);
+        expect(decisionRetry === null || (decisionRetry as HTMLButtonElement).disabled).toBe(true);
+        expectNoRetainedInviteEmail(queryClient, guards);
+
+        await user.click(collectionRetry);
+        await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(3));
+        const refreshed = within(invitations).getByRole('row', {
+          name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+        });
+        await user.click(await revealRowAction(user, refreshed, /^accept/i));
+        const refreshedDialog = screen.queryByRole('dialog', { name: /confirm/i });
+        if (refreshedDialog) {
+          await user.click(within(refreshedDialog).getByRole('button', { name: /confirm/i }));
+        }
+      } else {
+        reread.resolve({ items: [current, OTHER_PENDING_INVITATION] });
+        const retry = await within(invitations).findByRole('button', { name: /try again|retry/i });
+        await user.click(retry);
+      }
+
+      await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(2));
+      expect(acceptWorkspaceInvitation.mock.calls[1]).toEqual([
+        { invitationId: 'inv_00000000-0000-7112-ab59-8b98f3c7a0f6', ...{ expectedRevision: 29 } },
+      ]);
+      expect(
+        await within(invitations).findByRole('row', {
+          name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*accepted|accepted.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+        })
+      ).toBeInTheDocument();
+      const settledRows = within(invitations).getAllByRole('row');
+      expect(settledRows).toHaveLength(2);
+      expect(settledRows[0]).toHaveTextContent(
+        /ws_00000000-0000-7b10-9af8-12fd37a880e0.*accepted|accepted.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i
+      );
+      expect(settledRows[1]).toHaveTextContent(
+        /ws_00000000-0000-7ec6-8e33-a3b1d758efc6.*pending|pending.*ws_00000000-0000-7ec6-8e33-a3b1d758efc6/i
+      );
+      expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(rereadFails ? 3 : 2);
+      expectNoRetainedInviteEmail(queryClient, guards);
+    }
+  );
 });
 
 describe('selected-membership self-leave', () => {
@@ -3349,45 +3393,48 @@ describe('selected-membership self-leave', () => {
     ['owner_transfer_required', 409, /transfer.*ownership|ownership.*transfer/i],
     ['idempotency_key_conflict', 409, /request conflict/i],
     ['recovery_required', 500, /recovery required/i],
-  ] as const)('keeps self-leave failure %s truthful without a scan or automatic replay', async (code, status, outcome) => {
-    const guards = guardSensitiveSinks([EMAIL]);
-    const failure = new ApiCallError(status, `Leave failed for ${EMAIL}.`, { code });
-    const leaveWorkspace = vi.fn().mockRejectedValue(failure);
-    const { client, methods } = makeSharingClient({
-      authorizedWorkspaces: NON_OWNER_WORKSPACES,
-      coreWorkspaces: [
-        { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Authorized Workspace' },
-        { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Other Authorized Workspace' },
-      ],
-      methods: { leaveWorkspace },
-    });
-    useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
-    const { queryClient } = renderApp('/settings/account', client);
+  ] as const)(
+    'keeps self-leave failure %s truthful without a scan or automatic replay',
+    async (code, status, outcome) => {
+      const guards = guardSensitiveSinks([EMAIL]);
+      const failure = new ApiCallError(status, `Leave failed for ${EMAIL}.`, { code });
+      const leaveWorkspace = vi.fn().mockRejectedValue(failure);
+      const { client, methods } = makeSharingClient({
+        authorizedWorkspaces: NON_OWNER_WORKSPACES,
+        coreWorkspaces: [
+          { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Authorized Workspace' },
+          { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Other Authorized Workspace' },
+        ],
+        methods: { leaveWorkspace },
+      });
+      useWorkspaceStore.setState({ currentWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' });
+      const { queryClient } = renderApp('/settings/account', client);
 
-    await screen.findByText(/Workspace access:/i);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: /leave workspace/i }));
-    const dialog = screen.getByRole('dialog', { name: /confirm.*leave|leave.*confirm/i });
-    await user.click(within(dialog).getByRole('button', { name: /confirm|leave/i }));
+      await screen.findByText(/Workspace access:/i);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /leave workspace/i }));
+      const dialog = screen.getByRole('dialog', { name: /confirm.*leave|leave.*confirm/i });
+      await user.click(within(dialog).getByRole('button', { name: /confirm|leave/i }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(outcome);
-    expect(leaveWorkspace.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', ...{ expectedRevision: 17 } }],
-    ]);
-    await Promise.resolve();
-    expect(leaveWorkspace).toHaveBeenCalledTimes(1);
-    expect(methods.listWorkspaceMembers.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
-    ]);
-    expect(methods.listWorkspaceInvitations.mock.calls).toEqual([
-      [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
-    ]);
-    expectAuthorizedWorkspaceIds(queryClient, [
-      'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-      'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
-    ]);
-    expectNoRetainedInviteEmail(queryClient, guards);
-  });
+      expect(await screen.findByRole('alert')).toHaveTextContent(outcome);
+      expect(leaveWorkspace.mock.calls).toEqual([
+        [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', ...{ expectedRevision: 17 } }],
+      ]);
+      await Promise.resolve();
+      expect(leaveWorkspace).toHaveBeenCalledTimes(1);
+      expect(methods.listWorkspaceMembers.mock.calls).toEqual([
+        [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+      ]);
+      expect(methods.listWorkspaceInvitations.mock.calls).toEqual([
+        [{ workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' }],
+      ]);
+      expectAuthorizedWorkspaceIds(queryClient, [
+        'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      ]);
+      expectNoRetainedInviteEmail(queryClient, guards);
+    }
+  );
 });
 
 /** Observes the shared admission query without starting a second protected read. */

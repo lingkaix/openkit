@@ -115,46 +115,47 @@ describe('Artifact binary client bindings', () => {
     expect(await client.artifactFiles.commitVersion(input, body)).toEqual(accepted);
     expect(fetcher).toHaveBeenCalledOnce();
   });
-  it.each(
-    originals.filter((entry) => ['empty', 'binary-invalid-utf8'].includes(entry.id))
-  )('imports the exact $id body with bounded query metadata and a separate request identity', async (entry) => {
-    const body = new Blob([Buffer.from(entry.patternHex.repeat(entry.repeats), 'hex')]);
-    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
-      const url = new URL(String(input));
-      expect(url.pathname).toBe('/api/app/operations/artifact.import');
-      expect(init?.method).toBe('POST');
-      expect(init?.body).toBe(body);
-      expect(init?.credentials).toBe('include');
-      expect(init).toMatchObject({ duplex: 'half' });
-      const headers = new Headers(init?.headers);
-      expect(headers.get('authorization')).toBe('Bearer retained-auth');
-      expect(headers.get('content-type')).toBe('application/octet-stream');
-      expect(headers.get('x-openkit-request-id')).toBe(metadata.requestId);
-      expect(Object.fromEntries(url.searchParams)).toEqual({
-        workspaceId: metadata.workspaceId,
-        title: metadata.title,
-        mediaType: metadata.mediaType,
-        byteLength: String(entry.size),
-        contentDigest: entry.sha256,
+  it.each(originals.filter((entry) => ['empty', 'binary-invalid-utf8'].includes(entry.id)))(
+    'imports the exact $id body with bounded query metadata and a separate request identity',
+    async (entry) => {
+      const body = new Blob([Buffer.from(entry.patternHex.repeat(entry.repeats), 'hex')]);
+      const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+        const url = new URL(String(input));
+        expect(url.pathname).toBe('/api/app/operations/artifact.import');
+        expect(init?.method).toBe('POST');
+        expect(init?.body).toBe(body);
+        expect(init?.credentials).toBe('include');
+        expect(init).toMatchObject({ duplex: 'half' });
+        const headers = new Headers(init?.headers);
+        expect(headers.get('authorization')).toBe('Bearer retained-auth');
+        expect(headers.get('content-type')).toBe('application/octet-stream');
+        expect(headers.get('x-openkit-request-id')).toBe(metadata.requestId);
+        expect(Object.fromEntries(url.searchParams)).toEqual({
+          workspaceId: metadata.workspaceId,
+          title: metadata.title,
+          mediaType: metadata.mediaType,
+          byteLength: String(entry.size),
+          contentDigest: entry.sha256,
+        });
+        expect(Buffer.from(await new Response(init?.body).arrayBuffer())).toEqual(
+          Buffer.from(entry.patternHex.repeat(entry.repeats), 'hex')
+        );
+        return Response.json({ artifactId, artifactVersion: 1 }, { status: 201 });
       });
-      expect(Buffer.from(await new Response(init?.body).arrayBuffer())).toEqual(
-        Buffer.from(entry.patternHex.repeat(entry.repeats), 'hex')
-      );
-      return Response.json({ artifactId, artifactVersion: 1 }, { status: 201 });
-    });
-    const client = createCoreClient({
-      baseUrl: 'http://127.0.0.1',
-      headers: { authorization: 'Bearer retained-auth' },
-      fetch: fetcher,
-    });
-    await expect(
-      client.artifactFiles.import(
-        { ...metadata, byteLength: entry.size, contentDigest: entry.sha256 },
-        body
-      )
-    ).resolves.toEqual({ artifactId, artifactVersion: 1 });
-    expect(fetcher).toHaveBeenCalledOnce();
-  });
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        headers: { authorization: 'Bearer retained-auth' },
+        fetch: fetcher,
+      });
+      await expect(
+        client.artifactFiles.import(
+          { ...metadata, byteLength: entry.size, contentDigest: entry.sha256 },
+          body
+        )
+      ).resolves.toEqual({ artifactId, artifactVersion: 1 });
+      expect(fetcher).toHaveBeenCalledOnce();
+    }
+  );
 
   it('keeps download lazy, preserves invalid UTF-8 bytes, and pins the requested version', async () => {
     let pulls = 0;
@@ -216,21 +217,24 @@ describe('Artifact binary client bindings', () => {
     ['x-openkit-content-digest', 'sha256:bad'],
     ['x-openkit-content-digest', original.sha256.toUpperCase()],
     ['content-type', null],
-  ])('refuses download metadata %s=%s and cancels the unread response body', async (name, value) => {
-    const cancel = vi.fn();
-    const headers = new Headers(downloadHeaders());
-    if (value === null) headers.delete(name!);
-    else headers.set(name!, value);
-    const client = createCoreClient({
-      baseUrl: 'http://127.0.0.1',
-      fetch: async () =>
-        new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { headers }),
-    });
-    await expect(client.artifactFiles.download(selector)).rejects.toBeInstanceOf(
-      ProtocolValidationError
-    );
-    expect(cancel).toHaveBeenCalledOnce();
-  });
+  ])(
+    'refuses download metadata %s=%s and cancels the unread response body',
+    async (name, value) => {
+      const cancel = vi.fn();
+      const headers = new Headers(downloadHeaders());
+      if (value === null) headers.delete(name!);
+      else headers.set(name!, value);
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        fetch: async () =>
+          new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { headers }),
+      });
+      await expect(client.artifactFiles.download(selector)).rejects.toBeInstanceOf(
+        ProtocolValidationError
+      );
+      expect(cancel).toHaveBeenCalledOnce();
+    }
+  );
 
   it.each([
     ['a stored byte-length header only', { 'x-openkit-byte-length': String(original.size) }],
@@ -362,29 +366,29 @@ describe('Artifact binary client bindings', () => {
     );
   });
 
-  it.each([
-    'import',
-    'download',
-  ] as const)('preserves the %s API refusal without treating it as file content', async (binding) => {
-    const client = createCoreClient({
-      baseUrl: 'http://127.0.0.1',
-      fetch: async () =>
-        Response.json(
-          {
-            protocolVersion: '0.5.0',
-            code: 'workspace_access_denied',
-            message: 'Workspace access denied.',
-          },
-          { status: 403 }
-        ),
-    });
-    const request =
-      binding === 'import'
-        ? client.artifactFiles.import(metadata, bytes)
-        : client.artifactFiles.download(selector);
-    await expect(request).rejects.toBeInstanceOf(ApiCallError);
-    await expect(request).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
-  });
+  it.each(['import', 'download'] as const)(
+    'preserves the %s API refusal without treating it as file content',
+    async (binding) => {
+      const client = createCoreClient({
+        baseUrl: 'http://127.0.0.1',
+        fetch: async () =>
+          Response.json(
+            {
+              protocolVersion: '0.5.0',
+              code: 'workspace_access_denied',
+              message: 'Workspace access denied.',
+            },
+            { status: 403 }
+          ),
+      });
+      const request =
+        binding === 'import'
+          ? client.artifactFiles.import(metadata, bytes)
+          : client.artifactFiles.download(selector);
+      await expect(request).rejects.toBeInstanceOf(ApiCallError);
+      await expect(request).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
+    }
+  );
 });
 
 /** Supplies current metadata without consuming the command fixture's response sequence. */

@@ -1025,82 +1025,77 @@ describe('captured pending MCP schema identity at grant', () => {
     );
   });
 
-  it.each([
-    'unchanged',
-    'allowed-other',
-    'excluded-other',
-    'top-level-description',
-    'key-order',
-  ])('tracking executes the captured call once after %s changes', async (change) => {
-    const f = await fixture();
-    const current = tools();
-    if (change === 'allowed-other' || change === 'excluded-other') {
-      current.find((tool) => tool.name === change)!.inputSchema = {
-        type: 'object',
-        properties: { unrelated: { type: 'number' } },
-      };
-    }
-    if (change === 'top-level-description') current[0]!.description = 'Changed top-level metadata.';
-    if (change === 'key-order')
-      current[0]!.inputSchema = {
-        additionalProperties: false,
-        required: ['message'],
-        properties: {
-          message: {
-            examples: ['approved', 'second'],
-            description: 'Exact message.',
-            type: 'string',
+  it.each(['unchanged', 'allowed-other', 'excluded-other', 'top-level-description', 'key-order'])(
+    'tracking executes the captured call once after %s changes',
+    async (change) => {
+      const f = await fixture();
+      const current = tools();
+      if (change === 'allowed-other' || change === 'excluded-other') {
+        current.find((tool) => tool.name === change)!.inputSchema = {
+          type: 'object',
+          properties: { unrelated: { type: 'number' } },
+        };
+      }
+      if (change === 'top-level-description')
+        current[0]!.description = 'Changed top-level metadata.';
+      if (change === 'key-order')
+        current[0]!.inputSchema = {
+          additionalProperties: false,
+          required: ['message'],
+          properties: {
+            message: {
+              examples: ['approved', 'second'],
+              description: 'Exact message.',
+              type: 'string',
+            },
           },
-        },
-        type: 'object',
-      };
-    await f.retain(current);
-    expect(await f.grant()).toMatchObject({
-      resolution: 'granted',
-      claim: 'finished',
-      disposition: 'approved-executed',
-    });
-    expect(f.callTool).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        toolName: 'echo',
-        arguments: { message: 'approved' },
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    );
-    await expect(f.grant()).rejects.toMatchObject({ code: 'request_not_pending' });
-    expect(f.callTool).toHaveBeenCalledTimes(1);
-    expect(
-      f.db.sqlite.prepare('SELECT status,operation,capability_id FROM capability_calls').all()
-    ).toEqual([
-      { status: 'succeeded', operation: 'mcp.call-tool', capability_id: 'mcp.call-tool' },
-    ]);
-    expect(f.db.sqlite.prepare('SELECT quantity FROM usage_records').all()).toEqual([
-      { quantity: 1 },
-    ]);
-  });
+          type: 'object',
+        };
+      await f.retain(current);
+      expect(await f.grant()).toMatchObject({
+        resolution: 'granted',
+        claim: 'finished',
+        disposition: 'approved-executed',
+      });
+      expect(f.callTool).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          toolName: 'echo',
+          arguments: { message: 'approved' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      );
+      await expect(f.grant()).rejects.toMatchObject({ code: 'request_not_pending' });
+      expect(f.callTool).toHaveBeenCalledTimes(1);
+      expect(
+        f.db.sqlite.prepare('SELECT status,operation,capability_id FROM capability_calls').all()
+      ).toEqual([
+        { status: 'succeeded', operation: 'mcp.call-tool', capability_id: 'mcp.call-tool' },
+      ]);
+      expect(f.db.sqlite.prepare('SELECT quantity FROM usage_records').all()).toEqual([
+        { quantity: 1 },
+      ]);
+    }
+  );
 
-  it.each([
-    'type',
-    'nested-description',
-    'nested-annotation',
-    'array-order',
-    'renamed',
-    'removed',
-  ])('tracking refuses a requested-tool %s change without upstream contact', async (change) => {
-    const f = await fixture();
-    const current = tools();
-    const property = (current[0]!.inputSchema.properties as Record<string, Record<string, unknown>>)
-      .message!;
-    if (change === 'type') property.type = 'number';
-    if (change === 'nested-description') property.description = 'A changed effect description.';
-    if (change === 'nested-annotation') property.examples = ['different'];
-    if (change === 'array-order') property.examples = ['second', 'approved'];
-    if (change === 'renamed') current[0]!.name = 'renamed-echo';
-    if (change === 'removed') current.shift();
-    await f.retain(current);
-    expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
-    expectNoContactAfterClaim(f);
-  });
+  it.each(['type', 'nested-description', 'nested-annotation', 'array-order', 'renamed', 'removed'])(
+    'tracking refuses a requested-tool %s change without upstream contact',
+    async (change) => {
+      const f = await fixture();
+      const current = tools();
+      const property = (
+        current[0]!.inputSchema.properties as Record<string, Record<string, unknown>>
+      ).message!;
+      if (change === 'type') property.type = 'number';
+      if (change === 'nested-description') property.description = 'A changed effect description.';
+      if (change === 'nested-annotation') property.examples = ['different'];
+      if (change === 'array-order') property.examples = ['second', 'approved'];
+      if (change === 'renamed') current[0]!.name = 'renamed-echo';
+      if (change === 'removed') current.shift();
+      await f.retain(current);
+      expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
+      expectNoContactAfterClaim(f);
+    }
+  );
 
   it('refuses missing captured evidence even when the current requested schema is unchanged', async () => {
     const f = await fixture();
@@ -1170,17 +1165,17 @@ describe('captured pending MCP schema identity at grant', () => {
     ]);
   });
 
-  it.each([
-    'allowed-other',
-    'excluded-other',
-  ])('pinned refuses whole-snapshot drift in %s without upstream contact', async (name) => {
-    const f = await fixture('pinned');
-    const current = tools();
-    current.find((tool) => tool.name === name)!.inputSchema.description = 'Unrelated drift.';
-    await f.retain(current);
-    expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
-    expectNoContactAfterClaim(f);
-  });
+  it.each(['allowed-other', 'excluded-other'])(
+    'pinned refuses whole-snapshot drift in %s without upstream contact',
+    async (name) => {
+      const f = await fixture('pinned');
+      const current = tools();
+      current.find((tool) => tool.name === name)!.inputSchema.description = 'Unrelated drift.';
+      await f.retain(current);
+      expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
+      expectNoContactAfterClaim(f);
+    }
+  );
 
   it.each([
     'catalog',

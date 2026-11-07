@@ -221,80 +221,82 @@ function virtualDeadlineClock() {
 }
 
 describe('Knowledge Manager run deadline', () => {
-  it.each([
-    'omitted-limits',
-    'no-profile',
-  ] as const)('completes one Provider call after 120 seconds and before 300 seconds with %s', async (profile) => {
-    const f = await fixture(profile);
-    virtualDeadlineClock();
-    const result = f.run();
-    await f.dispatched;
-    await vi.advanceTimersByTimeAsync(150_000);
-    f.finish();
-    expect(await result).toEqual({
-      kind: 'completed',
-      value: { turnId: f.turn.id, text: JSON.stringify({ answer: 'One exact answer.' }) },
-    });
-    expect(f.createResponses).toHaveBeenCalledTimes(1);
-    expect(f.providerSignal()?.aborted).toBe(false);
-    expect(f.store.getTurnById(f.turn.id)).toMatchObject({
-      status: 'completed',
-      internalExecution: { limits: { deadlineMs: 300_000 } },
-    });
-    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toMatchObject([
-      { status: 'succeeded', turnId: f.turn.id },
-    ]);
-  });
+  it.each(['omitted-limits', 'no-profile'] as const)(
+    'completes one Provider call after 120 seconds and before 300 seconds with %s',
+    async (profile) => {
+      const f = await fixture(profile);
+      virtualDeadlineClock();
+      const result = f.run();
+      await f.dispatched;
+      await vi.advanceTimersByTimeAsync(150_000);
+      f.finish();
+      expect(await result).toEqual({
+        kind: 'completed',
+        value: { turnId: f.turn.id, text: JSON.stringify({ answer: 'One exact answer.' }) },
+      });
+      expect(f.createResponses).toHaveBeenCalledTimes(1);
+      expect(f.providerSignal()?.aborted).toBe(false);
+      expect(f.store.getTurnById(f.turn.id)).toMatchObject({
+        status: 'completed',
+        internalExecution: { limits: { deadlineMs: 300_000 } },
+      });
+      expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toMatchObject([
+        { status: 'succeeded', turnId: f.turn.id },
+      ]);
+    }
+  );
 
   it.each([
     { profile: 'omitted-limits' as const, deadline: 300_000 },
     { profile: 'no-profile' as const, deadline: 300_000 },
     { profile: 'explicit-limit' as const, deadline: 90_000 },
-  ])('retains a typed timeout at $deadline ms with $profile, without retry or late completion', async ({
-    profile,
-    deadline,
-  }) => {
-    const f = await fixture(profile);
-    virtualDeadlineClock();
-    const result = f.run();
-    await f.dispatched;
-    await vi.advanceTimersByTimeAsync(deadline - 1);
-    const before = {
-      status: f.store.getTurnById(f.turn.id).status,
-      aborted: f.providerSignal()?.aborted,
-    };
-    await vi.advanceTimersByTimeAsync(1);
-    const outcome = await result;
-    // The role fuse result does not acknowledge the Gateway's independent terminal write.
-    await expect(f.gatewayCall()).rejects.toThrow();
-    const settledTurn = f.store.getTurnById(f.turn.id);
-    const settledCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
-    const settledUsage = listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id);
-    f.finish();
-    await vi.advanceTimersByTimeAsync(1);
-    expect.soft(before).toEqual({ status: 'running', aborted: false });
-    expect
-      .soft(outcome)
-      .toMatchObject({ kind: 'failed', error: { code: 'knowledge_manager_timeout' } });
-    expect(f.providerSignal()?.aborted).toBe(true);
-    expect(f.createResponses).toHaveBeenCalledTimes(1);
-    expect.soft(settledTurn).toMatchObject({
-      status: 'failed',
-      error: { code: 'knowledge_manager_timeout' },
-      internalExecution: { limits: { deadlineMs: deadline } },
-    });
-    expect(f.store.getTurnById(f.turn.id).items.map(({ type }) => type)).toEqual(['user-message']);
-    expect.soft(settledCalls).toEqual([
-      expect.objectContaining({
-        status: 'timed-out',
-        turnId: f.turn.id,
-      }),
-    ]);
-    expect(settledUsage).toEqual([]);
-    expect(f.store.getTurnById(f.turn.id)).toEqual(settledTurn);
-    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toEqual(settledCalls);
-    expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id)).toEqual(settledUsage);
-  });
+  ])(
+    'retains a typed timeout at $deadline ms with $profile, without retry or late completion',
+    async ({ profile, deadline }) => {
+      const f = await fixture(profile);
+      virtualDeadlineClock();
+      const result = f.run();
+      await f.dispatched;
+      await vi.advanceTimersByTimeAsync(deadline - 1);
+      const before = {
+        status: f.store.getTurnById(f.turn.id).status,
+        aborted: f.providerSignal()?.aborted,
+      };
+      await vi.advanceTimersByTimeAsync(1);
+      const outcome = await result;
+      // The role fuse result does not acknowledge the Gateway's independent terminal write.
+      await expect(f.gatewayCall()).rejects.toThrow();
+      const settledTurn = f.store.getTurnById(f.turn.id);
+      const settledCalls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
+      const settledUsage = listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id);
+      f.finish();
+      await vi.advanceTimersByTimeAsync(1);
+      expect.soft(before).toEqual({ status: 'running', aborted: false });
+      expect
+        .soft(outcome)
+        .toMatchObject({ kind: 'failed', error: { code: 'knowledge_manager_timeout' } });
+      expect(f.providerSignal()?.aborted).toBe(true);
+      expect(f.createResponses).toHaveBeenCalledTimes(1);
+      expect.soft(settledTurn).toMatchObject({
+        status: 'failed',
+        error: { code: 'knowledge_manager_timeout' },
+        internalExecution: { limits: { deadlineMs: deadline } },
+      });
+      expect(f.store.getTurnById(f.turn.id).items.map(({ type }) => type)).toEqual([
+        'user-message',
+      ]);
+      expect.soft(settledCalls).toEqual([
+        expect.objectContaining({
+          status: 'timed-out',
+          turnId: f.turn.id,
+        }),
+      ]);
+      expect(settledUsage).toEqual([]);
+      expect(f.store.getTurnById(f.turn.id)).toEqual(settledTurn);
+      expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id)).toEqual(settledCalls);
+      expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspace.id)).toEqual(settledUsage);
+    }
+  );
 
   it('keeps caller cancellation distinct from a deadline and never retries the call', async () => {
     const f = await fixture('omitted-limits');

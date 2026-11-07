@@ -251,66 +251,65 @@ describe('Generative UI commands', () => {
     { status: 'failed' as const, result: 'Failed observation', digestMatches: true },
     { status: 'completed' as const, result: null, digestMatches: true },
     { status: 'completed' as const, result: 'Actual observation', digestMatches: false },
-  ])('refuses incomplete, missing or mismatched Tool bytes before publication: $status / $result', async ({
-    status,
-    result,
-    digestMatches,
-  }) => {
-    const context = await createContext();
-    try {
-      const turn = await context.store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001',
-        'Show the observation',
-        context.actor
-      );
-      const source = await context.store.createItem({
-        id: allocateEntityId('it'),
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnId: turn.id,
-        type: 'tool-call',
-        status,
-        tool: 'search',
-        server: null,
-        arguments: {},
-        result,
-        error: null,
-        durationMs: 1,
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-      });
-      await expect(
-        publishGenerativePresentation(context, {
+  ])(
+    'refuses incomplete, missing or mismatched Tool bytes before publication: $status / $result',
+    async ({ status, result, digestMatches }) => {
+      const context = await createContext();
+      try {
+        const turn = await context.store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          'Show the observation',
+          context.actor
+        );
+        const source = await context.store.createItem({
+          id: allocateEntityId('it'),
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: 'th_00000000-0000-7000-8000-000000000001',
           turnId: turn.id,
-          title: 'Observation',
-          fallbackText: 'Observation',
-          messages: nativeMessages('tool-refusal', [
-            { id: 'root', component: 'Text', text: { path: '/text' } },
-          ]),
-          source: {
-            kind: 'item',
-            itemId: source.id,
-            contentDigest: `sha256:${createHash('sha256')
-              .update(digestMatches ? (result ?? '') : 'Invented observation')
-              .digest('hex')}`,
-          },
-          actions: [],
-        })
-      ).rejects.toBeInstanceOf(KernelCommandError);
-      expect(
-        context.workspaceDb.sqlite
-          .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
-          .get()
-      ).toEqual({ n: 0 });
-      expect(
-        context.store.listAllItems().some((item) => item.type === 'generative-ui-reference')
-      ).toBe(false);
-    } finally {
-      context.close();
+          type: 'tool-call',
+          status,
+          tool: 'search',
+          server: null,
+          arguments: {},
+          result,
+          error: null,
+          durationMs: 1,
+          createdAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+        });
+        await expect(
+          publishGenerativePresentation(context, {
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+            title: 'Observation',
+            fallbackText: 'Observation',
+            messages: nativeMessages('tool-refusal', [
+              { id: 'root', component: 'Text', text: { path: '/text' } },
+            ]),
+            source: {
+              kind: 'item',
+              itemId: source.id,
+              contentDigest: `sha256:${createHash('sha256')
+                .update(digestMatches ? (result ?? '') : 'Invented observation')
+                .digest('hex')}`,
+            },
+            actions: [],
+          })
+        ).rejects.toBeInstanceOf(KernelCommandError);
+        expect(
+          context.workspaceDb.sqlite
+            .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
+            .get()
+        ).toEqual({ n: 0 });
+        expect(
+          context.store.listAllItems().some((item) => item.type === 'generative-ui-reference')
+        ).toBe(false);
+      } finally {
+        context.close();
+      }
     }
-  });
+  );
 
   it('keeps source-only interruption inspectable and refuses automatic publication repair', async () => {
     const context = await createContext();

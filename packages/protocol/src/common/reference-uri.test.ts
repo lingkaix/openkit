@@ -167,22 +167,13 @@ describe('canonical reference URI codec', () => {
     expect(ReferenceUriSchema.safeParse(uri).success).toBe(false);
   });
 
-  it.each([
-    '',
-    '/a',
-    'a/',
-    'a//b',
-    '.',
-    '..',
-    'a/../b',
-    'a\\b',
-    'a\0b',
-    'a\nb',
-    '\ud800',
-  ])('refuses unsafe object path %s before formatting', (objectId) => {
-    expect(() => formatReferenceUri({ scopeId, objectId })).toThrow();
-    expect(RawContentReferenceSchema.safeParse({ scopeId, objectId }).success).toBe(false);
-  });
+  it.each(['', '/a', 'a/', 'a//b', '.', '..', 'a/../b', 'a\\b', 'a\0b', 'a\nb', '\ud800'])(
+    'refuses unsafe object path %s before formatting',
+    (objectId) => {
+      expect(() => formatReferenceUri({ scopeId, objectId })).toThrow();
+      expect(RawContentReferenceSchema.safeParse({ scopeId, objectId }).success).toBe(false);
+    }
+  );
 
   it('validates the optional digest and does not add it to reference identity', () => {
     const reference = { scopeId, objectId: 'topic' };

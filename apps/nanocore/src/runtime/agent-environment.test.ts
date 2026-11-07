@@ -499,65 +499,64 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it.each([
-    { cpu: { maxCores: 1 } },
-    { unsupportedLimit: 0 },
-    { cpu: null },
-  ])('refuses non-empty authored resources before runtime effects: %j', async (resources) => {
-    const setup = createTestSetup();
-    const input = {
-      agentSetup: { ...setup, manifest: { ...setup.manifest, resources } },
-      agentSessionId: 'as_00000000-0000-7426-8df2-e55089bbdb33',
-      backend: { kind: 'openshell' as const },
-      turn: await createTurnFixture('Respect authored resource intent'),
-      triggerActor: USER_TRIGGER_ACTOR,
-      workspaceRoots: [],
-    };
-    for (const resolve of [
-      resolveAgentEnvironmentPackageMetadata,
-      resolveAgentSessionCompatibilityKey,
-    ]) {
-      expect(() => resolve(input)).toThrow(DeterministicAgentPreparationError);
-      expect(() => resolve(input)).toThrow(
-        'Agent resources is not supported; leave resources empty or absent.'
-      );
+  it.each([{ cpu: { maxCores: 1 } }, { unsupportedLimit: 0 }, { cpu: null }])(
+    'refuses non-empty authored resources before runtime effects: %j',
+    async (resources) => {
+      const setup = createTestSetup();
+      const input = {
+        agentSetup: { ...setup, manifest: { ...setup.manifest, resources } },
+        agentSessionId: 'as_00000000-0000-7426-8df2-e55089bbdb33',
+        backend: { kind: 'openshell' as const },
+        turn: await createTurnFixture('Respect authored resource intent'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceRoots: [],
+      };
+      for (const resolve of [
+        resolveAgentEnvironmentPackageMetadata,
+        resolveAgentSessionCompatibilityKey,
+      ]) {
+        expect(() => resolve(input)).toThrow(DeterministicAgentPreparationError);
+        expect(() => resolve(input)).toThrow(
+          'Agent resources is not supported; leave resources empty or absent.'
+        );
+      }
+      await expect(
+        async () =>
+          await resolveAgentEnvironmentPackage({
+            ...input,
+            captureCoverage: { scope: 'server', value: 'off' },
+          })
+      ).rejects.toThrow(DeterministicAgentPreparationError);
     }
-    await expect(
-      async () =>
-        await resolveAgentEnvironmentPackage({
-          ...input,
-          captureCoverage: { scope: 'server', value: 'off' },
-        })
-    ).rejects.toThrow(DeterministicAgentPreparationError);
-  });
+  );
 
-  it.each([
-    undefined,
-    {},
-  ])('keeps absent and empty authored resources usable: %j', async (resources) => {
-    const setup = createTestSetup();
-    const input = {
-      agentSetup: {
-        ...setup,
-        manifest: { ...setup.manifest, ...(resources ? { resources } : {}) },
-      },
-      agentSessionId: 'as_00000000-0000-7ecf-b59f-13550be570d8',
-      backend: { kind: 'openshell' as const },
-      turn: await createTurnFixture('Use supported default resources'),
-      triggerActor: USER_TRIGGER_ACTOR,
-      workspaceRoots: [],
-    };
-    expect(resolveAgentEnvironmentPackageMetadata(input).resources).toEqual({});
-    expect(
-      (
-        await resolveAgentEnvironmentPackage({
-          ...input,
-          captureCoverage: { scope: 'server', value: 'off' },
-        })
-      ).resources
-    ).toEqual({});
-    expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[0-9a-f]{64}$/);
-  });
+  it.each([undefined, {}])(
+    'keeps absent and empty authored resources usable: %j',
+    async (resources) => {
+      const setup = createTestSetup();
+      const input = {
+        agentSetup: {
+          ...setup,
+          manifest: { ...setup.manifest, ...(resources ? { resources } : {}) },
+        },
+        agentSessionId: 'as_00000000-0000-7ecf-b59f-13550be570d8',
+        backend: { kind: 'openshell' as const },
+        turn: await createTurnFixture('Use supported default resources'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceRoots: [],
+      };
+      expect(resolveAgentEnvironmentPackageMetadata(input).resources).toEqual({});
+      expect(
+        (
+          await resolveAgentEnvironmentPackage({
+            ...input,
+            captureCoverage: { scope: 'server', value: 'off' },
+          })
+        ).resources
+      ).toEqual({});
+      expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    }
+  );
 
   it('resolves the shipped DeepSeek template with its authored dsh binary', async () => {
     const loaded = loadAgentManifests(
@@ -860,77 +859,77 @@ describe('agent environment package resolver', () => {
     expect(resolved.scope).not.toHaveProperty('organizationId');
   });
 
-  it.each([
-    true,
-    false,
-  ])('projects complete admitted model parameters into the AEP: %s', async (complete) => {
-    const setupResult = resolveAgentSetup(createTestSetup().manifest, {
-      gatewayConfig: {
-        schemaVersion: 1,
-        enabled: true,
-        defaultLogicalModelId: 'reasoning',
-        logicalModels: [
-          {
-            id: 'reasoning',
-            displayName: 'Reasoning',
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
-            routes: [
-              {
-                id: 'primary',
-                providerProfileId: 'private-provider',
-                providerModel: 'private-model',
-              },
-            ],
-          },
-        ],
-      },
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'private-provider',
-          displayName: 'Private Provider',
-          kind: 'custom',
-          baseUrl: 'https://private.example/v1',
-          models: ['private-model'],
-          modelMetadata: {
-            'private-model': complete
-              ? {
-                  limit: { context: 128_000, output: 16_000 },
-                  modalities: { input: ['text', 'audio', 'pdf'] },
-                  reasoning: false,
-                }
-              : { limit: { context: 128_000 } },
-          },
+  it.each([true, false])(
+    'projects complete admitted model parameters into the AEP: %s',
+    async (complete) => {
+      const setupResult = resolveAgentSetup(createTestSetup().manifest, {
+        gatewayConfig: {
+          schemaVersion: 1,
+          enabled: true,
+          defaultLogicalModelId: 'reasoning',
+          logicalModels: [
+            {
+              id: 'reasoning',
+              displayName: 'Reasoning',
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: [
+                {
+                  id: 'primary',
+                  providerProfileId: 'private-provider',
+                  providerModel: 'private-model',
+                },
+              ],
+            },
+          ],
         },
-      ]),
-    });
-    expect(setupResult.diagnostics).toEqual([]);
-    if (!setupResult.setup) throw new Error('Expected admitted model setup.');
-    const resolved = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSetup: setupResult.setup,
-      agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
-      backend: { kind: 'openshell' },
-      turn: await createTurnFixture('Use admitted model parameters'),
-      triggerActor: USER_TRIGGER_ACTOR,
-      workspaceRoots: [],
-    });
-    const serialized = JSON.parse(JSON.stringify(resolved));
-    const route = serialized.llm.routes[0];
-    expect(route.model).toBe('reasoning');
-    expect(JSON.stringify(route)).not.toContain('private-provider');
-    expect(JSON.stringify(route)).not.toContain('private-model');
-    expect(JSON.stringify(route)).not.toContain('private.example');
-    if (complete) {
-      expect(route.modelParameters).toEqual({
-        contextWindow: 128_000,
-        maxOutputTokens: 16_000,
-        inputModalities: ['text', 'audio', 'pdf'],
-        reasoning: false,
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'private-provider',
+            displayName: 'Private Provider',
+            kind: 'custom',
+            baseUrl: 'https://private.example/v1',
+            models: ['private-model'],
+            modelMetadata: {
+              'private-model': complete
+                ? {
+                    limit: { context: 128_000, output: 16_000 },
+                    modalities: { input: ['text', 'audio', 'pdf'] },
+                    reasoning: false,
+                  }
+                : { limit: { context: 128_000 } },
+            },
+          },
+        ]),
       });
-    } else {
-      expect(route).not.toHaveProperty('modelParameters');
+      expect(setupResult.diagnostics).toEqual([]);
+      if (!setupResult.setup) throw new Error('Expected admitted model setup.');
+      const resolved = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: setupResult.setup,
+        agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
+        backend: { kind: 'openshell' },
+        turn: await createTurnFixture('Use admitted model parameters'),
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceRoots: [],
+      });
+      const serialized = JSON.parse(JSON.stringify(resolved));
+      const route = serialized.llm.routes[0];
+      expect(route.model).toBe('reasoning');
+      expect(JSON.stringify(route)).not.toContain('private-provider');
+      expect(JSON.stringify(route)).not.toContain('private-model');
+      expect(JSON.stringify(route)).not.toContain('private.example');
+      if (complete) {
+        expect(route.modelParameters).toEqual({
+          contextWindow: 128_000,
+          maxOutputTokens: 16_000,
+          inputModalities: ['text', 'audio', 'pdf'],
+          reasoning: false,
+        });
+      } else {
+        expect(route).not.toHaveProperty('modelParameters');
+      }
     }
-  });
+  );
 
   it('projects unequal mixed-family member parameters into the AEP', async () => {
     const setupResult = resolveAgentSetup(createTestSetup().manifest, {
@@ -1400,93 +1399,91 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it.each([
-    'codex',
-    'pi',
-    'opencode',
-    'deepseek',
-  ])('resolves selected MCP supply for %s without exposing its server topology', async (adapter) => {
-    const turn = await createTurnFixture('Use static supply');
-    const resolved = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSetup: createTestSetup({
-        adapter,
-        mcpIds: ['github'],
-        skillIds: [],
-      }),
-      agentSessionId: 'as_00000000-0000-73d3-aaea-d34a3ecb6216',
-      backend: {
-        kind: 'openshell',
-      },
-      createdAt: '2026-07-18T00:00:00.000Z',
-      requestId: 'req_supply_1',
-      turn,
-      triggerActor: USER_TRIGGER_ACTOR,
-      workspaceCwd: '/workspace/repo',
-      workspaceRoots: [],
-      workspaceMcpServerCatalog: {
-        schemaVersion: 1,
-        servers: [
-          {
-            allowedTools: ['echo'],
-            credentialBindings: [],
-            enabled: true,
-            id: 'github',
-            pinnedSchemaSnapshotId: null,
-            schemaPolicy: 'tracking',
-            timeoutMs: 60_000,
-            transport: {
-              args: ['fixtures/echo.mjs'],
-              command: 'node',
-              environment: {},
-              kind: 'stdio',
+  it.each(['codex', 'pi', 'opencode', 'deepseek'])(
+    'resolves selected MCP supply for %s without exposing its server topology',
+    async (adapter) => {
+      const turn = await createTurnFixture('Use static supply');
+      const resolved = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: createTestSetup({
+          adapter,
+          mcpIds: ['github'],
+          skillIds: [],
+        }),
+        agentSessionId: 'as_00000000-0000-73d3-aaea-d34a3ecb6216',
+        backend: {
+          kind: 'openshell',
+        },
+        createdAt: '2026-07-18T00:00:00.000Z',
+        requestId: 'req_supply_1',
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+        workspaceMcpServerCatalog: {
+          schemaVersion: 1,
+          servers: [
+            {
+              allowedTools: ['echo'],
+              credentialBindings: [],
+              enabled: true,
+              id: 'github',
+              pinnedSchemaSnapshotId: null,
+              schemaPolicy: 'tracking',
+              timeoutMs: 60_000,
+              transport: {
+                args: ['fixtures/echo.mjs'],
+                command: 'node',
+                environment: {},
+                kind: 'stdio',
+              },
             },
-          },
-        ],
-      },
-    });
+          ],
+        },
+      });
 
-    expect(resolved.supply.skills).toEqual([]);
-    expect(resolved.supply.mcpServers).toEqual([
-      expect.objectContaining({
-        allowedTools: ['echo'],
-        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        id: 'github',
-        schemaPolicy: 'tracking',
-      }),
-      expect.objectContaining({
-        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        id: 'openkit-generative',
-        schemaPolicy: 'pinned',
-      }),
-      expect.objectContaining({
-        allowedTools: [
-          'automation_event-admit',
-          'knowledge_ask',
-          'knowledge_tell',
-          'work_input_request',
-          'work_peer_list',
-          'work_peer_read',
-          'work_source_read',
-          'work_source_search',
-          'work_source_view',
-          'work_artifact_submit',
-        ],
-        catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        id: 'openkit-work',
-        schemaPolicy: 'pinned',
-      }),
-    ]);
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('command');
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
-    expect(resolved.supply.mcpServers[0]).not.toHaveProperty('credentialBindings');
-    expect(resolved.capabilities).toEqual({
-      mode: 'enabled',
-      protocol: 'openkit-worker-capability-v1',
-      routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
-    });
-    expect(resolved).not.toHaveProperty('providers');
-  });
+      expect(resolved.supply.skills).toEqual([]);
+      expect(resolved.supply.mcpServers).toEqual([
+        expect.objectContaining({
+          allowedTools: ['echo'],
+          catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          id: 'github',
+          schemaPolicy: 'tracking',
+        }),
+        expect.objectContaining({
+          catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          id: 'openkit-generative',
+          schemaPolicy: 'pinned',
+        }),
+        expect.objectContaining({
+          allowedTools: [
+            'automation_event-admit',
+            'knowledge_ask',
+            'knowledge_tell',
+            'work_input_request',
+            'work_peer_list',
+            'work_peer_read',
+            'work_source_read',
+            'work_source_search',
+            'work_source_view',
+            'work_artifact_submit',
+          ],
+          catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          id: 'openkit-work',
+          schemaPolicy: 'pinned',
+        }),
+      ]);
+      expect(resolved.supply.mcpServers[0]).not.toHaveProperty('command');
+      expect(resolved.supply.mcpServers[0]).not.toHaveProperty('transport');
+      expect(resolved.supply.mcpServers[0]).not.toHaveProperty('credentialBindings');
+      expect(resolved.capabilities).toEqual({
+        mode: 'enabled',
+        protocol: 'openkit-worker-capability-v1',
+        routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
+      });
+      expect(resolved).not.toHaveProperty('providers');
+    }
+  );
 
   it('projects one prepared worker Context Package through the existing generated context slot', async () => {
     const turn = await createTurnFixture('Use the prepared Context Package');
@@ -1822,190 +1819,67 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it.each([
-    'target',
-    'imported-history',
-  ] as const)('enforces %s issuance at the AEP effect boundary', async (issuance) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-workspace-binding-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-18T00:00:00.000Z';
-    const runtimeEnvCredentials: string[] = [];
+  it.each(['target', 'imported-history'] as const)(
+    'enforces %s issuance at the AEP effect boundary',
+    async (issuance) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-workspace-binding-'));
+      const coreDb = openCoreDb(dataRoot);
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server', 'vault'),
+      });
+      const now = '2026-07-18T00:00:00.000Z';
+      const runtimeEnvCredentials: string[] = [];
 
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      now: new Date(now),
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 24) });
-    vaultUnlockState.backend().store({
-      material: 'workspace_github_secret',
-      metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      referenceId: testEntityId('vault', 'vault_workspace_github'),
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-781d-86a3-4dc252e03399',
-      displayName: 'Workspace GitHub token',
-      now: () => now,
-      ownerScope: 'workspace',
-      referenceId: testEntityId('vault', 'vault_workspace_github'),
-      secretKind: 'provider-api-key',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const grant = await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['runtime-env'],
-      grantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
-      lifetime: 'agent-session',
-      now: () => now,
-      ownerScope: 'workspace',
-      targetAgentId: 'agent_codex_host',
-      targetAgentSessionId: 'as_01890f3e-0000-7000-8000-000000000061',
-      vaultReferenceId: testEntityId('vault', 'vault_workspace_github'),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-
-    if (issuance === 'imported-history') {
-      coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
-      importWorkspaceVaultGrants(coreDb, [grant]);
-    }
-    const backendResolver = vi.fn(() => vaultUnlockState.backend());
-
-    try {
-      const turn = await createTurnFixture('Use the Workspace GitHub account', coreDb);
-      prepareCredentialAttemptFixture(coreDb, turn, 'as_01890f3e-0000-7000-8000-000000000061');
-      const resolve = async () =>
-        await resolveAgentEnvironmentPackage({
-          captureCoverage: { scope: 'server', value: 'off' },
-          agentSetup: createTestSetup({
-            credentialDeclarations: [
-              {
-                id: 'github_token',
-                requirementId: 'github-token',
-                targetEnvVarName: 'GITHUB_TOKEN',
-                vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
-                visibility: 'runtime-env',
-              },
-            ],
-            requiredCapabilities: [],
-          }),
-          agentSessionId: 'as_01890f3e-0000-7000-8000-000000000061',
-          backend: { kind: 'openshell' },
-          coreDb,
-          createdAt: now,
-          requestId: 'req_workspace_binding',
-          runtimeEnvCredentialSink: (credential) =>
-            runtimeEnvCredentials.push(credential.credentialValue),
-          turn,
-          triggerActor: USER_TRIGGER_ACTOR,
-          vaultBackend: backendResolver,
-          workspaceCwd: '/workspace/repo',
-          workspaceRoots: [],
-        });
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        now: new Date(now),
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 24) });
+      vaultUnlockState.backend().store({
+        material: 'workspace_github_secret',
+        metadata: {
+          ownerScope: 'workspace',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+        referenceId: testEntityId('vault', 'vault_workspace_github'),
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-781d-86a3-4dc252e03399',
+        displayName: 'Workspace GitHub token',
+        now: () => now,
+        ownerScope: 'workspace',
+        referenceId: testEntityId('vault', 'vault_workspace_github'),
+        secretKind: 'provider-api-key',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const grant = await createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['runtime-env'],
+        grantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
+        lifetime: 'agent-session',
+        now: () => now,
+        ownerScope: 'workspace',
+        targetAgentId: 'agent_codex_host',
+        targetAgentSessionId: 'as_01890f3e-0000-7000-8000-000000000061',
+        vaultReferenceId: testEntityId('vault', 'vault_workspace_github'),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
 
       if (issuance === 'imported-history') {
-        await expect(resolve).rejects.toThrow();
-        expect(backendResolver).not.toHaveBeenCalled();
-        expect(runtimeEnvCredentials).toEqual([]);
-        expect(listVaultInjectionPlans(coreDb)).toEqual([]);
-        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
-        expect(listVaultUseRecords(coreDb)).toEqual([]);
-        return;
+        coreDb.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grant.grantId);
+        importWorkspaceVaultGrants(coreDb, [grant]);
       }
-      const resolved = await resolve();
-      expect(backendResolver).toHaveBeenCalled();
-      expect(resolved.credentials.declarations).toEqual([
-        expect.objectContaining({
-          requirementId: 'github-token',
-          vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
-        }),
-      ]);
-      expect(runtimeEnvCredentials).toEqual(['workspace_github_secret']);
-      expect(JSON.stringify(resolved)).not.toContain('workspace_github_secret');
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-    }
-  });
+      const backendResolver = vi.fn(() => vaultUnlockState.backend());
 
-  it.each([
-    'scope',
-    'version',
-    'health',
-  ] as const)('rejects a publicly minted Worker GitHub grant on Vault %s disagreement before Turn injection', async (failure) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-aep-public-github-${failure}-`));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const runtimeEnvCredentials: string[] = [];
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
-    const app = createApp({ coreDb, dataRoot, vaultUnlockState });
-    const post = (
-      operation: 'vault.secret-create' | 'vault.grant-create',
-      body: Record<string, unknown>
-    ) =>
-      app.request(`/api/app/operations/${operation}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-    try {
-      const secretResponse = await post('vault.secret-create', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        secretKind: 'github-token',
-        material: 'public-worker-canary',
-      });
-      expect(secretResponse.status).toBe(200);
-      const reference = await secretResponse.json();
-      const grantResponse = await post('vault.grant-create', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        referenceId: reference.referenceId,
-        injectionPath: 'runtime-env',
-      });
-      expect(grantResponse.status).toBe(200);
-      const grant = await grantResponse.json();
-      if (failure === 'scope') {
-        const backend = vaultUnlockState.backend();
-        const listReferences = backend.listReferences.bind(backend);
-        vi.spyOn(backend, 'listReferences').mockImplementation((scope) =>
-          listReferences(scope).map((entry) =>
-            entry.referenceId === reference.referenceId
-              ? { ...entry, workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' }
-              : entry
-          )
-        );
-      } else if (failure === 'version') {
-        vaultUnlockState.backend().rotate({
-          referenceId: reference.referenceId,
-          material: 'unprojected-worker-version',
-        });
-      } else {
-        vaultUnlockState.lock();
-      }
-      const expectedCode = {
-        scope: 'credential_materialization_failed',
-        version: 'credential_materialization_failed',
-        health: 'vault_locked',
-      }[failure];
-      const turn = await createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
-      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7791-97f9-e9eb064522fc');
-      await expect(
-        async () =>
+      try {
+        const turn = await createTurnFixture('Use the Workspace GitHub account', coreDb);
+        prepareCredentialAttemptFixture(coreDb, turn, 'as_01890f3e-0000-7000-8000-000000000061');
+        const resolve = async () =>
           await resolveAgentEnvironmentPackage({
             captureCoverage: { scope: 'server', value: 'off' },
             agentSetup: createTestSetup({
@@ -2014,37 +1888,162 @@ describe('agent environment package resolver', () => {
                   id: 'github_token',
                   requirementId: 'github-token',
                   targetEnvVarName: 'GITHUB_TOKEN',
-                  vaultGrantId: grant.grantId,
+                  vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
                   visibility: 'runtime-env',
                 },
               ],
               requiredCapabilities: [],
             }),
-            agentSessionId: 'as_00000000-0000-7791-97f9-e9eb064522fc',
+            agentSessionId: 'as_01890f3e-0000-7000-8000-000000000061',
             backend: { kind: 'openshell' },
             coreDb,
-            createdAt: '2026-07-18T00:00:00.000Z',
-            requestId: `req_public_github_${failure}`,
+            createdAt: now,
+            requestId: 'req_workspace_binding',
             runtimeEnvCredentialSink: (credential) =>
               runtimeEnvCredentials.push(credential.credentialValue),
             turn,
             triggerActor: USER_TRIGGER_ACTOR,
-            vaultBackend: () => vaultUnlockState.backend(),
+            vaultBackend: backendResolver,
             workspaceCwd: '/workspace/repo',
             workspaceRoots: [],
-          })
-        // Failure Semantics: retain backend disagreement refusal using its stable public code.
-      ).rejects.toThrow(expect.objectContaining({ code: expectedCode }));
-      expect(runtimeEnvCredentials).toEqual([]);
-      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
-      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
-      expect(listVaultUseRecords(coreDb)).toEqual([]);
-    } finally {
-      vi.restoreAllMocks();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+          });
+
+        if (issuance === 'imported-history') {
+          await expect(resolve).rejects.toThrow();
+          expect(backendResolver).not.toHaveBeenCalled();
+          expect(runtimeEnvCredentials).toEqual([]);
+          expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(listVaultUseRecords(coreDb)).toEqual([]);
+          return;
+        }
+        const resolved = await resolve();
+        expect(backendResolver).toHaveBeenCalled();
+        expect(resolved.credentials.declarations).toEqual([
+          expect.objectContaining({
+            requirementId: 'github-token',
+            vaultGrantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
+          }),
+        ]);
+        expect(runtimeEnvCredentials).toEqual(['workspace_github_secret']);
+        expect(JSON.stringify(resolved)).not.toContain('workspace_github_secret');
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(['scope', 'version', 'health'] as const)(
+    'rejects a publicly minted Worker GitHub grant on Vault %s disagreement before Turn injection',
+    async (failure) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), `openkit-aep-public-github-${failure}-`));
+      const coreDb = openCoreDb(dataRoot);
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server', 'vault'),
+      });
+      const runtimeEnvCredentials: string[] = [];
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
+      const app = createApp({ coreDb, dataRoot, vaultUnlockState });
+      const post = (
+        operation: 'vault.secret-create' | 'vault.grant-create',
+        body: Record<string, unknown>
+      ) =>
+        app.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      try {
+        const secretResponse = await post('vault.secret-create', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          secretKind: 'github-token',
+          material: 'public-worker-canary',
+        });
+        expect(secretResponse.status).toBe(200);
+        const reference = await secretResponse.json();
+        const grantResponse = await post('vault.grant-create', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          referenceId: reference.referenceId,
+          injectionPath: 'runtime-env',
+        });
+        expect(grantResponse.status).toBe(200);
+        const grant = await grantResponse.json();
+        if (failure === 'scope') {
+          const backend = vaultUnlockState.backend();
+          const listReferences = backend.listReferences.bind(backend);
+          vi.spyOn(backend, 'listReferences').mockImplementation((scope) =>
+            listReferences(scope).map((entry) =>
+              entry.referenceId === reference.referenceId
+                ? { ...entry, workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' }
+                : entry
+            )
+          );
+        } else if (failure === 'version') {
+          vaultUnlockState.backend().rotate({
+            referenceId: reference.referenceId,
+            material: 'unprojected-worker-version',
+          });
+        } else {
+          vaultUnlockState.lock();
+        }
+        const expectedCode = {
+          scope: 'credential_materialization_failed',
+          version: 'credential_materialization_failed',
+          health: 'vault_locked',
+        }[failure];
+        const turn = await createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
+        prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7791-97f9-e9eb064522fc');
+        await expect(
+          async () =>
+            await resolveAgentEnvironmentPackage({
+              captureCoverage: { scope: 'server', value: 'off' },
+              agentSetup: createTestSetup({
+                credentialDeclarations: [
+                  {
+                    id: 'github_token',
+                    requirementId: 'github-token',
+                    targetEnvVarName: 'GITHUB_TOKEN',
+                    vaultGrantId: grant.grantId,
+                    visibility: 'runtime-env',
+                  },
+                ],
+                requiredCapabilities: [],
+              }),
+              agentSessionId: 'as_00000000-0000-7791-97f9-e9eb064522fc',
+              backend: { kind: 'openshell' },
+              coreDb,
+              createdAt: '2026-07-18T00:00:00.000Z',
+              requestId: `req_public_github_${failure}`,
+              runtimeEnvCredentialSink: (credential) =>
+                runtimeEnvCredentials.push(credential.credentialValue),
+              turn,
+              triggerActor: USER_TRIGGER_ACTOR,
+              vaultBackend: () => vaultUnlockState.backend(),
+              workspaceCwd: '/workspace/repo',
+              workspaceRoots: [],
+            })
+          // Failure Semantics: retain backend disagreement refusal using its stable public code.
+        ).rejects.toThrow(expect.objectContaining({ code: expectedCode }));
+        expect(runtimeEnvCredentials).toEqual([]);
+        expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(listVaultUseRecords(coreDb)).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
+    }
+  );
 
   it('previews nonmember administrator credentials without effects and denies a revoked bearer', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-compatibility-preview-'));
@@ -2348,153 +2347,151 @@ describe('agent environment package resolver', () => {
       referenceScope: { ownerScope: 'server' as const },
       triggerActor: USER_TRIGGER_ACTOR,
     },
-  ])('admits the complete declaration list before releasing a valid first credential: $name', async ({
-    grantTarget,
-    name,
-    referenceScope,
-    triggerActor,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-aep-scope-${name}-`));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const now = '2026-07-18T00:00:00.000Z';
-    const declarationId = `scope_${name}`;
-    const referenceId = testEntityId('vault', `vault_${declarationId}`);
-    const grantId = testEntityId('grant', `grant_${declarationId}`);
-    const runtimeEnvCredentials: string[] = [];
-    const receiptSink = vi.fn();
-    const firstReferenceId = testEntityId('vault', `valid_first_${name}`);
-    const firstGrantId = testEntityId('grant', `valid_first_${name}`);
+  ])(
+    'admits the complete declaration list before releasing a valid first credential: $name',
+    async ({ grantTarget, name, referenceScope, triggerActor }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), `openkit-aep-scope-${name}-`));
+      const coreDb = openCoreDb(dataRoot);
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server', 'vault'),
+      });
+      const now = '2026-07-18T00:00:00.000Z';
+      const declarationId = `scope_${name}`;
+      const referenceId = testEntityId('vault', `vault_${declarationId}`);
+      const grantId = testEntityId('grant', `grant_${declarationId}`);
+      const runtimeEnvCredentials: string[] = [];
+      const receiptSink = vi.fn();
+      const firstReferenceId = testEntityId('vault', `valid_first_${name}`);
+      const firstGrantId = testEntityId('grant', `valid_first_${name}`);
 
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: USER_TRIGGER_ACTOR.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 23) });
-    vaultUnlockState.backend().store({
-      material: `secret_${name}`,
-      metadata: referenceScope,
-      referenceId,
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: `encrypted-file://server/vault/${referenceId}`,
-      displayName: `${name} scope credential`,
-      now: () => now,
-      ...referenceScope,
-      referenceId,
-      secretKind: 'provider-api-key',
-    });
-    await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['runtime-env'],
-      grantId,
-      lifetime: 'agent-session',
-      now: () => now,
-      ...referenceScope,
-      ...grantTarget,
-      targetAgentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
-      vaultReferenceId: referenceId,
-    });
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: USER_TRIGGER_ACTOR.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 23) });
+      vaultUnlockState.backend().store({
+        material: `secret_${name}`,
+        metadata: referenceScope,
+        referenceId,
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://server/vault/${referenceId}`,
+        displayName: `${name} scope credential`,
+        now: () => now,
+        ...referenceScope,
+        referenceId,
+        secretKind: 'provider-api-key',
+      });
+      await createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['runtime-env'],
+        grantId,
+        lifetime: 'agent-session',
+        now: () => now,
+        ...referenceScope,
+        ...grantTarget,
+        targetAgentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
+        vaultReferenceId: referenceId,
+      });
 
-    vaultUnlockState.backend().store({
-      material: 'valid-first-credential-canary',
-      metadata: { ownerScope: 'server' },
-      referenceId: firstReferenceId,
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: `encrypted-file://server/vault/${firstReferenceId}`,
-      displayName: 'Valid first credential',
-      now: () => now,
-      ownerScope: 'server',
-      referenceId: firstReferenceId,
-      secretKind: 'provider-api-key',
-    });
-    await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['runtime-env'],
-      grantId: firstGrantId,
-      lifetime: 'agent-session',
-      now: () => now,
-      ownerScope: 'server',
-      targetAgentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
-      vaultReferenceId: firstReferenceId,
-    });
-    const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+      vaultUnlockState.backend().store({
+        material: 'valid-first-credential-canary',
+        metadata: { ownerScope: 'server' },
+        referenceId: firstReferenceId,
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://server/vault/${firstReferenceId}`,
+        displayName: 'Valid first credential',
+        now: () => now,
+        ownerScope: 'server',
+        referenceId: firstReferenceId,
+        secretKind: 'provider-api-key',
+      });
+      await createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['runtime-env'],
+        grantId: firstGrantId,
+        lifetime: 'agent-session',
+        now: () => now,
+        ownerScope: 'server',
+        targetAgentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
+        vaultReferenceId: firstReferenceId,
+      });
+      const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
 
-    try {
-      const turn = await createTurnFixture(`Reject ${name} scope`, coreDb, triggerActor);
-      prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e83-a452-cc477903d837');
-      await expect(
-        async () =>
-          await resolveAgentEnvironmentPackage({
-            captureCoverage: { scope: 'server', value: 'off' },
-            agentSetup: createTestSetup({
-              credentialDeclarations: [
-                {
-                  id: 'valid_first',
-                  targetEnvVarName: 'VALID_FIRST_SECRET',
-                  vaultGrantId: firstGrantId,
-                  visibility: 'runtime-env',
-                },
-                {
-                  id: declarationId,
-                  ...(name === 'user' || name === 'workspace'
-                    ? { requirementId: `requirement_${name}` }
-                    : {}),
-                  targetEnvVarName: 'SCOPE_SECRET',
-                  vaultGrantId: grantId,
-                  visibility: 'runtime-env',
-                },
-              ],
-              network: [
-                {
-                  access: 'read-write',
-                  binaries: ['/usr/local/bin/codex'],
-                  host: 'api.example.test',
-                  id: 'scope-api',
-                  port: 443,
-                  protocol: 'rest',
-                },
-              ],
-              requiredCapabilities: [],
-            }),
-            agentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
-            backend: {
-              kind: 'openshell',
-            },
-            coreDb,
-            createdAt: now,
-            credentialReceiptSink: receiptSink,
-            requestId: `req_scope_${name}`,
-            runtimeEnvCredentialSink: (credential) =>
-              runtimeEnvCredentials.push(credential.credentialValue),
-            turn,
-            triggerActor,
-            vaultBackend: () => vaultUnlockState.backend(),
-            workspaceCwd: '/workspace/repo',
-            workspaceRoots: [],
-          })
-        // Failure Semantics replaces identifier-bearing scope text; complete-list refusal remains.
-      ).rejects.toThrow(expect.objectContaining({ code: 'credential_declaration_invalid' }));
-      // Worker Credential Declarations / Shared Resolution Rules: all entries precede release.
-      expect(resolve).not.toHaveBeenCalled();
-      expect(receiptSink).not.toHaveBeenCalled();
-      expect(runtimeEnvCredentials).toEqual([]);
-      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
-      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
-      expect(listVaultUseRecords(coreDb)).toEqual([]);
-    } finally {
-      resolve.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+      try {
+        const turn = await createTurnFixture(`Reject ${name} scope`, coreDb, triggerActor);
+        prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e83-a452-cc477903d837');
+        await expect(
+          async () =>
+            await resolveAgentEnvironmentPackage({
+              captureCoverage: { scope: 'server', value: 'off' },
+              agentSetup: createTestSetup({
+                credentialDeclarations: [
+                  {
+                    id: 'valid_first',
+                    targetEnvVarName: 'VALID_FIRST_SECRET',
+                    vaultGrantId: firstGrantId,
+                    visibility: 'runtime-env',
+                  },
+                  {
+                    id: declarationId,
+                    ...(name === 'user' || name === 'workspace'
+                      ? { requirementId: `requirement_${name}` }
+                      : {}),
+                    targetEnvVarName: 'SCOPE_SECRET',
+                    vaultGrantId: grantId,
+                    visibility: 'runtime-env',
+                  },
+                ],
+                network: [
+                  {
+                    access: 'read-write',
+                    binaries: ['/usr/local/bin/codex'],
+                    host: 'api.example.test',
+                    id: 'scope-api',
+                    port: 443,
+                    protocol: 'rest',
+                  },
+                ],
+                requiredCapabilities: [],
+              }),
+              agentSessionId: 'as_00000000-0000-7e83-a452-cc477903d837',
+              backend: {
+                kind: 'openshell',
+              },
+              coreDb,
+              createdAt: now,
+              credentialReceiptSink: receiptSink,
+              requestId: `req_scope_${name}`,
+              runtimeEnvCredentialSink: (credential) =>
+                runtimeEnvCredentials.push(credential.credentialValue),
+              turn,
+              triggerActor,
+              vaultBackend: () => vaultUnlockState.backend(),
+              workspaceCwd: '/workspace/repo',
+              workspaceRoots: [],
+            })
+          // Failure Semantics replaces identifier-bearing scope text; complete-list refusal remains.
+        ).rejects.toThrow(expect.objectContaining({ code: 'credential_declaration_invalid' }));
+        // Worker Credential Declarations / Shared Resolution Rules: all entries precede release.
+        expect(resolve).not.toHaveBeenCalled();
+        expect(receiptSink).not.toHaveBeenCalled();
+        expect(runtimeEnvCredentials).toEqual([]);
+        expect(listVaultInjectionPlans(coreDb)).toEqual([]);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(listVaultUseRecords(coreDb)).toEqual([]);
+      } finally {
+        resolve.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('writes no receipt when a credential sink fails after Vault resolution', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-aep-direct-sink-'));
@@ -3117,50 +3114,49 @@ it.each([
   { effort: 'none' as const, levels: ['none', 'high'], expected: ['none', 'high'] },
   { effort: undefined, levels: [], expected: [] },
   { effort: undefined, levels: undefined, expected: undefined },
-] as const)('projects only recorded Turn effort and advertised model levels into immutable package bytes: %j', async ({
-  effort,
-  levels,
-  expected,
-}) => {
-  const setup = createTestSetup();
-  const model = {
-    ...setup.logicalModels.allowed[0]!,
-    ...(levels !== undefined ? { reasoningEffortLevels: levels } : {}),
-  };
-  const input = {
-    agentSetup: {
-      ...setup,
-      manifest: {
-        ...setup.manifest,
-        models: { ...setup.manifest.models, reasoningEffort: 'max' as const },
+] as const)(
+  'projects only recorded Turn effort and advertised model levels into immutable package bytes: %j',
+  async ({ effort, levels, expected }) => {
+    const setup = createTestSetup();
+    const model = {
+      ...setup.logicalModels.allowed[0]!,
+      ...(levels !== undefined ? { reasoningEffortLevels: levels } : {}),
+    };
+    const input = {
+      agentSetup: {
+        ...setup,
+        manifest: {
+          ...setup.manifest,
+          models: { ...setup.manifest.models, reasoningEffort: 'max' as const },
+        },
+        logicalModels: { ...setup.logicalModels, allowed: [model] },
       },
-      logicalModels: { ...setup.logicalModels, allowed: [model] },
-    },
-    agentSessionId: 'as_00000000-0000-72de-9f15-4d6e5bc250fb',
-    backend: { kind: 'openshell' as const },
-    turn: {
-      ...(await createTurnFixture('Effort projection')),
-      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
-    },
-    triggerActor: USER_TRIGGER_ACTOR,
-    workspaceRoots: [],
-    captureCoverage: { scope: 'server' as const, value: 'off' as const },
-  };
-  const resolved = await resolveAgentEnvironmentPackage(input);
-  const bytes = JSON.stringify(resolved);
-  expect(JSON.parse(bytes).llm).toEqual(resolved.llm);
-  if (effort === undefined) expect(resolved.llm).not.toHaveProperty('reasoningEffort');
-  else expect(resolved.llm).toHaveProperty('reasoningEffort', effort);
-  if (expected === undefined)
-    expect(resolved.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
-  else expect(resolved.llm.routes[0]).toHaveProperty('reasoningEffortLevels', expected);
-  expect(resolveAgentSessionCompatibilityKey(input)).toBe(
-    resolveAgentSessionCompatibilityKey({
-      ...input,
-      turn: { ...input.turn, reasoningEffort: 'high' },
-    })
-  );
-});
+      agentSessionId: 'as_00000000-0000-72de-9f15-4d6e5bc250fb',
+      backend: { kind: 'openshell' as const },
+      turn: {
+        ...(await createTurnFixture('Effort projection')),
+        ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+      },
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+      captureCoverage: { scope: 'server' as const, value: 'off' as const },
+    };
+    const resolved = await resolveAgentEnvironmentPackage(input);
+    const bytes = JSON.stringify(resolved);
+    expect(JSON.parse(bytes).llm).toEqual(resolved.llm);
+    if (effort === undefined) expect(resolved.llm).not.toHaveProperty('reasoningEffort');
+    else expect(resolved.llm).toHaveProperty('reasoningEffort', effort);
+    if (expected === undefined)
+      expect(resolved.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
+    else expect(resolved.llm.routes[0]).toHaveProperty('reasoningEffortLevels', expected);
+    expect(resolveAgentSessionCompatibilityKey(input)).toBe(
+      resolveAgentSessionCompatibilityKey({
+        ...input,
+        turn: { ...input.turn, reasoningEffort: 'high' },
+      })
+    );
+  }
+);
 
 // RET §Native Transcripts And Runtime Logs; RET-2 selects once into immutable AEP evidence.
 it('RET-2 binds the default and later policy selection into separate AEPs, keeping capture OFF', async () => {

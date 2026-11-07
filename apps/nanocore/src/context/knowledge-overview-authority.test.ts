@@ -148,99 +148,103 @@ function readInput(f: Awaited<ReturnType<typeof fixture>>) {
   };
 }
 
-it.each(
-  CHANGES
-)('keeps exact-index prepared input subject to live owner truth: %s', async (change) => {
-  const f = await fixture();
-  const input = readInput(f);
-  const prepared = await notebookReader.prepareAuthorizedWorkspaceNotebookRead(input);
-  const read = () =>
-    notebookReader.readAuthorizedWorkspaceNotebookPages({
-      ...input,
-      notebookRead: prepared,
-      notebookRevision: f.notebookRevision,
-    });
-  const expected = [
-    { id: 'index', path: 'index.md', content: INDEX, contentDigest: digest(INDEX) },
-  ];
-  expect(read().pages).toEqual(expected);
-  await changeCurrent(f, change);
-  // Core Policy current admission and S39 exact selected bytes are independent predicates.
-  if (change === 'published-head') {
-    const result = read();
-    expect(result.knowledgeBaseId).toBe(f.knowledgeBaseId);
-    expect(result.notebookRevision).toBe(f.notebookRevision);
-    expect(result.pages).toEqual(expected);
-  } else expect(read).toThrow();
-});
-
-it.each(
-  CHANGES
-)('rechecks the real overview after awaited exact-index preparation: %s', async (change) => {
-  const f = await fixture();
-  const prepare = notebookReader.prepareAuthorizedWorkspaceNotebookRead;
-  let intercepted = false;
-  // Fault injection at the public crossing retains the real producer result and real consumer.
-  const barrier = vi
-    .spyOn(notebookReader, 'prepareAuthorizedWorkspaceNotebookRead')
-    .mockImplementation(async (input) => {
-      const prepared = await prepare(input);
-      if (!intercepted && input.workspaceId === f.workspaceId) {
-        await changeCurrent(f, change);
-        intercepted = true;
-      }
-      return prepared;
-    });
-  try {
-    const overview = await prepareKnowledgeOverview(f);
-    // An OLD implementation without this crossing has not exercised the new guard.
-    expect(intercepted, 'Async Notebook preparation boundary was not reached.').toBe(true);
-    const projection = JSON.parse(
-      overview.text.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
-    );
-    const workspace = projection.overviews.find(
-      (entry: { scope: string }) => entry.scope === `workspace:${f.workspaceId}`
-    );
-    const server = projection.overviews.find(
-      (entry: { scope: string }) => entry.scope === 'server'
-    );
-    if (change === 'published-head') {
-      // S39 Knowledge Handling binds canonical and delivered bytes to the captured commit.
-      expect(workspace).toMatchObject({
-        knowledgeBaseId: f.knowledgeBaseId,
-        path: 'index.md',
+it.each(CHANGES)(
+  'keeps exact-index prepared input subject to live owner truth: %s',
+  async (change) => {
+    const f = await fixture();
+    const input = readInput(f);
+    const prepared = await notebookReader.prepareAuthorizedWorkspaceNotebookRead(input);
+    const read = () =>
+      notebookReader.readAuthorizedWorkspaceNotebookPages({
+        ...input,
+        notebookRead: prepared,
         notebookRevision: f.notebookRevision,
-        contentDigest: digest(INDEX),
-        deliveredDigest: digest(INDEX),
-        truncated: false,
-        content: INDEX,
       });
-      await expect(Promise.resolve().then(() => overview.assertCurrent())).resolves.toBeUndefined();
-    } else {
-      expect(workspace).toMatchObject({ unavailable: true });
-      for (const key of [
-        'knowledgeBaseId',
-        'notebookRevision',
-        'contentDigest',
-        'deliveredDigest',
-        'content',
-      ])
-        expect(workspace).not.toHaveProperty(key);
-      expect(JSON.stringify(projection)).not.toContain('INITIAL-INDEX-AUTHORITY-MARKER');
-      expect(overview.text).not.toContain(f.dataRoot);
-    }
-    if (change === 'disabled-user') {
-      if (server) expect(server).toEqual({ scope: 'server', unavailable: true });
-    } else {
-      // Workspace source failure grants no Server authority and revokes no independent Server grant.
-      expect(server).toMatchObject({
-        knowledgeBaseId: f.server.knowledgeBaseId,
-        notebookRevision: f.server.notebookRevision,
-        contentDigest: digest(f.serverIndex),
-        content: f.serverIndex,
-      });
-    }
-  } finally {
-    barrier.mockRestore();
+    const expected = [
+      { id: 'index', path: 'index.md', content: INDEX, contentDigest: digest(INDEX) },
+    ];
+    expect(read().pages).toEqual(expected);
+    await changeCurrent(f, change);
+    // Core Policy current admission and S39 exact selected bytes are independent predicates.
+    if (change === 'published-head') {
+      const result = read();
+      expect(result.knowledgeBaseId).toBe(f.knowledgeBaseId);
+      expect(result.notebookRevision).toBe(f.notebookRevision);
+      expect(result.pages).toEqual(expected);
+    } else expect(read).toThrow();
   }
-});
+);
+
+it.each(CHANGES)(
+  'rechecks the real overview after awaited exact-index preparation: %s',
+  async (change) => {
+    const f = await fixture();
+    const prepare = notebookReader.prepareAuthorizedWorkspaceNotebookRead;
+    let intercepted = false;
+    // Fault injection at the public crossing retains the real producer result and real consumer.
+    const barrier = vi
+      .spyOn(notebookReader, 'prepareAuthorizedWorkspaceNotebookRead')
+      .mockImplementation(async (input) => {
+        const prepared = await prepare(input);
+        if (!intercepted && input.workspaceId === f.workspaceId) {
+          await changeCurrent(f, change);
+          intercepted = true;
+        }
+        return prepared;
+      });
+    try {
+      const overview = await prepareKnowledgeOverview(f);
+      // An OLD implementation without this crossing has not exercised the new guard.
+      expect(intercepted, 'Async Notebook preparation boundary was not reached.').toBe(true);
+      const projection = JSON.parse(
+        overview.text.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
+      );
+      const workspace = projection.overviews.find(
+        (entry: { scope: string }) => entry.scope === `workspace:${f.workspaceId}`
+      );
+      const server = projection.overviews.find(
+        (entry: { scope: string }) => entry.scope === 'server'
+      );
+      if (change === 'published-head') {
+        // S39 Knowledge Handling binds canonical and delivered bytes to the captured commit.
+        expect(workspace).toMatchObject({
+          knowledgeBaseId: f.knowledgeBaseId,
+          path: 'index.md',
+          notebookRevision: f.notebookRevision,
+          contentDigest: digest(INDEX),
+          deliveredDigest: digest(INDEX),
+          truncated: false,
+          content: INDEX,
+        });
+        await expect(
+          Promise.resolve().then(() => overview.assertCurrent())
+        ).resolves.toBeUndefined();
+      } else {
+        expect(workspace).toMatchObject({ unavailable: true });
+        for (const key of [
+          'knowledgeBaseId',
+          'notebookRevision',
+          'contentDigest',
+          'deliveredDigest',
+          'content',
+        ])
+          expect(workspace).not.toHaveProperty(key);
+        expect(JSON.stringify(projection)).not.toContain('INITIAL-INDEX-AUTHORITY-MARKER');
+        expect(overview.text).not.toContain(f.dataRoot);
+      }
+      if (change === 'disabled-user') {
+        if (server) expect(server).toEqual({ scope: 'server', unavailable: true });
+      } else {
+        // Workspace source failure grants no Server authority and revokes no independent Server grant.
+        expect(server).toMatchObject({
+          knowledgeBaseId: f.server.knowledgeBaseId,
+          notebookRevision: f.server.notebookRevision,
+          contentDigest: digest(f.serverIndex),
+          content: f.serverIndex,
+        });
+      }
+    } finally {
+      barrier.mockRestore();
+    }
+  }
+);

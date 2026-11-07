@@ -296,25 +296,25 @@ describe('retained MCP Tool schema SQL format', () => {
     }
   });
 
-  it.each([
-    '{',
-    '[{"inputSchema":{"type":"string"},"name":"lookup"}]',
-  ])('refuses a cold retained schema whose original digest no longer proves tools_json: %s', (changed) => {
-    const { db, root, snapshot, selector } = retainedSnapshotFixture();
-    db.sqlite.prepare('UPDATE mcp_tool_schema_snapshots SET tools_json = ?').run(changed);
-    db.sqlite.close();
-    const reopened = openWorkspaceDb(root, snapshot.workspaceId);
-    try {
-      expect(() =>
-        readRetainedMcpToolSchemaSnapshot({ ...selector, workspaceDb: reopened })
-      ).toThrow();
-      expect(
-        reopened.sqlite.prepare('SELECT tools_json FROM mcp_tool_schema_snapshots').all()
-      ).toEqual([{ tools_json: changed }]);
-    } finally {
-      reopened.sqlite.close();
+  it.each(['{', '[{"inputSchema":{"type":"string"},"name":"lookup"}]'])(
+    'refuses a cold retained schema whose original digest no longer proves tools_json: %s',
+    (changed) => {
+      const { db, root, snapshot, selector } = retainedSnapshotFixture();
+      db.sqlite.prepare('UPDATE mcp_tool_schema_snapshots SET tools_json = ?').run(changed);
+      db.sqlite.close();
+      const reopened = openWorkspaceDb(root, snapshot.workspaceId);
+      try {
+        expect(() =>
+          readRetainedMcpToolSchemaSnapshot({ ...selector, workspaceDb: reopened })
+        ).toThrow();
+        expect(
+          reopened.sqlite.prepare('SELECT tools_json FROM mcp_tool_schema_snapshots').all()
+        ).toEqual([{ tools_json: changed }]);
+      } finally {
+        reopened.sqlite.close();
+      }
     }
-  });
+  );
 
   it('writes v1 and reads exact nested schema annotations without changing stored bytes', async () => {
     const { db, snapshot, selector } = retainedSnapshotFixture();

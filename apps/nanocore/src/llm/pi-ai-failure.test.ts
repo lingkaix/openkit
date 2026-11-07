@@ -312,59 +312,59 @@ function runtime(message: AssistantMessage) {
 }
 
 describe('pi-ai boundary failure attachment', () => {
-  it.each([
-    'chat',
-    'responses',
-    'chat-stream',
-    'responses-stream',
-  ])('carries the probe table through %s and dispatcher unchanged', async (path) => {
-    for (const [, input, kind] of failureProbes) {
-      if (kind === undefined) continue;
-      const original = input as unknown as Record<string, unknown>;
-      const message = Object.assign(
-        fauxAssistantMessage([], {
-          stopReason: kind === 'cancelled' ? 'aborted' : 'error',
-          errorMessage: String(original.message ?? original.errorMessage ?? ''),
-        }),
-        original
-      );
-      const { models, provider } = runtime(message);
-      const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
-      const operation =
-        path === 'chat'
-          ? dispatcher.createChatCompletion(
-              provider,
-              { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
-              { models }
-            )
-          : path === 'responses'
-            ? dispatcher.createResponses(
+  it.each(['chat', 'responses', 'chat-stream', 'responses-stream'])(
+    'carries the probe table through %s and dispatcher unchanged',
+    async (path) => {
+      for (const [, input, kind] of failureProbes) {
+        if (kind === undefined) continue;
+        const original = input as unknown as Record<string, unknown>;
+        const message = Object.assign(
+          fauxAssistantMessage([], {
+            stopReason: kind === 'cancelled' ? 'aborted' : 'error',
+            errorMessage: String(original.message ?? original.errorMessage ?? ''),
+          }),
+          original
+        );
+        const { models, provider } = runtime(message);
+        const dispatcher = new LLMGatewayProviderDispatcher({
+          piAiClient: new PiAiGatewayClient(),
+        });
+        const operation =
+          path === 'chat'
+            ? dispatcher.createChatCompletion(
                 provider,
-                { model: 'gpt-test', input: 'hello' },
+                { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
                 { models }
               )
-            : path === 'chat-stream'
-              ? dispatcher
-                  .createChatCompletionStream(
-                    provider,
-                    {
-                      model: 'gpt-test',
-                      messages: [{ role: 'user', content: 'hello' }],
-                      stream: true,
-                    },
-                    { models }
-                  )
-                  .then((stream) => new Response(stream).text())
-              : dispatcher
-                  .createResponsesStream(
-                    provider,
-                    { model: 'gpt-test', input: 'hello', stream: true },
-                    { models }
-                  )
-                  .then((stream) => new Response(stream).text());
-      await expect(operation).rejects.toMatchObject({ failure: classifyPiAiFailure(message) });
+            : path === 'responses'
+              ? dispatcher.createResponses(
+                  provider,
+                  { model: 'gpt-test', input: 'hello' },
+                  { models }
+                )
+              : path === 'chat-stream'
+                ? dispatcher
+                    .createChatCompletionStream(
+                      provider,
+                      {
+                        model: 'gpt-test',
+                        messages: [{ role: 'user', content: 'hello' }],
+                        stream: true,
+                      },
+                      { models }
+                    )
+                    .then((stream) => new Response(stream).text())
+                : dispatcher
+                    .createResponsesStream(
+                      provider,
+                      { model: 'gpt-test', input: 'hello', stream: true },
+                      { models }
+                    )
+                    .then((stream) => new Response(stream).text());
+        await expect(operation).rejects.toMatchObject({ failure: classifyPiAiFailure(message) });
+      }
     }
-  });
+  );
   it('attaches actual thrown evidence once and preserves the original error fields', () => {
     const thrown = Object.assign(new Error('rate limit'), {
       status: 429,

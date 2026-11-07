@@ -312,42 +312,42 @@ describe('Task conversation and Pending Request definition projections', () => {
     }
   });
 
-  it.each([
-    'workspace',
-    'server-admin',
-  ] as const)('preserves authorized request decisions and read results across HTTP client and CLI for %s', async (scope) => {
-    const f = await fixture(
-      scope === 'server-admin'
-        ? { privateThread: true, responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
-        : {}
-    );
-    try {
-      const projectors = await projections(f, scope);
-      const all = inputs(f);
-      // The raising Turn remains running so decisions do not add a delivery Turn between reads.
-      for (const [id, input] of Object.entries(all).filter(
-        ([id]) => id !== 'conversation.submit' && id !== 'task.start'
-      )) {
-        const values = [];
-        for (const project of Object.values(projectors)) values.push(await project(id, input));
-        expect(values[1], id).toEqual(values[0]);
-        expect(values[2], id).toEqual(values[0]);
-      }
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  it.each(['workspace', 'server-admin'] as const)(
+    'preserves authorized request decisions and read results across HTTP client and CLI for %s',
+    async (scope) => {
+      const f = await fixture(
+        scope === 'server-admin'
+          ? { privateThread: true, responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
+          : {}
+      );
       try {
-        for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw']) {
-          const record = readPendingRequest(db.sqlite, id)!;
-          expect(record.decidingActor?.id ?? record.endingActor?.id).toBe(
-            'usr_00000000-0000-7000-8000-000000000001'
-          );
+        const projectors = await projections(f, scope);
+        const all = inputs(f);
+        // The raising Turn remains running so decisions do not add a delivery Turn between reads.
+        for (const [id, input] of Object.entries(all).filter(
+          ([id]) => id !== 'conversation.submit' && id !== 'task.start'
+        )) {
+          const values = [];
+          for (const project of Object.values(projectors)) values.push(await project(id, input));
+          expect(values[1], id).toEqual(values[0]);
+          expect(values[2], id).toEqual(values[0]);
+        }
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw']) {
+            const record = readPendingRequest(db.sqlite, id)!;
+            expect(record.decidingActor?.id ?? record.endingActor?.id).toBe(
+              'usr_00000000-0000-7000-8000-000000000001'
+            );
+          }
+        } finally {
+          db.sqlite.close();
         }
       } finally {
-        db.sqlite.close();
+        f.close();
       }
-    } finally {
-      f.close();
     }
-  });
+  );
 
   it('preserves unauthorized Workspace and foreign private Thread refusals across projections', async () => {
     const f = await fixture({ privateThread: true });
@@ -468,42 +468,42 @@ describe('Task conversation and Pending Request definition projections', () => {
     }
   });
 
-  it.each([
-    'readonly',
-    'closed admission',
-  ] as const)('refuses every migrated mutation under %s before a protected write', async (condition) => {
-    const f = await fixture({ accepting: condition !== 'closed admission' });
-    try {
-      const projectors = await projections(
-        f,
-        condition === 'readonly' ? 'workspace-readonly' : 'workspace'
-      );
-      const before = f.store.listAllItems();
-      const beforeCommands = f.store.listCommandRequests();
-      for (const [id, input] of Object.entries(inputs(f)).filter(
-        ([id]) =>
-          !['conversation.targets', 'conversation.navigation', 'attention.list'].includes(id)
-      )) {
-        for (const project of Object.values(projectors))
-          await expect(project(id, input)).rejects.toMatchObject(
-            condition === 'readonly'
-              ? { code: 'workspace_access_denied', status: 403 }
-              : { code: 'product_work_unavailable', status: 503 }
-          );
-      }
-      expect(f.store.listAllItems()).toEqual(before);
-      expect(f.store.listCommandRequests()).toEqual(beforeCommands);
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  it.each(['readonly', 'closed admission'] as const)(
+    'refuses every migrated mutation under %s before a protected write',
+    async (condition) => {
+      const f = await fixture({ accepting: condition !== 'closed admission' });
       try {
-        for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw'])
-          expect(readPendingRequest(db.sqlite, id)?.state).toBe('pending');
+        const projectors = await projections(
+          f,
+          condition === 'readonly' ? 'workspace-readonly' : 'workspace'
+        );
+        const before = f.store.listAllItems();
+        const beforeCommands = f.store.listCommandRequests();
+        for (const [id, input] of Object.entries(inputs(f)).filter(
+          ([id]) =>
+            !['conversation.targets', 'conversation.navigation', 'attention.list'].includes(id)
+        )) {
+          for (const project of Object.values(projectors))
+            await expect(project(id, input)).rejects.toMatchObject(
+              condition === 'readonly'
+                ? { code: 'workspace_access_denied', status: 403 }
+                : { code: 'product_work_unavailable', status: 503 }
+            );
+        }
+        expect(f.store.listAllItems()).toEqual(before);
+        expect(f.store.listCommandRequests()).toEqual(beforeCommands);
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          for (const id of ['ap_projection', 'ui_projection', 'ui_withdraw'])
+            expect(readPendingRequest(db.sqlite, id)?.state).toBe('pending');
+        } finally {
+          db.sqlite.close();
+        }
       } finally {
-        db.sqlite.close();
+        f.close();
       }
-    } finally {
-      f.close();
     }
-  });
+  );
 
   it('refuses decisions by another ordinary member through the responsible-user owner', async () => {
     const f = await fixture({ responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
@@ -622,35 +622,38 @@ describe('Task conversation and Pending Request definition projections', () => {
     ['POST', '/api/approvals/ap_projection/respond', 'approval.respond'],
     ['POST', '/api/user-input-requests/ui_projection/answer', 'question.answer'],
     ['POST', '/api/pending-requests/ui_withdraw/withdraw', 'pending-request.withdraw'],
-  ] as const)('removes %s %s with HTTP 404 for an authenticated valid request', async (method, path, id) => {
-    const f = await fixture();
-    try {
-      const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'workspace',
-        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      }).secret;
-      const app = createApp({ ...f.appOptions, mode: 'server' });
-      const input = { ...inputs(f)[id] } as Record<string, unknown>;
-      // These former strict body schemas received selectors from the path, not JSON.
-      if (id === 'conversation.submit' || id === 'task.start') {
-        delete input.workspaceId;
-        delete input.threadId;
+  ] as const)(
+    'removes %s %s with HTTP 404 for an authenticated valid request',
+    async (method, path, id) => {
+      const f = await fixture();
+      try {
+        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: 'workspace',
+          workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        }).secret;
+        const app = createApp({ ...f.appOptions, mode: 'server' });
+        const input = { ...inputs(f)[id] } as Record<string, unknown>;
+        // These former strict body schemas received selectors from the path, not JSON.
+        if (id === 'conversation.submit' || id === 'task.start') {
+          delete input.workspaceId;
+          delete input.threadId;
+        }
+        expect(
+          (
+            await app.request(path, {
+              method,
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+              ...(method === 'POST' ? { body: JSON.stringify(input) } : {}),
+            })
+          ).status
+        ).toBe(404);
+      } finally {
+        f.close();
       }
-      expect(
-        (
-          await app.request(path, {
-            method,
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-            ...(method === 'POST' ? { body: JSON.stringify(input) } : {}),
-          })
-        ).status
-      ).toBe(404);
-    } finally {
-      f.close();
     }
-  });
+  );
 });
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.

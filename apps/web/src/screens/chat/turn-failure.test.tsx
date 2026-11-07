@@ -239,46 +239,48 @@ beforeEach(() => {
 });
 
 describe('task runtime activity', () => {
-  it.each([
-    true,
-    false,
-  ])('locates only a retained Turn from the current authorized Thread: %s', async (present) => {
-    const prior = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
-    const scroll = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scroll,
-    });
-    try {
-      const target = present ? FAILED_DASHBOARD_TURN.id : testEntityId('tu', 'tu_unavailable');
-      const client = makeClient({
-        'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
-        'thread.dashboard': vi.fn().mockResolvedValue({
-          thread: THREAD,
-          turns: [{ ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] }],
-        }),
+  it.each([true, false])(
+    'locates only a retained Turn from the current authorized Thread: %s',
+    async (present) => {
+      const prior = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+      const scroll = vi.fn();
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        value: scroll,
       });
-      renderTask(
-        client,
-        `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
-      );
-      if (present) {
-        expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();
-        await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
-        expect(scroll.mock.contexts[0]).toHaveTextContent(`Recorded Turn ${target}`);
-      } else {
-        expect(
-          await screen.findByText('Recorded Turn is unavailable in this Thread.')
-        ).toBeInTheDocument();
-        expect(scroll).not.toHaveBeenCalled();
+      try {
+        const target = present ? FAILED_DASHBOARD_TURN.id : testEntityId('tu', 'tu_unavailable');
+        const client = makeClient({
+          'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+          'thread.dashboard': vi.fn().mockResolvedValue({
+            thread: THREAD,
+            turns: [
+              { ...COMPLETED_DASHBOARD_TURN, status: 'pending', completedAt: null, items: [] },
+            ],
+          }),
+        });
+        renderTask(
+          client,
+          `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
+        );
+        if (present) {
+          expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();
+          await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+          expect(scroll.mock.contexts[0]).toHaveTextContent(`Recorded Turn ${target}`);
+        } else {
+          expect(
+            await screen.findByText('Recorded Turn is unavailable in this Thread.')
+          ).toBeInTheDocument();
+          expect(scroll).not.toHaveBeenCalled();
+        }
+        expect(client.operations['turn.start']).not.toHaveBeenCalled();
+        expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+      } finally {
+        if (prior) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', prior);
+        else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
       }
-      expect(client.operations['turn.start']).not.toHaveBeenCalled();
-      expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
-    } finally {
-      if (prior) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', prior);
-      else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
     }
-  });
+  );
 
   it('shows activity once after the last interleaved group without inventing actions', async () => {
     renderTask(
@@ -332,49 +334,48 @@ describe('task runtime activity', () => {
     expect(screen.queryByRole('button', { name: 'Approve child' })).not.toBeInTheDocument();
   });
 
-  it.each([
-    'collecting',
-    'partial',
-    'unavailable',
-  ] as const)('shows %s coverage for historical and latest Turns without Items', async (coverage) => {
-    renderTask(
-      makeClient(
-        { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
-        {
-          'thread.dashboard': vi.fn().mockResolvedValue({
-            thread: THREAD,
-            turns: [
-              { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
-              { ...COMPLETED_DASHBOARD_TURN, items: [] },
-            ],
-            runtimeActivity: [
-              'tu_00000000-0000-780c-a2d1-635989a81c43',
-              'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
-            ].map((turnId) => ({
-              turnId,
-              coverage,
-              contentCapture:
-                turnId === 'tu_00000000-0000-780c-a2d1-635989a81c43' ? 'off' : 'unknown',
-              entries: [],
-              omittedEntryCount: 0,
-            })),
-          }),
-        }
-      )
-    );
-    expect(await screen.findAllByRole('region', { name: 'Runtime activity' })).toHaveLength(2);
-    const message =
-      coverage === 'collecting'
-        ? 'Activity collection is ongoing.'
-        : coverage === 'partial'
-          ? 'Activity coverage is partial.'
-          : 'Activity coverage is unavailable.';
-    expect(screen.getAllByText(message)).toHaveLength(2);
-    expect(screen.getByText('Full-content capture was off for this Turn.')).toBeInTheDocument();
-    expect(screen.getByText('Full-content capture setting is unknown.')).toBeInTheDocument();
-    expect(screen.queryByText('No messages yet')).not.toBeInTheDocument();
-    expect(screen.queryByText(/no children|complete coverage/i)).not.toBeInTheDocument();
-  });
+  it.each(['collecting', 'partial', 'unavailable'] as const)(
+    'shows %s coverage for historical and latest Turns without Items',
+    async (coverage) => {
+      renderTask(
+        makeClient(
+          { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
+          {
+            'thread.dashboard': vi.fn().mockResolvedValue({
+              thread: THREAD,
+              turns: [
+                { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
+                { ...COMPLETED_DASHBOARD_TURN, items: [] },
+              ],
+              runtimeActivity: [
+                'tu_00000000-0000-780c-a2d1-635989a81c43',
+                'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
+              ].map((turnId) => ({
+                turnId,
+                coverage,
+                contentCapture:
+                  turnId === 'tu_00000000-0000-780c-a2d1-635989a81c43' ? 'off' : 'unknown',
+                entries: [],
+                omittedEntryCount: 0,
+              })),
+            }),
+          }
+        )
+      );
+      expect(await screen.findAllByRole('region', { name: 'Runtime activity' })).toHaveLength(2);
+      const message =
+        coverage === 'collecting'
+          ? 'Activity collection is ongoing.'
+          : coverage === 'partial'
+            ? 'Activity coverage is partial.'
+            : 'Activity coverage is unavailable.';
+      expect(screen.getAllByText(message)).toHaveLength(2);
+      expect(screen.getByText('Full-content capture was off for this Turn.')).toBeInTheDocument();
+      expect(screen.getByText('Full-content capture setting is unknown.')).toBeInTheDocument();
+      expect(screen.queryByText('No messages yet')).not.toBeInTheDocument();
+      expect(screen.queryByText(/no children|complete coverage/i)).not.toBeInTheDocument();
+    }
+  );
 });
 
 describe('task turn failure (dashboard reload)', () => {

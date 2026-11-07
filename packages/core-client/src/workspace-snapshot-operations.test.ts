@@ -110,45 +110,44 @@ describe('W operational backup download client boundary', () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    'wrong-media-type',
-    'wrong-media-type-cancel-failure',
-    'missing-body',
-  ] as const)('refuses a successful %s response and releases any rejected body', async (fault) => {
-    const cancel = vi.fn(async () => {
-      if (fault === 'wrong-media-type-cancel-failure')
-        throw new Error('Injected rejected response-body cancellation.');
-    });
-    const pull = vi.fn();
-    const body = new ReadableStream<Uint8Array>(
-      {
-        start(controller) {
-          controller.enqueue(Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd]));
+  it.each(['wrong-media-type', 'wrong-media-type-cancel-failure', 'missing-body'] as const)(
+    'refuses a successful %s response and releases any rejected body',
+    async (fault) => {
+      const cancel = vi.fn(async () => {
+        if (fault === 'wrong-media-type-cancel-failure')
+          throw new Error('Injected rejected response-body cancellation.');
+      });
+      const pull = vi.fn();
+      const body = new ReadableStream<Uint8Array>(
+        {
+          start(controller) {
+            controller.enqueue(Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd]));
+          },
+          pull,
+          cancel,
         },
-        pull,
-        cancel,
-      },
-      { highWaterMark: 0 }
-    );
-    const response =
-      fault === 'missing-body'
-        ? new Response(null, { headers: { 'content-type': mediaType } })
-        : new Response(body, {
-            headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
-          });
-    const reader = vi.spyOn(body, 'getReader');
-    const client = createCoreClient({
-      baseUrl: 'https://nanocore.invalid',
-      fetch: async () => response,
-    });
-    await expect(client.operations['workspace.backup-download'](selection)).rejects.toBeInstanceOf(
-      ProtocolValidationError
-    );
-    expect(reader).not.toHaveBeenCalled();
-    expect(pull).not.toHaveBeenCalled();
-    if (fault === 'missing-body') expect(cancel).not.toHaveBeenCalled();
-    else expect(cancel).toHaveBeenCalledOnce();
-  });
+        { highWaterMark: 0 }
+      );
+      const response =
+        fault === 'missing-body'
+          ? new Response(null, { headers: { 'content-type': mediaType } })
+          : new Response(body, {
+              headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
+            });
+      const reader = vi.spyOn(body, 'getReader');
+      const client = createCoreClient({
+        baseUrl: 'https://nanocore.invalid',
+        fetch: async () => response,
+      });
+      await expect(
+        client.operations['workspace.backup-download'](selection)
+      ).rejects.toBeInstanceOf(ProtocolValidationError);
+      expect(reader).not.toHaveBeenCalled();
+      expect(pull).not.toHaveBeenCalled();
+      if (fault === 'missing-body') expect(cancel).not.toHaveBeenCalled();
+      else expect(cancel).toHaveBeenCalledOnce();
+    }
+  );
 });
 
 /** Supplies current metadata without consuming the command fixture response sequence. */

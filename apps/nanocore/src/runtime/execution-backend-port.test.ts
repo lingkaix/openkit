@@ -411,30 +411,30 @@ describe('execution backend port through real Core coordination', () => {
     }
   });
 
-  it.each([
-    'local',
-    'remote',
-  ] as const)('uses the same configured backend id for %s with adapter-specific proof kept opaque', async (placement) => {
-    const f = await fixture('accepted', placement);
-    try {
-      await f.queue('configured');
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      expect(f.effectCalls[0]).toMatchObject({ backendId: 'fixture-backend' });
-      const atCall = f.snapshots[0]![0]!;
-      expect(atCall).toMatchObject({
-        phase: 'open',
-        disposition: 'unknown',
-        backend_id: 'fixture-backend',
-      });
-      expect(atCall.operation_id).toBe(f.effectCalls[0]!.operationId);
-      expect(atCall.attempt_id).toBe(f.effectCalls[0]!.attemptId);
-      expect(f.effectCalls[0]!.inputRef).toEqual(expect.any(String));
-      expect(f.effectCalls[0]!.bindingRef).toEqual(expect.any(String));
-    } finally {
-      f.db.sqlite.close();
+  it.each(['local', 'remote'] as const)(
+    'uses the same configured backend id for %s with adapter-specific proof kept opaque',
+    async (placement) => {
+      const f = await fixture('accepted', placement);
+      try {
+        await f.queue('configured');
+        await f.dispatch();
+        expect(f.port.submit).toHaveBeenCalledOnce();
+        expect(f.effectCalls[0]).toMatchObject({ backendId: 'fixture-backend' });
+        const atCall = f.snapshots[0]![0]!;
+        expect(atCall).toMatchObject({
+          phase: 'open',
+          disposition: 'unknown',
+          backend_id: 'fixture-backend',
+        });
+        expect(atCall.operation_id).toBe(f.effectCalls[0]!.operationId);
+        expect(atCall.attempt_id).toBe(f.effectCalls[0]!.attemptId);
+        expect(f.effectCalls[0]!.inputRef).toEqual(expect.any(String));
+        expect(f.effectCalls[0]!.bindingRef).toEqual(expect.any(String));
+      } finally {
+        f.db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('closes definite busy only after no reservation, keeping the same queued admission and Turn for a new attempt', async () => {
     const f = await fixture('accepted');
@@ -478,290 +478,295 @@ describe('execution backend port through real Core coordination', () => {
     }
   });
 
-  it.each([
-    'accepted',
-    'unknown',
-  ] as const)('inspects %s pending work across maintenance and restart without another native start', async (disposition) => {
-    const f = await fixture(disposition);
-    try {
-      const entry = await f.queue('pending');
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      const original = f.effectCalls[0]!;
-      await f.dispatch();
-      await f.maintain();
-      const _boot = await runSchedulerRestartRecovery(f.db, f.recoveryInput);
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      expect(f.port.cancel).not.toHaveBeenCalled();
-      await runSchedulerRecoveryMaintenance(f.db, f.recoveryInput);
-      expect(f.port.inspect).toHaveBeenCalled();
-      for (const [inspection] of f.port.inspect.mock.calls)
-        expect(inspection).toMatchObject({
-          attemptId: original.attemptId,
-          operationId: original.operationId,
-          backendId: original.backendId,
-        });
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      expect(attempts(f.db).filter((attempt) => attempt.phase !== 'closed')).toEqual([
-        expect.objectContaining({ attempt_id: original.attemptId, turn_id: entry.turnId }),
-      ]);
-    } finally {
-      f.db.sqlite.close();
-    }
-  });
-
-  it.each([
-    'open',
-    'closing',
-  ] as const)('keeps %s exclusion local while an independent Thread gets a durable queued receipt', async (phase) => {
-    const f = await fixture('unknown', 'local', true);
-    f.port.cancel.mockImplementation(async (correlation) => ({
-      ...correlation,
-      disposition: 'unknown',
-      execution: 'unknown',
-      fenceRef: null,
-      outcomeRef: null,
-    }));
-    try {
-      const a = await f.queue('exclusive');
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      const original = f.effectCalls[0]!;
-      if (phase === 'closing') {
-        // Exclusion belongs to the attempt owner even while the external submit response is absent.
-        attemptRecords.markSchedulerExecutionAttemptClosing(f.db, {
-          attemptId: original.attemptId,
-          cause: 'turn-cancelled',
-          now: f.dispatchInput.now,
-        });
-        await f.maintain();
-      }
-      const held = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;
-      expect(held.phase).toBe(phase);
-      expect(held.disposition).toBe('unknown');
-      // This coordination seam constructs collisions that public one-Turn-per-Thread validation forbids.
-      const acquire = (
-        db: typeof f.db,
-        candidate: {
-          entry: ReturnType<typeof createSchedulerAdmissionEntry>;
-          attemptId: string;
-          agentSessionId: string;
-        }
-      ) =>
-        db.sqlite
-          .transaction(() => {
-            const acquired = attemptRecords.createSchedulerExecutionAttempt(db, {
-              entry: candidate.entry,
-              attemptId: candidate.attemptId,
-              preparationInput: { admission: candidate.entry },
-            });
-            return attemptRecords.bindSchedulerExecutionAttemptSession(db, {
-              attemptId: acquired.attemptId,
-              agentSessionId: candidate.agentSessionId,
-            });
-          })
-          .immediate();
-      expect(acquire, 'The record owner must expose conditional attempt acquisition.').toBeTypeOf(
-        'function'
-      );
-      // Positive control prevents a missing prerequisite or unconditional refusal from proving exclusion.
-      const control = await f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
-      const candidateFor = (entry: typeof control, attemptId: string, sessionId: string) => ({
-        entry,
-        attemptId,
-        agentSessionId: sessionId,
-      });
-      await acquire(
-        f.db,
-        candidateFor(
-          control,
-          testEntityId('attempt', 'control-attempt'),
-          testEntityId('as', 'control-session')
-        )
-      );
-      expect(attempts(f.db)).toContainEqual(
-        expect.objectContaining({
-          attempt_id: testEntityId('attempt', 'control-attempt'),
-          phase: 'open',
-          turn_id: control.turnId,
-        })
-      );
-      for (const collision of ['turn', 'thread', 'session'] as const) {
-        // Thread collision is negative-only Core input; it grants no product Turn authority.
-        const entry =
-          collision === 'turn'
-            ? a
-            : collision === 'thread'
-              ? createSchedulerAdmissionEntry(f.db, {
-                  ...a,
-                  queueEntryId: 'queue_port_collision-thread',
-                  requestId: testEntityId('tu', 'request_port_collision-thread').slice(3),
-                  turnId: testEntityId('tu', 'turn_port_collision-thread'),
-                  now: f.dispatchInput.now,
-                })
-              : await f.queue(`collision-${collision}`, 'th_00000000-0000-751d-bedc-6ab13a59afef');
-        const candidate = candidateFor(
-          entry,
-          testEntityId('attempt', `competing-${collision}`),
-          collision === 'session'
-            ? String(held.agent_session_id)
-            : testEntityId('as', `other-session-${collision}`)
-        );
-        const before = attempts(f.db);
-        expect(() => acquire(f.db, candidate)).toThrow(
-          collision === 'turn' ? /queued admission/ : /UNIQUE constraint/
-        );
-        expect(
-          attempts(f.db),
-          `A competing ${collision} cannot acquire execution authority.`
-        ).toEqual(before);
-        expect(f.port.submit).toHaveBeenCalledOnce();
-        if (collision !== 'turn')
-          cancelSchedulerAdmissionEntry(f.db, {
-            queueEntryId: entry.queueEntryId,
-            workspaceId: entry.workspaceId,
-          });
-      }
-      // The positive control opened no external operation. Its local no-effect release removes only that control.
-      const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
-      expect(close).toBeTypeOf('function');
-      await close(f.db, {
-        attemptId: testEntityId('attempt', 'control-attempt'),
-        cause: 'turn-start-failed',
-        noOutstandingEffects: true,
-      });
-      expect(
-        attempts(f.db).find((row) => row.attempt_id === testEntityId('attempt', 'control-attempt'))
-          ?.phase
-      ).toBe('closed');
-      // Acquisition made this control admitted; retain that history after its no-effect close.
-      expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
-      const setup = createTestAgentSetup();
-      await f.store.createThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'Independent',
-        'th_00000000-0000-7034-bb1e-225363d49699'
-      );
-      const appInput: Parameters<typeof createAppWithWorkspaceAuthority>[0] = {
-        coreDb: f.db,
-        store: f.store,
-        turnExecutor: f.executor,
-        agentManifests: [setup.manifest],
-        providerRegistry: f.dispatchInput.providerRegistry,
-        gatewayConfig: f.dispatchInput.gatewayConfig,
-      };
-      // Delay B only to observe its receipt; the external backend separately proves occupied capacity.
-      f.setPhysicalCapacityAvailable(false);
-      const gate = Promise.withResolvers<void>();
-      const prepare = WorkerGovernanceTurnExecutor.prototype.prepareAgentSessionForTurn.bind(
-        f.executor
-      );
-      const delayed = vi
-        .spyOn(f.executor, 'prepareAgentSessionForTurn')
-        .mockImplementation(async (store, input) => {
-          if (input.turn.threadId === 'th_00000000-0000-7034-bb1e-225363d49699') await gate.promise;
-          return prepare(store, input);
-        });
-      const post = (app: ReturnType<typeof createAppWithWorkspaceAuthority>) =>
-        app.request(
-          ...operationRequest(
-            'turn.start',
-            {},
-            {
-              body: JSON.stringify({
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-                threadId: 'th_00000000-0000-7034-bb1e-225363d49699',
-                agentId: setup.manifest.id,
-                input: 'Independent bounded work.',
-                requestId: '00000000-0000-4000-8000-00000000c303',
-              }),
-            }
-          )
-        );
+  it.each(['accepted', 'unknown'] as const)(
+    'inspects %s pending work across maintenance and restart without another native start',
+    async (disposition) => {
+      const f = await fixture(disposition);
       try {
-        const app = createAppWithWorkspaceAuthority(appInput);
-        const response = await post(app);
-        expect(response.status).toBe(202);
-        const b = await response.json();
-        expect(b.status).toBe('pending');
-        expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
-          expect.objectContaining({ turnId: b.id })
-        );
-        expect((await (await post(app)).json()).id).toBe(b.id);
-        expect(f.effectCalls).toHaveLength(1);
-        gate.resolve();
-        // D85 holds the data-root preparation claim until the unknown submit response settles.
+        const entry = await f.queue('pending');
         await f.dispatch();
         expect(f.port.submit).toHaveBeenCalledOnce();
-        expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
-          phase
+        const original = f.effectCalls[0]!;
+        await f.dispatch();
+        await f.maintain();
+        const _boot = await runSchedulerRestartRecovery(f.db, f.recoveryInput);
+        expect(f.port.submit).toHaveBeenCalledOnce();
+        expect(f.port.cancel).not.toHaveBeenCalled();
+        await runSchedulerRecoveryMaintenance(f.db, f.recoveryInput);
+        expect(f.port.inspect).toHaveBeenCalled();
+        for (const [inspection] of f.port.inspect.mock.calls)
+          expect(inspection).toMatchObject({
+            attemptId: original.attemptId,
+            operationId: original.operationId,
+            backendId: original.backendId,
+          });
+        expect(f.port.submit).toHaveBeenCalledOnce();
+        expect(attempts(f.db).filter((attempt) => attempt.phase !== 'closed')).toEqual([
+          expect.objectContaining({ attempt_id: original.attemptId, turn_id: entry.turnId }),
+        ]);
+      } finally {
+        f.db.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['open', 'closing'] as const)(
+    'keeps %s exclusion local while an independent Thread gets a durable queued receipt',
+    async (phase) => {
+      const f = await fixture('unknown', 'local', true);
+      f.port.cancel.mockImplementation(async (correlation) => ({
+        ...correlation,
+        disposition: 'unknown',
+        execution: 'unknown',
+        fenceRef: null,
+        outcomeRef: null,
+      }));
+      try {
+        const a = await f.queue('exclusive');
+        await f.dispatch();
+        expect(f.port.submit).toHaveBeenCalledOnce();
+        const original = f.effectCalls[0]!;
+        if (phase === 'closing') {
+          // Exclusion belongs to the attempt owner even while the external submit response is absent.
+          attemptRecords.markSchedulerExecutionAttemptClosing(f.db, {
+            attemptId: original.attemptId,
+            cause: 'turn-cancelled',
+            now: f.dispatchInput.now,
+          });
+          await f.maintain();
+        }
+        const held = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;
+        expect(held.phase).toBe(phase);
+        expect(held.disposition).toBe('unknown');
+        // This coordination seam constructs collisions that public one-Turn-per-Thread validation forbids.
+        const acquire = (
+          db: typeof f.db,
+          candidate: {
+            entry: ReturnType<typeof createSchedulerAdmissionEntry>;
+            attemptId: string;
+            agentSessionId: string;
+          }
+        ) =>
+          db.sqlite
+            .transaction(() => {
+              const acquired = attemptRecords.createSchedulerExecutionAttempt(db, {
+                entry: candidate.entry,
+                attemptId: candidate.attemptId,
+                preparationInput: { admission: candidate.entry },
+              });
+              return attemptRecords.bindSchedulerExecutionAttemptSession(db, {
+                attemptId: acquired.attemptId,
+                agentSessionId: candidate.agentSessionId,
+              });
+            })
+            .immediate();
+        expect(acquire, 'The record owner must expose conditional attempt acquisition.').toBeTypeOf(
+          'function'
         );
-        f.settleSubmitResponse();
-        await vi.waitFor(() =>
+        // Positive control prevents a missing prerequisite or unconditional refusal from proving exclusion.
+        const control = await f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
+        const candidateFor = (entry: typeof control, attemptId: string, sessionId: string) => ({
+          entry,
+          attemptId,
+          agentSessionId: sessionId,
+        });
+        await acquire(
+          f.db,
+          candidateFor(
+            control,
+            testEntityId('attempt', 'control-attempt'),
+            testEntityId('as', 'control-session')
+          )
+        );
+        expect(attempts(f.db)).toContainEqual(
+          expect.objectContaining({
+            attempt_id: testEntityId('attempt', 'control-attempt'),
+            phase: 'open',
+            turn_id: control.turnId,
+          })
+        );
+        for (const collision of ['turn', 'thread', 'session'] as const) {
+          // Thread collision is negative-only Core input; it grants no product Turn authority.
+          const entry =
+            collision === 'turn'
+              ? a
+              : collision === 'thread'
+                ? createSchedulerAdmissionEntry(f.db, {
+                    ...a,
+                    queueEntryId: 'queue_port_collision-thread',
+                    requestId: testEntityId('tu', 'request_port_collision-thread').slice(3),
+                    turnId: testEntityId('tu', 'turn_port_collision-thread'),
+                    now: f.dispatchInput.now,
+                  })
+                : await f.queue(
+                    `collision-${collision}`,
+                    'th_00000000-0000-751d-bedc-6ab13a59afef'
+                  );
+          const candidate = candidateFor(
+            entry,
+            testEntityId('attempt', `competing-${collision}`),
+            collision === 'session'
+              ? String(held.agent_session_id)
+              : testEntityId('as', `other-session-${collision}`)
+          );
+          const before = attempts(f.db);
+          expect(() => acquire(f.db, candidate)).toThrow(
+            collision === 'turn' ? /queued admission/ : /UNIQUE constraint/
+          );
+          expect(
+            attempts(f.db),
+            `A competing ${collision} cannot acquire execution authority.`
+          ).toEqual(before);
+          expect(f.port.submit).toHaveBeenCalledOnce();
+          if (collision !== 'turn')
+            cancelSchedulerAdmissionEntry(f.db, {
+              queueEntryId: entry.queueEntryId,
+              workspaceId: entry.workspaceId,
+            });
+        }
+        // The positive control opened no external operation. Its local no-effect release removes only that control.
+        const close = attemptRecords.closeSchedulerExecutionAttemptWithoutEffects;
+        expect(close).toBeTypeOf('function');
+        await close(f.db, {
+          attemptId: testEntityId('attempt', 'control-attempt'),
+          cause: 'turn-start-failed',
+          noOutstandingEffects: true,
+        });
+        expect(
+          attempts(f.db).find(
+            (row) => row.attempt_id === testEntityId('attempt', 'control-attempt')
+          )?.phase
+        ).toBe('closed');
+        // Acquisition made this control admitted; retain that history after its no-effect close.
+        expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
+        const setup = createTestAgentSetup();
+        await f.store.createThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'Independent',
+          'th_00000000-0000-7034-bb1e-225363d49699'
+        );
+        const appInput: Parameters<typeof createAppWithWorkspaceAuthority>[0] = {
+          coreDb: f.db,
+          store: f.store,
+          turnExecutor: f.executor,
+          agentManifests: [setup.manifest],
+          providerRegistry: f.dispatchInput.providerRegistry,
+          gatewayConfig: f.dispatchInput.gatewayConfig,
+        };
+        // Delay B only to observe its receipt; the external backend separately proves occupied capacity.
+        f.setPhysicalCapacityAvailable(false);
+        const gate = Promise.withResolvers<void>();
+        const prepare = WorkerGovernanceTurnExecutor.prototype.prepareAgentSessionForTurn.bind(
+          f.executor
+        );
+        const delayed = vi
+          .spyOn(f.executor, 'prepareAgentSessionForTurn')
+          .mockImplementation(async (store, input) => {
+            if (input.turn.threadId === 'th_00000000-0000-7034-bb1e-225363d49699')
+              await gate.promise;
+            return prepare(store, input);
+          });
+        const post = (app: ReturnType<typeof createAppWithWorkspaceAuthority>) =>
+          app.request(
+            ...operationRequest(
+              'turn.start',
+              {},
+              {
+                body: JSON.stringify({
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                  threadId: 'th_00000000-0000-7034-bb1e-225363d49699',
+                  agentId: setup.manifest.id,
+                  input: 'Independent bounded work.',
+                  requestId: '00000000-0000-4000-8000-00000000c303',
+                }),
+              }
+            )
+          );
+        try {
+          const app = createAppWithWorkspaceAuthority(appInput);
+          const response = await post(app);
+          expect(response.status).toBe(202);
+          const b = await response.json();
+          expect(b.status).toBe('pending');
+          expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
+            expect.objectContaining({ turnId: b.id })
+          );
+          expect((await (await post(app)).json()).id).toBe(b.id);
+          expect(f.effectCalls).toHaveLength(1);
+          gate.resolve();
+          // D85 holds the data-root preparation claim until the unknown submit response settles.
+          await f.dispatch();
+          expect(f.port.submit).toHaveBeenCalledOnce();
+          expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
+            phase
+          );
+          f.settleSubmitResponse();
+          await vi.waitFor(() =>
+            expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
+              'closing'
+            )
+          );
+          await f.dispatch();
+          await vi.waitFor(() =>
+            expect(attempts(f.db)).toContainEqual(
+              expect.objectContaining({
+                turn_id: b.id,
+                phase: 'closed',
+                terminal_cause: 'backend-busy',
+                disposition: 'not_accepted',
+                operation_id: null,
+              })
+            )
+          );
+          expect(f.port.submit).toHaveBeenCalledOnce();
+          expect(f.nativeStarts).toHaveLength(1);
+          expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
+            expect.objectContaining({ turnId: b.id })
+          );
+          const busy = attempts(f.db).find(
+            (row) => row.turn_id === b.id && row.terminal_cause === 'backend-busy'
+          )!;
+          expect(busy.phase).toBe('closed');
+          // Only this backend's capacity proof changes; A's original unresolved execution stays fenced.
+          f.setPhysicalCapacityAvailable(true);
+          await f.dispatch();
+          await vi.waitFor(() => expect(f.nativeStarts).toHaveLength(2));
+          expect(f.port.submit).toHaveBeenCalledTimes(2);
+          expect(f.effectCalls[1]!.attemptId).not.toBe(original.attemptId);
+          expect(f.effectCalls[1]!.attemptId).not.toBe(busy.attempt_id);
           expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
             'closing'
-          )
-        );
-        await f.dispatch();
-        await vi.waitFor(() =>
-          expect(attempts(f.db)).toContainEqual(
-            expect.objectContaining({
-              turn_id: b.id,
-              phase: 'closed',
-              terminal_cause: 'backend-busy',
-              disposition: 'not_accepted',
-              operation_id: null,
-            })
-          )
-        );
-        expect(f.port.submit).toHaveBeenCalledOnce();
-        expect(f.nativeStarts).toHaveLength(1);
-        expect(listQueuedSchedulerAdmissionEntries(f.db)).toContainEqual(
-          expect.objectContaining({ turnId: b.id })
-        );
-        const busy = attempts(f.db).find(
-          (row) => row.turn_id === b.id && row.terminal_cause === 'backend-busy'
-        )!;
-        expect(busy.phase).toBe('closed');
-        // Only this backend's capacity proof changes; A's original unresolved execution stays fenced.
-        f.setPhysicalCapacityAvailable(true);
-        await f.dispatch();
-        await vi.waitFor(() => expect(f.nativeStarts).toHaveLength(2));
-        expect(f.port.submit).toHaveBeenCalledTimes(2);
-        expect(f.effectCalls[1]!.attemptId).not.toBe(original.attemptId);
-        expect(f.effectCalls[1]!.attemptId).not.toBe(busy.attempt_id);
-        expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
-          'closing'
-        );
-        const reloaded = openCoreDb(f.db.dataRoot);
-        try {
-          const recovery = {
-            ...f.recoveryInput,
-            store: await createDemoStore({ dataRoot: f.db.dataRoot }),
-          };
-          const _boot = await runSchedulerRestartRecovery(reloaded, recovery);
-          await runSchedulerRecoveryMaintenance(reloaded, recovery);
-          await runSchedulerDispatchLoop({
-            ...f.dispatchInput,
-            coreDb: reloaded,
-            store: recovery.store,
-          });
-          expect(
-            attempts(reloaded).find((row) => row.attempt_id === original.attemptId)?.phase
-          ).toBe('closing');
-          expect(f.port.submit).toHaveBeenCalledTimes(2);
-          expect(f.nativeStarts).toHaveLength(2);
+          );
+          const reloaded = openCoreDb(f.db.dataRoot);
+          try {
+            const recovery = {
+              ...f.recoveryInput,
+              store: await createDemoStore({ dataRoot: f.db.dataRoot }),
+            };
+            const _boot = await runSchedulerRestartRecovery(reloaded, recovery);
+            await runSchedulerRecoveryMaintenance(reloaded, recovery);
+            await runSchedulerDispatchLoop({
+              ...f.dispatchInput,
+              coreDb: reloaded,
+              store: recovery.store,
+            });
+            expect(
+              attempts(reloaded).find((row) => row.attempt_id === original.attemptId)?.phase
+            ).toBe('closing');
+            expect(f.port.submit).toHaveBeenCalledTimes(2);
+            expect(f.nativeStarts).toHaveLength(2);
+          } finally {
+            reloaded.sqlite.close();
+          }
         } finally {
-          reloaded.sqlite.close();
+          gate.resolve();
+          delayed.mockRestore();
         }
       } finally {
-        gate.resolve();
-        delayed.mockRestore();
+        f.db.sqlite.close();
       }
-    } finally {
-      f.db.sqlite.close();
     }
-  });
+  );
 
   it.each([
     'missing',
@@ -808,92 +813,93 @@ describe('execution backend port through real Core coordination', () => {
     }
   });
 
-  it.each([
-    'exact',
-    'conflicting',
-  ] as const)('keeps the first closed outcome immutable after a %s late result and storage reload', async (kind) => {
-    const f = await fixture('not_accepted');
-    try {
-      const entry = await f.queue('late-closed');
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      const correlation = f.effectCalls[0]!;
-      await vi.waitFor(() => expect(f.dispatchErrors).toHaveLength(1));
-      attemptRecords.closeSchedulerExecutionAttemptWithoutEffects(f.db, {
-        attemptId: correlation.attemptId,
-        noOutstandingEffects: true,
-        cause: 'whole-fixture-refusal',
-      });
-      const closed = attempts(f.db).find((row) => row.attempt_id === correlation.attemptId)!;
-      expect(closed.phase).toBe('closed');
-      expect(closed.terminal_cause).toEqual(expect.any(String));
-      expect(closed.outcome_ref).toBeDefined();
-      /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
-      const protectedFacts = (db: typeof f.db) => {
-        const rows = attempts(db);
-        const row = rows.find((candidate) => candidate.attempt_id === correlation.attemptId);
-        expect(row).toBeDefined();
-        expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
-        expect(rows.map((candidate) => candidate.attempt_id)).toEqual([correlation.attemptId]);
-        return {
-          attemptId: row!.attempt_id,
-          phase: row!.phase,
-          firstTerminalCause: row!.terminal_cause,
-          outcome: row!.outcome_ref,
-          disposition: row!.disposition,
-          operationId: row!.operation_id,
-          fenceRef: row!.fence_ref,
-        };
-      };
-      const protectedFirst = protectedFacts(f.db);
-      const observation: Observation = {
-        ...correlation,
-        disposition: kind === 'exact' ? 'not_accepted' : 'accepted',
-        execution: kind === 'exact' ? 'unknown' : 'terminal',
-        outcomeRef: kind === 'exact' ? null : 'conflicting-success',
-        fenceRef: null,
-      };
-      // Deliver the candidate to the real result consumer, even when closed attempts are not polled.
-      // This private action binding must move with its owner; a fake observation setter is no ingestion proof.
-      const ingest = async (db: typeof f.db) => {
-        const accepted = attemptRecords.acceptSchedulerExecutionObservation(db, observation);
-        // Failed closeout now retains its canonical outcome before closure; contradictory evidence must be refused.
-        if (kind === 'conflicting' && protectedFirst.outcome !== null) expect(accepted).toBeNull();
-        else {
-          expect(accepted?.attemptId).toBe(correlation.attemptId);
-          expect(accepted?.phase).toBe('closed');
-        }
-        expect(protectedFacts(db)).toEqual(protectedFirst);
-        expect(f.port.submit).toHaveBeenCalledOnce();
-        expect(f.nativeStarts).toEqual([]);
-      };
-      await ingest(f.db);
-      // Submitted refusal retains admitted history; it is no longer a queued cancellation target.
-      expect(requireSchedulerAdmissionEntry(f.db, entry.queueEntryId).status).toBe('admitted');
-      await f.maintain();
-      await f.dispatch();
-      expect(protectedFacts(f.db)).toEqual(protectedFirst);
-      const root = f.db.dataRoot;
-      const reloaded = openCoreDb(root);
+  it.each(['exact', 'conflicting'] as const)(
+    'keeps the first closed outcome immutable after a %s late result and storage reload',
+    async (kind) => {
+      const f = await fixture('not_accepted');
       try {
-        const recovery = { ...f.recoveryInput, store: await createDemoStore({ dataRoot: root }) };
-        const _boot = await runSchedulerRestartRecovery(reloaded, recovery);
-        await runSchedulerRecoveryMaintenance(reloaded, recovery);
-        await runSchedulerDispatchLoop({
-          ...f.dispatchInput,
-          coreDb: reloaded,
-          store: recovery.store,
-        });
-        await ingest(reloaded);
-        expect(protectedFacts(reloaded)).toEqual(protectedFirst);
+        const entry = await f.queue('late-closed');
+        await f.dispatch();
         expect(f.port.submit).toHaveBeenCalledOnce();
+        const correlation = f.effectCalls[0]!;
+        await vi.waitFor(() => expect(f.dispatchErrors).toHaveLength(1));
+        attemptRecords.closeSchedulerExecutionAttemptWithoutEffects(f.db, {
+          attemptId: correlation.attemptId,
+          noOutstandingEffects: true,
+          cause: 'whole-fixture-refusal',
+        });
+        const closed = attempts(f.db).find((row) => row.attempt_id === correlation.attemptId)!;
+        expect(closed.phase).toBe('closed');
+        expect(closed.terminal_cause).toEqual(expect.any(String));
+        expect(closed.outcome_ref).toBeDefined();
+        /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
+        const protectedFacts = (db: typeof f.db) => {
+          const rows = attempts(db);
+          const row = rows.find((candidate) => candidate.attempt_id === correlation.attemptId);
+          expect(row).toBeDefined();
+          expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
+          expect(rows.map((candidate) => candidate.attempt_id)).toEqual([correlation.attemptId]);
+          return {
+            attemptId: row!.attempt_id,
+            phase: row!.phase,
+            firstTerminalCause: row!.terminal_cause,
+            outcome: row!.outcome_ref,
+            disposition: row!.disposition,
+            operationId: row!.operation_id,
+            fenceRef: row!.fence_ref,
+          };
+        };
+        const protectedFirst = protectedFacts(f.db);
+        const observation: Observation = {
+          ...correlation,
+          disposition: kind === 'exact' ? 'not_accepted' : 'accepted',
+          execution: kind === 'exact' ? 'unknown' : 'terminal',
+          outcomeRef: kind === 'exact' ? null : 'conflicting-success',
+          fenceRef: null,
+        };
+        // Deliver the candidate to the real result consumer, even when closed attempts are not polled.
+        // This private action binding must move with its owner; a fake observation setter is no ingestion proof.
+        const ingest = async (db: typeof f.db) => {
+          const accepted = attemptRecords.acceptSchedulerExecutionObservation(db, observation);
+          // Failed closeout now retains its canonical outcome before closure; contradictory evidence must be refused.
+          if (kind === 'conflicting' && protectedFirst.outcome !== null)
+            expect(accepted).toBeNull();
+          else {
+            expect(accepted?.attemptId).toBe(correlation.attemptId);
+            expect(accepted?.phase).toBe('closed');
+          }
+          expect(protectedFacts(db)).toEqual(protectedFirst);
+          expect(f.port.submit).toHaveBeenCalledOnce();
+          expect(f.nativeStarts).toEqual([]);
+        };
+        await ingest(f.db);
+        // Submitted refusal retains admitted history; it is no longer a queued cancellation target.
+        expect(requireSchedulerAdmissionEntry(f.db, entry.queueEntryId).status).toBe('admitted');
+        await f.maintain();
+        await f.dispatch();
+        expect(protectedFacts(f.db)).toEqual(protectedFirst);
+        const root = f.db.dataRoot;
+        const reloaded = openCoreDb(root);
+        try {
+          const recovery = { ...f.recoveryInput, store: await createDemoStore({ dataRoot: root }) };
+          const _boot = await runSchedulerRestartRecovery(reloaded, recovery);
+          await runSchedulerRecoveryMaintenance(reloaded, recovery);
+          await runSchedulerDispatchLoop({
+            ...f.dispatchInput,
+            coreDb: reloaded,
+            store: recovery.store,
+          });
+          await ingest(reloaded);
+          expect(protectedFacts(reloaded)).toEqual(protectedFirst);
+          expect(f.port.submit).toHaveBeenCalledOnce();
+        } finally {
+          reloaded.sqlite.close();
+        }
       } finally {
-        reloaded.sqlite.close();
+        f.db.sqlite.close();
       }
-    } finally {
-      f.db.sqlite.close();
     }
-  });
+  );
 
   it('keeps durable queued cancellation sessionless without backend submission', async () => {
     const f = await fixture();

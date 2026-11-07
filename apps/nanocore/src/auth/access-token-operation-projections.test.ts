@@ -44,40 +44,41 @@ function fixture() {
 }
 
 describe('B12 bootstrap credential admission', () => {
-  it.each([
-    'bearer',
-    'session',
-  ] as const)('refuses an ordinary %s before any bootstrap row is written', async (credential) => {
-    const f = fixture();
-    const auth: BetterAuthServer = {
-      api: {
-        getSession: async () =>
-          credential === 'session'
-            ? { user: { id: 'usr_00000000-0000-7691-add4-fc1fc8769319' } }
-            : null,
-      },
-      handler: async () => new Response(null, { status: 404 }),
-    };
-    const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
-    try {
-      const before = f.rows();
-      const response = await app.request(
-        ...operationRequest(
-          'bootstrap.consume',
-          {},
-          {
-            headers: credential === 'bearer' ? { authorization: 'Bearer okt_fixture_bearer' } : {},
-            body: JSON.stringify(f.input),
-          }
-        )
-      );
-      expect(response.status).toBe(401);
-      expect(await response.json()).toMatchObject({ code: 'core.auth.unauthenticated' });
-      expect(f.rows()).toEqual(before);
-    } finally {
-      f.close();
+  it.each(['bearer', 'session'] as const)(
+    'refuses an ordinary %s before any bootstrap row is written',
+    async (credential) => {
+      const f = fixture();
+      const auth: BetterAuthServer = {
+        api: {
+          getSession: async () =>
+            credential === 'session'
+              ? { user: { id: 'usr_00000000-0000-7691-add4-fc1fc8769319' } }
+              : null,
+        },
+        handler: async () => new Response(null, { status: 404 }),
+      };
+      const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
+      try {
+        const before = f.rows();
+        const response = await app.request(
+          ...operationRequest(
+            'bootstrap.consume',
+            {},
+            {
+              headers:
+                credential === 'bearer' ? { authorization: 'Bearer okt_fixture_bearer' } : {},
+              body: JSON.stringify(f.input),
+            }
+          )
+        );
+        expect(response.status).toBe(401);
+        expect(await response.json()).toMatchObject({ code: 'core.auth.unauthenticated' });
+        expect(f.rows()).toEqual(before);
+      } finally {
+        f.close();
+      }
     }
-  });
+  );
 
   it('refuses non-loopback plaintext before bootstrap writes even with a valid secret', async () => {
     const f = fixture();
@@ -200,42 +201,43 @@ const formerBindings = [
 ] as const;
 
 describe('B12 authorized former binding retirement', () => {
-  it.each(
-    formerBindings
-  )('removes %s %s after reaching its native response on the base', async (method, path, input) => {
-    const f = fixture();
-    try {
-      ensureLocalUser(f.coreDb);
-      const admin = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
-        tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
-      });
-      const auth: BetterAuthServer = {
-        api: {
-          getSession: async ({ headers }) =>
-            headers.has('x-test-session')
-              ? { user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }
-              : null,
-        },
-        handler: async () => new Response(null, { status: 404 }),
-      };
-      const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
-      const response = await app.request(path, {
-        method,
-        headers: path.includes('my-admin-tokens')
-          ? { 'x-test-session': '1', 'content-type': 'application/json' }
-          : { authorization: `Bearer ${admin.secret}`, 'content-type': 'application/json' },
-        ...(method !== 'GET'
-          ? { body: JSON.stringify(path.includes('bootstrap') ? f.input : input) }
-          : {}),
-      });
-      expect(response.status).toBe(404);
-      expect(await response.text()).toBe('404 Not Found');
-    } finally {
-      f.close();
+  it.each(formerBindings)(
+    'removes %s %s after reaching its native response on the base',
+    async (method, path, input) => {
+      const f = fixture();
+      try {
+        ensureLocalUser(f.coreDb);
+        const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+          tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629',
+        });
+        const auth: BetterAuthServer = {
+          api: {
+            getSession: async ({ headers }) =>
+              headers.has('x-test-session')
+                ? { user: { id: 'usr_00000000-0000-7000-8000-000000000001' } }
+                : null,
+          },
+          handler: async () => new Response(null, { status: 404 }),
+        };
+        const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
+        const response = await app.request(path, {
+          method,
+          headers: path.includes('my-admin-tokens')
+            ? { 'x-test-session': '1', 'content-type': 'application/json' }
+            : { authorization: `Bearer ${admin.secret}`, 'content-type': 'application/json' },
+          ...(method !== 'GET'
+            ? { body: JSON.stringify(path.includes('bootstrap') ? f.input : input) }
+            : {}),
+        });
+        expect(response.status).toBe(404);
+        expect(await response.text()).toBe('404 Not Found');
+      } finally {
+        f.close();
+      }
     }
-  });
+  );
 });

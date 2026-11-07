@@ -128,16 +128,17 @@ describe('workspace collection closed wire', () => {
       })
     ).toBeDefined();
   });
-  it.each(
-    WorkspaceCollectionRecoveryCauseSchema.options
-  )('preserves the closed recovery cause %s', (cause) => {
-    expect(
-      admitWorkspaceCollectJsonResult(
-        { requestId: command.requestId, outcome: 'recovery_required', cause, additive: true },
-        WorkspaceCollectCommandSchema.parse(command)
-      )
-    ).toEqual({ requestId: command.requestId, outcome: 'recovery_required', cause });
-  });
+  it.each(WorkspaceCollectionRecoveryCauseSchema.options)(
+    'preserves the closed recovery cause %s',
+    (cause) => {
+      expect(
+        admitWorkspaceCollectJsonResult(
+          { requestId: command.requestId, outcome: 'recovery_required', cause, additive: true },
+          WorkspaceCollectCommandSchema.parse(command)
+        )
+      ).toEqual({ requestId: command.requestId, outcome: 'recovery_required', cause });
+    }
+  );
   it('rejects unknown outcomes, causes and mismatched request or mode', () => {
     for (const result of [
       { requestId: command.requestId, outcome: 'baseline_unstable' },

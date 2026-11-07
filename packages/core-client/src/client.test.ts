@@ -4959,42 +4959,42 @@ describe('createCoreClient', () => {
     expect(fetchCalls).toEqual(['https://nanocore.test/api/meta']);
   });
 
-  it.each([
-    '',
-    'https://nanocore.test/prefix/',
-  ])('encodes SSE path and query identifiers on both transports with base %j', async (baseUrl) => {
-    const options = {
-      baseUrl,
-      workspaceId: 'ws /?',
-      threadId: 'th #/é',
-      turnId: 'turn &?=+',
-      since: 7,
-    };
-    const path =
-      '/api/workspaces/ws%20%2F%3F/threads/th%20%23%2F%C3%A9/events?turnId=turn+%26%3F%3D%2B&since=7';
-    const expected = baseUrl ? `https://nanocore.test${path}` : path;
-    const fetchUrls: string[] = [];
-    const iterator = subscribeTurnEvents({
-      ...options,
-      fetch: async (input) => {
-        fetchUrls.push(String(input));
-        return new Response(null, { status: 204 });
-      },
-    })[Symbol.asyncIterator]();
-    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
-    expect(fetchUrls).toEqual([expected]);
+  it.each(['', 'https://nanocore.test/prefix/'])(
+    'encodes SSE path and query identifiers on both transports with base %j',
+    async (baseUrl) => {
+      const options = {
+        baseUrl,
+        workspaceId: 'ws /?',
+        threadId: 'th #/é',
+        turnId: 'turn &?=+',
+        since: 7,
+      };
+      const path =
+        '/api/workspaces/ws%20%2F%3F/threads/th%20%23%2F%C3%A9/events?turnId=turn+%26%3F%3D%2B&since=7';
+      const expected = baseUrl ? `https://nanocore.test${path}` : path;
+      const fetchUrls: string[] = [];
+      const iterator = subscribeTurnEvents({
+        ...options,
+        fetch: async (input) => {
+          fetchUrls.push(String(input));
+          return new Response(null, { status: 204 });
+        },
+      })[Symbol.asyncIterator]();
+      await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+      expect(fetchUrls).toEqual([expected]);
 
-    FakeEventSource.instances = [];
-    const eventSourceIterator = subscribeTurnEvents({
-      ...options,
-      eventSource: FakeEventSource,
-    })[Symbol.asyncIterator]();
-    try {
-      expect(FakeEventSource.instances.map((source) => source.url)).toEqual([expected]);
-    } finally {
-      await eventSourceIterator.return?.();
+      FakeEventSource.instances = [];
+      const eventSourceIterator = subscribeTurnEvents({
+        ...options,
+        eventSource: FakeEventSource,
+      })[Symbol.asyncIterator]();
+      try {
+        expect(FakeEventSource.instances.map((source) => source.url)).toEqual([expected]);
+      } finally {
+        await eventSourceIterator.return?.();
+      }
     }
-  });
+  );
 
   it('withholds AgentSession events and projects embedded Turns over fetch SSE', async () => {
     const terminal = turnEvent(2, 'turn.completed');
@@ -5225,34 +5225,35 @@ describe('createCoreClient', () => {
     await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
   });
 
-  it.each(
-    pseudoTerminalCases
-  )('withholds %s and reconnects fetch with its sequence', async (_label, pseudoTerminal) => {
-    let fetchCalls = 0;
-    const fetcher: typeof fetch = async (input) => {
-      fetchCalls += 1;
-      expect(String(input)).toContain(`since=${fetchCalls === 1 ? 4 : 5}`);
+  it.each(pseudoTerminalCases)(
+    'withholds %s and reconnects fetch with its sequence',
+    async (_label, pseudoTerminal) => {
+      let fetchCalls = 0;
+      const fetcher: typeof fetch = async (input) => {
+        fetchCalls += 1;
+        expect(String(input)).toContain(`since=${fetchCalls === 1 ? 4 : 5}`);
 
-      return fetchCalls === 1
-        ? sseResponse([pseudoTerminal])
-        : sseResponse([turnEvent(6, 'turn.completed')]);
-    };
-    const iterator = subscribeTurnEvents({
-      baseUrl: 'https://nanocore.test',
-      fetch: fetcher,
-      since: 4,
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    })[Symbol.asyncIterator]();
+        return fetchCalls === 1
+          ? sseResponse([pseudoTerminal])
+          : sseResponse([turnEvent(6, 'turn.completed')]);
+      };
+      const iterator = subscribeTurnEvents({
+        baseUrl: 'https://nanocore.test',
+        fetch: fetcher,
+        since: 4,
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })[Symbol.asyncIterator]();
 
-    await expect(iterator.next()).resolves.toMatchObject({
-      done: false,
-      value: { event: 'turn.completed', sequence: 6 },
-    });
-    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
-    expect(fetchCalls).toBe(2);
-  });
+      await expect(iterator.next()).resolves.toMatchObject({
+        done: false,
+        value: { event: 'turn.completed', sequence: 6 },
+      });
+      await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+      expect(fetchCalls).toBe(2);
+    }
+  );
 
   it('applies configured HTTP headers to JSON requests and fetch SSE requests', async () => {
     const jsonRequests: RecordedRequest[] = [];
@@ -5488,35 +5489,36 @@ describe('createCoreClient', () => {
     });
   });
 
-  it.each(
-    pseudoTerminalCases
-  )('withholds %s and reconnects EventSource with its sequence', async (_label, pseudoTerminal) => {
-    FakeEventSource.instances = [];
-    const stream = subscribeTurnEvents({
-      baseUrl: 'https://nanocore.test',
-      eventSource: FakeEventSource,
-      since: 4,
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const iterator = stream[Symbol.asyncIterator]();
-    const source = FakeEventSource.instances[0]!;
-    source.emit('message', pseudoTerminal);
-    source.emit('error', null);
-    const reopenedSource = FakeEventSource.instances[1]!;
-    expect(reopenedSource.url).toBe(
-      'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=5'
-    );
-    reopenedSource.emit('message', turnEvent(6, 'turn.completed'));
+  it.each(pseudoTerminalCases)(
+    'withholds %s and reconnects EventSource with its sequence',
+    async (_label, pseudoTerminal) => {
+      FakeEventSource.instances = [];
+      const stream = subscribeTurnEvents({
+        baseUrl: 'https://nanocore.test',
+        eventSource: FakeEventSource,
+        since: 4,
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const iterator = stream[Symbol.asyncIterator]();
+      const source = FakeEventSource.instances[0]!;
+      source.emit('message', pseudoTerminal);
+      source.emit('error', null);
+      const reopenedSource = FakeEventSource.instances[1]!;
+      expect(reopenedSource.url).toBe(
+        'https://nanocore.test/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=tu_00000000-0000-77e3-bfde-66477d556f64&since=5'
+      );
+      reopenedSource.emit('message', turnEvent(6, 'turn.completed'));
 
-    await expect(iterator.next()).resolves.toMatchObject({
-      done: false,
-      value: { event: 'turn.completed', sequence: 6 },
-    });
-    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
-    expect(reopenedSource.closed).toBe(true);
-  });
+      await expect(iterator.next()).resolves.toMatchObject({
+        done: false,
+        value: { event: 'turn.completed', sequence: 6 },
+      });
+      await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+      expect(reopenedSource.closed).toBe(true);
+    }
+  );
 
   it('drains queued EventSource events before reporting replacement construction failure', async () => {
     const constructionError = new Error('replacement EventSource construction failed');

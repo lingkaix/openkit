@@ -192,48 +192,48 @@ describe('new Chat calls require the current request declaration', () => {
         messages: history,
       },
     ];
-    it.each(refused)(`refuses $name without retry; stream=${stream}`, async ({
-      tools,
-      nameOut,
-      messages,
-    }) => {
-      const subject = fixture(
-        fauxAssistantMessage(fauxToolCall(nameOut, {}, { id: 'call_new' }), {
-          stopReason: 'toolUse',
-        })
-      );
-      await expectRefusal(
-        subject,
-        {
-          model: 'physical',
-          messages: messages ?? [],
-          ...(tools === undefined ? {} : { tools }),
-          stream,
-        },
-        stream
-      );
-    });
+    it.each(refused)(
+      `refuses $name without retry; stream=${stream}`,
+      async ({ tools, nameOut, messages }) => {
+        const subject = fixture(
+          fauxAssistantMessage(fauxToolCall(nameOut, {}, { id: 'call_new' }), {
+            stopReason: 'toolUse',
+          })
+        );
+        await expectRefusal(
+          subject,
+          {
+            model: 'physical',
+            messages: messages ?? [],
+            ...(tools === undefined ? {} : { tools }),
+            stream,
+          },
+          stream
+        );
+      }
+    );
 
     it.each([
       { label: 'null', argumentsOut: null },
       { label: 'array', argumentsOut: [] },
       { label: 'string', argumentsOut: 'not an object' },
       { label: 'number', argumentsOut: 3 },
-    ])(`refuses non-object completed arguments $label; stream=${stream}`, async ({
-      argumentsOut,
-    }) => {
-      // Fault injection is at the semantic boundary; this does not claim malformed-wire parser coverage.
-      const malformed = {
-        ...fauxToolCall('lookup', {}, { id: 'call_new' }),
-        arguments: argumentsOut,
-      } as unknown as ToolCall;
-      const subject = fixture(fauxAssistantMessage(malformed, { stopReason: 'toolUse' }));
-      await expectRefusal(
-        subject,
-        { model: 'physical', messages: [], tools: [declaration], stream },
-        stream
-      );
-    });
+    ])(
+      `refuses non-object completed arguments $label; stream=${stream}`,
+      async ({ argumentsOut }) => {
+        // Fault injection is at the semantic boundary; this does not claim malformed-wire parser coverage.
+        const malformed = {
+          ...fauxToolCall('lookup', {}, { id: 'call_new' }),
+          arguments: argumentsOut,
+        } as unknown as ToolCall;
+        const subject = fixture(fauxAssistantMessage(malformed, { stopReason: 'toolUse' }));
+        await expectRefusal(
+          subject,
+          { model: 'physical', messages: [], tools: [declaration], stream },
+          stream
+        );
+      }
+    );
 
     it(`refuses a duplicate call id with conflicting callable identities; stream=${stream}`, async () => {
       const subject = fixture(
@@ -296,48 +296,48 @@ describe('new Chat calls require the current request declaration', () => {
     });
   }
 
-  it.each([
-    'lookup',
-    'unknown',
-  ])('validates identity supplied only at completion: %s', async (name) => {
-    const completed = fauxToolCall(name, { query: 'current' }, { id: 'call_late' });
-    const message = fauxAssistantMessage([completed], { stopReason: 'toolUse' });
-    const provisional = fauxAssistantMessage([{ ...completed, id: '', name: '', arguments: {} }]);
-    const subject = fixture(message, [
-      { type: 'start', partial: fauxAssistantMessage([]) },
-      { type: 'toolcall_start', contentIndex: 0, partial: provisional },
-      {
-        type: 'toolcall_delta',
-        contentIndex: 0,
-        delta: '{"query":"current"}',
-        partial: provisional,
-      },
-      { type: 'toolcall_end', contentIndex: 0, toolCall: completed, partial: message },
-      { type: 'done', reason: 'toolUse', message },
-    ]);
-    const request = { model: 'physical', messages: [], tools: [declaration], stream: true };
-    if (name === 'unknown') {
-      await expectRefusal(subject, request, true);
-      return;
+  it.each(['lookup', 'unknown'])(
+    'validates identity supplied only at completion: %s',
+    async (name) => {
+      const completed = fauxToolCall(name, { query: 'current' }, { id: 'call_late' });
+      const message = fauxAssistantMessage([completed], { stopReason: 'toolUse' });
+      const provisional = fauxAssistantMessage([{ ...completed, id: '', name: '', arguments: {} }]);
+      const subject = fixture(message, [
+        { type: 'start', partial: fauxAssistantMessage([]) },
+        { type: 'toolcall_start', contentIndex: 0, partial: provisional },
+        {
+          type: 'toolcall_delta',
+          contentIndex: 0,
+          delta: '{"query":"current"}',
+          partial: provisional,
+        },
+        { type: 'toolcall_end', contentIndex: 0, toolCall: completed, partial: message },
+        { type: 'done', reason: 'toolUse', message },
+      ]);
+      const request = { model: 'physical', messages: [], tools: [declaration], stream: true };
+      if (name === 'unknown') {
+        await expectRefusal(subject, request, true);
+        return;
+      }
+      const result = await readChat(
+        await subject.client.createChatCompletionStream(subject.provider, request)
+      );
+      expect(result.error).toBeUndefined();
+      const calls = result.frames
+        .flatMap((frame) => frame.choices ?? [])
+        .flatMap((choice) => choice.delta?.tool_calls ?? []);
+      expect(calls.find((call) => call.function?.name)).toMatchObject({
+        id: 'call_late',
+        function: { name: 'lookup' },
+      });
+      expect(calls.some((call) => call.id === '' || call.function?.name === '')).toBe(false);
+      expect(JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))).toEqual({
+        query: 'current',
+      });
+      expect(result.wire).toContain('[DONE]');
+      expect(subject.invoke).toHaveBeenCalledOnce();
     }
-    const result = await readChat(
-      await subject.client.createChatCompletionStream(subject.provider, request)
-    );
-    expect(result.error).toBeUndefined();
-    const calls = result.frames
-      .flatMap((frame) => frame.choices ?? [])
-      .flatMap((choice) => choice.delta?.tool_calls ?? []);
-    expect(calls.find((call) => call.function?.name)).toMatchObject({
-      id: 'call_late',
-      function: { name: 'lookup' },
-    });
-    expect(calls.some((call) => call.id === '' || call.function?.name === '')).toBe(false);
-    expect(JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))).toEqual({
-      query: 'current',
-    });
-    expect(result.wire).toContain('[DONE]');
-    expect(subject.invoke).toHaveBeenCalledOnce();
-  });
+  );
 
   it('terminates after committed text when the completed call is undeclared', async () => {
     const completed = fauxToolCall('unknown', {}, { id: 'call_late_bad' });
@@ -364,80 +364,80 @@ describe('new Chat calls require the current request declaration', () => {
     ).toBe('Visible text.');
   });
 
-  it.each([
-    'name',
-    'id',
-  ] as const)('refuses a completed %s conflict even when both names are declared', async (field) => {
-    const started = fauxToolCall('lookup', {}, { id: 'call_started' });
-    const completed = { ...started, [field]: field === 'name' ? 'other' : 'call_changed' };
-    const message = fauxAssistantMessage([completed], { stopReason: 'toolUse' });
-    const subject = fixture(message, [
-      { type: 'start', partial: fauxAssistantMessage([]) },
-      { type: 'toolcall_start', contentIndex: 0, partial: fauxAssistantMessage([started]) },
-      { type: 'toolcall_end', contentIndex: 0, toolCall: completed, partial: message },
-      { type: 'done', reason: 'toolUse', message },
-    ]);
-    const other = { ...declaration, function: { ...declaration.function, name: 'other' } };
-    await expectRefusal(
-      subject,
-      { model: 'physical', messages: [], tools: [declaration, other], stream: true },
-      true
-    );
-  });
-
-  it.each([
-    'lookup',
-    'unknown',
-  ])('validates a terminal-only call without a tool-end event: %s', async (name) => {
-    const message = fauxAssistantMessage(fauxToolCall(name, {}, { id: 'call_terminal' }), {
-      stopReason: 'toolUse',
-    });
-    const subject = fixture(message, [
-      { type: 'start', partial: fauxAssistantMessage([]) },
-      { type: 'done', reason: 'toolUse', message },
-    ]);
-    const request = { model: 'physical', messages: [], tools: [declaration], stream: true };
-    if (name === 'unknown') {
-      await expectRefusal(subject, request, true);
-      return;
+  it.each(['name', 'id'] as const)(
+    'refuses a completed %s conflict even when both names are declared',
+    async (field) => {
+      const started = fauxToolCall('lookup', {}, { id: 'call_started' });
+      const completed = { ...started, [field]: field === 'name' ? 'other' : 'call_changed' };
+      const message = fauxAssistantMessage([completed], { stopReason: 'toolUse' });
+      const subject = fixture(message, [
+        { type: 'start', partial: fauxAssistantMessage([]) },
+        { type: 'toolcall_start', contentIndex: 0, partial: fauxAssistantMessage([started]) },
+        { type: 'toolcall_end', contentIndex: 0, toolCall: completed, partial: message },
+        { type: 'done', reason: 'toolUse', message },
+      ]);
+      const other = { ...declaration, function: { ...declaration.function, name: 'other' } };
+      await expectRefusal(
+        subject,
+        { model: 'physical', messages: [], tools: [declaration, other], stream: true },
+        true
+      );
     }
-    const result = await readChat(
-      await subject.client.createChatCompletionStream(subject.provider, request)
-    );
-    expect(result.error).toBeUndefined();
-    const choices = result.frames.flatMap((frame) => frame.choices ?? []);
-    const calls = choices.flatMap((choice) => choice.delta?.tool_calls ?? []);
-    expect(calls.find((call) => call.function?.name)).toMatchObject({
-      id: 'call_terminal',
-      function: { name: 'lookup' },
-    });
-    expect(JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))).toEqual({});
-    expect(choices.at(-1).finish_reason).toBe('tool_calls');
-    expect(result.wire).toContain('[DONE]');
-    expect(subject.invoke).toHaveBeenCalledOnce();
-  });
+  );
 
-  it.each([
-    false,
-    true,
-  ])('refuses an unfinished started call omitted from terminal output; identityKnown=%s', async (identityKnown) => {
-    const started = fauxToolCall(
-      identityKnown ? 'lookup' : '',
-      {},
-      { id: identityKnown ? 'call_unfinished' : '' }
-    );
-    const message = fauxAssistantMessage('Final text.');
-    const subject = fixture(message, [
-      { type: 'start', partial: fauxAssistantMessage([]) },
-      { type: 'toolcall_start', contentIndex: 0, partial: fauxAssistantMessage([started]) },
-      { type: 'done', reason: 'stop', message },
-    ]);
-    await expectRefusal(
-      subject,
-      { model: 'physical', messages: [], tools: [declaration], stream: true },
-      true
-    );
-  });
+  it.each(['lookup', 'unknown'])(
+    'validates a terminal-only call without a tool-end event: %s',
+    async (name) => {
+      const message = fauxAssistantMessage(fauxToolCall(name, {}, { id: 'call_terminal' }), {
+        stopReason: 'toolUse',
+      });
+      const subject = fixture(message, [
+        { type: 'start', partial: fauxAssistantMessage([]) },
+        { type: 'done', reason: 'toolUse', message },
+      ]);
+      const request = { model: 'physical', messages: [], tools: [declaration], stream: true };
+      if (name === 'unknown') {
+        await expectRefusal(subject, request, true);
+        return;
+      }
+      const result = await readChat(
+        await subject.client.createChatCompletionStream(subject.provider, request)
+      );
+      expect(result.error).toBeUndefined();
+      const choices = result.frames.flatMap((frame) => frame.choices ?? []);
+      const calls = choices.flatMap((choice) => choice.delta?.tool_calls ?? []);
+      expect(calls.find((call) => call.function?.name)).toMatchObject({
+        id: 'call_terminal',
+        function: { name: 'lookup' },
+      });
+      expect(JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))).toEqual({});
+      expect(choices.at(-1).finish_reason).toBe('tool_calls');
+      expect(result.wire).toContain('[DONE]');
+      expect(subject.invoke).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([false, true])(
+    'refuses an unfinished started call omitted from terminal output; identityKnown=%s',
+    async (identityKnown) => {
+      const started = fauxToolCall(
+        identityKnown ? 'lookup' : '',
+        {},
+        { id: identityKnown ? 'call_unfinished' : '' }
+      );
+      const message = fauxAssistantMessage('Final text.');
+      const subject = fixture(message, [
+        { type: 'start', partial: fauxAssistantMessage([]) },
+        { type: 'toolcall_start', contentIndex: 0, partial: fauxAssistantMessage([started]) },
+        { type: 'done', reason: 'stop', message },
+      ]);
+      await expectRefusal(
+        subject,
+        { model: 'physical', messages: [], tools: [declaration], stream: true },
+        true
+      );
+    }
+  );
 });
 
 describe('Chat declaration validation through the stock completions parser', () => {
@@ -452,195 +452,198 @@ describe('Chat declaration validation through the stock completions parser', () 
     { label: 'valid unknown callable', name: 'unknown', fragments: ['{}'], allowed: false },
   ];
   for (const stream of [false, true]) {
-    it.each(cases)(`$label uses the same final and streamed admission; stream=${stream}`, async ({
-      name,
-      fragments,
-      allowed,
-    }) => {
-      const stock = deepseekProvider();
-      const models = createModels();
-      models.setProvider(stock);
-      const model = models.getModels().find((entry) => entry.provider === stock.id);
-      if (!model) throw new Error('Stock DeepSeek fixture has no model.');
-      const provider = {
-        id: 'stock-declaration-profile',
-        adapterId: stock.id,
-        apiKey: 'synthetic',
-        baseUrl: null,
-        models: [model.id],
-        requiresApiKey: true,
-        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-      } as ResolvedLLMProviderConfig;
-      // The HTTP double is outside both the real stock parser and the Gateway projection.
-      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
-        const chunks = [
-          ...fragments.map((argumentsFragment, index) => ({
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  ...(index === 0 ? { id: 'call_stock', type: 'function' } : {}),
-                  function: { ...(index === 0 ? { name } : {}), arguments: argumentsFragment },
-                },
-              ],
-            },
-            finish_reason: null,
-          })),
-          { index: 0, delta: {}, finish_reason: 'tool_calls' },
-        ].map((choice) => ({
-          id: 'chat_stock',
-          object: 'chat.completion.chunk',
-          created: 1,
-          model: model.id,
-          choices: [choice],
-        }));
-        return new Response(
-          `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`,
-          { headers: { 'content-type': 'text/event-stream' } }
-        );
-      });
-      try {
-        const client = new PiAiGatewayClient({ models });
-        const request = { model: model.id, messages: [], tools: [declaration], stream };
-        if (stream) {
-          const result = await readChat(await client.createChatCompletionStream(provider, request));
-          const choices = result.frames.flatMap((frame) => frame.choices ?? []);
-          if (allowed) {
-            expect(result.error).toBeUndefined();
-            const calls = choices.flatMap((choice) => choice.delta?.tool_calls ?? []);
-            expect(calls.find((call) => call.function?.name)).toMatchObject({
-              id: 'call_stock',
-              function: { name: 'lookup' },
+    it.each(cases)(
+      `$label uses the same final and streamed admission; stream=${stream}`,
+      async ({ name, fragments, allowed }) => {
+        const stock = deepseekProvider();
+        const models = createModels();
+        models.setProvider(stock);
+        const model = models.getModels().find((entry) => entry.provider === stock.id);
+        if (!model) throw new Error('Stock DeepSeek fixture has no model.');
+        const provider = {
+          id: 'stock-declaration-profile',
+          adapterId: stock.id,
+          apiKey: 'synthetic',
+          baseUrl: null,
+          models: [model.id],
+          requiresApiKey: true,
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+        } as ResolvedLLMProviderConfig;
+        // The HTTP double is outside both the real stock parser and the Gateway projection.
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+          const chunks = [
+            ...fragments.map((argumentsFragment, index) => ({
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    ...(index === 0 ? { id: 'call_stock', type: 'function' } : {}),
+                    function: { ...(index === 0 ? { name } : {}), arguments: argumentsFragment },
+                  },
+                ],
+              },
+              finish_reason: null,
+            })),
+            { index: 0, delta: {}, finish_reason: 'tool_calls' },
+          ].map((choice) => ({
+            id: 'chat_stock',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: model.id,
+            choices: [choice],
+          }));
+          return new Response(
+            `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`,
+            { headers: { 'content-type': 'text/event-stream' } }
+          );
+        });
+        try {
+          const client = new PiAiGatewayClient({ models });
+          const request = { model: model.id, messages: [], tools: [declaration], stream };
+          if (stream) {
+            const result = await readChat(
+              await client.createChatCompletionStream(provider, request)
+            );
+            const choices = result.frames.flatMap((frame) => frame.choices ?? []);
+            if (allowed) {
+              expect(result.error).toBeUndefined();
+              const calls = choices.flatMap((choice) => choice.delta?.tool_calls ?? []);
+              expect(calls.find((call) => call.function?.name)).toMatchObject({
+                id: 'call_stock',
+                function: { name: 'lookup' },
+              });
+              expect(
+                JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))
+              ).toEqual({ query: 'current' });
+              expect(choices.at(-1).finish_reason).toBe('tool_calls');
+              expect(result.wire).toContain('[DONE]');
+            } else {
+              expect(result.error).toMatchObject({ code: 'unsupported_gateway_feature' });
+              expect(choices.some((choice) => choice.finish_reason)).toBe(false);
+              expect(result.wire).not.toContain('[DONE]');
+            }
+          } else if (allowed) {
+            const result = await client.createChatCompletion(provider, request);
+            expect(result.choices[0]).toMatchObject({
+              finish_reason: 'tool_calls',
+              message: {
+                tool_calls: [
+                  {
+                    id: 'call_stock',
+                    type: 'function',
+                    function: { name: 'lookup', arguments: '{"query":"current"}' },
+                  },
+                ],
+              },
             });
-            expect(
-              JSON.parse(calls.map((call) => call.function?.arguments ?? '').join(''))
-            ).toEqual({ query: 'current' });
-            expect(choices.at(-1).finish_reason).toBe('tool_calls');
-            expect(result.wire).toContain('[DONE]');
           } else {
-            expect(result.error).toMatchObject({ code: 'unsupported_gateway_feature' });
-            expect(choices.some((choice) => choice.finish_reason)).toBe(false);
-            expect(result.wire).not.toContain('[DONE]');
+            await expect(client.createChatCompletion(provider, request)).rejects.toMatchObject({
+              code: 'unsupported_gateway_feature',
+            });
           }
-        } else if (allowed) {
-          const result = await client.createChatCompletion(provider, request);
-          expect(result.choices[0]).toMatchObject({
-            finish_reason: 'tool_calls',
+          expect(fetchMock).toHaveBeenCalledOnce();
+        } finally {
+          fetchMock.mockRestore();
+        }
+      }
+    );
+  }
+});
+
+it.each([false, true])(
+  'refuses a non-string completed call identity with the typed error; stream=%s',
+  async (stream) => {
+    const call = { ...fauxToolCall('lookup', {}), id: 42 } as unknown as ToolCall;
+    const message = fauxAssistantMessage([call], { stopReason: 'toolUse' });
+    const subject = fixture(message, [
+      { type: 'start', partial: fauxAssistantMessage([]) },
+      { type: 'toolcall_start', contentIndex: 0, partial: message },
+      { type: 'toolcall_end', contentIndex: 0, toolCall: call, partial: message },
+      { type: 'done', reason: 'toolUse', message },
+    ]);
+    await expectRefusal(
+      subject,
+      { model: 'physical', messages: [], tools: [declaration], stream },
+      stream
+    );
+  }
+);
+
+describe('refused Chat output remains observable for model capture', () => {
+  for (const stream of [false, true]) {
+    it.each([false, true])(
+      `preserves refused call content before public validation; terminalOnly=%s stream=${stream}`,
+      async (terminalOnly) => {
+        const argumentsOut = { query: ' non-secret observation\n雪 ', nested: { count: 2 } };
+        const call = fauxToolCall('unknown', argumentsOut, { id: 'call_refused|fc_refused' });
+        const message = fauxAssistantMessage([call], { stopReason: 'toolUse' });
+        const events: AssistantMessageEvent[] = [
+          { type: 'start', partial: fauxAssistantMessage([]) },
+        ];
+        if (!terminalOnly) {
+          events.push(
+            { type: 'toolcall_start', contentIndex: 0, partial: message },
+            {
+              type: 'toolcall_delta',
+              contentIndex: 0,
+              delta: JSON.stringify(argumentsOut),
+              partial: message,
+            },
+            { type: 'toolcall_end', contentIndex: 0, toolCall: call, partial: message }
+          );
+        }
+        events.push({ type: 'done', reason: 'toolUse', message });
+        const subject = fixture(message, events);
+        // This sink proves the real client's semantic selection boundary, not durable persistence.
+        const observed: unknown[] = [];
+        const transport = {
+          onModelEvent: (event: unknown) => {
+            observed.push(event);
+          },
+        };
+        const request = { model: 'physical', messages: [], tools: [declaration], stream };
+        if (stream) {
+          const result = await readChat(
+            await subject.client.createChatCompletionStream(
+              subject.provider,
+              request,
+              undefined,
+              transport
+            )
+          );
+          expect(result.error).toMatchObject({ code: 'unsupported_gateway_feature' });
+          expect(result.wire).not.toContain('[DONE]');
+          expect(
+            result.frames
+              .flatMap((frame) => frame.choices ?? [])
+              .some((choice) => choice.finish_reason)
+          ).toBe(false);
+        } else {
+          await expect(
+            subject.client.createChatCompletion(subject.provider, request, undefined, transport)
+          ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
+        }
+        expect(subject.invoke).toHaveBeenCalledOnce();
+        if (terminalOnly) {
+          expect(observed).toContainEqual({
+            type: 'done',
             message: {
-              tool_calls: [
-                {
-                  id: 'call_stock',
-                  type: 'function',
-                  function: { name: 'lookup', arguments: '{"query":"current"}' },
-                },
+              type: 'message',
+              stopReason: 'toolUse',
+              content: [
+                { type: 'toolCall', id: call.id, name: 'unknown', arguments: argumentsOut },
               ],
             },
           });
         } else {
-          await expect(client.createChatCompletion(provider, request)).rejects.toMatchObject({
-            code: 'unsupported_gateway_feature',
+          expect(observed).toContainEqual({
+            type: 'toolcall_end',
+            contentIndex: 0,
+            toolCall: { id: call.id, name: 'unknown', arguments: argumentsOut },
           });
         }
-        expect(fetchMock).toHaveBeenCalledOnce();
-      } finally {
-        fetchMock.mockRestore();
       }
-    });
-  }
-});
-
-it.each([
-  false,
-  true,
-])('refuses a non-string completed call identity with the typed error; stream=%s', async (stream) => {
-  const call = { ...fauxToolCall('lookup', {}), id: 42 } as unknown as ToolCall;
-  const message = fauxAssistantMessage([call], { stopReason: 'toolUse' });
-  const subject = fixture(message, [
-    { type: 'start', partial: fauxAssistantMessage([]) },
-    { type: 'toolcall_start', contentIndex: 0, partial: message },
-    { type: 'toolcall_end', contentIndex: 0, toolCall: call, partial: message },
-    { type: 'done', reason: 'toolUse', message },
-  ]);
-  await expectRefusal(
-    subject,
-    { model: 'physical', messages: [], tools: [declaration], stream },
-    stream
-  );
-});
-
-describe('refused Chat output remains observable for model capture', () => {
-  for (const stream of [false, true]) {
-    it.each([
-      false,
-      true,
-    ])(`preserves refused call content before public validation; terminalOnly=%s stream=${stream}`, async (terminalOnly) => {
-      const argumentsOut = { query: ' non-secret observation\n雪 ', nested: { count: 2 } };
-      const call = fauxToolCall('unknown', argumentsOut, { id: 'call_refused|fc_refused' });
-      const message = fauxAssistantMessage([call], { stopReason: 'toolUse' });
-      const events: AssistantMessageEvent[] = [
-        { type: 'start', partial: fauxAssistantMessage([]) },
-      ];
-      if (!terminalOnly) {
-        events.push(
-          { type: 'toolcall_start', contentIndex: 0, partial: message },
-          {
-            type: 'toolcall_delta',
-            contentIndex: 0,
-            delta: JSON.stringify(argumentsOut),
-            partial: message,
-          },
-          { type: 'toolcall_end', contentIndex: 0, toolCall: call, partial: message }
-        );
-      }
-      events.push({ type: 'done', reason: 'toolUse', message });
-      const subject = fixture(message, events);
-      // This sink proves the real client's semantic selection boundary, not durable persistence.
-      const observed: unknown[] = [];
-      const transport = {
-        onModelEvent: (event: unknown) => {
-          observed.push(event);
-        },
-      };
-      const request = { model: 'physical', messages: [], tools: [declaration], stream };
-      if (stream) {
-        const result = await readChat(
-          await subject.client.createChatCompletionStream(
-            subject.provider,
-            request,
-            undefined,
-            transport
-          )
-        );
-        expect(result.error).toMatchObject({ code: 'unsupported_gateway_feature' });
-        expect(result.wire).not.toContain('[DONE]');
-        expect(
-          result.frames
-            .flatMap((frame) => frame.choices ?? [])
-            .some((choice) => choice.finish_reason)
-        ).toBe(false);
-      } else {
-        await expect(
-          subject.client.createChatCompletion(subject.provider, request, undefined, transport)
-        ).rejects.toMatchObject({ code: 'unsupported_gateway_feature' });
-      }
-      expect(subject.invoke).toHaveBeenCalledOnce();
-      if (terminalOnly) {
-        expect(observed).toContainEqual({
-          type: 'done',
-          message: {
-            type: 'message',
-            stopReason: 'toolUse',
-            content: [{ type: 'toolCall', id: call.id, name: 'unknown', arguments: argumentsOut }],
-          },
-        });
-      } else {
-        expect(observed).toContainEqual({
-          type: 'toolcall_end',
-          contentIndex: 0,
-          toolCall: { id: call.id, name: 'unknown', arguments: argumentsOut },
-        });
-      }
-    });
+    );
   }
 });

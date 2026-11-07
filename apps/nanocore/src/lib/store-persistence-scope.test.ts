@@ -548,31 +548,31 @@ describe('Workspace directory publication durability', () => {
     expect(new FsStore({ dataRoot: f.dataRoot }).listWorkspaces()).toEqual([]);
   });
 
-  it.each([
-    'destination',
-    'source',
-  ] as const)('does not acknowledge publication when the %s parent sync fails after rename', async (parent) => {
-    const f = fixture();
-    trace.fail = (path, directory) => {
-      const publication = trace.events.find(
-        (event) => event.op === 'rename' && event.path === f.finalRoot
+  it.each(['destination', 'source'] as const)(
+    'does not acknowledge publication when the %s parent sync fails after rename',
+    async (parent) => {
+      const f = fixture();
+      trace.fail = (path, directory) => {
+        const publication = trace.events.find(
+          (event) => event.op === 'rename' && event.path === f.finalRoot
+        );
+        return (
+          directory &&
+          publication !== undefined &&
+          path ===
+            (parent === 'destination' ? dirname(f.finalRoot) : dirname(publication.from as string))
+        );
+      };
+      await expect(f.publish()).rejects.toThrow('Injected tree synchronization failure');
+      trace.fail = undefined;
+      expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspaceId).name).toBe(
+        'Durable import'
       );
-      return (
-        directory &&
-        publication !== undefined &&
-        path ===
-          (parent === 'destination' ? dirname(f.finalRoot) : dirname(publication.from as string))
+      expect(readFileSync(join(f.finalRoot, 'opaque', 'nested', 'retained.bin'))).toEqual(
+        Buffer.from([0, 1, 255])
       );
-    };
-    await expect(f.publish()).rejects.toThrow('Injected tree synchronization failure');
-    trace.fail = undefined;
-    expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(f.workspaceId).name).toBe(
-      'Durable import'
-    );
-    expect(readFileSync(join(f.finalRoot, 'opaque', 'nested', 'retained.bin'))).toEqual(
-      Buffer.from([0, 1, 255])
-    );
-  });
+    }
+  );
 });
 
 /** Creates a fresh Workspace through either public creation path. */
@@ -600,113 +600,114 @@ function expectCompleteWorkspaceJournal(sqlite: Database.Database): void {
 }
 
 describe('fresh Workspace database publication', () => {
-  it.each([
-    'general',
-    'personal',
-  ] as const)('publishes %s with a migrated database ready for existing-only maintenance and reopen', async (kind) => {
-    const f = freshWorkspaceDatabaseFixture(kind);
-    const workspace = await f.create();
-    expect(workspace.kind).toBe(kind);
-    expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
-      { workspaceId: workspace.id },
-    ]);
-    const db = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
-    try {
-      expectCompleteWorkspaceJournal(db.sqlite);
-      expect(listRecoverableWorkerCheckpoints(db)).toEqual([]);
-    } finally {
-      db.sqlite.close();
-    }
-    expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(workspace.id).kind).toBe(kind);
-    const reopened = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
-    try {
-      expectCompleteWorkspaceJournal(reopened.sqlite);
-      expect(listRecoverableWorkerCheckpoints(reopened)).toEqual([]);
-    } finally {
-      reopened.sqlite.close();
-    }
-  });
-
-  it.each([
-    'general',
-    'personal',
-  ] as const)('completes the %s database in staging before the canonical rename', async (kind) => {
-    const f = freshWorkspaceDatabaseFixture(kind);
-    let inspected = 0;
-    trace.beforeRename = (from, to) => {
-      if (
-        dirname(from) !== join(f.dataRoot, 'workspaces', '.staging') ||
-        dirname(to) !== join(f.dataRoot, 'workspaces')
-      )
-        return;
-      inspected += 1;
-      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
-      expect(existsSync(join(from, 'config', 'workspace.jsonc'))).toBe(true);
-      const stagedDatabase = join(from, 'db', 'workspace.sqlite');
-      expect(existsSync(stagedDatabase)).toBe(true);
-      // Reading only the main file proves schema readiness does not depend on a live WAL sidecar.
-      const snapshot = join(f.dataRoot, 'before-publication.sqlite');
-      copyFileSync(stagedDatabase, snapshot);
-      const sqlite = new Database(snapshot, { fileMustExist: true, readonly: true });
+  it.each(['general', 'personal'] as const)(
+    'publishes %s with a migrated database ready for existing-only maintenance and reopen',
+    async (kind) => {
+      const f = freshWorkspaceDatabaseFixture(kind);
+      const workspace = await f.create();
+      expect(workspace.kind).toBe(kind);
+      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
+        { workspaceId: workspace.id },
+      ]);
+      const db = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
       try {
-        expectCompleteWorkspaceJournal(sqlite);
+        expectCompleteWorkspaceJournal(db.sqlite);
+        expect(listRecoverableWorkerCheckpoints(db)).toEqual([]);
       } finally {
-        sqlite.close();
+        db.sqlite.close();
       }
-    };
-    const workspace = await f.create();
-    expect(inspected).toBe(1);
-    expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
-      { workspaceId: workspace.id },
-    ]);
-    const db = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
-    try {
-      expect(listRecoverableWorkerCheckpoints(db)).toEqual([]);
-    } finally {
-      db.sqlite.close();
+      expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(workspace.id).kind).toBe(kind);
+      const reopened = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
+      try {
+        expectCompleteWorkspaceJournal(reopened.sqlite);
+        expect(listRecoverableWorkerCheckpoints(reopened)).toEqual([]);
+      } finally {
+        reopened.sqlite.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    'general',
-    'personal',
-  ] as const)('does not publish %s when a staged Workspace migration fails', async (kind) => {
-    const f = freshWorkspaceDatabaseFixture(kind);
-    const originalPrepare = Database.prototype.prepare;
-    let faults = 0;
-    const fault = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
-      this: Database.Database,
-      source: string
-    ) {
-      const [operation, entity, table] = source.trimStart().split(/\s+/, 3);
-      if (
-        this.name.includes('/workspaces/.staging/') &&
-        operation === 'CREATE' &&
-        entity === 'TABLE' &&
-        table === '`worker_turn_checkpoints`'
-      ) {
-        faults += 1;
-        throw new Error('Injected Workspace migration failure');
-      }
-      return originalPrepare.call(this, source);
-    } as typeof originalPrepare);
-    trace.events.length = 0;
-    try {
-      await expect(f.create()).rejects.toThrow(
-        expect.objectContaining({ code: 'migration_failed' })
-      );
-      expect(faults).toBe(1);
-      expect(f.store.listWorkspaces()).toEqual([]);
-      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
-      expect(
-        trace.events.some(
-          (event) => event.op === 'rename' && dirname(event.path) === join(f.dataRoot, 'workspaces')
+  it.each(['general', 'personal'] as const)(
+    'completes the %s database in staging before the canonical rename',
+    async (kind) => {
+      const f = freshWorkspaceDatabaseFixture(kind);
+      let inspected = 0;
+      trace.beforeRename = (from, to) => {
+        if (
+          dirname(from) !== join(f.dataRoot, 'workspaces', '.staging') ||
+          dirname(to) !== join(f.dataRoot, 'workspaces')
         )
-      ).toBe(false);
-    } finally {
-      fault.mockRestore();
+          return;
+        inspected += 1;
+        expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
+        expect(existsSync(join(from, 'config', 'workspace.jsonc'))).toBe(true);
+        const stagedDatabase = join(from, 'db', 'workspace.sqlite');
+        expect(existsSync(stagedDatabase)).toBe(true);
+        // Reading only the main file proves schema readiness does not depend on a live WAL sidecar.
+        const snapshot = join(f.dataRoot, 'before-publication.sqlite');
+        copyFileSync(stagedDatabase, snapshot);
+        const sqlite = new Database(snapshot, { fileMustExist: true, readonly: true });
+        try {
+          expectCompleteWorkspaceJournal(sqlite);
+        } finally {
+          sqlite.close();
+        }
+      };
+      const workspace = await f.create();
+      expect(inspected).toBe(1);
+      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
+        { workspaceId: workspace.id },
+      ]);
+      const db = openBootVerifiedWorkspaceDb(f.dataRoot, workspace.id);
+      try {
+        expect(listRecoverableWorkerCheckpoints(db)).toEqual([]);
+      } finally {
+        db.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(['general', 'personal'] as const)(
+    'does not publish %s when a staged Workspace migration fails',
+    async (kind) => {
+      const f = freshWorkspaceDatabaseFixture(kind);
+      const originalPrepare = Database.prototype.prepare;
+      let faults = 0;
+      const fault = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+        this: Database.Database,
+        source: string
+      ) {
+        const [operation, entity, table] = source.trimStart().split(/\s+/, 3);
+        if (
+          this.name.includes('/workspaces/.staging/') &&
+          operation === 'CREATE' &&
+          entity === 'TABLE' &&
+          table === '`worker_turn_checkpoints`'
+        ) {
+          faults += 1;
+          throw new Error('Injected Workspace migration failure');
+        }
+        return originalPrepare.call(this, source);
+      } as typeof originalPrepare);
+      trace.events.length = 0;
+      try {
+        await expect(f.create()).rejects.toThrow(
+          expect.objectContaining({ code: 'migration_failed' })
+        );
+        expect(faults).toBe(1);
+        expect(f.store.listWorkspaces()).toEqual([]);
+        expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
+        expect(
+          trace.events.some(
+            (event) =>
+              event.op === 'rename' && dirname(event.path) === join(f.dataRoot, 'workspaces')
+          )
+        ).toBe(false);
+      } finally {
+        fault.mockRestore();
+      }
+    }
+  );
 });
 
 /** Opens a separate existing fixture connection and always closes it; no schema or authority is synthesized. */
@@ -968,122 +969,126 @@ describe('native Thread byte authority', () => {
 });
 
 describe('native Workspace absence classification', () => {
-  it.each([
-    'never-published',
-    'retained-registered',
-  ] as const)('distinguishes %s absence without changing retained authority or healthy siblings', async (kind) => {
-    const f = await threadPublicationFixture(1);
-    const healthy = await f.store.createWorkspace('Healthy absence sibling');
-    const healthyThread = await f.store.createThread(healthy.id, 'Retained healthy history');
-    const coreDb = openCoreDb(f.dataRoot);
-    onTestFinished(() => coreDb.sqlite.close());
-    ensureLocalUser(coreDb);
-    for (const workspaceId of [f.workspace.id, healthy.id]) {
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        ownerUserId: FIXTURE_LOCAL_USER_ID,
-        workspaceId,
-      });
-    }
-    const absentId =
-      kind === 'never-published'
-        ? testEntityId('ws', 'ws_never_published_absence')
-        : f.workspace.id;
-    const canonicalRoot = join(f.dataRoot, 'workspaces', absentId);
-    const retainedRoot = join(f.dataRoot, 'retained-workspace-root');
-    const healthyBefore = f.store.getWorkspace(healthy.id);
-    const healthyRows = () =>
-      workspaceSql(f.dataRoot, healthy.id, (db) => ({
-        workspaces: db.prepare('SELECT * FROM control_workspaces ORDER BY id').all(),
-        threads: db.prepare('SELECT * FROM control_threads ORDER BY id').all(),
-      }));
-    const serverRows = () => ({
-      registry: coreDb.sqlite
-        .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
-        .all(),
-      membership: coreDb.sqlite
-        .prepare('SELECT * FROM workspace_members ORDER BY workspace_id, user_id')
-        .all(),
-    });
-    const healthyAuthority = healthyRows();
-    const serverAuthority = serverRows();
-    expect(serverAuthority.registry).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ workspace_id: f.workspace.id, status: 'active' }),
-        expect.objectContaining({ workspace_id: healthy.id, status: 'active' }),
-      ])
-    );
-    expect(serverAuthority.membership).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          workspace_id: f.workspace.id,
-          user_id: FIXTURE_LOCAL_USER_ID,
-          status: 'active',
-        }),
-        expect.objectContaining({
-          workspace_id: healthy.id,
-          user_id: FIXTURE_LOCAL_USER_ID,
-          status: 'active',
-        }),
-      ])
-    );
-    // Stop the Workspace writer before relocating complete retained authority.
-    await shutdownControlStoreWorkerClient();
-    // Establish genuine reader sidecars before freezing the exact absence-fault baseline.
-    for (const workspaceId of [f.workspace.id, healthy.id])
-      workspaceSql(
-        f.dataRoot,
-        workspaceId,
-        (db) => db.prepare('SELECT COUNT(*) FROM control_workspaces').get(),
-        true
-      );
-    if (kind === 'retained-registered') renameSync(canonicalRoot, retainedRoot);
-    else {
-      expect(
-        coreDb.sqlite.prepare('SELECT * FROM workspace_registry WHERE workspace_id=?').all(absentId)
-      ).toEqual([]);
-      expect(
-        coreDb.sqlite.prepare('SELECT * FROM workspace_members WHERE workspace_id=?').all(absentId)
-      ).toEqual([]);
-    }
-    expect(existsSync(canonicalRoot)).toBe(false);
-    const retainedFiles = () =>
-      existsSync(retainedRoot)
-        ? readdirSync(retainedRoot, { recursive: true })
-            .map(String)
-            .sort()
-            .filter((path) => lstatSync(join(retainedRoot, path)).isFile())
-            .map((path) => ({ path, bytes: readFileSync(join(retainedRoot, path)) }))
-        : [];
-    const retainedBytes = retainedFiles();
-    const entries = readdirSync(f.dataRoot, { recursive: true }).sort();
-    trace.events.length = 0;
-    const reopened = new FsStore({ dataRoot: f.dataRoot });
-    expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
-    expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
-    for (const reader of [reopened, f.store]) {
-      if (kind === 'never-published') {
-        expect(() => reader.getWorkspace(absentId)).toThrow(StoreRecordNotFoundError);
-        expect(() => reader.getWorkspace(absentId)).toThrow(
-          expect.objectContaining({ message: `Workspace not found: ${absentId}` })
-        );
-      } else {
-        expect(() => reader.getWorkspace(absentId)).toThrow(
-          expect.objectContaining({
-            code: 'recovery_required',
-            status: 409,
-            message: expect.stringContaining(`workspace ${absentId} quarantined`),
-          })
-        );
+  it.each(['never-published', 'retained-registered'] as const)(
+    'distinguishes %s absence without changing retained authority or healthy siblings',
+    async (kind) => {
+      const f = await threadPublicationFixture(1);
+      const healthy = await f.store.createWorkspace('Healthy absence sibling');
+      const healthyThread = await f.store.createThread(healthy.id, 'Retained healthy history');
+      const coreDb = openCoreDb(f.dataRoot);
+      onTestFinished(() => coreDb.sqlite.close());
+      ensureLocalUser(coreDb);
+      for (const workspaceId of [f.workspace.id, healthy.id]) {
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: FIXTURE_LOCAL_USER_ID,
+          workspaceId,
+        });
       }
+      const absentId =
+        kind === 'never-published'
+          ? testEntityId('ws', 'ws_never_published_absence')
+          : f.workspace.id;
+      const canonicalRoot = join(f.dataRoot, 'workspaces', absentId);
+      const retainedRoot = join(f.dataRoot, 'retained-workspace-root');
+      const healthyBefore = f.store.getWorkspace(healthy.id);
+      const healthyRows = () =>
+        workspaceSql(f.dataRoot, healthy.id, (db) => ({
+          workspaces: db.prepare('SELECT * FROM control_workspaces ORDER BY id').all(),
+          threads: db.prepare('SELECT * FROM control_threads ORDER BY id').all(),
+        }));
+      const serverRows = () => ({
+        registry: coreDb.sqlite
+          .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+          .all(),
+        membership: coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members ORDER BY workspace_id, user_id')
+          .all(),
+      });
+      const healthyAuthority = healthyRows();
+      const serverAuthority = serverRows();
+      expect(serverAuthority.registry).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ workspace_id: f.workspace.id, status: 'active' }),
+          expect.objectContaining({ workspace_id: healthy.id, status: 'active' }),
+        ])
+      );
+      expect(serverAuthority.membership).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            workspace_id: f.workspace.id,
+            user_id: FIXTURE_LOCAL_USER_ID,
+            status: 'active',
+          }),
+          expect.objectContaining({
+            workspace_id: healthy.id,
+            user_id: FIXTURE_LOCAL_USER_ID,
+            status: 'active',
+          }),
+        ])
+      );
+      // Stop the Workspace writer before relocating complete retained authority.
+      await shutdownControlStoreWorkerClient();
+      // Establish genuine reader sidecars before freezing the exact absence-fault baseline.
+      for (const workspaceId of [f.workspace.id, healthy.id])
+        workspaceSql(
+          f.dataRoot,
+          workspaceId,
+          (db) => db.prepare('SELECT COUNT(*) FROM control_workspaces').get(),
+          true
+        );
+      if (kind === 'retained-registered') renameSync(canonicalRoot, retainedRoot);
+      else {
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
+            .all(absentId)
+        ).toEqual([]);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT * FROM workspace_members WHERE workspace_id=?')
+            .all(absentId)
+        ).toEqual([]);
+      }
+      expect(existsSync(canonicalRoot)).toBe(false);
+      const retainedFiles = () =>
+        existsSync(retainedRoot)
+          ? readdirSync(retainedRoot, { recursive: true })
+              .map(String)
+              .sort()
+              .filter((path) => lstatSync(join(retainedRoot, path)).isFile())
+              .map((path) => ({ path, bytes: readFileSync(join(retainedRoot, path)) }))
+          : [];
+      const retainedBytes = retainedFiles();
+      const entries = readdirSync(f.dataRoot, { recursive: true }).sort();
+      trace.events.length = 0;
+      const reopened = new FsStore({ dataRoot: f.dataRoot });
+      expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
+      expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
+      for (const reader of [reopened, f.store]) {
+        if (kind === 'never-published') {
+          expect(() => reader.getWorkspace(absentId)).toThrow(StoreRecordNotFoundError);
+          expect(() => reader.getWorkspace(absentId)).toThrow(
+            expect.objectContaining({ message: `Workspace not found: ${absentId}` })
+          );
+        } else {
+          expect(() => reader.getWorkspace(absentId)).toThrow(
+            expect.objectContaining({
+              code: 'recovery_required',
+              status: 409,
+              message: expect.stringContaining(`workspace ${absentId} quarantined`),
+            })
+          );
+        }
+      }
+      expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
+      expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
+      expect(existsSync(canonicalRoot)).toBe(false);
+      expect(serverRows()).toEqual(serverAuthority);
+      expect(healthyRows()).toEqual(healthyAuthority);
+      expect(retainedFiles()).toEqual(retainedBytes);
+      expect(readdirSync(f.dataRoot, { recursive: true }).sort()).toEqual(entries);
+      expect(trace.events).toEqual([]);
     }
-    expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
-    expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
-    expect(existsSync(canonicalRoot)).toBe(false);
-    expect(serverRows()).toEqual(serverAuthority);
-    expect(healthyRows()).toEqual(healthyAuthority);
-    expect(retainedFiles()).toEqual(retainedBytes);
-    expect(readdirSync(f.dataRoot, { recursive: true }).sort()).toEqual(entries);
-    expect(trace.events).toEqual([]);
-  });
+  );
 });

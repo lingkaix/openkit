@@ -233,32 +233,32 @@ describe('Workspace relationship consumers', () => {
     ).toEqual([OWN_QUICK_CHAT.name, OWN_PROJECT.name, SHARED_EDITOR.name, SHARED_VIEWER.name]);
   });
 
-  it.each([
-    FOREIGN_PROJECT,
-    REMOVED_PROJECT,
-  ])('lists administrator-only relationships separately and opens $name for inspection', async (target) => {
-    const user = userEvent.setup();
-    const view = renderConsumers({ administration: true });
-    await view.discoveryReady();
-    const others = await screen.findByRole('region', { name: 'Other workspaces' });
-    expect(
-      within(others)
-        .getAllByRole('button')
-        .map((button) => button.getAttribute('aria-label'))
-    ).toEqual([
-      `Open ${FOREIGN_QUICK_CHAT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
-      `Open ${FOREIGN_PROJECT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
-      `Open ${REMOVED_PROJECT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
-    ]);
-    await user.click(
-      within(others).getByRole('button', {
-        name: `Open ${target.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
-      })
-    );
-    expect(screen.getByLabelText('Selected workspace')).toHaveTextContent(target.id);
-    expect(screen.getByLabelText('Current path')).toHaveTextContent('/chat');
-    expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(target.id);
-  });
+  it.each([FOREIGN_PROJECT, REMOVED_PROJECT])(
+    'lists administrator-only relationships separately and opens $name for inspection',
+    async (target) => {
+      const user = userEvent.setup();
+      const view = renderConsumers({ administration: true });
+      await view.discoveryReady();
+      const others = await screen.findByRole('region', { name: 'Other workspaces' });
+      expect(
+        within(others)
+          .getAllByRole('button')
+          .map((button) => button.getAttribute('aria-label'))
+      ).toEqual([
+        `Open ${FOREIGN_QUICK_CHAT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
+        `Open ${FOREIGN_PROJECT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
+        `Open ${REMOVED_PROJECT.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
+      ]);
+      await user.click(
+        within(others).getByRole('button', {
+          name: `Open ${target.name} owned by usr_00000000-0000-73d4-904a-d4c4b905df7c`,
+        })
+      );
+      expect(screen.getByLabelText('Selected workspace')).toHaveTextContent(target.id);
+      expect(screen.getByLabelText('Current path')).toHaveTextContent('/chat');
+      expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(target.id);
+    }
+  );
 
   it('reads the caller-owned Administration conversation when a foreign null-role Quick Chat comes first', async () => {
     const view = renderConsumers({ administration: true });

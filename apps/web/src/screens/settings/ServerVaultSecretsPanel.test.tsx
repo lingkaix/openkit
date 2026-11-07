@@ -156,24 +156,24 @@ it('clears transient material and removes mutation controls after current author
   expect(operations['vault.server-mcp-secret-create']).not.toHaveBeenCalled();
 });
 
-it.each([
-  `Create shared gateway grant ${REFERENCE_ID}`,
-  `Narrow shared grant ${GRANT_ID}`,
-])('rejects secret-shaped restrictions before %s enters mutation retention', async (name) => {
-  const { operations, cache } = setup();
-  await screen.findByText(GRANT_ID);
-  const canary = 'ghp_synthetic_private_grant_canary';
-  await userEvent.type(screen.getByLabelText('Shared grant Agent'), canary);
-  await userEvent.click(screen.getByRole('button', { name }));
-  expect(await screen.findByRole('status')).toHaveTextContent(
-    'Grant restriction fields are invalid.'
-  );
-  expect(operations['vault.server-mcp-grant-create']).not.toHaveBeenCalled();
-  expect(operations['vault.server-mcp-grant-narrow']).not.toHaveBeenCalled();
-  expect(cache.getMutationCache().getAll()).toHaveLength(0);
-  expect(screen.getByLabelText('Shared grant Agent')).toHaveValue('');
-  expect(document.body.textContent).not.toContain(canary);
-});
+it.each([`Create shared gateway grant ${REFERENCE_ID}`, `Narrow shared grant ${GRANT_ID}`])(
+  'rejects secret-shaped restrictions before %s enters mutation retention',
+  async (name) => {
+    const { operations, cache } = setup();
+    await screen.findByText(GRANT_ID);
+    const canary = 'ghp_synthetic_private_grant_canary';
+    await userEvent.type(screen.getByLabelText('Shared grant Agent'), canary);
+    await userEvent.click(screen.getByRole('button', { name }));
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Grant restriction fields are invalid.'
+    );
+    expect(operations['vault.server-mcp-grant-create']).not.toHaveBeenCalled();
+    expect(operations['vault.server-mcp-grant-narrow']).not.toHaveBeenCalled();
+    expect(cache.getMutationCache().getAll()).toHaveLength(0);
+    expect(screen.getByLabelText('Shared grant Agent')).toHaveValue('');
+    expect(document.body.textContent).not.toContain(canary);
+  }
+);
 
 it('does not expose AgentSession input and sends no session value on grant create or narrow', async () => {
   const { operations } = setup();

@@ -85,31 +85,31 @@ describe('native historical pairs are context without callable authority', () =>
     { kind: 'function', anchored: true },
     { kind: 'custom_tool', anchored: false },
     { kind: 'custom_tool', anchored: true },
-  ])('admits complete $kind pairs and canonical aliases without activating tools; anchored=$anchored', async ({
-    kind,
-    anchored,
-  }) => {
-    const { faux, dispatcher, provider, model } = fixture();
-    faux.setResponses([fauxAssistantMessage('summary')]);
-    const input = [
-      ...(anchored ? [emptyPrefix] : []),
-      ...pair(kind, '', 'default'),
-      ...pair(kind, 'left', 'left'),
-      ...pair(kind, 'right', 'right'),
-    ];
-    const defaultResultIndex = anchored ? 2 : 1;
-    input[defaultResultIndex] = { ...input[defaultResultIndex], namespace: 'functions' };
-    input.push(...pair(kind, 'functions', 'explicit'));
-    input[input.length - 2] = {
-      ...input[input.length - 2],
-      namespace: undefined,
-      status: 'completed',
-    };
-    input[input.length - 1] = { ...input[input.length - 1], namespace: '' };
-    const response = await dispatcher.createResponses(provider, { model, input });
-    expect(response.status).toBe('completed');
-    expect(faux.state.callCount).toBe(1);
-  });
+  ])(
+    'admits complete $kind pairs and canonical aliases without activating tools; anchored=$anchored',
+    async ({ kind, anchored }) => {
+      const { faux, dispatcher, provider, model } = fixture();
+      faux.setResponses([fauxAssistantMessage('summary')]);
+      const input = [
+        ...(anchored ? [emptyPrefix] : []),
+        ...pair(kind, '', 'default'),
+        ...pair(kind, 'left', 'left'),
+        ...pair(kind, 'right', 'right'),
+      ];
+      const defaultResultIndex = anchored ? 2 : 1;
+      input[defaultResultIndex] = { ...input[defaultResultIndex], namespace: 'functions' };
+      input.push(...pair(kind, 'functions', 'explicit'));
+      input[input.length - 2] = {
+        ...input[input.length - 2],
+        namespace: undefined,
+        status: 'completed',
+      };
+      input[input.length - 1] = { ...input[input.length - 1], namespace: '' };
+      const response = await dispatcher.createResponses(provider, { model, input });
+      expect(response.status).toBe('completed');
+      expect(faux.state.callCount).toBe(1);
+    }
+  );
 
   const invalid: Array<[string, Record<string, unknown>[]]> = [
     ['missing result', pair().slice(0, 1)],
@@ -187,25 +187,27 @@ describe('native historical pairs are context without callable authority', () =>
     invalid.flatMap(([name, history]) =>
       [false, true].map((anchored) => ({ name, history, anchored }))
     )
-  )('refuses $name before dispatcher or client backend invocation; anchored=$anchored', async ({
-    history,
-    anchored,
-  }) => {
-    const { faux, dispatcher, client, provider, model } = fixture();
-    faux.setResponses([fauxAssistantMessage('summary'), fauxAssistantMessage('summary')]);
-    const request = {
-      model,
-      input:
-        history[0]?.type === 'additional_tools' || !anchored ? history : [emptyPrefix, ...history],
-    };
-    await expect(dispatcher.createResponses(provider, request)).rejects.toMatchObject({
-      code: 'unsupported_gateway_feature',
-    });
-    await expect(client.createResponses(provider, request)).rejects.toMatchObject({
-      code: 'unsupported_gateway_feature',
-    });
-    expect(faux.state.callCount).toBe(0);
-  });
+  )(
+    'refuses $name before dispatcher or client backend invocation; anchored=$anchored',
+    async ({ history, anchored }) => {
+      const { faux, dispatcher, client, provider, model } = fixture();
+      faux.setResponses([fauxAssistantMessage('summary'), fauxAssistantMessage('summary')]);
+      const request = {
+        model,
+        input:
+          history[0]?.type === 'additional_tools' || !anchored
+            ? history
+            : [emptyPrefix, ...history],
+      };
+      await expect(dispatcher.createResponses(provider, request)).rejects.toMatchObject({
+        code: 'unsupported_gateway_feature',
+      });
+      await expect(client.createResponses(provider, request)).rejects.toMatchObject({
+        code: 'unsupported_gateway_feature',
+      });
+      expect(faux.state.callCount).toBe(0);
+    }
+  );
 
   it('keeps undeclared history forbidden across protocols', async () => {
     const { faux, client, provider, model } = fixture();
@@ -224,68 +226,154 @@ describe('native historical pairs are context without callable authority', () =>
     [true, 'function'],
     [false, 'custom_tool'],
     [true, 'custom_tool'],
-  ] as const)('validates completed stock calls against present declarations; stream=%s kind=%s', async (stream, kind) => {
-    for (const anchored of [false, true]) {
-      for (const [name, namespace, allowed] of [
-        ['old', 'left', false],
-        ['unknown', 'left', false],
-        ['old', 'right', false],
-        ['allowed', 'right', true],
-      ] as const) {
-        const { client, provider, model } = fixture(true);
-        const tools = [
-          {
-            type: 'namespace',
-            name: 'right',
-            tools: [
-              { ...(kind === 'function' ? functionDefinition : customDefinition), name: 'allowed' },
-            ],
-          },
-        ];
-        const input = anchored ? [{ ...emptyPrefix, tools }, ...pair(kind)] : pair(kind);
-        const request = { model, input, ...(anchored ? {} : { tools }), stream };
+  ] as const)(
+    'validates completed stock calls against present declarations; stream=%s kind=%s',
+    async (stream, kind) => {
+      for (const anchored of [false, true]) {
+        for (const [name, namespace, allowed] of [
+          ['old', 'left', false],
+          ['unknown', 'left', false],
+          ['old', 'right', false],
+          ['allowed', 'right', true],
+        ] as const) {
+          const { client, provider, model } = fixture(true);
+          const tools = [
+            {
+              type: 'namespace',
+              name: 'right',
+              tools: [
+                {
+                  ...(kind === 'function' ? functionDefinition : customDefinition),
+                  name: 'allowed',
+                },
+              ],
+            },
+          ];
+          const input = anchored ? [{ ...emptyPrefix, tools }, ...pair(kind)] : pair(kind);
+          const request = { model, input, ...(anchored ? {} : { tools }), stream };
+          const call = {
+            type: `${kind}_call`,
+            id: 'fc_new',
+            call_id: 'call_new',
+            name,
+            namespace,
+            ...(kind === 'function' ? { arguments: '{}' } : { input: 'new input' }),
+            status: 'completed',
+          };
+          // The namespace arrives only on completion, so a provisional default identity cannot authorize the call.
+          const { namespace: _namespace, ...start } = call;
+          const events = [
+            {
+              type: 'response.created',
+              response: { id: 'resp_calls', output: [], status: 'in_progress' },
+            },
+            {
+              type: 'response.output_item.added',
+              output_index: 0,
+              item: {
+                ...start,
+                ...(kind === 'function' ? { arguments: '' } : { input: '' }),
+                status: 'in_progress',
+              },
+            },
+            {
+              type:
+                kind === 'function'
+                  ? 'response.function_call_arguments.delta'
+                  : 'response.custom_tool_call_input.delta',
+              output_index: 0,
+              delta: kind === 'function' ? '{}' : 'new input',
+            },
+            { type: 'response.output_item.done', output_index: 0, item: call },
+            {
+              type: 'response.completed',
+              response: {
+                id: 'resp_calls',
+                status: 'completed',
+                output: [call],
+                usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+              },
+            },
+          ];
+          const fetchMock = vi
+            .spyOn(globalThis, 'fetch')
+            .mockResolvedValue(
+              new Response(
+                events
+                  .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+                  .join(''),
+                { headers: { 'content-type': 'text/event-stream' } }
+              )
+            );
+          const executeTool = vi.fn();
+          try {
+            const run = async () => {
+              if (!stream) {
+                const response = await client.createResponses(provider, request);
+                for (const item of response.output)
+                  if (item.type === `${kind}_call`) executeTool(item);
+                return;
+              }
+              const reader = (await client.createResponsesStream(provider, request)).getReader();
+              let wire = '';
+              let pending = '';
+              while (true) {
+                const chunk = await reader.read();
+                if (chunk.done) break;
+                const text = new TextDecoder().decode(chunk.value);
+                wire += text;
+                pending += text;
+                const lines = pending.split('\n');
+                pending = lines.pop()!;
+                for (const line of lines.filter((line) => line.startsWith('data: {'))) {
+                  const event = JSON.parse(line.slice(6));
+                  if (
+                    event.type === 'response.output_item.done' &&
+                    event.item.type === `${kind}_call`
+                  )
+                    executeTool(event.item);
+                }
+              }
+              expect(wire).toContain('response.completed');
+            };
+            if (allowed) {
+              await run();
+              expect(executeTool).toHaveBeenCalledOnce();
+              expect(executeTool).toHaveBeenCalledWith(
+                expect.objectContaining({ name, namespace })
+              );
+            } else {
+              await expect(run()).rejects.toThrow('undeclared provider tool output');
+              expect(executeTool).not.toHaveBeenCalled();
+            }
+            expect(fetchMock).toHaveBeenCalledOnce();
+          } finally {
+            fetchMock.mockRestore();
+          }
+        }
+      }
+    }
+  );
+
+  it.each([false, true])(
+    'refuses historical and unknown output even with no declaration fields; stream=%s',
+    async (stream) => {
+      const { client, provider, model } = fixture(true);
+      for (const name of ['old', 'unknown']) {
         const call = {
-          type: `${kind}_call`,
+          type: 'function_call',
           id: 'fc_new',
           call_id: 'call_new',
           name,
-          namespace,
-          ...(kind === 'function' ? { arguments: '{}' } : { input: 'new input' }),
-          status: 'completed',
+          namespace: 'left',
+          arguments: '{}',
         };
-        // The namespace arrives only on completion, so a provisional default identity cannot authorize the call.
-        const { namespace: _namespace, ...start } = call;
         const events = [
-          {
-            type: 'response.created',
-            response: { id: 'resp_calls', output: [], status: 'in_progress' },
-          },
-          {
-            type: 'response.output_item.added',
-            output_index: 0,
-            item: {
-              ...start,
-              ...(kind === 'function' ? { arguments: '' } : { input: '' }),
-              status: 'in_progress',
-            },
-          },
-          {
-            type:
-              kind === 'function'
-                ? 'response.function_call_arguments.delta'
-                : 'response.custom_tool_call_input.delta',
-            output_index: 0,
-            delta: kind === 'function' ? '{}' : 'new input',
-          },
+          { type: 'response.output_item.added', output_index: 0, item: call },
           { type: 'response.output_item.done', output_index: 0, item: call },
           {
             type: 'response.completed',
-            response: {
-              id: 'resp_calls',
-              status: 'completed',
-              output: [call],
-              usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-            },
+            response: { id: 'resp_call', status: 'completed', output: [call] },
           },
         ];
         const fetchMock = vi
@@ -298,98 +386,20 @@ describe('native historical pairs are context without callable authority', () =>
               { headers: { 'content-type': 'text/event-stream' } }
             )
           );
-        const executeTool = vi.fn();
         try {
-          const run = async () => {
-            if (!stream) {
-              const response = await client.createResponses(provider, request);
-              for (const item of response.output)
-                if (item.type === `${kind}_call`) executeTool(item);
-              return;
-            }
-            const reader = (await client.createResponsesStream(provider, request)).getReader();
-            let wire = '';
-            let pending = '';
-            while (true) {
-              const chunk = await reader.read();
-              if (chunk.done) break;
-              const text = new TextDecoder().decode(chunk.value);
-              wire += text;
-              pending += text;
-              const lines = pending.split('\n');
-              pending = lines.pop()!;
-              for (const line of lines.filter((line) => line.startsWith('data: {'))) {
-                const event = JSON.parse(line.slice(6));
-                if (
-                  event.type === 'response.output_item.done' &&
-                  event.item.type === `${kind}_call`
-                )
-                  executeTool(event.item);
-              }
-            }
-            expect(wire).toContain('response.completed');
-          };
-          if (allowed) {
-            await run();
-            expect(executeTool).toHaveBeenCalledOnce();
-            expect(executeTool).toHaveBeenCalledWith(expect.objectContaining({ name, namespace }));
-          } else {
-            await expect(run()).rejects.toThrow('undeclared provider tool output');
-            expect(executeTool).not.toHaveBeenCalled();
-          }
+          const request = { model, input: pair(), stream };
+          const run = async () =>
+            stream
+              ? new Response(await client.createResponsesStream(provider, request)).text()
+              : client.createResponses(provider, request);
+          await expect(run()).rejects.toThrow('undeclared provider tool output');
           expect(fetchMock).toHaveBeenCalledOnce();
         } finally {
           fetchMock.mockRestore();
         }
       }
     }
-  });
-
-  it.each([
-    false,
-    true,
-  ])('refuses historical and unknown output even with no declaration fields; stream=%s', async (stream) => {
-    const { client, provider, model } = fixture(true);
-    for (const name of ['old', 'unknown']) {
-      const call = {
-        type: 'function_call',
-        id: 'fc_new',
-        call_id: 'call_new',
-        name,
-        namespace: 'left',
-        arguments: '{}',
-      };
-      const events = [
-        { type: 'response.output_item.added', output_index: 0, item: call },
-        { type: 'response.output_item.done', output_index: 0, item: call },
-        {
-          type: 'response.completed',
-          response: { id: 'resp_call', status: 'completed', output: [call] },
-        },
-      ];
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(
-          new Response(
-            events
-              .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
-              .join(''),
-            { headers: { 'content-type': 'text/event-stream' } }
-          )
-        );
-      try {
-        const request = { model, input: pair(), stream };
-        const run = async () =>
-          stream
-            ? new Response(await client.createResponsesStream(provider, request)).text()
-            : client.createResponses(provider, request);
-        await expect(run()).rejects.toThrow('undeclared provider tool output');
-        expect(fetchMock).toHaveBeenCalledOnce();
-      } finally {
-        fetchMock.mockRestore();
-      }
-    }
-  });
+  );
   const malformedOutput: Array<[string, Record<string, unknown>]> = [
     ['empty argument string', { arguments: '' }],
     ['object-valued arguments', { arguments: {} }],
@@ -406,79 +416,79 @@ describe('native historical pairs are context without callable authority', () =>
     malformedOutput.flatMap(([name, fields]) =>
       [false, true].map((stream) => ({ name, fields, stream }))
     )
-  )('rejects malformed completed stock calls ($name) before executable output; stream=$stream', async ({
-    fields,
-    stream,
-  }) => {
-    const { client, provider, model } = fixture(true);
-    const call = {
-      type: 'function_call',
-      id: 'fc_new',
-      call_id: 'call_new',
-      name: 'old',
-      namespace: 'left',
-      arguments: '{}',
-      status: 'completed',
-      ...fields,
-    };
-    const events = [
-      {
-        type: 'response.output_item.added',
-        output_index: 0,
-        item: { ...call, arguments: '', status: 'in_progress' },
-      },
-      { type: 'response.output_item.done', output_index: 0, item: call },
-      {
-        type: 'response.completed',
-        response: { id: 'resp_call', status: 'completed', output: [call] },
-      },
-    ];
-    const fetchMock = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(
-        new Response(
-          events
-            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
-            .join(''),
-          { headers: { 'content-type': 'text/event-stream' } }
-        )
-      );
-    let wire = '';
-    const executeTool = vi.fn();
-    try {
-      const request = { model, input: [emptyPrefix, ...pair()], tools: [], stream };
-      // Give this new call real current authority, so syntax rather than historical authority decides refusal.
-      request.input[0] = {
-        ...emptyPrefix,
-        tools: [{ type: 'namespace', name: 'left', tools: [functionDefinition] }],
+  )(
+    'rejects malformed completed stock calls ($name) before executable output; stream=$stream',
+    async ({ fields, stream }) => {
+      const { client, provider, model } = fixture(true);
+      const call = {
+        type: 'function_call',
+        id: 'fc_new',
+        call_id: 'call_new',
+        name: 'old',
+        namespace: 'left',
+        arguments: '{}',
+        status: 'completed',
+        ...fields,
       };
-      const run = async () => {
-        if (!stream) {
-          const response = await client.createResponses(provider, request);
-          for (const item of response.output)
-            if (item.type === 'function_call' || item.type === 'custom_tool_call')
-              executeTool(item);
-          return;
-        }
-        const reader = (await client.createResponsesStream(provider, request)).getReader();
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          wire += new TextDecoder().decode(chunk.value);
-        }
-      };
-      // The stock SDK wraps observer errors; this text still identifies the native validator, not its parser.
-      await expect(run()).rejects.toThrow(
-        Object.hasOwn(fields, 'arguments')
-          ? 'pi-ai Responses function arguments'
-          : 'Gateway does not support this feature: pi-ai Responses'
-      );
-      expect(executeTool).not.toHaveBeenCalled();
-      expect(wire).not.toContain('"type":"response.output_item.done"');
-      expect(wire).not.toContain('"type":"response.completed"');
-      expect(fetchMock).toHaveBeenCalledOnce();
-    } finally {
-      fetchMock.mockRestore();
+      const events = [
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { ...call, arguments: '', status: 'in_progress' },
+        },
+        { type: 'response.output_item.done', output_index: 0, item: call },
+        {
+          type: 'response.completed',
+          response: { id: 'resp_call', status: 'completed', output: [call] },
+        },
+      ];
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(
+          new Response(
+            events
+              .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+              .join(''),
+            { headers: { 'content-type': 'text/event-stream' } }
+          )
+        );
+      let wire = '';
+      const executeTool = vi.fn();
+      try {
+        const request = { model, input: [emptyPrefix, ...pair()], tools: [], stream };
+        // Give this new call real current authority, so syntax rather than historical authority decides refusal.
+        request.input[0] = {
+          ...emptyPrefix,
+          tools: [{ type: 'namespace', name: 'left', tools: [functionDefinition] }],
+        };
+        const run = async () => {
+          if (!stream) {
+            const response = await client.createResponses(provider, request);
+            for (const item of response.output)
+              if (item.type === 'function_call' || item.type === 'custom_tool_call')
+                executeTool(item);
+            return;
+          }
+          const reader = (await client.createResponsesStream(provider, request)).getReader();
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            wire += new TextDecoder().decode(chunk.value);
+          }
+        };
+        // The stock SDK wraps observer errors; this text still identifies the native validator, not its parser.
+        await expect(run()).rejects.toThrow(
+          Object.hasOwn(fields, 'arguments')
+            ? 'pi-ai Responses function arguments'
+            : 'Gateway does not support this feature: pi-ai Responses'
+        );
+        expect(executeTool).not.toHaveBeenCalled();
+        expect(wire).not.toContain('"type":"response.output_item.done"');
+        expect(wire).not.toContain('"type":"response.completed"');
+        expect(fetchMock).toHaveBeenCalledOnce();
+      } finally {
+        fetchMock.mockRestore();
+      }
     }
-  });
+  );
 });

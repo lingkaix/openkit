@@ -56,73 +56,76 @@ describe('capability usage ledger', () => {
     ['native', 'mcp'],
     ['direct', 'llm'],
     ['direct', 'mcp'],
-  ] as const)('refuses actorless %s Workspace %s admission before retained effects', async (path, family) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-actorless-admission-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
-    let nativeAdmission: ReturnType<typeof vi.spyOn> | undefined;
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      const actor = createWorkspaceLedgerActor(workspaceDb);
-      if (path === 'native') {
-        await openTestNativeWorkspace(workspaceDb);
-        nativeAdmission = vi.spyOn(getControlStoreWorkerClient(), 'workspaceCapability');
+  ] as const)(
+    'refuses actorless %s Workspace %s admission before retained effects',
+    async (path, family) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-actorless-admission-'));
+      const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+      let nativeAdmission: ReturnType<typeof vi.spyOn> | undefined;
+      try {
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        const actor = createWorkspaceLedgerActor(workspaceDb);
+        if (path === 'native') {
+          await openTestNativeWorkspace(workspaceDb);
+          nativeAdmission = vi.spyOn(getControlStoreWorkerClient(), 'workspaceCapability');
+        }
+        const input = {
+          workspaceDb,
+          workspaceId: workspaceDb.workspaceId,
+          authorityActor: null,
+          capabilityId: family === 'llm' ? 'llm.responses' : 'mcp.call-tool',
+          family,
+          operation: family === 'llm' ? 'responses.create' : 'mcp.call-tool',
+          redactionClass: 'metadata-only',
+        };
+        const calls = listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId);
+        const usage = listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId);
+        const audit = workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all();
+
+        await expect(
+          async () =>
+            await (path === 'native' ? startCapabilityCall(input) : startCapabilityCallInDb(input))
+        ).rejects.toThrow();
+        expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toEqual(calls);
+        expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual(usage);
+        expect(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual(audit);
+        if (nativeAdmission) expect(nativeAdmission).not.toHaveBeenCalled();
+
+        const admitted = { ...input, authorityActor: actor };
+        const call = await (path === 'native'
+          ? startCapabilityCall(admitted)
+          : startCapabilityCallInDb(admitted));
+        expect(call.context.authorityActor).toEqual(actor);
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit'"
+            )
+            .get(call.id)
+        ).toEqual({ actor_json: JSON.stringify(actor) });
+        const measurement = {
+          workspaceDb,
+          call,
+          records: [
+            {
+              category: family === 'llm' ? ('llm' as const) : ('tool' as const),
+              unit: family === 'llm' ? ('tokens' as const) : ('tool_calls' as const),
+              quantity: 1,
+            },
+          ],
+        };
+        await (path === 'native' ? recordUsage(measurement) : recordUsageInDb(measurement));
+        expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([
+          expect.objectContaining({ capabilityCallId: call.id, responsibleUserId: actor.id }),
+        ]);
+      } finally {
+        nativeAdmission?.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        closeTestCoreDb(workspaceDb);
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-      const input = {
-        workspaceDb,
-        workspaceId: workspaceDb.workspaceId,
-        authorityActor: null,
-        capabilityId: family === 'llm' ? 'llm.responses' : 'mcp.call-tool',
-        family,
-        operation: family === 'llm' ? 'responses.create' : 'mcp.call-tool',
-        redactionClass: 'metadata-only',
-      };
-      const calls = listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId);
-      const usage = listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId);
-      const audit = workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all();
-
-      await expect(
-        async () =>
-          await (path === 'native' ? startCapabilityCall(input) : startCapabilityCallInDb(input))
-      ).rejects.toThrow();
-      expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toEqual(calls);
-      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual(usage);
-      expect(workspaceDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual(audit);
-      if (nativeAdmission) expect(nativeAdmission).not.toHaveBeenCalled();
-
-      const admitted = { ...input, authorityActor: actor };
-      const call = await (path === 'native'
-        ? startCapabilityCall(admitted)
-        : startCapabilityCallInDb(admitted));
-      expect(call.context.authorityActor).toEqual(actor);
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit'"
-          )
-          .get(call.id)
-      ).toEqual({ actor_json: JSON.stringify(actor) });
-      const measurement = {
-        workspaceDb,
-        call,
-        records: [
-          {
-            category: family === 'llm' ? ('llm' as const) : ('tool' as const),
-            unit: family === 'llm' ? ('tokens' as const) : ('tool_calls' as const),
-            quantity: 1,
-          },
-        ],
-      };
-      await (path === 'native' ? recordUsage(measurement) : recordUsageInDb(measurement));
-      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([
-        expect.objectContaining({ capabilityCallId: call.id, responsibleUserId: actor.id }),
-      ]);
-    } finally {
-      nativeAdmission?.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      closeTestCoreDb(workspaceDb);
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it('rejects an unknown retained capability format before replay or JSON decode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-format-'));
@@ -1578,67 +1581,69 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
   });
 });
 
-it.each([
-  'server',
-  'foreign-workspace',
-] as const)('refuses %s call ownership before Workspace ledger import effects', async (kind) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-owner-import-'));
-  const source = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
-  const target = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
-  try {
-    applyScopedMigrations(source, undefined, 'pre-knowledge');
-    await openTestNativeWorkspace(source);
-    applyScopedMigrations(target, undefined, 'pre-knowledge');
-    await startCapabilityCall({
-      workspaceDb: source,
-      workspaceId: source.workspaceId,
-      authorityActor: { kind: 'user', id: allocateEntityId('usr') },
-      capabilityId: 'llm.responses',
-      family: 'llm',
-      operation: 'responses.create',
-      redactionClass: 'metadata-only',
-      requestId: null,
-    });
-    const [produced] = listWorkspaceCapabilityCalls(source, source.workspaceId);
-    expect(produced?.owner).toEqual({ kind: 'workspace', workspaceId: source.workspaceId });
-    const accepted = {
-      ...produced!,
-      id: allocateEntityId('cap'),
-      owner: { kind: 'workspace' as const, workspaceId: target.workspaceId },
-    };
-    const foreign = {
-      ...produced!,
-      id: allocateEntityId('cap'),
-      owner:
-        kind === 'server'
-          ? { kind: 'server' as const }
-          : { kind: 'workspace' as const, workspaceId: source.workspaceId },
-    };
-    expect(() =>
+it.each(['server', 'foreign-workspace'] as const)(
+  'refuses %s call ownership before Workspace ledger import effects',
+  async (kind) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-owner-import-'));
+    const source = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+    const target = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+    try {
+      applyScopedMigrations(source, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(source);
+      applyScopedMigrations(target, undefined, 'pre-knowledge');
+      await startCapabilityCall({
+        workspaceDb: source,
+        workspaceId: source.workspaceId,
+        authorityActor: { kind: 'user', id: allocateEntityId('usr') },
+        capabilityId: 'llm.responses',
+        family: 'llm',
+        operation: 'responses.create',
+        redactionClass: 'metadata-only',
+        requestId: null,
+      });
+      const [produced] = listWorkspaceCapabilityCalls(source, source.workspaceId);
+      expect(produced?.owner).toEqual({ kind: 'workspace', workspaceId: source.workspaceId });
+      const accepted = {
+        ...produced!,
+        id: allocateEntityId('cap'),
+        owner: { kind: 'workspace' as const, workspaceId: target.workspaceId },
+      };
+      const foreign = {
+        ...produced!,
+        id: allocateEntityId('cap'),
+        owner:
+          kind === 'server'
+            ? { kind: 'server' as const }
+            : { kind: 'workspace' as const, workspaceId: source.workspaceId },
+      };
+      expect(() =>
+        importWorkspaceCapabilityUsageLedger({
+          workspaceDb: target,
+          capabilityCalls: [accepted, foreign],
+          usageRecords: [],
+        })
+      ).toThrow();
+      expect(target.sqlite.prepare('SELECT count(*) AS count FROM capability_calls').get()).toEqual(
+        {
+          count: 0,
+        }
+      );
       importWorkspaceCapabilityUsageLedger({
         workspaceDb: target,
-        capabilityCalls: [accepted, foreign],
+        capabilityCalls: [accepted],
         usageRecords: [],
-      })
-    ).toThrow();
-    expect(target.sqlite.prepare('SELECT count(*) AS count FROM capability_calls').get()).toEqual({
-      count: 0,
-    });
-    importWorkspaceCapabilityUsageLedger({
-      workspaceDb: target,
-      capabilityCalls: [accepted],
-      usageRecords: [],
-    });
-    expect(listWorkspaceCapabilityCalls(target, target.workspaceId)).toMatchObject([
-      { id: accepted.id, owner: accepted.owner },
-    ]);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    source.sqlite.close();
-    target.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+      });
+      expect(listWorkspaceCapabilityCalls(target, target.workspaceId)).toMatchObject([
+        { id: accepted.id, owner: accepted.owner },
+      ]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      source.sqlite.close();
+      target.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   }
-});
+);
 
 it('preserves delivered Knowledge answers alongside existing extensions, refuses unsupported admission-audit formats, and replays finish without mutating the completed Call or Audit', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-finish-delivery-replay-'));
@@ -1763,113 +1768,113 @@ it('preserves delivered Knowledge answers alongside existing extensions, refuses
   }
 });
 
-it.each([
-  'recordUsage',
-  'finishMcpToolCall',
-] as const)('never diagnoses usage_record_failed or retries %s when its worker ACK is unknown', async (path) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), `openkit-unknown-ack-${path}-`));
-  const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
-  let emitSpy: ReturnType<typeof vi.spyOn> | undefined;
-  let postSpy: ReturnType<typeof vi.spyOn> | undefined;
-  try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    await openTestNativeWorkspace(workspaceDb);
-    const actor = createWorkspaceLedgerActor(workspaceDb);
-    const call = await startCapabilityCall({
-      workspaceDb,
-      workspaceId: workspaceDb.workspaceId,
-      authorityActor: actor,
-      capabilityId: path === 'recordUsage' ? 'llm.responses' : 'mcp.call-tool',
-      family: path === 'recordUsage' ? 'llm' : 'mcp',
-      operation: path === 'recordUsage' ? 'responses.create' : 'mcp.call-tool',
-      redactionClass: 'metadata-only',
-      requestId: '00000000-0000-4000-8000-000000000902',
-    });
+it.each(['recordUsage', 'finishMcpToolCall'] as const)(
+  'never diagnoses usage_record_failed or retries %s when its worker ACK is unknown',
+  async (path) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-unknown-ack-${path}-`));
+    const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+    let emitSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let postSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(workspaceDb);
+      const actor = createWorkspaceLedgerActor(workspaceDb);
+      const call = await startCapabilityCall({
+        workspaceDb,
+        workspaceId: workspaceDb.workspaceId,
+        authorityActor: actor,
+        capabilityId: path === 'recordUsage' ? 'llm.responses' : 'mcp.call-tool',
+        family: path === 'recordUsage' ? 'llm' : 'mcp',
+        operation: path === 'recordUsage' ? 'responses.create' : 'mcp.call-tool',
+        redactionClass: 'metadata-only',
+        requestId: '00000000-0000-4000-8000-000000000902',
+      });
 
-    const emit = Worker.prototype.emit;
-    let droppedAck = false;
-    emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
-      this: Worker,
-      event: string | symbol,
-      ...args: unknown[]
-    ) {
-      const reply = args[0] as { id?: number; status?: string; operation?: string } | undefined;
-      if (
-        !droppedAck &&
-        event === 'message' &&
-        reply?.operation === 'capability' &&
-        reply.status === 'ok'
+      const emit = Worker.prototype.emit;
+      let droppedAck = false;
+      emitSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+        this: Worker,
+        event: string | symbol,
+        ...args: unknown[]
       ) {
-        droppedAck = true;
-        return emit.call(this, 'message', {
-          version: 99,
-          id: reply.id ?? 1,
-          status: 'ok',
-          operation: 'capability',
-          result: null,
-        });
-      }
-      return emit.apply(this, [event, ...args]);
-    });
-    postSpy = vi.spyOn(Worker.prototype, 'postMessage');
-
-    const outcome = await (path === 'recordUsage'
-      ? recordUsage({
-          workspaceDb,
-          call,
-          records: [{ category: 'llm', unit: 'tokens', quantity: 11 }],
-        })
-      : finishMcpToolCall(call, workspaceDb, { status: 'succeeded' }, true)
-    ).then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error })
-    );
-
-    expect(droppedAck).toBe(true);
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error('Expected unknown ACK rejection.');
-    expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
-    expect(outcome.error).toMatchObject({ code: 'unavailable', commit: 'unknown' });
-
-    const capabilityPosts = postSpy.mock.calls.filter(
-      ([request]) =>
-        typeof request === 'object' &&
-        request !== null &&
-        (request as { operation?: string }).operation === 'capability'
-    );
-    expect(capabilityPosts).toHaveLength(1);
-    expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([
-      expect.objectContaining({
-        capabilityCallId: call.id,
-        quantity: path === 'recordUsage' ? 11 : 1,
-      }),
-    ]);
-    if (path === 'recordUsage') {
-      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
-        status: 'running',
-        error_code: null,
-        completed_at: null,
+        const reply = args[0] as { id?: number; status?: string; operation?: string } | undefined;
+        if (
+          !droppedAck &&
+          event === 'message' &&
+          reply?.operation === 'capability' &&
+          reply.status === 'ok'
+        ) {
+          droppedAck = true;
+          return emit.call(this, 'message', {
+            version: 99,
+            id: reply.id ?? 1,
+            status: 'ok',
+            operation: 'capability',
+            result: null,
+          });
+        }
+        return emit.apply(this, [event, ...args]);
       });
-      expect(auditRows(workspaceDb, call.id)).toEqual([]);
-    } else {
-      expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
-        status: 'succeeded',
-        error_code: null,
-      });
-      expect(auditRows(workspaceDb, call.id)).toEqual([
+      postSpy = vi.spyOn(Worker.prototype, 'postMessage');
+
+      const outcome = await (path === 'recordUsage'
+        ? recordUsage({
+            workspaceDb,
+            call,
+            records: [{ category: 'llm', unit: 'tokens', quantity: 11 }],
+          })
+        : finishMcpToolCall(call, workspaceDb, { status: 'succeeded' }, true)
+      ).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error })
+      );
+
+      expect(droppedAck).toBe(true);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected unknown ACK rejection.');
+      expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+      expect(outcome.error).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+
+      const capabilityPosts = postSpy.mock.calls.filter(
+        ([request]) =>
+          typeof request === 'object' &&
+          request !== null &&
+          (request as { operation?: string }).operation === 'capability'
+      );
+      expect(capabilityPosts).toHaveLength(1);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([
         expect.objectContaining({
-          action: 'capability.finish',
-          capability_call_id: call.id,
-          outcome: 'succeeded',
-          error_code: null,
+          capabilityCallId: call.id,
+          quantity: path === 'recordUsage' ? 11 : 1,
         }),
       ]);
+      if (path === 'recordUsage') {
+        expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+          status: 'running',
+          error_code: null,
+          completed_at: null,
+        });
+        expect(auditRows(workspaceDb, call.id)).toEqual([]);
+      } else {
+        expect(capabilityCallRow(workspaceDb, call.id)).toMatchObject({
+          status: 'succeeded',
+          error_code: null,
+        });
+        expect(auditRows(workspaceDb, call.id)).toEqual([
+          expect.objectContaining({
+            action: 'capability.finish',
+            capability_call_id: call.id,
+            outcome: 'succeeded',
+            error_code: null,
+          }),
+        ]);
+      }
+    } finally {
+      emitSpy?.mockRestore();
+      postSpy?.mockRestore();
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(workspaceDb);
+      rmSync(dataRoot, { recursive: true, force: true });
     }
-  } finally {
-    emitSpy?.mockRestore();
-    postSpy?.mockRestore();
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(workspaceDb);
-    rmSync(dataRoot, { recursive: true, force: true });
   }
-});
+);

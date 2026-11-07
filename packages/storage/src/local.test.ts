@@ -266,63 +266,65 @@ describe('trusted canonical directory ensure and sync', () => {
     expect(await readdir(child)).toEqual([]);
   });
 
-  it.each([
-    'ensure',
-    'sync',
-  ] as const)('refuses regular files and final symlinks during %s', async (operation) => {
-    const f = await fixture();
-    const outside = join(f.directory, 'outside');
-    const regular = join(f.root, 'regular.bin');
-    const link = join(f.root, 'link');
-    await mkdir(outside);
-    await writeFile(join(outside, 'sentinel.bin'), 'Unselected outside bytes.');
-    await writeFile(regular, 'Regular file bytes.');
-    await symlink(outside, link);
-    const descriptors: FileHandle[] = [];
-    mutation.opened = (handle) => {
-      descriptors.push(handle);
-    };
-    const execute =
-      operation === 'ensure' ? treeStorage.ensureTreeDirectory : treeStorage.syncTreeDirectory;
-    for (const path of [regular, link]) {
-      await expect(execute(path)).rejects.toThrow();
-      if (operation === 'ensure') {
-        await expect(execute(join(path, 'missing-child'))).rejects.toThrow();
+  it.each(['ensure', 'sync'] as const)(
+    'refuses regular files and final symlinks during %s',
+    async (operation) => {
+      const f = await fixture();
+      const outside = join(f.directory, 'outside');
+      const regular = join(f.root, 'regular.bin');
+      const link = join(f.root, 'link');
+      await mkdir(outside);
+      await writeFile(join(outside, 'sentinel.bin'), 'Unselected outside bytes.');
+      await writeFile(regular, 'Regular file bytes.');
+      await symlink(outside, link);
+      const descriptors: FileHandle[] = [];
+      mutation.opened = (handle) => {
+        descriptors.push(handle);
+      };
+      const execute =
+        operation === 'ensure' ? treeStorage.ensureTreeDirectory : treeStorage.syncTreeDirectory;
+      for (const path of [regular, link]) {
+        await expect(execute(path)).rejects.toThrow();
+        if (operation === 'ensure') {
+          await expect(execute(join(path, 'missing-child'))).rejects.toThrow();
+        }
+      }
+      expect((await lstat(link)).isSymbolicLink()).toBe(true);
+      expect(await readFile(regular, 'utf8')).toBe('Regular file bytes.');
+      expect(await readFile(join(outside, 'sentinel.bin'), 'utf8')).toBe(
+        'Unselected outside bytes.'
+      );
+      expect(await readdir(outside)).toEqual(['sentinel.bin']);
+      for (const descriptor of descriptors) {
+        await expect(descriptor.stat()).rejects.toMatchObject({ code: 'EBADF' });
       }
     }
-    expect((await lstat(link)).isSymbolicLink()).toBe(true);
-    expect(await readFile(regular, 'utf8')).toBe('Regular file bytes.');
-    expect(await readFile(join(outside, 'sentinel.bin'), 'utf8')).toBe('Unselected outside bytes.');
-    expect(await readdir(outside)).toEqual(['sentinel.bin']);
-    for (const descriptor of descriptors) {
-      await expect(descriptor.stat()).rejects.toMatchObject({ code: 'EBADF' });
-    }
-  });
+  );
 
-  it.each([
-    'sync',
-    'stat',
-  ] as const)('propagates an exact directory %s failure and closes its descriptor', async (failure) => {
-    const f = await fixture();
-    const refusal = new Error(`Independent canonical directory ${failure} refusal.`);
-    let descriptorStat!: FileHandle['stat'];
-    mutation.opened = (handle) => {
-      descriptorStat = handle.stat.bind(handle);
-      if (failure === 'stat') {
-        handle.stat = (async () => {
-          throw refusal;
-        }) as FileHandle['stat'];
-      } else {
-        handle.sync = async () => {
-          throw refusal;
-        };
-      }
-    };
-    await expect(treeStorage.syncTreeDirectory(f.root)).rejects.toBe(refusal);
-    await expect(descriptorStat()).rejects.toMatchObject({ code: 'EBADF' });
-    expect((await lstat(f.root)).isDirectory()).toBe(true);
-    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
-  });
+  it.each(['sync', 'stat'] as const)(
+    'propagates an exact directory %s failure and closes its descriptor',
+    async (failure) => {
+      const f = await fixture();
+      const refusal = new Error(`Independent canonical directory ${failure} refusal.`);
+      let descriptorStat!: FileHandle['stat'];
+      mutation.opened = (handle) => {
+        descriptorStat = handle.stat.bind(handle);
+        if (failure === 'stat') {
+          handle.stat = (async () => {
+            throw refusal;
+          }) as FileHandle['stat'];
+        } else {
+          handle.sync = async () => {
+            throw refusal;
+          };
+        }
+      };
+      await expect(treeStorage.syncTreeDirectory(f.root)).rejects.toBe(refusal);
+      await expect(descriptorStat()).rejects.toMatchObject({ code: 'EBADF' });
+      expect((await lstat(f.root)).isDirectory()).toBe(true);
+      expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+    }
+  );
 });
 
 /** COORD 11:01 ZIP move: private writes retain accounting, cleanup and truthful publication failures. */
@@ -730,33 +732,36 @@ describe('LocalStorage current access and confinement', () => {
     'pathPrefix',
     'expiresAt',
     'revoked',
-  ] as const)('denies a mismatched or inactive %s without disclosing metadata', async (dimension) => {
-    const f = await fixture();
-    const access = { ...f.access };
-    switch (dimension) {
-      case 'ownerScope':
-        access.ownerScope = { kind: 'workspace', workspaceId: allocateEntityId('ws') };
-        break;
-      case 'knowledgeBaseId':
-        access.knowledgeBaseId = allocateEntityId('kb');
-        break;
-      case 'mount':
-        access.mount = 'other';
-        break;
-      case 'pathPrefix':
-        access.pathPrefix = 'private';
-        break;
-      case 'expiresAt':
-        access.expiresAt = new Date(Date.now() - 1).toISOString();
-        break;
-      case 'revoked':
-        access.revoked = true;
-        break;
+  ] as const)(
+    'denies a mismatched or inactive %s without disclosing metadata',
+    async (dimension) => {
+      const f = await fixture();
+      const access = { ...f.access };
+      switch (dimension) {
+        case 'ownerScope':
+          access.ownerScope = { kind: 'workspace', workspaceId: allocateEntityId('ws') };
+          break;
+        case 'knowledgeBaseId':
+          access.knowledgeBaseId = allocateEntityId('kb');
+          break;
+        case 'mount':
+          access.mount = 'other';
+          break;
+        case 'pathPrefix':
+          access.pathPrefix = 'private';
+          break;
+        case 'expiresAt':
+          access.expiresAt = new Date(Date.now() - 1).toISOString();
+          break;
+        case 'revoked':
+          access.revoked = true;
+          break;
+      }
+      expect(await invoke(f.storage.stat, { access, locator: f.locator })).toEqual({
+        status: 'denied',
+      });
     }
-    expect(await invoke(f.storage.stat, { access, locator: f.locator })).toEqual({
-      status: 'denied',
-    });
-  });
+  );
 
   it('does not infer an admitted scope or mount from a captured locator', async () => {
     const f = await fixture();
@@ -1190,83 +1195,85 @@ async function nativeFixture(ownerScope: StorageLocator['ownerScope']) {
 
 describe('RET-1 native scoped Storage', () => {
   // RET §Content Addressing And Scope Placement: use existing Storage immutable content in the real Server or Workspace scope.
-  it.each([
-    'server',
-    'workspace',
-  ] as const)('stages and reads exact %s bytes at their scoped digest placement', async (kind) => {
-    const ownerScope =
-      kind === 'workspace' ? { kind, workspaceId: allocateEntityId('ws') } : { kind };
-    const f = await nativeFixture(ownerScope);
-    const { handle } = value(
-      await invoke(f.storage.beginStage, {
-        access: f.access,
-        locator: f.locator,
-        maxByteLength: f.bytes.length,
-      })
-    );
-    for (const bytes of [f.bytes.subarray(0, 4), f.bytes.subarray(4)]) {
-      value(
-        await invoke(f.storage.writeStage, {
+  it.each(['server', 'workspace'] as const)(
+    'stages and reads exact %s bytes at their scoped digest placement',
+    async (kind) => {
+      const ownerScope =
+        kind === 'workspace' ? { kind, workspaceId: allocateEntityId('ws') } : { kind };
+      const f = await nativeFixture(ownerScope);
+      const { handle } = value(
+        await invoke(f.storage.beginStage, {
           access: f.access,
-          handle,
-          data: bytes.toString('base64'),
+          locator: f.locator,
+          maxByteLength: f.bytes.length,
         })
       );
+      for (const bytes of [f.bytes.subarray(0, 4), f.bytes.subarray(4)]) {
+        value(
+          await invoke(f.storage.writeStage, {
+            access: f.access,
+            handle,
+            data: bytes.toString('base64'),
+          })
+        );
+      }
+      const stage = value(await invoke(f.storage.finishStage, { access: f.access, handle }));
+      expect(stage.content).toEqual({
+        reference: {
+          knowledgeBaseId: null,
+          contentDigest: digest(f.bytes),
+          locator: f.locator,
+          range: null,
+          availability: 'available',
+        },
+        byteLength: 9,
+        mediaType: 'application/octet-stream',
+      });
+      expect(ContentReferenceSchema.parse(stage.content.reference)).toEqual(
+        stage.content.reference
+      );
+      const first = value(
+        await invoke(f.storage.readStage, { access: f.access, handle, offset: 0, length: 4 })
+      );
+      const last = value(
+        await invoke(f.storage.readStage, { access: f.access, handle, offset: 4, length: 20 })
+      );
+      expect(first).toEqual({
+        data: f.bytes.subarray(0, 4).toString('base64'),
+        offset: 0,
+        nextOffset: 4,
+      });
+      expect(last).toEqual({
+        data: f.bytes.subarray(4).toString('base64'),
+        offset: 4,
+        nextOffset: null,
+      });
+      const sealed = Buffer.concat([
+        Buffer.from(first.data, 'base64'),
+        Buffer.from(last.data, 'base64'),
+      ]);
+      expect(sealed).toEqual(f.bytes);
+      expect(await readdir(join(f.root, 'sha256'))).toEqual([]);
+      // Fixture owner consumes the handoff; Storage itself has no publication operation.
+      await writeFile(join(f.root, f.locator.path), sealed, { flag: 'wx' });
+      value(await invoke(f.storage.discardStage, { access: f.access, handle }));
+      const content = value(
+        await invoke(f.storage.stat, { access: f.readAccess, locator: f.locator })
+      );
+      expect(content).toEqual(stage.content);
+      expect(
+        value(
+          await invoke(f.storage.read, {
+            access: f.readAccess,
+            content,
+            offset: 0,
+            length: 20,
+          })
+        )
+      ).toEqual({ data: f.bytes.toString('base64'), offset: 0, nextOffset: null });
+      expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
     }
-    const stage = value(await invoke(f.storage.finishStage, { access: f.access, handle }));
-    expect(stage.content).toEqual({
-      reference: {
-        knowledgeBaseId: null,
-        contentDigest: digest(f.bytes),
-        locator: f.locator,
-        range: null,
-        availability: 'available',
-      },
-      byteLength: 9,
-      mediaType: 'application/octet-stream',
-    });
-    expect(ContentReferenceSchema.parse(stage.content.reference)).toEqual(stage.content.reference);
-    const first = value(
-      await invoke(f.storage.readStage, { access: f.access, handle, offset: 0, length: 4 })
-    );
-    const last = value(
-      await invoke(f.storage.readStage, { access: f.access, handle, offset: 4, length: 20 })
-    );
-    expect(first).toEqual({
-      data: f.bytes.subarray(0, 4).toString('base64'),
-      offset: 0,
-      nextOffset: 4,
-    });
-    expect(last).toEqual({
-      data: f.bytes.subarray(4).toString('base64'),
-      offset: 4,
-      nextOffset: null,
-    });
-    const sealed = Buffer.concat([
-      Buffer.from(first.data, 'base64'),
-      Buffer.from(last.data, 'base64'),
-    ]);
-    expect(sealed).toEqual(f.bytes);
-    expect(await readdir(join(f.root, 'sha256'))).toEqual([]);
-    // Fixture owner consumes the handoff; Storage itself has no publication operation.
-    await writeFile(join(f.root, f.locator.path), sealed, { flag: 'wx' });
-    value(await invoke(f.storage.discardStage, { access: f.access, handle }));
-    const content = value(
-      await invoke(f.storage.stat, { access: f.readAccess, locator: f.locator })
-    );
-    expect(content).toEqual(stage.content);
-    expect(
-      value(
-        await invoke(f.storage.read, {
-          access: f.readAccess,
-          content,
-          offset: 0,
-          length: 20,
-        })
-      )
-    ).toEqual({ data: f.bytes.toString('base64'), offset: 0, nextOffset: null });
-    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
-  });
+  );
 
   // RET §Content Addressing And Scope Placement: equal digests grant no read permission or cross-Workspace existence probe.
   it('denies foreign Server and Workspace access to native bytes and stage handles', async () => {

@@ -561,180 +561,180 @@ function workspaceOwnership(f: ReturnType<typeof fixture>) {
 }
 
 describe('Workspace synchronization native projections', () => {
-  it.each([
-    'acknowledged',
-    'receipt-refusal',
-  ] as const)('preserves native recovery decisions and their separate receipt stage: %s', async (boundary) => {
-    const f = await fixture();
-    const workspaceId = f.db.workspaceId;
-    const dataRoot = f.store.getDataRoot()!;
-    const client = getControlStoreWorkerClient();
-    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
-    const database = `workspace:${scope.path}`;
-    // Join the actual writer before retained-format setup and persisted fault DDL.
-    await client.close(database);
-    const original = listWorkspaceReconciliationRecords(f.db, workspaceId)[0]!;
-    const manifests = listWorkerOutputManifests(f.db, workspaceId);
-    const matching = manifests.filter((manifest) =>
-      original.affectedRecordIds.includes(manifest.materializationRecordId)
-    );
-    expect(matching.length).toBeGreaterThan(0);
-    const extended = {
-      ...original,
-      futureAnnotation: { note: 'retained operator\nannotation' },
-      backendReachability: {
-        ...original.backendReachability,
-        futureAnnotation: ['retained observation'],
-      },
-    };
-    // Add only inert retained annotations to the record already created by the existing owner fixture.
-    f.db.sqlite
-      .prepare(`UPDATE workspace_reconciliation_records SET payload_json = ?
+  it.each(['acknowledged', 'receipt-refusal'] as const)(
+    'preserves native recovery decisions and their separate receipt stage: %s',
+    async (boundary) => {
+      const f = await fixture();
+      const workspaceId = f.db.workspaceId;
+      const dataRoot = f.store.getDataRoot()!;
+      const client = getControlStoreWorkerClient();
+      const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+      const database = `workspace:${scope.path}`;
+      // Join the actual writer before retained-format setup and persisted fault DDL.
+      await client.close(database);
+      const original = listWorkspaceReconciliationRecords(f.db, workspaceId)[0]!;
+      const manifests = listWorkerOutputManifests(f.db, workspaceId);
+      const matching = manifests.filter((manifest) =>
+        original.affectedRecordIds.includes(manifest.materializationRecordId)
+      );
+      expect(matching.length).toBeGreaterThan(0);
+      const extended = {
+        ...original,
+        futureAnnotation: { note: 'retained operator\nannotation' },
+        backendReachability: {
+          ...original.backendReachability,
+          futureAnnotation: ['retained observation'],
+        },
+      };
+      // Add only inert retained annotations to the record already created by the existing owner fixture.
+      f.db.sqlite
+        .prepare(`UPDATE workspace_reconciliation_records SET payload_json = ?
           WHERE workspace_id = ? AND reconciliation_record_id = ?`)
-      .run(JSON.stringify(extended, null, 2), workspaceId, original.id);
-    if (boundary === 'receipt-refusal') {
-      // Mutation and the generic original receipt were separate commits before this owner move.
-      f.db.sqlite.exec(`CREATE TRIGGER refuse_operator_receipt
+        .run(JSON.stringify(extended, null, 2), workspaceId, original.id);
+      if (boundary === 'receipt-refusal') {
+        // Mutation and the generic original receipt were separate commits before this owner move.
+        f.db.sqlite.exec(`CREATE TRIGGER refuse_operator_receipt
           BEFORE INSERT ON idempotency_requests
           WHEN NEW.command_name = 'workspace_sync.recovery.decide'
           BEGIN SELECT RAISE(ABORT, 'operator receipt refused'); END`);
-    }
-    const before = structuredClone(f.observed());
-    const ownership = workspaceOwnership(f);
-    await client.open({
-      database,
-      path: scope.path,
-      dataRoot,
-      create: false,
-      initialize: 'workspace',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    let queryOnlyReads = 0;
-    const repositoryWorkspaceDb = (selectedWorkspaceId: string) => {
-      const db = openWorkspaceDb(dataRoot, selectedWorkspaceId);
-      db.sqlite.pragma('query_only = ON');
-      expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
-      queryOnlyReads += 1;
-      return db;
-    };
-    const invoke = createOperationInvocation({
-      coreDb: f.coreDb,
-      store: f.store,
-      inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: f.mutationAdmission,
-      repositoryWorkspaceDb,
-    });
-    const actor = {
-      kind: 'token' as const,
-      userId: f.issued.record.ownerUserId,
-      tokenId: f.issued.record.tokenId,
-      tokenScope: 'workspace' as const,
-      tokenWorkspaceIds: [workspaceId],
-    };
-    const context = { kind: 'public' as const, actor };
-    const input = {
-      workspaceId,
-      reconciliationRecordId: original.id,
-      requestId: `native-operator-${boundary}`,
-      decision: 'resume_collection' as const,
-    };
-    const pending = invoke('sync.recovery-decide', input, context);
-    if (boundary === 'receipt-refusal') await expect(pending).rejects.toThrow();
-    const response = boundary === 'acknowledged' ? await pending : undefined;
-    expect(queryOnlyReads).toBeGreaterThan(0);
-    const records = listWorkspaceReconciliationRecords(f.db, workspaceId);
-    expect(records).toHaveLength(1);
-    const decided = records[0]!;
-    expect(decided).toMatchObject({
-      id: original.id,
-      affectedRecordIds: original.affectedRecordIds,
-      backendHandleSummary: original.backendHandleSummary,
-      collectedOutputManifestIds: matching.map((manifest) => manifest.id),
-      evidenceBundleIds: original.evidenceBundleIds,
-      quarantineRefs: original.quarantineRefs,
-      requiredHumanDecision: null,
-      retentionDecision: 'teardown-backend',
-      startedAt: original.startedAt,
-      stateBefore: 'requires-human',
-      stateAfter: 'recovered',
-      triggerReason: original.triggerReason,
-      workspaceId,
-    });
-    expect(decided.finishedAt).not.toBeNull();
-    expect(decided.backendReachability).toMatchObject({
-      checkedAt: decided.finishedAt,
-      status: 'unknown',
-    });
-    if (response) expect(response.reconciliationRecord).toEqual(decided);
-    const rows = f.db.sqlite
-      .prepare('SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id')
-      .all() as Array<{ payload_json: string }>;
-    expect(JSON.parse(rows[0]!.payload_json)).toEqual({
-      ...extended,
-      ...decided,
-      backendReachability: { ...extended.backendReachability, ...decided.backendReachability },
-    });
-    const receipts = f.store
-      .listCommandRequests(workspaceId)
-      .filter((receipt) => receipt.command === 'workspace_sync.recovery.decide');
-    expect(receipts).toHaveLength(boundary === 'acknowledged' ? 1 : 0);
-    if (boundary === 'acknowledged')
-      expect(receipts[0]).toMatchObject({
-        command: 'workspace_sync.recovery.decide',
-        requestId: input.requestId,
-        scope: { workspaceId, reconciliationRecordId: original.id },
-        response: { kind: 'workspace_sync_review', id: original.id },
-      });
-    const receiptRows = f.db.sqlite
-      .prepare(`SELECT * FROM idempotency_requests
-          WHERE command_name = 'workspace_sync.recovery.decide' ORDER BY request_key`)
-      .all();
-    expect(listWorkerOutputManifests(f.db, workspaceId)).toEqual(manifests);
-    const after = f.observed();
-    expect(after.review).toEqual(before.review);
-    expect(after.plans).toEqual(before.plans);
-    expect(after.results).toEqual(before.results);
-    expect(workspaceOwnership(f)).toEqual(ownership);
-    await client.close(database);
-    const cold = openWorkspaceDb(dataRoot, workspaceId);
-    const coldStore = new FsStore({ dataRoot });
-    try {
-      cold.sqlite.pragma('query_only = ON');
-      expect(listWorkspaceReconciliationRecords(cold, workspaceId)).toEqual(records);
-      expect(listWorkerOutputManifests(cold, workspaceId)).toEqual(manifests);
-      if (boundary === 'acknowledged') {
-        const replay = createOperationInvocation({
-          coreDb: f.coreDb,
-          store: coldStore,
-          inflightCommands: new WeakMap(),
-          workspaceMutationAdmission: f.mutationAdmission,
-          repositoryWorkspaceDb,
-        });
-        expect(await replay('sync.recovery-decide', input, context)).toEqual(response);
       }
-      expect(
-        cold.sqlite
-          .prepare(
-            'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
-          )
-          .all()
-      ).toEqual(rows);
-      expect(
-        cold.sqlite
-          .prepare(`SELECT * FROM idempotency_requests
+      const before = structuredClone(f.observed());
+      const ownership = workspaceOwnership(f);
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      let queryOnlyReads = 0;
+      const repositoryWorkspaceDb = (selectedWorkspaceId: string) => {
+        const db = openWorkspaceDb(dataRoot, selectedWorkspaceId);
+        db.sqlite.pragma('query_only = ON');
+        expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        queryOnlyReads += 1;
+        return db;
+      };
+      const invoke = createOperationInvocation({
+        coreDb: f.coreDb,
+        store: f.store,
+        inflightCommands: new WeakMap(),
+        workspaceMutationAdmission: f.mutationAdmission,
+        repositoryWorkspaceDb,
+      });
+      const actor = {
+        kind: 'token' as const,
+        userId: f.issued.record.ownerUserId,
+        tokenId: f.issued.record.tokenId,
+        tokenScope: 'workspace' as const,
+        tokenWorkspaceIds: [workspaceId],
+      };
+      const context = { kind: 'public' as const, actor };
+      const input = {
+        workspaceId,
+        reconciliationRecordId: original.id,
+        requestId: `native-operator-${boundary}`,
+        decision: 'resume_collection' as const,
+      };
+      const pending = invoke('sync.recovery-decide', input, context);
+      if (boundary === 'receipt-refusal') await expect(pending).rejects.toThrow();
+      const response = boundary === 'acknowledged' ? await pending : undefined;
+      expect(queryOnlyReads).toBeGreaterThan(0);
+      const records = listWorkspaceReconciliationRecords(f.db, workspaceId);
+      expect(records).toHaveLength(1);
+      const decided = records[0]!;
+      expect(decided).toMatchObject({
+        id: original.id,
+        affectedRecordIds: original.affectedRecordIds,
+        backendHandleSummary: original.backendHandleSummary,
+        collectedOutputManifestIds: matching.map((manifest) => manifest.id),
+        evidenceBundleIds: original.evidenceBundleIds,
+        quarantineRefs: original.quarantineRefs,
+        requiredHumanDecision: null,
+        retentionDecision: 'teardown-backend',
+        startedAt: original.startedAt,
+        stateBefore: 'requires-human',
+        stateAfter: 'recovered',
+        triggerReason: original.triggerReason,
+        workspaceId,
+      });
+      expect(decided.finishedAt).not.toBeNull();
+      expect(decided.backendReachability).toMatchObject({
+        checkedAt: decided.finishedAt,
+        status: 'unknown',
+      });
+      if (response) expect(response.reconciliationRecord).toEqual(decided);
+      const rows = f.db.sqlite
+        .prepare('SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id')
+        .all() as Array<{ payload_json: string }>;
+      expect(JSON.parse(rows[0]!.payload_json)).toEqual({
+        ...extended,
+        ...decided,
+        backendReachability: { ...extended.backendReachability, ...decided.backendReachability },
+      });
+      const receipts = f.store
+        .listCommandRequests(workspaceId)
+        .filter((receipt) => receipt.command === 'workspace_sync.recovery.decide');
+      expect(receipts).toHaveLength(boundary === 'acknowledged' ? 1 : 0);
+      if (boundary === 'acknowledged')
+        expect(receipts[0]).toMatchObject({
+          command: 'workspace_sync.recovery.decide',
+          requestId: input.requestId,
+          scope: { workspaceId, reconciliationRecordId: original.id },
+          response: { kind: 'workspace_sync_review', id: original.id },
+        });
+      const receiptRows = f.db.sqlite
+        .prepare(`SELECT * FROM idempotency_requests
+          WHERE command_name = 'workspace_sync.recovery.decide' ORDER BY request_key`)
+        .all();
+      expect(listWorkerOutputManifests(f.db, workspaceId)).toEqual(manifests);
+      const after = f.observed();
+      expect(after.review).toEqual(before.review);
+      expect(after.plans).toEqual(before.plans);
+      expect(after.results).toEqual(before.results);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+      await client.close(database);
+      const cold = openWorkspaceDb(dataRoot, workspaceId);
+      const coldStore = new FsStore({ dataRoot });
+      try {
+        cold.sqlite.pragma('query_only = ON');
+        expect(listWorkspaceReconciliationRecords(cold, workspaceId)).toEqual(records);
+        expect(listWorkerOutputManifests(cold, workspaceId)).toEqual(manifests);
+        if (boundary === 'acknowledged') {
+          const replay = createOperationInvocation({
+            coreDb: f.coreDb,
+            store: coldStore,
+            inflightCommands: new WeakMap(),
+            workspaceMutationAdmission: f.mutationAdmission,
+            repositoryWorkspaceDb,
+          });
+          expect(await replay('sync.recovery-decide', input, context)).toEqual(response);
+        }
+        expect(
+          cold.sqlite
+            .prepare(
+              'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+            )
+            .all()
+        ).toEqual(rows);
+        expect(
+          cold.sqlite
+            .prepare(`SELECT * FROM idempotency_requests
               WHERE command_name = 'workspace_sync.recovery.decide' ORDER BY request_key`)
-          .all()
-      ).toEqual(receiptRows);
-      expect(
-        coldStore
-          .listCommandRequests(workspaceId)
-          .filter((receipt) => receipt.command === 'workspace_sync.recovery.decide')
-      ).toEqual(receipts);
-    } finally {
-      cold.sqlite.close();
+            .all()
+        ).toEqual(receiptRows);
+        expect(
+          coldStore
+            .listCommandRequests(workspaceId)
+            .filter((receipt) => receipt.command === 'workspace_sync.recovery.decide')
+        ).toEqual(receipts);
+      } finally {
+        cold.sqlite.close();
+      }
     }
-  });
+  );
 
   it('resumes collection from a manifest published ahead of its queued native decision', async () => {
     const f = await fixture();
@@ -937,254 +937,260 @@ describe('Workspace synchronization native projections', () => {
     }
   });
 
-  it.each([
-    'sync.review-list',
-    'sync.review-decide',
-    'sync.recovery-decide',
-  ])('propagates an unexpected admission exception for %s to the HTTP error handler', async (id) => {
-    const f = await fixture();
-    const fault = new Error('b8-admission-fault');
-    const errorHandler = vi.fn((error: Error) => {
-      expect(error).toBe(fault);
-      return new Response('Admission error handler', { status: 500 });
-    });
-    f.app.onError(errorHandler);
-    vi.spyOn(f.mutationAdmission, 'isClosed').mockImplementation(() => {
-      throw fault;
-    });
-    const before = f.observed();
-    const response = await f.http(id, inputs()[id]!);
-    expect(response.status).toBe(500);
-    expect(await response.text()).toBe('Admission error handler');
-    expect(errorHandler).toHaveBeenCalledExactlyOnceWith(fault, expect.anything());
-    expect(f.observed()).toEqual(before);
-  });
+  it.each(['sync.review-list', 'sync.review-decide', 'sync.recovery-decide'])(
+    'propagates an unexpected admission exception for %s to the HTTP error handler',
+    async (id) => {
+      const f = await fixture();
+      const fault = new Error('b8-admission-fault');
+      const errorHandler = vi.fn((error: Error) => {
+        expect(error).toBe(fault);
+        return new Response('Admission error handler', { status: 500 });
+      });
+      f.app.onError(errorHandler);
+      vi.spyOn(f.mutationAdmission, 'isClosed').mockImplementation(() => {
+        throw fault;
+      });
+      const before = f.observed();
+      const response = await f.http(id, inputs()[id]!);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe('Admission error handler');
+      expect(errorHandler).toHaveBeenCalledExactlyOnceWith(fault, expect.anything());
+      expect(f.observed()).toEqual(before);
+    }
+  );
 
-  it.each([
-    'bearer',
-    'session',
-  ] as const)('allows a trusted native administrator %s to apply a foreign Workspace review without membership', async (kind) => {
-    const f = await foreignFilesystemFixture();
-    const item = f.filesystemItem;
-    const targetRoot = f.targetRoot;
-    const invoke = createOperationInvocation({
-      coreDb: f.coreDb,
-      store: f.store,
-      inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: f.mutationAdmission,
-      repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(f.store.getDataRoot()!, workspaceId),
-    });
-    const actor =
-      kind === 'bearer'
-        ? {
-            kind: 'token' as const,
-            userId: 'usr_00000000-0000-7000-8000-000000000001',
-            tokenId: f.issued.record.tokenId,
-            tokenScope: 'server-admin' as const,
-            tokenWorkspaceIds: [],
-          }
-        : {
-            kind: 'session' as const,
-            userId: 'usr_00000000-0000-7000-8000-000000000001',
-            adminTokenId: f.issued.record.tokenId,
-          };
-    const result = await invoke(
-      'sync.review-decide',
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        reviewId: item.review.id,
-        requestId: 'admin-apply',
-        decision: 'accepted',
-      },
-      { kind: 'public', actor }
-    );
-    expect(result.review.status).toBe('accepted');
-    expect(result.workspaceApplyResult).toMatchObject({ status: 'applied', commitIds: [] });
-    expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('after\n');
-    expect(
-      f.coreDb.sqlite
-        .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-        .get('ws_00000000-0000-7000-8000-000000000001')
-    ).toMatchObject({ owner_user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
-  });
-
-  it.each([
-    'bearer',
-    'session',
-  ] as const)('authenticates an administrator %s over HTTP and applies the foreign Workspace without manufacturing membership', async (kind) => {
-    const f = await foreignFilesystemFixture();
-    const session = kind === 'session' ? await webSession(f) : null;
-    const userId = session?.userId ?? 'usr_00000000-0000-7000-8000-000000000001';
-    const issued = session
-      ? createOpenKitAccessTokenRecord(f.coreDb, {
-          ownerUserId: userId,
-          scope: 'server-admin',
-          workspaceIds: [],
-          expiresAt: '2099-01-01T00:00:00.000Z',
-        })
-      : f.issued;
-    const credentials = session?.credentials ?? { authorization: `Bearer ${issued.secret}` };
-    const ownership = workspaceOwnership(f);
-    expect(ownership.owner).toEqual({ owner_user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
-    expect(ownership.members).toEqual([
-      expect.objectContaining({ user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }),
-    ]);
-    const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
-    const response = await f.http(
-      'sync.review-decide',
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        reviewId: f.filesystemItem.review.id,
-        requestId: 'http-admin-apply',
-        decision: 'accepted',
-      },
-      credentials
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      review: {
-        id: f.filesystemItem.review.id,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        status: 'accepted',
-      },
-      workspaceApplyResult: {
-        reviewId: f.filesystemItem.review.id,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        status: 'applied',
-        commitIds: [],
-      },
-    });
-    expect(owner).toHaveBeenCalledOnce();
-    expect(owner.mock.calls[0]?.[0]).toMatchObject({
-      authorityActor: { kind: 'user', id: userId },
-      requestActor:
+  it.each(['bearer', 'session'] as const)(
+    'allows a trusted native administrator %s to apply a foreign Workspace review without membership',
+    async (kind) => {
+      const f = await foreignFilesystemFixture();
+      const item = f.filesystemItem;
+      const targetRoot = f.targetRoot;
+      const invoke = createOperationInvocation({
+        coreDb: f.coreDb,
+        store: f.store,
+        inflightCommands: new WeakMap(),
+        workspaceMutationAdmission: f.mutationAdmission,
+        repositoryWorkspaceDb: (workspaceId) =>
+          openWorkspaceDb(f.store.getDataRoot()!, workspaceId),
+      });
+      const actor =
         kind === 'bearer'
-          ? { kind: 'token', userId, tokenId: issued.record.tokenId, tokenScope: 'server-admin' }
-          : { kind: 'session', userId, adminTokenId: issued.record.tokenId },
-    });
-    const after = f.observedFilesystem();
-    expect(after.targetBytes.toString()).toBe('after\n');
-    expect(after.plans).toHaveLength(1);
-    expect(after.results).toHaveLength(1);
-    expect(after.receipts).toEqual([
-      expect.objectContaining({
-        command: 'workspace_sync.review.decide',
-        requestId: 'http-admin-apply',
-        scope: {
+          ? {
+              kind: 'token' as const,
+              userId: 'usr_00000000-0000-7000-8000-000000000001',
+              tokenId: f.issued.record.tokenId,
+              tokenScope: 'server-admin' as const,
+              tokenWorkspaceIds: [],
+            }
+          : {
+              kind: 'session' as const,
+              userId: 'usr_00000000-0000-7000-8000-000000000001',
+              adminTokenId: f.issued.record.tokenId,
+            };
+      const result = await invoke(
+        'sync.review-decide',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          reviewId: item.review.id,
+          requestId: 'admin-apply',
+          decision: 'accepted',
+        },
+        { kind: 'public', actor }
+      );
+      expect(result.review.status).toBe('accepted');
+      expect(result.workspaceApplyResult).toMatchObject({ status: 'applied', commitIds: [] });
+      expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('after\n');
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
+          .get('ws_00000000-0000-7000-8000-000000000001')
+      ).toMatchObject({ owner_user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
+    }
+  );
+
+  it.each(['bearer', 'session'] as const)(
+    'authenticates an administrator %s over HTTP and applies the foreign Workspace without manufacturing membership',
+    async (kind) => {
+      const f = await foreignFilesystemFixture();
+      const session = kind === 'session' ? await webSession(f) : null;
+      const userId = session?.userId ?? 'usr_00000000-0000-7000-8000-000000000001';
+      const issued = session
+        ? createOpenKitAccessTokenRecord(f.coreDb, {
+            ownerUserId: userId,
+            scope: 'server-admin',
+            workspaceIds: [],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          })
+        : f.issued;
+      const credentials = session?.credentials ?? { authorization: `Bearer ${issued.secret}` };
+      const ownership = workspaceOwnership(f);
+      expect(ownership.owner).toEqual({
+        owner_user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
+      });
+      expect(ownership.members).toEqual([
+        expect.objectContaining({ user_id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }),
+      ]);
+      const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
+      const response = await f.http(
+        'sync.review-decide',
+        {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           reviewId: f.filesystemItem.review.id,
+          requestId: 'http-admin-apply',
+          decision: 'accepted',
         },
-      }),
-    ]);
-    expect(workspaceOwnership(f)).toEqual(ownership);
-  });
+        credentials
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        review: {
+          id: f.filesystemItem.review.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          status: 'accepted',
+        },
+        workspaceApplyResult: {
+          reviewId: f.filesystemItem.review.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          status: 'applied',
+          commitIds: [],
+        },
+      });
+      expect(owner).toHaveBeenCalledOnce();
+      expect(owner.mock.calls[0]?.[0]).toMatchObject({
+        authorityActor: { kind: 'user', id: userId },
+        requestActor:
+          kind === 'bearer'
+            ? { kind: 'token', userId, tokenId: issued.record.tokenId, tokenScope: 'server-admin' }
+            : { kind: 'session', userId, adminTokenId: issued.record.tokenId },
+      });
+      const after = f.observedFilesystem();
+      expect(after.targetBytes.toString()).toBe('after\n');
+      expect(after.plans).toHaveLength(1);
+      expect(after.results).toHaveLength(1);
+      expect(after.receipts).toEqual([
+        expect.objectContaining({
+          command: 'workspace_sync.review.decide',
+          requestId: 'http-admin-apply',
+          scope: {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            reviewId: f.filesystemItem.review.id,
+          },
+        }),
+      ]);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+    }
+  );
 
   it.each([
     'non-member bearer',
     'session without its last administrator token',
     'revoked administrator bearer',
-  ] as const)('refuses a foreign Workspace apply over HTTP for a %s without changing protected state', async (condition) => {
-    const f = await foreignFilesystemFixture();
-    let credentials = { authorization: `Bearer ${f.issued.secret}` } as Record<string, string>;
-    if (condition !== 'revoked administrator bearer') {
-      const session = await webSession(f);
-      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: session.userId,
-        scope: condition === 'non-member bearer' ? 'workspace' : 'server-admin',
-        workspaceIds:
-          condition === 'non-member bearer' ? ['ws_00000000-0000-7000-8000-000000000001'] : [],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      if (condition === 'non-member bearer') {
-        credentials = { authorization: `Bearer ${issued.secret}` };
-      } else {
-        expect(
-          f.coreDb.sqlite
-            .prepare(
-              "SELECT token_id FROM openkit_access_tokens WHERE owner_user_id = ? AND scope = 'server-admin' AND revoked_at IS NULL"
-            )
-            .all(session.userId)
-        ).toHaveLength(1);
-        revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
-        credentials = session.credentials;
-        // The cookie remains authenticated after losing its independently derived administrator authority.
-        const authenticated = await f.app.request('http://localhost:3000/api/auth/get-session', {
-          headers: credentials,
-        });
-        expect(authenticated.status).toBe(200);
-        expect(await authenticated.json()).toMatchObject({ user: { id: session.userId } });
-      }
-    } else {
-      revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
-    }
-    const before = f.observedFilesystem();
-    expect(before.targetBytes.toString()).toBe('before\n');
-    expect(before.review?.review.status).toBe('pending');
-    expect(before.plans).toEqual([]);
-    expect(before.results).toEqual([]);
-    expect(before.receipts).toEqual([]);
-    const ownership = workspaceOwnership(f);
-    const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
-    const response = await f.http(
-      'sync.review-decide',
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        reviewId: f.filesystemItem.review.id,
-        requestId: 'denied-http-admin-apply',
-        decision: 'accepted',
-      },
-      credentials
-    );
-    const revoked = condition === 'revoked administrator bearer';
-    expect(response.status).toBe(revoked ? 401 : 403);
-    if (!revoked) expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
-    expect(owner).not.toHaveBeenCalled();
-    expect(f.observedFilesystem()).toEqual(before);
-    expect(workspaceOwnership(f)).toEqual(ownership);
-  });
-
-  it.each([
-    'bearer',
-    'session',
-  ] as const)('re-evaluates administrator %s authority at the filesystem effect after HTTP admission', async (kind) => {
-    const f = await foreignFilesystemFixture();
-    const session = kind === 'session' ? await webSession(f) : null;
-    const issued = session
-      ? createOpenKitAccessTokenRecord(f.coreDb, {
+  ] as const)(
+    'refuses a foreign Workspace apply over HTTP for a %s without changing protected state',
+    async (condition) => {
+      const f = await foreignFilesystemFixture();
+      let credentials = { authorization: `Bearer ${f.issued.secret}` } as Record<string, string>;
+      if (condition !== 'revoked administrator bearer') {
+        const session = await webSession(f);
+        const issued = createOpenKitAccessTokenRecord(f.coreDb, {
           ownerUserId: session.userId,
-          scope: 'server-admin',
-          workspaceIds: [],
+          scope: condition === 'non-member bearer' ? 'workspace' : 'server-admin',
+          workspaceIds:
+            condition === 'non-member bearer' ? ['ws_00000000-0000-7000-8000-000000000001'] : [],
           expiresAt: '2099-01-01T00:00:00.000Z',
-        })
-      : f.issued;
-    const credentials = session?.credentials ?? { authorization: `Bearer ${issued.secret}` };
-    const before = f.observedFilesystem();
-    const ownership = workspaceOwnership(f);
-    const enter = f.mutationAdmission.enter.bind(f.mutationAdmission);
-    const admission = vi.spyOn(f.mutationAdmission, 'enter').mockImplementation((workspaceId) => {
-      const release = enter(workspaceId);
-      expect(release).not.toBeNull();
-      revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
-      return release;
-    });
-    const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
-    const response = await f.http(
-      'sync.review-decide',
-      {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        reviewId: f.filesystemItem.review.id,
-        requestId: 'effect-time-revocation',
-        decision: 'accepted',
-      },
-      credentials
-    );
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
-    expect(admission).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001');
-    expect(owner).toHaveBeenCalledOnce();
-    expect(f.observedFilesystem()).toEqual(before);
-    expect(workspaceOwnership(f)).toEqual(ownership);
-  });
+        });
+        if (condition === 'non-member bearer') {
+          credentials = { authorization: `Bearer ${issued.secret}` };
+        } else {
+          expect(
+            f.coreDb.sqlite
+              .prepare(
+                "SELECT token_id FROM openkit_access_tokens WHERE owner_user_id = ? AND scope = 'server-admin' AND revoked_at IS NULL"
+              )
+              .all(session.userId)
+          ).toHaveLength(1);
+          revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+          credentials = session.credentials;
+          // The cookie remains authenticated after losing its independently derived administrator authority.
+          const authenticated = await f.app.request('http://localhost:3000/api/auth/get-session', {
+            headers: credentials,
+          });
+          expect(authenticated.status).toBe(200);
+          expect(await authenticated.json()).toMatchObject({ user: { id: session.userId } });
+        }
+      } else {
+        revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
+      }
+      const before = f.observedFilesystem();
+      expect(before.targetBytes.toString()).toBe('before\n');
+      expect(before.review?.review.status).toBe('pending');
+      expect(before.plans).toEqual([]);
+      expect(before.results).toEqual([]);
+      expect(before.receipts).toEqual([]);
+      const ownership = workspaceOwnership(f);
+      const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
+      const response = await f.http(
+        'sync.review-decide',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          reviewId: f.filesystemItem.review.id,
+          requestId: 'denied-http-admin-apply',
+          decision: 'accepted',
+        },
+        credentials
+      );
+      const revoked = condition === 'revoked administrator bearer';
+      expect(response.status).toBe(revoked ? 401 : 403);
+      if (!revoked)
+        expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+      expect(owner).not.toHaveBeenCalled();
+      expect(f.observedFilesystem()).toEqual(before);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+    }
+  );
+
+  it.each(['bearer', 'session'] as const)(
+    're-evaluates administrator %s authority at the filesystem effect after HTTP admission',
+    async (kind) => {
+      const f = await foreignFilesystemFixture();
+      const session = kind === 'session' ? await webSession(f) : null;
+      const issued = session
+        ? createOpenKitAccessTokenRecord(f.coreDb, {
+            ownerUserId: session.userId,
+            scope: 'server-admin',
+            workspaceIds: [],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          })
+        : f.issued;
+      const credentials = session?.credentials ?? { authorization: `Bearer ${issued.secret}` };
+      const before = f.observedFilesystem();
+      const ownership = workspaceOwnership(f);
+      const enter = f.mutationAdmission.enter.bind(f.mutationAdmission);
+      const admission = vi.spyOn(f.mutationAdmission, 'enter').mockImplementation((workspaceId) => {
+        const release = enter(workspaceId);
+        expect(release).not.toBeNull();
+        revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+        return release;
+      });
+      const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
+      const response = await f.http(
+        'sync.review-decide',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          reviewId: f.filesystemItem.review.id,
+          requestId: 'effect-time-revocation',
+          decision: 'accepted',
+        },
+        credentials
+      );
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+      expect(admission).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001');
+      expect(owner).toHaveBeenCalledOnce();
+      expect(f.observedFilesystem()).toEqual(before);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+    }
+  );
 
   it('refuses a non-accepted review decision when its credential is revoked during the scoped SQL hold', async () => {
     const f = await fixture();
@@ -1396,31 +1402,31 @@ describe('Workspace synchronization native projections', () => {
     expect(f.observed()).toEqual(before);
   });
 
-  it.each([
-    'sync.review-decide',
-    'sync.recovery-decide',
-  ])('refuses changed-input replay for %s through HTTP and MCP without changing owner rows or receipts', async (id) => {
-    const f = await fixture();
-    const input = { ...inputs()[id]!, message: 'Captured decision intent.' };
-    const first = await f.http(id, input);
-    expect(first.status).toBe(200);
-    expect(await first.json()).toMatchObject(
-      id === 'sync.review-decide'
-        ? { review: { id: f.item.review.id, status: 'rejected' } }
-        : { reconciliationRecord: { id: 'wrr_projection', stateAfter: 'unrecoverable' } }
-    );
-    const before = f.observed();
-    const conflictingInput = { ...input, message: 'Changed decision intent.' };
-    const conflict = await f.http(id, conflictingInput);
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(f.observed()).toEqual(before);
-    expect(await f.mcp(id, conflictingInput)).toMatchObject({
-      isError: true,
-      value: { code: 'idempotency_key_conflict' },
-    });
-    expect(f.observed()).toEqual(before);
-  });
+  it.each(['sync.review-decide', 'sync.recovery-decide'])(
+    'refuses changed-input replay for %s through HTTP and MCP without changing owner rows or receipts',
+    async (id) => {
+      const f = await fixture();
+      const input = { ...inputs()[id]!, message: 'Captured decision intent.' };
+      const first = await f.http(id, input);
+      expect(first.status).toBe(200);
+      expect(await first.json()).toMatchObject(
+        id === 'sync.review-decide'
+          ? { review: { id: f.item.review.id, status: 'rejected' } }
+          : { reconciliationRecord: { id: 'wrr_projection', stateAfter: 'unrecoverable' } }
+      );
+      const before = f.observed();
+      const conflictingInput = { ...input, message: 'Changed decision intent.' };
+      const conflict = await f.http(id, conflictingInput);
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(f.observed()).toEqual(before);
+      expect(await f.mcp(id, conflictingInput)).toMatchObject({
+        isError: true,
+        value: { code: 'idempotency_key_conflict' },
+      });
+      expect(f.observed()).toEqual(before);
+    }
+  );
 
   it.each(
     ['sync.review-decide', 'sync.recovery-decide'].flatMap((id) =>
@@ -1496,357 +1502,377 @@ it.each([
   ['sync.review-decide', 'MCP'],
   ['sync.recovery-decide', 'HTTP'],
   ['sync.recovery-decide', 'MCP'],
-] as const)('preserves classified native terminal %s refusal through %s without changes', async (id, projection) => {
-  const f = await fixture();
-  const selectors =
-    id === 'sync.review-decide'
-      ? { reviewId: f.item.review.id }
-      : { reconciliationRecordId: 'wrr_projection' };
-  const first = await f.http(id, {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    ...selectors,
-    decision: id === 'sync.review-decide' ? 'rejected' : 'abandon',
-    requestId: crypto.randomUUID(),
-  });
-  expect(first.status).toBe(200);
-  const before = structuredClone(f.observed());
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    ...selectors,
-    decision: id === 'sync.review-decide' ? 'accepted' : 'abandon',
-    requestId: crypto.randomUUID(),
-  };
-  const result = projection === 'HTTP' ? await f.http(id, input) : await f.mcp(id, input);
-  expect(f.observed()).toEqual(before);
-  const code =
-    id === 'sync.review-decide'
-      ? 'workspace_sync_review_failed'
-      : 'workspace_recovery_decision_failed';
-  const message =
-    id === 'sync.review-decide'
-      ? `Workspace synchronization review is already resolved: ${f.item.review.id}`
-      : 'Workspace reconciliation record is already terminal: wrr_projection';
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else {
-    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+] as const)(
+  'preserves classified native terminal %s refusal through %s without changes',
+  async (id, projection) => {
+    const f = await fixture();
+    const selectors =
+      id === 'sync.review-decide'
+        ? { reviewId: f.item.review.id }
+        : { reconciliationRecordId: 'wrr_projection' };
+    const first = await f.http(id, {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ...selectors,
+      decision: id === 'sync.review-decide' ? 'rejected' : 'abandon',
+      requestId: crypto.randomUUID(),
+    });
+    expect(first.status).toBe(200);
+    const before = structuredClone(f.observed());
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ...selectors,
+      decision: id === 'sync.review-decide' ? 'accepted' : 'abandon',
+      requestId: crypto.randomUUID(),
+    };
+    const result = projection === 'HTTP' ? await f.http(id, input) : await f.mcp(id, input);
+    expect(f.observed()).toEqual(before);
+    const code =
+      id === 'sync.review-decide'
+        ? 'workspace_sync_review_failed'
+        : 'workspace_recovery_decision_failed';
+    const message =
+      id === 'sync.review-decide'
+        ? `Workspace synchronization review is already resolved: ${f.item.review.id}`
+        : 'Workspace reconciliation record is already terminal: wrr_projection';
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else {
+      expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+    }
   }
-});
+);
 
 it.each([
   ['sync.review-decide', 'HTTP'],
   ['sync.review-decide', 'MCP'],
   ['sync.recovery-decide', 'HTTP'],
   ['sync.recovery-decide', 'MCP'],
-] as const)('preserves classified native unavailable %s refusal through %s without changes', async (id, projection) => {
-  const f = await fixture();
-  if (id === 'sync.recovery-decide')
+] as const)(
+  'preserves classified native unavailable %s refusal through %s without changes',
+  async (id, projection) => {
+    const f = await fixture();
+    if (id === 'sync.recovery-decide')
+      f.db.sqlite
+        .prepare('DELETE FROM worker_output_manifests WHERE workspace_id = ?')
+        .run('ws_00000000-0000-7000-8000-000000000001');
+    const before = structuredClone(f.observed());
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId: crypto.randomUUID(),
+      ...(id === 'sync.review-decide'
+        ? { reviewId: f.item.review.id, decision: 'accepted' }
+        : { reconciliationRecordId: 'wrr_projection', decision: 'resume_collection' }),
+    };
+    const result = projection === 'HTTP' ? await f.http(id, input) : await f.mcp(id, input);
+    expect(f.observed()).toEqual(before);
+    const code =
+      id === 'sync.review-decide'
+        ? 'workspace_sync_review_failed'
+        : 'workspace_recovery_decision_failed';
+    const message =
+      id === 'sync.review-decide'
+        ? 'Git review application is unavailable; publish through the selected vendor MCP.'
+        : 'Workspace recovery collection has no durable output manifest: wrr_projection';
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else {
+      expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+    }
+  }
+);
+
+it.each(['HTTP', 'MCP'] as const)(
+  'preserves classified native retained review integrity refusal through %s without changes',
+  async (projection) => {
+    const f = await fixture();
+    const patchPayload = { ...f.item.patchPayload!, text: 'tampered retained patch' };
     f.db.sqlite
-      .prepare('DELETE FROM worker_output_manifests WHERE workspace_id = ?')
-      .run('ws_00000000-0000-7000-8000-000000000001');
-  const before = structuredClone(f.observed());
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    requestId: crypto.randomUUID(),
-    ...(id === 'sync.review-decide'
-      ? { reviewId: f.item.review.id, decision: 'accepted' }
-      : { reconciliationRecordId: 'wrr_projection', decision: 'resume_collection' }),
-  };
-  const result = projection === 'HTTP' ? await f.http(id, input) : await f.mcp(id, input);
-  expect(f.observed()).toEqual(before);
-  const code =
-    id === 'sync.review-decide'
-      ? 'workspace_sync_review_failed'
-      : 'workspace_recovery_decision_failed';
-  const message =
-    id === 'sync.review-decide'
-      ? 'Git review application is unavailable; publish through the selected vendor MCP.'
-      : 'Workspace recovery collection has no durable output manifest: wrr_projection';
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else {
-    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
-  }
-});
-
-it.each([
-  'HTTP',
-  'MCP',
-] as const)('preserves classified native retained review integrity refusal through %s without changes', async (projection) => {
-  const f = await fixture();
-  const patchPayload = { ...f.item.patchPayload!, text: 'tampered retained patch' };
-  f.db.sqlite
-    .prepare(
-      'UPDATE staged_workspace_reviews SET patch_payload_json = ? WHERE workspace_id = ? AND review_id = ?'
-    )
-    .run(JSON.stringify(patchPayload), 'ws_00000000-0000-7000-8000-000000000001', f.item.review.id);
-  const observed = () => ({
-    reviews: f.db.sqlite.prepare('SELECT * FROM staged_workspace_reviews ORDER BY review_id').all(),
-    recovery: listWorkspaceReconciliationRecords(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
-    plans: listWorkspaceApplyPlans(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
-    results: listWorkspaceApplyResults(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
-    receipts: f.store.listCommandRequests(),
-  });
-  const before = structuredClone(observed());
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: f.item.review.id,
-    decision: 'rejected',
-    requestId: crypto.randomUUID(),
-  };
-  const result =
-    projection === 'HTTP'
-      ? await f.http('sync.review-decide', input)
-      : await f.mcp('sync.review-decide', input);
-  expect(observed()).toEqual(before);
-  const code = 'workspace_sync_review_failed';
-  const message = 'The record could not be processed.';
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else {
-    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
-  }
-});
-
-it.each([
-  'HTTP',
-  'MCP',
-] as const)('preserves classified native filesystem identity refusal through %s and its existing preparation plan', async (projection) => {
-  const f = await foreignFilesystemFixture();
-  const heldRoot = `${f.targetRoot}.held`;
-  renameSync(f.targetRoot, heldRoot);
-  cleanups.push(() => rmSync(heldRoot, { recursive: true, force: true }));
-  mkdirSync(f.targetRoot);
-  writeFileSync(join(f.targetRoot, 'review.txt'), 'before\n');
-  const { plans: beforePlans, ...before } = f.observedFilesystem();
-  expect(beforePlans).toEqual([]);
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: f.filesystemItem.review.id,
-    decision: 'accepted',
-    requestId: crypto.randomUUID(),
-  };
-  const result =
-    projection === 'HTTP'
-      ? await f.http('sync.review-decide', input)
-      : await f.mcp('sync.review-decide', input);
-  const { plans, ...after } = f.observedFilesystem();
-  expect(after).toEqual(before);
-  expect(plans).toHaveLength(1);
-  expect(plans[0]).toMatchObject({
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: f.filesystemItem.review.id,
-  });
-  const code = 'workspace_sync_review_failed';
-  const message = 'Filesystem workspace root identity changed after review staging.';
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else {
-    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
-  }
-});
-
-it.each([
-  'HTTP',
-  'MCP',
-] as const)('keeps an unknown native Sync failure unclassified through %s without changes', async (projection) => {
-  const f = await fixture();
-  const sentinel = new Error('private native Sync sentinel');
-  const owner = vi
-    .spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview')
-    .mockRejectedValue(sentinel);
-  const errors: Error[] = [];
-  f.app.onError((error, c) => {
-    errors.push(error);
-    return c.text('Internal Server Error', 500);
-  });
-  const before = structuredClone(f.observed());
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: f.item.review.id,
-    decision: 'rejected',
-    requestId: crypto.randomUUID(),
-  };
-  const result =
-    projection === 'HTTP'
-      ? await f.http('sync.review-decide', input)
-      : await f.mcp('sync.review-decide', input);
-  expect(f.observed()).toEqual(before);
-  expect(owner).toHaveBeenCalledTimes(1);
-  if (result instanceof Response) {
-    expect(errors).toEqual([sentinel]);
-    expect(result.status).toBe(500);
-    expect(await result.text()).toBe('Internal Server Error');
-  } else {
-    expect(errors).toEqual([]);
-    expect(result).toEqual({
-      isError: true,
-      value: {
-        code: 'operation_failed',
-        message: 'Operation failed. Inspect the owner outcome before retrying.',
-      },
+      .prepare(
+        'UPDATE staged_workspace_reviews SET patch_payload_json = ? WHERE workspace_id = ? AND review_id = ?'
+      )
+      .run(
+        JSON.stringify(patchPayload),
+        'ws_00000000-0000-7000-8000-000000000001',
+        f.item.review.id
+      );
+    const observed = () => ({
+      reviews: f.db.sqlite
+        .prepare('SELECT * FROM staged_workspace_reviews ORDER BY review_id')
+        .all(),
+      recovery: listWorkspaceReconciliationRecords(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
+      plans: listWorkspaceApplyPlans(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
+      results: listWorkspaceApplyResults(f.db, 'ws_00000000-0000-7000-8000-000000000001'),
+      receipts: f.store.listCommandRequests(),
     });
+    const before = structuredClone(observed());
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: f.item.review.id,
+      decision: 'rejected',
+      requestId: crypto.randomUUID(),
+    };
+    const result =
+      projection === 'HTTP'
+        ? await f.http('sync.review-decide', input)
+        : await f.mcp('sync.review-decide', input);
+    expect(observed()).toEqual(before);
+    const code = 'workspace_sync_review_failed';
+    const message = 'The record could not be processed.';
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else {
+      expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+    }
   }
-});
+);
+
+it.each(['HTTP', 'MCP'] as const)(
+  'preserves classified native filesystem identity refusal through %s and its existing preparation plan',
+  async (projection) => {
+    const f = await foreignFilesystemFixture();
+    const heldRoot = `${f.targetRoot}.held`;
+    renameSync(f.targetRoot, heldRoot);
+    cleanups.push(() => rmSync(heldRoot, { recursive: true, force: true }));
+    mkdirSync(f.targetRoot);
+    writeFileSync(join(f.targetRoot, 'review.txt'), 'before\n');
+    const { plans: beforePlans, ...before } = f.observedFilesystem();
+    expect(beforePlans).toEqual([]);
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: f.filesystemItem.review.id,
+      decision: 'accepted',
+      requestId: crypto.randomUUID(),
+    };
+    const result =
+      projection === 'HTTP'
+        ? await f.http('sync.review-decide', input)
+        : await f.mcp('sync.review-decide', input);
+    const { plans, ...after } = f.observedFilesystem();
+    expect(after).toEqual(before);
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: f.filesystemItem.review.id,
+    });
+    const code = 'workspace_sync_review_failed';
+    const message = 'Filesystem workspace root identity changed after review staging.';
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else {
+      expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+    }
+  }
+);
+
+it.each(['HTTP', 'MCP'] as const)(
+  'keeps an unknown native Sync failure unclassified through %s without changes',
+  async (projection) => {
+    const f = await fixture();
+    const sentinel = new Error('private native Sync sentinel');
+    const owner = vi
+      .spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview')
+      .mockRejectedValue(sentinel);
+    const errors: Error[] = [];
+    f.app.onError((error, c) => {
+      errors.push(error);
+      return c.text('Internal Server Error', 500);
+    });
+    const before = structuredClone(f.observed());
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: f.item.review.id,
+      decision: 'rejected',
+      requestId: crypto.randomUUID(),
+    };
+    const result =
+      projection === 'HTTP'
+        ? await f.http('sync.review-decide', input)
+        : await f.mcp('sync.review-decide', input);
+    expect(f.observed()).toEqual(before);
+    expect(owner).toHaveBeenCalledTimes(1);
+    if (result instanceof Response) {
+      expect(errors).toEqual([sentinel]);
+      expect(result.status).toBe(500);
+      expect(await result.text()).toBe('Internal Server Error');
+    } else {
+      expect(errors).toEqual([]);
+      expect(result).toEqual({
+        isError: true,
+        value: {
+          code: 'operation_failed',
+          message: 'Operation failed. Inspect the owner outcome before retrying.',
+        },
+      });
+    }
+  }
+);
 
 it.each([
   ['staging payload', 'HTTP'],
   ['staging payload', 'MCP'],
   ['apply plan', 'HTTP'],
   ['apply plan', 'MCP'],
-] as const)('preserves classified native %s refusal through %s without changes', async (subject, projection) => {
-  const f = await foreignFilesystemFixture();
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: f.filesystemItem.review.id,
-    decision: 'accepted',
-    requestId: crypto.randomUUID(),
-  };
-  if (subject === 'staging payload') {
-    f.db.sqlite
-      .prepare(
-        'UPDATE workspace_filesystem_staging_roots SET before_manifest_json = ? WHERE workspace_id = ? AND review_id = ?'
-      )
-      .run('{}', 'ws_00000000-0000-7000-8000-000000000001', input.reviewId);
-  } else {
-    const heldRoot = `${f.targetRoot}.held`;
-    renameSync(f.targetRoot, heldRoot);
-    cleanups.push(() => rmSync(heldRoot, { recursive: true, force: true }));
-    mkdirSync(f.targetRoot);
-    writeFileSync(join(f.targetRoot, 'review.txt'), 'before\n');
-    expect((await f.http('sync.review-decide', input)).status).toBe(404);
-    const plan = f.observedFilesystem().plans[0]!;
-    expect(plan.plannedWrites).not.toEqual([]);
-    f.db.sqlite
-      .prepare(
-        'UPDATE workspace_apply_plans SET payload_json = ? WHERE workspace_id = ? AND apply_plan_id = ?'
-      )
-      .run(
-        JSON.stringify({ ...plan, plannedWrites: [] }),
-        'ws_00000000-0000-7000-8000-000000000001',
-        plan.id
-      );
-    input.requestId = crypto.randomUUID();
+] as const)(
+  'preserves classified native %s refusal through %s without changes',
+  async (subject, projection) => {
+    const f = await foreignFilesystemFixture();
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: f.filesystemItem.review.id,
+      decision: 'accepted',
+      requestId: crypto.randomUUID(),
+    };
+    if (subject === 'staging payload') {
+      f.db.sqlite
+        .prepare(
+          'UPDATE workspace_filesystem_staging_roots SET before_manifest_json = ? WHERE workspace_id = ? AND review_id = ?'
+        )
+        .run('{}', 'ws_00000000-0000-7000-8000-000000000001', input.reviewId);
+    } else {
+      const heldRoot = `${f.targetRoot}.held`;
+      renameSync(f.targetRoot, heldRoot);
+      cleanups.push(() => rmSync(heldRoot, { recursive: true, force: true }));
+      mkdirSync(f.targetRoot);
+      writeFileSync(join(f.targetRoot, 'review.txt'), 'before\n');
+      expect((await f.http('sync.review-decide', input)).status).toBe(404);
+      const plan = f.observedFilesystem().plans[0]!;
+      expect(plan.plannedWrites).not.toEqual([]);
+      f.db.sqlite
+        .prepare(
+          'UPDATE workspace_apply_plans SET payload_json = ? WHERE workspace_id = ? AND apply_plan_id = ?'
+        )
+        .run(
+          JSON.stringify({ ...plan, plannedWrites: [] }),
+          'ws_00000000-0000-7000-8000-000000000001',
+          plan.id
+        );
+      input.requestId = crypto.randomUUID();
+    }
+    const observed = () => ({
+      ...f.observedFilesystem(),
+      staging: f.db.sqlite
+        .prepare('SELECT * FROM workspace_filesystem_staging_roots ORDER BY review_id')
+        .all(),
+    });
+    const before = observed();
+    const result =
+      projection === 'HTTP'
+        ? await f.http('sync.review-decide', input)
+        : await f.mcp('sync.review-decide', input);
+    expect(observed()).toEqual(before);
+    const code = 'workspace_sync_review_failed';
+    const message =
+      subject === 'staging payload'
+        ? 'The record could not be processed.'
+        : `Workspace apply plan replay conflict: wap_${input.reviewId}`;
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
-  const observed = () => ({
-    ...f.observedFilesystem(),
-    staging: f.db.sqlite
-      .prepare('SELECT * FROM workspace_filesystem_staging_roots ORDER BY review_id')
-      .all(),
-  });
-  const before = observed();
-  const result =
-    projection === 'HTTP'
-      ? await f.http('sync.review-decide', input)
-      : await f.mcp('sync.review-decide', input);
-  expect(observed()).toEqual(before);
-  const code = 'workspace_sync_review_failed';
-  const message =
-    subject === 'staging payload'
-      ? 'The record could not be processed.'
-      : `Workspace apply plan replay conflict: wap_${input.reviewId}`;
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
-});
+);
 
 it.each([
   ['symlink', 'HTTP'],
   ['symlink', 'MCP'],
   ['file', 'HTTP'],
   ['file', 'MCP'],
-] as const)('preserves the live rollback-root %s guard reason through %s without effects', async (kind, projection) => {
-  const f = await foreignFilesystemFixture();
-  const rollbackName =
-    '.openkit-workspace-rollback-' +
-    createHash('sha256').update('ws_00000000-0000-7000-8000-000000000001\0swr_admin').digest('hex');
-  const rollbackRoot = join(f.stagingRoot, rollbackName);
-  const outside = join(f.targetRoot, 'outside.txt');
-  writeFileSync(outside, 'private external bytes');
-  if (kind === 'symlink') symlinkSync(f.targetRoot, rollbackRoot);
-  else writeFileSync(rollbackRoot, 'not a directory');
-  const before = f.observedFilesystem();
-  expect(before.review?.review.status).toBe('pending');
-  expect(before.receipts).toEqual([]);
-  const input = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    reviewId: f.filesystemItem.review.id,
-    decision: 'accepted',
-    requestId: crypto.randomUUID(),
-  };
-  const result =
-    projection === 'HTTP'
-      ? await f.http('sync.review-decide', input)
-      : await f.mcp('sync.review-decide', input);
-  const after = f.observedFilesystem();
-  expect(after.review).toEqual(before.review);
-  expect(after.review?.review.status).toBe('pending');
-  expect(after.receipts).toEqual([]);
-  expect(after.results).toEqual(before.results);
-  expect(after.targetBytes).toEqual(before.targetBytes);
-  expect(readFileSync(outside, 'utf8')).toBe('private external bytes');
-  const code = 'workspace_sync_review_failed';
-  const message = 'Unsafe filesystem rollback root.';
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
-});
-
-it.each([
-  'HTTP',
-  'MCP',
-] as const)('redacts malformed current manifest decoding through %s without changes', async (projection) => {
-  const f = await fixture();
-  const workspaceId = f.db.workspaceId;
-  const writer = getControlStoreWorkerClient();
-  const database = `workspace:${f.db.sqlite.name}`;
-  await writer.close(database);
-  const manifest = listWorkerOutputManifests(f.db, workspaceId)[0]!;
-  // Deliberate corruption follows valid owner setup and the real writer close; this is no publication path.
-  f.db.sqlite
-    .prepare(`UPDATE worker_output_manifests SET payload_json = ?
-      WHERE workspace_id = ? AND worker_output_manifest_id = ?`)
-    .run('{private manifest decoder sentinel', workspaceId, manifest.id);
-  const observed = () => ({
-    ...f.observed(),
-    manifests: f.db.sqlite
-      .prepare('SELECT * FROM worker_output_manifests ORDER BY worker_output_manifest_id')
-      .all(),
-    ownership: workspaceOwnership(f),
-  });
-  const before = structuredClone(observed());
-  const decision = vi.spyOn(writer, 'workspaceRecoveryDecision');
-  const input = {
-    workspaceId,
-    reconciliationRecordId: 'wrr_projection',
-    decision: 'resume_collection',
-    requestId: 'malformed-current-manifest',
-  };
-  const result =
-    projection === 'HTTP'
-      ? await f.http('sync.recovery-decide', input)
-      : await f.mcp('sync.recovery-decide', input);
-  expect(observed()).toEqual(before);
-  expect(decision).toHaveBeenCalledTimes(1);
-  expect(decision).toHaveBeenCalledWith(
-    database,
-    expect.objectContaining({
-      action: 'decide',
-      reconciliationRecordId: 'wrr_projection',
-    })
-  );
-  const code = 'workspace_recovery_decision_failed';
-  const message = 'The record could not be processed.';
-  if (result instanceof Response) {
-    expect(result.status).toBe(404);
-    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-  } else {
-    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+] as const)(
+  'preserves the live rollback-root %s guard reason through %s without effects',
+  async (kind, projection) => {
+    const f = await foreignFilesystemFixture();
+    const rollbackName =
+      '.openkit-workspace-rollback-' +
+      createHash('sha256')
+        .update('ws_00000000-0000-7000-8000-000000000001\0swr_admin')
+        .digest('hex');
+    const rollbackRoot = join(f.stagingRoot, rollbackName);
+    const outside = join(f.targetRoot, 'outside.txt');
+    writeFileSync(outside, 'private external bytes');
+    if (kind === 'symlink') symlinkSync(f.targetRoot, rollbackRoot);
+    else writeFileSync(rollbackRoot, 'not a directory');
+    const before = f.observedFilesystem();
+    expect(before.review?.review.status).toBe('pending');
+    expect(before.receipts).toEqual([]);
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      reviewId: f.filesystemItem.review.id,
+      decision: 'accepted',
+      requestId: crypto.randomUUID(),
+    };
+    const result =
+      projection === 'HTTP'
+        ? await f.http('sync.review-decide', input)
+        : await f.mcp('sync.review-decide', input);
+    const after = f.observedFilesystem();
+    expect(after.review).toEqual(before.review);
+    expect(after.review?.review.status).toBe('pending');
+    expect(after.receipts).toEqual([]);
+    expect(after.results).toEqual(before.results);
+    expect(after.targetBytes).toEqual(before.targetBytes);
+    expect(readFileSync(outside, 'utf8')).toBe('private external bytes');
+    const code = 'workspace_sync_review_failed';
+    const message = 'Unsafe filesystem rollback root.';
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
   }
-});
+);
+
+it.each(['HTTP', 'MCP'] as const)(
+  'redacts malformed current manifest decoding through %s without changes',
+  async (projection) => {
+    const f = await fixture();
+    const workspaceId = f.db.workspaceId;
+    const writer = getControlStoreWorkerClient();
+    const database = `workspace:${f.db.sqlite.name}`;
+    await writer.close(database);
+    const manifest = listWorkerOutputManifests(f.db, workspaceId)[0]!;
+    // Deliberate corruption follows valid owner setup and the real writer close; this is no publication path.
+    f.db.sqlite
+      .prepare(`UPDATE worker_output_manifests SET payload_json = ?
+      WHERE workspace_id = ? AND worker_output_manifest_id = ?`)
+      .run('{private manifest decoder sentinel', workspaceId, manifest.id);
+    const observed = () => ({
+      ...f.observed(),
+      manifests: f.db.sqlite
+        .prepare('SELECT * FROM worker_output_manifests ORDER BY worker_output_manifest_id')
+        .all(),
+      ownership: workspaceOwnership(f),
+    });
+    const before = structuredClone(observed());
+    const decision = vi.spyOn(writer, 'workspaceRecoveryDecision');
+    const input = {
+      workspaceId,
+      reconciliationRecordId: 'wrr_projection',
+      decision: 'resume_collection',
+      requestId: 'malformed-current-manifest',
+    };
+    const result =
+      projection === 'HTTP'
+        ? await f.http('sync.recovery-decide', input)
+        : await f.mcp('sync.recovery-decide', input);
+    expect(observed()).toEqual(before);
+    expect(decision).toHaveBeenCalledTimes(1);
+    expect(decision).toHaveBeenCalledWith(
+      database,
+      expect.objectContaining({
+        action: 'decide',
+        reconciliationRecordId: 'wrr_projection',
+      })
+    );
+    const code = 'workspace_recovery_decision_failed';
+    const message = 'The record could not be processed.';
+    if (result instanceof Response) {
+      expect(result.status).toBe(404);
+      expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+    } else {
+      expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+    }
+  }
+);

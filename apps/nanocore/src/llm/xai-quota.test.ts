@@ -287,29 +287,29 @@ describe('readXaiAutoTopup', () => {
 });
 
 describe('xAI same-bearer quota rejection', () => {
-  it.each([
-    'user',
-    'billing',
-  ] as const)('proves the presented bearer for a %s 401 without another provider request', async (endpoint) => {
-    const runtime = models();
-    const fetchSpy = mockUpstream();
-    fetchSpy.mockImplementation(async (input) => {
-      if (String(input).includes(endpoint === 'user' ? '/user?' : '/billing?'))
-        return new Response('', { status: 401 });
-      return new Response(JSON.stringify({ userId: USER_ID, subscriptionTier: 'SuperGrok' }));
-    });
-    expect(
-      await readXaiQuota(
-        runtime,
-        () => NOW,
-        async () => true
-      )
-    ).toEqual({
-      availability: 'authentication_required',
-    });
-    expect(runtime.getAuth).toHaveBeenCalledTimes(2);
-    expect(fetchSpy).toHaveBeenCalledTimes(endpoint === 'user' ? 1 : 2);
-  });
+  it.each(['user', 'billing'] as const)(
+    'proves the presented bearer for a %s 401 without another provider request',
+    async (endpoint) => {
+      const runtime = models();
+      const fetchSpy = mockUpstream();
+      fetchSpy.mockImplementation(async (input) => {
+        if (String(input).includes(endpoint === 'user' ? '/user?' : '/billing?'))
+          return new Response('', { status: 401 });
+        return new Response(JSON.stringify({ userId: USER_ID, subscriptionTier: 'SuperGrok' }));
+      });
+      expect(
+        await readXaiQuota(
+          runtime,
+          () => NOW,
+          async () => true
+        )
+      ).toEqual({
+        availability: 'authentication_required',
+      });
+      expect(runtime.getAuth).toHaveBeenCalledTimes(2);
+      expect(fetchSpy).toHaveBeenCalledTimes(endpoint === 'user' ? 1 : 2);
+    }
+  );
   it('suppresses a predecessor bearer, auth failure and generic 403', async () => {
     for (const replacement of ['new-bearer', undefined, new Error('refresh timeout')]) {
       const runtime = models();

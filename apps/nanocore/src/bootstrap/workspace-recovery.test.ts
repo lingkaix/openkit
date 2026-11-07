@@ -518,99 +518,177 @@ const sourceCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
 ];
 
 describe('D0 RED-3 source crash boundaries / Ruling 13:07Z', () => {
-  it.each(
-    sourceCrashPoints
-  )('WM 389, 411–415 / %s: cold state, real boot refusal and exact explicit recovery', async (point) => {
-    const f = await fixture(true);
-    const commandRoot = mkdtempSync(join(tmpdir(), 'd0-source-crash-'));
-    disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
-    const bundleRoot = join(commandRoot, 'bundle');
-    const releaseIdentityPath = join(commandRoot, 'release-identity.json');
-    writeFileSync(
-      releaseIdentityPath,
-      JSON.stringify({ releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) })
-    );
-    const backupId = allocateEntityId('wsbak');
-    const prepared = await runCli(
-      [
-        'capture',
-        '--source-data-root',
+  it.each(sourceCrashPoints)(
+    'WM 389, 411–415 / %s: cold state, real boot refusal and exact explicit recovery',
+    async (point) => {
+      const f = await fixture(true);
+      const commandRoot = mkdtempSync(join(tmpdir(), 'd0-source-crash-'));
+      disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
+      const bundleRoot = join(commandRoot, 'bundle');
+      const releaseIdentityPath = join(commandRoot, 'release-identity.json');
+      writeFileSync(
+        releaseIdentityPath,
+        JSON.stringify({ releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) })
+      );
+      const backupId = allocateEntityId('wsbak');
+      const prepared = await runCli(
+        [
+          'capture',
+          '--source-data-root',
+          f.dataRoot,
+          '--workspace-id',
+          f.badId,
+          '--expected-source-deployment-id',
+          readDataRootLayoutMarker(f.dataRoot).deploymentId,
+          '--bundle-root',
+          bundleRoot,
+          '--purpose',
+          'move',
+          '--backup-id',
+          backupId,
+        ],
+        () => {},
+        { releaseIdentityPath }
+      );
+      expect(prepared).toMatchObject({
+        disposition: 'prepared',
+        workspaceId: f.badId,
+        capture: { backupId },
+      });
+      const digest = `sha256:${createHash('sha256')
+        .update(readFileSync(join(bundleRoot, 'manifest.json')))
+        .digest('hex')}`;
+      expect(prepared.capture!.manifestDigest).toBe(digest);
+      expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
+      const capturedBytes = bytes(bundleRoot);
+      const before = crashSourceState(f, backupId);
+      expect(before.workspace.capture.state).toBe('active');
+      expect(callStatus(f.dataRoot, f.badId, f.callId)).toBe('running');
+      const input: WorkspaceMoveOutInput = {
+        dataRoot: f.dataRoot,
+        workspaceId: f.badId,
+        backupId,
+        bundleRoot,
+        expectedRevision: prepared.capture!.capturedRevision,
+      };
+      await crashMoveOut(input, point);
+
+      const committed = point !== 'before-moved-out-commit';
+      const sealed = point === 'after-seal-publication';
+      const cold = crashSourceState(f, backupId);
+      if (!committed) {
+        expect.soft(cold).toEqual(before);
+      } else {
+        expect.soft(cold.workspace.authority.revision).toBeGreaterThan(input.expectedRevision);
+        expect.soft(JSON.parse(cold.workspace.authority.record_json)).toMatchObject({
+          movedOut: { backupId, manifestDigest: digest },
+        });
+        expect
+          .soft(
+            cold.workspace.audit.filter(
+              (row) =>
+                JSON.stringify(row).includes(backupId) && JSON.stringify(row).includes(digest)
+            )
+          )
+          .toHaveLength(1);
+      }
+      // No durable seal means no independent verified copy and no end to capture protection.
+      if (!sealed) expect.soft(cold.workspace.capture).toEqual(before.workspace.capture);
+      expect
+        .soft(cold.workspace.calls.map((call) => call.call_id))
+        .toEqual(before.workspace.calls.map((call) => call.call_id));
+      expect
+        .soft(['running', 'unknown'])
+        .toContain(cold.workspace.calls.find((call) => call.call_id === f.callId)?.status);
+      expect.soft(existsSync(join(bundleRoot, 'seal.json'))).toBe(sealed);
+      const bundleAfterCrash = bytes(bundleRoot);
+      const { '/seal.json': _seal, ...unsealedBytes } = bundleAfterCrash;
+      // A failed publication may leave owned temporary bytes, but may not change captured content.
+      expect.soft(unsealedBytes).toMatchObject(capturedBytes);
+      if (sealed) {
+        expect.soft(JSON.parse(readFileSync(join(bundleRoot, 'seal.json'), 'utf8'))).toMatchObject({
+          format: 'openkit-workspace-backup-seal',
+          version: 1,
+          purpose: 'move',
+          backupId,
+          manifestDigest: digest,
+        });
+        await expect
+          .soft(
+            runCli(['verify', '--bundle-root', bundleRoot], () => {}, {
+              releaseIdentityPath,
+            })
+          )
+          .resolves.toMatchObject({
+            disposition: 'verified',
+            capture: { backupId, manifestDigest: digest },
+          });
+      } else {
+        const output: string[] = [];
+        const refusal: unknown = await runCli(
+          ['verify', '--bundle-root', bundleRoot],
+          (line) => output.push(line),
+          { releaseIdentityPath }
+        ).catch((error: unknown) => error);
+        expect.soft(refusal).toBeInstanceOf(WorkspaceRecoveryError);
+        expect.soft((refusal as WorkspaceRecoveryError).code).toBe('invalid-bundle');
+        expect.soft(output).toEqual([]);
+      }
+
+      // Boot must preserve both unfinished capture and committed tombstone, before native recovery.
+      const server = await boot(f.dataRoot);
+      const healthy = await server.call(
+        'thread.create',
+        {
+          workspaceId: f.goodId,
+          name: 'Healthy beside crashed MOVE',
+          requestId: randomUUID(),
+        },
+        f.token
+      );
+      expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
+      const refused = await server.call(
+        'thread.create',
+        {
+          workspaceId: f.badId,
+          name: 'Must not reopen partial MOVE',
+          requestId: randomUUID(),
+        },
+        f.token
+      );
+      expect.soft([403, 409], await refused.clone().text()).toContain(refused.status);
+      await server.stop();
+      expect.soft(callStatus(f.dataRoot, f.goodId, f.callId)).toBe('unknown');
+      expect.soft(crashSourceState(f, backupId)).toEqual(cold);
+      expect.soft(bytes(bundleRoot)).toEqual(bundleAfterCrash);
+
+      const selection = [
+        '--data-root',
         f.dataRoot,
         '--workspace-id',
         f.badId,
-        '--expected-source-deployment-id',
-        readDataRootLayoutMarker(f.dataRoot).deploymentId,
-        '--bundle-root',
-        bundleRoot,
-        '--purpose',
-        'move',
         '--backup-id',
         backupId,
-      ],
-      () => {},
-      { releaseIdentityPath }
-    );
-    expect(prepared).toMatchObject({
-      disposition: 'prepared',
-      workspaceId: f.badId,
-      capture: { backupId },
-    });
-    const digest = `sha256:${createHash('sha256')
-      .update(readFileSync(join(bundleRoot, 'manifest.json')))
-      .digest('hex')}`;
-    expect(prepared.capture!.manifestDigest).toBe(digest);
-    expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
-    const capturedBytes = bytes(bundleRoot);
-    const before = crashSourceState(f, backupId);
-    expect(before.workspace.capture.state).toBe('active');
-    expect(callStatus(f.dataRoot, f.badId, f.callId)).toBe('running');
-    const input: WorkspaceMoveOutInput = {
-      dataRoot: f.dataRoot,
-      workspaceId: f.badId,
-      backupId,
-      bundleRoot,
-      expectedRevision: prepared.capture!.capturedRevision,
-    };
-    await crashMoveOut(input, point);
-
-    const committed = point !== 'before-moved-out-commit';
-    const sealed = point === 'after-seal-publication';
-    const cold = crashSourceState(f, backupId);
-    if (!committed) {
-      expect.soft(cold).toEqual(before);
-    } else {
-      expect.soft(cold.workspace.authority.revision).toBeGreaterThan(input.expectedRevision);
-      expect.soft(JSON.parse(cold.workspace.authority.record_json)).toMatchObject({
-        movedOut: { backupId, manifestDigest: digest },
-      });
-      expect
-        .soft(
-          cold.workspace.audit.filter(
-            (row) => JSON.stringify(row).includes(backupId) && JSON.stringify(row).includes(digest)
-          )
-        )
-        .toHaveLength(1);
-    }
-    // No durable seal means no independent verified copy and no end to capture protection.
-    if (!sealed) expect.soft(cold.workspace.capture).toEqual(before.workspace.capture);
-    expect
-      .soft(cold.workspace.calls.map((call) => call.call_id))
-      .toEqual(before.workspace.calls.map((call) => call.call_id));
-    expect
-      .soft(['running', 'unknown'])
-      .toContain(cold.workspace.calls.find((call) => call.call_id === f.callId)?.status);
-    expect.soft(existsSync(join(bundleRoot, 'seal.json'))).toBe(sealed);
-    const bundleAfterCrash = bytes(bundleRoot);
-    const { '/seal.json': _seal, ...unsealedBytes } = bundleAfterCrash;
-    // A failed publication may leave owned temporary bytes, but may not change captured content.
-    expect.soft(unsealedBytes).toMatchObject(capturedBytes);
-    if (sealed) {
-      expect.soft(JSON.parse(readFileSync(join(bundleRoot, 'seal.json'), 'utf8'))).toMatchObject({
-        format: 'openkit-workspace-backup-seal',
-        version: 1,
-        purpose: 'move',
-        backupId,
-        manifestDigest: digest,
+      ];
+      await expect
+        .soft(runCli(['inspect', ...selection], () => {}, { releaseIdentityPath }))
+        .resolves.toMatchObject({
+          disposition: committed ? 'moved-out' : 'prepared',
+          currentRevision: cold.workspace.authority.revision,
+          capture: { backupId, manifestDigest: digest },
+        });
+      // A cold retry owns recovery; boot may neither seal the bundle nor replay the source work.
+      const recovered = committed
+        ? finishWorkspaceMove({
+            dataRoot: f.dataRoot,
+            workspaceId: f.badId,
+            selection: { kind: 'capture', backupId },
+          })
+        : moveOutWorkspace(input);
+      await expect.soft(recovered).resolves.toMatchObject({
+        disposition: 'moved-out',
+        workspaceId: f.badId,
+        capture: { backupId, manifestDigest: digest },
       });
       await expect
         .soft(
@@ -622,105 +700,30 @@ describe('D0 RED-3 source crash boundaries / Ruling 13:07Z', () => {
           disposition: 'verified',
           capture: { backupId, manifestDigest: digest },
         });
-    } else {
-      const output: string[] = [];
-      const refusal: unknown = await runCli(
-        ['verify', '--bundle-root', bundleRoot],
-        (line) => output.push(line),
-        { releaseIdentityPath }
-      ).catch((error: unknown) => error);
-      expect.soft(refusal).toBeInstanceOf(WorkspaceRecoveryError);
-      expect.soft((refusal as WorkspaceRecoveryError).code).toBe('invalid-bundle');
-      expect.soft(output).toEqual([]);
-    }
-
-    // Boot must preserve both unfinished capture and committed tombstone, before native recovery.
-    const server = await boot(f.dataRoot);
-    const healthy = await server.call(
-      'thread.create',
-      {
-        workspaceId: f.goodId,
-        name: 'Healthy beside crashed MOVE',
-        requestId: randomUUID(),
-      },
-      f.token
-    );
-    expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
-    const refused = await server.call(
-      'thread.create',
-      {
-        workspaceId: f.badId,
-        name: 'Must not reopen partial MOVE',
-        requestId: randomUUID(),
-      },
-      f.token
-    );
-    expect.soft([403, 409], await refused.clone().text()).toContain(refused.status);
-    await server.stop();
-    expect.soft(callStatus(f.dataRoot, f.goodId, f.callId)).toBe('unknown');
-    expect.soft(crashSourceState(f, backupId)).toEqual(cold);
-    expect.soft(bytes(bundleRoot)).toEqual(bundleAfterCrash);
-
-    const selection = [
-      '--data-root',
-      f.dataRoot,
-      '--workspace-id',
-      f.badId,
-      '--backup-id',
-      backupId,
-    ];
-    await expect
-      .soft(runCli(['inspect', ...selection], () => {}, { releaseIdentityPath }))
-      .resolves.toMatchObject({
-        disposition: committed ? 'moved-out' : 'prepared',
-        currentRevision: cold.workspace.authority.revision,
-        capture: { backupId, manifestDigest: digest },
-      });
-    // A cold retry owns recovery; boot may neither seal the bundle nor replay the source work.
-    const recovered = committed
-      ? finishWorkspaceMove({
-          dataRoot: f.dataRoot,
-          workspaceId: f.badId,
-          selection: { kind: 'capture', backupId },
-        })
-      : moveOutWorkspace(input);
-    await expect.soft(recovered).resolves.toMatchObject({
-      disposition: 'moved-out',
-      workspaceId: f.badId,
-      capture: { backupId, manifestDigest: digest },
-    });
-    await expect
-      .soft(
-        runCli(['verify', '--bundle-root', bundleRoot], () => {}, {
-          releaseIdentityPath,
-        })
-      )
-      .resolves.toMatchObject({
-        disposition: 'verified',
-        capture: { backupId, manifestDigest: digest },
-      });
-    const finished = crashSourceState(f, backupId);
-    expect.soft(finished.workspace.capture.state).toBe('finished');
-    expect
-      .soft(
-        finished.workspace.audit.filter(
-          (row) => JSON.stringify(row).includes(backupId) && JSON.stringify(row).includes(digest)
+      const finished = crashSourceState(f, backupId);
+      expect.soft(finished.workspace.capture.state).toBe('finished');
+      expect
+        .soft(
+          finished.workspace.audit.filter(
+            (row) => JSON.stringify(row).includes(backupId) && JSON.stringify(row).includes(digest)
+          )
         )
-      )
-      .toHaveLength(1);
-    expect
-      .soft(finished.workspace.calls.map((call) => call.call_id))
-      .toEqual(before.workspace.calls.map((call) => call.call_id));
-    expect
-      .soft(['running', 'unknown'])
-      .toContain(finished.workspace.calls.find((call) => call.call_id === f.callId)?.status);
-    await expect.soft(moveOutWorkspace(input)).resolves.toMatchObject({
-      disposition: 'moved-out',
-      currentRevision: finished.workspace.authority.revision,
-      capture: { backupId, manifestDigest: digest },
-    });
-    expect.soft(crashSourceState(f, backupId)).toEqual(finished);
-  }, 120_000);
+        .toHaveLength(1);
+      expect
+        .soft(finished.workspace.calls.map((call) => call.call_id))
+        .toEqual(before.workspace.calls.map((call) => call.call_id));
+      expect
+        .soft(['running', 'unknown'])
+        .toContain(finished.workspace.calls.find((call) => call.call_id === f.callId)?.status);
+      await expect.soft(moveOutWorkspace(input)).resolves.toMatchObject({
+        disposition: 'moved-out',
+        currentRevision: finished.workspace.authority.revision,
+        capture: { backupId, manifestDigest: digest },
+      });
+      expect.soft(crashSourceState(f, backupId)).toEqual(finished);
+    },
+    120_000
+  );
 });
 
 /** Creates native recurring rows through their owner, including one real published queued Turn. */
@@ -1062,101 +1065,107 @@ describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', ()
     ).toBe(true);
   }, 120_000);
 
-  it.each([
-    'restore',
-    'move-in',
-  ] as const)('%s retains recurring history inert across the next real boot without starting an occurrence', async (command) => {
-    const f = await recurringFixture();
-    const prepared = await captureRecurring(f, command === 'restore' ? 'backup' : 'move');
-    let targetRoot = f.dataRoot;
-    let ownerId = f.ownerId;
-    if (command === 'move-in') {
-      await expect(
-        runCli(
-          [
-            'move-out',
-            '--data-root',
-            f.dataRoot,
-            '--workspace-id',
-            f.badId,
-            '--backup-id',
-            f.backupId,
-            '--bundle-root',
-            f.bundleRoot,
-            '--expected-revision',
-            String(prepared.capture!.capturedRevision),
-          ],
-          () => {},
-          f
-        )
-      ).resolves.toMatchObject({ disposition: 'moved-out' });
-      targetRoot = join(f.commandRoot, 'target');
-      cpSync(baseTemplate.demoOnlyRoot, targetRoot, { recursive: true });
-      // The target is otherwise native and configured; its demo Workspace is an unrelated identity collision.
-      // Remove only that fixture authority before admission and keep the real server/configuration owners.
-      rmSync(join(targetRoot, 'workspaces', DEMO_WORKSPACE_ID), { recursive: true, force: true });
-      const targetCore = openCoreDb(targetRoot);
-      ownerId = ensureLocalUser(targetCore);
-      targetCore.sqlite.close();
-    }
-    const argv =
-      command === 'restore'
-        ? [
-            command,
-            '--data-root',
-            targetRoot,
-            '--bundle-root',
-            f.bundleRoot,
-            '--workspace-id',
-            f.badId,
-            '--request-id',
-            randomUUID(),
-          ]
-        : [
-            command,
-            '--data-root',
-            targetRoot,
-            '--bundle-root',
-            f.bundleRoot,
-            '--target-owner-id',
-            ownerId,
-            '--request-id',
-            randomUUID(),
-          ];
-    await expect(runCli(argv, () => {}, f)).resolves.toMatchObject({
-      disposition: command === 'restore' ? 'restored' : 'imported',
-      workspaceId: f.badId,
-    });
-    const historyPath = join(targetRoot, 'workspaces', f.badId, 'imports/recurrence-history.json');
-    const history = readFileSync(historyPath, 'utf8');
-    const graph = readRecurringPortableHistory(JSON.parse(history));
-    expect(graph.schedules).toContainEqual(
-      expect.objectContaining({ originScheduleId: f.scheduleId })
-    );
-    expect(graph.occurrences.length).toBeGreaterThan(0);
-    expect(graph.expiredRanges.length).toBeGreaterThan(0);
-    const before = schedulingState(targetRoot, f.badId);
-    if (command === 'move-in') expect(before.scheduler_admission_entries).toEqual([]);
-    else {
-      // Existing source queue history may remain, but it cannot retain dispatch authority.
-      const entries = before.scheduler_admission_entries as { status: string }[];
-      expect(
-        entries.every((entry) => ['cancelled', 'expired', 'denied'].includes(entry.status))
-      ).toBe(true);
-    }
-    expect(before.scheduler_execution_attempts).toEqual([]);
-    const core = openCoreDb(targetRoot);
-    try {
-      const schedules = new AutomationStore(core, new WorkspaceMutationAdmission());
-      expect(await schedules.collectScanCandidates(new Date().toISOString())).toEqual([]);
-    } finally {
-      core.sqlite.close();
-    }
-    const server = await boot(targetRoot);
-    await server.stop();
-    expect(schedulingState(targetRoot, f.badId)).toEqual(before);
-    expect(readFileSync(historyPath, 'utf8')).toBe(history);
-  }, 120_000);
+  it.each(['restore', 'move-in'] as const)(
+    '%s retains recurring history inert across the next real boot without starting an occurrence',
+    async (command) => {
+      const f = await recurringFixture();
+      const prepared = await captureRecurring(f, command === 'restore' ? 'backup' : 'move');
+      let targetRoot = f.dataRoot;
+      let ownerId = f.ownerId;
+      if (command === 'move-in') {
+        await expect(
+          runCli(
+            [
+              'move-out',
+              '--data-root',
+              f.dataRoot,
+              '--workspace-id',
+              f.badId,
+              '--backup-id',
+              f.backupId,
+              '--bundle-root',
+              f.bundleRoot,
+              '--expected-revision',
+              String(prepared.capture!.capturedRevision),
+            ],
+            () => {},
+            f
+          )
+        ).resolves.toMatchObject({ disposition: 'moved-out' });
+        targetRoot = join(f.commandRoot, 'target');
+        cpSync(baseTemplate.demoOnlyRoot, targetRoot, { recursive: true });
+        // The target is otherwise native and configured; its demo Workspace is an unrelated identity collision.
+        // Remove only that fixture authority before admission and keep the real server/configuration owners.
+        rmSync(join(targetRoot, 'workspaces', DEMO_WORKSPACE_ID), { recursive: true, force: true });
+        const targetCore = openCoreDb(targetRoot);
+        ownerId = ensureLocalUser(targetCore);
+        targetCore.sqlite.close();
+      }
+      const argv =
+        command === 'restore'
+          ? [
+              command,
+              '--data-root',
+              targetRoot,
+              '--bundle-root',
+              f.bundleRoot,
+              '--workspace-id',
+              f.badId,
+              '--request-id',
+              randomUUID(),
+            ]
+          : [
+              command,
+              '--data-root',
+              targetRoot,
+              '--bundle-root',
+              f.bundleRoot,
+              '--target-owner-id',
+              ownerId,
+              '--request-id',
+              randomUUID(),
+            ];
+      await expect(runCli(argv, () => {}, f)).resolves.toMatchObject({
+        disposition: command === 'restore' ? 'restored' : 'imported',
+        workspaceId: f.badId,
+      });
+      const historyPath = join(
+        targetRoot,
+        'workspaces',
+        f.badId,
+        'imports/recurrence-history.json'
+      );
+      const history = readFileSync(historyPath, 'utf8');
+      const graph = readRecurringPortableHistory(JSON.parse(history));
+      expect(graph.schedules).toContainEqual(
+        expect.objectContaining({ originScheduleId: f.scheduleId })
+      );
+      expect(graph.occurrences.length).toBeGreaterThan(0);
+      expect(graph.expiredRanges.length).toBeGreaterThan(0);
+      const before = schedulingState(targetRoot, f.badId);
+      if (command === 'move-in') expect(before.scheduler_admission_entries).toEqual([]);
+      else {
+        // Existing source queue history may remain, but it cannot retain dispatch authority.
+        const entries = before.scheduler_admission_entries as { status: string }[];
+        expect(
+          entries.every((entry) => ['cancelled', 'expired', 'denied'].includes(entry.status))
+        ).toBe(true);
+      }
+      expect(before.scheduler_execution_attempts).toEqual([]);
+      const core = openCoreDb(targetRoot);
+      try {
+        const schedules = new AutomationStore(core, new WorkspaceMutationAdmission());
+        expect(await schedules.collectScanCandidates(new Date().toISOString())).toEqual([]);
+      } finally {
+        core.sqlite.close();
+      }
+      const server = await boot(targetRoot);
+      await server.stop();
+      expect(schedulingState(targetRoot, f.badId)).toEqual(before);
+      expect(readFileSync(historyPath, 'utf8')).toBe(history);
+    },
+    120_000
+  );
 });
 
 /** Copies each retained SQLite directory before observing the target's crash transaction. */
@@ -1543,153 +1552,157 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
     await shutdownControlStoreWorkerClient();
   }, 120_000);
 
-  it.each(
-    targetCrashPoints
-  )('%s: cold publication, isolated boot and explicit same-request finish', async (point) => {
-    const commandRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-'));
-    disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
-    const bundleRoot = join(commandRoot, 'bundle');
-    cpSync(sharedBundleRoot, bundleRoot, { recursive: true });
-    const targetRoot = join(commandRoot, 'target');
-    cpSync(targetTemplateRoot, targetRoot, { recursive: true });
-    const requestId = randomUUID();
-    const input: WorkspaceTargetRecoveryInput = {
-      command: 'move-in',
-      dataRoot: targetRoot,
-      bundleRoot,
-      requestId,
-      targetOwnerId: ownerId,
-      memberMappings: [{ sourceAccountId: source.ownerId, targetAccountId: memberId }],
-      expectedRelease,
-    };
-    await crashTargetAdmission(input, workspaceId, point);
-    const placed = point !== 'before-target-rename';
-    const committed = point === 'after-registration-commit';
-    const cold = crashTargetState(targetRoot, workspaceId, requestId);
-    expect.soft(cold.placed).toBe(placed);
-    expect.soft(cold.candidatePresent).toBe(!placed);
-    expect.soft(cold.core.admission).toMatchObject({
-      state: committed ? 'finished' : 'prepared',
-      backup_id: backupId,
-    });
-    const proof = JSON.parse(cold.core.admission.proof_json);
-    expect
-      .soft(proof.capture)
-      .toMatchObject({ backupId, workspaceId, manifestDigest: capture.capture!.manifestDigest });
-    expect
-      .soft(proof.result)
-      .toMatchObject({ disposition: committed ? 'imported' : 'quarantined', workspaceId });
-    const expectedRegistry = [
-      expect.objectContaining({
-        workspace_id: workspaceId,
-        owner_user_id: ownerId,
-        status: 'active',
-      }),
-    ];
-    const expectedMembers = [ownerId, memberId]
-      .sort()
-      .map((user_id) =>
-        expect.objectContaining({ workspace_id: workspaceId, user_id, status: 'active' })
-      );
-    expect.soft(cold.core.registry).toEqual(committed ? expectedRegistry : []);
-    expect.soft(cold.core.members).toEqual(committed ? expectedMembers : []);
-    expect.soft(JSON.parse(cold.workspace.authority.record_json)).toMatchObject({
-      id: workspaceId,
-      importedFrom: {
-        sourceWorkspaceId: workspaceId,
-        sourceDeploymentId: capture.capture!.sourceDeploymentId,
-        manifestDigest: capture.capture!.manifestDigest,
-      },
-    });
-    expect
-      .soft(cold.workspace.calls)
-      .toEqual([expect.objectContaining({ call_id: source.callId, status: 'unknown' })]);
-    expect.soft(cold.workspace.pending).toEqual([]);
-    expect.soft(cold.core.queued).toEqual([]);
-    expect.soft(cold.core.attempts).toEqual([]);
-    expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
-
-    const starting = boot(targetRoot);
-    await expect.soft(starting).resolves.toMatchObject({ call: expect.any(Function) });
-    const server = await starting.catch(() => undefined);
-    if (server) {
-      const healthy = await server.call(
-        'thread.create',
-        {
-          workspaceId: DEMO_WORKSPACE_ID,
-          name: 'Healthy beside target crash',
-          requestId: randomUUID(),
-        },
-        credentialSecret
-      );
-      expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
-      const affected = committed
-        ? await server.call('thread.list', { workspaceId }, credentialSecret)
-        : await server.call(
-            'thread.create',
-            { workspaceId, name: 'Must not publish unfinished target', requestId: randomUUID() },
-            credentialSecret
-          );
+  it.each(targetCrashPoints)(
+    '%s: cold publication, isolated boot and explicit same-request finish',
+    async (point) => {
+      const commandRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-'));
+      disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
+      const bundleRoot = join(commandRoot, 'bundle');
+      cpSync(sharedBundleRoot, bundleRoot, { recursive: true });
+      const targetRoot = join(commandRoot, 'target');
+      cpSync(targetTemplateRoot, targetRoot, { recursive: true });
+      const requestId = randomUUID();
+      const input: WorkspaceTargetRecoveryInput = {
+        command: 'move-in',
+        dataRoot: targetRoot,
+        bundleRoot,
+        requestId,
+        targetOwnerId: ownerId,
+        memberMappings: [{ sourceAccountId: source.ownerId, targetAccountId: memberId }],
+        expectedRelease,
+      };
+      await crashTargetAdmission(input, workspaceId, point);
+      const placed = point !== 'before-target-rename';
+      const committed = point === 'after-registration-commit';
+      const cold = crashTargetState(targetRoot, workspaceId, requestId);
+      expect.soft(cold.placed).toBe(placed);
+      expect.soft(cold.candidatePresent).toBe(!placed);
+      expect.soft(cold.core.admission).toMatchObject({
+        state: committed ? 'finished' : 'prepared',
+        backup_id: backupId,
+      });
+      const proof = JSON.parse(cold.core.admission.proof_json);
       expect
-        .soft(committed ? [200] : [403, 409], await affected.clone().text())
-        .toContain(affected.status);
-      await server.stop();
-      expect.soft(callStatus(targetRoot, DEMO_WORKSPACE_ID, siblingCall)).toBe('unknown');
-    }
-    expect.soft(crashTargetState(targetRoot, workspaceId, requestId)).toEqual(cold);
-    expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
-    expect.soft(crashSourceState({ ...source, badId: workspaceId }, backupId)).toEqual(sourceState);
+        .soft(proof.capture)
+        .toMatchObject({ backupId, workspaceId, manifestDigest: capture.capture!.manifestDigest });
+      expect
+        .soft(proof.result)
+        .toMatchObject({ disposition: committed ? 'imported' : 'quarantined', workspaceId });
+      const expectedRegistry = [
+        expect.objectContaining({
+          workspace_id: workspaceId,
+          owner_user_id: ownerId,
+          status: 'active',
+        }),
+      ];
+      const expectedMembers = [ownerId, memberId]
+        .sort()
+        .map((user_id) =>
+          expect.objectContaining({ workspace_id: workspaceId, user_id, status: 'active' })
+        );
+      expect.soft(cold.core.registry).toEqual(committed ? expectedRegistry : []);
+      expect.soft(cold.core.members).toEqual(committed ? expectedMembers : []);
+      expect.soft(JSON.parse(cold.workspace.authority.record_json)).toMatchObject({
+        id: workspaceId,
+        importedFrom: {
+          sourceWorkspaceId: workspaceId,
+          sourceDeploymentId: capture.capture!.sourceDeploymentId,
+          manifestDigest: capture.capture!.manifestDigest,
+        },
+      });
+      expect
+        .soft(cold.workspace.calls)
+        .toEqual([expect.objectContaining({ call_id: source.callId, status: 'unknown' })]);
+      expect.soft(cold.workspace.pending).toEqual([]);
+      expect.soft(cold.core.queued).toEqual([]);
+      expect.soft(cold.core.attempts).toEqual([]);
+      expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
 
-    const selection = { kind: 'admission' as const, requestId };
-    await expect
-      .soft(
-        runCli(
-          [
-            'inspect',
-            '--data-root',
-            targetRoot,
-            '--workspace-id',
-            workspaceId,
-            '--request-id',
-            requestId,
-          ],
-          () => {},
-          { releaseIdentityPath }
+      const starting = boot(targetRoot);
+      await expect.soft(starting).resolves.toMatchObject({ call: expect.any(Function) });
+      const server = await starting.catch(() => undefined);
+      if (server) {
+        const healthy = await server.call(
+          'thread.create',
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            name: 'Healthy beside target crash',
+            requestId: randomUUID(),
+          },
+          credentialSecret
+        );
+        expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
+        const affected = committed
+          ? await server.call('thread.list', { workspaceId }, credentialSecret)
+          : await server.call(
+              'thread.create',
+              { workspaceId, name: 'Must not publish unfinished target', requestId: randomUUID() },
+              credentialSecret
+            );
+        expect
+          .soft(committed ? [200] : [403, 409], await affected.clone().text())
+          .toContain(affected.status);
+        await server.stop();
+        expect.soft(callStatus(targetRoot, DEMO_WORKSPACE_ID, siblingCall)).toBe('unknown');
+      }
+      expect.soft(crashTargetState(targetRoot, workspaceId, requestId)).toEqual(cold);
+      expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
+      expect
+        .soft(crashSourceState({ ...source, badId: workspaceId }, backupId))
+        .toEqual(sourceState);
+
+      const selection = { kind: 'admission' as const, requestId };
+      await expect
+        .soft(
+          runCli(
+            [
+              'inspect',
+              '--data-root',
+              targetRoot,
+              '--workspace-id',
+              workspaceId,
+              '--request-id',
+              requestId,
+            ],
+            () => {},
+            { releaseIdentityPath }
+          )
         )
-      )
-      .resolves.toMatchObject({
-        disposition: committed ? 'imported' : 'quarantined',
+        .resolves.toMatchObject({
+          disposition: committed ? 'imported' : 'quarantined',
+          workspaceId,
+          selection,
+          capture: { backupId, manifestDigest: capture.capture!.manifestDigest },
+        });
+      const recovering = finishWorkspaceRecovery({ dataRoot: targetRoot, workspaceId, selection });
+      await expect.soft(recovering).resolves.toMatchObject({
+        command: 'finish',
+        disposition: 'imported',
         workspaceId,
         selection,
+        nextAction: 'none',
         capture: { backupId, manifestDigest: capture.capture!.manifestDigest },
       });
-    const recovering = finishWorkspaceRecovery({ dataRoot: targetRoot, workspaceId, selection });
-    await expect.soft(recovering).resolves.toMatchObject({
-      command: 'finish',
-      disposition: 'imported',
-      workspaceId,
-      selection,
-      nextAction: 'none',
-      capture: { backupId, manifestDigest: capture.capture!.manifestDigest },
-    });
-    const recovered = await recovering.catch(() => undefined);
-    // The required result assertion already failed; do not mask it with dependent retry errors.
-    if (!recovered) return;
-    const finished = crashTargetState(targetRoot, workspaceId, requestId);
-    expect.soft(finished.core.admission.state).toBe('finished');
-    expect.soft(finished.placed).toBe(true);
-    expect.soft(finished.candidatePresent).toBe(false);
-    expect.soft(finished.core.registry).toEqual(expectedRegistry);
-    expect.soft(finished.core.members).toEqual(expectedMembers);
-    expect.soft(finished.workspace).toEqual(cold.workspace);
-    expect.soft(finished.core.queued).toEqual([]);
-    expect.soft(finished.core.attempts).toEqual([]);
-    const retry = await admitWorkspaceBackup(input);
-    expect.soft(retry).toEqual(JSON.parse(finished.core.admission.proof_json).result);
-    await expect
-      .soft(finishWorkspaceRecovery({ dataRoot: targetRoot, workspaceId, selection }))
-      .resolves.toEqual(recovered);
-    expect.soft(crashTargetState(targetRoot, workspaceId, requestId)).toEqual(finished);
-    expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
-  }, 120_000);
+      const recovered = await recovering.catch(() => undefined);
+      // The required result assertion already failed; do not mask it with dependent retry errors.
+      if (!recovered) return;
+      const finished = crashTargetState(targetRoot, workspaceId, requestId);
+      expect.soft(finished.core.admission.state).toBe('finished');
+      expect.soft(finished.placed).toBe(true);
+      expect.soft(finished.candidatePresent).toBe(false);
+      expect.soft(finished.core.registry).toEqual(expectedRegistry);
+      expect.soft(finished.core.members).toEqual(expectedMembers);
+      expect.soft(finished.workspace).toEqual(cold.workspace);
+      expect.soft(finished.core.queued).toEqual([]);
+      expect.soft(finished.core.attempts).toEqual([]);
+      const retry = await admitWorkspaceBackup(input);
+      expect.soft(retry).toEqual(JSON.parse(finished.core.admission.proof_json).result);
+      await expect
+        .soft(finishWorkspaceRecovery({ dataRoot: targetRoot, workspaceId, selection }))
+        .resolves.toEqual(recovered);
+      expect.soft(crashTargetState(targetRoot, workspaceId, requestId)).toEqual(finished);
+      expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
+    },
+    120_000
+  );
 });

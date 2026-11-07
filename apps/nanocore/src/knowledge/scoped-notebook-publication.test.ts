@@ -224,122 +224,122 @@ describe('internal direct User and Server Notebook publication', () => {
     );
   });
 
-  it.each([
-    'user',
-    'server',
-  ] as const)('honors current %s protected-page policy before effects and again after preparation', async (kind) => {
-    const f = await fixture();
-    const input = kind === 'user' ? f.user : f.server;
-    const initial = kind === 'user' ? f.initialUser : f.initialServer;
-    const db = kind === 'user' ? f.userDb : f.coreDb;
-    const request = edit(initial, resolveScopedNotebookOwner(input).ownerScope);
-    const configRoot =
-      kind === 'user' ? join(f.dataRoot, 'users', alice, 'config') : join(f.dataRoot, 'config');
-    const configPath = join(configRoot, kind === 'user' ? 'user.jsonc' : 'server.jsonc');
-    const protect = async (pageIds: string[]) => {
-      mkdirSync(configRoot, { recursive: true });
-      writeFileSync(
-        configPath,
-        JSON.stringify({
-          ...JSON.parse(readFileSync(configPath, 'utf8')),
-          knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: pageIds },
-        })
-      );
-      expect((await input.runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
-    };
-    await protect(['note']);
-    await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
-      code: 'review_required',
-    });
-    expect(notebook(input).publishedRevision()).toBe(initial);
-    expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
-
-    await protect([]);
-    const prepare = KnowledgeNotebook.prototype.prepare;
-    const prepared = vi
-      .spyOn(KnowledgeNotebook.prototype, 'prepare')
-      .mockImplementationOnce(async function (this: KnowledgeNotebook, input) {
-        const candidate = prepare.call(this, input);
-        await protect(['note']);
-        return candidate;
+  it.each(['user', 'server'] as const)(
+    'honors current %s protected-page policy before effects and again after preparation',
+    async (kind) => {
+      const f = await fixture();
+      const input = kind === 'user' ? f.user : f.server;
+      const initial = kind === 'user' ? f.initialUser : f.initialServer;
+      const db = kind === 'user' ? f.userDb : f.coreDb;
+      const request = edit(initial, resolveScopedNotebookOwner(input).ownerScope);
+      const configRoot =
+        kind === 'user' ? join(f.dataRoot, 'users', alice, 'config') : join(f.dataRoot, 'config');
+      const configPath = join(configRoot, kind === 'user' ? 'user.jsonc' : 'server.jsonc');
+      const protect = async (pageIds: string[]) => {
+        mkdirSync(configRoot, { recursive: true });
+        writeFileSync(
+          configPath,
+          JSON.stringify({
+            ...JSON.parse(readFileSync(configPath, 'utf8')),
+            knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: pageIds },
+          })
+        );
+        expect((await input.runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
+      };
+      await protect(['note']);
+      await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
+        code: 'review_required',
       });
-    await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
-      code: 'review_required',
-    });
-    expect(prepared).toHaveBeenCalledOnce();
-    expect(notebook(input).publishedRevision()).toBe(initial);
-    expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
-  });
+      expect(notebook(input).publishedRevision()).toBe(initial);
+      expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
 
-  it.each([
-    'user',
-    'server',
-  ] as const)('publishes and replays exact %s scope through its existing Audit/receipt owner', async (kind) => {
-    const f = await fixture();
-    const input = kind === 'user' ? f.user : f.server;
-    const ownerScope = resolveScopedNotebookOwner(input).ownerScope;
-    const base = kind === 'user' ? f.initialUser : f.initialServer;
-    const db = kind === 'user' ? f.userDb : f.coreDb;
-    const request = edit(base, ownerScope);
-    const first = await publishScopedNotebook(input, request);
-    expect(first).toMatchObject({
-      ownerScope,
-      baseRevision: base,
-      receiptRef: { requestId: request.requestId, ownerScope },
-    });
-    const saved = notebook(input).readRevision(first.notebookRevision);
-    expect(saved.files['note.md']).toBe(request.changes[0]!.content);
-    expect(saved.metadata.producer).toEqual({ kind: 'user', id: input.actor.userId });
-    const later = await publishScopedNotebook(
-      input,
-      edit(first.notebookRevision, ownerScope, 'Later exact bytes.')
-    );
-    expect(
-      await publishScopedNotebook(
-        {
-          ...input,
-          store: new FsStore({ dataRoot: input.coreDb.dataRoot }),
-          inflightCommands: new WeakMap(),
-        },
-        request
-      )
-    ).toEqual(first);
-    expect(notebook(input).publishedRevision()).toBe(later.notebookRevision);
-    await expect(
-      publishScopedNotebook(input, { ...request, summary: 'Changed input under same key' })
-    ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
-    await expect(publishScopedNotebook(input, edit(base, ownerScope))).rejects.toMatchObject({
-      code: 'conflict',
-      currentRevision: later.notebookRevision,
-    });
-    const history = readScopedNotebookHistory({ ...input, limit: 2 });
-    expect(history.ownerScope).toEqual(ownerScope);
-    expect(history.revisions.map(({ revision }) => revision)).toEqual([
-      later.notebookRevision,
-      first.notebookRevision,
-    ]);
-    expect(history.nextRevision).toBe(base);
-    const audits = db.sqlite
-      .prepare(
-        'SELECT notebook_admission_json AS evidence FROM audit_events WHERE request_id = ? ORDER BY rowid'
-      )
-      .all(request.requestId) as { evidence: string }[];
-    expect(audits).toHaveLength(2);
-    expect(audits.map(({ evidence }) => JSON.parse(evidence).ownerScope)).toEqual([
-      ownerScope,
-      ownerScope,
-    ]);
-    expect(counts(db)).toEqual({ audit: 6, receipts: 2 });
-    const receipt = db.sqlite
-      .prepare('SELECT scope_json AS scope FROM idempotency_requests WHERE request_id = ?')
-      .get(request.requestId) as { scope: string };
-    expect(JSON.parse(receipt.scope)).toEqual(
-      kind === 'user' ? { userId: alice, actorId: alice } : { coreId: 'server', actorId: bob }
-    );
-    expect(notebook(kind === 'user' ? f.server : f.user).publishedRevision()).toBe(
-      kind === 'user' ? f.initialServer : f.initialUser
-    );
-  });
+      await protect([]);
+      const prepare = KnowledgeNotebook.prototype.prepare;
+      const prepared = vi
+        .spyOn(KnowledgeNotebook.prototype, 'prepare')
+        .mockImplementationOnce(async function (this: KnowledgeNotebook, input) {
+          const candidate = prepare.call(this, input);
+          await protect(['note']);
+          return candidate;
+        });
+      await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
+        code: 'review_required',
+      });
+      expect(prepared).toHaveBeenCalledOnce();
+      expect(notebook(input).publishedRevision()).toBe(initial);
+      expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
+    }
+  );
+
+  it.each(['user', 'server'] as const)(
+    'publishes and replays exact %s scope through its existing Audit/receipt owner',
+    async (kind) => {
+      const f = await fixture();
+      const input = kind === 'user' ? f.user : f.server;
+      const ownerScope = resolveScopedNotebookOwner(input).ownerScope;
+      const base = kind === 'user' ? f.initialUser : f.initialServer;
+      const db = kind === 'user' ? f.userDb : f.coreDb;
+      const request = edit(base, ownerScope);
+      const first = await publishScopedNotebook(input, request);
+      expect(first).toMatchObject({
+        ownerScope,
+        baseRevision: base,
+        receiptRef: { requestId: request.requestId, ownerScope },
+      });
+      const saved = notebook(input).readRevision(first.notebookRevision);
+      expect(saved.files['note.md']).toBe(request.changes[0]!.content);
+      expect(saved.metadata.producer).toEqual({ kind: 'user', id: input.actor.userId });
+      const later = await publishScopedNotebook(
+        input,
+        edit(first.notebookRevision, ownerScope, 'Later exact bytes.')
+      );
+      expect(
+        await publishScopedNotebook(
+          {
+            ...input,
+            store: new FsStore({ dataRoot: input.coreDb.dataRoot }),
+            inflightCommands: new WeakMap(),
+          },
+          request
+        )
+      ).toEqual(first);
+      expect(notebook(input).publishedRevision()).toBe(later.notebookRevision);
+      await expect(
+        publishScopedNotebook(input, { ...request, summary: 'Changed input under same key' })
+      ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+      await expect(publishScopedNotebook(input, edit(base, ownerScope))).rejects.toMatchObject({
+        code: 'conflict',
+        currentRevision: later.notebookRevision,
+      });
+      const history = readScopedNotebookHistory({ ...input, limit: 2 });
+      expect(history.ownerScope).toEqual(ownerScope);
+      expect(history.revisions.map(({ revision }) => revision)).toEqual([
+        later.notebookRevision,
+        first.notebookRevision,
+      ]);
+      expect(history.nextRevision).toBe(base);
+      const audits = db.sqlite
+        .prepare(
+          'SELECT notebook_admission_json AS evidence FROM audit_events WHERE request_id = ? ORDER BY rowid'
+        )
+        .all(request.requestId) as { evidence: string }[];
+      expect(audits).toHaveLength(2);
+      expect(audits.map(({ evidence }) => JSON.parse(evidence).ownerScope)).toEqual([
+        ownerScope,
+        ownerScope,
+      ]);
+      expect(counts(db)).toEqual({ audit: 6, receipts: 2 });
+      const receipt = db.sqlite
+        .prepare('SELECT scope_json AS scope FROM idempotency_requests WHERE request_id = ?')
+        .get(request.requestId) as { scope: string };
+      expect(JSON.parse(receipt.scope)).toEqual(
+        kind === 'user' ? { userId: alice, actorId: alice } : { coreId: 'server', actorId: bob }
+      );
+      expect(notebook(kind === 'user' ? f.server : f.user).publishedRevision()).toBe(
+        kind === 'user' ? f.initialServer : f.initialUser
+      );
+    }
+  );
 
   it('refuses foreign User profiles/databases and keeps administrator User inspection read-only', async () => {
     const f = await fixture();
@@ -510,49 +510,49 @@ describe('internal direct User and Server Notebook publication', () => {
     expect(notebook(f.server).publishedRevision()).toBe(f.initialServer);
   });
 
-  it.each([
-    'user',
-    'server',
-  ] as const)('retains %s Git/Audit effects after receipt failure and refuses inferred completion', async (kind) => {
-    const f = await fixture();
-    const input = kind === 'user' ? f.user : f.server;
-    const db = kind === 'user' ? f.userDb : f.coreDb;
-    const initial = kind === 'user' ? f.initialUser : f.initialServer;
-    const request = edit(initial, resolveScopedNotebookOwner(input).ownerScope);
-    db.sqlite.exec(
-      "CREATE TRIGGER refuse_admission BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT, 'test admission fault'); END"
-    );
-    const failedAdmission = publishScopedNotebook(input, request);
-    await expect(failedAdmission).rejects.toBeInstanceOf(ControlStoreWorkerError);
-    await expect(failedAdmission).rejects.toMatchObject({
-      code: 'constraint',
-      commit: 'not-committed',
-      message: 'Control database writer operation failed.',
-    });
-    expect(notebook(input).publishedRevision()).toBe(initial);
-    expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
-    db.sqlite.exec('DROP TRIGGER refuse_admission');
-    db.sqlite.exec(
-      "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'test receipt fault'); END"
-    );
-    const failedReceipt = publishScopedNotebook(input, request);
-    await expect(failedReceipt).rejects.toBeInstanceOf(ControlStoreWorkerError);
-    await expect(failedReceipt).rejects.toMatchObject({
-      code: 'constraint',
-      commit: 'not-committed',
-      message: 'Control database writer operation failed.',
-    });
-    const published = notebook(input).publishedRevision();
-    expect(published).not.toBe(initial);
-    expect(counts(db)).toEqual({ audit: 4, receipts: 0 });
-    db.sqlite.exec('DROP TRIGGER refuse_receipt');
-    await expect(
-      publishScopedNotebook(
-        { ...input, store: new FsStore({ dataRoot: input.coreDb.dataRoot }) },
-        request
-      )
-    ).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(notebook(input).publishedRevision()).toBe(published);
-    expect(counts(db)).toEqual({ audit: 4, receipts: 0 });
-  });
+  it.each(['user', 'server'] as const)(
+    'retains %s Git/Audit effects after receipt failure and refuses inferred completion',
+    async (kind) => {
+      const f = await fixture();
+      const input = kind === 'user' ? f.user : f.server;
+      const db = kind === 'user' ? f.userDb : f.coreDb;
+      const initial = kind === 'user' ? f.initialUser : f.initialServer;
+      const request = edit(initial, resolveScopedNotebookOwner(input).ownerScope);
+      db.sqlite.exec(
+        "CREATE TRIGGER refuse_admission BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT, 'test admission fault'); END"
+      );
+      const failedAdmission = publishScopedNotebook(input, request);
+      await expect(failedAdmission).rejects.toBeInstanceOf(ControlStoreWorkerError);
+      await expect(failedAdmission).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+        message: 'Control database writer operation failed.',
+      });
+      expect(notebook(input).publishedRevision()).toBe(initial);
+      expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
+      db.sqlite.exec('DROP TRIGGER refuse_admission');
+      db.sqlite.exec(
+        "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'test receipt fault'); END"
+      );
+      const failedReceipt = publishScopedNotebook(input, request);
+      await expect(failedReceipt).rejects.toBeInstanceOf(ControlStoreWorkerError);
+      await expect(failedReceipt).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+        message: 'Control database writer operation failed.',
+      });
+      const published = notebook(input).publishedRevision();
+      expect(published).not.toBe(initial);
+      expect(counts(db)).toEqual({ audit: 4, receipts: 0 });
+      db.sqlite.exec('DROP TRIGGER refuse_receipt');
+      await expect(
+        publishScopedNotebook(
+          { ...input, store: new FsStore({ dataRoot: input.coreDb.dataRoot }) },
+          request
+        )
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(notebook(input).publishedRevision()).toBe(published);
+      expect(counts(db)).toEqual({ audit: 4, receipts: 0 });
+    }
+  );
 });

@@ -39,19 +39,19 @@ describe('bounded conversation file framing', () => {
     await body.cancel();
   });
 
-  it.each([
-    0,
-    MAX_CONVERSATION_FILE_METADATA_BYTES + 1,
-  ])('refuses metadata length %s before reading its body', async (length) => {
-    const prefix = Buffer.alloc(4);
-    prefix.writeUInt32BE(length);
-    const input = source([prefix, new Uint8Array([9])]);
-    const body = new ConversationFileBody(input.stream);
-    await expect(body.metadata()).rejects.toThrow('framing');
-    expect(input.pull).toHaveBeenCalledTimes(1);
-    await body.cancel();
-    expect(input.cancel).toHaveBeenCalledTimes(1);
-  });
+  it.each([0, MAX_CONVERSATION_FILE_METADATA_BYTES + 1])(
+    'refuses metadata length %s before reading its body',
+    async (length) => {
+      const prefix = Buffer.alloc(4);
+      prefix.writeUInt32BE(length);
+      const input = source([prefix, new Uint8Array([9])]);
+      const body = new ConversationFileBody(input.stream);
+      await expect(body.metadata()).rejects.toThrow('framing');
+      expect(input.pull).toHaveBeenCalledTimes(1);
+      await body.cancel();
+      expect(input.cancel).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('cancels unread retry bytes after metadata without reading the selected original', async () => {
     const json = Buffer.from('{}');

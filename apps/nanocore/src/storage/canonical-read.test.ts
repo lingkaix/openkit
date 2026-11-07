@@ -133,30 +133,31 @@ describe('canonical byte reads and integrity measurement', () => {
     expectOwnedDescriptorClosed();
   });
 
-  it.each([
-    0, 200_003,
-  ])('measures every byte of a %i-byte file through both public entries', (size) => {
-    const bytes = Buffer.from(Array.from({ length: size }, (_, index) => index % 251));
-    const path = fixture(bytes);
-    const expected = {
-      byteLength: size,
-      contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-    };
-    expect(measureCanonicalFile(path)).toEqual(expected);
-    expectOwnedDescriptorClosed();
-    const descriptor = openSync(path, 'r');
-    try {
-      const prefixLength = Math.min(17, size);
-      expect(readSync(descriptor, Buffer.alloc(prefixLength), 0, prefixLength, null)).toBe(
-        prefixLength
-      );
-      expect(measureCanonicalFileDescriptor(descriptor)).toEqual(expected);
-      expect(readFileSync(descriptor)).toEqual(bytes.subarray(prefixLength));
-      expect(fstatSync(descriptor).isFile()).toBe(true);
-    } finally {
-      closeSync(descriptor);
+  it.each([0, 200_003])(
+    'measures every byte of a %i-byte file through both public entries',
+    (size) => {
+      const bytes = Buffer.from(Array.from({ length: size }, (_, index) => index % 251));
+      const path = fixture(bytes);
+      const expected = {
+        byteLength: size,
+        contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      };
+      expect(measureCanonicalFile(path)).toEqual(expected);
+      expectOwnedDescriptorClosed();
+      const descriptor = openSync(path, 'r');
+      try {
+        const prefixLength = Math.min(17, size);
+        expect(readSync(descriptor, Buffer.alloc(prefixLength), 0, prefixLength, null)).toBe(
+          prefixLength
+        );
+        expect(measureCanonicalFileDescriptor(descriptor)).toEqual(expected);
+        expect(readFileSync(descriptor)).toEqual(bytes.subarray(prefixLength));
+        expect(fstatSync(descriptor).isFile()).toBe(true);
+      } finally {
+        closeSync(descriptor);
+      }
     }
-  });
+  );
 
   it('refuses symbolic links and nonregular files without reading another target', () => {
     const path = fixture();
@@ -212,37 +213,38 @@ describe('canonical byte reads and integrity measurement', () => {
     expect(io.beforeOpen).toBeUndefined();
   });
 
-  it.each([
-    ...readers,
-    measureCanonicalFile,
-  ])('%s closes an owned descriptor after a read fault', (read) => {
-    const path = fixture();
-    const failure = new Error('Injected canonical read failure.');
-    io.afterRead = () => {
-      throw failure;
-    };
-    expect(() => read(path)).toThrow(failure);
-    expect(io.afterRead).toBeUndefined();
-    expectOwnedDescriptorClosed();
-  });
+  it.each([...readers, measureCanonicalFile])(
+    '%s closes an owned descriptor after a read fault',
+    (read) => {
+      const path = fixture();
+      const failure = new Error('Injected canonical read failure.');
+      io.afterRead = () => {
+        throw failure;
+      };
+      expect(() => read(path)).toThrow(failure);
+      expect(io.afterRead).toBeUndefined();
+      expectOwnedDescriptorClosed();
+    }
+  );
 
-  it.each(
-    measure
-  )('refuses same-size mutation during $name measurement, even with preserved mtime', ({ run }) => {
-    const path = fixture(Buffer.alloc(200_003, 0x61));
-    utimesSync(path, 1_700_000_000, 1_700_000_000);
-    const before = statSync(path, { bigint: true });
-    io.afterRead = () => {
-      writeFileSync(path, Buffer.alloc(200_003, 0x62));
+  it.each(measure)(
+    'refuses same-size mutation during $name measurement, even with preserved mtime',
+    ({ run }) => {
+      const path = fixture(Buffer.alloc(200_003, 0x61));
       utimesSync(path, 1_700_000_000, 1_700_000_000);
-    };
-    expect(() => run(path)).toThrow();
-    expect(io.afterRead).toBeUndefined();
-    const after = statSync(path, { bigint: true });
-    expect(after.size).toBe(before.size);
-    expect(after.mtimeNs).toBe(before.mtimeNs);
-    expect(after.ctimeNs).not.toBe(before.ctimeNs);
-  });
+      const before = statSync(path, { bigint: true });
+      io.afterRead = () => {
+        writeFileSync(path, Buffer.alloc(200_003, 0x62));
+        utimesSync(path, 1_700_000_000, 1_700_000_000);
+      };
+      expect(() => run(path)).toThrow();
+      expect(io.afterRead).toBeUndefined();
+      const after = statSync(path, { bigint: true });
+      expect(after.size).toBe(before.size);
+      expect(after.mtimeNs).toBe(before.mtimeNs);
+      expect(after.ctimeNs).not.toBe(before.ctimeNs);
+    }
+  );
 
   it.each(measure)('refuses an incomplete real read during $name measurement', ({ run }) => {
     const path = fixture(Buffer.alloc(200_003, 0x61));

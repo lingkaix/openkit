@@ -756,338 +756,343 @@ describe('D0-2 same-deployment restore', () => {
     }
   }, 120_000);
 
-  it.each([
-    'credential-revoked',
-    'freeze-released',
-    'registry-deleted',
-  ] as const)('refuses selected registration after %s while its actual Core post is deferred', async (fault) => {
-    const f = await readmissionFixture(false, 'after-target-rename');
-    const core = f.owner.core;
-    const token = createOpenKitAccessTokenRecord(core, {
-      ownerUserId: f.ownerId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    });
-    const actor = {
-      kind: 'token' as const,
-      userId: token.record.ownerUserId,
-      tokenId: token.tokenId,
-      tokenScope: token.record.scope,
-      tokenWorkspaceIds: token.record.workspaceIds,
-    };
-    const owner = {
-      ...f.owner,
-      actor,
-      currentAuthority: () => requireAdministratorOperation(core, actor, 'api.call'),
-    };
-    owner.currentAuthority();
-    const client = getControlStoreWorkerClient(f.gate);
-    const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
-    const database = `core:${scope.path}`;
-    await client.open({
-      database,
-      path: scope.path,
-      dataRoot: f.dataRoot,
-      create: false,
-      initialize: 'core',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    let release = await client.pauseForDataRootBackup(database);
-    const selected = {
-      dataRoot: f.dataRoot,
-      workspaceId,
-      selection: { kind: 'admission' as const, requestId: f.requestId },
-    };
-    const tuple = () =>
-      Object.fromEntries(
-        [
-          'workspace_recovery_admissions',
-          'workspace_registry',
-          'workspace_members',
-          'recurring_schedules',
-          'recurring_occurrences',
-          'recurring_expired_ranges',
-          'scheduler_admission_entries',
-          'scheduler_execution_attempts',
-          'audit_events',
-        ].map((table) => [table, rows(scope.path, table)])
-      );
-    const before = tuple();
-    let expected = before;
-    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
-    core.sqlite.pragma('query_only = ON');
-    const publication = vi.spyOn(client, 'recoveryTargetRegistration');
-    const actualOpen = client.open.bind(client);
-    let upstreamOpenRejected = false;
-    let upstreamOpenFailure: unknown;
-    const opening = vi.spyOn(client, 'open').mockImplementation((...args) => {
-      const operation = actualOpen(...args);
-      void operation.catch((error: unknown) => {
-        if (args[0].database === database) {
-          upstreamOpenRejected = true;
-          upstreamOpenFailure = error;
-        }
+  it.each(['credential-revoked', 'freeze-released', 'registry-deleted'] as const)(
+    'refuses selected registration after %s while its actual Core post is deferred',
+    async (fault) => {
+      const f = await readmissionFixture(false, 'after-target-rename');
+      const core = f.owner.core;
+      const token = createOpenKitAccessTokenRecord(core, {
+        ownerUserId: f.ownerId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
       });
-      return operation;
-    });
-    const posts = vi.spyOn(Worker.prototype, 'postMessage');
-    const registrationPosts = () =>
-      posts.mock.calls.filter(
-        ([message]) =>
-          message.operation === 'recovery-target-registration' &&
-          message.database === database &&
-          message.input?.admissionId === f.requestId &&
-          message.input?.workspaceId === workspaceId
+      const actor = {
+        kind: 'token' as const,
+        userId: token.record.ownerUserId,
+        tokenId: token.tokenId,
+        tokenScope: token.record.scope,
+        tokenWorkspaceIds: token.record.workspaceIds,
+      };
+      const owner = {
+        ...f.owner,
+        actor,
+        currentAuthority: () => requireAdministratorOperation(core, actor, 'api.call'),
+      };
+      owner.currentAuthority();
+      const client = getControlStoreWorkerClient(f.gate);
+      const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
+      const database = `core:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: f.dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      let release = await client.pauseForDataRootBackup(database);
+      const selected = {
+        dataRoot: f.dataRoot,
+        workspaceId,
+        selection: { kind: 'admission' as const, requestId: f.requestId },
+      };
+      const tuple = () =>
+        Object.fromEntries(
+          [
+            'workspace_recovery_admissions',
+            'workspace_registry',
+            'workspace_members',
+            'recurring_schedules',
+            'recurring_occurrences',
+            'recurring_expired_ranges',
+            'scheduler_admission_entries',
+            'scheduler_execution_attempts',
+            'audit_events',
+          ].map((table) => [table, rows(scope.path, table)])
+        );
+      const before = tuple();
+      let expected = before;
+      const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+      core.sqlite.pragma('query_only = ON');
+      const publication = vi.spyOn(client, 'recoveryTargetRegistration');
+      const actualOpen = client.open.bind(client);
+      let upstreamOpenRejected = false;
+      let upstreamOpenFailure: unknown;
+      const opening = vi.spyOn(client, 'open').mockImplementation((...args) => {
+        const operation = actualOpen(...args);
+        void operation.catch((error: unknown) => {
+          if (args[0].database === database) {
+            upstreamOpenRejected = true;
+            upstreamOpenFailure = error;
+          }
+        });
+        return operation;
+      });
+      const posts = vi.spyOn(Worker.prototype, 'postMessage');
+      const registrationPosts = () =>
+        posts.mock.calls.filter(
+          ([message]) =>
+            message.operation === 'recovery-target-registration' &&
+            message.database === database &&
+            message.input?.admissionId === f.requestId &&
+            message.input?.workspaceId === workspaceId
+        );
+      let settled = false;
+      const command = finishWorkspaceRecoveryAtCore(owner, selected).then(
+        (result) => {
+          settled = true;
+          return { result };
+        },
+        (error) => {
+          settled = true;
+          return { error };
+        }
       );
-    let settled = false;
-    const command = finishWorkspaceRecoveryAtCore(owner, selected).then(
-      (result) => {
-        settled = true;
-        return { result };
-      },
-      (error) => {
-        settled = true;
-        return { error };
-      }
-    );
-    try {
-      // A failed open can enter producer cleanup, whose real close waits for this
-      // posting hold. Observe that rejection before joining the whole producer.
-      while (!publication.mock.calls.length && !settled && !upstreamOpenRejected) await nextTurn();
-      expect(
-        upstreamOpenFailure,
-        'Actual selected Core open rejected before registration.'
-      ).toBeUndefined();
-      expect(publication).toHaveBeenCalledTimes(1);
-      expect(settled).toBe(false);
-      expect(registrationPosts()).toEqual([]);
-      if (fault === 'credential-revoked') {
-        const writer = openCoreDb(f.dataRoot);
-        try {
-          revokeOpenKitAccessTokenRecord(writer, token.tokenId);
-        } finally {
-          writer.sqlite.close();
-        }
-      } else if (fault === 'freeze-released') f.freeze.release();
-      else {
-        const writer = openCoreDb(f.dataRoot);
-        try {
-          // Change the actual Core lifecycle through its domain owners. This
-          // adversarial current fact is not a public deletion/file-closure fixture.
-          writer.sqlite
-            .transaction(() => {
-              const registry = getWorkspaceRegistryLifecycleFact(writer, workspaceId)!;
-              const deleting = beginWorkspaceDeletion({
-                coreDb: writer,
-                workspaceId,
-                originalOwnerUserId: f.ownerId,
-                expectedRegistryRevision: registry.registryRevision,
-              });
-              completeWorkspaceDeletion({
-                coreDb: writer,
-                workspaceId,
-                originalOwnerUserId: f.ownerId,
-                expectedRegistryRevision: deleting.registryRevision,
-              });
+      try {
+        // A failed open can enter producer cleanup, whose real close waits for this
+        // posting hold. Observe that rejection before joining the whole producer.
+        while (!publication.mock.calls.length && !settled && !upstreamOpenRejected)
+          await nextTurn();
+        expect(
+          upstreamOpenFailure,
+          'Actual selected Core open rejected before registration.'
+        ).toBeUndefined();
+        expect(publication).toHaveBeenCalledTimes(1);
+        expect(settled).toBe(false);
+        expect(registrationPosts()).toEqual([]);
+        if (fault === 'credential-revoked') {
+          const writer = openCoreDb(f.dataRoot);
+          try {
+            revokeOpenKitAccessTokenRecord(writer, token.tokenId);
+          } finally {
+            writer.sqlite.close();
+          }
+        } else if (fault === 'freeze-released') f.freeze.release();
+        else {
+          const writer = openCoreDb(f.dataRoot);
+          try {
+            // Change the actual Core lifecycle through its domain owners. This
+            // adversarial current fact is not a public deletion/file-closure fixture.
+            writer.sqlite
+              .transaction(() => {
+                const registry = getWorkspaceRegistryLifecycleFact(writer, workspaceId)!;
+                const deleting = beginWorkspaceDeletion({
+                  coreDb: writer,
+                  workspaceId,
+                  originalOwnerUserId: f.ownerId,
+                  expectedRegistryRevision: registry.registryRevision,
+                });
+                completeWorkspaceDeletion({
+                  coreDb: writer,
+                  workspaceId,
+                  originalOwnerUserId: f.ownerId,
+                  expectedRegistryRevision: deleting.registryRevision,
+                });
+              })
+              .immediate();
+          } finally {
+            writer.sqlite.close();
+          }
+          expected = tuple();
+          expect(expected.workspace_recovery_admissions).toEqual(
+            before.workspace_recovery_admissions
+          );
+          expect(expected.workspace_registry).toContainEqual(
+            expect.objectContaining({
+              workspace_id: workspaceId,
+              status: 'deleted',
             })
-            .immediate();
-        } finally {
-          writer.sqlite.close();
+          );
         }
-        expected = tuple();
-        expect(expected.workspace_recovery_admissions).toEqual(
-          before.workspace_recovery_admissions
-        );
-        expect(expected.workspace_registry).toContainEqual(
-          expect.objectContaining({
-            workspace_id: workspaceId,
-            status: 'deleted',
-          })
-        );
+        release();
+        release = () => {};
+        expect(await command).toHaveProperty('error');
+        expect(registrationPosts()).toHaveLength(fault === 'freeze-released' ? 0 : 1);
+        expect(tuple()).toEqual(expected);
+        expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+        expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+      } finally {
+        release();
+        await command;
+        opening.mockRestore();
+        publication.mockRestore();
+        posts.mockRestore();
       }
-      release();
-      release = () => {};
-      expect(await command).toHaveProperty('error');
-      expect(registrationPosts()).toHaveLength(fault === 'freeze-released' ? 0 : 1);
-      expect(tuple()).toEqual(expected);
-      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
-      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
-    } finally {
-      release();
-      await command;
-      opening.mockRestore();
-      publication.mockRestore();
-      posts.mockRestore();
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 
-  it.each([
-    'descriptive-extensions',
-    'unknown-core',
-  ] as const)('selected registration preserves retained report compatibility for %s before committing its result', async (shape) => {
-    const f = await readmissionFixture(false, 'after-target-rename');
-    const retained = readRecoveryAdmission(f.owner.core, f.requestId)!;
-    expect(retained.state).toBe('prepared');
-    expect(retained.proof.candidateDigest).toBeTypeOf('string');
-    const rawProof = f.owner.core.sqlite
-      .prepare('SELECT proof_json FROM workspace_recovery_admissions WHERE admission_id=?')
-      .pluck()
-      .get(f.requestId) as string;
-    const parent = verifyDataRootBackupManifest({
-      backupRoot: join(dirname(f.dataRoot), 'parent'),
-    }).manifest;
-    const capture = {
-      ...retained.proof.capture,
-      futureCaptureDescription: { label: 'Original retained capture description' },
-      coverage: {
-        ...retained.proof.capture.coverage,
-        futureCoverageDescription: { label: 'Original retained coverage description' },
-      },
-      source: {
-        kind: 'data-root-backup' as const,
-        dataRootBackupId: parent.id,
-        consistency: parent.consistency,
-        futureSourceDescription: { label: 'Original verified parent description' },
-      },
-    };
-    const result = {
-      ...retained.proof.result,
-      capture,
-      command:
-        shape === 'unknown-core' ? 'unsupported-future-command' : retained.proof.result.command,
-      futureReportDescription: { label: 'Original retained report description' },
-    } as typeof retained.proof.result;
-    const injected = { ...retained.proof, capture, result };
-    // Retained-content fault/format specimen after genuine placement, following
-    // the existing recovery-admission owner's corruption fixture. No authority changes.
-    const changed = f.owner.core.sqlite
-      .prepare(`UPDATE workspace_recovery_admissions
+  it.each(['descriptive-extensions', 'unknown-core'] as const)(
+    'selected registration preserves retained report compatibility for %s before committing its result',
+    async (shape) => {
+      const f = await readmissionFixture(false, 'after-target-rename');
+      const retained = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      expect(retained.state).toBe('prepared');
+      expect(retained.proof.candidateDigest).toBeTypeOf('string');
+      const rawProof = f.owner.core.sqlite
+        .prepare('SELECT proof_json FROM workspace_recovery_admissions WHERE admission_id=?')
+        .pluck()
+        .get(f.requestId) as string;
+      const parent = verifyDataRootBackupManifest({
+        backupRoot: join(dirname(f.dataRoot), 'parent'),
+      }).manifest;
+      const capture = {
+        ...retained.proof.capture,
+        futureCaptureDescription: { label: 'Original retained capture description' },
+        coverage: {
+          ...retained.proof.capture.coverage,
+          futureCoverageDescription: { label: 'Original retained coverage description' },
+        },
+        source: {
+          kind: 'data-root-backup' as const,
+          dataRootBackupId: parent.id,
+          consistency: parent.consistency,
+          futureSourceDescription: { label: 'Original verified parent description' },
+        },
+      };
+      const result = {
+        ...retained.proof.result,
+        capture,
+        command:
+          shape === 'unknown-core' ? 'unsupported-future-command' : retained.proof.result.command,
+        futureReportDescription: { label: 'Original retained report description' },
+      } as typeof retained.proof.result;
+      const injected = { ...retained.proof, capture, result };
+      // Retained-content fault/format specimen after genuine placement, following
+      // the existing recovery-admission owner's corruption fixture. No authority changes.
+      const changed = f.owner.core.sqlite
+        .prepare(`UPDATE workspace_recovery_admissions
       SET proof_json=? WHERE admission_id=? AND workspace_id=? AND state='prepared'
       AND revision=? AND candidate_ref=? AND proof_json=?`)
-      .run(
-        JSON.stringify(injected),
-        f.requestId,
-        retained.workspace_id,
-        retained.revision,
-        retained.candidate_ref,
-        rawProof
-      );
-    expect(changed.changes).toBe(1);
-    const installed = readRecoveryAdmission(f.owner.core, f.requestId)!;
-    expect(installed.state).toBe(retained.state);
-    expect(installed.revision).toBe(retained.revision);
-    expect(installed.candidate_ref).toBe(retained.candidate_ref);
-    // Setup guards read real retained content, independent of the later expected snapshot.
-    expect(installed.proof.result.command).toBe(
-      shape === 'unknown-core' ? 'unsupported-future-command' : retained.proof.result.command
-    );
-    const descriptions = {
-      futureCaptureDescription: { label: 'Original retained capture description' },
-      coverage: {
-        futureCoverageDescription: { label: 'Original retained coverage description' },
-      },
-      source: {
-        kind: 'data-root-backup',
-        dataRootBackupId: parent.id,
-        consistency: parent.consistency,
-        futureSourceDescription: { label: 'Original verified parent description' },
-      },
-    };
-    expect(installed.proof.capture).toMatchObject(descriptions);
-    expect(installed.proof.result).toMatchObject({
-      capture: descriptions,
-      futureReportDescription: { label: 'Original retained report description' },
-    });
-    expect(installed.proof).toEqual(injected);
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
-    const publish = client.recoveryTargetRegistration.bind(client);
-    let selectedCalls = 0;
-    let nativeRefusal: unknown;
-    const publication = vi
-      .spyOn(client, 'recoveryTargetRegistration')
-      .mockImplementation(async (...args) => {
-        if (
-          args[0] === `core:${coreDbPath(f.dataRoot)}` &&
-          args[1].admissionId === f.requestId &&
-          args[1].workspaceId === workspaceId
-        ) {
-          selectedCalls++;
-          try {
-            return await publish(...args);
-          } catch (error) {
-            nativeRefusal = error;
-            throw error;
-          }
-        }
-        return publish(...args);
-      });
-    onTestFinished(() => {
-      try {
-        expect(selectedCalls, 'Selected registration must reach its real native method once.').toBe(
-          1
+        .run(
+          JSON.stringify(injected),
+          f.requestId,
+          retained.workspace_id,
+          retained.revision,
+          retained.candidate_ref,
+          rawProof
         );
-        if (shape === 'unknown-core')
-          expect(nativeRefusal).toMatchObject({
-            commit: 'not-committed',
-            domain: {
-              operation: 'recovery-target-registration',
-              code: 'recovery-required',
-              status: 409,
-            },
-          });
-      } finally {
-        publication.mockRestore();
-      }
-    });
-    const before = readRecoveryAdmission(f.owner.core, f.requestId)!;
-    const tuple = () =>
-      Object.fromEntries(
-        [
-          'workspace_recovery_admissions',
-          'workspace_registry',
-          'workspace_members',
-          'recurring_schedules',
-          'recurring_occurrences',
-          'recurring_expired_ranges',
-          'scheduler_admission_entries',
-          'scheduler_execution_attempts',
-          'audit_events',
-        ].map((table) => [table, rows(coreDbPath(f.dataRoot), table)])
+      expect(changed.changes).toBe(1);
+      const installed = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      expect(installed.state).toBe(retained.state);
+      expect(installed.revision).toBe(retained.revision);
+      expect(installed.candidate_ref).toBe(retained.candidate_ref);
+      // Setup guards read real retained content, independent of the later expected snapshot.
+      expect(installed.proof.result.command).toBe(
+        shape === 'unknown-core' ? 'unsupported-future-command' : retained.proof.result.command
       );
-    const original = tuple();
-    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
-    const selected = {
-      dataRoot: f.dataRoot,
-      workspaceId,
-      selection: { kind: 'admission' as const, requestId: f.requestId },
-    };
-    f.owner.core.sqlite.pragma('query_only = ON');
-    if (shape === 'unknown-core') {
-      await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).rejects.toBeInstanceOf(Error);
-      expect(tuple()).toEqual(original);
-      expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(before);
-    } else {
-      const result = await finishWorkspaceRecoveryAtCore(f.owner, selected);
-      const expected = {
-        ...before.proof.result,
-        disposition: 'restored',
-        droppedSourceMemberIds: [],
-        nextAction: 'none',
+      const descriptions = {
+        futureCaptureDescription: { label: 'Original retained capture description' },
+        coverage: {
+          futureCoverageDescription: { label: 'Original retained coverage description' },
+        },
+        source: {
+          kind: 'data-root-backup',
+          dataRootBackupId: parent.id,
+          consistency: parent.consistency,
+          futureSourceDescription: { label: 'Original verified parent description' },
+        },
       };
-      expect(result).toEqual({ ...expected, command: 'finish', selection: selected.selection });
-      const finished = readRecoveryAdmission(f.owner.core, f.requestId)!;
-      expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
-      expect(finished.proof).toEqual({ ...before.proof, result: expected });
-      const committed = tuple();
-      await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).resolves.toEqual(result);
-      expect(tuple()).toEqual(committed);
-    }
-    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
-    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-  }, 120_000);
+      expect(installed.proof.capture).toMatchObject(descriptions);
+      expect(installed.proof.result).toMatchObject({
+        capture: descriptions,
+        futureReportDescription: { label: 'Original retained report description' },
+      });
+      expect(installed.proof).toEqual(injected);
+      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const publish = client.recoveryTargetRegistration.bind(client);
+      let selectedCalls = 0;
+      let nativeRefusal: unknown;
+      const publication = vi
+        .spyOn(client, 'recoveryTargetRegistration')
+        .mockImplementation(async (...args) => {
+          if (
+            args[0] === `core:${coreDbPath(f.dataRoot)}` &&
+            args[1].admissionId === f.requestId &&
+            args[1].workspaceId === workspaceId
+          ) {
+            selectedCalls++;
+            try {
+              return await publish(...args);
+            } catch (error) {
+              nativeRefusal = error;
+              throw error;
+            }
+          }
+          return publish(...args);
+        });
+      onTestFinished(() => {
+        try {
+          expect(
+            selectedCalls,
+            'Selected registration must reach its real native method once.'
+          ).toBe(1);
+          if (shape === 'unknown-core')
+            expect(nativeRefusal).toMatchObject({
+              commit: 'not-committed',
+              domain: {
+                operation: 'recovery-target-registration',
+                code: 'recovery-required',
+                status: 409,
+              },
+            });
+        } finally {
+          publication.mockRestore();
+        }
+      });
+      const before = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const tuple = () =>
+        Object.fromEntries(
+          [
+            'workspace_recovery_admissions',
+            'workspace_registry',
+            'workspace_members',
+            'recurring_schedules',
+            'recurring_occurrences',
+            'recurring_expired_ranges',
+            'scheduler_admission_entries',
+            'scheduler_execution_attempts',
+            'audit_events',
+          ].map((table) => [table, rows(coreDbPath(f.dataRoot), table)])
+        );
+      const original = tuple();
+      const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+      const selected = {
+        dataRoot: f.dataRoot,
+        workspaceId,
+        selection: { kind: 'admission' as const, requestId: f.requestId },
+      };
+      f.owner.core.sqlite.pragma('query_only = ON');
+      if (shape === 'unknown-core') {
+        await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).rejects.toBeInstanceOf(
+          Error
+        );
+        expect(tuple()).toEqual(original);
+        expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(before);
+      } else {
+        const result = await finishWorkspaceRecoveryAtCore(f.owner, selected);
+        const expected = {
+          ...before.proof.result,
+          disposition: 'restored',
+          droppedSourceMemberIds: [],
+          nextAction: 'none',
+        };
+        expect(result).toEqual({ ...expected, command: 'finish', selection: selected.selection });
+        const finished = readRecoveryAdmission(f.owner.core, f.requestId)!;
+        expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
+        expect(finished.proof).toEqual({ ...before.proof, result: expected });
+        const committed = tuple();
+        await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).resolves.toEqual(result);
+        expect(tuple()).toEqual(committed);
+      }
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+    },
+    120_000
+  );
 
   it('rolls restore pause history, queued and denied cancellation, Audit and result back together after late admission failure', async () => {
     let scheduleId = '';
@@ -1381,67 +1386,69 @@ describe('D0-2 same-deployment restore', () => {
     }
   }, 120_000);
 
-  it.each([
-    'before-target-rename',
-    'after-target-rename',
-  ] as const)('readmission: selected abandon validates and reopens the preserved predecessor after %s', async (interruption) => {
-    const f = await readmissionFixture(false, interruption);
-    const prepared = readRecoveryAdmission(f.owner.core, f.requestId)!;
-    const candidate = existsSync(prepared.candidate_ref)
-      ? prepared.candidate_ref
-      : join(f.dataRoot, 'workspaces', workspaceId);
-    const retainedCandidate = inventoryRegularFiles(candidate);
-    const selected = {
-      command: 'abandon' as const,
-      dataRoot: f.dataRoot,
-      workspaceId,
-      selection: { kind: 'admission' as const, requestId: f.requestId },
-    };
-    const result = await abandonWorkspaceRecoveryAtCore(f.owner, selected);
-    expect(result).toMatchObject({ disposition: 'abandoned', nextAction: 'none' });
-    const abandoned = readRecoveryAdmission(f.owner.core, f.requestId);
-    expect(abandoned?.state).toBe('abandoned');
-    // Target Admission requires retirement to preserve owned bytes, including retained holds.
-    expect(inventoryRegularFiles(join(dirname(prepared.candidate_ref), 'abandoned'))).toEqual(
-      retainedCandidate
-    );
-    await expect(
-      finishWorkspaceRecoveryAtCore(f.owner, { ...selected, command: 'finish' })
-    ).rejects.toBeInstanceOf(WorkspaceRecoveryError);
-    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-    expect(() => f.store.getWorkspace(workspaceId)).toThrow();
-    refuseScope(f.dataRoot, { scope: 'workspace', id: f.sibling.id, check: 'database' });
-    const independent = scopeAdmissionFailures(f.dataRoot).filter(
-      (failure) => failure.id !== workspaceId || failure.check !== 'recovery'
-    );
-    let checkedAuthority = false;
-    expect(
-      activateWorkspaceRecoveryAtCore(f.owner, {
-        ...f.activation,
-        currentAuthority: () => {
-          checkedAuthority = true;
-          expect(f.gate.enter(workspaceId)).toBeNull();
-          expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-        },
-      })
-    ).toEqual(result);
-    expect(checkedAuthority).toBe(true);
-    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(abandoned);
-    expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
-    // Same-Deployment Restore step 5 requires canonical authority, not the retired candidate.
-    expect(f.store.getThread(workspaceId, f.staleThread.id)).toMatchObject({
-      id: f.staleThread.id,
-    });
-    expect(
-      f.runtimeConfigManager
-        .current()
-        .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config.workspace.name
-    ).toBe('Current recovered configuration');
-    f.freeze.release();
-    await expect(f.store.createThread(workspaceId, 'Work after abandon')).resolves.toMatchObject({
-      name: 'Work after abandon',
-    });
-  }, 120_000);
+  it.each(['before-target-rename', 'after-target-rename'] as const)(
+    'readmission: selected abandon validates and reopens the preserved predecessor after %s',
+    async (interruption) => {
+      const f = await readmissionFixture(false, interruption);
+      const prepared = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const candidate = existsSync(prepared.candidate_ref)
+        ? prepared.candidate_ref
+        : join(f.dataRoot, 'workspaces', workspaceId);
+      const retainedCandidate = inventoryRegularFiles(candidate);
+      const selected = {
+        command: 'abandon' as const,
+        dataRoot: f.dataRoot,
+        workspaceId,
+        selection: { kind: 'admission' as const, requestId: f.requestId },
+      };
+      const result = await abandonWorkspaceRecoveryAtCore(f.owner, selected);
+      expect(result).toMatchObject({ disposition: 'abandoned', nextAction: 'none' });
+      const abandoned = readRecoveryAdmission(f.owner.core, f.requestId);
+      expect(abandoned?.state).toBe('abandoned');
+      // Target Admission requires retirement to preserve owned bytes, including retained holds.
+      expect(inventoryRegularFiles(join(dirname(prepared.candidate_ref), 'abandoned'))).toEqual(
+        retainedCandidate
+      );
+      await expect(
+        finishWorkspaceRecoveryAtCore(f.owner, { ...selected, command: 'finish' })
+      ).rejects.toBeInstanceOf(WorkspaceRecoveryError);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+      refuseScope(f.dataRoot, { scope: 'workspace', id: f.sibling.id, check: 'database' });
+      const independent = scopeAdmissionFailures(f.dataRoot).filter(
+        (failure) => failure.id !== workspaceId || failure.check !== 'recovery'
+      );
+      let checkedAuthority = false;
+      expect(
+        activateWorkspaceRecoveryAtCore(f.owner, {
+          ...f.activation,
+          currentAuthority: () => {
+            checkedAuthority = true;
+            expect(f.gate.enter(workspaceId)).toBeNull();
+            expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+          },
+        })
+      ).toEqual(result);
+      expect(checkedAuthority).toBe(true);
+      expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(abandoned);
+      expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
+      // Same-Deployment Restore step 5 requires canonical authority, not the retired candidate.
+      expect(f.store.getThread(workspaceId, f.staleThread.id)).toMatchObject({
+        id: f.staleThread.id,
+      });
+      expect(
+        f.runtimeConfigManager
+          .current()
+          .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config.workspace
+          .name
+      ).toBe('Current recovered configuration');
+      f.freeze.release();
+      await expect(f.store.createThread(workspaceId, 'Work after abandon')).resolves.toMatchObject({
+        name: 'Work after abandon',
+      });
+    },
+    120_000
+  );
 
   it('readmission: an abandoned result cannot admit invalid predecessor Store or config', async () => {
     const f = await readmissionFixture(false, 'after-target-rename');
@@ -2211,153 +2218,153 @@ describe('D0-2 same-deployment restore', () => {
       reason: 'mismatched-turn-lineage',
     },
     { history: 'corrupt', outcome: 'blocked', decision: 'refused', reason: 'unreadable-history' },
-  ] as const)('WM restore / scheduler maintenance: $history predecessor history preserves the global absence proof', async ({
-    history,
-    outcome,
-    decision,
-    reason,
-  }) => {
-    const f = await fixture();
-    const sibling = await f.store.createWorkspace('Healthy checkpoint-maintenance sibling');
-    const thread = await f.store.createThread(sibling.id, 'Failed pre-admission Task');
-    const identity = {
-      workspaceId: sibling.id,
-      threadId: thread.id,
-      turnId: allocateEntityId('tu'),
-    };
-    const requestId = randomUUID();
-    // The Turn is newer than the backup cut and survives restore only in the predecessor.
-    if (history === 'retained-turn') {
-      await f.store.createTurn(
-        workspaceId,
-        DEMO_THREAD_ID,
-        'Retained contradictory Turn',
-        { kind: 'user', id: f.ownerId },
-        null,
-        { turnId: identity.turnId }
-      );
-    }
-    await shutdownControlStoreWorkerClient();
-    const core = openCoreDb(f.dataRoot);
-    const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
-    try {
-      recordWorkspaceOwnerMembership({
-        coreDb: core,
+  ] as const)(
+    'WM restore / scheduler maintenance: $history predecessor history preserves the global absence proof',
+    async ({ history, outcome, decision, reason }) => {
+      const f = await fixture();
+      const sibling = await f.store.createWorkspace('Healthy checkpoint-maintenance sibling');
+      const thread = await f.store.createThread(sibling.id, 'Failed pre-admission Task');
+      const identity = {
         workspaceId: sibling.id,
-        ownerUserId: f.ownerId,
-      });
-      const queueEntryId = `restore-maintenance-${requestId}`;
-      createSchedulerAdmissionEntry(core, {
-        backendId: 'nanohost',
-        queueEntryId,
-        requestId,
-        requestedAgentId: 'agent_codex_host',
-        triggerActor: { kind: 'user', id: f.ownerId },
-        turnInput: 'Cancelled before Turn publication.',
-        ...identity,
-      });
-      cancelSchedulerAdmissionEntry(core, { queueEntryId, workspaceId: sibling.id });
-      await openTestNativeWorkspace(siblingDb);
-      await upsertWorkerCheckpoint(siblingDb, {
-        ...identity,
-        requestId,
-        requestInputHash: `sha256:${requestId}`,
-        stage: 'failed',
-        stopReason: 'error',
-        workerSessionId: null,
-        goalId: null,
-        taskId: null,
-        iteration: 0,
-        contextDigest: null,
-      });
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      siblingDb.sqlite.close();
-      core.sqlite.close();
-    }
-    const backupRoot = join(f.root, 'checkpoint-backups');
-    if (history === 'absent') {
-      await expect(
-        cleanCancelledAdmissionTaskCheckpoints({
-          dataRoot: f.dataRoot,
-          backupRoot,
-          checkpoints: [identity],
-        })
-      ).resolves.toMatchObject({
-        outcome: 'succeeded',
-        rows: [{ ...identity, decision: 'removable', reason: 'cancelled-admission' }],
-      });
-    }
-    // Enumerate only this finite fixture tree; recovery decides predecessor placement.
-    const databasePaths = () =>
-      readdirSync(f.root, { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name === 'workspace.sqlite')
-        .map((entry) => join(entry.parentPath, entry.name));
-    const databasePathsBefore = new Set(databasePaths());
-    const canonicalRootsBefore = readdirSync(join(f.dataRoot, 'workspaces')).sort();
-    const originalWorkspaceBytes = sha(readFileSync(workspaceDbPath(f.dataRoot, workspaceId)));
-    await expect(runCli(f.argv, () => {}, f)).resolves.toMatchObject({ disposition: 'restored' });
-    const predecessors = databasePaths()
-      .filter((path) => !databasePathsBefore.has(path))
-      .filter((path) =>
-        rows(path, 'control_workspaces').some(
-          (row) => typeof row === 'object' && row !== null && 'id' in row && row.id === workspaceId
-        )
-      );
-    expect(predecessors).toHaveLength(1);
-    const predecessorDb = predecessors[0]!;
-    expect(sha(readFileSync(predecessorDb))).toBe(originalWorkspaceBytes);
-    expect(rows(predecessorDb, 'control_workspaces')).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: workspaceId })])
-    );
-    if (history === 'retained-turn') {
-      expect(rows(predecessorDb, 'control_turns')).toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: identity.turnId })])
-      );
-      expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_turns')).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: identity.turnId })])
-      );
-    }
-    if (history === 'corrupt') {
-      // Corrupt stopped retained metadata; production writers and constraints stay unchanged.
-      const db = new Database(predecessorDb, { fileMustExist: true });
-      try {
-        db.pragma('ignore_check_constraints = ON');
-        expect(
-          db
-            .prepare('UPDATE control_threads SET record_json = ? WHERE id = ?')
-            .run('{', DEMO_THREAD_ID).changes
-        ).toBe(1);
-      } finally {
-        db.close();
+        threadId: thread.id,
+        turnId: allocateEntityId('tu'),
+      };
+      const requestId = randomUUID();
+      // The Turn is newer than the backup cut and survives restore only in the predecessor.
+      if (history === 'retained-turn') {
+        await f.store.createTurn(
+          workspaceId,
+          DEMO_THREAD_ID,
+          'Retained contradictory Turn',
+          { kind: 'user', id: f.ownerId },
+          null,
+          { turnId: identity.turnId }
+        );
       }
-    }
-    const predecessorBytes = sha(readFileSync(predecessorDb));
-    const siblingPath = workspaceDbPath(f.dataRoot, sibling.id);
-    const checkpointsBefore = rows(siblingPath, 'worker_turn_checkpoints');
-    const siblingTurnsBefore = rows(siblingPath, 'control_turns');
-    const admissionsBefore = rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries');
-    const attemptsBefore = rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts');
-    const result = await cleanCancelledAdmissionTaskCheckpoints({
-      dataRoot: f.dataRoot,
-      backupRoot,
-      checkpoints: [identity],
-    });
-    expect(result).toMatchObject({
-      applied: false,
-      backupRoot: null,
-      outcome,
-      removedCount: 0,
-      rows: [{ ...identity, decision, reason }],
-    });
-    expect(rows(siblingPath, 'worker_turn_checkpoints')).toEqual(checkpointsBefore);
-    expect(rows(siblingPath, 'control_turns')).toEqual(siblingTurnsBefore);
-    expect(rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries')).toEqual(admissionsBefore);
-    expect(rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts')).toEqual(attemptsBefore);
-    expect(sha(readFileSync(predecessorDb))).toBe(predecessorBytes);
-    expect(readdirSync(join(f.dataRoot, 'workspaces')).sort()).toEqual(canonicalRootsBefore);
-    expect(existsSync(backupRoot)).toBe(false);
-  }, 120_000);
+      await shutdownControlStoreWorkerClient();
+      const core = openCoreDb(f.dataRoot);
+      const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
+      try {
+        recordWorkspaceOwnerMembership({
+          coreDb: core,
+          workspaceId: sibling.id,
+          ownerUserId: f.ownerId,
+        });
+        const queueEntryId = `restore-maintenance-${requestId}`;
+        createSchedulerAdmissionEntry(core, {
+          backendId: 'nanohost',
+          queueEntryId,
+          requestId,
+          requestedAgentId: 'agent_codex_host',
+          triggerActor: { kind: 'user', id: f.ownerId },
+          turnInput: 'Cancelled before Turn publication.',
+          ...identity,
+        });
+        cancelSchedulerAdmissionEntry(core, { queueEntryId, workspaceId: sibling.id });
+        await openTestNativeWorkspace(siblingDb);
+        await upsertWorkerCheckpoint(siblingDb, {
+          ...identity,
+          requestId,
+          requestInputHash: `sha256:${requestId}`,
+          stage: 'failed',
+          stopReason: 'error',
+          workerSessionId: null,
+          goalId: null,
+          taskId: null,
+          iteration: 0,
+          contextDigest: null,
+        });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        siblingDb.sqlite.close();
+        core.sqlite.close();
+      }
+      const backupRoot = join(f.root, 'checkpoint-backups');
+      if (history === 'absent') {
+        await expect(
+          cleanCancelledAdmissionTaskCheckpoints({
+            dataRoot: f.dataRoot,
+            backupRoot,
+            checkpoints: [identity],
+          })
+        ).resolves.toMatchObject({
+          outcome: 'succeeded',
+          rows: [{ ...identity, decision: 'removable', reason: 'cancelled-admission' }],
+        });
+      }
+      // Enumerate only this finite fixture tree; recovery decides predecessor placement.
+      const databasePaths = () =>
+        readdirSync(f.root, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile() && entry.name === 'workspace.sqlite')
+          .map((entry) => join(entry.parentPath, entry.name));
+      const databasePathsBefore = new Set(databasePaths());
+      const canonicalRootsBefore = readdirSync(join(f.dataRoot, 'workspaces')).sort();
+      const originalWorkspaceBytes = sha(readFileSync(workspaceDbPath(f.dataRoot, workspaceId)));
+      await expect(runCli(f.argv, () => {}, f)).resolves.toMatchObject({ disposition: 'restored' });
+      const predecessors = databasePaths()
+        .filter((path) => !databasePathsBefore.has(path))
+        .filter((path) =>
+          rows(path, 'control_workspaces').some(
+            (row) =>
+              typeof row === 'object' && row !== null && 'id' in row && row.id === workspaceId
+          )
+        );
+      expect(predecessors).toHaveLength(1);
+      const predecessorDb = predecessors[0]!;
+      expect(sha(readFileSync(predecessorDb))).toBe(originalWorkspaceBytes);
+      expect(rows(predecessorDb, 'control_workspaces')).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: workspaceId })])
+      );
+      if (history === 'retained-turn') {
+        expect(rows(predecessorDb, 'control_turns')).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: identity.turnId })])
+        );
+        expect(rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_turns')).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: identity.turnId })])
+        );
+      }
+      if (history === 'corrupt') {
+        // Corrupt stopped retained metadata; production writers and constraints stay unchanged.
+        const db = new Database(predecessorDb, { fileMustExist: true });
+        try {
+          db.pragma('ignore_check_constraints = ON');
+          expect(
+            db
+              .prepare('UPDATE control_threads SET record_json = ? WHERE id = ?')
+              .run('{', DEMO_THREAD_ID).changes
+          ).toBe(1);
+        } finally {
+          db.close();
+        }
+      }
+      const predecessorBytes = sha(readFileSync(predecessorDb));
+      const siblingPath = workspaceDbPath(f.dataRoot, sibling.id);
+      const checkpointsBefore = rows(siblingPath, 'worker_turn_checkpoints');
+      const siblingTurnsBefore = rows(siblingPath, 'control_turns');
+      const admissionsBefore = rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries');
+      const attemptsBefore = rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts');
+      const result = await cleanCancelledAdmissionTaskCheckpoints({
+        dataRoot: f.dataRoot,
+        backupRoot,
+        checkpoints: [identity],
+      });
+      expect(result).toMatchObject({
+        applied: false,
+        backupRoot: null,
+        outcome,
+        removedCount: 0,
+        rows: [{ ...identity, decision, reason }],
+      });
+      expect(rows(siblingPath, 'worker_turn_checkpoints')).toEqual(checkpointsBefore);
+      expect(rows(siblingPath, 'control_turns')).toEqual(siblingTurnsBefore);
+      expect(rows(coreDbPath(f.dataRoot), 'scheduler_admission_entries')).toEqual(admissionsBefore);
+      expect(rows(coreDbPath(f.dataRoot), 'scheduler_execution_attempts')).toEqual(attemptsBefore);
+      expect(sha(readFileSync(predecessorDb))).toBe(predecessorBytes);
+      expect(readdirSync(join(f.dataRoot, 'workspaces')).sort()).toEqual(canonicalRootsBefore);
+      expect(existsSync(backupRoot)).toBe(false);
+    },
+    120_000
+  );
 
   it('WM 377–381: current registry, membership, grants, restrictions, holds and expiry win over backup state', async () => {
     const f = await fixture();
@@ -2593,18 +2600,19 @@ describe('D0-2 same-deployment restore', () => {
     await refuses(f, 'request-conflict');
   }, 120_000);
 
-  it.each([
-    'releaseTag',
-    'sourceCommit',
-  ] as const)('WM 356, 379: a different installed %s refuses release-mismatch', async (field) => {
-    const f = await fixture();
-    writeFileSync(
-      f.releaseIdentityPath,
-      JSON.stringify({
-        ...release,
-        [field]: field === 'releaseTag' ? 'v0.1.0-rc.12' : '2'.repeat(40),
-      })
-    );
-    await refuses(f, 'release-mismatch');
-  }, 120_000);
+  it.each(['releaseTag', 'sourceCommit'] as const)(
+    'WM 356, 379: a different installed %s refuses release-mismatch',
+    async (field) => {
+      const f = await fixture();
+      writeFileSync(
+        f.releaseIdentityPath,
+        JSON.stringify({
+          ...release,
+          [field]: field === 'releaseTag' ? 'v0.1.0-rc.12' : '2'.repeat(40),
+        })
+      );
+      await refuses(f, 'release-mismatch');
+    },
+    120_000
+  );
 });

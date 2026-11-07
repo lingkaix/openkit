@@ -127,14 +127,14 @@ describe('one scoped resource catalog owner', () => {
     expect(readFileSync(f.path, 'utf8')).toBe(bytes);
   });
 
-  it.each([
-    'server',
-    'unknown',
-  ])('rejects a misplaced or unknown %s scope without rewriting it', (scope) => {
-    const f = workspaceCatalog();
-    const bytes = JSON.stringify({ ...f.retained, scope });
-    writeFileSync(f.path, bytes);
-    expect(() => loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toThrow();
-    expect(readFileSync(f.path, 'utf8')).toBe(bytes);
-  });
+  it.each(['server', 'unknown'])(
+    'rejects a misplaced or unknown %s scope without rewriting it',
+    (scope) => {
+      const f = workspaceCatalog();
+      const bytes = JSON.stringify({ ...f.retained, scope });
+      writeFileSync(f.path, bytes);
+      expect(() => loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toThrow();
+      expect(readFileSync(f.path, 'utf8')).toBe(bytes);
+    }
+  );
 });

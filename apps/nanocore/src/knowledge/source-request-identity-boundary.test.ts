@@ -157,24 +157,26 @@ describe('public Source request identity', () => {
         .get(requestId)
     ).toEqual({ count: 1 });
   });
-  it.each([
-    'success',
-    'refusal',
-  ] as const)('closes its publication database after %s', async (outcome) => {
-    const f = await fixture();
-    const publish = sourcePublication.publishCapturedSource;
-    let publicationDb: WorkspaceDb | undefined;
-    vi.spyOn(sourcePublication, 'publishCapturedSource').mockImplementation(async (...args) => {
-      if (args[0].database.kind === 'workspace') publicationDb = args[0].database.workspaceDb;
-      return publish(...args);
-    });
-    const response = await f.register(
-      randomUUID(),
-      outcome === 'refusal' ? { originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2' } : {}
-    );
-    expect(response.status).toBe(outcome === 'success' ? 200 : 404);
-    expect(publicationDb).toBeDefined();
-    expect(publicationDb!.sqlite.open).toBe(false);
-    if (outcome === 'refusal') expect(f.store.listKnowledgeSources(f.workspace.id)).toEqual([]);
-  });
+  it.each(['success', 'refusal'] as const)(
+    'closes its publication database after %s',
+    async (outcome) => {
+      const f = await fixture();
+      const publish = sourcePublication.publishCapturedSource;
+      let publicationDb: WorkspaceDb | undefined;
+      vi.spyOn(sourcePublication, 'publishCapturedSource').mockImplementation(async (...args) => {
+        if (args[0].database.kind === 'workspace') publicationDb = args[0].database.workspaceDb;
+        return publish(...args);
+      });
+      const response = await f.register(
+        randomUUID(),
+        outcome === 'refusal'
+          ? { originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2' }
+          : {}
+      );
+      expect(response.status).toBe(outcome === 'success' ? 200 : 404);
+      expect(publicationDb).toBeDefined();
+      expect(publicationDb!.sqlite.open).toBe(false);
+      if (outcome === 'refusal') expect(f.store.listKnowledgeSources(f.workspace.id)).toEqual([]);
+    }
+  );
 });

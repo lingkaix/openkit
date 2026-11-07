@@ -29,13 +29,12 @@ describe('canonical entity identifiers', () => {
       true
     );
   });
-  it.each([
-    new Date(-1),
-    new Date(Number.NaN),
-    new Date(0x1000000000000),
-  ])('refuses an invalid UUID timestamp %s', (date) => {
-    expect(() => allocateEntityId('ws', date)).toThrow();
-  });
+  it.each([new Date(-1), new Date(Number.NaN), new Date(0x1000000000000)])(
+    'refuses an invalid UUID timestamp %s',
+    (date) => {
+      expect(() => allocateEntityId('ws', date)).toThrow();
+    }
+  );
   it('propagates entropy failure rather than returning a weak or replacement identity', () => {
     const entropy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(() => {
       throw new Error('entropy unavailable');
@@ -128,17 +127,17 @@ describe('canonical entity identifiers', () => {
   ])('refuses values outside the canonical JSON domain', (name) => {
     expect(() => canonicalIdentifierName(name)).toThrow();
   });
-  it.each([
-    'named',
-    'symbol',
-  ] as const)('refuses ignored %s array members in an identifier name', (kind) => {
-    const name = [1];
-    Object.defineProperty(name, kind === 'named' ? 'extra' : Symbol('extra'), {
-      value: 2,
-      enumerable: true,
-    });
-    expect(() => canonicalIdentifierName(name)).toThrow();
-  });
+  it.each(['named', 'symbol'] as const)(
+    'refuses ignored %s array members in an identifier name',
+    (kind) => {
+      const name = [1];
+      Object.defineProperty(name, kind === 'named' ? 'extra' : Symbol('extra'), {
+        value: 2,
+        enumerable: true,
+      });
+      expect(() => canonicalIdentifierName(name)).toThrow();
+    }
+  );
 
   it('rejects cycles rather than producing partial canonical bytes', () => {
     const value: unknown[] = [];

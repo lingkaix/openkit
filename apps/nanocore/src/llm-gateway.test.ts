@@ -448,132 +448,131 @@ describe('OpenAI-compatible agent gateway', () => {
     expect(seen).toEqual([{ providerId: 'orca-custom', model: 'handwritten/local-flash' }]);
   });
 
-  it.each([
-    'absent',
-    'delisted',
-  ])('hides a fully unavailable %s tier and returns its typed error', async (kind) => {
-    const attempts = vi.fn();
-    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(storeRoot);
-      rmSync(storeRoot, { recursive: true, force: true });
-    });
-    const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
-      gatewayConfig: {
-        schemaVersion: 1,
-        enabled: true,
-        logicalModels: [
-          {
-            id: 'retained-tier',
-            displayName: 'Retained',
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
-            routes: [
-              { id: 'missing-route', providerProfileId: 'supply', providerModel: 'gpt-5.1' },
-            ],
-          },
-        ],
-      },
-      openKitConfig: {},
-      providerRegistry: new ProviderRegistry(
-        kind === 'absent'
-          ? []
-          : [
-              {
-                id: 'supply',
-                displayName: 'Supply',
-                kind: 'local',
-                vendor: 'openai',
-                models: ['gpt-5.2'],
-              },
-            ]
-      ),
-      llmGatewayDispatcher: {
-        createChatCompletion: attempts,
-      } as unknown as LLMGatewayProviderDispatcher,
-      store: fixtureStore,
-    });
-    await expect((await app.request('/v1/models')).json()).resolves.toEqual({
-      object: 'list',
-      data: [],
-    });
-    const response = await app.request('/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: 'retained-tier',
-        messages: [{ role: 'user', content: 'hello' }],
-      }),
-    });
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: 'gateway_logical_model_unavailable' },
-    });
-    expect(attempts).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    'blocked',
-    'absent',
-    'delisted',
-  ])('retains discovery with an available sibling and a %s primary', async (kind) => {
-    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(storeRoot);
-      rmSync(storeRoot, { recursive: true, force: true });
-    });
-    const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
-      gatewayConfig: {
-        schemaVersion: 1,
-        enabled: true,
-        logicalModels: [
-          {
-            id: 'reasoning',
-            displayName: 'Reasoning',
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
-            routes: [
-              { id: 'blocked', providerProfileId: 'blocked', providerModel: 'gpt-5.1' },
-              { id: 'ready', providerProfileId: 'ready', providerModel: 'gpt-5.1' },
-            ],
-          },
-        ],
-      },
-      openKitConfig: {},
-      providerRegistry: new ProviderRegistry([
-        ...(kind === 'absent'
-          ? []
-          : [
-              {
-                displayName: 'Blocked',
-                id: 'blocked',
-                kind: 'local' as const,
-                models: kind === 'delisted' ? ['gpt-5.2'] : ['gpt-5.1'],
-                ...(kind === 'blocked'
-                  ? { readiness: { status: 'blocked' as const, summary: 'Unavailable' } }
-                  : {}),
-                vendor: 'openai',
-              },
-            ]),
-        {
-          displayName: 'Ready',
-          id: 'ready',
-          kind: 'local',
-          models: ['gpt-5.1'],
-          vendor: 'openai',
+  it.each(['absent', 'delisted'])(
+    'hides a fully unavailable %s tier and returns its typed error',
+    async (kind) => {
+      const attempts = vi.fn();
+      const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(storeRoot);
+        rmSync(storeRoot, { recursive: true, force: true });
+      });
+      const fixtureStore = createTestStore({ dataRoot: storeRoot });
+      const app = createApp({
+        gatewayConfig: {
+          schemaVersion: 1,
+          enabled: true,
+          logicalModels: [
+            {
+              id: 'retained-tier',
+              displayName: 'Retained',
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: [
+                { id: 'missing-route', providerProfileId: 'supply', providerModel: 'gpt-5.1' },
+              ],
+            },
+          ],
         },
-      ]),
-      store: fixtureStore,
-    });
+        openKitConfig: {},
+        providerRegistry: new ProviderRegistry(
+          kind === 'absent'
+            ? []
+            : [
+                {
+                  id: 'supply',
+                  displayName: 'Supply',
+                  kind: 'local',
+                  vendor: 'openai',
+                  models: ['gpt-5.2'],
+                },
+              ]
+        ),
+        llmGatewayDispatcher: {
+          createChatCompletion: attempts,
+        } as unknown as LLMGatewayProviderDispatcher,
+        store: fixtureStore,
+      });
+      await expect((await app.request('/v1/models')).json()).resolves.toEqual({
+        object: 'list',
+        data: [],
+      });
+      const response = await app.request('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'retained-tier',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+      });
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'gateway_logical_model_unavailable' },
+      });
+      expect(attempts).not.toHaveBeenCalled();
+    }
+  );
 
-    const body = (await (await app.request('/v1/models')).json()) as {
-      data: Array<{ id: string }>;
-    };
+  it.each(['blocked', 'absent', 'delisted'])(
+    'retains discovery with an available sibling and a %s primary',
+    async (kind) => {
+      const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(storeRoot);
+        rmSync(storeRoot, { recursive: true, force: true });
+      });
+      const fixtureStore = createTestStore({ dataRoot: storeRoot });
+      const app = createApp({
+        gatewayConfig: {
+          schemaVersion: 1,
+          enabled: true,
+          logicalModels: [
+            {
+              id: 'reasoning',
+              displayName: 'Reasoning',
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: [
+                { id: 'blocked', providerProfileId: 'blocked', providerModel: 'gpt-5.1' },
+                { id: 'ready', providerProfileId: 'ready', providerModel: 'gpt-5.1' },
+              ],
+            },
+          ],
+        },
+        openKitConfig: {},
+        providerRegistry: new ProviderRegistry([
+          ...(kind === 'absent'
+            ? []
+            : [
+                {
+                  displayName: 'Blocked',
+                  id: 'blocked',
+                  kind: 'local' as const,
+                  models: kind === 'delisted' ? ['gpt-5.2'] : ['gpt-5.1'],
+                  ...(kind === 'blocked'
+                    ? { readiness: { status: 'blocked' as const, summary: 'Unavailable' } }
+                    : {}),
+                  vendor: 'openai',
+                },
+              ]),
+          {
+            displayName: 'Ready',
+            id: 'ready',
+            kind: 'local',
+            models: ['gpt-5.1'],
+            vendor: 'openai',
+          },
+        ]),
+        store: fixtureStore,
+      });
 
-    expect(body.data).toEqual([expect.objectContaining({ id: 'reasoning' })]);
-  });
+      const body = (await (await app.request('/v1/models')).json()) as {
+        data: Array<{ id: string }>;
+      };
+
+      expect(body.data).toEqual([expect.objectContaining({ id: 'reasoning' })]);
+    }
+  );
 
   /**
    * Steps faked gateway backoff one second at a time.
@@ -775,116 +774,116 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
   });
 
-  it.each([
-    undefined,
-    false,
-  ])('uses authored failover and keeps private routes hidden: %s', async (autoFailover) => {
-    const attempts: Array<{ model: string; providerId: string }> = [];
-    const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(storeRoot);
-      rmSync(storeRoot, { recursive: true, force: true });
-    });
-    const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
-      gatewayConfig: {
-        schemaVersion: 1,
-        enabled: true,
-        logicalModels: [
-          {
-            id: 'reasoning',
-            displayName: 'Reasoning',
-            ...(autoFailover === undefined ? {} : { routing: { autoFailover } }),
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
-            routes: [
-              { id: 'primary', providerProfileId: 'openai-primary', providerModel: 'gpt-5.1' },
-              {
-                id: 'backup',
-                providerProfileId: 'openrouter-backup',
-                providerModel: 'openai/gpt-5.1',
-              },
-            ],
-          },
-        ],
-      },
-      openKitConfig: {},
-      providerRegistry: new ProviderRegistry([
-        {
-          displayName: 'Primary',
-          id: 'openai-primary',
-          kind: 'local',
-          models: ['gpt-5.1'],
-          vendor: 'openai',
-        },
-        {
-          displayName: 'Backup',
-          id: 'openrouter-backup',
-          kind: 'local',
-          models: ['openai/gpt-5.1'],
-          vendor: 'openrouter',
-        },
-      ]),
-      llmGatewayDispatcher: {
-        createChatCompletion: async (provider, request) => {
-          attempts.push({ model: request.model, providerId: provider.id });
-          if (provider.id === 'openai-primary') {
-            throw attachPiAiFailure(
-              new OpenAICompatibleProviderError({ message: 'quota', status: 429 })
-            ) as OpenAICompatibleProviderError;
-          }
-          return {
-            id: 'chatcmpl_fallback',
-            object: 'chat.completion',
-            created: 1,
-            model: request.model,
-            choices: [
-              {
-                index: 0,
-                message: { role: 'assistant', content: 'backup' },
-                finish_reason: 'stop',
-              },
-            ],
-          };
-        },
-      } as unknown as LLMGatewayProviderDispatcher,
-      store: fixtureStore,
-    });
-
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-    let res: Awaited<ReturnType<typeof app.request>>;
-    try {
-      res = await settleFakedBackoff(
-        app.request('/v1/chat/completions', {
-          method: 'POST',
-          body: JSON.stringify({
-            model: 'reasoning',
-            messages: [{ role: 'user', content: 'Hello' }],
-          }),
-          headers: { 'content-type': 'application/json' },
-        })
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-
-    if (autoFailover === false) {
-      expect(res.status).toBe(429);
-      await expect(res.json()).resolves.toMatchObject({
-        error: { code: 'gateway_provider_rate_limited' },
+  it.each([undefined, false])(
+    'uses authored failover and keeps private routes hidden: %s',
+    async (autoFailover) => {
+      const attempts: Array<{ model: string; providerId: string }> = [];
+      const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(storeRoot);
+        rmSync(storeRoot, { recursive: true, force: true });
       });
-      expect(attempts).toEqual(
-        Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' }))
-      );
-      return;
+      const fixtureStore = createTestStore({ dataRoot: storeRoot });
+      const app = createApp({
+        gatewayConfig: {
+          schemaVersion: 1,
+          enabled: true,
+          logicalModels: [
+            {
+              id: 'reasoning',
+              displayName: 'Reasoning',
+              ...(autoFailover === undefined ? {} : { routing: { autoFailover } }),
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: [
+                { id: 'primary', providerProfileId: 'openai-primary', providerModel: 'gpt-5.1' },
+                {
+                  id: 'backup',
+                  providerProfileId: 'openrouter-backup',
+                  providerModel: 'openai/gpt-5.1',
+                },
+              ],
+            },
+          ],
+        },
+        openKitConfig: {},
+        providerRegistry: new ProviderRegistry([
+          {
+            displayName: 'Primary',
+            id: 'openai-primary',
+            kind: 'local',
+            models: ['gpt-5.1'],
+            vendor: 'openai',
+          },
+          {
+            displayName: 'Backup',
+            id: 'openrouter-backup',
+            kind: 'local',
+            models: ['openai/gpt-5.1'],
+            vendor: 'openrouter',
+          },
+        ]),
+        llmGatewayDispatcher: {
+          createChatCompletion: async (provider, request) => {
+            attempts.push({ model: request.model, providerId: provider.id });
+            if (provider.id === 'openai-primary') {
+              throw attachPiAiFailure(
+                new OpenAICompatibleProviderError({ message: 'quota', status: 429 })
+              ) as OpenAICompatibleProviderError;
+            }
+            return {
+              id: 'chatcmpl_fallback',
+              object: 'chat.completion',
+              created: 1,
+              model: request.model,
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: 'backup' },
+                  finish_reason: 'stop',
+                },
+              ],
+            };
+          },
+        } as unknown as LLMGatewayProviderDispatcher,
+        store: fixtureStore,
+      });
+
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      let res: Awaited<ReturnType<typeof app.request>>;
+      try {
+        res = await settleFakedBackoff(
+          app.request('/v1/chat/completions', {
+            method: 'POST',
+            body: JSON.stringify({
+              model: 'reasoning',
+              messages: [{ role: 'user', content: 'Hello' }],
+            }),
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+
+      if (autoFailover === false) {
+        expect(res.status).toBe(429);
+        await expect(res.json()).resolves.toMatchObject({
+          error: { code: 'gateway_provider_rate_limited' },
+        });
+        expect(attempts).toEqual(
+          Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' }))
+        );
+        return;
+      }
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ model: 'reasoning' });
+      expect(attempts).toEqual([
+        ...Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' })),
+        { model: 'openai/gpt-5.1', providerId: 'openrouter-backup' },
+      ]);
     }
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({ model: 'reasoning' });
-    expect(attempts).toEqual([
-      ...Array.from({ length: 4 }, () => ({ model: 'gpt-5.1', providerId: 'openai-primary' })),
-      { model: 'openai/gpt-5.1', providerId: 'openrouter-backup' },
-    ]);
-  });
+  );
 
   it('rewrites provider-native models in public SSE events', async () => {
     const options = createOpenAIProviderOptions();
@@ -1374,198 +1373,198 @@ describe('OpenAI-compatible agent gateway', () => {
     { path: '/v1/responses', credential: 'admin bearer' },
     { path: '/v1/chat/completions', credential: 'admin session' },
     { path: '/v1/responses', credential: 'admin session' },
-  ] as const)('checks current private Turn attribution on $path with $credential', async ({
-    path,
-    credential,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const browserCredentials = {
-      name: 'Gateway administrator',
-      email: 'gateway-admin@example.invalid',
-      password: 'gateway-fixture-password-2430',
-    };
-    const bootstrap = ensureServerBootstrapToken(coreDb);
-    if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
-    const consumed = await consumeServerBootstrapToken(coreDb, {
-      token: bootstrap.token,
-      ownerUserId: allocateEntityId('usr'),
-      displayName: browserCredentials.name,
-      email: browserCredentials.email,
-      password: browserCredentials.password,
-      tokenExpiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
-    expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
-    const localUserId = ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const workspace = await store.createWorkspace('Private capture');
-    const privateOwnerUserId = localUserId;
-    const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId,
-    });
-    const turn = await store.createTurn(workspace.id, thread.id, 'Private prompt', {
-      kind: 'user',
-      id: privateOwnerUserId,
-    });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(workspaceDb);
-    const baseUrl = 'http://localhost';
-    const auth = createBetterAuth(coreDb, {
-      mode: 'server',
-      env: {
-        BETTER_AUTH_URL: baseUrl,
-        BETTER_AUTH_SECRET: 'gateway-fixture-auth-secret-2430-owner-test-only',
-      },
-    });
-    let administratorTokenId: string | undefined;
-    let revokeAfterEffect = false;
-    const withheld = 'GATEWAY_REVOKED_RESULT_CANARY';
-    const upstream = vi.fn(async () => {
-      if (revokeAfterEffect)
-        expect(revokeOpenKitAccessTokenRecord(coreDb, administratorTokenId!)?.status).toBe(
-          'revoked'
-        );
-      return path === '/v1/chat/completions'
-        ? {
-            object: 'chat.completion',
-            id: 'chatcmpl_gateway_authority',
-            created: 1,
-            model: 'claude-sonnet-4-5',
-            choices: [
-              {
-                index: 0,
-                message: { role: 'assistant', content: withheld },
-                finish_reason: 'stop',
-              },
-            ],
-          }
-        : {
-            object: 'response',
-            id: 'resp_gateway_authority',
-            status: 'completed',
-            model: 'claude-sonnet-4-5',
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: withheld }],
-              },
-            ],
-          };
-    });
-    try {
-      const app = createApp({
-        coreDb,
-        dataRoot,
-        store,
-        mode: 'server',
-        auth,
-        ...createAnthropicProviderOptions(),
-        llmGatewayDispatcher: {
-          createChatCompletion: upstream,
-          createResponses: upstream,
-        } as unknown as LLMGatewayProviderDispatcher,
+  ] as const)(
+    'checks current private Turn attribution on $path with $credential',
+    async ({ path, credential }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-private-capture-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const browserCredentials = {
+        name: 'Gateway administrator',
+        email: 'gateway-admin@example.invalid',
+        password: 'gateway-fixture-password-2430',
+      };
+      const bootstrap = ensureServerBootstrapToken(coreDb);
+      if (!bootstrap) throw new Error('Fixture must issue initial bootstrap.');
+      const consumed = await consumeServerBootstrapToken(coreDb, {
+        token: bootstrap.token,
+        ownerUserId: allocateEntityId('usr'),
+        displayName: browserCredentials.name,
+        email: browserCredentials.email,
+        password: browserCredentials.password,
+        tokenExpiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const body = JSON.stringify({
-        model: 'claude-sonnet-4-5',
-        messages: [{ role: 'user', content: 'spoof' }],
-        input: 'spoof',
-        metadata: {
-          openkit: { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id },
+      if (consumed.status !== 'consumed') throw new Error('Fixture bootstrap must complete.');
+      expect(revokeOpenKitAccessTokenRecord(coreDb, consumed.tokenId)?.status).toBe('revoked');
+      const localUserId = ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Private capture');
+      const privateOwnerUserId = localUserId;
+      const thread = await store.createThread(workspace.id, 'Private', undefined, 'conversation', {
+        visibility: 'private',
+        privateOwnerUserId,
+      });
+      const turn = await store.createTurn(workspace.id, thread.id, 'Private prompt', {
+        kind: 'user',
+        id: privateOwnerUserId,
+      });
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      applyScopedMigrations(workspaceDb);
+      const baseUrl = 'http://localhost';
+      const auth = createBetterAuth(coreDb, {
+        mode: 'server',
+        env: {
+          BETTER_AUTH_URL: baseUrl,
+          BETTER_AUTH_SECRET: 'gateway-fixture-auth-secret-2430-owner-test-only',
         },
       });
-      const registered = await auth.handler(
-        new Request(`${baseUrl}/api/auth/sign-in/email`, {
+      let administratorTokenId: string | undefined;
+      let revokeAfterEffect = false;
+      const withheld = 'GATEWAY_REVOKED_RESULT_CANARY';
+      const upstream = vi.fn(async () => {
+        if (revokeAfterEffect)
+          expect(revokeOpenKitAccessTokenRecord(coreDb, administratorTokenId!)?.status).toBe(
+            'revoked'
+          );
+        return path === '/v1/chat/completions'
+          ? {
+              object: 'chat.completion',
+              id: 'chatcmpl_gateway_authority',
+              created: 1,
+              model: 'claude-sonnet-4-5',
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: withheld },
+                  finish_reason: 'stop',
+                },
+              ],
+            }
+          : {
+              object: 'response',
+              id: 'resp_gateway_authority',
+              status: 'completed',
+              model: 'claude-sonnet-4-5',
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: withheld }],
+                },
+              ],
+            };
+      });
+      try {
+        const app = createApp({
+          coreDb,
+          dataRoot,
+          store,
+          mode: 'server',
+          auth,
+          ...createAnthropicProviderOptions(),
+          llmGatewayDispatcher: {
+            createChatCompletion: upstream,
+            createResponses: upstream,
+          } as unknown as LLMGatewayProviderDispatcher,
+        });
+        const body = JSON.stringify({
+          model: 'claude-sonnet-4-5',
+          messages: [{ role: 'user', content: 'spoof' }],
+          input: 'spoof',
+          metadata: {
+            openkit: { workspaceId: workspace.id, threadId: thread.id, turnId: turn.id },
+          },
+        });
+        const registered = await auth.handler(
+          new Request(`${baseUrl}/api/auth/sign-in/email`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(browserCredentials),
+          })
+        );
+        expect(registered.status).toBe(200);
+        const { user } = (await registered.json()) as { user: { id: string } };
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          workspaceId: workspace.id,
+          ownerUserId: credential === 'ordinary' ? user.id : localUserId,
+        });
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, user.id)).toBe(
+          credential === 'ordinary' ? 'owner' : null
+        );
+        const setCookie = registered.headers.get('set-cookie');
+        if (!setCookie) throw new Error('Gateway fixture must authenticate a Web session.');
+        const cookie = setCookie.split(';')[0]!;
+        const ordinary = await app.request(new URL(path, baseUrl).toString(), {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(browserCredentials),
-        })
-      );
-      expect(registered.status).toBe(200);
-      const { user } = (await registered.json()) as { user: { id: string } };
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        workspaceId: workspace.id,
-        ownerUserId: credential === 'ordinary' ? user.id : localUserId,
-      });
-      expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, user.id)).toBe(
-        credential === 'ordinary' ? 'owner' : null
-      );
-      const setCookie = registered.headers.get('set-cookie');
-      if (!setCookie) throw new Error('Gateway fixture must authenticate a Web session.');
-      const cookie = setCookie.split(';')[0]!;
-      const ordinary = await app.request(new URL(path, baseUrl).toString(), {
-        method: 'POST',
-        headers: { cookie, 'content-type': 'application/json' },
-        body,
-      });
-      expect(ordinary.status).toBe(403);
-      expect(upstream).not.toHaveBeenCalled();
-      expect(listWorkspaceCapabilityCalls(workspaceDb, workspace.id)).toHaveLength(0);
-      if (credential === 'ordinary') return;
-      const issued = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: user.id,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      administratorTokenId = issued.tokenId;
-      const headers = {
-        'content-type': 'application/json',
-        ...(credential === 'admin bearer'
-          ? { authorization: `Bearer ${issued.secret}` }
-          : { cookie }),
-      };
-      const allowed = await app.request(new URL(path, baseUrl).toString(), {
-        method: 'POST',
-        headers,
-        body,
-      });
-      expect(allowed.status, await allowed.text()).toBe(200);
-      expect(upstream).toHaveBeenCalledTimes(1);
-      expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, user.id)).toBeNull();
-      const allowedCall = listWorkspaceCapabilityCalls(workspaceDb, workspace.id).find(
-        (call) => call.status === 'succeeded'
-      );
-      expect(allowedCall).toMatchObject({ threadId: thread.id, turnId: turn.id });
-      expect(listWorkspaceAuditEvents(workspaceDb, workspace.id)).toContainEqual(
-        expect.objectContaining({
-          actor: { kind: 'user', id: user.id },
-          capabilityCallId: allowedCall!.id,
-        })
-      );
-      // A dispatched effect stays truthful, but current audience must fence its late result.
-      revokeAfterEffect = true;
-      const lostAudience = await app.request(new URL(path, baseUrl).toString(), {
-        method: 'POST',
-        headers,
-        body,
-      });
-      expect(lostAudience.ok).toBe(false);
-      const refusedText = await lostAudience.text();
-      expect(refusedText).not.toContain(withheld);
-      expect(JSON.parse(refusedText)).toMatchObject({ error: { code: expect.any(String) } });
-      expect(upstream).toHaveBeenCalledTimes(2);
-      const retainedCalls = listWorkspaceCapabilityCalls(workspaceDb, workspace.id);
-      const retainedUsage = listWorkspaceUsageRecords(workspaceDb, workspace.id);
-      const revoked = await app.request(new URL(path, baseUrl).toString(), {
-        method: 'POST',
-        headers,
-        body,
-      });
-      expect(revoked.status).toBe(credential === 'admin bearer' ? 401 : 403);
-      expect(upstream).toHaveBeenCalledTimes(2);
-      expect(listWorkspaceCapabilityCalls(workspaceDb, workspace.id)).toEqual(retainedCalls);
-      expect(listWorkspaceUsageRecords(workspaceDb, workspace.id)).toEqual(retainedUsage);
-    } finally {
-      workspaceDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+          headers: { cookie, 'content-type': 'application/json' },
+          body,
+        });
+        expect(ordinary.status).toBe(403);
+        expect(upstream).not.toHaveBeenCalled();
+        expect(listWorkspaceCapabilityCalls(workspaceDb, workspace.id)).toHaveLength(0);
+        if (credential === 'ordinary') return;
+        const issued = createOpenKitAccessTokenRecord(coreDb, {
+          ownerUserId: user.id,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        administratorTokenId = issued.tokenId;
+        const headers = {
+          'content-type': 'application/json',
+          ...(credential === 'admin bearer'
+            ? { authorization: `Bearer ${issued.secret}` }
+            : { cookie }),
+        };
+        const allowed = await app.request(new URL(path, baseUrl).toString(), {
+          method: 'POST',
+          headers,
+          body,
+        });
+        expect(allowed.status, await allowed.text()).toBe(200);
+        expect(upstream).toHaveBeenCalledTimes(1);
+        expect(resolveWorkspaceMembershipRelation(coreDb, workspace.id, user.id)).toBeNull();
+        const allowedCall = listWorkspaceCapabilityCalls(workspaceDb, workspace.id).find(
+          (call) => call.status === 'succeeded'
+        );
+        expect(allowedCall).toMatchObject({ threadId: thread.id, turnId: turn.id });
+        expect(listWorkspaceAuditEvents(workspaceDb, workspace.id)).toContainEqual(
+          expect.objectContaining({
+            actor: { kind: 'user', id: user.id },
+            capabilityCallId: allowedCall!.id,
+          })
+        );
+        // A dispatched effect stays truthful, but current audience must fence its late result.
+        revokeAfterEffect = true;
+        const lostAudience = await app.request(new URL(path, baseUrl).toString(), {
+          method: 'POST',
+          headers,
+          body,
+        });
+        expect(lostAudience.ok).toBe(false);
+        const refusedText = await lostAudience.text();
+        expect(refusedText).not.toContain(withheld);
+        expect(JSON.parse(refusedText)).toMatchObject({ error: { code: expect.any(String) } });
+        expect(upstream).toHaveBeenCalledTimes(2);
+        const retainedCalls = listWorkspaceCapabilityCalls(workspaceDb, workspace.id);
+        const retainedUsage = listWorkspaceUsageRecords(workspaceDb, workspace.id);
+        const revoked = await app.request(new URL(path, baseUrl).toString(), {
+          method: 'POST',
+          headers,
+          body,
+        });
+        expect(revoked.status).toBe(credential === 'admin bearer' ? 401 : 403);
+        expect(upstream).toHaveBeenCalledTimes(2);
+        expect(listWorkspaceCapabilityCalls(workspaceDb, workspace.id)).toEqual(retainedCalls);
+        expect(listWorkspaceUsageRecords(workspaceDb, workspace.id)).toEqual(retainedUsage);
+      } finally {
+        workspaceDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('records durable usage for attributed Anthropic Chat Completions through pi-ai', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-llm-gateway-usage-'));
@@ -3007,105 +3006,107 @@ describe('OpenAI-compatible agent gateway', () => {
     ]);
   });
 
-  it.each([
-    false,
-    true,
-  ])('admits public native Codex Responses metadata without forwarding it to Provider options; stream=%s', async (stream) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-responses-metadata-'));
-    const coreDb = openCoreDb(dataRoot);
-    const workspaceId = 'ws_00000000-0000-70a9-8c0d-fb925c73d5e5';
-    const requestId = '55555555-5555-4555-8555-555555555555';
-    const profile: ProviderProfile = {
-      defaultModel: 'openai-codex/gpt-5.6-sol',
-      displayName: 'OpenAI Codex',
-      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'team' } } },
-      id: 'openai-codex',
-      kind: 'oauth',
-      models: ['openai-codex/gpt-5.6-sol'],
-    };
-    const faux = fauxProvider({
-      api: 'openai-codex-responses',
-      provider: 'openai-codex',
-      models: [{ id: 'gpt-5.6-sol', reasoning: true }],
-      tokenSize: { min: 1000, max: 1000 },
-    });
-    const providerStream = vi.spyOn(faux.provider, 'stream');
-    const models = createModels();
-    models.setProvider(faux.provider);
-    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
-    faux.setResponses([fauxAssistantMessage('Codex metadata admitted')]);
-
-    try {
-      applyMigrations(coreDb);
-      const fixtureWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      try {
-        applyScopedMigrations(fixtureWorkspaceDb, undefined, 'pre-knowledge');
-        await openTestNativeWorkspace(fixtureWorkspaceDb);
-      } finally {
-        fixtureWorkspaceDb.sqlite.close();
-      }
-      recordLocalGatewayAuthority(coreDb, workspaceId);
-      const app = createDirectGatewayApp({
-        coreDb,
-        defaultProviderId: profile.id,
-        dispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() }),
-        getPairHandle: async () => ({
-          credentials: {} as never,
-          models,
-          getCredentialVersion: async () => 'synthetic-team:1',
-        }),
-        profiles: [profile],
-      });
-      const res = await app.request('/v1/responses', {
-        method: 'POST',
-        body: JSON.stringify({
-          input: 'Hello',
-          metadata: { label: 'public-metadata-marker', openkit: { requestId, workspaceId } },
-          model: profile.defaultModel,
-          stream,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const body = await res.text();
-
-      expect(res.status, body).toBe(200);
-      if (stream) {
-        expect(res.headers.get('content-type')).toContain('text/event-stream');
-        expect(body).toContain('response.completed');
-        expect(body).toContain('Codex metadata admitted');
-        expect(body).toContain('data: [DONE]');
-      } else {
-        expect(JSON.parse(body)).toMatchObject({
-          model: profile.defaultModel,
-          status: 'completed',
-          output: [{ content: [{ text: 'Codex metadata admitted' }] }],
-        });
-      }
-      expect(providerStream).toHaveBeenCalledTimes(1);
-      expect(providerStream.mock.calls[0]?.[0]).toMatchObject({
+  it.each([false, true])(
+    'admits public native Codex Responses metadata without forwarding it to Provider options; stream=%s',
+    async (stream) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-responses-metadata-'));
+      const coreDb = openCoreDb(dataRoot);
+      const workspaceId = 'ws_00000000-0000-70a9-8c0d-fb925c73d5e5';
+      const requestId = '55555555-5555-4555-8555-555555555555';
+      const profile: ProviderProfile = {
+        defaultModel: 'openai-codex/gpt-5.6-sol',
+        displayName: 'OpenAI Codex',
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'team' } } },
+        id: 'openai-codex',
+        kind: 'oauth',
+        models: ['openai-codex/gpt-5.6-sol'],
+      };
+      const faux = fauxProvider({
         api: 'openai-codex-responses',
-        id: 'gpt-5.6-sol',
+        provider: 'openai-codex',
+        models: [{ id: 'gpt-5.6-sol', reasoning: true }],
+        tokenSize: { min: 1000, max: 1000 },
       });
-      const nativeOptions = providerStream.mock.calls[0]?.[2];
-      expect(nativeOptions).toBeDefined();
-      expect(nativeOptions).not.toHaveProperty('metadata');
-      expect(JSON.stringify(nativeOptions)).not.toContain('public-metadata-marker');
+      const providerStream = vi.spyOn(faux.provider, 'stream');
+      const models = createModels();
+      models.setProvider(faux.provider);
+      vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+      faux.setResponses([fauxAssistantMessage('Codex metadata admitted')]);
 
-      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       try {
-        expect(
-          workspaceDb.sqlite
-            .prepare('SELECT capability_id, request_id, status FROM capability_calls')
-            .all()
-        ).toEqual([{ capability_id: 'llm.responses', request_id: requestId, status: 'succeeded' }]);
+        applyMigrations(coreDb);
+        const fixtureWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+        try {
+          applyScopedMigrations(fixtureWorkspaceDb, undefined, 'pre-knowledge');
+          await openTestNativeWorkspace(fixtureWorkspaceDb);
+        } finally {
+          fixtureWorkspaceDb.sqlite.close();
+        }
+        recordLocalGatewayAuthority(coreDb, workspaceId);
+        const app = createDirectGatewayApp({
+          coreDb,
+          defaultProviderId: profile.id,
+          dispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() }),
+          getPairHandle: async () => ({
+            credentials: {} as never,
+            models,
+            getCredentialVersion: async () => 'synthetic-team:1',
+          }),
+          profiles: [profile],
+        });
+        const res = await app.request('/v1/responses', {
+          method: 'POST',
+          body: JSON.stringify({
+            input: 'Hello',
+            metadata: { label: 'public-metadata-marker', openkit: { requestId, workspaceId } },
+            model: profile.defaultModel,
+            stream,
+          }),
+          headers: { 'content-type': 'application/json' },
+        });
+        const body = await res.text();
+
+        expect(res.status, body).toBe(200);
+        if (stream) {
+          expect(res.headers.get('content-type')).toContain('text/event-stream');
+          expect(body).toContain('response.completed');
+          expect(body).toContain('Codex metadata admitted');
+          expect(body).toContain('data: [DONE]');
+        } else {
+          expect(JSON.parse(body)).toMatchObject({
+            model: profile.defaultModel,
+            status: 'completed',
+            output: [{ content: [{ text: 'Codex metadata admitted' }] }],
+          });
+        }
+        expect(providerStream).toHaveBeenCalledTimes(1);
+        expect(providerStream.mock.calls[0]?.[0]).toMatchObject({
+          api: 'openai-codex-responses',
+          id: 'gpt-5.6-sol',
+        });
+        const nativeOptions = providerStream.mock.calls[0]?.[2];
+        expect(nativeOptions).toBeDefined();
+        expect(nativeOptions).not.toHaveProperty('metadata');
+        expect(JSON.stringify(nativeOptions)).not.toContain('public-metadata-marker');
+
+        const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+        try {
+          expect(
+            workspaceDb.sqlite
+              .prepare('SELECT capability_id, request_id, status FROM capability_calls')
+              .all()
+          ).toEqual([
+            { capability_id: 'llm.responses', request_id: requestId, status: 'succeeded' },
+          ]);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
       } finally {
-        workspaceDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
       }
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('normalizes Codex HTTP 200 terminal error events before public SSE projection', async () => {
     const profile: ProviderProfile = {

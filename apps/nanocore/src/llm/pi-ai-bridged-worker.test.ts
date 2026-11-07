@@ -504,35 +504,41 @@ describe('pi-ai reasoning attribution', () => {
     expect(bytes).not.toContain('fc_paired');
     expect(bytes).toContain('call_paired');
   });
-  it.each([
-    'restart',
-    'eviction',
-  ])('uses readable handoff after %s even for the original member', async (loss) => {
-    const { history, models, provider } = fixture();
-    const association = new ReasoningAttribution();
-    const client = new PiAiGatewayClient({ reasoningAttribution: association });
-    const response = await client.createResponses(
-      provider,
-      { model: 'gpt-test', input: 'hello' },
-      undefined,
-      {},
-      models
-    );
-    if (loss === 'eviction') {
-      for (let index = 0; index < REASONING_ATTRIBUTION_LIMIT; index++)
-        association.record(`rs_other_${index}`, { providerId: provider.id, modelId: 'gpt-test' });
+  it.each(['restart', 'eviction'])(
+    'uses readable handoff after %s even for the original member',
+    async (loss) => {
+      const { history, models, provider } = fixture();
+      const association = new ReasoningAttribution();
+      const client = new PiAiGatewayClient({ reasoningAttribution: association });
+      const response = await client.createResponses(
+        provider,
+        { model: 'gpt-test', input: 'hello' },
+        undefined,
+        {},
+        models
+      );
+      if (loss === 'eviction') {
+        for (let index = 0; index < REASONING_ATTRIBUTION_LIMIT; index++)
+          association.record(`rs_other_${index}`, { providerId: provider.id, modelId: 'gpt-test' });
+      }
+      const restarted =
+        loss === 'restart'
+          ? new PiAiGatewayClient({ reasoningAttribution: new ReasoningAttribution() })
+          : client;
+      await restarted.createResponses(
+        provider,
+        replay(response.output![0]!),
+        undefined,
+        {},
+        models
+      );
+      const bytes = JSON.stringify(history.at(-1));
+      expect(bytes).toContain('Readable reasoning.');
+      expect(bytes).not.toContain('opaque-ciphertext');
+      expect(bytes).not.toContain('thinkingSignature');
+      expect(bytes).not.toContain('fc_paired');
     }
-    const restarted =
-      loss === 'restart'
-        ? new PiAiGatewayClient({ reasoningAttribution: new ReasoningAttribution() })
-        : client;
-    await restarted.createResponses(provider, replay(response.output![0]!), undefined, {}, models);
-    const bytes = JSON.stringify(history.at(-1));
-    expect(bytes).toContain('Readable reasoning.');
-    expect(bytes).not.toContain('opaque-ciphertext');
-    expect(bytes).not.toContain('thinkingSignature');
-    expect(bytes).not.toContain('fc_paired');
-  });
+  );
   it('matches two logical-model dispatches using the same profile and native model across clients', async () => {
     const { history, models, provider } = fixture();
     // Logical route ids are resolved above the client; both dispatches arrive with this same native id.
@@ -553,65 +559,65 @@ describe('pi-ai reasoning attribution', () => {
     expect(JSON.stringify(history.at(-1))).toContain('opaque-ciphertext');
     expect(JSON.stringify(history.at(-1))).toContain('fc_paired');
   });
-  it.each([
-    [[]],
-    [[{ type: 'summary_text', text: '  ' }]],
-  ])('omits unattributed empty/redacted thinking (%j)', async (summary) => {
-    const { history, models, provider, capsule } = fixture();
-    await new PiAiGatewayClient().createResponses(
-      provider,
-      replay({ ...capsule, summary }),
-      undefined,
-      {},
-      models
-    );
-    const bytes = JSON.stringify(history.at(-1));
-    expect(bytes).not.toContain('opaque-ciphertext');
-    expect(bytes).not.toContain('thinkingSignature');
-    expect(bytes).not.toContain('fc_paired');
-    expect(bytes).not.toContain('"type":"thinking"');
-  });
-  it.each([
-    false,
-    true,
-  ])('preserves only same-profile/native-model round trips (stream=%s)', async (stream) => {
-    const { capsule, history, models, provider } = fixture();
-    const client = new PiAiGatewayClient();
-    const request = { model: 'gpt-test', input: 'hello' };
-    const response = stream
-      ? JSON.parse(
-          (
-            await new Response(
-              await client.createResponsesStream(provider, request, undefined, {}, models)
-            ).text()
-          )
-            .split('\n')
-            .find((line) => line.includes('"type":"response.completed"'))!
-            .slice(6)
-        ).response
-      : await client.createResponses(provider, request, undefined, {}, models);
-    expect(response.output[0]).toEqual({ ...capsule, status: 'completed' });
-    await client.createResponses(provider, replay(response.output[0]), undefined, {}, models);
-    expect(JSON.stringify(history.at(-1))).toContain('opaque-ciphertext');
-    expect(JSON.stringify(history.at(-1))).toContain('fc_paired');
-    await client.createResponses(
-      { ...provider, id: 'account-b' },
-      replay(response.output[0]),
-      undefined,
-      {},
-      models
-    );
-    expect(JSON.stringify(history.at(-1))).not.toContain('opaque-ciphertext');
-    expect(JSON.stringify(history.at(-1))).not.toContain('fc_paired');
-    await client.createResponses(
-      provider,
-      { ...replay(response.output[0]), model: 'gpt-other' },
-      undefined,
-      {},
-      models
-    );
-    expect(JSON.stringify(history.at(-1))).not.toContain('opaque-ciphertext');
-  });
+  it.each([[[]], [[{ type: 'summary_text', text: '  ' }]]])(
+    'omits unattributed empty/redacted thinking (%j)',
+    async (summary) => {
+      const { history, models, provider, capsule } = fixture();
+      await new PiAiGatewayClient().createResponses(
+        provider,
+        replay({ ...capsule, summary }),
+        undefined,
+        {},
+        models
+      );
+      const bytes = JSON.stringify(history.at(-1));
+      expect(bytes).not.toContain('opaque-ciphertext');
+      expect(bytes).not.toContain('thinkingSignature');
+      expect(bytes).not.toContain('fc_paired');
+      expect(bytes).not.toContain('"type":"thinking"');
+    }
+  );
+  it.each([false, true])(
+    'preserves only same-profile/native-model round trips (stream=%s)',
+    async (stream) => {
+      const { capsule, history, models, provider } = fixture();
+      const client = new PiAiGatewayClient();
+      const request = { model: 'gpt-test', input: 'hello' };
+      const response = stream
+        ? JSON.parse(
+            (
+              await new Response(
+                await client.createResponsesStream(provider, request, undefined, {}, models)
+              ).text()
+            )
+              .split('\n')
+              .find((line) => line.includes('"type":"response.completed"'))!
+              .slice(6)
+          ).response
+        : await client.createResponses(provider, request, undefined, {}, models);
+      expect(response.output[0]).toEqual({ ...capsule, status: 'completed' });
+      await client.createResponses(provider, replay(response.output[0]), undefined, {}, models);
+      expect(JSON.stringify(history.at(-1))).toContain('opaque-ciphertext');
+      expect(JSON.stringify(history.at(-1))).toContain('fc_paired');
+      await client.createResponses(
+        { ...provider, id: 'account-b' },
+        replay(response.output[0]),
+        undefined,
+        {},
+        models
+      );
+      expect(JSON.stringify(history.at(-1))).not.toContain('opaque-ciphertext');
+      expect(JSON.stringify(history.at(-1))).not.toContain('fc_paired');
+      await client.createResponses(
+        provider,
+        { ...replay(response.output[0]), model: 'gpt-other' },
+        undefined,
+        {},
+        models
+      );
+      expect(JSON.stringify(history.at(-1))).not.toContain('opaque-ciphertext');
+    }
+  );
 });
 
 function registerPiAiImageInputTests() {

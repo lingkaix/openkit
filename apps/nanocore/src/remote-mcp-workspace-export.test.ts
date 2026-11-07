@@ -17,114 +17,114 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('Remote MCP Workspace export retained snapshot refusal', () => {
-  it.each([
-    'JSON',
-    'schema',
-  ] as const)('returns a safe operation failure for %s corruption', async (corruption) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-export-snapshot-'));
-    const coreDb = openCoreDb(dataRoot);
-    try {
-      applyMigrations(coreDb);
-      ensureLocalUser(coreDb);
-      const store = new FsStore({ dataRoot });
-      const workspace = await store.createWorkspace('Corrupt snapshot export');
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        workspaceId: workspace.id,
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      });
-      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+  it.each(['JSON', 'schema'] as const)(
+    'returns a safe operation failure for %s corruption',
+    async (corruption) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-export-snapshot-'));
+      const coreDb = openCoreDb(dataRoot);
       try {
-        applyScopedMigrations(workspaceDb);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      const token = createOpenKitAccessTokenRecord(coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      const app = new Hono<{ Variables: AuthVariables }>();
-      // Supply the durable Token actor locally; bearer HTTP authentication is outside this seam.
-      app.use('*', async (c, next) => {
-        c.set('actor', {
-          userId: 'usr_00000000-0000-7000-8000-000000000001',
-          kind: 'token',
-          tokenId: token.tokenId,
-          tokenScope: 'server-admin',
-          tokenWorkspaceIds: [],
+        applyMigrations(coreDb);
+        ensureLocalUser(coreDb);
+        const store = new FsStore({ dataRoot });
+        const workspace = await store.createWorkspace('Corrupt snapshot export');
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          workspaceId: workspace.id,
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         });
-        await next();
-      });
-      registerRemoteMcpRoutes({
-        app,
-        coreDb,
-        store,
-        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-        repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
-        inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-        getBootReadiness: createBootReadinessSnapshot,
-      });
-      const snapshotsRoot = join(
-        dataRoot,
-        'workspaces',
-        workspace.id,
-        'runtime',
-        'agent-sessions',
-        'as_00000000-0000-7903-b33d-ca8a08f35a67',
-        'aep-snapshots'
-      );
-      mkdirSync(snapshotsRoot, { recursive: true });
-      const marker = 'ROW_SECRET_X9';
-      writeFileSync(
-        join(snapshotsRoot, 'aepsnap_corrupt.json'),
-        corruption === 'JSON' ? marker : JSON.stringify(marker)
-      );
+        const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+        try {
+          applyScopedMigrations(workspaceDb);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        const token = createOpenKitAccessTokenRecord(coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        const app = new Hono<{ Variables: AuthVariables }>();
+        // Supply the durable Token actor locally; bearer HTTP authentication is outside this seam.
+        app.use('*', async (c, next) => {
+          c.set('actor', {
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
+            kind: 'token',
+            tokenId: token.tokenId,
+            tokenScope: 'server-admin',
+            tokenWorkspaceIds: [],
+          });
+          await next();
+        });
+        registerRemoteMcpRoutes({
+          app,
+          coreDb,
+          store,
+          fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+          repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
+          inflightCommands: new WeakMap(),
+          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          getBootReadiness: createBootReadinessSnapshot,
+        });
+        const snapshotsRoot = join(
+          dataRoot,
+          'workspaces',
+          workspace.id,
+          'runtime',
+          'agent-sessions',
+          'as_00000000-0000-7903-b33d-ca8a08f35a67',
+          'aep-snapshots'
+        );
+        mkdirSync(snapshotsRoot, { recursive: true });
+        const marker = 'ROW_SECRET_X9';
+        writeFileSync(
+          join(snapshotsRoot, 'aepsnap_corrupt.json'),
+          corruption === 'JSON' ? marker : JSON.stringify(marker)
+        );
 
-      const response = await app.request('/mcp', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'application/json, text/event-stream',
-        },
-        body: JSON.stringify({
+        const response = await app.request('/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: {
+              name: 'openkit_call',
+              arguments: { operation: 'workspace.export', input: { workspaceId: workspace.id } },
+            },
+          }),
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get('content-type')).toContain('application/json');
+        const responseText = await response.text();
+        expect(responseText).not.toContain(marker);
+        const body = JSON.parse(responseText);
+        // Retained corruption is an owner failure, so changing the tool input is not the remedy.
+        expect(body).toEqual({
           jsonrpc: '2.0',
           id: 1,
-          method: 'tools/call',
-          params: {
-            name: 'openkit_call',
-            arguments: { operation: 'workspace.export', input: { workspaceId: workspace.id } },
+          result: {
+            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  code: 'operation_failed',
+                  message: 'Operation failed. Inspect the owner outcome before retrying.',
+                }),
+              },
+            ],
           },
-        }),
-      });
-      expect(response.status).toBe(200);
-      expect(response.headers.get('content-type')).toContain('application/json');
-      const responseText = await response.text();
-      expect(responseText).not.toContain(marker);
-      const body = JSON.parse(responseText);
-      // Retained corruption is an owner failure, so changing the tool input is not the remedy.
-      expect(body).toEqual({
-        jsonrpc: '2.0',
-        id: 1,
-        result: {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                code: 'operation_failed',
-                message: 'Operation failed. Inspect the owner outcome before retrying.',
-              }),
-            },
-          ],
-        },
-      });
-    } finally {
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+        });
+      } finally {
+        coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 });

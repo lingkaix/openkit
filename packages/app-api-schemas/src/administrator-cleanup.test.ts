@@ -270,89 +270,91 @@ describe('administrator cleanup shared schemas', () => {
     >().toEqualTypeOf<AdministratorCleanupSource>();
   });
 
-  it.each(
-    SOURCES
-  )('strips inert nested annotations from %s without exposing an operation', (source) => {
-    const known = item(source);
-    const decorated = {
-      ...known,
-      annotation: 'future display metadata',
-      target: { ...known.target, label: 'ignored' },
-      state: { ...known.state, explanatoryLabel: 'ignored' },
-      evidence: {
-        ...known.evidence,
-        description: 'ignored',
-        reference: { ...known.evidence.reference, label: 'ignored' },
-      },
-      nextInspection: {
-        ...known.nextInspection,
-        canDelete: true,
-        operation: 'invented.cleanup',
-        target: { ...known.nextInspection.target, label: 'ignored' },
-      },
-    };
-    expect(AdministratorCleanupItemSchema.parse(decorated)).toEqual(known);
-  });
-
-  it.each(
-    SOURCES
-  )('fails closed for changed %s identity, owner and inspection semantics', (source) => {
-    const known = item(source);
-    const invalid = [
-      { ...known, source: 'future-source' },
-      {
+  it.each(SOURCES)(
+    'strips inert nested annotations from %s without exposing an operation',
+    (source) => {
+      const known = item(source);
+      const decorated = {
         ...known,
-        sourceOwner:
-          OWNERS['worker-storage'] === known.sourceOwner
-            ? OWNERS['workspace-deletion']
-            : OWNERS['worker-storage'],
-      },
-      { ...known, target: { ...known.target, kind: 'future-target' } },
-      { ...known, evidence: { ...known.evidence, kind: 'assumed-clean' } },
-      { ...known, nextInspection: { ...known.nextInspection, kind: 'operation' } },
-      {
-        ...known,
-        nextInspection: { ...known.nextInspection, sourceOwner: 'docs/specs/unowned.md' },
-      },
-      { ...known, observedAt: 'not-a-timestamp' },
-      { ...known, sourceUpdatedAt: 'not-a-timestamp' },
-      { ...known, state: undefined },
-      { ...known, evidence: undefined },
-      { ...known, nextInspection: undefined },
-      { ...known, evidence: { ...known.evidence, recordedAt: 'not-a-timestamp' } },
-    ];
-    for (const candidate of invalid)
-      expect(AdministratorCleanupItemSchema.safeParse(candidate).success).toBe(false);
-    for (const field of Object.keys(known.state)) {
-      const state = { ...known.state } as Record<string, unknown>;
-      delete state[field];
-      expect(AdministratorCleanupItemSchema.safeParse({ ...known, state }).success).toBe(false);
+        annotation: 'future display metadata',
+        target: { ...known.target, label: 'ignored' },
+        state: { ...known.state, explanatoryLabel: 'ignored' },
+        evidence: {
+          ...known.evidence,
+          description: 'ignored',
+          reference: { ...known.evidence.reference, label: 'ignored' },
+        },
+        nextInspection: {
+          ...known.nextInspection,
+          canDelete: true,
+          operation: 'invented.cleanup',
+          target: { ...known.nextInspection.target, label: 'ignored' },
+        },
+      };
+      expect(AdministratorCleanupItemSchema.parse(decorated)).toEqual(known);
     }
-    for (const key of Object.keys(known.target).filter((key) => key !== 'kind')) {
-      const missing = { ...known.target } as Record<string, unknown>;
-      delete missing[key];
-      expect(AdministratorCleanupItemSchema.safeParse({ ...known, target: missing }).success).toBe(
-        false
-      );
-      expect(
-        AdministratorCleanupItemSchema.safeParse({
+  );
+
+  it.each(SOURCES)(
+    'fails closed for changed %s identity, owner and inspection semantics',
+    (source) => {
+      const known = item(source);
+      const invalid = [
+        { ...known, source: 'future-source' },
+        {
           ...known,
-          target: { ...known.target, [key]: '' },
-        }).success
-      ).toBe(false);
-      for (const field of ['evidence', 'nextInspection'] as const) {
-        const referenceKey = field === 'evidence' ? 'reference' : 'target';
-        const candidate = {
+          sourceOwner:
+            OWNERS['worker-storage'] === known.sourceOwner
+              ? OWNERS['workspace-deletion']
+              : OWNERS['worker-storage'],
+        },
+        { ...known, target: { ...known.target, kind: 'future-target' } },
+        { ...known, evidence: { ...known.evidence, kind: 'assumed-clean' } },
+        { ...known, nextInspection: { ...known.nextInspection, kind: 'operation' } },
+        {
           ...known,
-          [field]: {
-            ...known[field],
-            [referenceKey]: { ...known.target, [key]: 'different-identity' },
-          },
-        };
+          nextInspection: { ...known.nextInspection, sourceOwner: 'docs/specs/unowned.md' },
+        },
+        { ...known, observedAt: 'not-a-timestamp' },
+        { ...known, sourceUpdatedAt: 'not-a-timestamp' },
+        { ...known, state: undefined },
+        { ...known, evidence: undefined },
+        { ...known, nextInspection: undefined },
+        { ...known, evidence: { ...known.evidence, recordedAt: 'not-a-timestamp' } },
+      ];
+      for (const candidate of invalid)
         expect(AdministratorCleanupItemSchema.safeParse(candidate).success).toBe(false);
+      for (const field of Object.keys(known.state)) {
+        const state = { ...known.state } as Record<string, unknown>;
+        delete state[field];
+        expect(AdministratorCleanupItemSchema.safeParse({ ...known, state }).success).toBe(false);
+      }
+      for (const key of Object.keys(known.target).filter((key) => key !== 'kind')) {
+        const missing = { ...known.target } as Record<string, unknown>;
+        delete missing[key];
+        expect(
+          AdministratorCleanupItemSchema.safeParse({ ...known, target: missing }).success
+        ).toBe(false);
+        expect(
+          AdministratorCleanupItemSchema.safeParse({
+            ...known,
+            target: { ...known.target, [key]: '' },
+          }).success
+        ).toBe(false);
+        for (const field of ['evidence', 'nextInspection'] as const) {
+          const referenceKey = field === 'evidence' ? 'reference' : 'target';
+          const candidate = {
+            ...known,
+            [field]: {
+              ...known[field],
+              [referenceKey]: { ...known.target, [key]: 'different-identity' },
+            },
+          };
+          expect(AdministratorCleanupItemSchema.safeParse(candidate).success).toBe(false);
+        }
       }
     }
-  });
+  );
 
   it('requires nullable execution AgentSession lineage but nonnullable backend lineage', () => {
     expect(
@@ -470,32 +472,30 @@ describe('administrator cleanup shared schemas', () => {
     }
   });
 
-  it.each([
-    'missing',
-    'stale',
-    'contradictory',
-    'unavailable',
-  ] as const)('preserves explicit %s evidence without converting it to cleanup certainty', (reason) => {
-    const known = item('execution-attempt');
-    const observation = {
-      ...known,
-      state: { phase: 'closed', disposition: 'unknown' },
-      evidence: { kind: 'unknown', reason },
-    };
-    expect(AdministratorCleanupItemSchema.parse(observation)).toEqual(observation);
-    expect(
-      AdministratorCleanupItemSchema.safeParse({
-        ...observation,
-        evidence: { kind: 'unknown', reason: 'safe-to-delete' },
-      }).success
-    ).toBe(false);
-    expect(
-      AdministratorCleanupItemSchema.safeParse({
+  it.each(['missing', 'stale', 'contradictory', 'unavailable'] as const)(
+    'preserves explicit %s evidence without converting it to cleanup certainty',
+    (reason) => {
+      const known = item('execution-attempt');
+      const observation = {
         ...known,
-        evidence: { kind: 'recorded', recordedAt: SOURCE_TIME },
-      }).success
-    ).toBe(false);
-  });
+        state: { phase: 'closed', disposition: 'unknown' },
+        evidence: { kind: 'unknown', reason },
+      };
+      expect(AdministratorCleanupItemSchema.parse(observation)).toEqual(observation);
+      expect(
+        AdministratorCleanupItemSchema.safeParse({
+          ...observation,
+          evidence: { kind: 'unknown', reason: 'safe-to-delete' },
+        }).success
+      ).toBe(false);
+      expect(
+        AdministratorCleanupItemSchema.safeParse({
+          ...known,
+          evidence: { kind: 'recorded', recordedAt: SOURCE_TIME },
+        }).success
+      ).toBe(false);
+    }
+  );
 
   it('normalizes one complete observation with all seven empty or populated source facts', () => {
     expect(AdministratorCleanupReadResponseSchema.parse(response())).toEqual(response());
@@ -596,13 +596,14 @@ describe('administrator cleanup shared schemas', () => {
     expect(AdministratorCleanupReadResponseSchema.safeParse(excess).success).toBe(false);
   });
 
-  it.each([
-    262143, 262144, 262145,
-  ])('accounts for the entire known UTF-8 response at %i bytes', (bytes) => {
-    const known = responseBytes(bytes);
-    expect(JSON.stringify(known).length).toBeLessThan(bytes);
-    expect(AdministratorCleanupReadResponseSchema.safeParse(known).success).toBe(bytes <= 262144);
-  });
+  it.each([262143, 262144, 262145])(
+    'accounts for the entire known UTF-8 response at %i bytes',
+    (bytes) => {
+      const known = responseBytes(bytes);
+      expect(JSON.stringify(known).length).toBeLessThan(bytes);
+      expect(AdministratorCleanupReadResponseSchema.safeParse(known).success).toBe(bytes <= 262144);
+    }
+  );
 
   it('measures output bytes after stripping unknown annotations', () => {
     const known = responseBytes(262144);

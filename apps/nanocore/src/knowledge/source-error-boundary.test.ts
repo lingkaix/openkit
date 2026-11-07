@@ -120,56 +120,56 @@ describe('public Source error contract', () => {
     }).toEqual(before);
   });
 
-  it.each([
-    'knowledge.source.list',
-    'knowledge.source.read',
-  ] as const)('preserves a typed failure for a corrupt retained pointer through %s without repair', async (operation) => {
-    const f = await fixture();
-    const captured = await f.register('Valid original evidence');
-    expect(captured.status).toBe(200);
-    const { source } = RegisterKnowledgeSourceResponseSchema.parse(await captured.json());
-    const selectors = {
-      workspaceId: f.workspace.id,
-      ...(operation === 'knowledge.source.read' ? { sourceId: source.id } : {}),
-    };
-    const healthy = await f.app.request(...operationRequest(operation, selectors));
-    expect(healthy.status).toBe(200);
-    expect(await healthy.json()).toMatchObject(
-      operation === 'knowledge.source.read' ? { source } : { items: [source] }
-    );
-    const baseRevision = f.notebook.publishedRevision();
-    const pointers = f.notebook.readSourcePointers(baseRevision);
-    const pointer = pointers[source.id]!;
-    const corrupt = pointer.replace(/^capturedAt:.*\n/m, '');
-    expect(corrupt).not.toBe(pointer);
-    // Test-owned corruption of one retained required field; all other Source bytes remain exact.
-    const candidateRevision = f.notebook.prepareSourcePointers({
-      baseRevision,
-      changes: { [source.id]: corrupt },
-      metadata: f.notebook.inspectRevision(baseRevision).metadata,
-    });
-    corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, candidateRevision);
-    const before = {
-      revision: f.notebook.publishedRevision(),
-      pointers: f.notebook.readSourcePointers(candidateRevision),
-      raw: rawFiles(join(f.root, 'raw')),
-      receipts: f.store.listCommandRequests(),
-    };
-    expect(before.pointers).toEqual({ ...pointers, [source.id]: corrupt });
+  it.each(['knowledge.source.list', 'knowledge.source.read'] as const)(
+    'preserves a typed failure for a corrupt retained pointer through %s without repair',
+    async (operation) => {
+      const f = await fixture();
+      const captured = await f.register('Valid original evidence');
+      expect(captured.status).toBe(200);
+      const { source } = RegisterKnowledgeSourceResponseSchema.parse(await captured.json());
+      const selectors = {
+        workspaceId: f.workspace.id,
+        ...(operation === 'knowledge.source.read' ? { sourceId: source.id } : {}),
+      };
+      const healthy = await f.app.request(...operationRequest(operation, selectors));
+      expect(healthy.status).toBe(200);
+      expect(await healthy.json()).toMatchObject(
+        operation === 'knowledge.source.read' ? { source } : { items: [source] }
+      );
+      const baseRevision = f.notebook.publishedRevision();
+      const pointers = f.notebook.readSourcePointers(baseRevision);
+      const pointer = pointers[source.id]!;
+      const corrupt = pointer.replace(/^capturedAt:.*\n/m, '');
+      expect(corrupt).not.toBe(pointer);
+      // Test-owned corruption of one retained required field; all other Source bytes remain exact.
+      const candidateRevision = f.notebook.prepareSourcePointers({
+        baseRevision,
+        changes: { [source.id]: corrupt },
+        metadata: f.notebook.inspectRevision(baseRevision).metadata,
+      });
+      corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, candidateRevision);
+      const before = {
+        revision: f.notebook.publishedRevision(),
+        pointers: f.notebook.readSourcePointers(candidateRevision),
+        raw: rawFiles(join(f.root, 'raw')),
+        receipts: f.store.listCommandRequests(),
+      };
+      expect(before.pointers).toEqual({ ...pointers, [source.id]: corrupt });
 
-    const response = await f.app.request(...operationRequest(operation, selectors));
-    // A corrupt pointer cannot establish Source audience; exact reads keep the uniform refusal.
-    await expectError(
-      response,
-      operation === 'knowledge.source.read' ? 403 : 409,
-      operation === 'knowledge.source.read' ? 'workspace_access_denied' : 'recovery_required',
-      f.dataRoot
-    );
-    expect({
-      revision: f.notebook.publishedRevision(),
-      pointers: f.notebook.readSourcePointers(f.notebook.publishedRevision()),
-      raw: rawFiles(join(f.root, 'raw')),
-      receipts: f.store.listCommandRequests(),
-    }).toEqual(before);
-  });
+      const response = await f.app.request(...operationRequest(operation, selectors));
+      // A corrupt pointer cannot establish Source audience; exact reads keep the uniform refusal.
+      await expectError(
+        response,
+        operation === 'knowledge.source.read' ? 403 : 409,
+        operation === 'knowledge.source.read' ? 'workspace_access_denied' : 'recovery_required',
+        f.dataRoot
+      );
+      expect({
+        revision: f.notebook.publishedRevision(),
+        pointers: f.notebook.readSourcePointers(f.notebook.publishedRevision()),
+        raw: rawFiles(join(f.root, 'raw')),
+        receipts: f.store.listCommandRequests(),
+      }).toEqual(before);
+    }
+  );
 });

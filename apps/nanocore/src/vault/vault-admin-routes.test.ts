@@ -653,56 +653,56 @@ describe('vault admin app API', () => {
     }
   });
 
-  it.each([
-    'token',
-    'session',
-  ] as const)('accepts workspace secret enrollment from a deployment-admin %s', async (kind) => {
-    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
-    vaultUnlockState.unlock({ masterKey });
-    const admin = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    });
-    const auth: BetterAuthServer = {
-      api: {
-        getSession: async () =>
-          kind === 'session'
-            ? {
-                session: { id: 'session_admin' },
-                user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
-              }
-            : null,
-      },
-      handler: async () => Response.json({}),
-    };
-    const app = createApp({ coreDb, dataRoot, vaultUnlockState, mode: 'server', auth });
-    try {
-      const response = await app.request(
-        ...operationRequest(
-          'vault.secret-create',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              ...(kind === 'token' ? { authorization: `Bearer ${admin.secret}` } : {}),
-            },
-            body: JSON.stringify({ secretKind: 'github-token', material: 'fake-admin-secret' }),
-          }
-        )
-      );
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        status: 'active',
+  it.each(['token', 'session'] as const)(
+    'accepts workspace secret enrollment from a deployment-admin %s',
+    async (kind) => {
+      const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+      vaultUnlockState.unlock({ masterKey });
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
       });
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+      const auth: BetterAuthServer = {
+        api: {
+          getSession: async () =>
+            kind === 'session'
+              ? {
+                  session: { id: 'session_admin' },
+                  user: { id: 'usr_00000000-0000-7000-8000-000000000001' },
+                }
+              : null,
+        },
+        handler: async () => Response.json({}),
+      };
+      const app = createApp({ coreDb, dataRoot, vaultUnlockState, mode: 'server', auth });
+      try {
+        const response = await app.request(
+          ...operationRequest(
+            'vault.secret-create',
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                ...(kind === 'token' ? { authorization: `Bearer ${admin.secret}` } : {}),
+              },
+              body: JSON.stringify({ secretKind: 'github-token', material: 'fake-admin-secret' }),
+            }
+          )
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          status: 'active',
+        });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('destroys newly stored material when Core reference persistence fails', async () => {
     const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
@@ -1065,39 +1065,39 @@ describe('vault admin app API', () => {
     }
   });
 
-  it.each([
-    'local',
-    'server',
-  ] as const)('stores %s default Vault ciphertext only under DATA_ROOT/server/vault', (mode) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-vault-${mode}-composition-`));
-    const secret = `vault_${mode}_composition_plaintext`;
-    const referenceId = testEntityId('vault', `vault_${mode}_composition`);
-    const vaultUnlockState = createDefaultVaultUnlockState({ dataRoot, mode });
+  it.each(['local', 'server'] as const)(
+    'stores %s default Vault ciphertext only under DATA_ROOT/server/vault',
+    (mode) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), `openkit-vault-${mode}-composition-`));
+      const secret = `vault_${mode}_composition_plaintext`;
+      const referenceId = testEntityId('vault', `vault_${mode}_composition`);
+      const vaultUnlockState = createDefaultVaultUnlockState({ dataRoot, mode });
 
-    expect(vaultUnlockState.backend().health()).toMatchObject({
-      kind: 'encrypted-file',
-      state: 'locked',
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 17) }).store({
-      material: secret,
-      metadata: { ownerScope: 'server' },
-      referenceId,
-    });
+      expect(vaultUnlockState.backend().health()).toMatchObject({
+        kind: 'encrypted-file',
+        state: 'locked',
+      });
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 17) }).store({
+        material: secret,
+        metadata: { ownerScope: 'server' },
+        referenceId,
+      });
 
-    const expectedEntryPath = join('server', 'vault', 'entries', referenceId, '1.enc');
-    const files = globSync('**/*', { cwd: dataRoot })
-      .filter((path) => lstatSync(join(dataRoot, path)).isFile())
-      .sort();
+      const expectedEntryPath = join('server', 'vault', 'entries', referenceId, '1.enc');
+      const files = globSync('**/*', { cwd: dataRoot })
+        .filter((path) => lstatSync(join(dataRoot, path)).isFile())
+        .sort();
 
-    expect(files.filter((path) => path.endsWith('.enc'))).toEqual([expectedEntryPath]);
-    expect(existsSync(join(dataRoot, expectedEntryPath))).toBe(true);
-    expect(JSON.parse(readFileSync(join(dataRoot, expectedEntryPath), 'utf8'))).toMatchObject({
-      ciphertext: expect.any(String),
-    });
-    for (const path of files) {
-      expect(readFileSync(join(dataRoot, path)).includes(Buffer.from(secret))).toBe(false);
+      expect(files.filter((path) => path.endsWith('.enc'))).toEqual([expectedEntryPath]);
+      expect(existsSync(join(dataRoot, expectedEntryPath))).toBe(true);
+      expect(JSON.parse(readFileSync(join(dataRoot, expectedEntryPath), 'utf8'))).toMatchObject({
+        ciphertext: expect.any(String),
+      });
+      for (const path of files) {
+        expect(readFileSync(join(dataRoot, path)).includes(Buffer.from(secret))).toBe(false);
+      }
     }
-  });
+  );
 
   it('refuses request-supplied unlock material before creating a Vault header', async () => {
     const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
@@ -1746,101 +1746,100 @@ function serverAuditEvent(coreDb: CoreDb, auditEventId: string): Record<string, 
 
 /** The existing local HTTP route carries fixed failures; only upstream HTTP is doubled. */
 describe('human acquisition trusted refresh refusal', () => {
-  it.each([
-    'refresh-refused',
-    'missing-trusted-account',
-    'account-mismatch',
-  ] as const)('refuses %s with no material/metadata publication or raw error response', async (fault) => {
-    const { app, coreDb, vaultUnlockState, masterKey } = createVaultAdminApp();
-    vaultUnlockState.unlock({ masterKey });
-    const backend = vaultUnlockState.backend();
-    const access = (account?: string) =>
-      [
-        Buffer.from('{}').toString('base64'),
-        Buffer.from(
-          JSON.stringify({
-            'https://api.openai.com/auth':
-              account === undefined ? {} : { chatgpt_account_id: account },
-          })
-        ).toString('base64'),
-        'synthetic-signature',
-      ].join('.');
-    const inputRefresh = 'synthetic-acquisition-refused-input-refresh';
-    const freshRefresh = 'synthetic-acquisition-refused-successor-refresh';
-    const inputAccess = access('synthetic-original-account');
-    const freshAccess = access(
-      fault === 'missing-trusted-account' ? undefined : 'synthetic-different-account'
-    );
-    const authJsonBase64 = Buffer.from(
-      JSON.stringify({
-        tokens: {
-          access_token: inputAccess,
-          refresh_token: inputRefresh,
-          account_id: 'synthetic-original-account',
-        },
-      })
-    ).toString('base64');
-    const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      expect(request.url).toBe('https://auth.openai.com/oauth/token');
-      expect(request.method).toBe('POST');
-      const form = new URLSearchParams(await request.text());
-      expect(form.get('grant_type')).toBe('refresh_token');
-      expect(form.get('refresh_token')).toBe(inputRefresh);
-      expect(form.has('account_id')).toBe(false);
-      return fault === 'refresh-refused'
-        ? new Response('synthetic-private-upstream-refusal', { status: 401 })
-        : Response.json({
-            access_token: freshAccess,
-            refresh_token: freshRefresh,
-            expires_in: 3600,
-          });
-    });
-    const store = vi.spyOn(backend, 'store');
-    const beforeReferences = coreDb.sqlite.prepare('SELECT * FROM vault_references').all();
-    const beforeGrants = coreDb.sqlite.prepare('SELECT * FROM vault_grants').all();
-    const beforeInventory = backend.listReferences();
-    try {
-      const response = await app.request(
-        ...operationRequest(
-          'vault.bootstrap-codex-auth',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ authJsonBase64 }),
-          }
-        )
+  it.each(['refresh-refused', 'missing-trusted-account', 'account-mismatch'] as const)(
+    'refuses %s with no material/metadata publication or raw error response',
+    async (fault) => {
+      const { app, coreDb, vaultUnlockState, masterKey } = createVaultAdminApp();
+      vaultUnlockState.unlock({ masterKey });
+      const backend = vaultUnlockState.backend();
+      const access = (account?: string) =>
+        [
+          Buffer.from('{}').toString('base64'),
+          Buffer.from(
+            JSON.stringify({
+              'https://api.openai.com/auth':
+                account === undefined ? {} : { chatgpt_account_id: account },
+            })
+          ).toString('base64'),
+          'synthetic-signature',
+        ].join('.');
+      const inputRefresh = 'synthetic-acquisition-refused-input-refresh';
+      const freshRefresh = 'synthetic-acquisition-refused-successor-refresh';
+      const inputAccess = access('synthetic-original-account');
+      const freshAccess = access(
+        fault === 'missing-trusted-account' ? undefined : 'synthetic-different-account'
       );
-      // Old valid-local entry returns the historical Server success: this is a result RED, not setup failure.
-      expect(response.status).toBe(400);
-      const body = await response.json();
-      expect(body).toMatchObject({ code: 'vault_codex_auth_json_bootstrap_failed' });
-      expect(http).toHaveBeenCalledOnce();
-      expect(store).not.toHaveBeenCalled();
-      expect(coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual(
-        beforeReferences
-      );
-      expect(coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual(beforeGrants);
-      expect(backend.listReferences()).toEqual(beforeInventory);
-      const evidence = JSON.stringify([
-        body,
-        coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all(),
-        coreDb.sqlite.prepare('SELECT * FROM audit_events').all(),
-      ]);
-      for (const raw of [
-        authJsonBase64,
-        inputAccess,
-        inputRefresh,
-        freshAccess,
-        freshRefresh,
-        'synthetic-private-upstream-refusal',
-      ])
-        expect(evidence).not.toContain(raw);
-    } finally {
-      vi.restoreAllMocks();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+      const authJsonBase64 = Buffer.from(
+        JSON.stringify({
+          tokens: {
+            access_token: inputAccess,
+            refresh_token: inputRefresh,
+            account_id: 'synthetic-original-account',
+          },
+        })
+      ).toString('base64');
+      const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const request = new Request(input, init);
+        expect(request.url).toBe('https://auth.openai.com/oauth/token');
+        expect(request.method).toBe('POST');
+        const form = new URLSearchParams(await request.text());
+        expect(form.get('grant_type')).toBe('refresh_token');
+        expect(form.get('refresh_token')).toBe(inputRefresh);
+        expect(form.has('account_id')).toBe(false);
+        return fault === 'refresh-refused'
+          ? new Response('synthetic-private-upstream-refusal', { status: 401 })
+          : Response.json({
+              access_token: freshAccess,
+              refresh_token: freshRefresh,
+              expires_in: 3600,
+            });
+      });
+      const store = vi.spyOn(backend, 'store');
+      const beforeReferences = coreDb.sqlite.prepare('SELECT * FROM vault_references').all();
+      const beforeGrants = coreDb.sqlite.prepare('SELECT * FROM vault_grants').all();
+      const beforeInventory = backend.listReferences();
+      try {
+        const response = await app.request(
+          ...operationRequest(
+            'vault.bootstrap-codex-auth',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ authJsonBase64 }),
+            }
+          )
+        );
+        // Old valid-local entry returns the historical Server success: this is a result RED, not setup failure.
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body).toMatchObject({ code: 'vault_codex_auth_json_bootstrap_failed' });
+        expect(http).toHaveBeenCalledOnce();
+        expect(store).not.toHaveBeenCalled();
+        expect(coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual(
+          beforeReferences
+        );
+        expect(coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual(beforeGrants);
+        expect(backend.listReferences()).toEqual(beforeInventory);
+        const evidence = JSON.stringify([
+          body,
+          coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all(),
+          coreDb.sqlite.prepare('SELECT * FROM audit_events').all(),
+        ]);
+        for (const raw of [
+          authJsonBase64,
+          inputAccess,
+          inputRefresh,
+          freshAccess,
+          freshRefresh,
+          'synthetic-private-upstream-refusal',
+        ])
+          expect(evidence).not.toContain(raw);
+      } finally {
+        vi.restoreAllMocks();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 });

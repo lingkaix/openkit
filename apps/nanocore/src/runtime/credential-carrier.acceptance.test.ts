@@ -474,46 +474,45 @@ describe('credential carrier slice 1: Core acceptance', () => {
     }
   });
 
-  it.each([
-    'vault.binding-deliver',
-    'vault.binding-replace',
-    'vault.binding-revoke',
-  ] as const)('uses the unified reference-only Vault operation contract (%s)', (operation) => {
-    const definition = VAULT_OPERATION_DEFINITIONS[operation];
-    const input = {
-      workspaceId: DEMO_WORKSPACE_ID,
-      bindingThreadId: DEMO_THREAD_ID,
-      planId: randomUUID(),
-      requestId: randomUUID(),
-      ...(operation === 'vault.binding-deliver'
-        ? { receiptId: randomUUID(), materialVersion: 1 }
-        : { expectedReceiptId: randomUUID() }),
-      ...(operation === 'vault.binding-replace' ? { materialVersion: 2 } : {}),
-    };
-    expect(definition.inputSchema.safeParse(input).success).toBe(true);
-    expect(
-      definition.credentials.includes('worker-package') &&
-        definition.credentials.includes('coordinator'),
-      'generic lifecycle action is missing from authorized agent invocation'
-    ).toBe(true);
-    expect(definition.returnsOneTimeSecret).toBe(false);
-    expect(definition.mutating).toBe(true);
-    expect(definition.policyOperation).toBe('vault.use');
-    for (const field of [
-      'material',
-      'credentialValue',
-      'hostPath',
-      'targetPath',
-      'policyDecisionId',
-      'realizedProtection',
-    ]) {
+  it.each(['vault.binding-deliver', 'vault.binding-replace', 'vault.binding-revoke'] as const)(
+    'uses the unified reference-only Vault operation contract (%s)',
+    (operation) => {
+      const definition = VAULT_OPERATION_DEFINITIONS[operation];
+      const input = {
+        workspaceId: DEMO_WORKSPACE_ID,
+        bindingThreadId: DEMO_THREAD_ID,
+        planId: randomUUID(),
+        requestId: randomUUID(),
+        ...(operation === 'vault.binding-deliver'
+          ? { receiptId: randomUUID(), materialVersion: 1 }
+          : { expectedReceiptId: randomUUID() }),
+        ...(operation === 'vault.binding-replace' ? { materialVersion: 2 } : {}),
+      };
+      expect(definition.inputSchema.safeParse(input).success).toBe(true);
       expect(
-        definition.inputSchema.safeParse({ ...input, [field]: randomUUID() }).success,
-        'operation accepted caller material or fabricated authority'
-      ).toBe(false);
+        definition.credentials.includes('worker-package') &&
+          definition.credentials.includes('coordinator'),
+        'generic lifecycle action is missing from authorized agent invocation'
+      ).toBe(true);
+      expect(definition.returnsOneTimeSecret).toBe(false);
+      expect(definition.mutating).toBe(true);
+      expect(definition.policyOperation).toBe('vault.use');
+      for (const field of [
+        'material',
+        'credentialValue',
+        'hostPath',
+        'targetPath',
+        'policyDecisionId',
+        'realizedProtection',
+      ]) {
+        expect(
+          definition.inputSchema.safeParse({ ...input, [field]: randomUUID() }).success,
+          'operation accepted caller material or fabricated authority'
+        ).toBe(false);
+      }
+      assertNeutralCredentialShape(input);
     }
-    assertNeutralCredentialShape(input);
-  });
+  );
 
   it('admits an explicitly selected static runtime-file grant on the existing grant request', () => {
     // Ruling: raw static runtime-file is an explicit high-risk grant, like runtime-env.
@@ -775,20 +774,20 @@ describe('credential carrier slice 1: Core acceptance', () => {
     safe([request, await reviewed.json(), result, grant, policy, audit], f.material);
   });
 
-  it.each([
-    'gateway-only',
-    'runtime-env',
-  ])('refuses a file without exact runtime-file authority (%s)', async (path) => {
-    const f = await fixture([path]);
-    const resolve = vi.spyOn(f.vault.backend(), 'resolve');
-    expect(
-      await throwsWithCode(async () => await f.resolve(), 'credential_visibility_not_allowed')
-    ).toBe(true);
-    expect(resolve).not.toHaveBeenCalled();
-    expect(f.pending.length).toBe(0);
-    expect(listVaultInjectionPlans(f.coreDb).length).toBe(0);
-    expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
-  });
+  it.each(['gateway-only', 'runtime-env'])(
+    'refuses a file without exact runtime-file authority (%s)',
+    async (path) => {
+      const f = await fixture([path]);
+      const resolve = vi.spyOn(f.vault.backend(), 'resolve');
+      expect(
+        await throwsWithCode(async () => await f.resolve(), 'credential_visibility_not_allowed')
+      ).toBe(true);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(f.pending.length).toBe(0);
+      expect(listVaultInjectionPlans(f.coreDb).length).toBe(0);
+      expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
+    }
+  );
 
   it('prepares only reference lineage before deciding Policy without resolving material', async () => {
     const f = await fixture();
@@ -982,213 +981,214 @@ describe('credential carrier slice 1: Core acceptance', () => {
     ).toBe(true);
   });
 
-  it.each([
-    'mount',
-    'import',
-  ] as const)('issues no receipt when %s acknowledgement is unavailable', async (fault) => {
-    const f = await fixture();
-    const launched = await start(f, fault);
-    expect(
-      await launched.ready.then(
-        () => false,
-        (error: unknown) => error instanceof Error
-      )
-    ).toBe(true);
-    expect(launched.crossedFault(), 'launch did not reach the intended carrier fault').toBe(true);
-    expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
-    safe([listVaultInjectionPlans(f.coreDb), listVaultUseRecords(f.coreDb)], f.material);
-  });
-
-  it.each([
-    false,
-    true,
-  ])('revocation closes the binding and fences an unproved removal (removal fails: %s)', async (fails) => {
-    const f = await fixture();
-    const { native, execution, ready } = await start(f);
-    await ready;
-    // Revoke an actually delivered binding, after its existing receipt owner commits.
-    await vi.waitFor(() => expect(receipts.listVaultInjectionReceipts(f.coreDb)).toHaveLength(1));
-    expect(
-      native.workerControlGateway.authenticatePackageToken(
-        `Bearer ${native.executor.capabilityToken}`,
-        {
-          tokenFamily: 'capability',
-        }
-      ).scope.agentSessionId === f.agentSessionId,
-      'precondition: original binding must authorize its own route'
-    ).toBe(true);
-    native.peerFaults.failSandboxDelete = fails;
-    await revokeVaultGrant(f.coreDb, { grantId: f.grantId });
-    const close = closeRevokedCredentialBindings(
-      {
-        coreDb: f.coreDb,
-        store: f.store,
-        turnExecutor: native.executor,
-      },
-      { grantId: f.grantId }
-    );
-    if (fails)
+  it.each(['mount', 'import'] as const)(
+    'issues no receipt when %s acknowledgement is unavailable',
+    async (fault) => {
+      const f = await fixture();
+      const launched = await start(f, fault);
       expect(
-        await close.then(
+        await launched.ready.then(
           () => false,
-          (error: unknown) =>
-            typeof error === 'object' &&
-            error !== null &&
-            'code' in error &&
-            error.code === 'recovery_required'
+          (error: unknown) => error instanceof Error
         )
       ).toBe(true);
-    else await close;
-    await execution.catch(() => {});
-    expect(native.effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(true);
-    expect(
-      () =>
+      expect(launched.crossedFault(), 'launch did not reach the intended carrier fault').toBe(true);
+      expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
+      safe([listVaultInjectionPlans(f.coreDb), listVaultUseRecords(f.coreDb)], f.material);
+    }
+  );
+
+  it.each([false, true])(
+    'revocation closes the binding and fences an unproved removal (removal fails: %s)',
+    async (fails) => {
+      const f = await fixture();
+      const { native, execution, ready } = await start(f);
+      await ready;
+      // Revoke an actually delivered binding, after its existing receipt owner commits.
+      await vi.waitFor(() => expect(receipts.listVaultInjectionReceipts(f.coreDb)).toHaveLength(1));
+      expect(
         native.workerControlGateway.authenticatePackageToken(
           `Bearer ${native.executor.capabilityToken}`,
           {
             tokenFamily: 'capability',
           }
-        ),
-      'revoked binding retained a usable route token'
-    ).toThrowError();
-    // AgentSession / Termination permits closing or truthful terminal failure. Both must
-    // retire current authority; a cancelled Turn must not become a reusable binding.
-    const retired = f.store.getAgentSession(f.agentSessionId);
-    expect(isCurrentAgentSessionStatus(retired.status)).toBe(false);
-    expect(retired.stale).toBe(true);
-    expect(
-      receipts.listVaultInjectionReceipts(f.coreDb).map((receipt) => receipt.revocationStatus)
-    ).toEqual(['stale-session']);
-    // This peer models lost Core result delivery, not physical H2/Epoch invalidation.
-    // Read the existing affected-domain owners and exercise actual next admission.
-    const actorId = ensureLocalUser(f.coreDb);
-    const view = () =>
-      readRuntimeCleanupView({
-        coreDb: f.coreDb,
-        actor: { kind: 'local', userId: actorId },
-        now: new Date(),
-        maxEntries: 64,
-        maxBytes: 64 * 1024,
-      });
-    const affected = view();
-    // The admin view intentionally withholds contributed storage audience; its dedicated
-    // storage owner below reads the exact already-authorized association instead.
-    expect(affected.sources.find((source) => source.source === 'sandbox-runtime')).toEqual({
-      source: 'sandbox-runtime',
-      availability: 'available',
-      incomplete: false,
-      reasons: [],
-    });
-    const sandboxes = affected.items.filter((item) => item.source === 'sandbox-runtime');
-    const anchored = getWorkerBackendSession(f.coreDb, f.attemptId)!;
-    const storage = getWorkerStorageBindingForSandbox(f.coreDb, {
-      sandboxBindingRef: anchored.sandboxBindingRef,
-    });
-    const priorAttempt = requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
-    if (fails) {
-      expect(sandboxes).toHaveLength(1);
-      expect(sandboxes[0]!.state).toMatchObject({
-        lifecycleState: 'failed',
-        healthState: 'unknown',
-        drainState: 'draining',
-        cleanupState: 'unknown',
-        physicalEpochRelation: 'same',
-      });
-      expect(storage).toMatchObject({
-        state: 'unknown',
-        currentSandboxBindingRef: anchored.sandboxBindingRef,
-      });
-      // A completed creator Turn can have its own cleanup receipt while the resident
-      // Sandbox later becomes unknown. That receipt cannot release this wider occupant.
-      expect(sandboxes[0]!.evidence.kind).toBe('unknown');
-      expect(anchored.sandboxBindingRef).toBe(f.sandboxBindingRef);
-    } else expect(sandboxes).toHaveLength(0);
-    const nextAgentSessionId = testEntityId('as', randomUUID());
-    const nextGrantId = testEntityId('grant', randomUUID());
-    await createVaultGrant(f.coreDb, {
-      grantId: nextGrantId,
-      vaultReferenceId: f.referenceId,
-      ownerScope: 'server',
-      lifetime: 'agent-session',
-      targetAgentSessionId: nextAgentSessionId,
-      allowedInjectionPaths: ['runtime-file'],
-    });
-    const nextThread = await f.store.createThread(
-      DEMO_WORKSPACE_ID,
-      'Current authorized successor'
-    );
-    const nextTurn = await f.store.createTurn(
-      DEMO_WORKSPACE_ID,
-      nextThread.id,
-      'Use synthetic file',
-      { kind: 'user', id: actorId }
-    );
-    expect(
-      currentWorkspaceAuthority(
-        f.coreDb,
-        DEMO_WORKSPACE_ID,
-        nextTurn.triggerActor,
-        'vault.use',
-        true
-      )
-    ).not.toBeNull();
-    expect(getVaultGrant(f.coreDb, nextGrantId)?.status).toBe('active');
-    const nextSetup = createTestAgentSetup({
-      imageRef: `sha256:${'a'.repeat(64)}`,
-      requiredCapabilities: ['trusted-worker-inference-relay'],
-      credentialDeclarations: [
+        ).scope.agentSessionId === f.agentSessionId,
+        'precondition: original binding must authorize its own route'
+      ).toBe(true);
+      native.peerFaults.failSandboxDelete = fails;
+      await revokeVaultGrant(f.coreDb, { grantId: f.grantId });
+      const close = closeRevokedCredentialBindings(
         {
-          id: 'static_file',
-          vaultGrantId: nextGrantId,
-          visibility: 'runtime-file',
-          targetPath: f.targetPath,
+          coreDb: f.coreDb,
+          store: f.store,
+          turnExecutor: native.executor,
         },
-      ],
-    });
-    const nextRequestId = randomUUID();
-    createSchedulerAdmissionEntry(f.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: `queue:${nextTurn.id}`,
-      requestId: nextRequestId,
-      requestedAgentId: nextSetup.manifest.id,
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: nextThread.id,
-      turnId: nextTurn.id,
-      turnInput: 'Use synthetic file',
-      triggerActor: nextTurn.triggerActor,
-    });
-    const beforeEffects = native.effects.length;
-    const resolve = vi.spyOn(f.vault.backend(), 'resolve');
-    const preparation = native.executor.prepareAgentSessionForTurn!(f.store, {
-      agentSetup: nextSetup,
-      freshAgentSessionId: nextAgentSessionId,
-      requestId: nextRequestId,
-      turn: nextTurn,
-      turnInput: 'Use synthetic file',
-      workspaceRoots: [],
-      workspaceCwd: null,
-    });
-    if (fails) {
-      await expect(preparation).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
-      expect(requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toEqual(priorAttempt);
+        { grantId: f.grantId }
+      );
+      if (fails)
+        expect(
+          await close.then(
+            () => false,
+            (error: unknown) =>
+              typeof error === 'object' &&
+              error !== null &&
+              'code' in error &&
+              error.code === 'recovery_required'
+          )
+        ).toBe(true);
+      else await close;
+      await execution.catch(() => {});
+      expect(native.effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(true);
       expect(
-        getWorkerStorageBindingForSandbox(f.coreDb, {
-          sandboxBindingRef: anchored.sandboxBindingRef,
-        })
-      ).toEqual(storage);
+        () =>
+          native.workerControlGateway.authenticatePackageToken(
+            `Bearer ${native.executor.capabilityToken}`,
+            {
+              tokenFamily: 'capability',
+            }
+          ),
+        'revoked binding retained a usable route token'
+      ).toThrowError();
+      // AgentSession / Termination permits closing or truthful terminal failure. Both must
+      // retire current authority; a cancelled Turn must not become a reusable binding.
+      const retired = f.store.getAgentSession(f.agentSessionId);
+      expect(isCurrentAgentSessionStatus(retired.status)).toBe(false);
+      expect(retired.stale).toBe(true);
       expect(
-        view()
-          .items.filter((item) => item.source === 'sandbox-runtime')
-          .map((item) => item.state)
-      ).toEqual(sandboxes.map((item) => item.state));
-    } else await expect(preparation).resolves.toMatchObject({ agentSessionId: nextAgentSessionId });
-    expect(native.effects.length).toBe(beforeEffects);
-    expect(resolve).not.toHaveBeenCalled();
-    expect(receipts.listVaultInjectionReceipts(f.coreDb)).toHaveLength(1);
-    expect(f.store.listThreadAgentSessions(DEMO_WORKSPACE_ID, nextThread.id)).toEqual([]);
-    safe(
-      [f.store.getTurnById(f.turn.id), receipts.listVaultInjectionReceipts(f.coreDb)],
-      f.material
-    );
-  });
+        receipts.listVaultInjectionReceipts(f.coreDb).map((receipt) => receipt.revocationStatus)
+      ).toEqual(['stale-session']);
+      // This peer models lost Core result delivery, not physical H2/Epoch invalidation.
+      // Read the existing affected-domain owners and exercise actual next admission.
+      const actorId = ensureLocalUser(f.coreDb);
+      const view = () =>
+        readRuntimeCleanupView({
+          coreDb: f.coreDb,
+          actor: { kind: 'local', userId: actorId },
+          now: new Date(),
+          maxEntries: 64,
+          maxBytes: 64 * 1024,
+        });
+      const affected = view();
+      // The admin view intentionally withholds contributed storage audience; its dedicated
+      // storage owner below reads the exact already-authorized association instead.
+      expect(affected.sources.find((source) => source.source === 'sandbox-runtime')).toEqual({
+        source: 'sandbox-runtime',
+        availability: 'available',
+        incomplete: false,
+        reasons: [],
+      });
+      const sandboxes = affected.items.filter((item) => item.source === 'sandbox-runtime');
+      const anchored = getWorkerBackendSession(f.coreDb, f.attemptId)!;
+      const storage = getWorkerStorageBindingForSandbox(f.coreDb, {
+        sandboxBindingRef: anchored.sandboxBindingRef,
+      });
+      const priorAttempt = requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
+      if (fails) {
+        expect(sandboxes).toHaveLength(1);
+        expect(sandboxes[0]!.state).toMatchObject({
+          lifecycleState: 'failed',
+          healthState: 'unknown',
+          drainState: 'draining',
+          cleanupState: 'unknown',
+          physicalEpochRelation: 'same',
+        });
+        expect(storage).toMatchObject({
+          state: 'unknown',
+          currentSandboxBindingRef: anchored.sandboxBindingRef,
+        });
+        // A completed creator Turn can have its own cleanup receipt while the resident
+        // Sandbox later becomes unknown. That receipt cannot release this wider occupant.
+        expect(sandboxes[0]!.evidence.kind).toBe('unknown');
+        expect(anchored.sandboxBindingRef).toBe(f.sandboxBindingRef);
+      } else expect(sandboxes).toHaveLength(0);
+      const nextAgentSessionId = testEntityId('as', randomUUID());
+      const nextGrantId = testEntityId('grant', randomUUID());
+      await createVaultGrant(f.coreDb, {
+        grantId: nextGrantId,
+        vaultReferenceId: f.referenceId,
+        ownerScope: 'server',
+        lifetime: 'agent-session',
+        targetAgentSessionId: nextAgentSessionId,
+        allowedInjectionPaths: ['runtime-file'],
+      });
+      const nextThread = await f.store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Current authorized successor'
+      );
+      const nextTurn = await f.store.createTurn(
+        DEMO_WORKSPACE_ID,
+        nextThread.id,
+        'Use synthetic file',
+        { kind: 'user', id: actorId }
+      );
+      expect(
+        currentWorkspaceAuthority(
+          f.coreDb,
+          DEMO_WORKSPACE_ID,
+          nextTurn.triggerActor,
+          'vault.use',
+          true
+        )
+      ).not.toBeNull();
+      expect(getVaultGrant(f.coreDb, nextGrantId)?.status).toBe('active');
+      const nextSetup = createTestAgentSetup({
+        imageRef: `sha256:${'a'.repeat(64)}`,
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+        credentialDeclarations: [
+          {
+            id: 'static_file',
+            vaultGrantId: nextGrantId,
+            visibility: 'runtime-file',
+            targetPath: f.targetPath,
+          },
+        ],
+      });
+      const nextRequestId = randomUUID();
+      createSchedulerAdmissionEntry(f.coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${nextTurn.id}`,
+        requestId: nextRequestId,
+        requestedAgentId: nextSetup.manifest.id,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: nextThread.id,
+        turnId: nextTurn.id,
+        turnInput: 'Use synthetic file',
+        triggerActor: nextTurn.triggerActor,
+      });
+      const beforeEffects = native.effects.length;
+      const resolve = vi.spyOn(f.vault.backend(), 'resolve');
+      const preparation = native.executor.prepareAgentSessionForTurn!(f.store, {
+        agentSetup: nextSetup,
+        freshAgentSessionId: nextAgentSessionId,
+        requestId: nextRequestId,
+        turn: nextTurn,
+        turnInput: 'Use synthetic file',
+        workspaceRoots: [],
+        workspaceCwd: null,
+      });
+      if (fails) {
+        await expect(preparation).rejects.toBeInstanceOf(WorkerGovernanceCapacityUnavailableError);
+        expect(requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toEqual(priorAttempt);
+        expect(
+          getWorkerStorageBindingForSandbox(f.coreDb, {
+            sandboxBindingRef: anchored.sandboxBindingRef,
+          })
+        ).toEqual(storage);
+        expect(
+          view()
+            .items.filter((item) => item.source === 'sandbox-runtime')
+            .map((item) => item.state)
+        ).toEqual(sandboxes.map((item) => item.state));
+      } else
+        await expect(preparation).resolves.toMatchObject({ agentSessionId: nextAgentSessionId });
+      expect(native.effects.length).toBe(beforeEffects);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(receipts.listVaultInjectionReceipts(f.coreDb)).toHaveLength(1);
+      expect(f.store.listThreadAgentSessions(DEMO_WORKSPACE_ID, nextThread.id)).toEqual([]);
+      safe(
+        [f.store.getTurnById(f.turn.id), receipts.listVaultInjectionReceipts(f.coreDb)],
+        f.material
+      );
+    }
+  );
 });

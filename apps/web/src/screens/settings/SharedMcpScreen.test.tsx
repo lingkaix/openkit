@@ -175,45 +175,48 @@ describe('Shared MCP administration', () => {
     expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
     expect(operations['administration.server-mcp-update-binding']).not.toHaveBeenCalled();
   });
-  it.each([
-    403, 409, 503,
-  ])('requires successful reread after discovery failure %i without replay', async (status) => {
-    const operations = setup();
-    operations['administration.mcp-discovery-preview'].mockRejectedValueOnce(
-      new ApiCallError(status, 'ghp_fake_preview_error')
-    );
-    await userEvent.click(await screen.findByRole('button', { name: 'Configure Shared example' }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Preview tools once' }));
-    if (status === 403) {
-      await screen.findByText('Shared MCP administration access denied');
-      expect(screen.queryByLabelText('Allowed tools')).not.toBeInTheDocument();
-      expect(screen.queryByText('Shared example')).not.toBeInTheDocument();
-    } else {
-      await screen.findByText(
-        status === 409 ? /Discovery requires inspection/ : /Discovery failed or its connection/
+  it.each([403, 409, 503])(
+    'requires successful reread after discovery failure %i without replay',
+    async (status) => {
+      const operations = setup();
+      operations['administration.mcp-discovery-preview'].mockRejectedValueOnce(
+        new ApiCallError(status, 'ghp_fake_preview_error')
       );
+      await userEvent.click(
+        await screen.findByRole('button', { name: 'Configure Shared example' })
+      );
+      await userEvent.click(await screen.findByRole('button', { name: 'Preview tools once' }));
+      if (status === 403) {
+        await screen.findByText('Shared MCP administration access denied');
+        expect(screen.queryByLabelText('Allowed tools')).not.toBeInTheDocument();
+        expect(screen.queryByText('Shared example')).not.toBeInTheDocument();
+      } else {
+        await screen.findByText(
+          status === 409 ? /Discovery requires inspection/ : /Discovery failed or its connection/
+        );
+        expect(
+          screen.getByText(
+            /Reload current configuration only reads configuration and does not prove cleanup/
+          )
+        ).toBeVisible();
+        expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Enable shared supply' })).toBeDisabled();
+      }
+      expect(document.body.textContent).not.toContain('ghp_fake_preview_error');
+      expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
+      await userEvent.click(screen.getByRole('button', { name: 'Reload current configuration' }));
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeEnabled()
+      );
+      expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
       expect(
-        screen.getByText(
-          /Reload current configuration only reads configuration and does not prove cleanup/
-        )
+        screen.getByText(/A configuration reread does not prove cleanup of an earlier attempt/)
       ).toBeVisible();
-      expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: 'Enable shared supply' })).toBeDisabled();
+      await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
+      await screen.findByText('Observed tool metadata.');
+      expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(2);
     }
-    expect(document.body.textContent).not.toContain('ghp_fake_preview_error');
-    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
-    await userEvent.click(screen.getByRole('button', { name: 'Reload current configuration' }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Preview tools once' })).toBeEnabled()
-    );
-    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(1);
-    expect(
-      screen.getByText(/A configuration reread does not prove cleanup of an earlier attempt/)
-    ).toBeVisible();
-    await userEvent.click(screen.getByRole('button', { name: 'Preview tools once' }));
-    await screen.findByText('Observed tool metadata.');
-    expect(operations['administration.mcp-discovery-preview']).toHaveBeenCalledTimes(2);
-  });
+  );
   it('edits exact observed binding without silently replacing credential references', async () => {
     const operations = setup();
     await userEvent.click(await screen.findByRole('button', { name: 'Configure Shared example' }));
@@ -376,28 +379,28 @@ describe('Shared MCP administration', () => {
       )
     ).not.toContain('ghp_fake_canary');
   });
-  it.each([
-    'https://ordinary-user:plain-password@example.invalid/mcp',
-    'not-a-url',
-  ])('rejects an unsafe endpoint before cache admission or transport: %s', async (endpoint) => {
-    const operations = setup();
-    await screen.findByText('Shared example');
-    await userEvent.type(screen.getByLabelText('New MCP id'), 'new-example');
-    await userEvent.type(screen.getByLabelText('New display name'), 'New example');
-    await userEvent.type(screen.getByLabelText('New HTTP endpoint'), endpoint);
-    await userEvent.type(screen.getByLabelText('New allowed tools'), 'read');
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Add inactive shared configuration' })
-    );
-    await screen.findByText(/Check configuration fields/);
-    expect(operations['administration.server-mcp-create']).not.toHaveBeenCalled();
-    expect(
-      JSON.stringify(
-        operations.cache
-          .getMutationCache()
-          .getAll()
-          .map((mutation) => mutation.state)
-      )
-    ).not.toContain('plain-password');
-  });
+  it.each(['https://ordinary-user:plain-password@example.invalid/mcp', 'not-a-url'])(
+    'rejects an unsafe endpoint before cache admission or transport: %s',
+    async (endpoint) => {
+      const operations = setup();
+      await screen.findByText('Shared example');
+      await userEvent.type(screen.getByLabelText('New MCP id'), 'new-example');
+      await userEvent.type(screen.getByLabelText('New display name'), 'New example');
+      await userEvent.type(screen.getByLabelText('New HTTP endpoint'), endpoint);
+      await userEvent.type(screen.getByLabelText('New allowed tools'), 'read');
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Add inactive shared configuration' })
+      );
+      await screen.findByText(/Check configuration fields/);
+      expect(operations['administration.server-mcp-create']).not.toHaveBeenCalled();
+      expect(
+        JSON.stringify(
+          operations.cache
+            .getMutationCache()
+            .getAll()
+            .map((mutation) => mutation.state)
+        )
+      ).not.toContain('plain-password');
+    }
+  );
 });

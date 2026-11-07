@@ -1098,47 +1098,53 @@ describe('Portability', () => {
     assertNoLeakedInternals(queryClient);
   });
 
-  it.each([
-    401, 403,
-  ])('hides cached Vault references and rebind after a %s current read', async (status) => {
-    const referencesRead = vi
-      .fn()
-      .mockResolvedValueOnce(VAULT_LIST)
-      .mockRejectedValue(
-        new ApiCallError(status, 'portability-private failure', {
-          code: 'workspace_access_denied',
-          details: { secret: VAULT_MATERIAL },
-        })
+  it.each([401, 403])(
+    'hides cached Vault references and rebind after a %s current read',
+    async (status) => {
+      const referencesRead = vi
+        .fn()
+        .mockResolvedValueOnce(VAULT_LIST)
+        .mockRejectedValue(
+          new ApiCallError(status, 'portability-private failure', {
+            code: 'workspace_access_denied',
+            details: { secret: VAULT_MATERIAL },
+          })
+        );
+      const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
+      const { queryClient } = renderApp('/settings/portability', client);
+      expect(
+        await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true })
+      ).toBeInTheDocument();
+      expect(
+        rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId)
+      ).toBeEnabled();
+      await act(async () => {
+        await queryClient.refetchQueries({
+          queryKey: settingsKeys.vault(WORKSPACE.id),
+          exact: true,
+        });
+      });
+      const vault = screen.getByRole('region', { name: 'Vault references' });
+      expect(await within(vault).findByRole('alert')).toHaveTextContent(
+        /couldn't load vault references/i
       );
-    const client = makeClient({ operations: { 'vault.reference-list': referencesRead } });
-    const { queryClient } = renderApp('/settings/portability', client);
-    expect(
-      await screen.findByText(UNBOUND_REFERENCE.referenceId, { exact: true })
-    ).toBeInTheDocument();
-    expect(
-      rebindControl(UNBOUND_REFERENCE.secretKind, UNBOUND_REFERENCE.referenceId)
-    ).toBeEnabled();
-    await act(async () => {
-      await queryClient.refetchQueries({ queryKey: settingsKeys.vault(WORKSPACE.id), exact: true });
-    });
-    const vault = screen.getByRole('region', { name: 'Vault references' });
-    expect(await within(vault).findByRole('alert')).toHaveTextContent(
-      /couldn't load vault references/i
-    );
-    expect.soft(queryClient.getQueryState(settingsKeys.vault(WORKSPACE.id))?.error).toMatchObject({
-      status,
-      code: 'workspace_access_denied',
-      message: "Couldn't load vault references.",
-      details: undefined,
-    });
-    expect
-      .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
-      .toBeNull();
-    expect.soft(within(vault).queryByRole('button', { name: /rebind/i })).toBeNull();
-    expect(within(vault).queryByLabelText('Vault material')).toBeNull();
-    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
-  });
+      expect
+        .soft(queryClient.getQueryState(settingsKeys.vault(WORKSPACE.id))?.error)
+        .toMatchObject({
+          status,
+          code: 'workspace_access_denied',
+          message: "Couldn't load vault references.",
+          details: undefined,
+        });
+      expect
+        .soft(within(vault).queryByText(UNBOUND_REFERENCE.referenceId, { exact: true }))
+        .toBeNull();
+      expect.soft(within(vault).queryByRole('button', { name: /rebind/i })).toBeNull();
+      expect(within(vault).queryByLabelText('Vault material')).toBeNull();
+      expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
+    }
+  );
 
   it('blocks an open rebind confirmation while the current Vault read is pending or denied', async () => {
     const user = userEvent.setup();

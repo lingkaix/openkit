@@ -119,25 +119,25 @@ describe('derived-index physical operations', () => {
     expect(readFileSync(join(root, 'retrieval'))).toEqual(sentinel);
   });
 
-  it.each([
-    'retrieval',
-    'a-link',
-  ])('refuses the direct link %s before removing any stale entry', (name) => {
-    const { parent, root } = fixture();
-    mkdirSync(root);
-    const outside = join(parent, 'outside');
-    writeFileSync(outside, sentinel);
-    writeFileSync(join(root, 'z-stale'), sentinel);
-    symlinkSync(outside, join(root, name));
+  it.each(['retrieval', 'a-link'])(
+    'refuses the direct link %s before removing any stale entry',
+    (name) => {
+      const { parent, root } = fixture();
+      mkdirSync(root);
+      const outside = join(parent, 'outside');
+      writeFileSync(outside, sentinel);
+      writeFileSync(join(root, 'z-stale'), sentinel);
+      symlinkSync(outside, join(root, name));
 
-    expect(() => clearDerivedIndexDirectory(root, 'retrieval')).toThrow(
-      `Canonical directory must not contain a symbolic link: ${join(root, name)}.`
-    );
+      expect(() => clearDerivedIndexDirectory(root, 'retrieval')).toThrow(
+        `Canonical directory must not contain a symbolic link: ${join(root, name)}.`
+      );
 
-    expect(readFileSync(join(root, 'z-stale'))).toEqual(sentinel);
-    expect(readFileSync(outside)).toEqual(sentinel);
-    expect(lstatSync(join(root, name)).isSymbolicLink()).toBe(true);
-  });
+      expect(readFileSync(join(root, 'z-stale'))).toEqual(sentinel);
+      expect(readFileSync(outside)).toEqual(sentinel);
+      expect(lstatSync(join(root, name)).isSymbolicLink()).toBe(true);
+    }
+  );
 
   it('refuses a redirected root and a regular-file root without changing either target', () => {
     const { parent, root } = fixture();

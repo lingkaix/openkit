@@ -153,76 +153,78 @@ async function scenario(db: CoreDb, phase: Phase) {
 }
 
 describe('boot lifecycle native Audit tuple', () => {
-  it.each(
-    phases
-  )('%s persists its original tuple with Main query-only and survives native close', async (phase) => {
-    const f = fixture();
-    const expected = await scenario(f.db, phase);
-    expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
-    await expected.publish();
+  it.each(phases)(
+    '%s persists its original tuple with Main query-only and survives native close',
+    async (phase) => {
+      const f = fixture();
+      const expected = await scenario(f.db, phase);
+      expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      await expected.publish();
 
-    // Bootstrap audit owns original phase identity, payload and clocks across reopen.
-    const observed = tuple(f.db).boot;
-    expect(observed).toEqual([
-      {
-        ...expected.boot,
-        phase_outcomes_json: expect.any(String),
-        readiness_json: expect.any(String),
-      },
-    ]);
-    const row = observed[0] as { phase_outcomes_json: string; readiness_json: string };
-    expect(JSON.parse(row.phase_outcomes_json)).toEqual(
-      JSON.parse(expected.boot.phase_outcomes_json)
-    );
-    expect(JSON.parse(row.readiness_json)).toEqual(JSON.parse(expected.boot.readiness_json));
-    expect(listServerAuditEvents(f.db)).toEqual([
-      expect.objectContaining({
-        id: expected.auditId,
-        action: expected.boot.event_type,
-        resource: `server:boot:${expected.boot.boot_id}`,
-        workspaceId: null,
-        category: 'system',
-        outcome: expected.outcome,
-        severity: expected.severity,
-        errorCode: expected.errorCode,
-        createdAt,
-        occurredAt: createdAt,
-      }),
-    ]);
-    const acknowledged = tuple(f.db);
-    // Storage close drains and closes the native owner; no migration or publisher runs on reopen.
-    expect(await coldTuple(f)).toEqual(acknowledged);
-  });
-
-  it.each(
-    phases
-  )('%s rolls back the entire tuple when its general Audit insert fails', async (phase) => {
-    const f = fixture(false);
-    // Valid retained history comes from its real owner and must survive the failed new tuple.
-    await recordBootStartAuditEvent({
-      coreDb: f.db,
-      bootId: 'boot_preserved_seed',
-      migrationIds: [],
-      now: new Date('2026-07-05T00:00:00.000Z'),
-    });
-    const before = tuple(f.db);
-    await shutdownControlStoreWorkerClient();
-    f.db.sqlite.pragma('query_only = OFF');
-    try {
-      // Deliberate owner fault after valid setup; this SQL creates no successful record.
-      f.db.sqlite.exec(`CREATE TRIGGER fail_boot_general_audit BEFORE INSERT ON audit_events
-          BEGIN SELECT RAISE(ABORT, 'boot general Audit SQL fault'); END`);
-    } finally {
-      f.db.sqlite.pragma('query_only = ON');
+      // Bootstrap audit owns original phase identity, payload and clocks across reopen.
+      const observed = tuple(f.db).boot;
+      expect(observed).toEqual([
+        {
+          ...expected.boot,
+          phase_outcomes_json: expect.any(String),
+          readiness_json: expect.any(String),
+        },
+      ]);
+      const row = observed[0] as { phase_outcomes_json: string; readiness_json: string };
+      expect(JSON.parse(row.phase_outcomes_json)).toEqual(
+        JSON.parse(expected.boot.phase_outcomes_json)
+      );
+      expect(JSON.parse(row.readiness_json)).toEqual(JSON.parse(expected.boot.readiness_json));
+      expect(listServerAuditEvents(f.db)).toEqual([
+        expect.objectContaining({
+          id: expected.auditId,
+          action: expected.boot.event_type,
+          resource: `server:boot:${expected.boot.boot_id}`,
+          workspaceId: null,
+          category: 'system',
+          outcome: expected.outcome,
+          severity: expected.severity,
+          errorCode: expected.errorCode,
+          createdAt,
+          occurredAt: createdAt,
+        }),
+      ]);
+      const acknowledged = tuple(f.db);
+      // Storage close drains and closes the native owner; no migration or publisher runs on reopen.
+      expect(await coldTuple(f)).toEqual(acknowledged);
     }
-    const expected = await scenario(f.db, phase);
-    const publication = expected.publish();
-    await expect(publication).rejects.toMatchObject({
-      code: 'constraint',
-      commit: 'not-committed',
-    });
-    // Storage requires the complete moved family in one transaction, including required Audit.
-    expect(tuple(f.db)).toEqual(before);
-    expect(await coldTuple(f)).toEqual(before);
-  });
+  );
+
+  it.each(phases)(
+    '%s rolls back the entire tuple when its general Audit insert fails',
+    async (phase) => {
+      const f = fixture(false);
+      // Valid retained history comes from its real owner and must survive the failed new tuple.
+      await recordBootStartAuditEvent({
+        coreDb: f.db,
+        bootId: 'boot_preserved_seed',
+        migrationIds: [],
+        now: new Date('2026-07-05T00:00:00.000Z'),
+      });
+      const before = tuple(f.db);
+      await shutdownControlStoreWorkerClient();
+      f.db.sqlite.pragma('query_only = OFF');
+      try {
+        // Deliberate owner fault after valid setup; this SQL creates no successful record.
+        f.db.sqlite.exec(`CREATE TRIGGER fail_boot_general_audit BEFORE INSERT ON audit_events
+          BEGIN SELECT RAISE(ABORT, 'boot general Audit SQL fault'); END`);
+      } finally {
+        f.db.sqlite.pragma('query_only = ON');
+      }
+      const expected = await scenario(f.db, phase);
+      const publication = expected.publish();
+      await expect(publication).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      // Storage requires the complete moved family in one transaction, including required Audit.
+      expect(tuple(f.db)).toEqual(before);
+      expect(await coldTuple(f)).toEqual(before);
+    }
+  );
 });

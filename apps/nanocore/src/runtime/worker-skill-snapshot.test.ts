@@ -165,105 +165,107 @@ describe('exact retained Worker Skill delivery', () => {
     expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
   });
 
-  it.each([
-    'current',
-    'pin',
-  ] as const)('keeps admitted exact bytes and lineage after a newer %s selection', async (selection) => {
-    if (selection === 'pin') {
-      setWorkspaceSkillPin({
-        dataRoot: coreDb.dataRoot,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        entryId: 'repo-guidelines',
-        digest: first.version.digest,
-        expectedRevision: first.catalog.revision,
-      });
-      environmentPackage = await resolvePackage();
-    }
-    const next = advanceDefault();
-    if (selection === 'pin') {
+  it.each(['current', 'pin'] as const)(
+    'keeps admitted exact bytes and lineage after a newer %s selection',
+    async (selection) => {
+      if (selection === 'pin') {
+        setWorkspaceSkillPin({
+          dataRoot: coreDb.dataRoot,
+          workspaceId: workspaceIdForOwner(turn.owner),
+          entryId: 'repo-guidelines',
+          digest: first.version.digest,
+          expectedRevision: first.catalog.revision,
+        });
+        environmentPackage = await resolvePackage();
+      }
+      const next = advanceDefault();
+      if (selection === 'pin') {
+        expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(
+          first.version.digest
+        );
+        setWorkspaceSkillPin({
+          dataRoot: coreDb.dataRoot,
+          workspaceId: workspaceIdForOwner(turn.owner),
+          entryId: 'repo-guidelines',
+          digest: next.version.digest,
+          expectedRevision: next.catalog.revision,
+        });
+      }
       expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(
-        first.version.digest
+        next.version.digest
       );
-      setWorkspaceSkillPin({
-        dataRoot: coreDb.dataRoot,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        entryId: 'repo-guidelines',
-        digest: next.version.digest,
-        expectedRevision: next.catalog.revision,
-      });
-    }
-    expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
-    const imports = await prepare();
-    const expectedFiles = [
-      ['empty-file', Buffer.alloc(0), false],
-      ['run.sh', SCRIPT_BODY, true],
-      ['supporting.bin', SUPPORTING_BODY, false],
-    ] as const;
-    // The accepted #532 correction orders the complete delivery by UTF-16 path code units.
-    expect(imports.slice(1)).toStrictEqual([
-      {
-        body: SKILL_BODY,
-        byteLength: SKILL_BODY.byteLength,
-        contentDigest: `sha256:${createHash('sha256').update(SKILL_BODY).digest('hex')}`,
+      const imports = await prepare();
+      const expectedFiles = [
+        ['empty-file', Buffer.alloc(0), false],
+        ['run.sh', SCRIPT_BODY, true],
+        ['supporting.bin', SUPPORTING_BODY, false],
+      ] as const;
+      // The accepted #532 correction orders the complete delivery by UTF-16 path code units.
+      expect(imports.slice(1)).toStrictEqual([
+        {
+          body: SKILL_BODY,
+          byteLength: SKILL_BODY.byteLength,
+          contentDigest: `sha256:${createHash('sha256').update(SKILL_BODY).digest('hex')}`,
+          entryKind: 'file',
+          executable: false,
+          relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/SKILL.md`,
+          slot: 'worker-supply',
+        },
+        {
+          entryKind: 'directory',
+          relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/empty-dir`,
+          slot: 'worker-supply',
+        },
+        ...expectedFiles.map(([path, body, executable]) => ({
+          body,
+          byteLength: body.byteLength,
+          contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+          entryKind: 'file',
+          executable,
+          relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/${path}`,
+          slot: 'worker-supply',
+        })),
+      ]);
+      expect(imports.map((entry) => entry.slot)).toEqual([
+        'package-config',
+        'worker-supply',
+        'worker-supply',
+        'worker-supply',
+        'worker-supply',
+        'worker-supply',
+      ]);
+      expect(imports[0]).toMatchObject({
         entryKind: 'file',
         executable: false,
-        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/SKILL.md`,
-        slot: 'worker-supply',
-      },
-      {
-        entryKind: 'directory',
-        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/empty-dir`,
-        slot: 'worker-supply',
-      },
-      ...expectedFiles.map(([path, body, executable]) => ({
-        body,
-        byteLength: body.byteLength,
-        contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-        entryKind: 'file',
-        executable,
-        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/${path}`,
-        slot: 'worker-supply',
-      })),
-    ]);
-    expect(imports.map((entry) => entry.slot)).toEqual([
-      'package-config',
-      'worker-supply',
-      'worker-supply',
-      'worker-supply',
-      'worker-supply',
-      'worker-supply',
-    ]);
-    expect(imports[0]).toMatchObject({
-      entryKind: 'file',
-      executable: false,
-      slot: 'package-config',
-    });
-    const packageConfig = imports[0];
-    if (packageConfig?.entryKind !== 'file') throw new Error('Expected the package-config file.');
-    const importedPackage = JSON.parse(
-      packageConfig.body.toString('utf8')
-    ) as AgentEnvironmentPackage;
-    expect(importedPackage.supply.skills).toEqual(environmentPackage.supply.skills);
-    expect(importedPackage.supply.skills[0]).toMatchObject({
-      inventory: first.version.inventory,
-      selectionSource: selection,
-      lineage: { baseDigest: null, pluginMemberKey: null, pluginVersionDigest: null },
-    });
-    expect(importedPackage.supply.skills[0]?.inventory).toContainEqual({
-      path: 'run.sh',
-      kind: 'file',
-      executable: true,
-      size: SCRIPT_BODY.byteLength,
-      sha256: `sha256:${createHash('sha256').update(SCRIPT_BODY).digest('hex')}`,
-    });
-    expect(importedPackage.supply.skills[0]?.inventory).toContainEqual({
-      path: 'empty-dir',
-      kind: 'directory',
-      executable: false,
-      size: 0,
-      sha256: null,
-    });
-  });
+        slot: 'package-config',
+      });
+      const packageConfig = imports[0];
+      if (packageConfig?.entryKind !== 'file') throw new Error('Expected the package-config file.');
+      const importedPackage = JSON.parse(
+        packageConfig.body.toString('utf8')
+      ) as AgentEnvironmentPackage;
+      expect(importedPackage.supply.skills).toEqual(environmentPackage.supply.skills);
+      expect(importedPackage.supply.skills[0]).toMatchObject({
+        inventory: first.version.inventory,
+        selectionSource: selection,
+        lineage: { baseDigest: null, pluginMemberKey: null, pluginVersionDigest: null },
+      });
+      expect(importedPackage.supply.skills[0]?.inventory).toContainEqual({
+        path: 'run.sh',
+        kind: 'file',
+        executable: true,
+        size: SCRIPT_BODY.byteLength,
+        sha256: `sha256:${createHash('sha256').update(SCRIPT_BODY).digest('hex')}`,
+      });
+      expect(importedPackage.supply.skills[0]?.inventory).toContainEqual({
+        path: 'empty-dir',
+        kind: 'directory',
+        executable: false,
+        size: 0,
+        sha256: null,
+      });
+    }
+  );
 
   describe.each(['aep', 'native'] as const)('%s snapshot admission', (boundary) => {
     it.each([
@@ -306,24 +308,27 @@ describe('exact retained Worker Skill delivery', () => {
     'version',
     'source',
     'entry',
-  ] as const)('refuses changed admitted %s claims against exact retained authority', async (claim) => {
-    const candidate = structuredClone(environmentPackage);
-    const skill = candidate.supply.skills[0]!;
-    if (claim === 'omitted file')
-      skill.inventory = skill.inventory!.filter((row) => row.path !== 'supporting.bin');
-    else if (claim === 'mode')
-      skill.inventory!.find((row) => row.path === 'run.sh')!.executable = false;
-    else if (claim === 'directory')
-      skill.inventory = skill.inventory!.filter((row) => row.path !== 'empty-dir');
-    else if (claim === 'digest') skill.integrity = { sha256: `sha256:${'0'.repeat(64)}` };
-    else if (claim === 'provenance') skill.lineage!.baseDigest = `sha256:${'0'.repeat(64)}`;
-    else if (claim === 'version') skill.version = 'invented-version';
-    else if (claim === 'source') skill.sourceRef = 'invented-source';
-    else skill.id = 'unavailable-entry';
-    await expect(prepare(candidate)).rejects.toThrow(
-      claim === 'digest' || claim === 'entry' ? CatalogNotFoundError : CatalogIntegrityError
-    );
-  });
+  ] as const)(
+    'refuses changed admitted %s claims against exact retained authority',
+    async (claim) => {
+      const candidate = structuredClone(environmentPackage);
+      const skill = candidate.supply.skills[0]!;
+      if (claim === 'omitted file')
+        skill.inventory = skill.inventory!.filter((row) => row.path !== 'supporting.bin');
+      else if (claim === 'mode')
+        skill.inventory!.find((row) => row.path === 'run.sh')!.executable = false;
+      else if (claim === 'directory')
+        skill.inventory = skill.inventory!.filter((row) => row.path !== 'empty-dir');
+      else if (claim === 'digest') skill.integrity = { sha256: `sha256:${'0'.repeat(64)}` };
+      else if (claim === 'provenance') skill.lineage!.baseDigest = `sha256:${'0'.repeat(64)}`;
+      else if (claim === 'version') skill.version = 'invented-version';
+      else if (claim === 'source') skill.sourceRef = 'invented-source';
+      else skill.id = 'unavailable-entry';
+      await expect(prepare(candidate)).rejects.toThrow(
+        claim === 'digest' || claim === 'entry' ? CatalogNotFoundError : CatalogIntegrityError
+      );
+    }
+  );
 
   it('refuses removed entries while exact bytes remain retained', async () => {
     removeWorkspaceSkill({
@@ -345,52 +350,55 @@ describe('exact retained Worker Skill delivery', () => {
     ['native', 'purged', CatalogContentUnavailableError],
     ['native', 'missing version', CatalogNotFoundError],
     ['native', 'inventory', CatalogIntegrityError],
-  ] as const)('discards %s bytes when %s changes during the actual read', async (boundary, change, failure) => {
-    const source = join(
-      skillSnapshotPath(
-        coreDb.dataRoot,
-        workspaceIdForOwner(turn.owner),
-        'repo-guidelines',
-        first.version.digest
-      ),
-      'SKILL.md'
-    );
-    let changed = false;
-    const mutate = (path: unknown) => {
-      if (String(path) !== source || changed) return;
-      changed = true;
-      const catalog = loadWorkspaceResourceCatalog(
-        coreDb.dataRoot,
-        workspaceIdForOwner(turn.owner)
+  ] as const)(
+    'discards %s bytes when %s changes during the actual read',
+    async (boundary, change, failure) => {
+      const source = join(
+        skillSnapshotPath(
+          coreDb.dataRoot,
+          workspaceIdForOwner(turn.owner),
+          'repo-guidelines',
+          first.version.digest
+        ),
+        'SKILL.md'
       );
-      if (change === 'removed') catalog.skills.entries[0]!.availability = 'removed';
-      else if (change === 'purged') catalog.skills.versions[0]!.contentState = 'purged';
-      else if (change === 'missing version') catalog.skills.versions = [];
-      else catalog.skills.versions[0]!.inventory[0]!.executable = true;
-      publishWorkspaceResourceCatalog({
-        dataRoot: coreDb.dataRoot,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        expectedRevision: catalog.revision,
-        catalog,
+      let changed = false;
+      const mutate = (path: unknown) => {
+        if (String(path) !== source || changed) return;
+        changed = true;
+        const catalog = loadWorkspaceResourceCatalog(
+          coreDb.dataRoot,
+          workspaceIdForOwner(turn.owner)
+        );
+        if (change === 'removed') catalog.skills.entries[0]!.availability = 'removed';
+        else if (change === 'purged') catalog.skills.versions[0]!.contentState = 'purged';
+        else if (change === 'missing version') catalog.skills.versions = [];
+        else catalog.skills.versions[0]!.inventory[0]!.executable = true;
+        publishWorkspaceResourceCatalog({
+          dataRoot: coreDb.dataRoot,
+          workspaceId: workspaceIdForOwner(turn.owner),
+          expectedRevision: catalog.revision,
+          catalog,
+        });
+      };
+      const originalSyncRead = fs.readFileSync;
+      vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
+        const bytes = originalSyncRead(path, options);
+        mutate(path);
+        return bytes;
       });
-    };
-    const originalSyncRead = fs.readFileSync;
-    vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
-      const bytes = originalSyncRead(path, options);
-      mutate(path);
-      return bytes;
-    });
-    const originalRead = fsPromises.readFile;
-    vi.spyOn(fsPromises, 'readFile').mockImplementation(async (path, options) => {
-      const bytes = await originalRead(path, options);
-      mutate(path);
-      return bytes;
-    });
-    syncBuiltinESMExports();
-    if (boundary === 'aep') await expect(resolvePackage()).rejects.toThrow(failure);
-    else await expect(prepare()).rejects.toThrow(failure);
-    expect(changed).toBe(true);
-  });
+      const originalRead = fsPromises.readFile;
+      vi.spyOn(fsPromises, 'readFile').mockImplementation(async (path, options) => {
+        const bytes = await originalRead(path, options);
+        mutate(path);
+        return bytes;
+      });
+      syncBuiltinESMExports();
+      if (boundary === 'aep') await expect(resolvePackage()).rejects.toThrow(failure);
+      else await expect(prepare()).rejects.toThrow(failure);
+      expect(changed).toBe(true);
+    }
+  );
 
   it('refuses a missing retained version without choosing the newer default', async () => {
     const next = advanceDefault();
@@ -411,60 +419,60 @@ describe('exact retained Worker Skill delivery', () => {
     await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
   });
 
-  it.each([
-    'aep',
-    'native',
-  ] as const)('checks the complete %s selection after a later Skill read revokes an earlier Skill', async (boundary) => {
-    const second = importWorkspaceSkill({
-      activate: true,
-      createdAt: '2026-10-05T00:00:00.000Z',
-      dataRoot: coreDb.dataRoot,
-      displayName: 'Second Skill',
-      expectedRevision: first.catalog.revision,
-      producer: { id: userId, kind: 'user' },
-      tree: [
-        {
-          kind: 'file',
-          path: 'SKILL.md',
-          contentBase64: Buffer.from(
-            '---\nname: second-skill\ndescription: Second guidance.\n---\nSecond Skill.\n'
-          ).toString('base64'),
-        },
-      ],
-      workspaceId: workspaceIdForOwner(turn.owner),
-    });
-    const selectedSetup = createTestAgentSetup({ skillIds: ['repo-guidelines', 'second-skill'] });
-    environmentPackage = await resolvePackage(selectedSetup);
-    const source = join(
-      skillSnapshotPath(
-        coreDb.dataRoot,
-        workspaceIdForOwner(turn.owner),
-        'second-skill',
-        second.version.digest
-      ),
-      'SKILL.md'
-    );
-    const original = fs.readFileSync;
-    let changed = false;
-    vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
-      const bytes = original(path, options);
-      if (String(path) === source && !changed) {
-        changed = true;
-        removeWorkspaceSkill({
-          dataRoot: coreDb.dataRoot,
-          workspaceId: workspaceIdForOwner(turn.owner),
-          entryId: 'repo-guidelines',
-          expectedRevision: second.catalog.revision,
-        });
-      }
-      return bytes;
-    });
-    syncBuiltinESMExports();
-    if (boundary === 'aep')
-      await expect(resolvePackage(selectedSetup)).rejects.toThrow(CatalogNotFoundError);
-    else await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
-    expect(changed).toBe(true);
-  });
+  it.each(['aep', 'native'] as const)(
+    'checks the complete %s selection after a later Skill read revokes an earlier Skill',
+    async (boundary) => {
+      const second = importWorkspaceSkill({
+        activate: true,
+        createdAt: '2026-10-05T00:00:00.000Z',
+        dataRoot: coreDb.dataRoot,
+        displayName: 'Second Skill',
+        expectedRevision: first.catalog.revision,
+        producer: { id: userId, kind: 'user' },
+        tree: [
+          {
+            kind: 'file',
+            path: 'SKILL.md',
+            contentBase64: Buffer.from(
+              '---\nname: second-skill\ndescription: Second guidance.\n---\nSecond Skill.\n'
+            ).toString('base64'),
+          },
+        ],
+        workspaceId: workspaceIdForOwner(turn.owner),
+      });
+      const selectedSetup = createTestAgentSetup({ skillIds: ['repo-guidelines', 'second-skill'] });
+      environmentPackage = await resolvePackage(selectedSetup);
+      const source = join(
+        skillSnapshotPath(
+          coreDb.dataRoot,
+          workspaceIdForOwner(turn.owner),
+          'second-skill',
+          second.version.digest
+        ),
+        'SKILL.md'
+      );
+      const original = fs.readFileSync;
+      let changed = false;
+      vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
+        const bytes = original(path, options);
+        if (String(path) === source && !changed) {
+          changed = true;
+          removeWorkspaceSkill({
+            dataRoot: coreDb.dataRoot,
+            workspaceId: workspaceIdForOwner(turn.owner),
+            entryId: 'repo-guidelines',
+            expectedRevision: second.catalog.revision,
+          });
+        }
+        return bytes;
+      });
+      syncBuiltinESMExports();
+      if (boundary === 'aep')
+        await expect(resolvePackage(selectedSetup)).rejects.toThrow(CatalogNotFoundError);
+      else await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
+      expect(changed).toBe(true);
+    }
+  );
 
   it('refuses current selection when its retained version metadata is missing', async () => {
     publishWorkspaceResourceCatalog({

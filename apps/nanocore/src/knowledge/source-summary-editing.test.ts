@@ -210,116 +210,116 @@ async function fixture(
 }
 
 describe('ordinary SourceSummary editing through native owners', () => {
-  it.each([
-    'unchanged Source summary',
-    'joint Source summary repair',
-  ])('preserves live Page links during confirmed deletion with %s', async (mode) => {
-    const f = await fixture();
-    const linked = updateOkfFrontmatter({
-      path: f.sourcePath,
-      content: f.pointer,
-      updates: {},
-      body: '[Notes](../pages/unrelated.md)\n',
-    });
-    const linkedResult = await f.call('knowledge.notebook.update', {
-      requestId: randomUUID(),
-      baseRevision: f.baseRevision,
-      summary: 'Link the existing curated Page from the Source summary',
-      changes: [{ path: f.path, content: linked }],
-    });
-    expect(linkedResult.status, JSON.stringify(linkedResult.body)).toBe(200);
-    const linkedRevision = f.notebook.publishedRevision();
-    expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
-    if (mode === 'unchanged Source summary') {
-      const deleted = await f.call('knowledge.notebook.delete', {
-        requestId: randomUUID(),
-        baseRevision: linkedRevision,
-        path: 'unrelated.md',
-        expectedContentDigest: `sha256:${createHash('sha256').update(f.page).digest('hex')}`,
-        confirmRemoval: true,
-        summary: 'Attempt exact confirmed removal while a live Source summary still links here',
+  it.each(['unchanged Source summary', 'joint Source summary repair'])(
+    'preserves live Page links during confirmed deletion with %s',
+    async (mode) => {
+      const f = await fixture();
+      const linked = updateOkfFrontmatter({
+        path: f.sourcePath,
+        content: f.pointer,
+        updates: {},
+        body: '[Notes](../pages/unrelated.md)\n',
       });
-      expect(deleted.status, JSON.stringify(deleted.body)).toBe(400);
-      expect(f.notebook.publishedRevision()).toBe(linkedRevision);
+      const linkedResult = await f.call('knowledge.notebook.update', {
+        requestId: randomUUID(),
+        baseRevision: f.baseRevision,
+        summary: 'Link the existing curated Page from the Source summary',
+        changes: [{ path: f.path, content: linked }],
+      });
+      expect(linkedResult.status, JSON.stringify(linkedResult.body)).toBe(200);
+      const linkedRevision = f.notebook.publishedRevision();
+      expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
+      if (mode === 'unchanged Source summary') {
+        const deleted = await f.call('knowledge.notebook.delete', {
+          requestId: randomUUID(),
+          baseRevision: linkedRevision,
+          path: 'unrelated.md',
+          expectedContentDigest: `sha256:${createHash('sha256').update(f.page).digest('hex')}`,
+          confirmRemoval: true,
+          summary: 'Attempt exact confirmed removal while a live Source summary still links here',
+        });
+        expect(deleted.status, JSON.stringify(deleted.body)).toBe(400);
+        expect(f.notebook.publishedRevision()).toBe(linkedRevision);
+        expect(f.notebook.readRevision(linkedRevision).files['unrelated.md']).toBe(f.page);
+        expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
+      } else {
+        const repaired = updateOkfFrontmatter({
+          path: f.sourcePath,
+          content: linked,
+          updates: {},
+          body: 'The linked Page was removed; retained Source evidence is unchanged.\n',
+        });
+        const request: NotebookUpdate = {
+          workspaceId: f.workspace.id,
+          requestId: randomUUID(),
+          baseRevision: linkedRevision,
+          summary: 'Remove the exactly confirmed Page and repair its live Source link together',
+          changes: [
+            { path: 'unrelated.md', content: null },
+            { path: f.path, content: repaired },
+          ],
+        };
+        const actor = { kind: 'user', id: f.userId } as const;
+        const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+        const runtimeConfigManager = { current: () => snapshot };
+        const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+        const currentAuthority = () => {
+          if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
+            throw new OperationError(
+              'workspace_access_denied',
+              'Current native admission denied.',
+              403
+            );
+        };
+        // Native confirmation binds both removed bytes and the complete joint candidate.
+        const published = await publishWorkspaceNotebook(
+          {
+            store: f.store,
+            workspaceDb: f.workspaceDb,
+            notebook: f.notebook,
+            actor,
+            producer: actor,
+            confirmedRemovals: { 'unrelated.md': f.page },
+            inflightCommands: new WeakMap(),
+            revalidate: () =>
+              readWorkspaceNotebookAdmission({
+                store: f.store,
+                coreDb: f.coreDb,
+                workspaceDb: f.workspaceDb,
+                notebook: f.notebook,
+                scopeSchemaText: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+                  .scopeSchemaText,
+                runtimeConfigManager,
+                workspaceMutationAdmission,
+                currentAuthority,
+                actor,
+                request,
+              }),
+          },
+          request
+        );
+        const reopened = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).notebook;
+        expect(
+          readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit
+        ).toBe(published.notebookRevision);
+        expect(reopened.readRevision(published.notebookRevision).files).not.toHaveProperty(
+          'unrelated.md'
+        );
+        expect(reopened.readSourcePointers(published.notebookRevision)[f.source.id]).toBe(repaired);
+        expect(
+          parseSourcePointer(
+            f.owner,
+            f.source.id,
+            repaired,
+            readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+          ).fields
+        ).toEqual(f.parsed.fields);
+      }
       expect(f.notebook.readRevision(linkedRevision).files['unrelated.md']).toBe(f.page);
       expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
-    } else {
-      const repaired = updateOkfFrontmatter({
-        path: f.sourcePath,
-        content: linked,
-        updates: {},
-        body: 'The linked Page was removed; retained Source evidence is unchanged.\n',
-      });
-      const request: NotebookUpdate = {
-        workspaceId: f.workspace.id,
-        requestId: randomUUID(),
-        baseRevision: linkedRevision,
-        summary: 'Remove the exactly confirmed Page and repair its live Source link together',
-        changes: [
-          { path: 'unrelated.md', content: null },
-          { path: f.path, content: repaired },
-        ],
-      };
-      const actor = { kind: 'user', id: f.userId } as const;
-      const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
-      const runtimeConfigManager = { current: () => snapshot };
-      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-      const currentAuthority = () => {
-        if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
-          throw new OperationError(
-            'workspace_access_denied',
-            'Current native admission denied.',
-            403
-          );
-      };
-      // Native confirmation binds both removed bytes and the complete joint candidate.
-      const published = await publishWorkspaceNotebook(
-        {
-          store: f.store,
-          workspaceDb: f.workspaceDb,
-          notebook: f.notebook,
-          actor,
-          producer: actor,
-          confirmedRemovals: { 'unrelated.md': f.page },
-          inflightCommands: new WeakMap(),
-          revalidate: () =>
-            readWorkspaceNotebookAdmission({
-              store: f.store,
-              coreDb: f.coreDb,
-              workspaceDb: f.workspaceDb,
-              notebook: f.notebook,
-              scopeSchemaText: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
-                .scopeSchemaText,
-              runtimeConfigManager,
-              workspaceMutationAdmission,
-              currentAuthority,
-              actor,
-              request,
-            }),
-        },
-        request
-      );
-      const reopened = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).notebook;
-      expect(
-        readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).head.notebookCommit
-      ).toBe(published.notebookRevision);
-      expect(reopened.readRevision(published.notebookRevision).files).not.toHaveProperty(
-        'unrelated.md'
-      );
-      expect(reopened.readSourcePointers(published.notebookRevision)[f.source.id]).toBe(repaired);
-      expect(
-        parseSourcePointer(
-          f.owner,
-          f.source.id,
-          repaired,
-          readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
-        ).fields
-      ).toEqual(f.parsed.fields);
+      expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
     }
-    expect(f.notebook.readRevision(linkedRevision).files['unrelated.md']).toBe(f.page);
-    expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
-    expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
-  });
+  );
 
   it('separates transient Source edit addresses from curated Page paths', () => {
     const id = allocateEntityId('ks');
@@ -524,48 +524,44 @@ describe('ordinary SourceSummary editing through native owners', () => {
     expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
   });
 
-  it.each([
-    'ordinary',
-    'ordinary with linked Source',
-    'unselected',
-    'private',
-    'revoked',
-  ])('uses the real Workspace KM editor and publisher under %s admission', async (mode) => {
-    const linked = mode.endsWith('with linked Source');
-    const f =
-      mode === 'private'
-        ? await fixture(true, seed, false, true)
-        : await fixture(false, linked ? linkedSeed : seed);
-    await assertMaintenance(
-      f,
-      mode,
-      await runMaintenance(f, mode, linked ? linkedSourceId : undefined)
-    );
-  });
-
-  describe.each([
-    'required Review',
-    'required Review with linked Source',
-  ])('%s admission', (mode) => {
-    let baseline: Awaited<ReturnType<typeof fixture>>;
-    let observed: Awaited<ReturnType<typeof runMaintenance>>;
-    beforeAll(async () => {
+  it.each(['ordinary', 'ordinary with linked Source', 'unselected', 'private', 'revoked'])(
+    'uses the real Workspace KM editor and publisher under %s admission',
+    async (mode) => {
       const linked = mode.endsWith('with linked Source');
-      baseline = await fixture(false, linked ? linkedSeed : seed, true);
-      observed = await runMaintenance(baseline, mode, linked ? linkedSourceId : undefined);
-      baseline.workspaceDb.sqlite.close();
-      baseline.coreDb.sqlite.close();
-    }, 120_000);
-    // One real KM proposal feeds independent copies. No case depends on a prior case's mutation.
-    it.each([
-      'candidate',
-      'refusals',
-      'acceptance',
-    ] as const)('preserves exact Source Review %s through native owners', async (stage) => {
-      const f = await fixture(false, baseline);
-      await assertMaintenance(f, mode, observed, stage);
-    });
-  });
+      const f =
+        mode === 'private'
+          ? await fixture(true, seed, false, true)
+          : await fixture(false, linked ? linkedSeed : seed);
+      await assertMaintenance(
+        f,
+        mode,
+        await runMaintenance(f, mode, linked ? linkedSourceId : undefined)
+      );
+    }
+  );
+
+  describe.each(['required Review', 'required Review with linked Source'])(
+    '%s admission',
+    (mode) => {
+      let baseline: Awaited<ReturnType<typeof fixture>>;
+      let observed: Awaited<ReturnType<typeof runMaintenance>>;
+      beforeAll(async () => {
+        const linked = mode.endsWith('with linked Source');
+        baseline = await fixture(false, linked ? linkedSeed : seed, true);
+        observed = await runMaintenance(baseline, mode, linked ? linkedSourceId : undefined);
+        baseline.workspaceDb.sqlite.close();
+        baseline.coreDb.sqlite.close();
+      }, 120_000);
+      // One real KM proposal feeds independent copies. No case depends on a prior case's mutation.
+      it.each(['candidate', 'refusals', 'acceptance'] as const)(
+        'preserves exact Source Review %s through native owners',
+        async (stage) => {
+          const f = await fixture(false, baseline);
+          await assertMaintenance(f, mode, observed, stage);
+        }
+      );
+    }
+  );
 });
 
 /** Captures the related original before the immutable linked-Source baseline is closed. */
@@ -879,52 +875,53 @@ async function runMaintenance(
   };
 }
 
-it.each([
-  'source_refs',
-  'created_at',
-] as const)('reports protected SourceSummary %s edits with a repair instruction before candidate creation', async (field) => {
-  const f = await fixture();
-  const commits = notebookCommitInventory(f.repositoryPath);
-  const observed = await runMaintenance(f, 'required Review', undefined, field);
-  expect(observed.sourceRefusal).toBeDefined();
-  const refusal = observed.sourceRefusal!;
-  expect(refusal.tool.isError).toBe(true);
-  const feedback = refusal.tool.content
-    .flatMap((part) => (part.type === 'text' ? [part.text] : []))
-    .join('');
-  expect(refusal.commits).toBe(commits);
-  expect(refusal.revision).toBe(f.baseRevision);
-  expect(refusal.proposalCount).toBe(0);
-  for (const privateText of [f.dataRoot, f.source.contentDigest, f.original, 'NotebookError:'])
-    expect(feedback).not.toContain(privateText);
-  expect(JSON.parse(feedback)).toEqual({
-    code: 'invalid_request',
-    diagnostics: ['notebook.invalid_source_edit'],
-    message:
-      'Selected SourceSummary edits may change title, description, tags and summary text. Restore other frontmatter from the admitted summary, including source_refs and created_at; put citations on synthesized Pages. Resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.',
-  });
-  expect(observed.result.outcome).toBe('review-required');
-  const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
-  const candidate = f.notebook.readSourcePointers(proposal.candidateRevision)[f.source.id]!;
-  expect(
-    parseSourcePointer(
-      f.owner,
-      f.source.id,
-      candidate,
-      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
-    ).fields
-  ).toEqual(f.parsed.fields);
-  expect(candidate).toBe(
-    updateOkfFrontmatter({
-      path: f.sourcePath,
-      content: f.corrected,
-      updates: { review_state: 'delegated' },
-    })
-  );
-  expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
-  expect(f.notebook.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
-  expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
-}, 120_000);
+it.each(['source_refs', 'created_at'] as const)(
+  'reports protected SourceSummary %s edits with a repair instruction before candidate creation',
+  async (field) => {
+    const f = await fixture();
+    const commits = notebookCommitInventory(f.repositoryPath);
+    const observed = await runMaintenance(f, 'required Review', undefined, field);
+    expect(observed.sourceRefusal).toBeDefined();
+    const refusal = observed.sourceRefusal!;
+    expect(refusal.tool.isError).toBe(true);
+    const feedback = refusal.tool.content
+      .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+      .join('');
+    expect(refusal.commits).toBe(commits);
+    expect(refusal.revision).toBe(f.baseRevision);
+    expect(refusal.proposalCount).toBe(0);
+    for (const privateText of [f.dataRoot, f.source.contentDigest, f.original, 'NotebookError:'])
+      expect(feedback).not.toContain(privateText);
+    expect(JSON.parse(feedback)).toEqual({
+      code: 'invalid_request',
+      diagnostics: ['notebook.invalid_source_edit'],
+      message:
+        'Selected SourceSummary edits may change title, description, tags and summary text. Restore other frontmatter from the admitted summary, including source_refs and created_at; put citations on synthesized Pages. Resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.',
+    });
+    expect(observed.result.outcome).toBe('review-required');
+    const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
+    const candidate = f.notebook.readSourcePointers(proposal.candidateRevision)[f.source.id]!;
+    expect(
+      parseSourcePointer(
+        f.owner,
+        f.source.id,
+        candidate,
+        readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+      ).fields
+    ).toEqual(f.parsed.fields);
+    expect(candidate).toBe(
+      updateOkfFrontmatter({
+        path: f.sourcePath,
+        content: f.corrected,
+        updates: { review_state: 'delegated' },
+      })
+    );
+    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    expect(f.notebook.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
+    expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
+  },
+  120_000
+);
 
 /** Keeps the original publication, disclosure, cold-load and exact Review oracles. */
 async function assertMaintenance(

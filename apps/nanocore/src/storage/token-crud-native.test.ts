@@ -214,96 +214,98 @@ function facts(coreDb: CoreDb): string {
     .digest('hex');
 }
 
-it.each(
-  kinds
-)('canonical mutation %s commits with Main readonly before its ACK and later Audit', async (kind) => {
-  const f = await fixture(kind);
-  f.coreDb.sqlite.pragma('query_only=ON');
-  const held = f.hold();
-  const reached = await Promise.race([
-    held.arrived.then(() => true),
-    held.result.then(() => false),
-  ]);
-  if (!reached) {
-    const outcome = await held.result;
-    const code = !outcome.ok && isRecord(outcome.error) ? outcome.error.code : 'early-success';
-    expect(code).toBe('waiting-native-canonical-ack');
-  }
-  expect(reached).toBe(true);
-  expect(held.published()).toBe(false);
-  expect(fault.auditPosts).toBe(0);
-  const cold = openCoreDb(f.dataRoot);
-  try {
-    const records = listOpenKitAccessTokenRecords(cold);
-    expect(getOpenKitAccessTokenRecord(cold, f.target.record.tokenId)?.status).toBe(
-      kind === 'revoke' ? 'revoked' : 'rotated'
-    );
-    expect(records.length).toBe(f.before.length + (kind === 'rotate' ? 1 : 0));
-    if (kind === 'rotate') {
-      const successor = records.find(
-        (record) => record.predecessorTokenId === f.target.record.tokenId
-      );
-      expect(successor?.status).toBe('active');
-      expect(successor?.ownerUserId).toBe(f.target.record.ownerUserId);
-      expect(successor?.expiresAt).toBe(f.target.record.expiresAt);
+it.each(kinds)(
+  'canonical mutation %s commits with Main readonly before its ACK and later Audit',
+  async (kind) => {
+    const f = await fixture(kind);
+    f.coreDb.sqlite.pragma('query_only=ON');
+    const held = f.hold();
+    const reached = await Promise.race([
+      held.arrived.then(() => true),
+      held.result.then(() => false),
+    ]);
+    if (!reached) {
+      const outcome = await held.result;
+      const code = !outcome.ok && isRecord(outcome.error) ? outcome.error.code : 'early-success';
+      expect(code).toBe('waiting-native-canonical-ack');
     }
-    expect(listServerAuditEvents(cold).filter((event) => event.action === f.action)).toEqual(
-      f.beforeHistory
-    );
-  } finally {
-    cold.sqlite.close();
+    expect(reached).toBe(true);
+    expect(held.published()).toBe(false);
+    expect(fault.auditPosts).toBe(0);
+    const cold = openCoreDb(f.dataRoot);
+    try {
+      const records = listOpenKitAccessTokenRecords(cold);
+      expect(getOpenKitAccessTokenRecord(cold, f.target.record.tokenId)?.status).toBe(
+        kind === 'revoke' ? 'revoked' : 'rotated'
+      );
+      expect(records.length).toBe(f.before.length + (kind === 'rotate' ? 1 : 0));
+      if (kind === 'rotate') {
+        const successor = records.find(
+          (record) => record.predecessorTokenId === f.target.record.tokenId
+        );
+        expect(successor?.status).toBe('active');
+        expect(successor?.ownerUserId).toBe(f.target.record.ownerUserId);
+        expect(successor?.expiresAt).toBe(f.target.record.expiresAt);
+      }
+      expect(listServerAuditEvents(cold).filter((event) => event.action === f.action)).toEqual(
+        f.beforeHistory
+      );
+    } finally {
+      cold.sqlite.close();
+    }
+    fault.mode = '';
+    fault.release?.();
+    fault.release = undefined;
+    const outcome = await held.result;
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error('Expected fully acknowledged mutation.');
+    expect(fault.requests.length).toBe(1);
+    expect(fault.auditPosts).toBe(1);
+    expect(fault.inputFields.includes('secret')).toBe(false);
+    expect(Object.keys(outcome.value.record).includes('tokenHash')).toBe(false);
+    if (kind === 'rotate') {
+      expect('rotatedRecord' in outcome.value).toBe(true);
+      if (!('token' in outcome.value) || typeof outcome.value.token !== 'string')
+        throw new Error('Expected original one-time rotation result.');
+      expect((await verifyOpenKitAccessTokenRecord(f.coreDb, outcome.value.token))?.tokenId).toBe(
+        outcome.value.record.tokenId
+      );
+    } else {
+      expect(await verifyOpenKitAccessTokenRecord(f.coreDb, f.target.token)).toBeNull();
+    }
   }
-  fault.mode = '';
-  fault.release?.();
-  fault.release = undefined;
-  const outcome = await held.result;
-  expect(outcome.ok).toBe(true);
-  if (!outcome.ok) throw new Error('Expected fully acknowledged mutation.');
-  expect(fault.requests.length).toBe(1);
-  expect(fault.auditPosts).toBe(1);
-  expect(fault.inputFields.includes('secret')).toBe(false);
-  expect(Object.keys(outcome.value.record).includes('tokenHash')).toBe(false);
-  if (kind === 'rotate') {
-    expect('rotatedRecord' in outcome.value).toBe(true);
-    if (!('token' in outcome.value) || typeof outcome.value.token !== 'string')
-      throw new Error('Expected original one-time rotation result.');
-    expect((await verifyOpenKitAccessTokenRecord(f.coreDb, outcome.value.token))?.tokenId).toBe(
-      outcome.value.record.tokenId
-    );
-  } else {
-    expect(await verifyOpenKitAccessTokenRecord(f.coreDb, f.target.token)).toBeNull();
-  }
-});
+);
 
-it.each(
-  kinds
-)('losing canonical %s ACK cannot publish success, later Audit or a repost', async (kind) => {
-  const f = await fixture(kind);
-  const held = f.hold();
-  expect(await Promise.race([held.arrived.then(() => true), held.result.then(() => false)])).toBe(
-    true
-  );
-  fault.release = undefined;
-  await fault.worker?.terminate();
-  expect((await held.result).ok).toBe(false);
-  expect(held.published()).toBe(false);
-  expect(fault.requests.length).toBe(1);
-  expect(fault.auditPosts).toBe(0);
-  const cold = openCoreDb(f.dataRoot);
-  try {
-    expect(getOpenKitAccessTokenRecord(cold, f.target.record.tokenId)?.status).toBe(
-      kind === 'revoke' ? 'revoked' : 'rotated'
+it.each(kinds)(
+  'losing canonical %s ACK cannot publish success, later Audit or a repost',
+  async (kind) => {
+    const f = await fixture(kind);
+    const held = f.hold();
+    expect(await Promise.race([held.arrived.then(() => true), held.result.then(() => false)])).toBe(
+      true
     );
-    expect(listOpenKitAccessTokenRecords(cold).length).toBe(
-      f.before.length + (kind === 'rotate' ? 1 : 0)
-    );
-    expect(listServerAuditEvents(cold).filter((event) => event.action === f.action)).toEqual(
-      f.beforeHistory
-    );
-  } finally {
-    cold.sqlite.close();
+    fault.release = undefined;
+    await fault.worker?.terminate();
+    expect((await held.result).ok).toBe(false);
+    expect(held.published()).toBe(false);
+    expect(fault.requests.length).toBe(1);
+    expect(fault.auditPosts).toBe(0);
+    const cold = openCoreDb(f.dataRoot);
+    try {
+      expect(getOpenKitAccessTokenRecord(cold, f.target.record.tokenId)?.status).toBe(
+        kind === 'revoke' ? 'revoked' : 'rotated'
+      );
+      expect(listOpenKitAccessTokenRecords(cold).length).toBe(
+        f.before.length + (kind === 'rotate' ? 1 : 0)
+      );
+      expect(listServerAuditEvents(cold).filter((event) => event.action === f.action)).toEqual(
+        f.beforeHistory
+      );
+    } finally {
+      cold.sqlite.close();
+    }
   }
-});
+);
 
 it('failed successor insertion rolls back the whole original rotation tuple', async () => {
   const f = await fixture('rotate');
@@ -349,14 +351,15 @@ it('rotation returns its original mutation snapshot, not a fresh Main projection
   }
 });
 
-it.each(
-  kinds
-)('preserves the original %s missing-token404 and does not emit a later Audit', async (kind) => {
-  const f = await fixture(kind);
-  fault.kind = kind;
-  await expect(f.invoke(allocateEntityId('tok'))).rejects.toMatchObject({ status: 404 });
-  expect(fault.auditPosts).toBe(0);
-});
+it.each(kinds)(
+  'preserves the original %s missing-token404 and does not emit a later Audit',
+  async (kind) => {
+    const f = await fixture(kind);
+    fault.kind = kind;
+    await expect(f.invoke(allocateEntityId('tok'))).rejects.toMatchObject({ status: 404 });
+    expect(fault.auditPosts).toBe(0);
+  }
+);
 
 it('rotation rechecks a target revoked after Main preparation', async () => {
   const f = await fixture('rotate');
@@ -377,45 +380,48 @@ it('rotation rechecks a target revoked after Main preparation', async () => {
   expect(fault.auditPosts).toBe(0);
 });
 
-it.each(
-  kinds
-)('unsupported retained target format refuses canonical %s without overwrite', async (kind) => {
-  const f = await fixture(kind);
-  f.coreDb.sqlite
-    .prepare('UPDATE openkit_access_tokens SET schema_version = 2 WHERE token_id = ?')
-    .run(f.target.record.tokenId);
-  await expect(f.invoke()).rejects.toBeDefined();
-  expect(
+it.each(kinds)(
+  'unsupported retained target format refuses canonical %s without overwrite',
+  async (kind) => {
+    const f = await fixture(kind);
     f.coreDb.sqlite
-      .prepare('SELECT schema_version, status FROM openkit_access_tokens WHERE token_id = ?')
-      .get(f.target.record.tokenId)
-  ).toEqual({ schema_version: 2, status: 'active' });
-});
-
-it.each([
-  'expired',
-  'rotated-with-grace',
-] as const)('rotation preserves original404 for an existing %s target', async (state) => {
-  const f = await fixture('rotate');
-  let tokenId = f.target.record.tokenId;
-  if (state === 'expired') {
-    tokenId = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: f.target.record.ownerUserId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      now: new Date('2000-01-01T00:00:00.000Z'),
-      expiresAt: '2001-01-01T00:00:00.000Z',
-    }).record.tokenId;
-  } else {
-    await f.operations['token.rotate']({ tokenId, graceSeconds: 60 }, f.context);
-    expect((await verifyOpenKitAccessTokenRecord(f.coreDb, f.target.token))?.tokenId).toBe(tokenId);
+      .prepare('UPDATE openkit_access_tokens SET schema_version = 2 WHERE token_id = ?')
+      .run(f.target.record.tokenId);
+    await expect(f.invoke()).rejects.toBeDefined();
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT schema_version, status FROM openkit_access_tokens WHERE token_id = ?')
+        .get(f.target.record.tokenId)
+    ).toEqual({ schema_version: 2, status: 'active' });
   }
-  const before = facts(f.coreDb);
-  fault.kind = 'rotate';
-  await expect(f.invoke(tokenId)).rejects.toMatchObject({ status: 404 });
-  expect(facts(f.coreDb)).toBe(before);
-  expect(fault.auditPosts).toBe(0);
-});
+);
+
+it.each(['expired', 'rotated-with-grace'] as const)(
+  'rotation preserves original404 for an existing %s target',
+  async (state) => {
+    const f = await fixture('rotate');
+    let tokenId = f.target.record.tokenId;
+    if (state === 'expired') {
+      tokenId = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.target.record.ownerUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        now: new Date('2000-01-01T00:00:00.000Z'),
+        expiresAt: '2001-01-01T00:00:00.000Z',
+      }).record.tokenId;
+    } else {
+      await f.operations['token.rotate']({ tokenId, graceSeconds: 60 }, f.context);
+      expect((await verifyOpenKitAccessTokenRecord(f.coreDb, f.target.token))?.tokenId).toBe(
+        tokenId
+      );
+    }
+    const before = facts(f.coreDb);
+    fault.kind = 'rotate';
+    await expect(f.invoke(tokenId)).rejects.toMatchObject({ status: 404 });
+    expect(facts(f.coreDb)).toBe(before);
+    expect(fault.auditPosts).toBe(0);
+  }
+);
 
 it('a fresh repeated revoke preserves its original revocation timestamp and separate Audits', async () => {
   const f = await fixture('revoke');
@@ -461,41 +467,41 @@ it('prepared SQL owner rolls back predecessor update when successor insertion fa
   expect(facts(f.coreDb)).toBe(before);
 });
 
-it.each([
-  'workspace',
-  'workspace-readonly',
-] as const)('prepared SQL owner inherits the original %s owner, bindings and expiry', async (scope) => {
-  const f = await fixture('rotate');
-  const workspaces = createWorkspaceOperationImplementations({
-    coreDb: f.coreDb,
-    store: new FsStore({ dataRoot: f.dataRoot }),
-    inflightCommands: new Map(),
-  });
-  const workspace = await workspaces['workspace.create'](
-    { name: 'Scoped rotation fixture', requestId: randomUUID() },
-    f.context
-  );
-  const target = await f.operations['token.create'](
-    { scope, workspaceIds: [workspace.id], expiresAt: '2099-12-31T00:00:00.000Z' },
-    f.context
-  );
-  const successor = {
-    tokenId: allocateEntityId('tok'),
-    tokenHash: hashOpenKitAccessTokenSecret(createOpenKitAccessTokenSecret()),
-  };
-  const result = rotateOpenKitAccessTokenRecord(f.coreDb, target.record.tokenId, {
-    graceSeconds: 60,
-    successor,
-  });
-  for (const record of [result?.record, result?.rotatedRecord]) {
-    expect(record?.ownerUserId).toBe(target.record.ownerUserId);
-    expect(record?.scope).toBe(scope);
-    expect(record?.workspaceIds).toEqual([workspace.id]);
-    expect(record?.expiresAt).toBe(target.record.expiresAt);
+it.each(['workspace', 'workspace-readonly'] as const)(
+  'prepared SQL owner inherits the original %s owner, bindings and expiry',
+  async (scope) => {
+    const f = await fixture('rotate');
+    const workspaces = createWorkspaceOperationImplementations({
+      coreDb: f.coreDb,
+      store: new FsStore({ dataRoot: f.dataRoot }),
+      inflightCommands: new Map(),
+    });
+    const workspace = await workspaces['workspace.create'](
+      { name: 'Scoped rotation fixture', requestId: randomUUID() },
+      f.context
+    );
+    const target = await f.operations['token.create'](
+      { scope, workspaceIds: [workspace.id], expiresAt: '2099-12-31T00:00:00.000Z' },
+      f.context
+    );
+    const successor = {
+      tokenId: allocateEntityId('tok'),
+      tokenHash: hashOpenKitAccessTokenSecret(createOpenKitAccessTokenSecret()),
+    };
+    const result = rotateOpenKitAccessTokenRecord(f.coreDb, target.record.tokenId, {
+      graceSeconds: 60,
+      successor,
+    });
+    for (const record of [result?.record, result?.rotatedRecord]) {
+      expect(record?.ownerUserId).toBe(target.record.ownerUserId);
+      expect(record?.scope).toBe(scope);
+      expect(record?.workspaceIds).toEqual([workspace.id]);
+      expect(record?.expiresAt).toBe(target.record.expiresAt);
+    }
+    expect(result?.record.predecessorTokenId).toBe(target.record.tokenId);
+    expect(Object.keys(result ?? {}).includes('secret')).toBe(false);
   }
-  expect(result?.record.predecessorTokenId).toBe(target.record.tokenId);
-  expect(Object.keys(result ?? {}).includes('secret')).toBe(false);
-});
+);
 
 it('native leaf refuses application outside its covering Core transaction', async () => {
   const f = await fixture('revoke');

@@ -69,184 +69,185 @@ describe('real native child environment through Harness', () => {
     vi.unstubAllEnvs();
   });
 
-  it.each([
-    'pi',
-    'opencode',
-  ] as const)('delivers public values only to the %s native child and isolates a sibling', async (adapterId) => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-real-native-env-'));
-    const start = children.length;
-    const harnessEnvironment = {
-      HOME: join(root, 'bootstrap-home'),
-      PATH: process.env.PATH ?? '',
-      AMBIENT_SETTING: 'must-not-inherit',
-      LANG: 'fixture-ambient-language',
-    };
-    await mkdir(harnessEnvironment.HOME, { recursive: true });
-    // Image-default discovery must stay inside this test's fixture.
-    vi.stubEnv('HOME', harnessEnvironment.HOME);
-    await mkdir('/tmp/openkit-bootstrap', { recursive: true });
-    const nativeClients: OpenCodeClient[] = [];
-    const adapter =
-      adapterId === 'pi'
-        ? createPiResidentAdapter({
-            hostCommand: [
-              process.execPath,
-              '--no-warnings',
-              '--input-type=module',
-              '--eval',
-              SAMPLE +
-                `\nawait import(${JSON.stringify(new URL('../../pi-runtime-host/src/bin/openkit-pi-runtime-host.ts', import.meta.url).href)});`,
-            ],
-          })
-        : createOpenCodeAdapter({
-            loadClient: async () => {
-              const actual = await import('@opencode/client');
-              return {
-                OpenCode: {
-                  make: (options) => {
-                    const client = actual.OpenCode.make(options);
-                    nativeClients.push(client);
-                    return client;
-                  },
-                },
-              };
-            },
-          });
-    const harness = new WorkerHarness({
-      adapters: { [adapterId]: adapter },
-      environment: harnessEnvironment,
-      integration: integration(),
-      threadRootDirectory: join(root, 'native'),
-      rootDirectory: join(root, 'control'),
-      sandboxRoot: join(root, 'sandbox'),
-    });
-    let sequence = 0;
-    const send = (operation: 'session.open' | 'session.close', body: Record<string, unknown>) =>
-      harness.handle({
-        body,
-        harnessInstanceId: `harness-${adapterId}`,
-        operation,
-        operationId: createHash('sha256').update(`${root}:${sequence}`).digest('hex'),
-        schemaVersion: 2,
-        sequence: sequence++,
-      });
-    const selector = (id: string) => ({
-      agentSessionId: id,
-      agentSessionRuntimeBindingId: `binding-${id}`,
-    });
-    const open = async (id: string, values: Record<string, string>) => {
-      const threadId = allocateEntityId('th');
-      const turnId = allocateEntityId('tu');
-      // Core imports the session's initial workspace package before opening its native runtime.
-      const sandboxRoot = join(root, 'sandbox');
-      const packagePath = join(
-        sandboxRoot,
-        relative('/openkit', workerSessionInputPaths(id).packagePath)
-      );
-      await mkdir(dirname(packagePath), { recursive: true });
-      await writeFile(
-        packagePath,
-        JSON.stringify({
-          scope: {
-            agentSessionId: id,
-            threadId,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            turnId,
-          },
-          workspace: { root: sandboxRoot, inputs: [] },
-          runtime: {
-            environment: {
-              imageDigest: `sha256:${'a'.repeat(64)}`,
-              defaultsDigest: `sha256:${'b'.repeat(64)}`,
-              values,
-            },
-          },
-          extensions: {
-            openkit: {
-              sessionWorkspace: {
-                layout: {
-                  slots: [
-                    {
-                      id: 'work',
-                      kind: 'worktree',
-                      path: join(sandboxRoot, 'worktrees', id),
-                      access: 'read-write',
+  it.each(['pi', 'opencode'] as const)(
+    'delivers public values only to the %s native child and isolates a sibling',
+    async (adapterId) => {
+      const root = await mkdtemp(join(tmpdir(), 'openkit-real-native-env-'));
+      const start = children.length;
+      const harnessEnvironment = {
+        HOME: join(root, 'bootstrap-home'),
+        PATH: process.env.PATH ?? '',
+        AMBIENT_SETTING: 'must-not-inherit',
+        LANG: 'fixture-ambient-language',
+      };
+      await mkdir(harnessEnvironment.HOME, { recursive: true });
+      // Image-default discovery must stay inside this test's fixture.
+      vi.stubEnv('HOME', harnessEnvironment.HOME);
+      await mkdir('/tmp/openkit-bootstrap', { recursive: true });
+      const nativeClients: OpenCodeClient[] = [];
+      const adapter =
+        adapterId === 'pi'
+          ? createPiResidentAdapter({
+              hostCommand: [
+                process.execPath,
+                '--no-warnings',
+                '--input-type=module',
+                '--eval',
+                SAMPLE +
+                  `\nawait import(${JSON.stringify(new URL('../../pi-runtime-host/src/bin/openkit-pi-runtime-host.ts', import.meta.url).href)});`,
+              ],
+            })
+          : createOpenCodeAdapter({
+              loadClient: async () => {
+                const actual = await import('@opencode/client');
+                return {
+                  OpenCode: {
+                    make: (options) => {
+                      const client = actual.OpenCode.make(options);
+                      nativeClients.push(client);
+                      return client;
                     },
-                  ],
+                  },
+                };
+              },
+            });
+      const harness = new WorkerHarness({
+        adapters: { [adapterId]: adapter },
+        environment: harnessEnvironment,
+        integration: integration(),
+        threadRootDirectory: join(root, 'native'),
+        rootDirectory: join(root, 'control'),
+        sandboxRoot: join(root, 'sandbox'),
+      });
+      let sequence = 0;
+      const send = (operation: 'session.open' | 'session.close', body: Record<string, unknown>) =>
+        harness.handle({
+          body,
+          harnessInstanceId: `harness-${adapterId}`,
+          operation,
+          operationId: createHash('sha256').update(`${root}:${sequence}`).digest('hex'),
+          schemaVersion: 2,
+          sequence: sequence++,
+        });
+      const selector = (id: string) => ({
+        agentSessionId: id,
+        agentSessionRuntimeBindingId: `binding-${id}`,
+      });
+      const open = async (id: string, values: Record<string, string>) => {
+        const threadId = allocateEntityId('th');
+        const turnId = allocateEntityId('tu');
+        // Core imports the session's initial workspace package before opening its native runtime.
+        const sandboxRoot = join(root, 'sandbox');
+        const packagePath = join(
+          sandboxRoot,
+          relative('/openkit', workerSessionInputPaths(id).packagePath)
+        );
+        await mkdir(dirname(packagePath), { recursive: true });
+        await writeFile(
+          packagePath,
+          JSON.stringify({
+            scope: {
+              agentSessionId: id,
+              threadId,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              turnId,
+            },
+            workspace: { root: sandboxRoot, inputs: [] },
+            runtime: {
+              environment: {
+                imageDigest: `sha256:${'a'.repeat(64)}`,
+                defaultsDigest: `sha256:${'b'.repeat(64)}`,
+                values,
+              },
+            },
+            extensions: {
+              openkit: {
+                sessionWorkspace: {
+                  layout: {
+                    slots: [
+                      {
+                        id: 'work',
+                        kind: 'worktree',
+                        path: join(sandboxRoot, 'worktrees', id),
+                        access: 'read-write',
+                      },
+                    ],
+                  },
                 },
               },
             },
-          },
-        })
-      );
-      return await send('session.open', {
-        ...selector(id),
-        adapterId,
-        agentSessionCompatibilityKey: 'a'.repeat(64),
-        capabilityLoopbackCredential: credential(`capability-${id}`),
-        inferenceLoopbackCredential: credential(`inference-${id}`),
-        effectiveSetupGeneration: 1,
-        resume: null,
-        nativeEnvironment: values,
-        threadId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-    };
-    try {
-      expect(
-        (
-          await open('as_00000000-0000-78a2-b06c-d417ea60c9b7', {
-            N_ENV_PUBLIC: 'hello',
-            N_ENV_EMPTY: '',
-            OPENCODE_BENIGN_SETTING: 'yes',
           })
-        ).disposition
-      ).toBe('succeeded');
-      const primary = children.slice(start).find((child) => child.pid && child.exitCode === null);
-      expect(primary?.pid).toBeDefined();
-      if (adapterId === 'opencode') {
-        await nativeClients[0]!.location.reload();
-        await nativeClients[0]!.model.list();
-      }
-      await expect
-        .poll(() => JSON.parse(primary!.sample ?? '{}'), { timeout: 5000 })
-        .toEqual({
-          pid: primary!.pid!,
-          value: 'hello',
-          empty: '',
-          vendor: 'yes',
-          ambient: null,
-          language: null,
+        );
+        return await send('session.open', {
+          ...selector(id),
+          adapterId,
+          agentSessionCompatibilityKey: 'a'.repeat(64),
+          capabilityLoopbackCredential: credential(`capability-${id}`),
+          inferenceLoopbackCredential: credential(`inference-${id}`),
+          effectiveSetupGeneration: 1,
+          resume: null,
+          nativeEnvironment: values,
+          threadId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
-      const siblingStart = children.length;
-      expect((await open('as_00000000-0000-7ab7-b38f-79a3e328c12f', {})).disposition).toBe(
-        'succeeded'
-      );
-      const sibling = children
-        .slice(siblingStart)
-        .find((child) => child.pid && child.exitCode === null);
-      expect(sibling?.pid).toBeDefined();
-      if (adapterId === 'opencode') {
-        await nativeClients[1]!.location.reload();
-        await nativeClients[1]!.model.list();
+      };
+      try {
+        expect(
+          (
+            await open('as_00000000-0000-78a2-b06c-d417ea60c9b7', {
+              N_ENV_PUBLIC: 'hello',
+              N_ENV_EMPTY: '',
+              OPENCODE_BENIGN_SETTING: 'yes',
+            })
+          ).disposition
+        ).toBe('succeeded');
+        const primary = children.slice(start).find((child) => child.pid && child.exitCode === null);
+        expect(primary?.pid).toBeDefined();
+        if (adapterId === 'opencode') {
+          await nativeClients[0]!.location.reload();
+          await nativeClients[0]!.model.list();
+        }
+        await expect
+          .poll(() => JSON.parse(primary!.sample ?? '{}'), { timeout: 5000 })
+          .toEqual({
+            pid: primary!.pid!,
+            value: 'hello',
+            empty: '',
+            vendor: 'yes',
+            ambient: null,
+            language: null,
+          });
+        const siblingStart = children.length;
+        expect((await open('as_00000000-0000-7ab7-b38f-79a3e328c12f', {})).disposition).toBe(
+          'succeeded'
+        );
+        const sibling = children
+          .slice(siblingStart)
+          .find((child) => child.pid && child.exitCode === null);
+        expect(sibling?.pid).toBeDefined();
+        if (adapterId === 'opencode') {
+          await nativeClients[1]!.location.reload();
+          await nativeClients[1]!.model.list();
+        }
+        await expect
+          .poll(() => JSON.parse(sibling!.sample ?? '{}'), { timeout: 5000 })
+          .toEqual({
+            pid: sibling!.pid!,
+            value: null,
+            empty: null,
+            vendor: null,
+            ambient: null,
+            language: null,
+          });
+        expect(JSON.parse(primary!.sample ?? '{}').value).toBe('hello');
+        expect(Object.hasOwn(harnessEnvironment, 'N_ENV_PUBLIC')).toBe(false);
+        expect(process.env.N_ENV_PUBLIC).toBeUndefined();
+      } finally {
+        await send('session.close', selector('as_00000000-0000-78a2-b06c-d417ea60c9b7'));
+        await send('session.close', selector('as_00000000-0000-7ab7-b38f-79a3e328c12f'));
+        await rm(root, { recursive: true, force: true });
       }
-      await expect
-        .poll(() => JSON.parse(sibling!.sample ?? '{}'), { timeout: 5000 })
-        .toEqual({
-          pid: sibling!.pid!,
-          value: null,
-          empty: null,
-          vendor: null,
-          ambient: null,
-          language: null,
-        });
-      expect(JSON.parse(primary!.sample ?? '{}').value).toBe('hello');
-      expect(Object.hasOwn(harnessEnvironment, 'N_ENV_PUBLIC')).toBe(false);
-      expect(process.env.N_ENV_PUBLIC).toBeUndefined();
-    } finally {
-      await send('session.close', selector('as_00000000-0000-78a2-b06c-d417ea60c9b7'));
-      await send('session.close', selector('as_00000000-0000-7ab7-b38f-79a3e328c12f'));
-      await rm(root, { recursive: true, force: true });
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 });

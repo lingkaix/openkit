@@ -112,41 +112,38 @@ describe('harness Login default selection', () => {
     });
   });
 
-  it.each([
-    'revoked',
-    'quota-exhausted',
-    'error',
-    'explicit-request',
-  ] as const)('leaves the outgoing Login on %s even when it otherwise appears usable', (trigger) => {
-    const input = {
-      eligible: [login('outgoing'), login('replacement')],
-      threadBinding: { referenceId: 'outgoing' },
-      trigger,
-      now,
-    };
-    expect(selectHarnessLogin(input)).toEqual({ kind: 'target', referenceId: 'replacement' });
-    expect(selectHarnessLogin({ ...input, eligible: [login('outgoing')] })).toEqual({
-      kind: 'unavailable',
-    });
-  });
-
-  it.each([
-    'revoked',
-    'error',
-    'explicit-request',
-  ] as const)('allows another family of the same account on %s', (trigger) => {
-    expect(
-      selectHarnessLogin({
-        eligible: [
-          login('outgoing', { accountId: 'same-account' }),
-          login('sibling', { accountId: 'same-account' }),
-        ],
+  it.each(['revoked', 'quota-exhausted', 'error', 'explicit-request'] as const)(
+    'leaves the outgoing Login on %s even when it otherwise appears usable',
+    (trigger) => {
+      const input = {
+        eligible: [login('outgoing'), login('replacement')],
         threadBinding: { referenceId: 'outgoing' },
         trigger,
         now,
-      })
-    ).toEqual({ kind: 'target', referenceId: 'sibling' });
-  });
+      };
+      expect(selectHarnessLogin(input)).toEqual({ kind: 'target', referenceId: 'replacement' });
+      expect(selectHarnessLogin({ ...input, eligible: [login('outgoing')] })).toEqual({
+        kind: 'unavailable',
+      });
+    }
+  );
+
+  it.each(['revoked', 'error', 'explicit-request'] as const)(
+    'allows another family of the same account on %s',
+    (trigger) => {
+      expect(
+        selectHarnessLogin({
+          eligible: [
+            login('outgoing', { accountId: 'same-account' }),
+            login('sibling', { accountId: 'same-account' }),
+          ],
+          threadBinding: { referenceId: 'outgoing' },
+          trigger,
+          now,
+        })
+      ).toEqual({ kind: 'target', referenceId: 'sibling' });
+    }
+  );
 
   it('applies a quota-exhausted trigger to every Login of the outgoing account', () => {
     const input: SelectionInput = {
@@ -165,47 +162,56 @@ describe('harness Login default selection', () => {
     ).toEqual({ kind: 'target', referenceId: 'other-account' });
   });
 
-  it.each([
-    false,
-    true,
-  ])('applies observed account exhaustion independently of candidate order (source first: %s)', (sourceFirst) => {
-    const source = login('exhausted', { accountId: 'same-account', quota: quota('exhausted') });
-    const sibling = login('sibling', { accountId: 'same-account', ownership: 'workspace-shared' });
-    const eligible = sourceFirst ? [source, sibling] : [sibling, source];
-
-    expect(
-      selectHarnessLogin({
-        eligible,
-        threadBinding: { referenceId: 'sibling' },
-        trigger: 'use',
-        now,
-      })
-    ).toEqual({ kind: 'unavailable' });
-  });
-
-  it.each([
-    2, 4,
-  ])('ignores exhaustion from mismatched material generation %s for affinity and account peers', (materialGeneration) => {
-    const eligible = [
-      login('bound', {
+  it.each([false, true])(
+    'applies observed account exhaustion independently of candidate order (source first: %s)',
+    (sourceFirst) => {
+      const source = login('exhausted', { accountId: 'same-account', quota: quota('exhausted') });
+      const sibling = login('sibling', {
         accountId: 'same-account',
-        quota: { ...quota('exhausted'), materialGeneration },
-      }),
-      login('sibling', { accountId: 'same-account' }),
-    ];
+        ownership: 'workspace-shared',
+      });
+      const eligible = sourceFirst ? [source, sibling] : [sibling, source];
 
-    expect(
-      selectHarnessLogin({ eligible, threadBinding: { referenceId: 'bound' }, trigger: 'use', now })
-    ).toEqual({ kind: 'keep', referenceId: 'bound' });
-    expect(
-      selectHarnessLogin({
-        eligible,
-        threadBinding: { referenceId: 'bound' },
-        trigger: 'error',
-        now,
-      })
-    ).toEqual({ kind: 'target', referenceId: 'sibling' });
-  });
+      expect(
+        selectHarnessLogin({
+          eligible,
+          threadBinding: { referenceId: 'sibling' },
+          trigger: 'use',
+          now,
+        })
+      ).toEqual({ kind: 'unavailable' });
+    }
+  );
+
+  it.each([2, 4])(
+    'ignores exhaustion from mismatched material generation %s for affinity and account peers',
+    (materialGeneration) => {
+      const eligible = [
+        login('bound', {
+          accountId: 'same-account',
+          quota: { ...quota('exhausted'), materialGeneration },
+        }),
+        login('sibling', { accountId: 'same-account' }),
+      ];
+
+      expect(
+        selectHarnessLogin({
+          eligible,
+          threadBinding: { referenceId: 'bound' },
+          trigger: 'use',
+          now,
+        })
+      ).toEqual({ kind: 'keep', referenceId: 'bound' });
+      expect(
+        selectHarnessLogin({
+          eligible,
+          threadBinding: { referenceId: 'bound' },
+          trigger: 'error',
+          now,
+        })
+      ).toEqual({ kind: 'target', referenceId: 'sibling' });
+    }
+  );
 
   it('does not infer quota recovery from an elapsed reset or observation age', () => {
     expect(

@@ -152,49 +152,49 @@ async function fixture() {
   };
 }
 
-it.each([
-  false,
-  true,
-])('meters stock raw argument spelling before JSON normalization, stream=%s', async (stream) => {
-  const f = await fixture();
-  const wire =
-    [
-      f.chunk({ role: 'assistant' }),
-      f.chunk({ content: '中文🙂', reasoning_content: 'why\n' }),
-      f.chunk({
-        tool_calls: [
-          {
-            index: 0,
-            id: 'call_fixture',
-            type: 'function',
-            function: { name: 'lookup', arguments: '{ "x": ' },
-          },
-        ],
-      }),
-      f.chunk({ tool_calls: [{ index: 0, function: { arguments: '1 }' } }] }),
-      f.chunk({}, 'tool_calls'),
-    ]
-      .map(f.encode)
-      .join('') + 'data: [DONE]\n\n';
-  vi.spyOn(globalThis, 'fetch').mockImplementation(
-    async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } })
-  );
-  const transport = { rawOutput: f.boundary(randomUUID()) };
-  if (stream)
-    await new Response(
-      await f.client.createChatCompletionStream(
-        f.provider,
-        { ...f.request, stream: true },
-        undefined,
-        transport
-      )
-    ).text();
-  else await f.client.createChatCompletion(f.provider, f.request, undefined, transport);
-  await f.cover();
-  expect(readWorkerRawOutput(f.db, f.scope)).toEqual({ rawOutputBytes: 24, exhausted: false });
-  expect(f.events()).toBeGreaterThanOrEqual(5);
-  expect(f.pending()).toBe(0);
-});
+it.each([false, true])(
+  'meters stock raw argument spelling before JSON normalization, stream=%s',
+  async (stream) => {
+    const f = await fixture();
+    const wire =
+      [
+        f.chunk({ role: 'assistant' }),
+        f.chunk({ content: '中文🙂', reasoning_content: 'why\n' }),
+        f.chunk({
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_fixture',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{ "x": ' },
+            },
+          ],
+        }),
+        f.chunk({ tool_calls: [{ index: 0, function: { arguments: '1 }' } }] }),
+        f.chunk({}, 'tool_calls'),
+      ]
+        .map(f.encode)
+        .join('') + 'data: [DONE]\n\n';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } })
+    );
+    const transport = { rawOutput: f.boundary(randomUUID()) };
+    if (stream)
+      await new Response(
+        await f.client.createChatCompletionStream(
+          f.provider,
+          { ...f.request, stream: true },
+          undefined,
+          transport
+        )
+      ).text();
+    else await f.client.createChatCompletion(f.provider, f.request, undefined, transport);
+    await f.cover();
+    expect(readWorkerRawOutput(f.db, f.scope)).toEqual({ rawOutputBytes: 24, exhausted: false });
+    expect(f.events()).toBeGreaterThanOrEqual(5);
+    expect(f.pending()).toBe(0);
+  }
+);
 
 it('retains raw failed-attempt prefixes even when the stock parser cannot return a complete response', async () => {
   const f = await fixture();

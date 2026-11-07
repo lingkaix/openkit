@@ -191,71 +191,69 @@ function observed<T>(promise: Promise<T>) {
   );
 }
 
-it.each(
-  cases
-)('preserves original $operation admission facts with Main query-only and cold reopen', async ({
-  operation,
-  decision,
-}) => {
-  const f = await fixture();
-  f.queryOnly();
-  const requestId = randomUUID();
-  const candidateId = allocateEntityId('cand');
-  const result = await prepareCatalogSkillDecision(
-    f.dependencies,
-    {
-      operation,
-      decision,
-      requestId,
-      candidateId,
+it.each(cases)(
+  'preserves original $operation admission facts with Main query-only and cold reopen',
+  async ({ operation, decision }) => {
+    const f = await fixture();
+    f.queryOnly();
+    const requestId = randomUUID();
+    const candidateId = allocateEntityId('cand');
+    const result = await prepareCatalogSkillDecision(
+      f.dependencies,
+      {
+        operation,
+        decision,
+        requestId,
+        candidateId,
+        workspaceId: f.workspaceId,
+        expectedRevision: 7,
+      },
+      f.context
+    );
+    const events = listWorkspaceAuditEvents(f.workspaceDb, f.workspaceId).filter(
+      (event) => event.requestId === requestId
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      id: result.auditRef,
       workspaceId: f.workspaceId,
-      expectedRevision: 7,
-    },
-    f.context
-  );
-  const events = listWorkspaceAuditEvents(f.workspaceDb, f.workspaceId).filter(
-    (event) => event.requestId === requestId
-  );
-  expect(events).toHaveLength(1);
-  expect(events[0]).toEqual({
-    id: result.auditRef,
-    workspaceId: f.workspaceId,
-    threadId: null,
-    turnId: null,
-    itemId: null,
-    capabilityCallId: null,
-    permissionDecisionId: null,
-    vaultGrantId: null,
-    requestId,
-    actor: { kind: 'user', id: f.userId },
-    subject: null,
-    agentId: null,
-    agentSessionId: null,
-    category: 'system',
-    action: `${operation}.admit`,
-    resource: `skill-candidate:${candidateId}`,
-    resourceRevision: 7,
-    outcome: 'succeeded',
-    severity: 'info',
-    summary: `Human Skill candidate ${decision} admission.`,
-    errorCode: null,
-    createdAt: expect.any(String),
-    occurredAt: expect.any(String),
-  });
-  expect(result.actor).toEqual({ kind: 'user', id: f.userId });
-  expect(Date.parse(result.decidedAt)).toBeGreaterThanOrEqual(Date.parse(events[0]!.createdAt));
-  const original = f.rows(requestId);
-  expect(original.receipts).toEqual([]); // This original standalone stage owns no command receipt.
-  await shutdownControlStoreWorkerClient();
-  const cold = f.repositoryWorkspaceDb(f.workspaceId);
-  expect(cold.sqlite.pragma('query_only', { simple: true })).toBe(1);
-  expect(
-    listWorkspaceAuditEvents(cold, f.workspaceId).filter((event) => event.requestId === requestId)
-  ).toEqual(events);
-  expect(
-    cold.sqlite.prepare('SELECT * FROM audit_events WHERE request_id=?').all(requestId)
-  ).toEqual(original.audits);
-});
+      threadId: null,
+      turnId: null,
+      itemId: null,
+      capabilityCallId: null,
+      permissionDecisionId: null,
+      vaultGrantId: null,
+      requestId,
+      actor: { kind: 'user', id: f.userId },
+      subject: null,
+      agentId: null,
+      agentSessionId: null,
+      category: 'system',
+      action: `${operation}.admit`,
+      resource: `skill-candidate:${candidateId}`,
+      resourceRevision: 7,
+      outcome: 'succeeded',
+      severity: 'info',
+      summary: `Human Skill candidate ${decision} admission.`,
+      errorCode: null,
+      createdAt: expect.any(String),
+      occurredAt: expect.any(String),
+    });
+    expect(result.actor).toEqual({ kind: 'user', id: f.userId });
+    expect(Date.parse(result.decidedAt)).toBeGreaterThanOrEqual(Date.parse(events[0]!.createdAt));
+    const original = f.rows(requestId);
+    expect(original.receipts).toEqual([]); // This original standalone stage owns no command receipt.
+    await shutdownControlStoreWorkerClient();
+    const cold = f.repositoryWorkspaceDb(f.workspaceId);
+    expect(cold.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    expect(
+      listWorkspaceAuditEvents(cold, f.workspaceId).filter((event) => event.requestId === requestId)
+    ).toEqual(events);
+    expect(
+      cold.sqlite.prepare('SELECT * FROM audit_events WHERE request_id=?').all(requestId)
+    ).toEqual(original.audits);
+  }
+);
 
 it('publishes the original Audit identity and timestamps without adding a receipt', async () => {
   expect(STANDALONE_AUDIT_STAGES).toEqual([
@@ -386,158 +384,156 @@ it.each([
   expect(listWorkspaceAuditEvents(siblingDb, sibling.id)).toEqual(siblingBefore);
 });
 
-it.each(cases)('keeps current authority checks before $operation publication', async ({
-  operation,
-  decision,
-}) => {
-  const f = await fixture();
-  f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
-  const requestId = randomUUID();
-  const posts = fault.messages.length;
-  await expect(
-    Promise.resolve().then(() =>
-      prepareCatalogSkillDecision(
-        f.dependencies,
-        {
-          operation,
-          decision,
-          requestId,
-          candidateId: allocateEntityId('cand'),
-          workspaceId: f.workspaceId,
-          expectedRevision: 1,
-        },
-        f.context
+it.each(cases)(
+  'keeps current authority checks before $operation publication',
+  async ({ operation, decision }) => {
+    const f = await fixture();
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
+    const requestId = randomUUID();
+    const posts = fault.messages.length;
+    await expect(
+      Promise.resolve().then(() =>
+        prepareCatalogSkillDecision(
+          f.dependencies,
+          {
+            operation,
+            decision,
+            requestId,
+            candidateId: allocateEntityId('cand'),
+            workspaceId: f.workspaceId,
+            expectedRevision: 1,
+          },
+          f.context
+        )
       )
-    )
-  ).rejects.toThrow('Current Skill decision authority is unavailable.');
-  expect(f.rows(requestId)).toEqual({ audits: [], receipts: [] });
-  expect(fault.messages).toHaveLength(posts);
-});
+    ).rejects.toThrow('Current Skill decision authority is unavailable.');
+    expect(f.rows(requestId)).toEqual({ audits: [], receipts: [] });
+    expect(fault.messages).toHaveLength(posts);
+  }
+);
 
-it.each(
-  cases
-)('lost admission FULL ACK suppresses $operation candidate publication and any repost', async ({
-  operation,
-}) => {
-  const f = await fixture();
-  const submitted = submitWorkspaceSkillCandidate({
-    dataRoot: f.dataRoot,
-    workspaceId: f.workspaceId,
-    entryId: 'audit-only',
-    baseDigest: null,
-    expectedRevision: 0,
-    createdAt: '2026-10-19T00:00:00.000Z',
-    producer: { kind: 'user', id: f.userId },
-    summary: 'An inactive candidate for admission failure.',
-    tree: [
-      {
-        kind: 'file',
-        path: 'SKILL.md',
-        contentBase64: Buffer.from(
-          '---\nname: audit-only\ndescription: Audit admission fixture.\n---\nKeep candidate inactive.\n'
-        ).toString('base64'),
-      },
-    ],
-  });
-  const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
-  const requestId = randomUUID();
-  const gate = new Int32Array(fault.gate);
-  gate.fill(0);
-  new Uint8Array(fault.request).set(new TextEncoder().encode(requestId));
-  Atomics.store(gate, 1, 1);
-  const input = {
-    workspaceId: f.workspaceId,
-    candidateId: submitted.candidate.id,
-    expectedRevision: 1,
-    requestId,
-  };
-  const result = observed(
-    operation === 'catalog.skill-candidate-decide'
-      ? f.implementations[operation]({ ...input, decision: 'rejected' }, f.context)
-      : f.implementations[operation](input, f.context)
-  );
-  await vi.waitFor(() => expect(Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
-  expect(Atomics.load(gate, 3)).toBe(2); // SQLite FULL after actual COMMIT, before any ACK.
-  const prefix = f.rows(requestId);
-  expect(prefix.audits).toHaveLength(1);
-  expect(prefix.audits[0]).toMatchObject({ action: `${operation}.admit`, request_id: requestId });
-  expect(prefix.receipts).toEqual([]);
-  expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
-  const posts = fault.messages.length;
-  const workers = fault.workers.length;
-  await fault.workers[Atomics.load(gate, 4)]!.terminate();
-  expect(await result).toMatchObject({ ok: false, error: { commit: 'unknown' } });
-  expect(fault.messages).toHaveLength(posts);
-  expect(fault.workers).toHaveLength(workers);
-  expect(f.rows(requestId)).toEqual(prefix);
-  expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
-  await shutdownControlStoreWorkerClient();
-  const cold = f.repositoryWorkspaceDb(f.workspaceId);
-  expect(
-    cold.sqlite.prepare('SELECT * FROM audit_events WHERE request_id=?').all(requestId)
-  ).toEqual(prefix.audits);
-  expect(
-    cold.sqlite.prepare('SELECT * FROM idempotency_requests WHERE request_id=?').all(requestId)
-  ).toEqual([]);
-});
+it.each(cases)(
+  'lost admission FULL ACK suppresses $operation candidate publication and any repost',
+  async ({ operation }) => {
+    const f = await fixture();
+    const submitted = submitWorkspaceSkillCandidate({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspaceId,
+      entryId: 'audit-only',
+      baseDigest: null,
+      expectedRevision: 0,
+      createdAt: '2026-10-19T00:00:00.000Z',
+      producer: { kind: 'user', id: f.userId },
+      summary: 'An inactive candidate for admission failure.',
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          contentBase64: Buffer.from(
+            '---\nname: audit-only\ndescription: Audit admission fixture.\n---\nKeep candidate inactive.\n'
+          ).toString('base64'),
+        },
+      ],
+    });
+    const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
+    const requestId = randomUUID();
+    const gate = new Int32Array(fault.gate);
+    gate.fill(0);
+    new Uint8Array(fault.request).set(new TextEncoder().encode(requestId));
+    Atomics.store(gate, 1, 1);
+    const input = {
+      workspaceId: f.workspaceId,
+      candidateId: submitted.candidate.id,
+      expectedRevision: 1,
+      requestId,
+    };
+    const result = observed(
+      operation === 'catalog.skill-candidate-decide'
+        ? f.implementations[operation]({ ...input, decision: 'rejected' }, f.context)
+        : f.implementations[operation](input, f.context)
+    );
+    await vi.waitFor(() => expect(Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
+    expect(Atomics.load(gate, 3)).toBe(2); // SQLite FULL after actual COMMIT, before any ACK.
+    const prefix = f.rows(requestId);
+    expect(prefix.audits).toHaveLength(1);
+    expect(prefix.audits[0]).toMatchObject({ action: `${operation}.admit`, request_id: requestId });
+    expect(prefix.receipts).toEqual([]);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
+    const posts = fault.messages.length;
+    const workers = fault.workers.length;
+    await fault.workers[Atomics.load(gate, 4)]!.terminate();
+    expect(await result).toMatchObject({ ok: false, error: { commit: 'unknown' } });
+    expect(fault.messages).toHaveLength(posts);
+    expect(fault.workers).toHaveLength(workers);
+    expect(f.rows(requestId)).toEqual(prefix);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
+    await shutdownControlStoreWorkerClient();
+    const cold = f.repositoryWorkspaceDb(f.workspaceId);
+    expect(
+      cold.sqlite.prepare('SELECT * FROM audit_events WHERE request_id=?').all(requestId)
+    ).toEqual(prefix.audits);
+    expect(
+      cold.sqlite.prepare('SELECT * FROM idempotency_requests WHERE request_id=?').all(requestId)
+    ).toEqual([]);
+  }
+);
 
-it.each(
-  cases
-)('refuses $operation when current authority is lost during admission FULL acknowledgement', async ({
-  operation,
-}) => {
-  const f = await fixture();
-  const submitted = submitWorkspaceSkillCandidate({
-    dataRoot: f.dataRoot,
-    workspaceId: f.workspaceId,
-    entryId: 'audit-authority',
-    baseDigest: null,
-    expectedRevision: 0,
-    createdAt: '2026-10-19T00:00:00.000Z',
-    producer: { kind: 'user', id: f.userId },
-    summary: 'An inactive candidate for current authority loss.',
-    tree: [
-      {
-        kind: 'file',
-        path: 'SKILL.md',
-        contentBase64: Buffer.from(
-          '---\nname: audit-authority\ndescription: Current authority fixture.\n---\nKeep candidate inactive.\n'
-        ).toString('base64'),
-      },
-    ],
-  });
-  const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
-  const requestId = randomUUID();
-  const gate = new Int32Array(fault.gate);
-  gate.fill(0);
-  new Uint8Array(fault.request).set(new TextEncoder().encode(requestId));
-  Atomics.store(gate, 1, 1);
-  const input = {
-    workspaceId: f.workspaceId,
-    candidateId: submitted.candidate.id,
-    expectedRevision: 1,
-    requestId,
-  };
-  const result = observed(
-    operation === 'catalog.skill-candidate-decide'
-      ? f.implementations[operation]({ ...input, decision: 'rejected' }, f.context)
-      : f.implementations[operation](input, f.context)
-  );
-  await vi.waitFor(() => expect(Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
-  expect(Atomics.load(gate, 3)).toBe(2);
-  const prefix = f.rows(requestId);
-  expect(prefix.audits).toHaveLength(1);
-  expect(prefix.audits[0]).toMatchObject({ action: `${operation}.admit`, request_id: requestId });
-  expect(prefix.receipts).toEqual([]);
-  expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
-  // Cross-scope authority changes after durable admission, while its real ACK is still withheld.
-  f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
-  const posts = fault.messages.length;
-  const workers = fault.workers.length;
-  release();
-  expect(await result).toMatchObject({ ok: false, error: { code: 'catalog_forbidden' } });
-  expect(fault.messages).toHaveLength(posts);
-  expect(fault.workers).toHaveLength(workers);
-  expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
-  expect(f.rows(requestId)).toEqual(prefix);
-});
+it.each(cases)(
+  'refuses $operation when current authority is lost during admission FULL acknowledgement',
+  async ({ operation }) => {
+    const f = await fixture();
+    const submitted = submitWorkspaceSkillCandidate({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspaceId,
+      entryId: 'audit-authority',
+      baseDigest: null,
+      expectedRevision: 0,
+      createdAt: '2026-10-19T00:00:00.000Z',
+      producer: { kind: 'user', id: f.userId },
+      summary: 'An inactive candidate for current authority loss.',
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          contentBase64: Buffer.from(
+            '---\nname: audit-authority\ndescription: Current authority fixture.\n---\nKeep candidate inactive.\n'
+          ).toString('base64'),
+        },
+      ],
+    });
+    const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
+    const requestId = randomUUID();
+    const gate = new Int32Array(fault.gate);
+    gate.fill(0);
+    new Uint8Array(fault.request).set(new TextEncoder().encode(requestId));
+    Atomics.store(gate, 1, 1);
+    const input = {
+      workspaceId: f.workspaceId,
+      candidateId: submitted.candidate.id,
+      expectedRevision: 1,
+      requestId,
+    };
+    const result = observed(
+      operation === 'catalog.skill-candidate-decide'
+        ? f.implementations[operation]({ ...input, decision: 'rejected' }, f.context)
+        : f.implementations[operation](input, f.context)
+    );
+    await vi.waitFor(() => expect(Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
+    expect(Atomics.load(gate, 3)).toBe(2);
+    const prefix = f.rows(requestId);
+    expect(prefix.audits).toHaveLength(1);
+    expect(prefix.audits[0]).toMatchObject({ action: `${operation}.admit`, request_id: requestId });
+    expect(prefix.receipts).toEqual([]);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
+    // Cross-scope authority changes after durable admission, while its real ACK is still withheld.
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
+    const posts = fault.messages.length;
+    const workers = fault.workers.length;
+    release();
+    expect(await result).toMatchObject({ ok: false, error: { code: 'catalog_forbidden' } });
+    expect(fault.messages).toHaveLength(posts);
+    expect(fault.workers).toHaveLength(workers);
+    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
+    expect(f.rows(requestId)).toEqual(prefix);
+  }
+);

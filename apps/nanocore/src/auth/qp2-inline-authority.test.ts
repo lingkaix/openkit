@@ -153,51 +153,51 @@ describe('QP-2c remaining inline authority', () => {
     expect(await denied.json()).toMatchObject({ code: 'diagnostics_admin_forbidden' });
   });
 
-  it.each([
-    'invitee',
-    'administrator',
-  ] as const)('requires invitation.respond for a valid %s without adding membership', async (actor) => {
-    const f = await fixture();
-    const app = f.session(actor === 'invitee' ? f.inviteeId : FIXTURE_LOCAL_USER_ID);
-    const first = await f.invite();
-    const declined = await app.request(
-      ...operationRequest(
-        'workspace.my-invitation-decline',
-        {
-          invitationId: first.invitationId,
-          expectedRevision: first.revision,
-        },
-        { headers: { 'x-openkit-request-id': randomUUID() } }
-      )
-    );
-    expect(declined.status).toBe(200);
-    const pending = await f.invite();
-    const fault = removeOperationGrants('invitation.respond');
-    const denied = await app.request(
-      ...operationRequest(
-        'workspace.my-invitation-accept',
-        {
-          invitationId: pending.invitationId,
-          expectedRevision: pending.revision,
-        },
-        { headers: { 'x-openkit-request-id': randomUUID() } }
-      )
-    );
-    // Multi-user Workspace: identity eligibility does not bypass the concrete invitation Kernel decision.
-    expect(denied.status).toBe(403);
-    fault.mockRestore();
-    const accepted = await app.request(
-      ...operationRequest(
-        'workspace.my-invitation-accept',
-        {
-          invitationId: pending.invitationId,
-          expectedRevision: pending.revision,
-        },
-        { headers: { 'x-openkit-request-id': randomUUID() } }
-      )
-    );
-    expect(accepted.status).toBe(200);
-  });
+  it.each(['invitee', 'administrator'] as const)(
+    'requires invitation.respond for a valid %s without adding membership',
+    async (actor) => {
+      const f = await fixture();
+      const app = f.session(actor === 'invitee' ? f.inviteeId : FIXTURE_LOCAL_USER_ID);
+      const first = await f.invite();
+      const declined = await app.request(
+        ...operationRequest(
+          'workspace.my-invitation-decline',
+          {
+            invitationId: first.invitationId,
+            expectedRevision: first.revision,
+          },
+          { headers: { 'x-openkit-request-id': randomUUID() } }
+        )
+      );
+      expect(declined.status).toBe(200);
+      const pending = await f.invite();
+      const fault = removeOperationGrants('invitation.respond');
+      const denied = await app.request(
+        ...operationRequest(
+          'workspace.my-invitation-accept',
+          {
+            invitationId: pending.invitationId,
+            expectedRevision: pending.revision,
+          },
+          { headers: { 'x-openkit-request-id': randomUUID() } }
+        )
+      );
+      // Multi-user Workspace: identity eligibility does not bypass the concrete invitation Kernel decision.
+      expect(denied.status).toBe(403);
+      fault.mockRestore();
+      const accepted = await app.request(
+        ...operationRequest(
+          'workspace.my-invitation-accept',
+          {
+            invitationId: pending.invitationId,
+            expectedRevision: pending.revision,
+          },
+          { headers: { 'x-openkit-request-id': randomUUID() } }
+        )
+      );
+      expect(accepted.status).toBe(200);
+    }
+  );
 
   it('requires approval.respond before a current administrator can resolve another human request', async () => {
     const f = await fixture();

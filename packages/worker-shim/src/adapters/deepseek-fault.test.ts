@@ -82,10 +82,14 @@ describe('DeepSeek subprocess failure boundaries', () => {
     'content-unproved',
     'overflow',
     'overflow-unproved',
-  ])('stops or fences %s without escaping the supervisor', async (scenario) => {
-    const result = await probe(scenario);
-    expect(result.output).not.toMatch(/Unhandled|unhandled rejection/i);
-    expect(result.code, result.output).toBe(0);
-    expect(result.output).toContain(`PROBE-PASS ${scenario}`);
-  }, 40_000);
+  ])(
+    'stops or fences %s without escaping the supervisor',
+    async (scenario) => {
+      const result = await probe(scenario);
+      expect(result.output).not.toMatch(/Unhandled|unhandled rejection/i);
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain(`PROBE-PASS ${scenario}`);
+    },
+    40_000
+  );
 });

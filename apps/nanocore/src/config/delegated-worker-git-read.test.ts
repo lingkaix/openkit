@@ -445,50 +445,52 @@ describe('finite delegated Worker Git-read application', () => {
     });
   });
 
-  it.each([
-    'cancelled',
-    'author-revoked',
-  ] as const)('refuses maintenance %s during its admitted evidence ACK wait before Item or file publication', async (change) => {
-    const f = await fixture(1, true);
-    const proposal = await f.propose();
-    const request = { requestId: randomUUID(), candidate: proposal.candidate };
-    const controller = new AbortController();
-    const original = readFileSync(f.agentPath, 'utf8');
-    const items = f.store.listThreadItems(f.workspaceId, f.home.threadId);
-    let pending: Promise<unknown> | undefined;
-    try {
-      const held = await heldServerPermissionAck(
-        { kind: 'maintenance', requestId: request.requestId },
-        () =>
-          (pending = f.service.applyDelegated(request, { ...f.home, signal: controller.signal }))
-      );
-      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
-      expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
-      expect(f.write).not.toHaveBeenCalled();
-      expect(f.reload).not.toHaveBeenCalled();
-      const committed = listServerPermissionDecisions(f.coreDb);
-      const evidence = committed.filter(
-        (row) => (row.contextSummary as { requestId?: string }).requestId === request.requestId
-      );
-      expect(evidence).toHaveLength(1);
-      expect(evidence[0]!.result).toBe('allow');
-      if (change === 'cancelled') controller.abort();
-      else revokeOpenKitAccessTokenRecord(f.coreDb, f.issuerTokenId!);
-      releaseCommit();
-      await expect(held.result).rejects.toMatchObject({
-        code:
-          change === 'cancelled' ? 'configuration_cancelled' : 'configuration_delegation_required',
-      });
-      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
-      expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
-      expect(f.write).not.toHaveBeenCalled();
-      expect(f.reload).not.toHaveBeenCalled();
-      expect(listServerPermissionDecisions(f.coreDb)).toEqual(committed);
-    } finally {
-      releaseCommit();
-      if (pending) await Promise.allSettled([pending]);
+  it.each(['cancelled', 'author-revoked'] as const)(
+    'refuses maintenance %s during its admitted evidence ACK wait before Item or file publication',
+    async (change) => {
+      const f = await fixture(1, true);
+      const proposal = await f.propose();
+      const request = { requestId: randomUUID(), candidate: proposal.candidate };
+      const controller = new AbortController();
+      const original = readFileSync(f.agentPath, 'utf8');
+      const items = f.store.listThreadItems(f.workspaceId, f.home.threadId);
+      let pending: Promise<unknown> | undefined;
+      try {
+        const held = await heldServerPermissionAck(
+          { kind: 'maintenance', requestId: request.requestId },
+          () =>
+            (pending = f.service.applyDelegated(request, { ...f.home, signal: controller.signal }))
+        );
+        expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+        expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
+        expect(f.write).not.toHaveBeenCalled();
+        expect(f.reload).not.toHaveBeenCalled();
+        const committed = listServerPermissionDecisions(f.coreDb);
+        const evidence = committed.filter(
+          (row) => (row.contextSummary as { requestId?: string }).requestId === request.requestId
+        );
+        expect(evidence).toHaveLength(1);
+        expect(evidence[0]!.result).toBe('allow');
+        if (change === 'cancelled') controller.abort();
+        else revokeOpenKitAccessTokenRecord(f.coreDb, f.issuerTokenId!);
+        releaseCommit();
+        await expect(held.result).rejects.toMatchObject({
+          code:
+            change === 'cancelled'
+              ? 'configuration_cancelled'
+              : 'configuration_delegation_required',
+        });
+        expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+        expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
+        expect(f.write).not.toHaveBeenCalled();
+        expect(f.reload).not.toHaveBeenCalled();
+        expect(listServerPermissionDecisions(f.coreDb)).toEqual(committed);
+      } finally {
+        releaseCommit();
+        if (pending) await Promise.allSettled([pending]);
+      }
     }
-  });
+  );
 
   it('reports persistence separately when reload fails and replays without another write', async () => {
     const f = await fixture();
@@ -509,89 +511,89 @@ describe('finite delegated Worker Git-read application', () => {
     expect(f.reload).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    'outcome',
-    'receipt',
-  ] as const)('projects an unknown %s publication through the actual apply Tool without reporting refusal or repeating the write', async (stage) => {
-    const f = await fixture();
-    const request = { requestId: randomUUID(), candidate: (await f.propose()).candidate };
-    const tools = createAdministrationConfigurationTools(f.manager.current(), f.files, {
-      read: f.service.read,
-      schema: f.service.schema,
-      propose: (value) => f.service.propose(value, f.home),
-      applyDelegated: (value, context) =>
-        f.service.applyDelegated(value, { ...f.home, signal: context.signal }),
-    });
-    const interrupt = () => {
-      throw new Error('Injected private publication failure; never expose this message.');
-    };
-    const publication =
-      stage === 'outcome'
-        ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
-        : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
-    const context = {
-      callId: randomUUID(),
-      toolOccurrence: 1,
-      signal: new AbortController().signal,
-    };
-    const result = await tools[3].execute(request, context);
-    publication.mockRestore();
-    expect(JSON.parse(readFileSync(f.agentPath, 'utf8')).sandbox.network[0].rules).toEqual(
-      correctedRules
-    );
-    expect(result.isError).toBe(true);
-    const expected = {
-      code: 'configuration_recovery_required',
-      message:
-        'Configuration application could not be confirmed. Inspect the exact receipt, start status Item, outcome Artifact, current source revision and loaded state before a new request. Do not repeat an unknown effect.',
-    };
-    expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expected) }]);
-    expect(await tools[3].execute(request, context)).toEqual(result);
-    expect(f.write).toHaveBeenCalledTimes(1);
-    expect(f.reload).toHaveBeenCalledTimes(1);
-  });
+  it.each(['outcome', 'receipt'] as const)(
+    'projects an unknown %s publication through the actual apply Tool without reporting refusal or repeating the write',
+    async (stage) => {
+      const f = await fixture();
+      const request = { requestId: randomUUID(), candidate: (await f.propose()).candidate };
+      const tools = createAdministrationConfigurationTools(f.manager.current(), f.files, {
+        read: f.service.read,
+        schema: f.service.schema,
+        propose: (value) => f.service.propose(value, f.home),
+        applyDelegated: (value, context) =>
+          f.service.applyDelegated(value, { ...f.home, signal: context.signal }),
+      });
+      const interrupt = () => {
+        throw new Error('Injected private publication failure; never expose this message.');
+      };
+      const publication =
+        stage === 'outcome'
+          ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
+          : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
+      const context = {
+        callId: randomUUID(),
+        toolOccurrence: 1,
+        signal: new AbortController().signal,
+      };
+      const result = await tools[3].execute(request, context);
+      publication.mockRestore();
+      expect(JSON.parse(readFileSync(f.agentPath, 'utf8')).sandbox.network[0].rules).toEqual(
+        correctedRules
+      );
+      expect(result.isError).toBe(true);
+      const expected = {
+        code: 'configuration_recovery_required',
+        message:
+          'Configuration application could not be confirmed. Inspect the exact receipt, start status Item, outcome Artifact, current source revision and loaded state before a new request. Do not repeat an unknown effect.',
+      };
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(expected) }]);
+      expect(await tools[3].execute(request, context)).toEqual(result);
+      expect(f.write).toHaveBeenCalledTimes(1);
+      expect(f.reload).toHaveBeenCalledTimes(1);
+    }
+  );
 
-  it.each([
-    'outcome',
-    'receipt',
-  ] as const)('fences replay and reopen after an interrupted %s publication following the actual write', async (stage) => {
-    const f = await fixture();
-    const request = { requestId: randomUUID(), candidate: (await f.propose()).candidate };
-    const interrupt = () => {
-      throw new Error(`Injected ${stage} publication interruption.`);
-    };
-    const publication =
-      stage === 'outcome'
-        ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
-        : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
+  it.each(['outcome', 'receipt'] as const)(
+    'fences replay and reopen after an interrupted %s publication following the actual write',
+    async (stage) => {
+      const f = await fixture();
+      const request = { requestId: randomUUID(), candidate: (await f.propose()).candidate };
+      const interrupt = () => {
+        throw new Error(`Injected ${stage} publication interruption.`);
+      };
+      const publication =
+        stage === 'outcome'
+          ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
+          : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
 
-    await expect(f.service.applyDelegated(request, f.home)).rejects.toThrow(
-      `Injected ${stage} publication interruption.`
-    );
-    publication.mockRestore();
-    const persisted = readFileSync(f.agentPath, 'utf8');
-    expect(JSON.parse(persisted).sandbox.network[0].rules).toEqual(correctedRules);
-    expect(
-      f.store.getCommandRequest('administration.configuration.apply', request.requestId, {
-        actorId: f.actor.userId,
-        workspaceId: f.workspaceId,
-        threadId: f.home.threadId,
-      })
-    ).toBeNull();
-    await expect(f.service.applyDelegated(request, f.home)).rejects.toMatchObject({
-      code: 'configuration_recovery_required',
-    });
-    const reopened = createAdministrationConfiguration({
-      ...f,
-      store: new FsStore({ dataRoot: f.dataRoot }),
-    });
-    await expect(reopened.applyDelegated(request, f.home)).rejects.toMatchObject({
-      code: 'configuration_recovery_required',
-    });
-    expect(readFileSync(f.agentPath, 'utf8')).toBe(persisted);
-    expect(f.write).toHaveBeenCalledTimes(1);
-    expect(f.reload).toHaveBeenCalledTimes(1);
-  });
+      await expect(f.service.applyDelegated(request, f.home)).rejects.toThrow(
+        `Injected ${stage} publication interruption.`
+      );
+      publication.mockRestore();
+      const persisted = readFileSync(f.agentPath, 'utf8');
+      expect(JSON.parse(persisted).sandbox.network[0].rules).toEqual(correctedRules);
+      expect(
+        f.store.getCommandRequest('administration.configuration.apply', request.requestId, {
+          actorId: f.actor.userId,
+          workspaceId: f.workspaceId,
+          threadId: f.home.threadId,
+        })
+      ).toBeNull();
+      await expect(f.service.applyDelegated(request, f.home)).rejects.toMatchObject({
+        code: 'configuration_recovery_required',
+      });
+      const reopened = createAdministrationConfiguration({
+        ...f,
+        store: new FsStore({ dataRoot: f.dataRoot }),
+      });
+      await expect(reopened.applyDelegated(request, f.home)).rejects.toMatchObject({
+        code: 'configuration_recovery_required',
+      });
+      expect(readFileSync(f.agentPath, 'utf8')).toBe(persisted);
+      expect(f.write).toHaveBeenCalledTimes(1);
+      expect(f.reload).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('rejects a changed candidate for an already completed request without another effect', async () => {
     const f = await fixture();
@@ -635,21 +637,22 @@ describe('finite delegated Worker Git-read application', () => {
         { ...assignment, grant: { ...assignment.grant, repositoryPaths: ['/other/project.git'] } },
       ],
     },
-  ])('refuses current $reason authority after Tool assembly and before a write', async ({
-    entries,
-  }) => {
-    const f = await fixture();
-    const candidate = (await f.propose()).candidate;
-    const original = readFileSync(f.agentPath, 'utf8');
-    f.saveAssignments(entries);
-    expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
-    await expect(
-      f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
-    ).rejects.toMatchObject({ code: 'configuration_delegation_required' });
-    expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
-    expect(f.write).not.toHaveBeenCalled();
-    expect(f.reload).not.toHaveBeenCalled();
-  });
+  ])(
+    'refuses current $reason authority after Tool assembly and before a write',
+    async ({ entries }) => {
+      const f = await fixture();
+      const candidate = (await f.propose()).candidate;
+      const original = readFileSync(f.agentPath, 'utf8');
+      f.saveAssignments(entries);
+      expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
+      await expect(
+        f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
+      ).rejects.toMatchObject({ code: 'configuration_delegation_required' });
+      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+      expect(f.write).not.toHaveBeenCalled();
+      expect(f.reload).not.toHaveBeenCalled();
+    }
+  );
 
   it('refuses changed source and candidate identity without a configuration write', async () => {
     const f = await fixture();
@@ -703,40 +706,40 @@ describe('finite delegated Worker Git-read application', () => {
     expect(f.reload).not.toHaveBeenCalled();
   });
 
-  it.each([
-    false,
-    true,
-  ])('rechecks a distinct Policy issuer before mutation: revoked=%s', async (revoked) => {
-    const f = await fixture(1, true);
-    expect(f.issuerId).not.toBe(f.actor.userId);
-    const issuer = {
-      kind: 'session' as const,
-      userId: f.issuerId,
-      adminTokenId: f.issuerTokenId!,
-    };
-    expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(true);
-    expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(
-      policy([f.issuedAssignment])
-    );
-    const candidate = (await f.propose()).candidate;
-    const original = readFileSync(f.agentPath, 'utf8');
-    if (revoked) revokeOpenKitAccessTokenRecord(f.coreDb, f.issuerTokenId!);
-    expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(!revoked);
-    expect(isCurrentDeploymentAdministrator(f.coreDb, f.actor)).toBe(true);
-    if (revoked) {
-      await expect(
-        f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
-      ).rejects.toMatchObject({ code: 'configuration_delegation_required' });
-      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
-      expect(f.write).not.toHaveBeenCalled();
-      expect(f.reload).not.toHaveBeenCalled();
-    } else {
-      expect(
-        await f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
-      ).toMatchObject({ persisted: true, reload: 'applied' });
-      expect(f.write).toHaveBeenCalledTimes(1);
+  it.each([false, true])(
+    'rechecks a distinct Policy issuer before mutation: revoked=%s',
+    async (revoked) => {
+      const f = await fixture(1, true);
+      expect(f.issuerId).not.toBe(f.actor.userId);
+      const issuer = {
+        kind: 'session' as const,
+        userId: f.issuerId,
+        adminTokenId: f.issuerTokenId!,
+      };
+      expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(true);
+      expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(
+        policy([f.issuedAssignment])
+      );
+      const candidate = (await f.propose()).candidate;
+      const original = readFileSync(f.agentPath, 'utf8');
+      if (revoked) revokeOpenKitAccessTokenRecord(f.coreDb, f.issuerTokenId!);
+      expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(!revoked);
+      expect(isCurrentDeploymentAdministrator(f.coreDb, f.actor)).toBe(true);
+      if (revoked) {
+        await expect(
+          f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
+        ).rejects.toMatchObject({ code: 'configuration_delegation_required' });
+        expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+        expect(f.write).not.toHaveBeenCalled();
+        expect(f.reload).not.toHaveBeenCalled();
+      } else {
+        expect(
+          await f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
+        ).toMatchObject({ persisted: true, reload: 'applied' });
+        expect(f.write).toHaveBeenCalledTimes(1);
+      }
     }
-  });
+  );
 
   it('rechecks current administrator eligibility before mutation', async () => {
     const f = await fixture();

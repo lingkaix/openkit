@@ -319,65 +319,63 @@ it('skips equal JSON cores but reserves retained additive fields when the core c
   expect(existsSync(target)).toBe(true);
 });
 
-it.each([
-  'missing',
-  'short',
-  'digest-mismatched',
-  'unsynchronized',
-] as const)('refuses a public Item whose immutable input is %s without committing a reference', async (fault) => {
-  const dataRoot = root();
-  const coreDb = openCoreDb(dataRoot);
-  cores.push(coreDb);
-  applyMigrations(coreDb);
-  const store = new FsStore({ dataRoot });
-  const workspace = await store.createWorkspace('Immutable Item');
-  const thread = await store.createThread(workspace.id, 'Immutable Item');
-  const turn = await store.createTurn(workspace.id, thread.id, 'Publish', {
-    kind: 'user',
-    id: 'usr_00000000-0000-7000-8000-000000000001',
-  });
-  const db = openWorkspaceDb(dataRoot, workspace.id);
-  const before = db.sqlite.prepare('SELECT * FROM control_product_entries').all();
-  const state = new Int32Array(immutableFault.shared, 0, 4);
-  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspace.id });
-  const prefix = Buffer.from(`${scope.contentMount.root}/.`);
-  new Uint8Array(immutableFault.shared, 16).set(prefix);
-  Atomics.store(state, 2, prefix.length);
-  Atomics.store(state, 1, 0);
-  Atomics.store(
-    state,
-    0,
-    ['missing', 'short', 'digest-mismatched', 'unsynchronized'].indexOf(fault) + 1
-  );
-  let faultApplied = false;
-  try {
-    await expect(
-      (async () =>
-        await store.createItem({
-          id: allocateEntityId('it'),
-          owner: { kind: 'workspace', workspaceId: workspace.id },
-          threadId: thread.id,
-          turnId: turn.id,
-          type: 'assistant-message',
-          // Keep these real file-input faults above the retained inline threshold.
-          text: 'Exact immutable input'.padEnd(70_000, '.'),
-          status: 'in_progress',
-          createdAt: turn.startedAt!,
-          completedAt: null,
-        }))()
-    ).rejects.toThrow();
-    faultApplied = Atomics.load(state, 1) === 1;
-    expect(faultApplied, 'the fault must reach the actual immutable Product bytes').toBe(true);
-    expect(db.sqlite.prepare('SELECT * FROM control_product_entries').all()).toEqual(before);
-    vi.restoreAllMocks();
-    syncBuiltinESMExports();
-    await getControlStoreWorkerClient().shutdown();
-    expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([]);
-  } finally {
-    Atomics.store(state, 0, 0);
-    vi.restoreAllMocks();
-    syncBuiltinESMExports();
-    await getControlStoreWorkerClient().shutdown();
-    db.sqlite.close();
+it.each(['missing', 'short', 'digest-mismatched', 'unsynchronized'] as const)(
+  'refuses a public Item whose immutable input is %s without committing a reference',
+  async (fault) => {
+    const dataRoot = root();
+    const coreDb = openCoreDb(dataRoot);
+    cores.push(coreDb);
+    applyMigrations(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = await store.createWorkspace('Immutable Item');
+    const thread = await store.createThread(workspace.id, 'Immutable Item');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Publish', {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    });
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    const before = db.sqlite.prepare('SELECT * FROM control_product_entries').all();
+    const state = new Int32Array(immutableFault.shared, 0, 4);
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspace.id });
+    const prefix = Buffer.from(`${scope.contentMount.root}/.`);
+    new Uint8Array(immutableFault.shared, 16).set(prefix);
+    Atomics.store(state, 2, prefix.length);
+    Atomics.store(state, 1, 0);
+    Atomics.store(
+      state,
+      0,
+      ['missing', 'short', 'digest-mismatched', 'unsynchronized'].indexOf(fault) + 1
+    );
+    let faultApplied = false;
+    try {
+      await expect(
+        (async () =>
+          await store.createItem({
+            id: allocateEntityId('it'),
+            owner: { kind: 'workspace', workspaceId: workspace.id },
+            threadId: thread.id,
+            turnId: turn.id,
+            type: 'assistant-message',
+            // Keep these real file-input faults above the retained inline threshold.
+            text: 'Exact immutable input'.padEnd(70_000, '.'),
+            status: 'in_progress',
+            createdAt: turn.startedAt!,
+            completedAt: null,
+          }))()
+      ).rejects.toThrow();
+      faultApplied = Atomics.load(state, 1) === 1;
+      expect(faultApplied, 'the fault must reach the actual immutable Product bytes').toBe(true);
+      expect(db.sqlite.prepare('SELECT * FROM control_product_entries').all()).toEqual(before);
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
+      await getControlStoreWorkerClient().shutdown();
+      expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([]);
+    } finally {
+      Atomics.store(state, 0, 0);
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
+      await getControlStoreWorkerClient().shutdown();
+      db.sqlite.close();
+    }
   }
-});
+);

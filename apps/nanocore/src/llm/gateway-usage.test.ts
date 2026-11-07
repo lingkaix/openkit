@@ -55,90 +55,91 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
       auditLineage: { commandRequestId: '00000000-0000-4000-8000-000000000504' },
       expectedRequestId: '00000000-0000-4000-8000-000000000503',
     },
-  ])('$name after a usage write failure', async ({
-    requestId,
-    auditLineage,
-    expectedRequestId,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-failure-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  ])(
+    '$name after a usage write failure',
+    async ({ requestId, auditLineage, expectedRequestId }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-failure-'));
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      await openTestNativeWorkspace(workspaceDb);
-      const call = await startCapabilityCall({
-        ...(auditLineage ? { auditLineage } : {}),
-        authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
-        capabilityId: 'llm.responses',
-        family: 'llm',
-        operation: 'responses.create',
-        redactionClass: 'metadata-only',
-        requestId,
-        threadId: testEntityId('th', 'th_usage'),
-        turnId: testEntityId('tu', 'turn_usage'),
-        workspaceDb,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      workspaceDb.sqlite.exec(`
+      try {
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        await openTestNativeWorkspace(workspaceDb);
+        const call = await startCapabilityCall({
+          ...(auditLineage ? { auditLineage } : {}),
+          authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
+          capabilityId: 'llm.responses',
+          family: 'llm',
+          operation: 'responses.create',
+          redactionClass: 'metadata-only',
+          requestId,
+          threadId: testEntityId('th', 'th_usage'),
+          turnId: testEntityId('tu', 'turn_usage'),
+          workspaceDb,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_internal_usage_write
         BEFORE INSERT ON usage_records
         BEGIN
           SELECT RAISE(ABORT, 'injected internal usage write failure');
         END
       `);
-      const input = {
-        ...(auditLineage === undefined ? {} : { auditLineage }),
-        call,
-        logicalModelId: 'logical_test',
-        providerId: 'provider_test',
-        succeeded: true,
-        usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
-        workspaceDb,
-      };
+        const input = {
+          ...(auditLineage === undefined ? {} : { auditLineage }),
+          call,
+          logicalModelId: 'logical_test',
+          providerId: 'provider_test',
+          succeeded: true,
+          usage: { input_tokens: 9, output_tokens: 3, total_tokens: 12 },
+          workspaceDb,
+        };
 
-      await expect(recordInternalLlmGatewayUsage(input)).rejects.toMatchObject({
-        code: 'usage_record_failed',
-        status: 500,
-      });
-      expect(
-        workspaceDb.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(call.id)
-      ).toMatchObject({
-        error_code: 'usage_record_failed',
-        request_id: requestId,
-        status: 'failed',
-        thread_id: testEntityId('th', 'th_usage'),
-        turn_id: testEntityId('tu', 'turn_usage'),
-        workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      expect(
-        workspaceDb.sqlite
-          .prepare('SELECT * FROM usage_records WHERE capability_call_id = ?')
-          .all(call.id)
-      ).toEqual([]);
-      expect(
-        workspaceDb.sqlite
-          .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
-          .all(call.id)
-      ).toEqual([
-        expect.objectContaining({ action: 'capability.admit', request_id: expectedRequestId }),
-        expect.objectContaining({
-          action: 'capability.finish',
-          capability_call_id: call.id,
+        await expect(recordInternalLlmGatewayUsage(input)).rejects.toMatchObject({
+          code: 'usage_record_failed',
+          status: 500,
+        });
+        expect(
+          workspaceDb.sqlite
+            .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
+            .get(call.id)
+        ).toMatchObject({
           error_code: 'usage_record_failed',
-          outcome: 'failed',
-          request_id: expectedRequestId,
-          severity: 'error',
+          request_id: requestId,
+          status: 'failed',
           thread_id: testEntityId('th', 'th_usage'),
           turn_id: testEntityId('tu', 'turn_usage'),
           workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
-        }),
-      ]);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+        });
+        expect(
+          workspaceDb.sqlite
+            .prepare('SELECT * FROM usage_records WHERE capability_call_id = ?')
+            .all(call.id)
+        ).toEqual([]);
+        expect(
+          workspaceDb.sqlite
+            .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+            .all(call.id)
+        ).toEqual([
+          expect.objectContaining({ action: 'capability.admit', request_id: expectedRequestId }),
+          expect.objectContaining({
+            action: 'capability.finish',
+            capability_call_id: call.id,
+            error_code: 'usage_record_failed',
+            outcome: 'failed',
+            request_id: expectedRequestId,
+            severity: 'error',
+            thread_id: testEntityId('th', 'th_usage'),
+            turn_id: testEntityId('tu', 'turn_usage'),
+            workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
+          }),
+        ]);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('keeps command lineage out of normal usage and the call request', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-internal-usage-success-'));
@@ -489,66 +490,65 @@ it.each([
     succeeded: false,
     expected: [],
   },
-])('retains internal usage $name with exact capability lineage', async ({
-  usage,
-  succeeded,
-  expected,
-}) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'internal-usage-measurements-'));
-  const workspaceId = testEntityId('ws', 'usage-components');
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    await openTestNativeWorkspace(workspaceDb);
-    const threadId = testEntityId('th', 'usage-components');
-    const turnId = testEntityId('tu', 'usage-components');
-    const call = await startCapabilityCall({
-      authorityActor: { kind: 'user', id: testEntityId('usr', 'usage-components') },
-      capabilityId: 'inference.local.goal_coordinator',
-      family: 'llm',
-      operation: 'goal.coordinate',
-      redactionClass: 'metadata-only',
-      requestId: null,
-      threadId,
-      turnId,
-      workspaceDb,
-      workspaceId,
-    });
-    const usageIds = await recordInternalLlmGatewayUsage({
-      call,
-      workspaceDb,
-      logicalModelId: 'logical_test',
-      providerId: 'provider_test',
-      usage,
-      succeeded,
-    });
-    const rows = workspaceDb.sqlite
-      .prepare('SELECT * FROM usage_records WHERE capability_call_id=? ORDER BY rowid')
-      .all(call.id);
-    expect(rows).toHaveLength(expected.length);
-    expect(rows).toEqual(
-      expect.arrayContaining(
-        expected.map((measurement) =>
-          expect.objectContaining({
-            ...measurement,
-            capability_call_id: call.id,
-            workspace_id: workspaceId,
-            thread_id: threadId,
-            turn_id: turnId,
-            request_id: null,
-            category: 'llm',
-            model_id: 'logical_test',
-            provider_ref: 'provider_test',
-          })
+])(
+  'retains internal usage $name with exact capability lineage',
+  async ({ usage, succeeded, expected }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'internal-usage-measurements-'));
+    const workspaceId = testEntityId('ws', 'usage-components');
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(workspaceDb);
+      const threadId = testEntityId('th', 'usage-components');
+      const turnId = testEntityId('tu', 'usage-components');
+      const call = await startCapabilityCall({
+        authorityActor: { kind: 'user', id: testEntityId('usr', 'usage-components') },
+        capabilityId: 'inference.local.goal_coordinator',
+        family: 'llm',
+        operation: 'goal.coordinate',
+        redactionClass: 'metadata-only',
+        requestId: null,
+        threadId,
+        turnId,
+        workspaceDb,
+        workspaceId,
+      });
+      const usageIds = await recordInternalLlmGatewayUsage({
+        call,
+        workspaceDb,
+        logicalModelId: 'logical_test',
+        providerId: 'provider_test',
+        usage,
+        succeeded,
+      });
+      const rows = workspaceDb.sqlite
+        .prepare('SELECT * FROM usage_records WHERE capability_call_id=? ORDER BY rowid')
+        .all(call.id);
+      expect(rows).toHaveLength(expected.length);
+      expect(rows).toEqual(
+        expect.arrayContaining(
+          expected.map((measurement) =>
+            expect.objectContaining({
+              ...measurement,
+              capability_call_id: call.id,
+              workspace_id: workspaceId,
+              thread_id: threadId,
+              turn_id: turnId,
+              request_id: null,
+              category: 'llm',
+              model_id: 'logical_test',
+              provider_ref: 'provider_test',
+            })
+          )
         )
-      )
-    );
-    expect(rows.map((row) => (row as { usage_id: string }).usage_id).sort()).toEqual(
-      [...usageIds].sort()
-    );
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    workspaceDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+      );
+      expect(rows.map((row) => (row as { usage_id: string }).usage_id).sort()).toEqual(
+        [...usageIds].sort()
+      );
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   }
-});
+);

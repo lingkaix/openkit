@@ -78,84 +78,81 @@ vi.mock('@earendil-works/pi-coding-agent', async (importOriginal) => {
   };
 });
 
-it.each([
-  'factory',
-  'activation',
-  'registration',
-  'global-disable',
-  'identity',
-] as const)('M4 required native %s honors managed ownership', async (kind) => {
-  fault.kind = kind;
-  const directories = await createHostDirectories();
-  const capabilityCredential = mintLoopbackCredential();
-  const inferenceCredential = mintLoopbackCredential();
-  const capability = await startSyntheticCapability(capabilityCredential, ['openkit-work']);
-  capability.bound = true;
-  const inference = await startSyntheticInference(() => ({ text: 'must not run' }));
-  const marker = join(directories.root, 'session-start');
-  const extension = join(directories.root, 'probe.js');
-  await writeFile(
-    extension,
-    `import { writeFileSync } from 'node:fs';
+it.each(['factory', 'activation', 'registration', 'global-disable', 'identity'] as const)(
+  'M4 required native %s honors managed ownership',
+  async (kind) => {
+    fault.kind = kind;
+    const directories = await createHostDirectories();
+    const capabilityCredential = mintLoopbackCredential();
+    const inferenceCredential = mintLoopbackCredential();
+    const capability = await startSyntheticCapability(capabilityCredential, ['openkit-work']);
+    capability.bound = true;
+    const inference = await startSyntheticInference(() => ({ text: 'must not run' }));
+    const marker = join(directories.root, 'session-start');
+    const extension = join(directories.root, 'probe.js');
+    await writeFile(
+      extension,
+      `import { writeFileSync } from 'node:fs';
 export default function(pi) { pi.on('session_start', () => writeFileSync(${JSON.stringify(marker)}, 'effect')); }`
-  );
-  const settings = JSON.stringify({ extensions: [extension] });
-  await writeFile(join(directories.agentDir, 'settings.json'), settings);
-  const frames: (HostEvent | HostResponse)[] = [];
-  const host = new PiRuntimeHost({
-    onClosed: () => undefined,
-    send: (frame) => frames.push(frame),
-  });
-  try {
-    await host.receive(
-      JSON.stringify({
-        id: 1,
-        op: 'open',
-        skillTargetPaths: [],
-        agentDir: directories.agentDir,
-        stateRoot: directories.stateRoot,
-        workingDirectory: directories.workingDirectory,
-        inferenceBaseUrl: inference.url,
-        inferenceCredential,
-        capabilityBaseUrl: capability.base,
-        capabilityCredential,
-        mcpServers: ['openkit-work'],
-        model: modelDescriptor('logical-a'),
-        resume: null,
-      })
     );
-    await host.receive(
-      JSON.stringify({ id: 2, op: 'turn', turnId: 'turn-factory', prompt: 'first' })
-    );
-    await vi.waitFor(() =>
-      expect(
-        frames.find((frame) => 'event' in frame && frame.event === 'turn_settled')
-      ).toMatchObject({
-        outcome:
-          kind === 'global-disable' || kind === 'identity'
-            ? { status: 'completed' }
-            : { status: 'failed', reason: 'pi-setup-failed' },
-      })
-    );
-    expect(existsSync(marker)).toBe(
-      kind === 'activation' || kind === 'registration' || kind === 'identity'
-    );
-    if (kind === 'identity') {
-      expect(fault.identities.map((identity) => identity.before.path).sort()).toEqual([
-        '<inline:mcp>',
-        '<inline:tool-search>',
-      ]);
-      for (const identity of fault.identities) expect(identity.after).toEqual(identity.before);
+    const settings = JSON.stringify({ extensions: [extension] });
+    await writeFile(join(directories.agentDir, 'settings.json'), settings);
+    const frames: (HostEvent | HostResponse)[] = [];
+    const host = new PiRuntimeHost({
+      onClosed: () => undefined,
+      send: (frame) => frames.push(frame),
+    });
+    try {
+      await host.receive(
+        JSON.stringify({
+          id: 1,
+          op: 'open',
+          skillTargetPaths: [],
+          agentDir: directories.agentDir,
+          stateRoot: directories.stateRoot,
+          workingDirectory: directories.workingDirectory,
+          inferenceBaseUrl: inference.url,
+          inferenceCredential,
+          capabilityBaseUrl: capability.base,
+          capabilityCredential,
+          mcpServers: ['openkit-work'],
+          model: modelDescriptor('logical-a'),
+          resume: null,
+        })
+      );
+      await host.receive(
+        JSON.stringify({ id: 2, op: 'turn', turnId: 'turn-factory', prompt: 'first' })
+      );
+      await vi.waitFor(() =>
+        expect(
+          frames.find((frame) => 'event' in frame && frame.event === 'turn_settled')
+        ).toMatchObject({
+          outcome:
+            kind === 'global-disable' || kind === 'identity'
+              ? { status: 'completed' }
+              : { status: 'failed', reason: 'pi-setup-failed' },
+        })
+      );
+      expect(existsSync(marker)).toBe(
+        kind === 'activation' || kind === 'registration' || kind === 'identity'
+      );
+      if (kind === 'identity') {
+        expect(fault.identities.map((identity) => identity.before.path).sort()).toEqual([
+          '<inline:mcp>',
+          '<inline:tool-search>',
+        ]);
+        for (const identity of fault.identities) expect(identity.after).toEqual(identity.before);
+      }
+      expect(inference.requests).toHaveLength(
+        kind === 'global-disable' || kind === 'identity' ? 1 : 0
+      );
+      if (kind === 'factory') expect(capability.log).toHaveLength(0);
+      expect(await readFile(join(directories.agentDir, 'settings.json'), 'utf8')).toBe(settings);
+    } finally {
+      await host.abandon();
+      await capability.close();
+      await inference.close();
+      await rm(directories.root, { force: true, recursive: true });
     }
-    expect(inference.requests).toHaveLength(
-      kind === 'global-disable' || kind === 'identity' ? 1 : 0
-    );
-    if (kind === 'factory') expect(capability.log).toHaveLength(0);
-    expect(await readFile(join(directories.agentDir, 'settings.json'), 'utf8')).toBe(settings);
-  } finally {
-    await host.abandon();
-    await capability.close();
-    await inference.close();
-    await rm(directories.root, { force: true, recursive: true });
   }
-});
+);

@@ -392,59 +392,64 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
     'inactive member',
     'unknown source member',
     'duplicate source map',
-  ] as const)('WM 419–421: %s refuses mapping-refused without target registration', async (fault) => {
-    const f = await fixture();
-    let argv = f.argv;
-    const core = openCoreDb(f.dataRoot);
-    try {
-      if (fault === 'absent owner')
-        argv = argv.map((value) => (value === f.targetOwner ? allocateEntityId('usr') : value));
-      if (fault === 'inactive owner' || fault === 'inactive member') {
-        core.sqlite.transaction(() =>
-          disableCanonicalUser(core, fault === 'inactive owner' ? f.targetOwner : f.targetMember)
-        )();
-      }
-      if (fault === 'unknown source member')
-        argv = [
-          ...argv.slice(0, -2),
-          '--member-map',
-          `${allocateEntityId('usr')}=${f.targetMember}`,
-        ];
-      if (fault === 'duplicate source map')
-        argv = [...argv, '--member-map', `${f.sourceMember}=${f.targetOwner}`];
-    } finally {
-      core.sqlite.close();
-    }
-    const members = rows(coreDbPath(f.dataRoot), 'workspace_members');
-    await refuses(f, 'mapping-refused', argv);
-    expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual([]);
-    expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toEqual(members);
-    expect(existsSync(join(f.dataRoot, 'workspaces', workspaceId))).toBe(false);
-  }, 120_000);
-
-  it.each([
-    'registry',
-    'unregistered final directory',
-  ] as const)('WM 405, 435, 441: unrelated %s collision refuses identity-collision without reminting', async (collision) => {
-    const f = await fixture();
-    if (collision === 'registry') {
+  ] as const)(
+    'WM 419–421: %s refuses mapping-refused without target registration',
+    async (fault) => {
+      const f = await fixture();
+      let argv = f.argv;
       const core = openCoreDb(f.dataRoot);
-      recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: f.targetOwner });
-      core.sqlite.close();
-    } else {
-      cpSync(
-        join(f.sourceRoot, 'workspaces', workspaceId),
-        join(f.dataRoot, 'workspaces', workspaceId),
-        { recursive: true }
-      );
-    }
-    const before = rows(coreDbPath(f.dataRoot), 'workspace_registry');
-    await refuses(f, 'identity-collision');
-    expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(before);
-    expect(
-      readdirSync(join(f.dataRoot, 'workspaces')).filter((name) => name.startsWith('ws_'))
-    ).toEqual(collision === 'registry' ? [] : [workspaceId]);
-  }, 120_000);
+      try {
+        if (fault === 'absent owner')
+          argv = argv.map((value) => (value === f.targetOwner ? allocateEntityId('usr') : value));
+        if (fault === 'inactive owner' || fault === 'inactive member') {
+          core.sqlite.transaction(() =>
+            disableCanonicalUser(core, fault === 'inactive owner' ? f.targetOwner : f.targetMember)
+          )();
+        }
+        if (fault === 'unknown source member')
+          argv = [
+            ...argv.slice(0, -2),
+            '--member-map',
+            `${allocateEntityId('usr')}=${f.targetMember}`,
+          ];
+        if (fault === 'duplicate source map')
+          argv = [...argv, '--member-map', `${f.sourceMember}=${f.targetOwner}`];
+      } finally {
+        core.sqlite.close();
+      }
+      const members = rows(coreDbPath(f.dataRoot), 'workspace_members');
+      await refuses(f, 'mapping-refused', argv);
+      expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual([]);
+      expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toEqual(members);
+      expect(existsSync(join(f.dataRoot, 'workspaces', workspaceId))).toBe(false);
+    },
+    120_000
+  );
+
+  it.each(['registry', 'unregistered final directory'] as const)(
+    'WM 405, 435, 441: unrelated %s collision refuses identity-collision without reminting',
+    async (collision) => {
+      const f = await fixture();
+      if (collision === 'registry') {
+        const core = openCoreDb(f.dataRoot);
+        recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: f.targetOwner });
+        core.sqlite.close();
+      } else {
+        cpSync(
+          join(f.sourceRoot, 'workspaces', workspaceId),
+          join(f.dataRoot, 'workspaces', workspaceId),
+          { recursive: true }
+        );
+      }
+      const before = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+      await refuses(f, 'identity-collision');
+      expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(before);
+      expect(
+        readdirSync(join(f.dataRoot, 'workspaces')).filter((name) => name.startsWith('ws_'))
+      ).toEqual(collision === 'registry' ? [] : [workspaceId]);
+    },
+    120_000
+  );
 
   it('WM 434–435: exact committed retry wins before inactive mapping or damaged bundle is revalidated', async () => {
     const f = await fixture();
@@ -595,116 +600,118 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
     expect(inventoryRegularFiles(f.bundleRoot)).toEqual(sealedBytes);
   }, 120_000);
 
-  it.each([
-    'owner',
-    'member',
-  ] as const)('refuses the selected MOVE when its mapped %s becomes disabled during the actual Core posting hold', async (accountKind) => {
-    const f = await placedMoveFixture();
-    const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
-    const database = `core:${scope.path}`;
-    const client = getControlStoreWorkerClient();
-    await client.open({
-      database,
-      path: scope.path,
-      dataRoot: f.dataRoot,
-      create: false,
-      initialize: 'core',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    let release = await client.pauseForDataRootBackup(database);
-    const tuple = () =>
-      Object.fromEntries(
-        [
-          'workspace_recovery_admissions',
-          'workspace_registry',
-          'workspace_members',
-          'audit_events',
-        ].map((table) => [table, rows(scope.path, table)])
-      );
-    const before = tuple();
-    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
-    const publication = vi.spyOn(client, 'recoveryTargetRegistration');
-    const actualOpen = client.open.bind(client);
-    let upstreamOpenRejected = false;
-    let upstreamOpenFailure: unknown;
-    const opening = vi.spyOn(client, 'open').mockImplementation((...args) => {
-      const operation = actualOpen(...args);
-      void operation.catch((error: unknown) => {
-        if (args[0].database === database) {
-          upstreamOpenRejected = true;
-          upstreamOpenFailure = error;
-        }
+  it.each(['owner', 'member'] as const)(
+    'refuses the selected MOVE when its mapped %s becomes disabled during the actual Core posting hold',
+    async (accountKind) => {
+      const f = await placedMoveFixture();
+      const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
+      const database = `core:${scope.path}`;
+      const client = getControlStoreWorkerClient();
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: f.dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
       });
-      return operation;
-    });
-    const posts = vi.spyOn(Worker.prototype, 'postMessage');
-    const registrationPosts = () =>
-      posts.mock.calls.filter(
-        ([message]) =>
-          message.operation === 'recovery-target-registration' &&
-          message.database === database &&
-          message.input?.admissionId === f.requestId &&
-          message.input?.workspaceId === workspaceId
+      let release = await client.pauseForDataRootBackup(database);
+      const tuple = () =>
+        Object.fromEntries(
+          [
+            'workspace_recovery_admissions',
+            'workspace_registry',
+            'workspace_members',
+            'audit_events',
+          ].map((table) => [table, rows(scope.path, table)])
+        );
+      const before = tuple();
+      const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+      const publication = vi.spyOn(client, 'recoveryTargetRegistration');
+      const actualOpen = client.open.bind(client);
+      let upstreamOpenRejected = false;
+      let upstreamOpenFailure: unknown;
+      const opening = vi.spyOn(client, 'open').mockImplementation((...args) => {
+        const operation = actualOpen(...args);
+        void operation.catch((error: unknown) => {
+          if (args[0].database === database) {
+            upstreamOpenRejected = true;
+            upstreamOpenFailure = error;
+          }
+        });
+        return operation;
+      });
+      const posts = vi.spyOn(Worker.prototype, 'postMessage');
+      const registrationPosts = () =>
+        posts.mock.calls.filter(
+          ([message]) =>
+            message.operation === 'recovery-target-registration' &&
+            message.database === database &&
+            message.input?.admissionId === f.requestId &&
+            message.input?.workspaceId === workspaceId
+        );
+      let settled = false;
+      const command = runCli(
+        [
+          'finish',
+          '--data-root',
+          f.dataRoot,
+          '--workspace-id',
+          workspaceId,
+          '--request-id',
+          f.requestId,
+        ],
+        () => {},
+        f
+      ).then(
+        (result) => {
+          settled = true;
+          return { result };
+        },
+        (error) => {
+          settled = true;
+          return { error };
+        }
       );
-    let settled = false;
-    const command = runCli(
-      [
-        'finish',
-        '--data-root',
-        f.dataRoot,
-        '--workspace-id',
-        workspaceId,
-        '--request-id',
-        f.requestId,
-      ],
-      () => {},
-      f
-    ).then(
-      (result) => {
-        settled = true;
-        return { result };
-      },
-      (error) => {
-        settled = true;
-        return { error };
-      }
-    );
-    try {
-      // A failed Core open can start cleanup before the producer settles. Its
-      // close needs this hold released, so observe the real rejection separately.
-      while (!publication.mock.calls.length && !settled && !upstreamOpenRejected) await nextTurn();
-      expect(
-        upstreamOpenFailure,
-        'Actual selected Core open rejected before registration.'
-      ).toBeUndefined();
-      expect(publication).toHaveBeenCalledTimes(1);
-      expect(settled).toBe(false);
-      expect(registrationPosts()).toEqual([]);
-      const writer = openCoreDb(f.dataRoot);
       try {
-        writer.sqlite
-          .transaction(() =>
-            disableCanonicalUser(writer, accountKind === 'owner' ? f.targetOwner : f.targetMember)
-          )
-          .immediate();
+        // A failed Core open can start cleanup before the producer settles. Its
+        // close needs this hold released, so observe the real rejection separately.
+        while (!publication.mock.calls.length && !settled && !upstreamOpenRejected)
+          await nextTurn();
+        expect(
+          upstreamOpenFailure,
+          'Actual selected Core open rejected before registration.'
+        ).toBeUndefined();
+        expect(publication).toHaveBeenCalledTimes(1);
+        expect(settled).toBe(false);
+        expect(registrationPosts()).toEqual([]);
+        const writer = openCoreDb(f.dataRoot);
+        try {
+          writer.sqlite
+            .transaction(() =>
+              disableCanonicalUser(writer, accountKind === 'owner' ? f.targetOwner : f.targetMember)
+            )
+            .immediate();
+        } finally {
+          writer.sqlite.close();
+        }
+        release();
+        release = () => {};
+        expect(await command).toMatchObject({ error: { code: 'mapping-refused' } });
+        expect(registrationPosts()).toHaveLength(1);
+        expect(tuple()).toEqual(before);
+        expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
       } finally {
-        writer.sqlite.close();
+        release();
+        await command;
+        opening.mockRestore();
+        publication.mockRestore();
+        posts.mockRestore();
       }
-      release();
-      release = () => {};
-      expect(await command).toMatchObject({ error: { code: 'mapping-refused' } });
-      expect(registrationPosts()).toHaveLength(1);
-      expect(tuple()).toEqual(before);
-      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
-    } finally {
-      release();
-      await command;
-      opening.mockRestore();
-      publication.mockRestore();
-      posts.mockRestore();
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 
   it('WM 441: abandon closes an owned unregistered candidate before a later finish can publish', async () => {
     const f = await fixture();

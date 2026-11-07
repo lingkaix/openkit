@@ -135,54 +135,55 @@ describe('administration Worker environment Tools', () => {
       },
     },
   ] as const)('$mode Tool input admission', ({ mode, args }) => {
-    it.each([
-      'administrationThreadId',
-      'requestId',
-    ] as const)('rejects forged %s before calling the owner', async (field) => {
-      const prepare = vi.fn(async () => {
-        throw Object.assign(new Error('private detail'), { code: 'recovery_required' });
-      });
-      const tools = createAdministrationEnvironmentCandidateTools({
-        actor,
-        administrationThreadId: testEntityId('th', 'thread_admin'),
-        administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
-        prepare,
-      });
-      const tool = tools[mode === 'prepare' ? 0 : 1];
-      const context = {
-        callId: 'call_candidate',
-        toolOccurrence: 1,
-        signal: new AbortController().signal,
-      };
-
-      await tool.execute(args, context);
-      expect(prepare).toHaveBeenCalledTimes(1);
-      expect(prepare).toHaveBeenCalledWith(
-        { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
-        expect.objectContaining({
-          ...args,
-          mode,
+    it.each(['administrationThreadId', 'requestId'] as const)(
+      'rejects forged %s before calling the owner',
+      async (field) => {
+        const prepare = vi.fn(async () => {
+          throw Object.assign(new Error('private detail'), { code: 'recovery_required' });
+        });
+        const tools = createAdministrationEnvironmentCandidateTools({
+          actor,
           administrationThreadId: testEntityId('th', 'thread_admin'),
-        })
-      );
+          administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c',
+          prepare,
+        });
+        const tool = tools[mode === 'prepare' ? 0 : 1];
+        const context = {
+          callId: 'call_candidate',
+          toolOccurrence: 1,
+          signal: new AbortController().signal,
+        };
 
-      // A valid UUID ensures only model selection of the bound identity causes refusal.
-      const forgedValue = field === 'requestId' ? '11111111-1111-4111-8111-111111111111' : 'forged';
-      const result = await tool.execute({ ...args, [field]: forgedValue }, context);
-      expect(result).toEqual({
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              code: 'invalid_request',
-              message: 'The Worker environment request is invalid.',
-            }),
-          },
-        ],
-        isError: true,
-      });
-      expect(prepare).toHaveBeenCalledTimes(1);
-    });
+        await tool.execute(args, context);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(prepare).toHaveBeenCalledWith(
+          { actor, administrationTurnId: 'tu_00000000-0000-7e13-bcb6-acb21b36a45c' },
+          expect.objectContaining({
+            ...args,
+            mode,
+            administrationThreadId: testEntityId('th', 'thread_admin'),
+          })
+        );
+
+        // A valid UUID ensures only model selection of the bound identity causes refusal.
+        const forgedValue =
+          field === 'requestId' ? '11111111-1111-4111-8111-111111111111' : 'forged';
+        const result = await tool.execute({ ...args, [field]: forgedValue }, context);
+        expect(result).toEqual({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                code: 'invalid_request',
+                message: 'The Worker environment request is invalid.',
+              }),
+            },
+          ],
+          isError: true,
+        });
+        expect(prepare).toHaveBeenCalledTimes(1);
+      }
+    );
 
     it('rejects obsolete mode before calling the owner', async () => {
       const prepare = vi.fn(async () => {

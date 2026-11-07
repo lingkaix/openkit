@@ -74,33 +74,32 @@ async function fixture(id: string) {
 }
 
 describe('bounded ZIP folder snapshots', () => {
-  it.each([
-    'valid-empty',
-    'valid-file',
-    'compressed',
-  ])('extracts %s without changing its original', async (id) => {
-    const state = await fixture(id);
-    const staged = await stageZipSnapshot(state);
-    expect(await readFile(state.archivePath)).toEqual(state.original);
-    if (id === 'valid-empty') expect(staged.files).toEqual([]);
-    else {
-      expect(staged.files).toHaveLength(1);
-      const file = staged.files[0]!;
-      const expected = corpus.archives.find((entry) => entry.id === id)!.entries[0]!;
-      const bytes = await readFile(join(staged.root, file.relativePath));
-      expect(file).toEqual({
-        relativePath: expected.name,
-        byteLength: expected.actualSize,
-        contentDigest: expected.bodySha256,
-      });
-      expect(bytes.length).toBe(expected.actualSize);
-      expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(
-        expected.bodySha256
-      );
+  it.each(['valid-empty', 'valid-file', 'compressed'])(
+    'extracts %s without changing its original',
+    async (id) => {
+      const state = await fixture(id);
+      const staged = await stageZipSnapshot(state);
+      expect(await readFile(state.archivePath)).toEqual(state.original);
+      if (id === 'valid-empty') expect(staged.files).toEqual([]);
+      else {
+        expect(staged.files).toHaveLength(1);
+        const file = staged.files[0]!;
+        const expected = corpus.archives.find((entry) => entry.id === id)!.entries[0]!;
+        const bytes = await readFile(join(staged.root, file.relativePath));
+        expect(file).toEqual({
+          relativePath: expected.name,
+          byteLength: expected.actualSize,
+          contentDigest: expected.bodySha256,
+        });
+        expect(bytes.length).toBe(expected.actualSize);
+        expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(
+          expected.bodySha256
+        );
+      }
+      await staged.remove();
+      expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
     }
-    await staged.remove();
-    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
-  });
+  );
 
   it.each(
     corpus.archives.filter((entry) => !['valid', 'no-automatic-recursion'].includes(entry.expected))
@@ -250,31 +249,33 @@ describe('bounded ZIP folder snapshots', () => {
     expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
   });
 
-  it.each([
-    0x1, 0x40, 0x2000,
-  ])('rejects encrypted or masked entry flags %i before extraction', async (flag) => {
-    const state = await fixture('valid-file');
-    const encrypted = Buffer.from(state.original);
-    const central = encrypted.indexOf(Buffer.from('504b0102', 'hex'));
-    encrypted.writeUInt16LE(encrypted.readUInt16LE(6) | flag, 6);
-    encrypted.writeUInt16LE(encrypted.readUInt16LE(central + 8) | flag, central + 8);
-    await writeFile(state.archivePath, encrypted);
-    await expect(stageZipSnapshot(state)).rejects.toThrow();
-    expect(await readFile(state.archivePath)).toEqual(encrypted);
-    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
-  });
+  it.each([0x1, 0x40, 0x2000])(
+    'rejects encrypted or masked entry flags %i before extraction',
+    async (flag) => {
+      const state = await fixture('valid-file');
+      const encrypted = Buffer.from(state.original);
+      const central = encrypted.indexOf(Buffer.from('504b0102', 'hex'));
+      encrypted.writeUInt16LE(encrypted.readUInt16LE(6) | flag, 6);
+      encrypted.writeUInt16LE(encrypted.readUInt16LE(central + 8) | flag, central + 8);
+      await writeFile(state.archivePath, encrypted);
+      await expect(stageZipSnapshot(state)).rejects.toThrow();
+      expect(await readFile(state.archivePath)).toEqual(encrypted);
+      expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+    }
+  );
 
-  it.each([
-    0x08, 0x40, 0x400, 0x10,
-  ])('rejects DOS volume, device, reparse or mismatched directory attributes %i', async (attribute) => {
-    const state = await fixture('valid-file');
-    const special = Buffer.from(state.original);
-    const central = special.indexOf(Buffer.from('504b0102', 'hex'));
-    special.writeUInt32LE((special.readUInt32LE(central + 38) | attribute) >>> 0, central + 38);
-    await writeFile(state.archivePath, special);
-    await expect(stageZipSnapshot(state)).rejects.toThrow();
-    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
-  });
+  it.each([0x08, 0x40, 0x400, 0x10])(
+    'rejects DOS volume, device, reparse or mismatched directory attributes %i',
+    async (attribute) => {
+      const state = await fixture('valid-file');
+      const special = Buffer.from(state.original);
+      const central = special.indexOf(Buffer.from('504b0102', 'hex'));
+      special.writeUInt32LE((special.readUInt32LE(central + 38) | attribute) >>> 0, central + 38);
+      await writeFile(state.archivePath, special);
+      await expect(stageZipSnapshot(state)).rejects.toThrow();
+      expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+    }
+  );
 
   it('rejects a source rewritten during extraction even when its final bytes match', async () => {
     const state = await fixture('valid-file');

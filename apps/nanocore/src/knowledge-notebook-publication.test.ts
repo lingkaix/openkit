@@ -775,44 +775,46 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(await publish(f, request)).toEqual(completed);
   });
 
-  it.each([
-    'receipt',
-    'completion Audit',
-  ] as const)('requires recovery when a published command loses its exact %s evidence', async (missing) => {
-    const f = await fixture();
-    const request = edit((await listing(f)).notebookRevision);
-    const published = await publish(f, request);
-    const count = publishedCount(f);
-    const bytes = git(f, ['show', `${published.notebookRevision}:pages/alpha.md`]);
-    const deleted =
-      missing === 'receipt'
-        ? f.workspaceDb.sqlite
-            .prepare('DELETE FROM idempotency_requests WHERE command_name = ? AND request_id = ?')
-            .run(OPERATION, request.requestId)
-        : f.workspaceDb.sqlite
-            .prepare('DELETE FROM audit_events WHERE action = ? AND request_id = ?')
-            .run(OPERATION, request.requestId);
-    expect(deleted.changes).toBe(1);
-    reopen(f);
-    const replay = await submit(f, request);
-    expect(replay.status).toBeGreaterThanOrEqual(400);
-    expect(replay.body).toMatchObject({ code: 'recovery_required' });
-    expect(selectedRevision(f)).toBe(published.notebookRevision);
-    expect(publishedCount(f)).toBe(count);
-    expect(git(f, ['show', `${published.notebookRevision}:pages/alpha.md`])).toBe(bytes);
-    if (missing === 'receipt')
-      expect(
-        f.workspaceDb.sqlite
-          .prepare(
-            'SELECT count(*) AS count FROM idempotency_requests WHERE command_name = ? AND request_id = ?'
-          )
-          .get(OPERATION, request.requestId)
-      ).toEqual({ count: 0 });
-    else
-      expect(
-        f.workspaceDb.sqlite
-          .prepare('SELECT count(*) AS count FROM audit_events WHERE action = ? AND request_id = ?')
-          .get(OPERATION, request.requestId)
-      ).toEqual({ count: 0 });
-  });
+  it.each(['receipt', 'completion Audit'] as const)(
+    'requires recovery when a published command loses its exact %s evidence',
+    async (missing) => {
+      const f = await fixture();
+      const request = edit((await listing(f)).notebookRevision);
+      const published = await publish(f, request);
+      const count = publishedCount(f);
+      const bytes = git(f, ['show', `${published.notebookRevision}:pages/alpha.md`]);
+      const deleted =
+        missing === 'receipt'
+          ? f.workspaceDb.sqlite
+              .prepare('DELETE FROM idempotency_requests WHERE command_name = ? AND request_id = ?')
+              .run(OPERATION, request.requestId)
+          : f.workspaceDb.sqlite
+              .prepare('DELETE FROM audit_events WHERE action = ? AND request_id = ?')
+              .run(OPERATION, request.requestId);
+      expect(deleted.changes).toBe(1);
+      reopen(f);
+      const replay = await submit(f, request);
+      expect(replay.status).toBeGreaterThanOrEqual(400);
+      expect(replay.body).toMatchObject({ code: 'recovery_required' });
+      expect(selectedRevision(f)).toBe(published.notebookRevision);
+      expect(publishedCount(f)).toBe(count);
+      expect(git(f, ['show', `${published.notebookRevision}:pages/alpha.md`])).toBe(bytes);
+      if (missing === 'receipt')
+        expect(
+          f.workspaceDb.sqlite
+            .prepare(
+              'SELECT count(*) AS count FROM idempotency_requests WHERE command_name = ? AND request_id = ?'
+            )
+            .get(OPERATION, request.requestId)
+        ).toEqual({ count: 0 });
+      else
+        expect(
+          f.workspaceDb.sqlite
+            .prepare(
+              'SELECT count(*) AS count FROM audit_events WHERE action = ? AND request_id = ?'
+            )
+            .get(OPERATION, request.requestId)
+        ).toEqual({ count: 0 });
+    }
+  );
 });

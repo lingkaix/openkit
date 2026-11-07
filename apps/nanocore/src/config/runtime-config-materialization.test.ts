@@ -268,208 +268,219 @@ describe('configuration-stage work-slot source refusal', () => {
     ['create', 'catalog-first'],
     ['update', 'agent-first'],
     ['update', 'catalog-first'],
-  ] as const)('accepts shared Git/folder docs on both %s writes in %s order', async (mode, order) => {
-    const f = await fixture(true);
-    f.write(
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
-      catalog('git', 'docs')
-    );
-    const agentId = 'agents/team.agent.jsonc';
-    const catalogId = `workspaces/${f.otherWorkspaceId}/data-sources.jsonc`;
-    if (mode === 'update') {
-      f.write(agentId, agent([]));
-      f.write(catalogId, JSON.stringify({ schemaVersion: 1, sources: [] }));
+  ] as const)(
+    'accepts shared Git/folder docs on both %s writes in %s order',
+    async (mode, order) => {
+      const f = await fixture(true);
+      f.write(
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+        catalog('git', 'docs')
+      );
+      const agentId = 'agents/team.agent.jsonc';
+      const catalogId = `workspaces/${f.otherWorkspaceId}/data-sources.jsonc`;
+      if (mode === 'update') {
+        f.write(agentId, agent([]));
+        f.write(catalogId, JSON.stringify({ schemaVersion: 1, sources: [] }));
+      }
+      const inputs = [
+        {
+          id: agentId,
+          kind: 'agent' as const,
+          content: agent([{ id: 'docs', sourceRef: 'docs', access: 'read-write' }]),
+        },
+        { id: catalogId, kind: 'data-source' as const, content: catalog('workspace-dir', 'docs') },
+      ];
+      if (order === 'catalog-first') inputs.reverse();
+      for (const input of inputs) {
+        const result =
+          mode === 'create'
+            ? await f.files.createFile(input)
+            : await f.files.updateFile({
+                ...input,
+                expectedRevision: f.files.readFile(input.id).file.revision,
+              });
+        expect(result.file.exists).toBe(true);
+        expect(f.files.readFile(input.id).content).toBe(input.content);
+      }
     }
-    const inputs = [
-      {
-        id: agentId,
-        kind: 'agent' as const,
-        content: agent([{ id: 'docs', sourceRef: 'docs', access: 'read-write' }]),
-      },
-      { id: catalogId, kind: 'data-source' as const, content: catalog('workspace-dir', 'docs') },
-    ];
-    if (order === 'catalog-first') inputs.reverse();
-    for (const input of inputs) {
-      const result =
-        mode === 'create'
-          ? await f.files.createFile(input)
-          : await f.files.updateFile({
-              ...input,
-              expectedRevision: f.files.readFile(input.id).file.revision,
-            });
-      expect(result.file.exists).toBe(true);
-      expect(f.files.readFile(input.id).content).toBe(input.content);
-    }
-  });
+  );
 
   it.each([
     ['create', 'agent'],
     ['update', 'agent'],
     ['create', 'data-source'],
     ['update', 'data-source'],
-  ] as const)('refuses only-folder docs before the %s %s write changes bytes', async (mode, kind) => {
-    const f = await fixture(true);
-    f.write(
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
-      catalog('workspace-dir', 'docs')
-    );
-    const agentId = 'agents/team.agent.jsonc';
-    const catalogId = `workspaces/${f.otherWorkspaceId}/data-sources.jsonc`;
-    const selected = agent([{ id: 'docs', sourceRef: 'docs', access: 'read-write' }]);
-    if (kind === 'agent') f.write(catalogId, catalog('workspace-dir', 'docs'));
-    else f.write(agentId, selected);
-    const id = kind === 'agent' ? agentId : catalogId;
-    const content = kind === 'agent' ? selected : catalog('workspace-dir', 'docs');
-    const previous = kind === 'agent' ? agent([]) : catalog('git', 'docs');
-    if (mode === 'update') f.write(id, previous);
-    const input = {
-      id,
-      kind,
-      content,
-      expectedRevision: mode === 'update' ? f.files.readFile(id).file.revision : null,
-    };
-    await expect(
-      mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
-    ).rejects.toThrowError(
-      expect.objectContaining({
-        code: 'workspace_data_source_blocked',
-        message: MESSAGE,
-        status: 409,
-      })
-    );
-    const path = join(
-      f.dataRoot,
-      kind === 'agent' ? `config/${id}` : id.replace(/\/([^/]+\.jsonc)$/, '/config/$1')
-    );
-    expect(existsSync(path)).toBe(mode === 'update');
-    if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
-  });
+  ] as const)(
+    'refuses only-folder docs before the %s %s write changes bytes',
+    async (mode, kind) => {
+      const f = await fixture(true);
+      f.write(
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+        catalog('workspace-dir', 'docs')
+      );
+      const agentId = 'agents/team.agent.jsonc';
+      const catalogId = `workspaces/${f.otherWorkspaceId}/data-sources.jsonc`;
+      const selected = agent([{ id: 'docs', sourceRef: 'docs', access: 'read-write' }]);
+      if (kind === 'agent') f.write(catalogId, catalog('workspace-dir', 'docs'));
+      else f.write(agentId, selected);
+      const id = kind === 'agent' ? agentId : catalogId;
+      const content = kind === 'agent' ? selected : catalog('workspace-dir', 'docs');
+      const previous = kind === 'agent' ? agent([]) : catalog('git', 'docs');
+      if (mode === 'update') f.write(id, previous);
+      const input = {
+        id,
+        kind,
+        content,
+        expectedRevision: mode === 'update' ? f.files.readFile(id).file.revision : null,
+      };
+      await expect(
+        mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
+      ).rejects.toThrowError(
+        expect.objectContaining({
+          code: 'workspace_data_source_blocked',
+          message: MESSAGE,
+          status: 409,
+        })
+      );
+      const path = join(
+        f.dataRoot,
+        kind === 'agent' ? `config/${id}` : id.replace(/\/([^/]+\.jsonc)$/, '/config/$1')
+      );
+      expect(existsSync(path)).toBe(mode === 'update');
+      if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
+    }
+  );
 
   it.each([
     ['create', 'inline'],
     ['update', 'inline'],
     ['create', 'sourceRef'],
     ['update', 'sourceRef'],
-  ] as const)('accepts an unrelated Agent %s while an authored %s selection still refuses its own write', async (mode, shape) => {
-    const f = await fixture();
-    f.write(
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
-      catalog('workspace-dir')
-    );
-    const unsupportedId = 'agents/team.agent.jsonc';
-    const unsupported = agent(
-      shape === 'sourceRef'
-        ? selection
-        : [
-            {
-              id: 'documents',
-              access: 'read-write',
-              source: { kind: 'workspace-dir', pathRef: 'files/contracts' },
-            },
-          ]
-    );
-    const unsupportedPath = f.write(unsupportedId, unsupported);
-    const id = 'agents/other.agent.jsonc';
-    const content = agent([], 'agent_other_fixture');
-    if (mode === 'update') f.write(id, content);
-    const input = { id, kind: 'agent' as const, content };
-    const written =
-      mode === 'create'
-        ? await f.files.createFile(input)
-        : await f.files.updateFile({
-            ...input,
-            expectedRevision: f.files.readFile(id).file.revision,
-          });
-    expect(written.file.exists).toBe(true);
-    expect(f.files.readFile(id).content).toBe(content);
-    await expect(
-      f.files.updateFile({
-        id: unsupportedId,
-        kind: 'agent',
-        content: unsupported,
-        expectedRevision: f.files.readFile(unsupportedId).file.revision,
-      })
-    ).rejects.toThrowError(
-      expect.objectContaining({
-        code: 'workspace_data_source_blocked',
-        message: MESSAGE,
-        status: 409,
-      })
-    );
-    expect(readFileSync(unsupportedPath, 'utf8')).toBe(unsupported);
-  });
+  ] as const)(
+    'accepts an unrelated Agent %s while an authored %s selection still refuses its own write',
+    async (mode, shape) => {
+      const f = await fixture();
+      f.write(
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+        catalog('workspace-dir')
+      );
+      const unsupportedId = 'agents/team.agent.jsonc';
+      const unsupported = agent(
+        shape === 'sourceRef'
+          ? selection
+          : [
+              {
+                id: 'documents',
+                access: 'read-write',
+                source: { kind: 'workspace-dir', pathRef: 'files/contracts' },
+              },
+            ]
+      );
+      const unsupportedPath = f.write(unsupportedId, unsupported);
+      const id = 'agents/other.agent.jsonc';
+      const content = agent([], 'agent_other_fixture');
+      if (mode === 'update') f.write(id, content);
+      const input = { id, kind: 'agent' as const, content };
+      const written =
+        mode === 'create'
+          ? await f.files.createFile(input)
+          : await f.files.updateFile({
+              ...input,
+              expectedRevision: f.files.readFile(id).file.revision,
+            });
+      expect(written.file.exists).toBe(true);
+      expect(f.files.readFile(id).content).toBe(content);
+      await expect(
+        f.files.updateFile({
+          id: unsupportedId,
+          kind: 'agent',
+          content: unsupported,
+          expectedRevision: f.files.readFile(unsupportedId).file.revision,
+        })
+      ).rejects.toThrowError(
+        expect.objectContaining({
+          code: 'workspace_data_source_blocked',
+          message: MESSAGE,
+          status: 409,
+        })
+      );
+      expect(readFileSync(unsupportedPath, 'utf8')).toBe(unsupported);
+    }
+  );
 
-  it.each([
-    'create',
-    'update',
-  ] as const)('refuses a non-Git Agent input before %s stores bytes', async (mode) => {
-    const f = await fixture();
-    f.write(
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
-      catalog('workspace-dir')
-    );
-    const id = 'agents/team.agent.jsonc';
-    const previous = agent([]);
-    const path = mode === 'update' ? f.write(id, previous) : join(f.dataRoot, 'config', id);
-    const input = {
-      id,
-      kind: 'agent' as const,
-      content: agent(selection),
-      expectedRevision: mode === 'update' ? f.files.readFile(id).file.revision : null,
-    };
-    await expect(
-      mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
-    ).rejects.toThrowError(
-      expect.objectContaining({
-        code: 'workspace_data_source_blocked',
-        message: MESSAGE,
-        status: 409,
-      })
-    );
-    expect(existsSync(path)).toBe(mode === 'update');
-    if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
-  });
+  it.each(['create', 'update'] as const)(
+    'refuses a non-Git Agent input before %s stores bytes',
+    async (mode) => {
+      const f = await fixture();
+      f.write(
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+        catalog('workspace-dir')
+      );
+      const id = 'agents/team.agent.jsonc';
+      const previous = agent([]);
+      const path = mode === 'update' ? f.write(id, previous) : join(f.dataRoot, 'config', id);
+      const input = {
+        id,
+        kind: 'agent' as const,
+        content: agent(selection),
+        expectedRevision: mode === 'update' ? f.files.readFile(id).file.revision : null,
+      };
+      await expect(
+        mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
+      ).rejects.toThrowError(
+        expect.objectContaining({
+          code: 'workspace_data_source_blocked',
+          message: MESSAGE,
+          status: 409,
+        })
+      );
+      expect(existsSync(path)).toBe(mode === 'update');
+      if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
+    }
+  );
 
-  it.each([
-    'create',
-    'update',
-  ] as const)('refuses a configured folder root before %s stores bytes', async (mode) => {
-    const f = await fixture();
-    const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
-    const path = join(
-      f.dataRoot,
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
-    );
-    const previous = readFileSync(path, 'utf8');
-    const revision = f.files.readFile(id).file.revision;
-    if (mode === 'create') rmSync(path);
-    const input = {
-      id,
-      kind: 'workspace' as const,
-      content: JSON.stringify({
-        schemaVersion: RETAINED_FORMAT_VERSION,
-        workspace: {
-          name: 'Team',
-          ...(mode === 'update'
-            ? { defaultKnowledgeBaseId: JSON.parse(previous).workspace.defaultKnowledgeBaseId }
-            : {}),
-          roots: [{ id: 'files', kind: 'host-dir', path: 'files/contracts', access: 'read-write' }],
-        },
-      }),
-      expectedRevision: revision,
-    };
-    await expect(
-      mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
-    ).rejects.toThrowError(
-      expect.objectContaining({
-        code: 'workspace_data_source_blocked',
-        message: MESSAGE,
-        status: 409,
-      })
-    );
-    expect(existsSync(path)).toBe(mode === 'update');
-    if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
-  });
+  it.each(['create', 'update'] as const)(
+    'refuses a configured folder root before %s stores bytes',
+    async (mode) => {
+      const f = await fixture();
+      const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
+      const path = join(
+        f.dataRoot,
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc'
+      );
+      const previous = readFileSync(path, 'utf8');
+      const revision = f.files.readFile(id).file.revision;
+      if (mode === 'create') rmSync(path);
+      const input = {
+        id,
+        kind: 'workspace' as const,
+        content: JSON.stringify({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          workspace: {
+            name: 'Team',
+            ...(mode === 'update'
+              ? { defaultKnowledgeBaseId: JSON.parse(previous).workspace.defaultKnowledgeBaseId }
+              : {}),
+            roots: [
+              { id: 'files', kind: 'host-dir', path: 'files/contracts', access: 'read-write' },
+            ],
+          },
+        }),
+        expectedRevision: revision,
+      };
+      await expect(
+        mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
+      ).rejects.toThrowError(
+        expect.objectContaining({
+          code: 'workspace_data_source_blocked',
+          message: MESSAGE,
+          status: 409,
+        })
+      );
+      expect(existsSync(path)).toBe(mode === 'update');
+      if (mode === 'update') expect(readFileSync(path, 'utf8')).toBe(previous);
+    }
+  );
 
   it('keeps unselected non-Git catalog registration valid but refuses changing a selected Git source to a folder', async () => {
     const f = await fixture();
@@ -560,35 +571,35 @@ describe('configuration-stage work-slot source refusal', () => {
     expect(readFileSync(sourcePath, 'utf8')).toBe(source);
   });
 
-  it.each([
-    'runtime.file-create',
-    'runtime.file-update',
-  ])('projects the exact refusal through %s', async (operation) => {
-    const f = await fixture();
-    f.write(
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
-      catalog('workspace-dir')
-    );
-    const id = 'agents/team.agent.jsonc';
-    if (operation === 'runtime.file-update') f.write(id, agent([]));
-    const app = createAppWithWorkspaceAuthority({ dataRoot: f.dataRoot, store: f.store });
-    const response = await app.request(`/api/app/operations/${operation}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id,
-        kind: 'agent',
-        content: agent(selection),
-        expectedRevision:
-          operation === 'runtime.file-update' ? f.files.readFile(id).file.revision : null,
-      }),
-    });
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      code: 'workspace_data_source_blocked',
-      message: MESSAGE,
-    });
-  });
+  it.each(['runtime.file-create', 'runtime.file-update'])(
+    'projects the exact refusal through %s',
+    async (operation) => {
+      const f = await fixture();
+      f.write(
+        'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
+        catalog('workspace-dir')
+      );
+      const id = 'agents/team.agent.jsonc';
+      if (operation === 'runtime.file-update') f.write(id, agent([]));
+      const app = createAppWithWorkspaceAuthority({ dataRoot: f.dataRoot, store: f.store });
+      const response = await app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          kind: 'agent',
+          content: agent(selection),
+          expectedRevision:
+            operation === 'runtime.file-update' ? f.files.readFile(id).file.revision : null,
+        }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'workspace_data_source_blocked',
+        message: MESSAGE,
+      });
+    }
+  );
 
   it('accepts selected Git with additive input metadata', async () => {
     const f = await fixture();
@@ -686,36 +697,36 @@ describe('authored configuration durability', () => {
     );
   });
 
-  it.each([
-    'before',
-    'after',
-  ] as const)('rejects success when synchronization fails %s the configuration rename', async (boundary) => {
-    const f = await fixture();
-    const id = 'agents/durable.agent.jsonc';
-    const original = agent([], 'agent_durable_fixture');
-    const path = f.write(id, original);
-    const replacement = agent([], 'agent_durable_replacement');
-    durability.events.length = 0;
-    durability.fail = (candidate, directory) =>
-      boundary === 'before'
-        ? !directory && dirname(candidate) === dirname(path)
-        : directory &&
-          candidate === dirname(path) &&
-          durability.events.some((event) => event.op === 'rename' && event.path === path);
-    try {
-      await expect(
-        f.files.updateFile({
-          id,
-          kind: 'agent',
-          content: replacement,
-          expectedRevision: f.files.readFile(id).file.revision,
-        })
-      ).rejects.toThrow();
-      expect(f.files.readFile(id).content).toBe(boundary === 'before' ? original : replacement);
-    } finally {
-      durability.fail = undefined;
+  it.each(['before', 'after'] as const)(
+    'rejects success when synchronization fails %s the configuration rename',
+    async (boundary) => {
+      const f = await fixture();
+      const id = 'agents/durable.agent.jsonc';
+      const original = agent([], 'agent_durable_fixture');
+      const path = f.write(id, original);
+      const replacement = agent([], 'agent_durable_replacement');
+      durability.events.length = 0;
+      durability.fail = (candidate, directory) =>
+        boundary === 'before'
+          ? !directory && dirname(candidate) === dirname(path)
+          : directory &&
+            candidate === dirname(path) &&
+            durability.events.some((event) => event.op === 'rename' && event.path === path);
+      try {
+        await expect(
+          f.files.updateFile({
+            id,
+            kind: 'agent',
+            content: replacement,
+            expectedRevision: f.files.readFile(id).file.revision,
+          })
+        ).rejects.toThrow();
+        expect(f.files.readFile(id).content).toBe(boundary === 'before' ? original : replacement);
+      } finally {
+        durability.fail = undefined;
+      }
     }
-  });
+  );
 });
 
 /** Builds authored Assistant selection without introducing version or runtime authority. */
@@ -792,65 +803,71 @@ describe('Workspace Assistant Skill selection configuration', () => {
     invalidSelections.flatMap(([label, ids]) =>
       (['create', 'update'] as const).map((mode) => ({ label, ids, mode }))
     )
-  )('refuses $label references on $mode without changing authored or catalog bytes', async ({
-    ids,
-    mode,
-  }) => {
-    const f = await assistantSelectionFixture(mode);
-    const localCatalog = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    const foreignCatalog = catalogDocumentPath(f.dataRoot, f.otherWorkspaceId as string);
-    const catalogBefore = readFileSync(localCatalog);
-    const foreignBefore = readFileSync(foreignCatalog);
-    const content = assistantSelectionContent(ids);
-    await expect(f.write(content)).rejects.toThrowError(
-      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
-    );
-    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
-    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
-    expect(readFileSync(localCatalog)).toEqual(catalogBefore);
-    expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
-    const validation = f.files.validate({ files: [{ id: f.id, content }], mode: 'safe' });
-    expect(validation.valid).toBe(false);
-    expect(validation.diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          fileId: f.id,
-          code: 'invalid_workspace_config',
-          severity: 'error',
-        }),
-      ])
-    );
-  });
+  )(
+    'refuses $label references on $mode without changing authored or catalog bytes',
+    async ({ ids, mode }) => {
+      const f = await assistantSelectionFixture(mode);
+      const localCatalog = catalogDocumentPath(
+        f.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      const foreignCatalog = catalogDocumentPath(f.dataRoot, f.otherWorkspaceId as string);
+      const catalogBefore = readFileSync(localCatalog);
+      const foreignBefore = readFileSync(foreignCatalog);
+      const content = assistantSelectionContent(ids);
+      await expect(f.write(content)).rejects.toThrowError(
+        expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+      );
+      if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+      else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+      expect(readFileSync(localCatalog)).toEqual(catalogBefore);
+      expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
+      const validation = f.files.validate({ files: [{ id: f.id, content }], mode: 'safe' });
+      expect(validation.valid).toBe(false);
+      expect(validation.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fileId: f.id,
+            code: 'invalid_workspace_config',
+            severity: 'error',
+          }),
+        ])
+      );
+    }
+  );
 
   it.each(
     (['absent', 'empty', 'selected'] as const).flatMap((selection) =>
       (['create', 'update'] as const).map((mode) => ({ selection, mode }))
     )
-  )('persists $selection selection on $mode using current same-Workspace catalog identities', async ({
-    selection,
-    mode,
-  }) => {
-    const f = await assistantSelectionFixture(mode);
-    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    const catalogBefore = readFileSync(catalogPath);
-    expect(
-      loadWorkspaceResourceCatalog(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001').skills
-        .entries[0].currentDigest
-    ).toBeNull();
-    const ids =
-      selection === 'absent' ? undefined : selection === 'empty' ? [] : ['local-guidance'];
-    const content = assistantSelectionContent(ids);
-    await f.write(content);
-    expect(f.files.readFile(f.id).content).toBe(content);
-    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
-    const loaded = loadRuntimeConfig(f.dataRoot).workspaceConfigs.find(
-      (entry) => entry.workspaceId === 'ws_00000000-0000-7000-8000-000000000001'
-    );
-    expect(loaded?.config.workspace.assistant.repositoryInspection.enabled).toBe(false);
-    expect(
-      JSON.parse(readFileSync(f.path, 'utf8')).workspace.assistant.resources?.skillIds ?? []
-    ).toEqual(ids ?? []);
-  });
+  )(
+    'persists $selection selection on $mode using current same-Workspace catalog identities',
+    async ({ selection, mode }) => {
+      const f = await assistantSelectionFixture(mode);
+      const catalogPath = catalogDocumentPath(
+        f.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      const catalogBefore = readFileSync(catalogPath);
+      expect(
+        loadWorkspaceResourceCatalog(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001').skills
+          .entries[0].currentDigest
+      ).toBeNull();
+      const ids =
+        selection === 'absent' ? undefined : selection === 'empty' ? [] : ['local-guidance'];
+      const content = assistantSelectionContent(ids);
+      await f.write(content);
+      expect(f.files.readFile(f.id).content).toBe(content);
+      expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+      const loaded = loadRuntimeConfig(f.dataRoot).workspaceConfigs.find(
+        (entry) => entry.workspaceId === 'ws_00000000-0000-7000-8000-000000000001'
+      );
+      expect(loaded?.config.workspace.assistant.repositoryInspection.enabled).toBe(false);
+      expect(
+        JSON.parse(readFileSync(f.path, 'utf8')).workspace.assistant.resources?.skillIds ?? []
+      ).toEqual(ids ?? []);
+    }
+  );
 
   it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', async () => {
     const f = await assistantSelectionFixture('update');
@@ -882,29 +899,32 @@ describe('Workspace Assistant Skill selection configuration', () => {
     (['corrupt', 'missing'] as const).flatMap((authority) =>
       (['create', 'update'] as const).map((mode) => ({ authority, mode }))
     )
-  )('refuses $authority current catalog authority on $mode with a redacted error and unchanged authored bytes', async ({
-    authority,
-    mode,
-  }) => {
-    const f = await assistantSelectionFixture(mode);
-    const catalogPath = catalogDocumentPath(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    if (authority === 'corrupt') writeFileSync(catalogPath, '{invalid');
-    else rmSync(catalogPath);
-    let failure: unknown;
-    try {
-      await f.write(assistantSelectionContent(['local-guidance']));
-    } catch (error) {
-      failure = error;
+  )(
+    'refuses $authority current catalog authority on $mode with a redacted error and unchanged authored bytes',
+    async ({ authority, mode }) => {
+      const f = await assistantSelectionFixture(mode);
+      const catalogPath = catalogDocumentPath(
+        f.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      if (authority === 'corrupt') writeFileSync(catalogPath, '{invalid');
+      else rmSync(catalogPath);
+      let failure: unknown;
+      try {
+        await f.write(assistantSelectionContent(['local-guidance']));
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code: 'config_file_invalid', status: 400 });
+      expect(
+        `${failure instanceof Error ? failure.message : ''}${JSON.stringify(failure)}`
+      ).not.toContain(f.dataRoot);
+      if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+      else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+      if (authority === 'corrupt') expect(readFileSync(catalogPath, 'utf8')).toBe('{invalid');
+      else expect(existsSync(catalogPath)).toBe(false);
     }
-    expect(failure).toMatchObject({ code: 'config_file_invalid', status: 400 });
-    expect(
-      `${failure instanceof Error ? failure.message : ''}${JSON.stringify(failure)}`
-    ).not.toContain(f.dataRoot);
-    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
-    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
-    if (authority === 'corrupt') expect(readFileSync(catalogPath, 'utf8')).toBe('{invalid');
-    else expect(existsSync(catalogPath)).toBe(false);
-  });
+  );
 
   it('keeps exact revision refusal for an otherwise valid existing Skill selection', async () => {
     const f = await assistantSelectionFixture('update');
@@ -950,34 +970,34 @@ describe('Workspace Assistant Skill read-only validation', () => {
     expect(readFileSync(catalogPath)).toEqual(catalogBefore);
   });
 
-  it.each([
-    'create',
-    'update',
-  ] as const)('does not repair an unrelated Workspace subtree while refusing an invalid %s selection', async (mode) => {
-    const f = await assistantSelectionFixture(mode);
-    const unrelated = join(
-      f.dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'light-apps'
-    );
-    const catalogPath = join(
-      f.dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'catalog',
-      'catalog.json'
-    );
-    const catalogBefore = readFileSync(catalogPath);
-    rmSync(unrelated, { recursive: true });
-    await expect(f.write(assistantSelectionContent(['missing-guidance']))).rejects.toThrowError(
-      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
-    );
-    expect(existsSync(unrelated)).toBe(false);
-    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
-    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
-    expect(readFileSync(catalogPath)).toEqual(catalogBefore);
-  });
+  it.each(['create', 'update'] as const)(
+    'does not repair an unrelated Workspace subtree while refusing an invalid %s selection',
+    async (mode) => {
+      const f = await assistantSelectionFixture(mode);
+      const unrelated = join(
+        f.dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'light-apps'
+      );
+      const catalogPath = join(
+        f.dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'catalog',
+        'catalog.json'
+      );
+      const catalogBefore = readFileSync(catalogPath);
+      rmSync(unrelated, { recursive: true });
+      await expect(f.write(assistantSelectionContent(['missing-guidance']))).rejects.toThrowError(
+        expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+      );
+      expect(existsSync(unrelated)).toBe(false);
+      if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+      else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+      expect(readFileSync(catalogPath)).toEqual(catalogBefore);
+    }
+  );
 
   it('does not reject a valid Skill because an unrelated layout mkdir would fail', async () => {
     const f = await assistantSelectionFixture('update');
@@ -1013,52 +1033,52 @@ describe('Workspace Assistant Skill catalog confinement', () => {
     (['directory', 'file'] as const).flatMap((redirect) =>
       (['create', 'update'] as const).map((mode) => ({ redirect, mode }))
     )
-  )('rejects a catalog $redirect symlink to another Workspace on $mode without changing either authority', async ({
-    redirect,
-    mode,
-  }) => {
-    const f = await assistantSelectionFixture(mode);
-    const localDirectory = join(
-      f.dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'catalog'
-    );
-    const foreignDirectory = join(
-      f.dataRoot,
-      'workspaces',
-      f.otherWorkspaceId as string,
-      'catalog'
-    );
-    const foreignCatalog = join(foreignDirectory, 'catalog.json');
-    const foreignBefore = readFileSync(foreignCatalog);
-    const linkPath =
-      redirect === 'directory' ? localDirectory : join(localDirectory, 'catalog.json');
-    const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
-    rmSync(linkPath, { recursive: redirect === 'directory' });
-    symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
-    await expect(f.write(assistantSelectionContent(['foreign-guidance']))).rejects.toThrowError(
-      expect.objectContaining({ code: 'config_file_invalid', status: 400 })
-    );
-    if (mode === 'create') expect(existsSync(f.path)).toBe(false);
-    else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
-    expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
-    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(linkPath)).toBe(linkTarget);
-    const validation = f.files.validate({
-      files: [
-        {
-          id: f.id,
-          content: assistantSelectionContent(['foreign-guidance']),
-        },
-      ],
-      mode: 'safe',
-    });
-    expect(validation.valid).toBe(false);
-    expect(validation.diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: 'invalid_workspace_config', severity: 'error' }),
-      ])
-    );
-  });
+  )(
+    'rejects a catalog $redirect symlink to another Workspace on $mode without changing either authority',
+    async ({ redirect, mode }) => {
+      const f = await assistantSelectionFixture(mode);
+      const localDirectory = join(
+        f.dataRoot,
+        'workspaces',
+        'ws_00000000-0000-7000-8000-000000000001',
+        'catalog'
+      );
+      const foreignDirectory = join(
+        f.dataRoot,
+        'workspaces',
+        f.otherWorkspaceId as string,
+        'catalog'
+      );
+      const foreignCatalog = join(foreignDirectory, 'catalog.json');
+      const foreignBefore = readFileSync(foreignCatalog);
+      const linkPath =
+        redirect === 'directory' ? localDirectory : join(localDirectory, 'catalog.json');
+      const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
+      rmSync(linkPath, { recursive: redirect === 'directory' });
+      symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
+      await expect(f.write(assistantSelectionContent(['foreign-guidance']))).rejects.toThrowError(
+        expect.objectContaining({ code: 'config_file_invalid', status: 400 })
+      );
+      if (mode === 'create') expect(existsSync(f.path)).toBe(false);
+      else expect(readFileSync(f.path, 'utf8')).toBe(f.previous);
+      expect(readFileSync(foreignCatalog)).toEqual(foreignBefore);
+      expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(linkPath)).toBe(linkTarget);
+      const validation = f.files.validate({
+        files: [
+          {
+            id: f.id,
+            content: assistantSelectionContent(['foreign-guidance']),
+          },
+        ],
+        mode: 'safe',
+      });
+      expect(validation.valid).toBe(false);
+      expect(validation.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'invalid_workspace_config', severity: 'error' }),
+        ])
+      );
+    }
+  );
 });

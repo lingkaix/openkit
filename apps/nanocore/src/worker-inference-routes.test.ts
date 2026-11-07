@@ -823,54 +823,54 @@ function postRawWorkerResponses(
 }
 
 describe('worker inference routes', () => {
-  it.each([
-    false,
-    true,
-  ])('refuses successful Provider output without native raw observation proof (stream=%s)', async (stream) => {
-    const fixture = await createWorkerInferenceRouteFixture();
-    vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(
-      async (_provider, request) => ({
-        id: 'resp_unobserved',
-        object: 'response',
-        model: request.model,
-        output: [],
-        status: 'completed',
-      })
-    );
-    vi.spyOn(fixture.dispatcher, 'createResponsesStream').mockResolvedValue(
-      new ReadableStream({
-        start(controller) {
-          controller.enqueue(
-            new TextEncoder().encode(
-              'data: {"type":"response.output_text.delta","delta":"unobserved"}\n\n'
+  it.each([false, true])(
+    'refuses successful Provider output without native raw observation proof (stream=%s)',
+    async (stream) => {
+      const fixture = await createWorkerInferenceRouteFixture();
+      vi.spyOn(fixture.dispatcher, 'createResponses').mockImplementation(
+        async (_provider, request) => ({
+          id: 'resp_unobserved',
+          object: 'response',
+          model: request.model,
+          output: [],
+          status: 'completed',
+        })
+      );
+      vi.spyOn(fixture.dispatcher, 'createResponsesStream').mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"response.output_text.delta","delta":"unobserved"}\n\n'
+              )
+            );
+            controller.close();
+          },
+        })
+      );
+      const response = await postWorkerResponses(fixture, {
+        model: WORKER_LOGICAL_MODEL_ID,
+        input: 'Observe exactly',
+        stream,
+      });
+      expect(response.status).toBe(503);
+      const workspaceDb = openWorkspaceDb(
+        fixture.coreDb!.dataRoot,
+        fixture.environmentPackage.scope.workspaceId
+      );
+      try {
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              "SELECT status, error_code FROM capability_calls WHERE service_ref = 'worker-inference-gateway'"
             )
-          );
-          controller.close();
-        },
-      })
-    );
-    const response = await postWorkerResponses(fixture, {
-      model: WORKER_LOGICAL_MODEL_ID,
-      input: 'Observe exactly',
-      stream,
-    });
-    expect(response.status).toBe(503);
-    const workspaceDb = openWorkspaceDb(
-      fixture.coreDb!.dataRoot,
-      fixture.environmentPackage.scope.workspaceId
-    );
-    try {
-      expect(
-        workspaceDb.sqlite
-          .prepare(
-            "SELECT status, error_code FROM capability_calls WHERE service_ref = 'worker-inference-gateway'"
-          )
-          .all()
-      ).toEqual([{ status: 'failed', error_code: 'worker_raw_output_unavailable' }]);
-    } finally {
-      workspaceDb.sqlite.close();
+            .all()
+        ).toEqual([{ status: 'failed', error_code: 'worker_raw_output_unavailable' }]);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
     }
-  });
+  );
   it('refuses a complete final request before inference and retains known zero raw output', async () => {
     const providerRegistry = new ProviderRegistry([
       {
@@ -1137,219 +1137,227 @@ describe('worker inference routes', () => {
     });
   });
 
-  it.each([
-    false,
-    true,
-  ])('maps native Codex metadata through Integration and Core with mapping=%s', async (mapped) => {
-    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, mapped);
-    const canonical = JSON.stringify({
-      request_kind: 'turn',
-      session_id: 'native-session',
-      thread_id: 'native-thread',
-    });
-    const native = {
-      input: 'Hello through Integration',
-      model: WORKER_LOGICAL_MODEL_ID,
-      client_metadata: {
+  it.each([false, true])(
+    'maps native Codex metadata through Integration and Core with mapping=%s',
+    async (mapped) => {
+      const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, mapped);
+      const canonical = JSON.stringify({
+        request_kind: 'turn',
         session_id: 'native-session',
         thread_id: 'native-thread',
-        'x-codex-turn-metadata': canonical,
-      },
-      prompt_cache_key: 'private-cache',
-      ...(!mapped
-        ? {
-            openkit_runtime_hint: {
-              runtimeFamily: 'codex',
-              nativeSessionId: 'forged-session',
-              nativeThreadId: 'forged-thread',
-            },
-          }
-        : {}),
-    };
-    const bridge = createHttp2Server();
-    let bridgeSession: ServerHttp2Session | undefined;
-    const coreRequests: Array<{ headers: Record<string, unknown>; body: Record<string, unknown> }> =
-      [];
-    bridge.on('session', (session) => {
-      bridgeSession = session;
-    });
-    bridge.on('stream', (stream, headers) => {
-      const chunks: Buffer[] = [];
-      stream.on('error', () => undefined);
-      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-      stream.on('end', () => {
-        void (async () => {
-          const body = Buffer.concat(chunks);
-          coreRequests.push({ headers, body: JSON.parse(body.toString('utf8')) });
-          const forwarded = new Headers();
-          for (const [key, value] of Object.entries(headers)) {
-            if (!key.startsWith(':') && typeof value === 'string') forwarded.set(key, value);
-          }
-          const response = await fixture.app.request('/api/worker-inference/v1/responses', {
-            method: 'POST',
-            headers: forwarded,
-            body,
-          });
-          stream.respond({
-            ':status': response.status,
-            'content-type': response.headers.get('content-type') ?? 'application/json',
-          });
-          stream.end(await response.text());
-        })().catch(() => {
-          if (!stream.destroyed) {
-            stream.respond({ ':status': 500 });
-            stream.end();
-          }
-        });
       });
-    });
-    const integration = await openSandboxIntegration();
-    const socket = connectSocket(17891, '127.0.0.1');
-    bridge.emit('connection', socket);
-    try {
-      await integration.ready;
-      integration.registerSessionLoopback('as-core-mapping', {
-        capabilityCredential: 'C'.repeat(43),
-        inferenceCredential: 'I'.repeat(43),
-        ...(mapped
-          ? { inferenceRuntimeHintMapping: WORKER_ADAPTERS.codex?.inferenceRuntimeHintMapping }
+      const native = {
+        input: 'Hello through Integration',
+        model: WORKER_LOGICAL_MODEL_ID,
+        client_metadata: {
+          session_id: 'native-session',
+          thread_id: 'native-thread',
+          'x-codex-turn-metadata': canonical,
+        },
+        prompt_cache_key: 'private-cache',
+        ...(!mapped
+          ? {
+              openkit_runtime_hint: {
+                runtimeFamily: 'codex',
+                nativeSessionId: 'forged-session',
+                nativeThreadId: 'forged-thread',
+              },
+            }
           : {}),
+      };
+      const bridge = createHttp2Server();
+      let bridgeSession: ServerHttp2Session | undefined;
+      const coreRequests: Array<{
+        headers: Record<string, unknown>;
+        body: Record<string, unknown>;
+      }> = [];
+      bridge.on('session', (session) => {
+        bridgeSession = session;
       });
-      integration.bindTurnRouteTokens('as-core-mapping', {
-        capabilityToken: 'capability',
-        controlToken: 'control',
-        inferenceToken: fixture.token,
-      });
-      const status = await new Promise<number>((resolve, reject) => {
-        const request = requestHttp(
-          {
-            host: '127.0.0.1',
-            port: 17892,
-            method: 'POST',
-            path: '/inference/v1/responses',
-            headers: {
-              authorization: `Bearer ${'I'.repeat(43)}`,
-              'content-type': 'application/json',
-              'session-id': 'native-session',
-              'thread-id': 'native-thread',
-              'x-client-request-id': 'native-thread',
-              'x-codex-turn-metadata': canonical,
-            },
-          },
-          (response) => {
-            response.resume();
-            response.on('end', () => resolve(response.statusCode ?? 0));
-          }
-        );
-        request.on('error', reject);
-        request.end(JSON.stringify(native));
-      });
-      expect(status).toBe(200);
-      expect(coreRequests).toHaveLength(1);
-      expect(fixture.dispatcher.responseCalls).toHaveLength(1);
-      const upstream = fixture.dispatcher.responseCalls[0]?.request;
-      expect(upstream).toMatchObject({
-        input: native.input,
-        model: WORKER_PROVIDER_MODEL,
-        store: false,
-      });
-      expect(upstream).not.toHaveProperty('openkit_runtime_hint');
-      expect(upstream).not.toHaveProperty('client_metadata');
-      if (mapped) {
-        expect(coreRequests[0]?.body.openkit_runtime_hint).toEqual({
-          runtimeFamily: 'codex',
-          requestKind: 'turn',
-          nativeSessionId: 'native-session',
-          nativeThreadId: 'native-thread',
-          nativeCacheLineageId: 'private-cache',
+      bridge.on('stream', (stream, headers) => {
+        const chunks: Buffer[] = [];
+        stream.on('error', () => undefined);
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('end', () => {
+          void (async () => {
+            const body = Buffer.concat(chunks);
+            coreRequests.push({ headers, body: JSON.parse(body.toString('utf8')) });
+            const forwarded = new Headers();
+            for (const [key, value] of Object.entries(headers)) {
+              if (!key.startsWith(':') && typeof value === 'string') forwarded.set(key, value);
+            }
+            const response = await fixture.app.request('/api/worker-inference/v1/responses', {
+              method: 'POST',
+              headers: forwarded,
+              body,
+            });
+            stream.respond({
+              ':status': response.status,
+              'content-type': response.headers.get('content-type') ?? 'application/json',
+            });
+            stream.end(await response.text());
+          })().catch(() => {
+            if (!stream.destroyed) {
+              stream.respond({ ':status': 500 });
+              stream.end();
+            }
+          });
         });
-        expect(coreRequests[0]?.headers['x-codex-turn-metadata']).toBeUndefined();
-        expect(coreRequests[0]?.body).not.toHaveProperty('client_metadata');
-        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeOriginRef).toMatch(
-          /^rto_[a-f0-9]{24}$/
-        );
-        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeCacheLineageRef).toMatch(
-          /^rcl_[a-f0-9]{24}$/
-        );
-      } else {
-        expect(coreRequests[0]?.body).not.toHaveProperty('openkit_runtime_hint');
-        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeOriginRef).toBeNull();
-        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeCacheLineageRef).toBeNull();
+      });
+      const integration = await openSandboxIntegration();
+      const socket = connectSocket(17891, '127.0.0.1');
+      bridge.emit('connection', socket);
+      try {
+        await integration.ready;
+        integration.registerSessionLoopback('as-core-mapping', {
+          capabilityCredential: 'C'.repeat(43),
+          inferenceCredential: 'I'.repeat(43),
+          ...(mapped
+            ? { inferenceRuntimeHintMapping: WORKER_ADAPTERS.codex?.inferenceRuntimeHintMapping }
+            : {}),
+        });
+        integration.bindTurnRouteTokens('as-core-mapping', {
+          capabilityToken: 'capability',
+          controlToken: 'control',
+          inferenceToken: fixture.token,
+        });
+        const status = await new Promise<number>((resolve, reject) => {
+          const request = requestHttp(
+            {
+              host: '127.0.0.1',
+              port: 17892,
+              method: 'POST',
+              path: '/inference/v1/responses',
+              headers: {
+                authorization: `Bearer ${'I'.repeat(43)}`,
+                'content-type': 'application/json',
+                'session-id': 'native-session',
+                'thread-id': 'native-thread',
+                'x-client-request-id': 'native-thread',
+                'x-codex-turn-metadata': canonical,
+              },
+            },
+            (response) => {
+              response.resume();
+              response.on('end', () => resolve(response.statusCode ?? 0));
+            }
+          );
+          request.on('error', reject);
+          request.end(JSON.stringify(native));
+        });
+        expect(status).toBe(200);
+        expect(coreRequests).toHaveLength(1);
+        expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+        const upstream = fixture.dispatcher.responseCalls[0]?.request;
+        expect(upstream).toMatchObject({
+          input: native.input,
+          model: WORKER_PROVIDER_MODEL,
+          store: false,
+        });
+        expect(upstream).not.toHaveProperty('openkit_runtime_hint');
+        expect(upstream).not.toHaveProperty('client_metadata');
+        if (mapped) {
+          expect(coreRequests[0]?.body.openkit_runtime_hint).toEqual({
+            runtimeFamily: 'codex',
+            requestKind: 'turn',
+            nativeSessionId: 'native-session',
+            nativeThreadId: 'native-thread',
+            nativeCacheLineageId: 'private-cache',
+          });
+          expect(coreRequests[0]?.headers['x-codex-turn-metadata']).toBeUndefined();
+          expect(coreRequests[0]?.body).not.toHaveProperty('client_metadata');
+          expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeOriginRef).toMatch(
+            /^rto_[a-f0-9]{24}$/
+          );
+          expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeCacheLineageRef).toMatch(
+            /^rcl_[a-f0-9]{24}$/
+          );
+        } else {
+          expect(coreRequests[0]?.body).not.toHaveProperty('openkit_runtime_hint');
+          expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeOriginRef).toBeNull();
+          expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeCacheLineageRef).toBeNull();
+        }
+        expect(JSON.stringify(upstream)).not.toContain('private-cache');
+        expect(JSON.stringify(upstream)).not.toContain('native-thread');
+      } finally {
+        integration.close();
+        bridgeSession?.destroy();
+        socket.destroy();
+        await new Promise<void>((resolve) => bridge.close(() => resolve()));
       }
-      expect(JSON.stringify(upstream)).not.toContain('private-cache');
-      expect(JSON.stringify(upstream)).not.toContain('native-thread');
-    } finally {
-      integration.close();
-      bridgeSession?.destroy();
-      socket.destroy();
-      await new Promise<void>((resolve) => bridge.close(() => resolve()));
     }
-  });
+  );
 
-  it.each([
-    false,
-    true,
-  ])('consumes normalized runtime hints with provenance required=%s', async (required) => {
-    const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, required);
-    const turnMetadata = {
-      parent_thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e04',
-      request_kind: 'turn',
-      session_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e01',
-      subagent_kind: 'thread_spawn',
-      thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e02',
-      turn_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e03',
-    };
-    const response = await postWorkerResponses(fixture, {
-      input: 'Hello from a Codex child',
-      model: WORKER_LOGICAL_MODEL_ID,
-      openkit_runtime_hint: {
-        nativeCacheLineageId: 'private-runtime-cache-lineage',
-        nativeSessionId: turnMetadata.session_id,
-        nativeThreadId: turnMetadata.thread_id,
-        nativeTurnId: turnMetadata.turn_id,
-        parentNativeThreadId: turnMetadata.parent_thread_id,
-        runtimeFamily: 'codex',
-        subagentKind: 'thread_spawn',
-      },
-    });
-
-    expect(response.status).toBe(200);
-    expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
-      expect.objectContaining({
+  it.each([false, true])(
+    'consumes normalized runtime hints with provenance required=%s',
+    async (required) => {
+      const fixture = await createWorkerInferenceRouteFixture(
+        true,
+        undefined,
+        true,
+        true,
+        required
+      );
+      const turnMetadata = {
+        parent_thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e04',
+        request_kind: 'turn',
+        session_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e01',
+        subagent_kind: 'thread_spawn',
+        thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e02',
+        turn_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e03',
+      };
+      const response = await postWorkerResponses(fixture, {
         input: 'Hello from a Codex child',
-        model: WORKER_PROVIDER_MODEL,
-        prompt_cache_key: expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
-        store: false,
-        stream: false,
-      })
-    );
-    expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
-      expect.objectContaining({
-        packageSnapshotId: fixture.environmentPackage.snapshotId,
-        runtimeCacheLineageRef: expect.stringMatching(/^rcl_[a-f0-9]{24}$/),
-        runtimeOriginRef: expect.stringMatching(/^rto_[a-f0-9]{24}$/),
-      }),
-    ]);
-    const serializedCall = JSON.stringify(fixture.dispatcher.responseCalls[0], (key, value) =>
-      key === 'workspaceDb' ? undefined : value
-    );
-    expect(serializedCall).not.toContain(turnMetadata.thread_id);
-    expect(serializedCall).not.toContain('private-runtime-cache-lineage');
-    for (const nativeValue of [
-      turnMetadata.session_id,
-      turnMetadata.turn_id,
-      turnMetadata.parent_thread_id,
-      'collab_spawn',
-    ]) {
-      expect(serializedCall).not.toContain(nativeValue);
+        model: WORKER_LOGICAL_MODEL_ID,
+        openkit_runtime_hint: {
+          nativeCacheLineageId: 'private-runtime-cache-lineage',
+          nativeSessionId: turnMetadata.session_id,
+          nativeThreadId: turnMetadata.thread_id,
+          nativeTurnId: turnMetadata.turn_id,
+          parentNativeThreadId: turnMetadata.parent_thread_id,
+          runtimeFamily: 'codex',
+          subagentKind: 'thread_spawn',
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
+        expect.objectContaining({
+          input: 'Hello from a Codex child',
+          model: WORKER_PROVIDER_MODEL,
+          prompt_cache_key: expect.stringMatching(/^openkit:responses:[a-f0-9]{32}$/),
+          store: false,
+          stream: false,
+        })
+      );
+      expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([
+        expect.objectContaining({
+          packageSnapshotId: fixture.environmentPackage.snapshotId,
+          runtimeCacheLineageRef: expect.stringMatching(/^rcl_[a-f0-9]{24}$/),
+          runtimeOriginRef: expect.stringMatching(/^rto_[a-f0-9]{24}$/),
+        }),
+      ]);
+      const serializedCall = JSON.stringify(fixture.dispatcher.responseCalls[0], (key, value) =>
+        key === 'workspaceDb' ? undefined : value
+      );
+      expect(serializedCall).not.toContain(turnMetadata.thread_id);
+      expect(serializedCall).not.toContain('private-runtime-cache-lineage');
+      for (const nativeValue of [
+        turnMetadata.session_id,
+        turnMetadata.turn_id,
+        turnMetadata.parent_thread_id,
+        'collab_spawn',
+      ]) {
+        expect(serializedCall).not.toContain(nativeValue);
+        expect(JSON.stringify(readWorkerInferenceCapabilityCalls(fixture))).not.toContain(
+          nativeValue
+        );
+      }
       expect(JSON.stringify(readWorkerInferenceCapabilityCalls(fixture))).not.toContain(
-        nativeValue
+        turnMetadata.thread_id
       );
     }
-    expect(JSON.stringify(readWorkerInferenceCapabilityCalls(fixture))).not.toContain(
-      turnMetadata.thread_id
-    );
-  });
+  );
 
   it('requires canonical runtime hints for provenance-required packages', async () => {
     const fixture = await createWorkerInferenceRouteFixture(true, undefined, true, true, true);
@@ -2328,51 +2336,51 @@ describe('worker inference routes', () => {
     ]);
   });
 
-  it.each([
-    false,
-    true,
-  ])('preserves typed unsupported feature failures before stream=%s', async (stream) => {
-    const fixture = await createWorkerInferenceRouteFixture();
-    const request = { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID, stream };
-    const supported = await postWorkerResponses(fixture, request);
-    expect(supported.status).toBe(200);
-    await supported.text();
+  it.each([false, true])(
+    'preserves typed unsupported feature failures before stream=%s',
+    async (stream) => {
+      const fixture = await createWorkerInferenceRouteFixture();
+      const request = { input: 'Hello', model: WORKER_LOGICAL_MODEL_ID, stream };
+      const supported = await postWorkerResponses(fixture, request);
+      expect(supported.status).toBe(200);
+      await supported.text();
 
-    fixture.dispatcher.responseError = new GatewayUnsupportedFeatureError(
-      'pi-ai Responses function tools token=tok_00000000-0000-7608-9cb9-96beaf03534f'
-    );
-    const rejected = await postWorkerResponses(fixture, request);
-    const body = await rejected.json();
-    const calls = readWorkerInferenceCapabilityCalls(fixture);
-    expect(rejected.status).toBe(400);
-    expect(calls).toEqual([
-      expect.objectContaining({ errorCode: null, status: 'succeeded' }),
-      expect.objectContaining({ errorCode: 'unsupported_gateway_feature', status: 'failed' }),
-    ]);
-    expect(body).toEqual({
-      error: {
-        code: 'unsupported_gateway_feature',
-        message: 'Requested features are not supported by the Gateway.',
-        type: 'invalid_request_error',
-      },
-    });
-    expect(JSON.stringify({ body, calls })).not.toMatch(/pi-ai|tok_secret/);
+      fixture.dispatcher.responseError = new GatewayUnsupportedFeatureError(
+        'pi-ai Responses function tools token=tok_00000000-0000-7608-9cb9-96beaf03534f'
+      );
+      const rejected = await postWorkerResponses(fixture, request);
+      const body = await rejected.json();
+      const calls = readWorkerInferenceCapabilityCalls(fixture);
+      expect(rejected.status).toBe(400);
+      expect(calls).toEqual([
+        expect.objectContaining({ errorCode: null, status: 'succeeded' }),
+        expect.objectContaining({ errorCode: 'unsupported_gateway_feature', status: 'failed' }),
+      ]);
+      expect(body).toEqual({
+        error: {
+          code: 'unsupported_gateway_feature',
+          message: 'Requested features are not supported by the Gateway.',
+          type: 'invalid_request_error',
+        },
+      });
+      expect(JSON.stringify({ body, calls })).not.toMatch(/pi-ai|tok_secret/);
 
-    fixture.dispatcher.responseError = Object.assign(
-      new Error('private token=tok_00000000-0000-7608-9cb9-96beaf03534f'),
-      {
-        code: 'unsupported_gateway_feature',
-      }
-    );
-    const untyped = await postWorkerResponses(fixture, request);
-    expect(await untyped.json()).toMatchObject({
-      error: { code: 'worker_inference_request_failed' },
-    });
-    expect(readWorkerInferenceCapabilityCalls(fixture).at(-1)).toMatchObject({
-      errorCode: 'worker_inference_failed',
-      status: 'failed',
-    });
-  });
+      fixture.dispatcher.responseError = Object.assign(
+        new Error('private token=tok_00000000-0000-7608-9cb9-96beaf03534f'),
+        {
+          code: 'unsupported_gateway_feature',
+        }
+      );
+      const untyped = await postWorkerResponses(fixture, request);
+      expect(await untyped.json()).toMatchObject({
+        error: { code: 'worker_inference_request_failed' },
+      });
+      expect(readWorkerInferenceCapabilityCalls(fixture).at(-1)).toMatchObject({
+        errorCode: 'worker_inference_failed',
+        status: 'failed',
+      });
+    }
+  );
 
   it('projects typed provider request failures as generic worker errors', async () => {
     const fixture = await createWorkerInferenceRouteFixture();
@@ -3173,85 +3181,93 @@ describe('slice 3c Worker native effort and immutable package', () => {
     }
   });
 
-  it.each([
-    'responses',
-    'chat/completions',
-  ] as const)('refuses unknown %s effort without an effect', async (endpoint) => {
-    const f = await createWorkerInferenceRouteFixture();
-    for (const effort of ['turbo', null, 4, {}]) {
-      const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: WORKER_LOGICAL_MODEL_ID,
-          ...(endpoint === 'responses'
-            ? { input: 'hello', reasoning: { effort } }
-            : { messages: [{ role: 'user', content: 'hello' }], reasoning_effort: effort }),
-        }),
-      });
-      expect(response.status).toBe(400);
+  it.each(['responses', 'chat/completions'] as const)(
+    'refuses unknown %s effort without an effect',
+    async (endpoint) => {
+      const f = await createWorkerInferenceRouteFixture();
+      for (const effort of ['turbo', null, 4, {}]) {
+        const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: WORKER_LOGICAL_MODEL_ID,
+            ...(endpoint === 'responses'
+              ? { input: 'hello', reasoning: { effort } }
+              : { messages: [{ role: 'user', content: 'hello' }], reasoning_effort: effort }),
+          }),
+        });
+        expect(response.status).toBe(400);
+      }
+      expect(f.dispatcher.responseCalls).toHaveLength(0);
+      expect(f.dispatcher.chatCalls).toHaveLength(0);
+      expect(readWorkerInferenceCapabilityCalls(f)).toEqual([]);
     }
-    expect(f.dispatcher.responseCalls).toHaveLength(0);
-    expect(f.dispatcher.chatCalls).toHaveLength(0);
-    expect(readWorkerInferenceCapabilityCalls(f)).toEqual([]);
-  });
+  );
 
   it.each([
     ['high', 'low', 'high'],
     ['high', undefined, 'high'],
     [undefined, 'low', 'low'],
     [undefined, undefined, undefined],
-  ] as const)('request %s/%s uses %s through stock Models', async (recorded, requested, expected) => {
-    const received: unknown[] = [];
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
-      const body = JSON.parse(String(init?.body));
-      received.push(body.reasoning?.effort ?? body.reasoning_effort);
-      return new Response(
-        'data: {"id":"chatcmpl_effort","model":"openai/gpt-5.2","choices":[{"index":0,"delta":{"content":"worker effort answer"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
-        { headers: { 'content-type': 'text/event-stream' } }
-      );
-    });
-    const models = createModels();
-    models.setProvider(openrouterProvider());
-    const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient({ models }),
-    });
-    const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
-      persistedTurn: true,
-      dispatcher,
-      ...(recorded ? { reasoningEffort: recorded } : {}),
-    });
-    const admittedPackage = structuredClone(f.environmentPackage);
-    expect(admittedPackage.llm.reasoningEffort).toBe(recorded);
-    const dispatched = vi.spyOn(dispatcher, 'createResponses');
-    const response = await postWorkerResponses(f, {
-      model: WORKER_LOGICAL_MODEL_ID,
-      input: 'hello',
-      ...(requested === undefined ? {} : { reasoning: { effort: requested } }),
-    });
-    expect(response.status, await response.text()).toBe(200);
-    const request = dispatched.mock.calls[0]?.[1];
-    if (expected === undefined) expect(request).not.toHaveProperty('reasoning');
-    else expect(request).toMatchObject({ reasoning: { effort: expected } });
-    // Stock Completions maps an omitted Core effort through this model's disabled-thinking value.
-    expect(received).toEqual([expected ?? 'none']);
-    expect(f.environmentPackage).toEqual(admittedPackage);
-    const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
-    try {
-      const entries = listWorkspaceCapabilityCalls(db, 'ws_00000000-0000-7000-8000-000000000001')[0]
-        ?.extensions?.['openkit.gateway/routeLineage']?.entries;
-      expect(entries).toHaveLength(1);
-      if (requested === undefined) expect(entries?.[0]).not.toHaveProperty('requestedEffort');
-      else expect(entries?.[0]).toHaveProperty('requestedEffort', requested);
-      if (expected === undefined)
-        expect(entries?.[0]).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
-      else expect(entries?.[0]).toHaveProperty('effectiveEffort', expected);
-    } finally {
-      fetchSpy.mockRestore();
-      db.sqlite.close();
+  ] as const)(
+    'request %s/%s uses %s through stock Models',
+    async (recorded, requested, expected) => {
+      const received: unknown[] = [];
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        const body = JSON.parse(String(init?.body));
+        received.push(body.reasoning?.effort ?? body.reasoning_effort);
+        return new Response(
+          'data: {"id":"chatcmpl_effort","model":"openai/gpt-5.2","choices":[{"index":0,"delta":{"content":"worker effort answer"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          { headers: { 'content-type': 'text/event-stream' } }
+        );
+      });
+      const models = createModels();
+      models.setProvider(openrouterProvider());
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+      });
+      const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+        persistedTurn: true,
+        dispatcher,
+        ...(recorded ? { reasoningEffort: recorded } : {}),
+      });
+      const admittedPackage = structuredClone(f.environmentPackage);
+      expect(admittedPackage.llm.reasoningEffort).toBe(recorded);
+      const dispatched = vi.spyOn(dispatcher, 'createResponses');
+      const response = await postWorkerResponses(f, {
+        model: WORKER_LOGICAL_MODEL_ID,
+        input: 'hello',
+        ...(requested === undefined ? {} : { reasoning: { effort: requested } }),
+      });
+      expect(response.status, await response.text()).toBe(200);
+      const request = dispatched.mock.calls[0]?.[1];
+      if (expected === undefined) expect(request).not.toHaveProperty('reasoning');
+      else expect(request).toMatchObject({ reasoning: { effort: expected } });
+      // Stock Completions maps an omitted Core effort through this model's disabled-thinking value.
+      expect(received).toEqual([expected ?? 'none']);
+      expect(f.environmentPackage).toEqual(admittedPackage);
+      const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      try {
+        const entries = listWorkspaceCapabilityCalls(
+          db,
+          'ws_00000000-0000-7000-8000-000000000001'
+        )[0]?.extensions?.['openkit.gateway/routeLineage']?.entries;
+        expect(entries).toHaveLength(1);
+        if (requested === undefined) expect(entries?.[0]).not.toHaveProperty('requestedEffort');
+        else expect(entries?.[0]).toHaveProperty('requestedEffort', requested);
+        if (expected === undefined)
+          expect(entries?.[0]).toHaveProperty(
+            'effectiveEffortReason',
+            'provider_default_no_effort'
+          );
+        else expect(entries?.[0]).toHaveProperty('effectiveEffort', expected);
+      } finally {
+        fetchSpy.mockRestore();
+        db.sqlite.close();
+      }
     }
-  });
+  );
 });
 
 it('Worker inference skips missing API-key supply without a Provider callback', async () => {
@@ -3271,174 +3287,175 @@ it('Worker inference skips missing API-key supply without a Provider callback', 
 
 describe('Worker Turn admitted limits', () => {
   for (const endpoint of ['responses', 'chat/completions'] as const) {
-    it.each([
-      'new smaller primary',
-      'all members shrunk',
-      'absent modelParameters',
-    ] as const)(`${endpoint}: %s`, async (scenario) => {
-      const originalProfiles = [
-        { id: 'original-primary', context: 240_000, output: 16_000 },
-        { id: 'original-backup', context: 200_000, output: 8_000 },
-      ].map(({ id, context, output }) => ({
-        id,
-        displayName: id,
-        kind: 'llm-gateway' as const,
-        vendor: 'openrouter' as const,
-        secretRef: 'test:worker-api-key',
-        models: [WORKER_PROVIDER_MODEL],
-        modelMetadata: {
-          [WORKER_PROVIDER_MODEL]: {
-            limit: { context, output },
-            modalities: { input: ['text'], output: ['text'] },
+    it.each(['new smaller primary', 'all members shrunk', 'absent modelParameters'] as const)(
+      `${endpoint}: %s`,
+      async (scenario) => {
+        const originalProfiles = [
+          { id: 'original-primary', context: 240_000, output: 16_000 },
+          { id: 'original-backup', context: 200_000, output: 8_000 },
+        ].map(({ id, context, output }) => ({
+          id,
+          displayName: id,
+          kind: 'llm-gateway' as const,
+          vendor: 'openrouter' as const,
+          secretRef: 'test:worker-api-key',
+          models: [WORKER_PROVIDER_MODEL],
+          modelMetadata: {
+            [WORKER_PROVIDER_MODEL]: {
+              limit: { context, output },
+              modalities: { input: ['text'], output: ['text'] },
+            },
           },
-        },
-      }));
-      const admittedConfig: GatewayConfig = {
-        schemaVersion: 1,
-        enabled: true,
-        defaultLogicalModelId: WORKER_LOGICAL_MODEL_ID,
-        requiredFeatures: [],
-        logicalModels: [
-          {
-            id: WORKER_LOGICAL_MODEL_ID,
-            displayName: 'Worker reasoning',
-            routing: { autoFailover: true },
-            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
-            routes: originalProfiles.map((profile) => ({
-              id: profile.id,
-              providerProfileId: profile.id,
-              providerModel: WORKER_PROVIDER_MODEL,
-            })),
-          },
-        ],
-      };
-      const admittedModel = resolveLogicalModel(
-        admittedConfig,
-        new ProviderRegistry(originalProfiles),
-        WORKER_LOGICAL_MODEL_ID
-      )!;
-      expect(admittedModel.modelParameters).toMatchObject({
-        contextWindow: 200_000,
-        maxOutputTokens: 8_000,
-      });
-      const { modelParameters: _admittedParameters, ...modelWithoutParameters } = admittedModel;
-      const currentProfiles =
-        scenario === 'all members shrunk'
-          ? originalProfiles.map((profile) => ({
-              ...profile,
-              modelMetadata: {
-                [WORKER_PROVIDER_MODEL]: {
-                  ...profile.modelMetadata[WORKER_PROVIDER_MODEL],
-                  limit: { context: 20_000, output: 1_000 },
-                },
-              },
-            }))
-          : [
-              {
-                ...originalProfiles[0]!,
-                id: 'new-smaller-primary',
-                displayName: 'New smaller primary',
-                modelMetadata: {
-                  [WORKER_PROVIDER_MODEL]: {
-                    ...originalProfiles[0]!.modelMetadata[WORKER_PROVIDER_MODEL],
-                    limit: { context: 20_000, output: 1_000 },
-                  },
-                },
-              },
-              ...originalProfiles,
-            ];
-      const currentConfig = structuredClone(admittedConfig);
-      currentConfig.logicalModels[0]!.routes = currentProfiles.map((profile) => ({
-        id: profile.id,
-        providerProfileId: profile.id,
-        providerModel: WORKER_PROVIDER_MODEL,
-      }));
-      const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
-        persistedTurn: true,
-        admittedLogicalModel:
-          scenario === 'absent modelParameters' ? modelWithoutParameters : admittedModel,
-        gatewayConfig: currentConfig,
-        providerRegistry: new ProviderRegistry(currentProfiles),
-      });
-      const admittedPackage = structuredClone(f.environmentPackage);
-      if (scenario === 'absent modelParameters') {
-        expect(f.environmentPackage.llm.routes[0]).not.toHaveProperty('modelParameters');
-      } else {
-        expect(f.environmentPackage.llm.routes[0]?.modelParameters).toMatchObject({
+        }));
+        const admittedConfig: GatewayConfig = {
+          schemaVersion: 1,
+          enabled: true,
+          defaultLogicalModelId: WORKER_LOGICAL_MODEL_ID,
+          requiredFeatures: [],
+          logicalModels: [
+            {
+              id: WORKER_LOGICAL_MODEL_ID,
+              displayName: 'Worker reasoning',
+              routing: { autoFailover: true },
+              contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+              routes: originalProfiles.map((profile) => ({
+                id: profile.id,
+                providerProfileId: profile.id,
+                providerModel: WORKER_PROVIDER_MODEL,
+              })),
+            },
+          ],
+        };
+        const admittedModel = resolveLogicalModel(
+          admittedConfig,
+          new ProviderRegistry(originalProfiles),
+          WORKER_LOGICAL_MODEL_ID
+        )!;
+        expect(admittedModel.modelParameters).toMatchObject({
           contextWindow: 200_000,
           maxOutputTokens: 8_000,
         });
-      }
-      const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: WORKER_LOGICAL_MODEL_ID,
-          ...(endpoint === 'responses'
-            ? { input: 'Hello' }
-            : { messages: [{ role: 'user', content: 'Hello' }] }),
-        }),
-      });
-      const failed = scenario === 'all members shrunk';
-      expect(response.status).toBe(failed ? 503 : 200);
-      if (failed) {
-        const body = await response.json();
-        expect(body).toMatchObject({ error: { code: 'gateway_logical_model_unavailable' } });
-        expect(body.error).not.toHaveProperty('cause');
-      } else {
-        await response.json();
-      }
-      const providerCalls = [...f.dispatcher.responseCalls, ...f.dispatcher.chatCalls];
-      expect(providerCalls.map((call) => call.provider.id)).toEqual(
-        failed
-          ? []
-          : [scenario === 'absent modelParameters' ? 'new-smaller-primary' : 'original-primary']
-      );
-      const db = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
-      try {
-        const calls = listWorkspaceCapabilityCalls(db, f.environmentPackage.scope.workspaceId);
-        expect(calls).toHaveLength(1);
-        expect(calls[0]).toMatchObject({
-          status: failed ? 'failed' : 'succeeded',
-          errorCode: failed ? 'gateway_logical_model_unavailable' : null,
-          providerRef: null,
-          turnId: f.environmentPackage.scope.turnId,
-          agentSessionId: f.environmentPackage.scope.agentSessionId,
-          packageSnapshotId: f.environmentPackage.snapshotId,
+        const { modelParameters: _admittedParameters, ...modelWithoutParameters } = admittedModel;
+        const currentProfiles =
+          scenario === 'all members shrunk'
+            ? originalProfiles.map((profile) => ({
+                ...profile,
+                modelMetadata: {
+                  [WORKER_PROVIDER_MODEL]: {
+                    ...profile.modelMetadata[WORKER_PROVIDER_MODEL],
+                    limit: { context: 20_000, output: 1_000 },
+                  },
+                },
+              }))
+            : [
+                {
+                  ...originalProfiles[0]!,
+                  id: 'new-smaller-primary',
+                  displayName: 'New smaller primary',
+                  modelMetadata: {
+                    [WORKER_PROVIDER_MODEL]: {
+                      ...originalProfiles[0]!.modelMetadata[WORKER_PROVIDER_MODEL],
+                      limit: { context: 20_000, output: 1_000 },
+                    },
+                  },
+                },
+                ...originalProfiles,
+              ];
+        const currentConfig = structuredClone(admittedConfig);
+        currentConfig.logicalModels[0]!.routes = currentProfiles.map((profile) => ({
+          id: profile.id,
+          providerProfileId: profile.id,
+          providerModel: WORKER_PROVIDER_MODEL,
+        }));
+        const f = await createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+          persistedTurn: true,
+          admittedLogicalModel:
+            scenario === 'absent modelParameters' ? modelWithoutParameters : admittedModel,
+          gatewayConfig: currentConfig,
+          providerRegistry: new ProviderRegistry(currentProfiles),
         });
-        const entries = calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries;
-        const excluded = (routeMemberId: string) => ({
-          kind: 'unavailable',
-          routeMemberId,
-          selectionReason: 'pinned_capability_unavailable',
-          unavailableReason: 'pinned_capability_unavailable',
-          failureKind: 'unsupported',
-        });
-        expect(entries).toMatchObject(
-          failed
-            ? originalProfiles.map((profile) => excluded(profile.id))
-            : scenario === 'absent modelParameters'
-              ? [{ kind: 'attempt', routeMemberId: 'new-smaller-primary' }]
-              : [
-                  excluded('new-smaller-primary'),
-                  { kind: 'attempt', routeMemberId: 'original-primary' },
-                ]
-        );
-        expect(entries).toHaveLength(failed ? 2 : scenario === 'absent modelParameters' ? 1 : 2);
-        if (failed) {
-          expect(listWorkspaceUsageRecords(db, f.environmentPackage.scope.workspaceId)).toEqual([]);
-          expect(
-            readWorkObservations(db, {
-              threadId: f.environmentPackage.scope.threadId,
-              turnId: f.environmentPackage.scope.turnId,
-            }).filter((row) => row.type === 'model.observed')
-          ).toEqual([]);
+        const admittedPackage = structuredClone(f.environmentPackage);
+        if (scenario === 'absent modelParameters') {
+          expect(f.environmentPackage.llm.routes[0]).not.toHaveProperty('modelParameters');
+        } else {
+          expect(f.environmentPackage.llm.routes[0]?.modelParameters).toMatchObject({
+            contextWindow: 200_000,
+            maxOutputTokens: 8_000,
+          });
         }
-      } finally {
-        db.sqlite.close();
+        const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: WORKER_LOGICAL_MODEL_ID,
+            ...(endpoint === 'responses'
+              ? { input: 'Hello' }
+              : { messages: [{ role: 'user', content: 'Hello' }] }),
+          }),
+        });
+        const failed = scenario === 'all members shrunk';
+        expect(response.status).toBe(failed ? 503 : 200);
+        if (failed) {
+          const body = await response.json();
+          expect(body).toMatchObject({ error: { code: 'gateway_logical_model_unavailable' } });
+          expect(body.error).not.toHaveProperty('cause');
+        } else {
+          await response.json();
+        }
+        const providerCalls = [...f.dispatcher.responseCalls, ...f.dispatcher.chatCalls];
+        expect(providerCalls.map((call) => call.provider.id)).toEqual(
+          failed
+            ? []
+            : [scenario === 'absent modelParameters' ? 'new-smaller-primary' : 'original-primary']
+        );
+        const db = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
+        try {
+          const calls = listWorkspaceCapabilityCalls(db, f.environmentPackage.scope.workspaceId);
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).toMatchObject({
+            status: failed ? 'failed' : 'succeeded',
+            errorCode: failed ? 'gateway_logical_model_unavailable' : null,
+            providerRef: null,
+            turnId: f.environmentPackage.scope.turnId,
+            agentSessionId: f.environmentPackage.scope.agentSessionId,
+            packageSnapshotId: f.environmentPackage.snapshotId,
+          });
+          const entries = calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries;
+          const excluded = (routeMemberId: string) => ({
+            kind: 'unavailable',
+            routeMemberId,
+            selectionReason: 'pinned_capability_unavailable',
+            unavailableReason: 'pinned_capability_unavailable',
+            failureKind: 'unsupported',
+          });
+          expect(entries).toMatchObject(
+            failed
+              ? originalProfiles.map((profile) => excluded(profile.id))
+              : scenario === 'absent modelParameters'
+                ? [{ kind: 'attempt', routeMemberId: 'new-smaller-primary' }]
+                : [
+                    excluded('new-smaller-primary'),
+                    { kind: 'attempt', routeMemberId: 'original-primary' },
+                  ]
+          );
+          expect(entries).toHaveLength(failed ? 2 : scenario === 'absent modelParameters' ? 1 : 2);
+          if (failed) {
+            expect(listWorkspaceUsageRecords(db, f.environmentPackage.scope.workspaceId)).toEqual(
+              []
+            );
+            expect(
+              readWorkObservations(db, {
+                threadId: f.environmentPackage.scope.threadId,
+                turnId: f.environmentPackage.scope.turnId,
+              }).filter((row) => row.type === 'model.observed')
+            ).toEqual([]);
+          }
+        } finally {
+          db.sqlite.close();
+        }
+        expect(f.environmentPackage).toEqual(admittedPackage);
       }
-      expect(f.environmentPackage).toEqual(admittedPackage);
-    });
+    );
   }
 
   it('negotiates modern MCP through the actual DeepSeek plugin and Integration to the admitted Worker', async ({

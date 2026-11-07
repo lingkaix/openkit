@@ -528,146 +528,150 @@ it('admits the actual existing native admission INSERT/FULL/held-Worker observer
   expect(await f.cold()).toEqual(prefix);
 });
 
-it.each(
-  cases
-)('preserves original $operation outcome, current-version replay and CAS refusals', async (c) => {
-  const f = await fixture(c);
-  const before = f.bytes();
-  const stale = await f.call({ ...f.input, expectedRevision: 1 });
-  expect(stale.status).toBe(409);
-  expect(await stale.json()).toMatchObject({ code: 'conflict' });
-  expect(f.bytes()).toBe(before);
-  expect(f.rows()).toEqual({ audits: [], receipts: [] });
-  if (c.stage === 3 || c.stage === 4) {
-    const conflict = await f.call({
-      ...f.input,
-      ...(c.stage === 3
-        ? { expectedCurrentDigest: f.second.digest }
-        : { expectedPinDigest: f.first.digest }),
-    });
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ code: 'conflict' });
+it.each(cases)(
+  'preserves original $operation outcome, current-version replay and CAS refusals',
+  async (c) => {
+    const f = await fixture(c);
+    const before = f.bytes();
+    const stale = await f.call({ ...f.input, expectedRevision: 1 });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: 'conflict' });
     expect(f.bytes()).toBe(before);
     expect(f.rows()).toEqual({ audits: [], receipts: [] });
-  }
-  await success(f, await f.call());
-  effect(f);
-  audit(f);
-  receipt(f);
-  const original = f.rows();
-  const completed = f.bytes();
-  const changedInput = await f.call({ ...f.input, expectedRevision: 1 });
-  expect(changedInput.status).toBe(409);
-  expect(await changedInput.json()).toMatchObject({ code: 'idempotency_key_conflict' });
-  expect(f.rows()).toEqual(original);
-  expect(f.bytes()).toBe(completed);
-  selectWorkspaceLightAppDefinitionDefault({
-    dataRoot: f.dataRoot,
-    workspaceId: f.workspaceId,
-    entryId: 'notes',
-    expectedRevision: 3,
-    digest: f.first.digest,
-    expectedCurrentDigest:
-      c.stage === 1 ? f.finalDigest : c.stage === 3 ? f.second.digest : f.first.digest,
-  });
-  const moved = f.bytes();
-  await success(f, await f.call(), 4);
-  expect(f.rows()).toEqual(original);
-  expect(f.bytes()).toBe(moved);
-  expect(
-    resolveWorkspaceLightAppDefinition({
+    if (c.stage === 3 || c.stage === 4) {
+      const conflict = await f.call({
+        ...f.input,
+        ...(c.stage === 3
+          ? { expectedCurrentDigest: f.second.digest }
+          : { expectedPinDigest: f.first.digest }),
+      });
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ code: 'conflict' });
+      expect(f.bytes()).toBe(before);
+      expect(f.rows()).toEqual({ audits: [], receipts: [] });
+    }
+    await success(f, await f.call());
+    effect(f);
+    audit(f);
+    receipt(f);
+    const original = f.rows();
+    const completed = f.bytes();
+    const changedInput = await f.call({ ...f.input, expectedRevision: 1 });
+    expect(changedInput.status).toBe(409);
+    expect(await changedInput.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+    expect(f.rows()).toEqual(original);
+    expect(f.bytes()).toBe(completed);
+    selectWorkspaceLightAppDefinitionDefault({
       dataRoot: f.dataRoot,
       workspaceId: f.workspaceId,
       entryId: 'notes',
-    }).version.digest
-  ).toBe(c.stage === 4 ? f.second.digest : f.first.digest);
-  expect(await f.cold()).toEqual(original);
-  expect(f.bytes()).toBe(moved);
-});
+      expectedRevision: 3,
+      digest: f.first.digest,
+      expectedCurrentDigest:
+        c.stage === 1 ? f.finalDigest : c.stage === 3 ? f.second.digest : f.first.digest,
+    });
+    const moved = f.bytes();
+    await success(f, await f.call(), 4);
+    expect(f.rows()).toEqual(original);
+    expect(f.bytes()).toBe(moved);
+    expect(
+      resolveWorkspaceLightAppDefinition({
+        dataRoot: f.dataRoot,
+        workspaceId: f.workspaceId,
+        entryId: 'notes',
+      }).version.digest
+    ).toBe(c.stage === 4 ? f.second.digest : f.first.digest);
+    expect(await f.cold()).toEqual(original);
+    expect(f.bytes()).toBe(moved);
+  }
+);
 
-it.each(
-  cases
-)('awaits actual native $operation completion before original receipt and public success', async (c) => {
-  const f = await fixture(c);
-  let settled = false;
-  const result = f.start();
-  void result.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    }
-  );
-  await held(f, result);
-  expect(settled).toBe(false);
-  const event = audit(f);
-  expect(f.rows().receipts).toEqual([]);
-  const bytes = f.bytes();
-  release();
-  await success(f, await result);
-  receipt(f);
-  expect(audit(f)).toEqual(event);
-  const prefix = f.rows();
-  await success(f, await f.call());
-  expect(f.rows()).toEqual(prefix);
-  expect(f.bytes()).toBe(bytes);
-  expect(await f.cold()).toEqual(prefix);
-  expect(f.bytes()).toBe(bytes);
-});
+it.each(cases)(
+  'awaits actual native $operation completion before original receipt and public success',
+  async (c) => {
+    const f = await fixture(c);
+    let settled = false;
+    const result = f.start();
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await held(f, result);
+    expect(settled).toBe(false);
+    const event = audit(f);
+    expect(f.rows().receipts).toEqual([]);
+    const bytes = f.bytes();
+    release();
+    await success(f, await result);
+    receipt(f);
+    expect(audit(f)).toEqual(event);
+    const prefix = f.rows();
+    await success(f, await f.call());
+    expect(f.rows()).toEqual(prefix);
+    expect(f.bytes()).toBe(bytes);
+    expect(await f.cold()).toEqual(prefix);
+    expect(f.bytes()).toBe(bytes);
+  }
+);
 
-it.each(
-  cases
-)('retains actual $operation effect and historical Audit after lost completion ACK without receipt or repost', async (c) => {
-  const f = await fixture(c);
-  const result = f.start();
-  const worker = await held(f, result);
-  audit(f);
-  expect(f.rows().receipts).toEqual([]);
-  const prefix = f.rows();
-  const bytes = f.bytes();
-  const posts = fault.messages.length;
-  const workers = fault.workers.length;
-  await worker.terminate();
-  const response = await result;
-  expect(response.status).toBe(409);
-  expect(await response.json()).toMatchObject({
-    code: 'recovery_required',
-    message:
-      'Definition publication completed but its command outcome is unavailable. Inspect the catalog before a new request.',
-  });
-  expect(fault.messages).toHaveLength(posts);
-  expect(fault.workers).toHaveLength(workers);
-  expect(f.rows()).toEqual(prefix);
-  expect(f.bytes()).toBe(bytes);
-  expect(await f.cold()).toEqual(prefix); // Explicit shutdown is required before a new native host.
-  const replay = await f.call();
-  expect(replay.status).toBe(409);
-  expect(await replay.json()).toMatchObject({ code: 'conflict' });
-  expect(f.rows()).toEqual(prefix);
-  expect(f.bytes()).toBe(bytes);
-  expect(await f.cold()).toEqual(prefix);
-});
+it.each(cases)(
+  'retains actual $operation effect and historical Audit after lost completion ACK without receipt or repost',
+  async (c) => {
+    const f = await fixture(c);
+    const result = f.start();
+    const worker = await held(f, result);
+    audit(f);
+    expect(f.rows().receipts).toEqual([]);
+    const prefix = f.rows();
+    const bytes = f.bytes();
+    const posts = fault.messages.length;
+    const workers = fault.workers.length;
+    await worker.terminate();
+    const response = await result;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: 'recovery_required',
+      message:
+        'Definition publication completed but its command outcome is unavailable. Inspect the catalog before a new request.',
+    });
+    expect(fault.messages).toHaveLength(posts);
+    expect(fault.workers).toHaveLength(workers);
+    expect(f.rows()).toEqual(prefix);
+    expect(f.bytes()).toBe(bytes);
+    expect(await f.cold()).toEqual(prefix); // Explicit shutdown is required before a new native host.
+    const replay = await f.call();
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ code: 'conflict' });
+    expect(f.rows()).toEqual(prefix);
+    expect(f.bytes()).toBe(bytes);
+    expect(await f.cold()).toEqual(prefix);
+  }
+);
 
-it.each(
-  cases
-)('keeps original $operation historical actor and receipt before final revoked-authority refusal', async (c) => {
-  const f = await fixture(c);
-  const result = f.start();
-  await held(f, result);
-  const event = audit(f);
-  expect(f.rows().receipts).toEqual([]);
-  const bytes = f.bytes();
-  f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
-  expect(isCanonicalUserActive(f.coreDb, f.userId)).toBe(false);
-  release();
-  const response = await result;
-  expect(response.status).toBe(403);
-  expect(await response.json()).toMatchObject({ code: 'catalog_forbidden' });
-  receipt(f);
-  expect(audit(f)).toEqual(event);
-  expect(f.bytes()).toBe(bytes);
-  const prefix = f.rows();
-  expect(await f.cold()).toEqual(prefix);
-  expect(f.bytes()).toBe(bytes);
-});
+it.each(cases)(
+  'keeps original $operation historical actor and receipt before final revoked-authority refusal',
+  async (c) => {
+    const f = await fixture(c);
+    const result = f.start();
+    await held(f, result);
+    const event = audit(f);
+    expect(f.rows().receipts).toEqual([]);
+    const bytes = f.bytes();
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.userId))();
+    expect(isCanonicalUserActive(f.coreDb, f.userId)).toBe(false);
+    release();
+    const response = await result;
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'catalog_forbidden' });
+    receipt(f);
+    expect(audit(f)).toEqual(event);
+    expect(f.bytes()).toBe(bytes);
+    const prefix = f.rows();
+    expect(await f.cold()).toEqual(prefix);
+    expect(f.bytes()).toBe(bytes);
+  }
+);

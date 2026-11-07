@@ -420,81 +420,82 @@ describe('D0-4: real offline capture and verification', () => {
     };
   }
 
-  it.each([
-    'backup',
-    'move',
-  ] as const)('WM capture/seal: CLI %s returns one path-free report and allocates wsbak', async (purpose) => {
-    const f = await stoppedRoot();
-    const bundleRoot = join(f.parent, 'bundle');
-    const lines: string[] = [];
-    const report = await runCli(
-      [
-        'capture',
-        '--source-data-root',
-        f.dataRoot,
-        '--workspace-id',
-        workspaceId,
-        '--expected-source-deployment-id',
-        f.deploymentId,
-        '--bundle-root',
-        bundleRoot,
-        '--purpose',
-        purpose,
-      ],
-      (line) => lines.push(line),
-      { releaseIdentityPath: f.releaseIdentityPath }
-    );
-    expect(report).toMatchObject({
-      command: 'capture',
-      disposition: purpose === 'backup' ? 'sealed' : 'prepared',
-      workspaceId,
-      droppedSourceMemberIds: [],
-      restrictedRecovery: false,
-      capture: {
-        workspaceId,
-        sourceDeploymentId: f.deploymentId,
-        source: { kind: 'stopped-data-root' },
-      },
-    });
-    expect(report.capture!.backupId).toMatch(
-      /^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-    );
-    expect(lines).toHaveLength(1);
-    expect(JSON.parse(lines[0]!)).toEqual(report);
-    expect(lines[0]).not.toContain(f.parent);
-    expect(lines[0]).not.toContain('Product focus');
-    const manifest = parseWorkspaceBackupManifest(
-      JSON.parse(readFileSync(join(bundleRoot, 'manifest.json'), 'utf8'))
-    );
-    expect(manifest.backupId).toBe(report.capture!.backupId);
-    expect(manifest.capture.consistency).toBe('quiescent');
-    if (purpose === 'move') {
-      expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
-    } else {
-      const seal = parseWorkspaceBackupSeal(
-        JSON.parse(readFileSync(join(bundleRoot, 'seal.json'), 'utf8'))
-      );
-      expect(seal.manifestDigest).toBe(report.capture!.manifestDigest);
-      const verifyLines: string[] = [];
-      const verification = await runCli(
-        ['verify', '--bundle-root', bundleRoot],
-        (line) => verifyLines.push(line),
+  it.each(['backup', 'move'] as const)(
+    'WM capture/seal: CLI %s returns one path-free report and allocates wsbak',
+    async (purpose) => {
+      const f = await stoppedRoot();
+      const bundleRoot = join(f.parent, 'bundle');
+      const lines: string[] = [];
+      const report = await runCli(
+        [
+          'capture',
+          '--source-data-root',
+          f.dataRoot,
+          '--workspace-id',
+          workspaceId,
+          '--expected-source-deployment-id',
+          f.deploymentId,
+          '--bundle-root',
+          bundleRoot,
+          '--purpose',
+          purpose,
+        ],
+        (line) => lines.push(line),
         { releaseIdentityPath: f.releaseIdentityPath }
       );
-      expect(verification).toMatchObject({
-        command: 'verify',
-        disposition: 'verified',
+      expect(report).toMatchObject({
+        command: 'capture',
+        disposition: purpose === 'backup' ? 'sealed' : 'prepared',
         workspaceId,
-        capture: { backupId: manifest.backupId },
         droppedSourceMemberIds: [],
         restrictedRecovery: false,
-        nextAction: 'none',
+        capture: {
+          workspaceId,
+          sourceDeploymentId: f.deploymentId,
+          source: { kind: 'stopped-data-root' },
+        },
       });
-      expect(verifyLines).toHaveLength(1);
-      expect(JSON.parse(verifyLines[0]!)).toEqual(verification);
-      expect(verifyLines[0]).not.toContain(f.parent);
-    }
-  }, 120_000);
+      expect(report.capture!.backupId).toMatch(
+        /^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!)).toEqual(report);
+      expect(lines[0]).not.toContain(f.parent);
+      expect(lines[0]).not.toContain('Product focus');
+      const manifest = parseWorkspaceBackupManifest(
+        JSON.parse(readFileSync(join(bundleRoot, 'manifest.json'), 'utf8'))
+      );
+      expect(manifest.backupId).toBe(report.capture!.backupId);
+      expect(manifest.capture.consistency).toBe('quiescent');
+      if (purpose === 'move') {
+        expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
+      } else {
+        const seal = parseWorkspaceBackupSeal(
+          JSON.parse(readFileSync(join(bundleRoot, 'seal.json'), 'utf8'))
+        );
+        expect(seal.manifestDigest).toBe(report.capture!.manifestDigest);
+        const verifyLines: string[] = [];
+        const verification = await runCli(
+          ['verify', '--bundle-root', bundleRoot],
+          (line) => verifyLines.push(line),
+          { releaseIdentityPath: f.releaseIdentityPath }
+        );
+        expect(verification).toMatchObject({
+          command: 'verify',
+          disposition: 'verified',
+          workspaceId,
+          capture: { backupId: manifest.backupId },
+          droppedSourceMemberIds: [],
+          restrictedRecovery: false,
+          nextAction: 'none',
+        });
+        expect(verifyLines).toHaveLength(1);
+        expect(JSON.parse(verifyLines[0]!)).toEqual(verification);
+        expect(verifyLines[0]).not.toContain(f.parent);
+      }
+    },
+    120_000
+  );
 
   it('WM cold exclusion: CLI refuses a held source root with root-locked and no report', async () => {
     const f = await stoppedRoot();

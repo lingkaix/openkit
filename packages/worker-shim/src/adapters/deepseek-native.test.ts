@@ -410,39 +410,37 @@ it('reuses an existing home byte for byte even when the image source changes or 
   expect(snapshot(home)).toEqual(before);
 });
 
-it.each([
-  'unreadable',
-  'special',
-  'escape',
-  'staging',
-])('refuses %s initialization before native work without changing retained bytes', async (kind) => {
-  writeFileSync(join(state, 'retained-canary'), 'unchanged');
-  const source = join(image, '.dsh');
-  mkdirSync(source);
-  const entry = join(source, 'entry');
-  if (kind === 'escape') symlinkSync(work, entry);
-  if (kind === 'special') expect(spawnSync('mkfifo', [entry]).status).toBe(0);
-  if (kind === 'unreadable') {
-    writeFileSync(entry, 'unreadable');
-    chmodSync(entry, 0);
+it.each(['unreadable', 'special', 'escape', 'staging'])(
+  'refuses %s initialization before native work without changing retained bytes',
+  async (kind) => {
+    writeFileSync(join(state, 'retained-canary'), 'unchanged');
+    const source = join(image, '.dsh');
+    mkdirSync(source);
+    const entry = join(source, 'entry');
+    if (kind === 'escape') symlinkSync(work, entry);
+    if (kind === 'special') expect(spawnSync('mkfifo', [entry]).status).toBe(0);
+    if (kind === 'unreadable') {
+      writeFileSync(entry, 'unreadable');
+      chmodSync(entry, 0);
+    }
+    if (kind === 'staging') {
+      mkdirSync(`${home}.initializing`);
+      writeFileSync(join(`${home}.initializing`, 'partial'), 'leave me');
+    }
+    const before = snapshot(state);
+    const inference = await server();
+    try {
+      await expect(open(inference)).rejects.toThrow();
+      expect(snapshot(state)).toEqual(before);
+      expect(existsSync(home)).toBe(false);
+      expect(existsSync(`${home}.initializing`)).toBe(kind === 'staging');
+      expect(readdirSync(control)).toEqual([]);
+      expect(inference.requests).toHaveLength(0);
+    } finally {
+      if (kind === 'unreadable') chmodSync(entry, 0o600);
+    }
   }
-  if (kind === 'staging') {
-    mkdirSync(`${home}.initializing`);
-    writeFileSync(join(`${home}.initializing`, 'partial'), 'leave me');
-  }
-  const before = snapshot(state);
-  const inference = await server();
-  try {
-    await expect(open(inference)).rejects.toThrow();
-    expect(snapshot(state)).toEqual(before);
-    expect(existsSync(home)).toBe(false);
-    expect(existsSync(`${home}.initializing`)).toBe(kind === 'staging');
-    expect(readdirSync(control)).toEqual([]);
-    expect(inference.requests).toHaveLength(0);
-  } finally {
-    if (kind === 'unreadable') chmodSync(entry, 0o600);
-  }
-});
+);
 
 it('creates an empty home with no source and does not read a source inside stateRoot', async () => {
   const inference = await server();

@@ -491,42 +491,39 @@ describe('native inline retained work bodies', () => {
     expect(exactBytes(f, acknowledged.content)).toEqual(originalBytes);
   });
 
-  it.each([
-    'digest',
-    'length',
-    'representation',
-    'retained format',
-    'lineage',
-  ] as const)('refuses invalid inline %s without an accepted reference, head or receipt', async (fault) => {
-    const f = await fixture();
-    await f.store.createItem(f.item);
-    const value = {
-      ...writeRetainedV1(f.item),
-      text: 'Must not be acknowledged',
-      ...(fault === 'retained format' ? { schemaVersion: 99 } : {}),
-      ...(fault === 'lineage' ? { turnId: allocateEntityId('tu') } : {}),
-    };
-    const body = JSON.stringify(value);
-    const original = retainedContent(f.scope.owner, body).inline;
-    const content = {
-      ...original,
-      reference: {
-        ...original.reference,
-        representation: fault === 'representation' ? 'unknown-required-inline' : 'inline',
-        contentDigest:
-          fault === 'digest' ? `sha256:${'0'.repeat(64)}` : original.reference.contentDigest,
-      },
-      byteLength: original.byteLength + (fault === 'length' ? 1 : 0),
-    };
-    const before = cut(f);
-    const input = candidate(f, content);
-    // Storage, Item Log Invariants: exact facts and required representation semantics precede FULL ACK.
-    await expect(
-      getControlStoreWorkerClient().transition(`workspace:${f.scope.path}`, input)
-    ).rejects.toMatchObject({ commit: 'not-committed' });
-    expect(cut(f)).toEqual(before);
-    await shutdownControlStoreWorkerClient();
-    createTestStore({ dataRoot: f.root });
-    expect(cut(f)).toEqual(before);
-  });
+  it.each(['digest', 'length', 'representation', 'retained format', 'lineage'] as const)(
+    'refuses invalid inline %s without an accepted reference, head or receipt',
+    async (fault) => {
+      const f = await fixture();
+      await f.store.createItem(f.item);
+      const value = {
+        ...writeRetainedV1(f.item),
+        text: 'Must not be acknowledged',
+        ...(fault === 'retained format' ? { schemaVersion: 99 } : {}),
+        ...(fault === 'lineage' ? { turnId: allocateEntityId('tu') } : {}),
+      };
+      const body = JSON.stringify(value);
+      const original = retainedContent(f.scope.owner, body).inline;
+      const content = {
+        ...original,
+        reference: {
+          ...original.reference,
+          representation: fault === 'representation' ? 'unknown-required-inline' : 'inline',
+          contentDigest:
+            fault === 'digest' ? `sha256:${'0'.repeat(64)}` : original.reference.contentDigest,
+        },
+        byteLength: original.byteLength + (fault === 'length' ? 1 : 0),
+      };
+      const before = cut(f);
+      const input = candidate(f, content);
+      // Storage, Item Log Invariants: exact facts and required representation semantics precede FULL ACK.
+      await expect(
+        getControlStoreWorkerClient().transition(`workspace:${f.scope.path}`, input)
+      ).rejects.toMatchObject({ commit: 'not-committed' });
+      expect(cut(f)).toEqual(before);
+      await shutdownControlStoreWorkerClient();
+      createTestStore({ dataRoot: f.root });
+      expect(cut(f)).toEqual(before);
+    }
+  );
 });

@@ -341,52 +341,52 @@ describe('workspace switcher persistence', () => {
     expect(getSession).not.toHaveBeenCalled();
   });
 
-  it.each([
-    null,
-    'removed',
-  ] as const)('does not restore another identity selection before discovery or from its %s membership', async (membershipStatus) => {
-    useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
-    useWorkspaceStore.getState().setCurrentWorkspaceId(USER_A_QUICK_CHAT.id);
-    await rehydratePersistedSelection();
+  it.each([null, 'removed'] as const)(
+    'does not restore another identity selection before discovery or from its %s membership',
+    async (membershipStatus) => {
+      useWorkspaceStore.getState().bindSelectionUserKey(USER_A_QUICK_CHAT.id);
+      useWorkspaceStore.getState().setCurrentWorkspaceId(USER_A_QUICK_CHAT.id);
+      await rehydratePersistedSelection();
 
-    const result = {
-      items: [USER_A_QUICK_CHAT, USER_B_QUICK_CHAT].map((workspace, index) => ({
-        membershipStatus: index === 0 ? membershipStatus : 'active',
-        accessCause: 'administrator',
-        workspace,
-        isOwner: index !== 0,
-        membershipRevision: index === 0 && membershipStatus === null ? null : 1,
-        ownerUserId: index === 0 ? 'user_a' : 'user_b',
-        registryRevision: 1,
-      })),
-    };
-    let finishDiscovery!: (value: typeof result) => void;
-    const listWorkspaces = vi.fn().mockReturnValue(
-      new Promise<typeof result>((resolve) => {
-        finishDiscovery = resolve;
-      })
-    );
-    const client = {
-      operations: { 'workspace.list': listWorkspaces },
-    } as unknown as CoreClient;
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <CoreClientProvider client={client}>
-          <CurrentWorkspaceProbe />
-        </CoreClientProvider>
-      </QueryClientProvider>
-    );
+      const result = {
+        items: [USER_A_QUICK_CHAT, USER_B_QUICK_CHAT].map((workspace, index) => ({
+          membershipStatus: index === 0 ? membershipStatus : 'active',
+          accessCause: 'administrator',
+          workspace,
+          isOwner: index !== 0,
+          membershipRevision: index === 0 && membershipStatus === null ? null : 1,
+          ownerUserId: index === 0 ? 'user_a' : 'user_b',
+          registryRevision: 1,
+        })),
+      };
+      let finishDiscovery!: (value: typeof result) => void;
+      const listWorkspaces = vi.fn().mockReturnValue(
+        new Promise<typeof result>((resolve) => {
+          finishDiscovery = resolve;
+        })
+      );
+      const client = {
+        operations: { 'workspace.list': listWorkspaces },
+      } as unknown as CoreClient;
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <CoreClientProvider client={client}>
+            <CurrentWorkspaceProbe />
+          </CoreClientProvider>
+        </QueryClientProvider>
+      );
 
-    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(1));
-    expect(screen.getByLabelText('Current workspace')).toBeEmptyDOMElement();
-    await act(async () => finishDiscovery(result));
-    await waitFor(() => {
-      expect(screen.getByLabelText('Current workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
-      expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
-      expect(useWorkspaceStore.getState().selectionUserKey).toBe(USER_B_QUICK_CHAT.id);
-    });
-  });
+      await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(1));
+      expect(screen.getByLabelText('Current workspace')).toBeEmptyDOMElement();
+      await act(async () => finishDiscovery(result));
+      await waitFor(() => {
+        expect(screen.getByLabelText('Current workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
+        expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
+        expect(useWorkspaceStore.getState().selectionUserKey).toBe(USER_B_QUICK_CHAT.id);
+      });
+    }
+  );
 
   it('keeps the Quick Chat default when no explicit selection is persisted', async () => {
     renderCurrentWorkspace([PROJECT_WORKSPACE, USER_A_QUICK_CHAT]);

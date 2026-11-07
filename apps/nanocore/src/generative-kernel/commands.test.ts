@@ -317,52 +317,55 @@ describe('Generative Kernel commands', () => {
     ['create', 'field'],
     ['update', 'collection'],
     ['update', 'field'],
-  ] as const)('refuses caller-assigned new %s %s IDs without publishing changes', async (operation, entity) => {
-    const context = await createContext();
-    if (operation === 'create') {
-      const proposed = structuredClone(MAPPING_SCHEMA);
-      if (entity === 'collection') proposed.collections[0]!.id = allocateEntityId('col');
-      else proposed.collections[0]!.fields[0]!.id = allocateEntityId('fld');
-      await expect.soft(createLightApp(context, proposed)).rejects.toMatchObject({
-        code: 'validation_failed',
-      });
-      expect(listLightApps(context.dataRoot, context.workspaceId).items).toEqual([]);
-      return;
-    }
-    const app = await createLightApp(context, MAPPING_SCHEMA);
-    const {
-      appId: _appId,
-      schemaRevision: _schemaRevision,
-      ...proposed
-    } = structuredClone(app.schema!);
-    if (entity === 'collection') {
-      proposed.collections.push({
-        ...structuredClone(MAPPING_SCHEMA.collections[0]!),
-        id: allocateEntityId('col'),
-        name: 'extra_mappings',
-      });
-    } else {
-      proposed.collections[0]!.fields.push({
-        id: allocateEntityId('fld'),
-        name: 'source_note',
-        type: 'text',
-        required: false,
-        description: 'Where this mapping was observed.',
-      });
-    }
-    await expect
-      .soft(
-        updateLightAppSchema(
-          { ...context, requestId: randomUUID() },
-          app.appId,
-          app.appRevision,
-          app.schemaRevision,
-          proposed
+  ] as const)(
+    'refuses caller-assigned new %s %s IDs without publishing changes',
+    async (operation, entity) => {
+      const context = await createContext();
+      if (operation === 'create') {
+        const proposed = structuredClone(MAPPING_SCHEMA);
+        if (entity === 'collection') proposed.collections[0]!.id = allocateEntityId('col');
+        else proposed.collections[0]!.fields[0]!.id = allocateEntityId('fld');
+        await expect.soft(createLightApp(context, proposed)).rejects.toMatchObject({
+          code: 'validation_failed',
+        });
+        expect(listLightApps(context.dataRoot, context.workspaceId).items).toEqual([]);
+        return;
+      }
+      const app = await createLightApp(context, MAPPING_SCHEMA);
+      const {
+        appId: _appId,
+        schemaRevision: _schemaRevision,
+        ...proposed
+      } = structuredClone(app.schema!);
+      if (entity === 'collection') {
+        proposed.collections.push({
+          ...structuredClone(MAPPING_SCHEMA.collections[0]!),
+          id: allocateEntityId('col'),
+          name: 'extra_mappings',
+        });
+      } else {
+        proposed.collections[0]!.fields.push({
+          id: allocateEntityId('fld'),
+          name: 'source_note',
+          type: 'text',
+          required: false,
+          description: 'Where this mapping was observed.',
+        });
+      }
+      await expect
+        .soft(
+          updateLightAppSchema(
+            { ...context, requestId: randomUUID() },
+            app.appId,
+            app.appRevision,
+            app.schemaRevision,
+            proposed
+          )
         )
-      )
-      .rejects.toMatchObject({ code: 'validation_failed' });
-    expect(getLightApp(context.dataRoot, context.workspaceId, app.appId)).toEqual(app);
-  });
+        .rejects.toMatchObject({ code: 'validation_failed' });
+      expect(getLightApp(context.dataRoot, context.workspaceId, app.appId)).toEqual(app);
+    }
+  );
 
   it('creates an app and record, then rereads them after reopen', async () => {
     const context = await createContext();
@@ -666,84 +669,84 @@ describe('Generative Kernel commands', () => {
     ).resolves.toMatchObject({ data: { membership_id: 'mem_sibling' } });
   });
 
-  it.each([
-    'data-root',
-    'other-workspace-history',
-  ] as const)('refuses a real native forecast redirected to %s before any App publication', async (destination) => {
-    const context = await createContext();
-    const app = await createLightApp(context, MAPPING_SCHEMA);
-    const peer = await context.store.createWorkspace('Unrelated schema history owner');
-    const before = listLightAppSnapshots(context.dataRoot, context.workspaceId, app.appId);
-    const requestId = randomUUID();
-    const target =
-      destination === 'data-root'
-        ? join(context.dataRoot, 'outside-both-roots.yaml')
-        : join(
-            context.dataRoot,
-            'workspaces',
-            peer.id,
-            'knowledge',
-            'schema',
-            'history',
-            'foreign.yaml'
-          );
-    const admission = new FileStorageAdmission(
-      context.dataRoot,
-      () => 0n,
-      () => 1_000_000_000n
-    );
-    const selected: string[] = [];
-    const forPath = admission.forPath.bind(admission);
-    const observe = vi.spyOn(admission, 'forPath').mockImplementation((path) => {
-      selected.push(path);
-      return forPath(path);
-    });
-    getControlStoreWorkerClient().setFileStorageAdmission(context.dataRoot, admission);
-    const {
-      appId: _appId,
-      schemaRevision: _schemaRevision,
-      ...schema
-    } = structuredClone(app.schema!);
-    schema.collections[0]!.fields.push({
-      name: 'scope_forecast_note',
-      type: 'text',
-      required: false,
-      description: 'Published only with an admitted physical forecast.',
-    });
-    commitBoundary.forecastDecisions = [];
-    commitBoundary.forecastPath = target;
-    try {
-      await expect(
-        updateLightAppSchema(
-          { ...context, requestId },
-          app.appId,
-          app.appRevision,
-          app.schemaRevision,
-          schema
-        )
-      ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
-      expect(commitBoundary.forecastCount).toBe(1);
-      expect(commitBoundary.forecastDecisions).toEqual(['unavailable']);
-      expect(selected).not.toContain(target);
-      expect(existsSync(target)).toBe(false);
-      expect(getLightApp(context.dataRoot, context.workspaceId, app.appId)).toEqual(app);
-      expect(listLightAppSnapshots(context.dataRoot, context.workspaceId, app.appId)).toEqual(
-        before
+  it.each(['data-root', 'other-workspace-history'] as const)(
+    'refuses a real native forecast redirected to %s before any App publication',
+    async (destination) => {
+      const context = await createContext();
+      const app = await createLightApp(context, MAPPING_SCHEMA);
+      const peer = await context.store.createWorkspace('Unrelated schema history owner');
+      const before = listLightAppSnapshots(context.dataRoot, context.workspaceId, app.appId);
+      const requestId = randomUUID();
+      const target =
+        destination === 'data-root'
+          ? join(context.dataRoot, 'outside-both-roots.yaml')
+          : join(
+              context.dataRoot,
+              'workspaces',
+              peer.id,
+              'knowledge',
+              'schema',
+              'history',
+              'foreign.yaml'
+            );
+      const admission = new FileStorageAdmission(
+        context.dataRoot,
+        () => 0n,
+        () => 1_000_000_000n
       );
-      const scope = { workspaceId: context.workspaceId, appId: app.appId };
-      expect(
-        getCommandRequestRecord(
-          context.dataRoot,
-          scope,
-          commandRequestKey('kernel.schema.update', requestId, scope),
-          new Date().toISOString()
-        )
-      ).toBeNull();
-    } finally {
-      commitBoundary.forecastPath = undefined;
-      observe.mockRestore();
+      const selected: string[] = [];
+      const forPath = admission.forPath.bind(admission);
+      const observe = vi.spyOn(admission, 'forPath').mockImplementation((path) => {
+        selected.push(path);
+        return forPath(path);
+      });
+      getControlStoreWorkerClient().setFileStorageAdmission(context.dataRoot, admission);
+      const {
+        appId: _appId,
+        schemaRevision: _schemaRevision,
+        ...schema
+      } = structuredClone(app.schema!);
+      schema.collections[0]!.fields.push({
+        name: 'scope_forecast_note',
+        type: 'text',
+        required: false,
+        description: 'Published only with an admitted physical forecast.',
+      });
+      commitBoundary.forecastDecisions = [];
+      commitBoundary.forecastPath = target;
+      try {
+        await expect(
+          updateLightAppSchema(
+            { ...context, requestId },
+            app.appId,
+            app.appRevision,
+            app.schemaRevision,
+            schema
+          )
+        ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+        expect(commitBoundary.forecastCount).toBe(1);
+        expect(commitBoundary.forecastDecisions).toEqual(['unavailable']);
+        expect(selected).not.toContain(target);
+        expect(existsSync(target)).toBe(false);
+        expect(getLightApp(context.dataRoot, context.workspaceId, app.appId)).toEqual(app);
+        expect(listLightAppSnapshots(context.dataRoot, context.workspaceId, app.appId)).toEqual(
+          before
+        );
+        const scope = { workspaceId: context.workspaceId, appId: app.appId };
+        expect(
+          getCommandRequestRecord(
+            context.dataRoot,
+            scope,
+            commandRequestKey('kernel.schema.update', requestId, scope),
+            new Date().toISOString()
+          )
+        ).toBeNull();
+      } finally {
+        commitBoundary.forecastPath = undefined;
+        observe.mockRestore();
+      }
     }
-  });
+  );
 
   it('retains exact snapshot reservations until a failed native channel exits', async () => {
     const context = await createContext();

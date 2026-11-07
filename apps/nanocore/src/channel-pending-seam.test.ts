@@ -434,48 +434,48 @@ describe('Discord to native Pending Request seam', () => {
     expect(f.record()).toEqual(pending);
   });
 
-  it.each([
-    'approval',
-    'user-input',
-  ] as const)('settles one exact %s response through its native owner once', async (kind) => {
-    const f = await fixture(kind);
-    await f.pair();
-    const disclosure = await f.disclose();
-    const command = kind === 'approval' ? 'deny' : 'answer';
-    const values = {
-      ...f.target,
-      disclosure,
-      ...(kind === 'user-input' ? { answers: JSON.stringify({ color: ['blue'] }) } : {}),
-    };
-    const signed = f.signed(f.envelope(command, values));
-    expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain('accepted');
-    expect(f.nativeCalls).toHaveLength(1);
-    expect(f.nativeCalls[0]).toMatchObject({
-      id: kind === 'approval' ? 'approval.respond' : 'question.answer',
-      actor,
-    });
-    expect(f.record()).toMatchObject({ state: 'resolved', claim: 'unclaimed' });
-    if (kind === 'approval') {
-      expect(f.store.getApproval(f.target.request).status).toBe('denied');
-      expect(f.record()).toMatchObject({
-        resolution: 'denied',
-        decidingActor: { kind: 'user', id: actor.userId },
+  it.each(['approval', 'user-input'] as const)(
+    'settles one exact %s response through its native owner once',
+    async (kind) => {
+      const f = await fixture(kind);
+      await f.pair();
+      const disclosure = await f.disclose();
+      const command = kind === 'approval' ? 'deny' : 'answer';
+      const values = {
+        ...f.target,
+        disclosure,
+        ...(kind === 'user-input' ? { answers: JSON.stringify({ color: ['blue'] }) } : {}),
+      };
+      const signed = f.signed(f.envelope(command, values));
+      expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain('accepted');
+      expect(f.nativeCalls).toHaveLength(1);
+      expect(f.nativeCalls[0]).toMatchObject({
+        id: kind === 'approval' ? 'approval.respond' : 'question.answer',
+        actor,
       });
-    } else {
-      expect(f.record()).toMatchObject({
-        resolution: 'answered',
-        answerMap: { color: ['blue'] },
-        decidingActor: { kind: 'user', id: actor.userId },
-      });
+      expect(f.record()).toMatchObject({ state: 'resolved', claim: 'unclaimed' });
+      if (kind === 'approval') {
+        expect(f.store.getApproval(f.target.request).status).toBe('denied');
+        expect(f.record()).toMatchObject({
+          resolution: 'denied',
+          decidingActor: { kind: 'user', id: actor.userId },
+        });
+      } else {
+        expect(f.record()).toMatchObject({
+          resolution: 'answered',
+          answerMap: { color: ['blue'] },
+          decidingActor: { kind: 'user', id: actor.userId },
+        });
+      }
+      const settled = f.record();
+      expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain(
+        'already handled'
+      );
+      expect(f.nativeCalls).toHaveLength(1);
+      expect(f.record()).toEqual(settled);
+      expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, f.target.thread)).toHaveLength(1);
     }
-    const settled = f.record();
-    expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain(
-      'already handled'
-    );
-    expect(f.nativeCalls).toHaveLength(1);
-    expect(f.record()).toEqual(settled);
-    expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, f.target.thread)).toHaveLength(1);
-  });
+  );
 
   it('does not carry session administrator authority through a real signed Discord response', async () => {
     const f = await fixture();
@@ -534,78 +534,77 @@ describe('Discord to native Pending Request seam', () => {
     expect(f.record().state).toBe('pending');
   });
 
-  it.each([
-    'membership',
-    'audience',
-    'binding',
-  ] as const)('refuses a response after current %s authority changes following disclosure', async (loss) => {
-    const f = await fixture();
-    await f.pair();
-    const disclosure = await f.disclose();
-    const pending = f.record();
-    if (loss === 'membership') {
-      f.removeMembership();
-    } else if (loss === 'audience') {
-      const thread = f.store.getThread(DEMO_WORKSPACE_ID, f.target.thread);
-      expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(true);
-      // Visibility is creation-fixed; current managed Policy removes access without conversion.
-      f.revokeThreadAudience();
-      expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(false);
-      expect(f.store.getThread(DEMO_WORKSPACE_ID, thread.id)).toEqual(thread);
-    } else {
-      f.services.discord!.revoke(actor);
+  it.each(['membership', 'audience', 'binding'] as const)(
+    'refuses a response after current %s authority changes following disclosure',
+    async (loss) => {
+      const f = await fixture();
+      await f.pair();
+      const disclosure = await f.disclose();
+      const pending = f.record();
+      if (loss === 'membership') {
+        f.removeMembership();
+      } else if (loss === 'audience') {
+        const thread = f.store.getThread(DEMO_WORKSPACE_ID, f.target.thread);
+        expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(true);
+        // Visibility is creation-fixed; current managed Policy removes access without conversion.
+        f.revokeThreadAudience();
+        expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(false);
+        expect(f.store.getThread(DEMO_WORKSPACE_ID, thread.id)).toEqual(thread);
+      } else {
+        f.services.discord!.revoke(actor);
+      }
+      expect(text(await f.send('deny', { ...f.target, disclosure }))).toContain('refused');
+      expect(f.nativeCalls).toHaveLength(0);
+      expect(f.record().state).toBe('pending');
+      expect(f.record()).toEqual(pending);
+      expect(f.record().claim).toBe('unclaimed');
     }
-    expect(text(await f.send('deny', { ...f.target, disclosure }))).toContain('refused');
-    expect(f.nativeCalls).toHaveLength(0);
-    expect(f.record().state).toBe('pending');
-    expect(f.record()).toEqual(pending);
-    expect(f.record().claim).toBe('unclaimed');
-  });
+  );
 
-  it.each([
-    'membership',
-    'binding',
-  ] as const)('rechecks %s after asynchronous vendor preparation before sending a message', async (loss) => {
-    const f = await fixture();
-    await f.pair();
-    let entered: (() => void) | undefined;
-    let release: (() => void) | undefined;
-    const preparing = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const prepared = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let messageContacts = 0;
-    f.sendAttention.mockImplementation(async (input) => {
-      entered!();
-      await prepared;
-      if (!input.beforeSend())
-        return { status: 'failed-no-send', code: 'simulated-current-authority-refusal' };
-      messageContacts++;
-      return { status: 'sent', externalMessageId: '523456789012345678' };
-    });
-    const pending = f.record();
-    f.services.attentionRaised(pending);
-    await preparing;
-    try {
-      if (loss === 'membership') f.removeMembership();
-      else f.services.discord!.revoke(actor);
-    } finally {
-      release!();
+  it.each(['membership', 'binding'] as const)(
+    'rechecks %s after asynchronous vendor preparation before sending a message',
+    async (loss) => {
+      const f = await fixture();
+      await f.pair();
+      let entered: (() => void) | undefined;
+      let release: (() => void) | undefined;
+      const preparing = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const prepared = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let messageContacts = 0;
+      f.sendAttention.mockImplementation(async (input) => {
+        entered!();
+        await prepared;
+        if (!input.beforeSend())
+          return { status: 'failed-no-send', code: 'simulated-current-authority-refusal' };
+        messageContacts++;
+        return { status: 'sent', externalMessageId: '523456789012345678' };
+      });
+      const pending = f.record();
+      f.services.attentionRaised(pending);
+      await preparing;
+      try {
+        if (loss === 'membership') f.removeMembership();
+        else f.services.discord!.revoke(actor);
+      } finally {
+        release!();
+      }
+      await vi.waitFor(
+        () =>
+          expect(
+            f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status
+          ).toBe('failed-no-send'),
+        { timeout: 15_000 }
+      );
+      expect(messageContacts).toBe(0);
+      expect(f.sendAttention).toHaveBeenCalledTimes(1);
+      expect(f.nativeCalls).toHaveLength(0);
+      expect(f.record()).toEqual(pending);
     }
-    await vi.waitFor(
-      () =>
-        expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
-          'failed-no-send'
-        ),
-      { timeout: 15_000 }
-    );
-    expect(messageContacts).toBe(0);
-    expect(f.sendAttention).toHaveBeenCalledTimes(1);
-    expect(f.nativeCalls).toHaveLength(0);
-    expect(f.record()).toEqual(pending);
-  });
+  );
 
   it('keeps notification uncertainty across restart without changing or resending its Core request', async () => {
     const f = await fixture();

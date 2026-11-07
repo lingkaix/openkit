@@ -57,62 +57,62 @@ function gateway(input: {
 }
 
 describe('resolveLogicalModelCatalog', () => {
-  it.each([
-    'absent',
-    'delisted',
-  ])('derives the complete contract without constraining a %s backup', (kind) => {
-    const primary = profile({
-      id: 'primary',
-      models: ['primary-model'],
-      modelMetadata: {
-        'primary-model': {
-          family: 'primary-family',
-          limit: { context: 128_000, output: 16_000 },
-          modalities: { input: ['text', 'image'], output: ['text'] },
+  it.each(['absent', 'delisted'])(
+    'derives the complete contract without constraining a %s backup',
+    (kind) => {
+      const primary = profile({
+        id: 'primary',
+        models: ['primary-model'],
+        modelMetadata: {
+          'primary-model': {
+            family: 'primary-family',
+            limit: { context: 128_000, output: 16_000 },
+            modalities: { input: ['text', 'image'], output: ['text'] },
+            reasoning: true,
+            tool_call: true,
+          },
+        },
+      });
+      const [model] = resolveLogicalModelCatalog(
+        gateway({
+          routes: [
+            { id: 'primary', providerProfileId: 'primary', providerModel: 'primary-model' },
+            { id: 'backup', providerProfileId: 'backup', providerModel: 'missing-model' },
+          ],
+        }),
+        new ProviderRegistry([
+          primary,
+          ...(kind === 'absent' ? [] : [profile({ id: 'backup', models: ['different-model'] })]),
+        ])
+      );
+      expect(model).toMatchObject({
+        modelFamilyId: 'primary-family',
+        modelParameters: {
+          contextWindow: 128_000,
+          maxOutputTokens: 16_000,
+          inputModalities: ['text', 'image'],
           reasoning: true,
-          tool_call: true,
         },
-      },
-    });
-    const [model] = resolveLogicalModelCatalog(
-      gateway({
         routes: [
-          { id: 'primary', providerProfileId: 'primary', providerModel: 'primary-model' },
-          { id: 'backup', providerProfileId: 'backup', providerModel: 'missing-model' },
+          { available: true },
+          {
+            available: false,
+            unavailableReason:
+              kind === 'absent' ? 'provider_profile_absent' : 'provider_model_delisted',
+          },
         ],
-      }),
-      new ProviderRegistry([
-        primary,
-        ...(kind === 'absent' ? [] : [profile({ id: 'backup', models: ['different-model'] })]),
-      ])
-    );
-    expect(model).toMatchObject({
-      modelFamilyId: 'primary-family',
-      modelParameters: {
-        contextWindow: 128_000,
-        maxOutputTokens: 16_000,
-        inputModalities: ['text', 'image'],
-        reasoning: true,
-      },
-      routes: [
-        { available: true },
-        {
-          available: false,
-          unavailableReason:
-            kind === 'absent' ? 'provider_profile_absent' : 'provider_model_delisted',
-        },
-      ],
-    });
-    expect(model?.capabilities).toEqual([
-      'chat-completions',
-      'input:image',
-      'input:text',
-      'output:text',
-      'reasoning',
-      'responses',
-      'tool-calling',
-    ]);
-  });
+      });
+      expect(model?.capabilities).toEqual([
+        'chat-completions',
+        'input:image',
+        'input:text',
+        'output:text',
+        'reasoning',
+        'responses',
+        'tool-calling',
+      ]);
+    }
+  );
 
   it('derives a coherent mixed-family contract over all authored members', () => {
     const [model] = resolveLogicalModelCatalog(
@@ -223,53 +223,60 @@ describe('resolveLogicalModelCatalog', () => {
     { label: 'missing output', overlay: { limit: { context: 128_000 } }, projected: true },
     { label: 'missing modalities', overlay: { modalities: undefined }, projected: false },
     { label: 'missing reasoning', overlay: { reasoning: undefined }, projected: true },
-  ])('projects only coherent model parameters across authored routes: $label', ({
-    label,
-    overlay,
-    projected,
-  }) => {
-    const metadata = {
-      family: 'local-model',
-      limit: { context: 128_000, output: 16_000 },
-      modalities: { input: ['text'] },
-      reasoning: false,
-    };
-    const [model] = resolveLogicalModelCatalog(
-      gateway({
-        routes: [
-          { id: 'primary', providerProfileId: 'primary', providerModel: 'handwritten/local-flash' },
-          { id: 'blocked', providerProfileId: 'blocked', providerModel: 'handwritten/local-flash' },
-        ],
-      }),
-      new ProviderRegistry([
-        profile({
-          id: 'primary',
-          baseUrl: 'https://primary.example/v1',
-          models: ['handwritten/local-flash'],
-          modelMetadata: { 'handwritten/local-flash': metadata },
-        }),
-        profile({
-          id: 'blocked',
-          baseUrl: 'https://blocked.example/v1',
-          models: ['handwritten/local-flash'],
-          readiness: { status: 'blocked', message: 'Unavailable' },
-          modelMetadata: { 'handwritten/local-flash': { ...metadata, ...overlay } },
-        }),
-      ])
-    );
-
-    expect(model?.routes).toHaveLength(2);
-    if (projected) {
-      expect(model).toHaveProperty('modelParameters', {
-        contextWindow: 128_000,
-        maxOutputTokens: label === 'conflicting output' ? 8_000 : 16_000,
-        inputModalities: ['text'],
+  ])(
+    'projects only coherent model parameters across authored routes: $label',
+    ({ label, overlay, projected }) => {
+      const metadata = {
+        family: 'local-model',
+        limit: { context: 128_000, output: 16_000 },
+        modalities: { input: ['text'] },
         reasoning: false,
-      });
-    } else {
-      expect(model).not.toHaveProperty('modelParameters');
+      };
+      const [model] = resolveLogicalModelCatalog(
+        gateway({
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'primary',
+              providerModel: 'handwritten/local-flash',
+            },
+            {
+              id: 'blocked',
+              providerProfileId: 'blocked',
+              providerModel: 'handwritten/local-flash',
+            },
+          ],
+        }),
+        new ProviderRegistry([
+          profile({
+            id: 'primary',
+            baseUrl: 'https://primary.example/v1',
+            models: ['handwritten/local-flash'],
+            modelMetadata: { 'handwritten/local-flash': metadata },
+          }),
+          profile({
+            id: 'blocked',
+            baseUrl: 'https://blocked.example/v1',
+            models: ['handwritten/local-flash'],
+            readiness: { status: 'blocked', message: 'Unavailable' },
+            modelMetadata: { 'handwritten/local-flash': { ...metadata, ...overlay } },
+          }),
+        ])
+      );
+
+      expect(model?.routes).toHaveLength(2);
+      if (projected) {
+        expect(model).toHaveProperty('modelParameters', {
+          contextWindow: 128_000,
+          maxOutputTokens: label === 'conflicting output' ? 8_000 : 16_000,
+          inputModalities: ['text'],
+          reasoning: false,
+        });
+      } else {
+        expect(model).not.toHaveProperty('modelParameters');
+      }
     }
-  });
+  );
 
   it('admits a handwritten uncatalogued model on one authored route with null family', () => {
     const catalog = resolveLogicalModelCatalog(

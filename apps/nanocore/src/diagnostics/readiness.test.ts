@@ -18,54 +18,52 @@ describe('operational readiness dimensions', () => {
     { sampledAt: '2026-10-14T00:00:00.000Z', state: 'ready', age: 259200000, freshEmpty: true },
     { sampledAt: '2026-10-11T00:00:00.000Z', state: 'ready', age: 0, freshEmpty: true },
     { sampledAt: '2026-10-10T00:00:00.000Z', state: 'unknown', age: null, freshEmpty: null },
-  ])('shows host observation age at $sampledAt without promoting future evidence', async ({
-    sampledAt,
-    state,
-    age,
-    freshEmpty,
-  }) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-host-age-'));
-    const coreDb = openCoreDb(root);
-    applyMigrations(coreDb);
-    const observedAt = '2026-10-11T00:00:00.000Z';
-    const nanoHostConfig = {
-      identityId: 'nh_age',
-      deploymentId: 'dep_00000000-0000-787c-af58-ea110715292e',
-    };
-    try {
-      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        ...nanoHostConfig,
-        targetId: nanoHostConfig.identityId,
-        observedAt,
-      });
-      await upsertNanoHostRuntimeTarget(coreDb, {
-        ...nanoHostConfig,
-        targetId: nanoHostConfig.identityId,
-        observedAt,
-        connectionGeneration: 1,
-        predecessorFenced: true,
-        ready: true,
-        freshEmpty: true,
-        physicalEpoch: 'a'.repeat(64),
-      });
-      const result = observeOperationalReadiness(
-        { coreDb, mode: 'server', nanoHostConfig },
-        computeBootReadinessSnapshot({ bootId: 'boot_stored_observation' }),
-        () => Date.parse(sampledAt)
-      );
-      expect(result.executionHost).toEqual({
-        state,
-        observedAt,
-        observationAgeMs: age,
-        freshEmpty,
-        liveProbe: false,
-      });
-      expect(result.maintenanceSafety).toEqual({ state: 'unknown', observation: null });
-    } finally {
-      coreDb.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
+  ])(
+    'shows host observation age at $sampledAt without promoting future evidence',
+    async ({ sampledAt, state, age, freshEmpty }) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-host-age-'));
+      const coreDb = openCoreDb(root);
+      applyMigrations(coreDb);
+      const observedAt = '2026-10-11T00:00:00.000Z';
+      const nanoHostConfig = {
+        identityId: 'nh_age',
+        deploymentId: 'dep_00000000-0000-787c-af58-ea110715292e',
+      };
+      try {
+        await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+          ...nanoHostConfig,
+          targetId: nanoHostConfig.identityId,
+          observedAt,
+        });
+        await upsertNanoHostRuntimeTarget(coreDb, {
+          ...nanoHostConfig,
+          targetId: nanoHostConfig.identityId,
+          observedAt,
+          connectionGeneration: 1,
+          predecessorFenced: true,
+          ready: true,
+          freshEmpty: true,
+          physicalEpoch: 'a'.repeat(64),
+        });
+        const result = observeOperationalReadiness(
+          { coreDb, mode: 'server', nanoHostConfig },
+          computeBootReadinessSnapshot({ bootId: 'boot_stored_observation' }),
+          () => Date.parse(sampledAt)
+        );
+        expect(result.executionHost).toEqual({
+          state,
+          observedAt,
+          observationAgeMs: age,
+          freshEmpty,
+          liveProbe: false,
+        });
+        expect(result.maintenanceSafety).toEqual({ state: 'unknown', observation: null });
+      } finally {
+        coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('keeps service availability separate from blocked work and unknown maintenance safety', async () => {
     const boot = computeBootReadinessSnapshot({

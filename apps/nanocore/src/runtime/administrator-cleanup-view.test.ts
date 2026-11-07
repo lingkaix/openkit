@@ -608,48 +608,45 @@ describe('administrator runtime cleanup view', () => {
     });
   });
 
-  it.each([
-    'ordinary',
-    'readonly',
-    'disabled',
-    'revoked',
-    'expired',
-  ] as const)('refuses %s authority before enumerating any runtime source', async (kind) => {
-    const input = await fixture();
-    await populate(input.coreDb);
-    if (kind === 'ordinary' || kind === 'readonly') {
-      const scope = kind === 'readonly' ? 'workspace-readonly' : 'workspace';
-      const issued = createOpenKitAccessTokenRecord(input.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
-        scope,
-        workspaceIds: ['ws_00000000-0000-740d-a2ee-b63efda55617'],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      input.actor = {
-        kind: 'token',
-        userId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
-        tokenId: issued.tokenId,
-        tokenScope: scope,
-      };
-    } else if (kind === 'disabled') {
-      input.coreDb.sqlite
-        .prepare(
-          "UPDATE users SET status = 'disabled' WHERE id = 'usr_00000000-0000-7add-9824-527f8e1d47e2'"
-        )
-        .run();
-    } else if (kind === 'revoked') {
-      revokeOpenKitAccessTokenRecord(input.coreDb, input.token.tokenId, new Date(NOW));
-    } else {
-      input.coreDb.sqlite
-        .prepare('UPDATE openkit_access_tokens SET expires_at = ? WHERE token_id = ?')
-        .run(CREATED, input.token.tokenId);
+  it.each(['ordinary', 'readonly', 'disabled', 'revoked', 'expired'] as const)(
+    'refuses %s authority before enumerating any runtime source',
+    async (kind) => {
+      const input = await fixture();
+      await populate(input.coreDb);
+      if (kind === 'ordinary' || kind === 'readonly') {
+        const scope = kind === 'readonly' ? 'workspace-readonly' : 'workspace';
+        const issued = createOpenKitAccessTokenRecord(input.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
+          scope,
+          workspaceIds: ['ws_00000000-0000-740d-a2ee-b63efda55617'],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        input.actor = {
+          kind: 'token',
+          userId: 'usr_00000000-0000-7add-9824-527f8e1d47e2',
+          tokenId: issued.tokenId,
+          tokenScope: scope,
+        };
+      } else if (kind === 'disabled') {
+        input.coreDb.sqlite
+          .prepare(
+            "UPDATE users SET status = 'disabled' WHERE id = 'usr_00000000-0000-7add-9824-527f8e1d47e2'"
+          )
+          .run();
+      } else if (kind === 'revoked') {
+        revokeOpenKitAccessTokenRecord(input.coreDb, input.token.tokenId, new Date(NOW));
+      } else {
+        input.coreDb.sqlite
+          .prepare('UPDATE openkit_access_tokens SET expires_at = ? WHERE token_id = ?')
+          .run(CREATED, input.token.tokenId);
+      }
+      const prepare = vi.spyOn(input.coreDb.sqlite, 'prepare');
+      await expect(async () => read(input)).rejects.toBeInstanceOf(DeploymentAdminRequiredError);
+      expect(
+        prepare.mock.calls.filter(([sql]) => TABLES.some((table) => sql.includes(table)))
+      ).toEqual([]);
     }
-    const prepare = vi.spyOn(input.coreDb.sqlite, 'prepare');
-    await expect(async () => read(input)).rejects.toBeInstanceOf(DeploymentAdminRequiredError);
-    expect(
-      prepare.mock.calls.filter(([sql]) => TABLES.some((table) => sql.includes(table)))
-    ).toEqual([]);
-  });
+  );
 
   it('rechecks a previously successful administrator instead of retaining admission', async () => {
     const input = await fixture();

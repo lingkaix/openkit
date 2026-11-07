@@ -388,68 +388,70 @@ function completedPrefix(f: Awaited<ReturnType<typeof fixture>>) {
   return { catalog, bytes: f.bytes(), rows: f.rows(), completion };
 }
 
-it.each(
-  actions
-)('%s acknowledges native completion after the real file effect and before reload/receipt/response', async (action) => {
-  const f = await fixture(action);
-  let settled = false;
-  const result = f.start();
-  void result.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    }
-  );
-  await held(1, result, f);
-  expect(settled).toBe(false);
-  const prefix = completedPrefix(f);
-  release(1);
-  const response = await result;
-  expect(response.status).toBe(action === 'catalog.skill-candidate-submit' ? 201 : 200);
-  const body = await response.json();
-  expect(f.reload).toHaveBeenCalledTimes(1);
-  expect(f.catalog()).toEqual(prefix.catalog);
-  expect(f.bytes()).toEqual(prefix.bytes);
-  expect(f.events().find((event) => event.action === action)).toEqual(prefix.completion);
-  expect(f.rows().receipts).toHaveLength(1);
-  const replay = await f.replay();
-  expect(replay.status).toBe(response.status);
-  expect(await replay.json()).toEqual(body);
-  expect(f.reload).toHaveBeenCalledTimes(1);
-  expect(f.events()).toHaveLength(2);
-  expect(await f.cold()).toEqual(f.rows());
-  expect(f.catalog()).toEqual(prefix.catalog);
-});
+it.each(actions)(
+  '%s acknowledges native completion after the real file effect and before reload/receipt/response',
+  async (action) => {
+    const f = await fixture(action);
+    let settled = false;
+    const result = f.start();
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await held(1, result, f);
+    expect(settled).toBe(false);
+    const prefix = completedPrefix(f);
+    release(1);
+    const response = await result;
+    expect(response.status).toBe(action === 'catalog.skill-candidate-submit' ? 201 : 200);
+    const body = await response.json();
+    expect(f.reload).toHaveBeenCalledTimes(1);
+    expect(f.catalog()).toEqual(prefix.catalog);
+    expect(f.bytes()).toEqual(prefix.bytes);
+    expect(f.events().find((event) => event.action === action)).toEqual(prefix.completion);
+    expect(f.rows().receipts).toHaveLength(1);
+    const replay = await f.replay();
+    expect(replay.status).toBe(response.status);
+    expect(await replay.json()).toEqual(body);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+    expect(f.events()).toHaveLength(2);
+    expect(await f.cold()).toEqual(f.rows());
+    expect(f.catalog()).toEqual(prefix.catalog);
+  }
+);
 
-it.each(
-  actions
-)('%s retains its cold file/Audit prefix after completion ACK loss without a receipt or automatic repost', async (action) => {
-  const f = await fixture(action);
-  const result = f.start();
-  const worker = await held(1, result, f);
-  const prefix = completedPrefix(f);
-  const posts = fault.messages.length;
-  const workers = fault.workers.length;
-  await worker.terminate();
-  const response = await result;
-  expect(response.status).toBe(409);
-  await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
-  expect(fault.messages).toHaveLength(posts);
-  expect(fault.workers).toHaveLength(workers);
-  expect(f.reload).not.toHaveBeenCalled();
-  expect(f.rows()).toEqual(prefix.rows);
-  expect(f.bytes()).toEqual(prefix.bytes);
-  expect(await f.cold()).toEqual(prefix.rows);
-  const retry = await f.replay();
-  expect(retry.status).toBe(409);
-  await expect(retry.json()).resolves.toMatchObject({ code: 'recovery_required' });
-  expect(f.catalog()).toEqual(prefix.catalog);
-  expect(f.bytes()).toEqual(prefix.bytes);
-  expect(f.rows()).toEqual(prefix.rows);
-  expect(f.reload).not.toHaveBeenCalled();
-});
+it.each(actions)(
+  '%s retains its cold file/Audit prefix after completion ACK loss without a receipt or automatic repost',
+  async (action) => {
+    const f = await fixture(action);
+    const result = f.start();
+    const worker = await held(1, result, f);
+    const prefix = completedPrefix(f);
+    const posts = fault.messages.length;
+    const workers = fault.workers.length;
+    await worker.terminate();
+    const response = await result;
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
+    expect(fault.messages).toHaveLength(posts);
+    expect(fault.workers).toHaveLength(workers);
+    expect(f.reload).not.toHaveBeenCalled();
+    expect(f.rows()).toEqual(prefix.rows);
+    expect(f.bytes()).toEqual(prefix.bytes);
+    expect(await f.cold()).toEqual(prefix.rows);
+    const retry = await f.replay();
+    expect(retry.status).toBe(409);
+    await expect(retry.json()).resolves.toMatchObject({ code: 'recovery_required' });
+    expect(f.catalog()).toEqual(prefix.catalog);
+    expect(f.bytes()).toEqual(prefix.bytes);
+    expect(f.rows()).toEqual(prefix.rows);
+    expect(f.reload).not.toHaveBeenCalled();
+  }
+);
 
 it('settles the original actor after completion COMMIT even when its live credential is revoked before ACK', async () => {
   const f = await fixture('catalog.skill-candidate-submit');

@@ -1961,54 +1961,52 @@ describe('workspace derived index rebuild', () => {
     expect(readIndexBytes(quickChatIndexes)).toEqual(quickChatBytes);
   });
 
-  it.each(
-    invalidDerivedIndexCases
-  )('rebuilds only an index set with $name and keeps a current sibling byte-identical', async ({
-    mutate,
-    throws,
-  }) => {
-    const dataRoot = createDataRoot();
-    await createDemoStore({ dataRoot });
-    const keptAt = '2026-07-05T00:00:00.000Z';
-    const siblingId = 'ws_00000000-0000-7000-8000-000000000001';
-    const badId = quickChatWorkspaceIdForUser(LOCAL_USER_ID);
-    const siblingIndexes = join(dataRoot, 'workspaces', siblingId, 'indexes');
-    const badIndexes = join(dataRoot, 'workspaces', badId, 'indexes');
-    writeCurrentDerivedIndexSet(siblingIndexes, siblingId, keptAt);
-    writeCurrentDerivedIndexSet(badIndexes, badId, keptAt);
-    const siblingBytes = readIndexBytes(siblingIndexes);
-    const outside = mutate(badIndexes);
+  it.each(invalidDerivedIndexCases)(
+    'rebuilds only an index set with $name and keeps a current sibling byte-identical',
+    async ({ mutate, throws }) => {
+      const dataRoot = createDataRoot();
+      await createDemoStore({ dataRoot });
+      const keptAt = '2026-07-05T00:00:00.000Z';
+      const siblingId = 'ws_00000000-0000-7000-8000-000000000001';
+      const badId = quickChatWorkspaceIdForUser(LOCAL_USER_ID);
+      const siblingIndexes = join(dataRoot, 'workspaces', siblingId, 'indexes');
+      const badIndexes = join(dataRoot, 'workspaces', badId, 'indexes');
+      writeCurrentDerivedIndexSet(siblingIndexes, siblingId, keptAt);
+      writeCurrentDerivedIndexSet(badIndexes, badId, keptAt);
+      const siblingBytes = readIndexBytes(siblingIndexes);
+      const outside = mutate(badIndexes);
 
-    if (throws) {
-      expect(
-        rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
-          now: () => '2026-07-06T00:00:00.000Z',
-        })
-      ).toEqual([]);
-      // Scope isolation must not turn an unsafe index into a successful rebuild.
-      expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: badId })).toThrow(
-        /symbolic link/
-      );
-      expect(lstatSync(join(badIndexes, 'knowledge-links.json')).isSymbolicLink()).toBe(true);
-      expect(readlinkSync(join(badIndexes, 'knowledge-links.json'))).toBe(outside);
-      expect(outside ? readFileSync(outside, 'utf8') : null).toBe('outside sentinel\n');
-    } else {
-      expect(
-        rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
-          now: () => '2026-07-06T00:00:00.000Z',
-        }).map((result) => result.workspaceId)
-      ).toEqual([badId]);
-      expect(
-        JSON.parse(readFileSync(join(badIndexes, 'knowledge-validation.json'), 'utf8'))
-      ).toMatchObject({
-        rebuiltAt: '2026-07-06T00:00:00.000Z',
-        schemaVersion: 1,
-        workspaceId: badId,
-      });
+      if (throws) {
+        expect(
+          rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
+            now: () => '2026-07-06T00:00:00.000Z',
+          })
+        ).toEqual([]);
+        // Scope isolation must not turn an unsafe index into a successful rebuild.
+        expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: badId })).toThrow(
+          /symbolic link/
+        );
+        expect(lstatSync(join(badIndexes, 'knowledge-links.json')).isSymbolicLink()).toBe(true);
+        expect(readlinkSync(join(badIndexes, 'knowledge-links.json'))).toBe(outside);
+        expect(outside ? readFileSync(outside, 'utf8') : null).toBe('outside sentinel\n');
+      } else {
+        expect(
+          rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
+            now: () => '2026-07-06T00:00:00.000Z',
+          }).map((result) => result.workspaceId)
+        ).toEqual([badId]);
+        expect(
+          JSON.parse(readFileSync(join(badIndexes, 'knowledge-validation.json'), 'utf8'))
+        ).toMatchObject({
+          rebuiltAt: '2026-07-06T00:00:00.000Z',
+          schemaVersion: 1,
+          workspaceId: badId,
+        });
+      }
+
+      expect(readIndexBytes(siblingIndexes)).toEqual(siblingBytes);
     }
-
-    expect(readIndexBytes(siblingIndexes)).toEqual(siblingBytes);
-  });
+  );
 
   it('rebuilds stale nonlexical indexes before kernel retrieval reads canonical pages', async () => {
     const dataRoot = createDataRoot();

@@ -392,30 +392,31 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 }
 
 describe('native retained file formats', () => {
-  it.each(
-    families
-  )('writes %s v1 and reopens descriptive additions without changing bytes', async (family) => {
-    const { dataRoot, expected, surfaces } = await createRetainedFixture();
-    const surface = surfaces[family];
-    const originalSource = readRetainedSurface(surface);
-    const record = originalSource.record;
-    expect(record.schemaVersion).toBe(1);
-    const original = loadWorkspaceFileRecords(dataRoot);
-    expect(original).toMatchObject([expected]);
-    record.futureNote = 'Retained descriptive annotation.';
-    await replaceRetainedSurface(surface, record);
-    const annotatedBytes = readRetainedSurface(surface).bytes;
+  it.each(families)(
+    'writes %s v1 and reopens descriptive additions without changing bytes',
+    async (family) => {
+      const { dataRoot, expected, surfaces } = await createRetainedFixture();
+      const surface = surfaces[family];
+      const originalSource = readRetainedSurface(surface);
+      const record = originalSource.record;
+      expect(record.schemaVersion).toBe(1);
+      const original = loadWorkspaceFileRecords(dataRoot);
+      expect(original).toMatchObject([expected]);
+      record.futureNote = 'Retained descriptive annotation.';
+      await replaceRetainedSurface(surface, record);
+      const annotatedBytes = readRetainedSurface(surface).bytes;
 
-    expect(loadWorkspaceFileRecords(dataRoot)).toEqual(original);
-    expect(readRetainedSurface(surface).bytes).toBe(annotatedBytes);
-    const reopened = new FsStore({ dataRoot });
-    expect(reopened.getWorkspace(expected.workspace.id)).toMatchObject(expected.workspace);
-    expect(reopened.getTurnById(expected.turns[0]!.id)).not.toHaveProperty('futureNote');
-    expect(reopened.getTurnById(expected.turns[0]!.id).items[0]).not.toHaveProperty('futureNote');
-    if (surface.kind === 'entry') {
-      expect(readFileSync(originalSource.path!, 'utf8')).toBe(originalSource.bytes);
+      expect(loadWorkspaceFileRecords(dataRoot)).toEqual(original);
+      expect(readRetainedSurface(surface).bytes).toBe(annotatedBytes);
+      const reopened = new FsStore({ dataRoot });
+      expect(reopened.getWorkspace(expected.workspace.id)).toMatchObject(expected.workspace);
+      expect(reopened.getTurnById(expected.turns[0]!.id)).not.toHaveProperty('futureNote');
+      expect(reopened.getTurnById(expected.turns[0]!.id).items[0]).not.toHaveProperty('futureNote');
+      if (surface.kind === 'entry') {
+        expect(readFileSync(originalSource.path!, 'utf8')).toBe(originalSource.bytes);
+      }
     }
-  });
+  );
 
   it.each(families)('refuses %s with a missing or unknown retained version', async (family) => {
     const { dataRoot, surfaces, workspaceId } = await createRetainedFixture();
@@ -456,87 +457,92 @@ describe('native retained file formats', () => {
     }
   });
 
-  it.each(
-    nativeFamilies
-  )('refuses %s unsupported required semantics and unknown core values', async (family) => {
-    const { scope, surfaces } = await createRetainedFixture();
-    const surface = surfaces[family];
-    const original = readRetainedSurface(surface).record;
-    const required = {
-      ...original,
-      requiredFeatures: [
-        ...((original.requiredFeatures as string[] | undefined) ?? []),
-        'openkit.test-unsupported-retained.v1',
-      ],
-    };
-    const core = structuredClone(original);
-    if (family === 'Item') core.type = 'future-item';
-    else if (family === 'stream event') {
-      core.event = 'future.event';
-      core.data = { type: 'future-event' };
-    } else core.status = 'future-status';
-    for (const record of [required, core]) {
-      await replaceRetainedSurface(surface, record);
-      const invalidBytes = readRetainedSurface(surface).bytes;
-      expect(() => readNativeSurface(scope, surface)).toThrow();
-      expect(readRetainedSurface(surface).bytes).toBe(invalidBytes);
-      await replaceRetainedSurface(surface, original);
+  it.each(nativeFamilies)(
+    'refuses %s unsupported required semantics and unknown core values',
+    async (family) => {
+      const { scope, surfaces } = await createRetainedFixture();
+      const surface = surfaces[family];
+      const original = readRetainedSurface(surface).record;
+      const required = {
+        ...original,
+        requiredFeatures: [
+          ...((original.requiredFeatures as string[] | undefined) ?? []),
+          'openkit.test-unsupported-retained.v1',
+        ],
+      };
+      const core = structuredClone(original);
+      if (family === 'Item') core.type = 'future-item';
+      else if (family === 'stream event') {
+        core.event = 'future.event';
+        core.data = { type: 'future-event' };
+      } else core.status = 'future-status';
+      for (const record of [required, core]) {
+        await replaceRetainedSurface(surface, record);
+        const invalidBytes = readRetainedSurface(surface).bytes;
+        expect(() => readNativeSurface(scope, surface)).toThrow();
+        expect(readRetainedSurface(surface).bytes).toBe(invalidBytes);
+        await replaceRetainedSurface(surface, original);
+        expect(() => readNativeSurface(scope, surface)).not.toThrow();
+      }
+    }
+  );
+
+  it.each(nativeFamilies)(
+    'checks %s native SQL version before decoding retained JSON',
+    async (family) => {
+      const { scope, surfaces } = await createRetainedFixture();
+      const surface = surfaces[family];
+      if (surface.kind === 'file')
+        throw new Error('This check requires native retained authority.');
+      const reader = new Database(scope.path, { readonly: true, fileMustExist: true });
+      let row: { schema_version: number; json: string };
+      try {
+        row =
+          surface.kind === 'metadata'
+            ? (reader
+                .prepare(
+                  `SELECT schema_version,record_json AS json FROM ${surface.table} WHERE id=?`
+                )
+                .get(surface.id) as typeof row)
+            : (reader
+                .prepare(
+                  'SELECT schema_version,content_json AS json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=1'
+                )
+                .get(surface.entryKind, surface.turnId) as typeof row);
+      } finally {
+        reader.close();
+      }
+      expect(row.schema_version).toBe(1);
+      // Only this stopped fixture mutator admits corruption; the real reader keeps every guard.
+      const replace = (version: number, json: string) => {
+        const mutator = new Database(scope.path, { fileMustExist: true });
+        try {
+          mutator.pragma('ignore_check_constraints = ON');
+          if (surface.kind === 'metadata')
+            mutator
+              .prepare(`UPDATE ${surface.table} SET schema_version=?,record_json=? WHERE id=?`)
+              .run(version, json, surface.id);
+          else
+            mutator
+              .prepare(
+                'UPDATE control_product_entries SET schema_version=?,content_json=? WHERE kind=? AND turn_id=? AND sequence=1'
+              )
+              .run(version, json, surface.entryKind, surface.turnId);
+        } finally {
+          try {
+            mutator.pragma('ignore_check_constraints = OFF');
+          } finally {
+            mutator.close();
+          }
+        }
+      };
+      for (const json of [row.json, '{invalid-json']) {
+        replace(2, json);
+        expect(() => readNativeSurface(scope, surface)).toThrow();
+        expect(() => readNativeSurface(scope, surface)).not.toThrow(SyntaxError);
+      }
+      replace(row.schema_version, row.json);
       expect(() => readNativeSurface(scope, surface)).not.toThrow();
     }
-  });
-
-  it.each(
-    nativeFamilies
-  )('checks %s native SQL version before decoding retained JSON', async (family) => {
-    const { scope, surfaces } = await createRetainedFixture();
-    const surface = surfaces[family];
-    if (surface.kind === 'file') throw new Error('This check requires native retained authority.');
-    const reader = new Database(scope.path, { readonly: true, fileMustExist: true });
-    let row: { schema_version: number; json: string };
-    try {
-      row =
-        surface.kind === 'metadata'
-          ? (reader
-              .prepare(`SELECT schema_version,record_json AS json FROM ${surface.table} WHERE id=?`)
-              .get(surface.id) as typeof row)
-          : (reader
-              .prepare(
-                'SELECT schema_version,content_json AS json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=1'
-              )
-              .get(surface.entryKind, surface.turnId) as typeof row);
-    } finally {
-      reader.close();
-    }
-    expect(row.schema_version).toBe(1);
-    // Only this stopped fixture mutator admits corruption; the real reader keeps every guard.
-    const replace = (version: number, json: string) => {
-      const mutator = new Database(scope.path, { fileMustExist: true });
-      try {
-        mutator.pragma('ignore_check_constraints = ON');
-        if (surface.kind === 'metadata')
-          mutator
-            .prepare(`UPDATE ${surface.table} SET schema_version=?,record_json=? WHERE id=?`)
-            .run(version, json, surface.id);
-        else
-          mutator
-            .prepare(
-              'UPDATE control_product_entries SET schema_version=?,content_json=? WHERE kind=? AND turn_id=? AND sequence=1'
-            )
-            .run(version, json, surface.entryKind, surface.turnId);
-      } finally {
-        try {
-          mutator.pragma('ignore_check_constraints = OFF');
-        } finally {
-          mutator.close();
-        }
-      }
-    };
-    for (const json of [row.json, '{invalid-json']) {
-      replace(2, json);
-      expect(() => readNativeSurface(scope, surface)).toThrow();
-      expect(() => readNativeSurface(scope, surface)).not.toThrow(SyntaxError);
-    }
-    replace(row.schema_version, row.json);
-    expect(() => readNativeSurface(scope, surface)).not.toThrow();
-  });
+  );
 });

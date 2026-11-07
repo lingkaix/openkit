@@ -291,30 +291,29 @@ describe('durable AEP snapshot publication', () => {
     }
   });
 
-  it.each([
-    'partial',
-    'file-sync',
-    'publish',
-  ] as const)('propagates %s failure without a canonical snapshot', async (mode) => {
-    const f = await fixture();
-    try {
-      fault.mode = mode;
-      await expect(f.write()).rejects.toThrow(/injected/);
-      expect(fault.injections).toBe(1);
-      expect(existsSync(f.path)).toBe(false);
-      expect(() =>
-        requireAgentEnvironmentPackageSnapshot(
-          f.db,
-          f.db.workspaceId,
-          f.input.environmentPackage.snapshotId
-        )
-      ).toThrow(/not found/);
-      fault.mode = '';
-      expect((await f.write()).snapshotId).toBe(f.input.environmentPackage.snapshotId);
-    } finally {
-      f.db.sqlite.close();
+  it.each(['partial', 'file-sync', 'publish'] as const)(
+    'propagates %s failure without a canonical snapshot',
+    async (mode) => {
+      const f = await fixture();
+      try {
+        fault.mode = mode;
+        await expect(f.write()).rejects.toThrow(/injected/);
+        expect(fault.injections).toBe(1);
+        expect(existsSync(f.path)).toBe(false);
+        expect(() =>
+          requireAgentEnvironmentPackageSnapshot(
+            f.db,
+            f.db.workspaceId,
+            f.input.environmentPackage.snapshotId
+          )
+        ).toThrow(/not found/);
+        fault.mode = '';
+        expect((await f.write()).snapshotId).toBe(f.input.environmentPackage.snapshotId);
+      } finally {
+        f.db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('refuses directory-sync failure and retries synchronization for identical complete bytes', async () => {
     const f = await fixture();
@@ -332,32 +331,32 @@ describe('durable AEP snapshot publication', () => {
     }
   });
 
-  it.each([
-    'same',
-    'different',
-  ] as const)('preserves a %s racing immutable winner', async (race) => {
-    const f = await fixture();
-    try {
-      fault.race = race;
-      if (race === 'same') {
-        const record = await f.write();
-        expect(fault.race).toBe('');
-        expect(
-          requireAgentEnvironmentPackageSnapshot(f.db, f.db.workspaceId, record.snapshotId)
-        ).toMatchObject(record);
-        expect(fault.events.indexOf('file-sync')).toBeGreaterThanOrEqual(0);
-        expect(fault.events.indexOf('file-sync')).toBeLessThan(fault.events.indexOf('publish'));
-        expect(fault.events.lastIndexOf('directory-sync')).toBeGreaterThan(
-          fault.events.indexOf('publish')
-        );
-      } else {
-        await expect(f.write()).rejects.toThrow();
-        expect(readFileSync(f.path, 'utf8')).toBe('a conflicting racing winner');
+  it.each(['same', 'different'] as const)(
+    'preserves a %s racing immutable winner',
+    async (race) => {
+      const f = await fixture();
+      try {
+        fault.race = race;
+        if (race === 'same') {
+          const record = await f.write();
+          expect(fault.race).toBe('');
+          expect(
+            requireAgentEnvironmentPackageSnapshot(f.db, f.db.workspaceId, record.snapshotId)
+          ).toMatchObject(record);
+          expect(fault.events.indexOf('file-sync')).toBeGreaterThanOrEqual(0);
+          expect(fault.events.indexOf('file-sync')).toBeLessThan(fault.events.indexOf('publish'));
+          expect(fault.events.lastIndexOf('directory-sync')).toBeGreaterThan(
+            fault.events.indexOf('publish')
+          );
+        } else {
+          await expect(f.write()).rejects.toThrow();
+          expect(readFileSync(f.path, 'utf8')).toBe('a conflicting racing winner');
+        }
+      } finally {
+        f.db.sqlite.close();
       }
-    } finally {
-      f.db.sqlite.close();
     }
-  });
+  );
 
   it('uses the same durable publication boundary for imported snapshots', async () => {
     const f = await fixture();

@@ -280,33 +280,33 @@ describe('exact User Policy statement scope', () => {
     },
   };
 
-  it.each([
-    'gate',
-    'observe',
-  ] as const)('admits and selects an exact deterministic User %s', (mode) => {
-    const statement: PolicyBindingV1 =
-      mode === 'gate'
-        ? userBinding
-        : {
-            ...userBinding,
-            mode,
-            stage: 'completed',
-            failure: 'continue',
-            lifetime: { anchor: resource.container },
-          };
-    const document = validatePolicyDocument({ schemaVersion: 1, statements: [statement] });
-    expect(document.statements).toEqual([statement]);
-    expect(
-      selectPolicyBindings({
-        document,
-        proposal: userProposal,
-        stage: mode === 'gate' ? 'decide' : 'completed',
-        now: Date.parse('2026-10-18T01:00:00Z'),
-        authorCurrent: (id) => id === userId,
-        anchorCurrent: (anchor) => policyDigest(anchor) === policyDigest(resource.container),
-      })
-    ).toEqual([statement]);
-  });
+  it.each(['gate', 'observe'] as const)(
+    'admits and selects an exact deterministic User %s',
+    (mode) => {
+      const statement: PolicyBindingV1 =
+        mode === 'gate'
+          ? userBinding
+          : {
+              ...userBinding,
+              mode,
+              stage: 'completed',
+              failure: 'continue',
+              lifetime: { anchor: resource.container },
+            };
+      const document = validatePolicyDocument({ schemaVersion: 1, statements: [statement] });
+      expect(document.statements).toEqual([statement]);
+      expect(
+        selectPolicyBindings({
+          document,
+          proposal: userProposal,
+          stage: mode === 'gate' ? 'decide' : 'completed',
+          now: Date.parse('2026-10-18T01:00:00Z'),
+          authorCurrent: (id) => id === userId,
+          anchorCurrent: (anchor) => policyDigest(anchor) === policyDigest(resource.container),
+        })
+      ).toEqual([statement]);
+    }
+  );
 
   it('selects the User owner independently of descriptive Workspace process lineage and rechecks current predicates', () => {
     const document = validatePolicyDocument({ schemaVersion: 1, statements: [userBinding] });

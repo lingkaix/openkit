@@ -171,53 +171,51 @@ describe('encrypted-file vault backend', () => {
     ).toBe('ghp_live_secret');
   });
 
-  it.each([
-    'tampered-tag',
-    'tampered-created-at',
-    'unsupported-kdf',
-    'malformed-json',
-  ] as const)('rejects a %s header without exposing or repairing protected inputs', (corruption) => {
-    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
-    const masterKey = Buffer.alloc(32, 9);
-    const masterKeyBase64 = masterKey.toString('base64');
-    const masterKeyHex = masterKey.toString('hex');
-    const headerPath = join(storeDir, 'header.json');
+  it.each(['tampered-tag', 'tampered-created-at', 'unsupported-kdf', 'malformed-json'] as const)(
+    'rejects a %s header without exposing or repairing protected inputs',
+    (corruption) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+      const masterKey = Buffer.alloc(32, 9);
+      const masterKeyBase64 = masterKey.toString('base64');
+      const masterKeyHex = masterKey.toString('hex');
+      const headerPath = join(storeDir, 'header.json');
 
-    createEncryptedFileVaultBackend({ masterKey, storeDir });
-
-    const header = JSON.parse(readFileSync(headerPath, 'utf8')) as Record<string, unknown>;
-    let corruptedHeader: string;
-
-    if (corruption === 'tampered-tag') {
-      const verification = header.masterKeyVerification as Record<string, unknown>;
-      verification.tag = Buffer.alloc(16, 13).toString('base64');
-      corruptedHeader = `${JSON.stringify(header, null, 2)}\n`;
-    } else if (corruption === 'tampered-created-at') {
-      header.createdAt = '2026-07-06T01:00:00.000Z';
-      corruptedHeader = `${JSON.stringify(header, null, 2)}\n`;
-    } else if (corruption === 'unsupported-kdf') {
-      header.kdf = { kind: 'argon2id' };
-      corruptedHeader = `${JSON.stringify(header, null, 2)}\n`;
-    } else {
-      corruptedHeader = '{"formatVersion":';
-    }
-
-    writeFileSync(headerPath, corruptedHeader, { mode: 0o600 });
-
-    let failure: unknown;
-
-    try {
       createEncryptedFileVaultBackend({ masterKey, storeDir });
-    } catch (error) {
-      failure = error;
-    }
 
-    expect(failure).toBeInstanceOf(VaultBackendError);
-    expect(readFileSync(headerPath, 'utf8')).toBe(corruptedHeader);
-    expect(String(failure)).not.toContain(storeDir);
-    expect(String(failure)).not.toContain(masterKeyBase64);
-    expect(String(failure)).not.toContain(masterKeyHex);
-  });
+      const header = JSON.parse(readFileSync(headerPath, 'utf8')) as Record<string, unknown>;
+      let corruptedHeader: string;
+
+      if (corruption === 'tampered-tag') {
+        const verification = header.masterKeyVerification as Record<string, unknown>;
+        verification.tag = Buffer.alloc(16, 13).toString('base64');
+        corruptedHeader = `${JSON.stringify(header, null, 2)}\n`;
+      } else if (corruption === 'tampered-created-at') {
+        header.createdAt = '2026-07-06T01:00:00.000Z';
+        corruptedHeader = `${JSON.stringify(header, null, 2)}\n`;
+      } else if (corruption === 'unsupported-kdf') {
+        header.kdf = { kind: 'argon2id' };
+        corruptedHeader = `${JSON.stringify(header, null, 2)}\n`;
+      } else {
+        corruptedHeader = '{"formatVersion":';
+      }
+
+      writeFileSync(headerPath, corruptedHeader, { mode: 0o600 });
+
+      let failure: unknown;
+
+      try {
+        createEncryptedFileVaultBackend({ masterKey, storeDir });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(VaultBackendError);
+      expect(readFileSync(headerPath, 'utf8')).toBe(corruptedHeader);
+      expect(String(failure)).not.toContain(storeDir);
+      expect(String(failure)).not.toContain(masterKeyBase64);
+      expect(String(failure)).not.toContain(masterKeyHex);
+    }
+  );
 
   it('rejects a valid header reached through a symlink without changing its target', () => {
     const sourceStoreDir = mkdtempSync(join(tmpdir(), 'openkit-vault-header-source-'));
@@ -854,96 +852,98 @@ describe('encrypted-file vault backend', () => {
     ).toThrow('reference-revoked');
   });
 
-  it.each(
-    WRITER_TEMP_SUFFIXES
-  )('fails ordinary operations closed but explicit revoke cleans an exact complete entry temp (%s)', (_kind, suffix) => {
-    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
-    const masterKey = Buffer.alloc(32, 9);
-    const timestamps = ['2026-07-05T01:00:00.000Z', '2026-07-05T01:20:00.000Z'];
-    const backend = createEncryptedFileVaultBackend({
-      masterKey,
-      now: () => timestamps.shift() ?? '2026-07-05T01:20:00.000Z',
-      storeDir,
-    });
-    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-7703-a0ed-bba6a2bbc169');
-    const firstEntryPath = join(referenceDir, '1.enc');
-    const secondEntryPath = join(referenceDir, '2.enc');
-    const entryTempPath = join(referenceDir, `.2.enc.${suffix}.tmp`);
+  it.each(WRITER_TEMP_SUFFIXES)(
+    'fails ordinary operations closed but explicit revoke cleans an exact complete entry temp (%s)',
+    (_kind, suffix) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+      const masterKey = Buffer.alloc(32, 9);
+      const timestamps = ['2026-07-05T01:00:00.000Z', '2026-07-05T01:20:00.000Z'];
+      const backend = createEncryptedFileVaultBackend({
+        masterKey,
+        now: () => timestamps.shift() ?? '2026-07-05T01:20:00.000Z',
+        storeDir,
+      });
+      const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-7703-a0ed-bba6a2bbc169');
+      const firstEntryPath = join(referenceDir, '1.enc');
+      const secondEntryPath = join(referenceDir, '2.enc');
+      const entryTempPath = join(referenceDir, `.2.enc.${suffix}.tmp`);
 
-    backend.store({
-      material: 'first_secret',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
-    });
-    sealEncryptedFileVaultEntry({
-      createdAt: '2026-07-05T01:10:00.000Z',
-      masterKey,
-      material: 'complete_temp_secret',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
-      storeDir,
-      version: 2,
-      versionExpirations: { '1': '2026-07-05T01:11:00.000Z' },
-    } as never);
-    const completeEntry = readFileSync(secondEntryPath);
-    rmSync(secondEntryPath);
-    writeFileSync(entryTempPath, completeEntry, { mode: 0o600 });
+      backend.store({
+        material: 'first_secret',
+        metadata: { ownerScope: 'server' },
+        referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
+      });
+      sealEncryptedFileVaultEntry({
+        createdAt: '2026-07-05T01:10:00.000Z',
+        masterKey,
+        material: 'complete_temp_secret',
+        metadata: { ownerScope: 'server' },
+        referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
+        storeDir,
+        version: 2,
+        versionExpirations: { '1': '2026-07-05T01:11:00.000Z' },
+      } as never);
+      const completeEntry = readFileSync(secondEntryPath);
+      rmSync(secondEntryPath);
+      writeFileSync(entryTempPath, completeEntry, { mode: 0o600 });
 
-    expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect
-      .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169' }))
-      .toThrow('backend-unavailable');
+      expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
+      expect
+        .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169' }))
+        .toThrow('backend-unavailable');
 
-    const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169' });
+      const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169' });
 
-    expect(revoked).toMatchObject({
-      currentVersion: 2,
-      referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
-      revoked: true,
-      versionCount: 2,
-    });
-    expect(existsSync(firstEntryPath)).toBe(false);
-    expect(existsSync(entryTempPath)).toBe(false);
-    expect(existsSync(secondEntryPath)).toBe(false);
-    expect(backend.listReferences()).toEqual([revoked]);
-  });
+      expect(revoked).toMatchObject({
+        currentVersion: 2,
+        referenceId: 'vault_00000000-0000-7703-a0ed-bba6a2bbc169',
+        revoked: true,
+        versionCount: 2,
+      });
+      expect(existsSync(firstEntryPath)).toBe(false);
+      expect(existsSync(entryTempPath)).toBe(false);
+      expect(existsSync(secondEntryPath)).toBe(false);
+      expect(backend.listReferences()).toEqual([revoked]);
+    }
+  );
 
-  it.each(
-    WRITER_TEMP_SUFFIXES
-  )('fails ordinary operations closed but explicit revoke cleans an exact complete state temp (%s)', (_kind, suffix) => {
-    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
-    const backend = createEncryptedFileVaultBackend({
-      masterKey: Buffer.alloc(32, 9),
-      now: () => '2026-07-05T01:00:00.000Z',
-      storeDir,
-    });
-    const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-75ef-936c-e9644868d706');
-    const entryPath = join(referenceDir, '1.enc');
-    const statePath = join(referenceDir, 'state.json');
-    const stateTempPath = join(referenceDir, `.state.json.${suffix}.tmp`);
+  it.each(WRITER_TEMP_SUFFIXES)(
+    'fails ordinary operations closed but explicit revoke cleans an exact complete state temp (%s)',
+    (_kind, suffix) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        now: () => '2026-07-05T01:00:00.000Z',
+        storeDir,
+      });
+      const referenceDir = join(storeDir, 'entries', 'vault_00000000-0000-75ef-936c-e9644868d706');
+      const entryPath = join(referenceDir, '1.enc');
+      const statePath = join(referenceDir, 'state.json');
+      const stateTempPath = join(referenceDir, `.state.json.${suffix}.tmp`);
 
-    backend.store({
-      material: 'state_temp_secret',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706',
-    });
-    writeFileSync(stateTempPath, readFileSync(statePath), { mode: 0o600 });
+      backend.store({
+        material: 'state_temp_secret',
+        metadata: { ownerScope: 'server' },
+        referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706',
+      });
+      writeFileSync(stateTempPath, readFileSync(statePath), { mode: 0o600 });
 
-    expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
-    expect
-      .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706' }))
-      .toThrow('backend-unavailable');
+      expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
+      expect
+        .soft(() => backend.resolve({ referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706' }))
+        .toThrow('backend-unavailable');
 
-    const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706' });
+      const revoked = backend.revoke({ referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706' });
 
-    expect(revoked).toMatchObject({
-      referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706',
-      revoked: true,
-    });
-    expect(existsSync(entryPath)).toBe(false);
-    expect(existsSync(stateTempPath)).toBe(false);
-    expect(backend.listReferences()).toEqual([revoked]);
-  });
+      expect(revoked).toMatchObject({
+        referenceId: 'vault_00000000-0000-75ef-936c-e9644868d706',
+        revoked: true,
+      });
+      expect(existsSync(entryPath)).toBe(false);
+      expect(existsSync(stateTempPath)).toBe(false);
+      expect(backend.listReferences()).toEqual([revoked]);
+    }
+  );
 
   it('revokes complete state residue after reopening with the same process PID', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
@@ -984,52 +984,52 @@ describe('encrypted-file vault backend', () => {
   });
 
   describe.each(WRITER_TEMP_SUFFIXES)('entry attribution with %s names', (_kind, suffix) => {
-    it.each([
-      'malformed',
-      'unverifiable',
-    ] as const)('leaves state and every file untouched for an exact %s entry temp', (corruption) => {
-      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
-      const backend = createEncryptedFileVaultBackend({
-        masterKey: Buffer.alloc(32, 9),
-        storeDir,
-      });
-      const referenceId = testEntityId('vault', `vault_${corruption}_entry_temp`);
-      const referenceDir = join(storeDir, 'entries', referenceId);
-      const firstEntryPath = join(referenceDir, '1.enc');
-      const entryTempPath = join(referenceDir, `.2.enc.${suffix}.tmp`);
+    it.each(['malformed', 'unverifiable'] as const)(
+      'leaves state and every file untouched for an exact %s entry temp',
+      (corruption) => {
+        const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+        const backend = createEncryptedFileVaultBackend({
+          masterKey: Buffer.alloc(32, 9),
+          storeDir,
+        });
+        const referenceId = testEntityId('vault', `vault_${corruption}_entry_temp`);
+        const referenceDir = join(storeDir, 'entries', referenceId);
+        const firstEntryPath = join(referenceDir, '1.enc');
+        const entryTempPath = join(referenceDir, `.2.enc.${suffix}.tmp`);
 
-      backend.store({
-        material: 'must_remain_until_attribution_succeeds',
-        metadata: { ownerScope: 'server' },
-        referenceId,
-      });
+        backend.store({
+          material: 'must_remain_until_attribution_succeeds',
+          metadata: { ownerScope: 'server' },
+          referenceId,
+        });
 
-      if (corruption === 'malformed') {
-        writeFileSync(entryTempPath, '{"formatVersion":', { mode: 0o600 });
-      } else {
-        const entry = JSON.parse(readFileSync(firstEntryPath, 'utf8')) as {
-          associatedData: { version: number };
-          version: number;
-        };
-        entry.version = 2;
-        entry.associatedData.version = 2;
-        writeFileSync(entryTempPath, `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 });
+        if (corruption === 'malformed') {
+          writeFileSync(entryTempPath, '{"formatVersion":', { mode: 0o600 });
+        } else {
+          const entry = JSON.parse(readFileSync(firstEntryPath, 'utf8')) as {
+            associatedData: { version: number };
+            version: number;
+          };
+          entry.version = 2;
+          entry.associatedData.version = 2;
+          writeFileSync(entryTempPath, `${JSON.stringify(entry, null, 2)}\n`, { mode: 0o600 });
+        }
+
+        const fileNamesBefore = readdirSync(referenceDir).sort();
+        const filesBefore = fileNamesBefore.map(
+          (fileName) => [fileName, readFileSync(join(referenceDir, fileName))] as const
+        );
+
+        expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
+        expect.soft(() => backend.resolve({ referenceId })).toThrow('backend-unavailable');
+        expect.soft(() => backend.revoke({ referenceId })).toThrow('backend-unavailable');
+
+        expect(readdirSync(referenceDir).sort()).toEqual(fileNamesBefore);
+        for (const [fileName, content] of filesBefore) {
+          expect(readFileSync(join(referenceDir, fileName))).toEqual(content);
+        }
       }
-
-      const fileNamesBefore = readdirSync(referenceDir).sort();
-      const filesBefore = fileNamesBefore.map(
-        (fileName) => [fileName, readFileSync(join(referenceDir, fileName))] as const
-      );
-
-      expect.soft(() => backend.listReferences()).toThrow('backend-unavailable');
-      expect.soft(() => backend.resolve({ referenceId })).toThrow('backend-unavailable');
-      expect.soft(() => backend.revoke({ referenceId })).toThrow('backend-unavailable');
-
-      expect(readdirSync(referenceDir).sort()).toEqual(fileNamesBefore);
-      for (const [fileName, content] of filesBefore) {
-        expect(readFileSync(join(referenceDir, fileName))).toEqual(content);
-      }
-    });
+    );
   });
 
   it.each([
@@ -1094,82 +1094,82 @@ describe('encrypted-file vault backend', () => {
     expect(existsSync(malformedEntryPath)).toBe(true);
   });
 
-  it.each([
-    'rotation',
-    'inventory',
-  ] as const)('destroys expired prior material on addressed %s after validating the complete reference', (operation) => {
-    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
-    const referenceId = testEntityId('vault', `expired_material_${operation}`);
-    const referenceDir = join(storeDir, 'entries', referenceId);
-    let now = '2026-07-05T01:00:00.000Z';
-    const backend = createEncryptedFileVaultBackend({
-      masterKey: Buffer.alloc(32, 9),
-      now: () => now,
-      rotationGraceMs: 60_000,
-      storeDir,
-    });
-    try {
-      backend.store({
-        material: 'synthetic_first_material',
-        metadata: { ownerScope: 'server' },
-        referenceId,
+  it.each(['rotation', 'inventory'] as const)(
+    'destroys expired prior material on addressed %s after validating the complete reference',
+    (operation) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
+      const referenceId = testEntityId('vault', `expired_material_${operation}`);
+      const referenceDir = join(storeDir, 'entries', referenceId);
+      let now = '2026-07-05T01:00:00.000Z';
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        now: () => now,
+        rotationGraceMs: 60_000,
+        storeDir,
       });
-      now = '2026-07-05T01:00:10.000Z';
-      backend.rotate({ referenceId, material: 'synthetic_second_material' });
-      now = '2026-07-05T01:00:20.000Z';
-      backend.rotate({ referenceId, material: 'synthetic_third_material' });
-      expect(existsSync(join(referenceDir, '1.enc'))).toBe(true);
-      expect(
-        Buffer.from(backend.resolve({ referenceId, version: 1 })).equals(
-          Buffer.from('synthetic_first_material')
-        )
-      ).toBe(true);
+      try {
+        backend.store({
+          material: 'synthetic_first_material',
+          metadata: { ownerScope: 'server' },
+          referenceId,
+        });
+        now = '2026-07-05T01:00:10.000Z';
+        backend.rotate({ referenceId, material: 'synthetic_second_material' });
+        now = '2026-07-05T01:00:20.000Z';
+        backend.rotate({ referenceId, material: 'synthetic_third_material' });
+        expect(existsSync(join(referenceDir, '1.enc'))).toBe(true);
+        expect(
+          Buffer.from(backend.resolve({ referenceId, version: 1 })).equals(
+            Buffer.from('synthetic_first_material')
+          )
+        ).toBe(true);
 
-      now = '2026-07-05T01:01:11.000Z';
-      const address = () =>
-        operation === 'rotation'
-          ? backend.rotate({ referenceId, material: 'synthetic_fourth_material' })
-          : backend.listReferences();
-      // Expired material must survive until the entire addressed reference authenticates.
-      const currentPath = join(referenceDir, '3.enc');
-      const currentBefore = readFileSync(currentPath);
-      writeFileSync(currentPath, '{"schemaVersion":', { mode: 0o600 });
-      const filesBefore = readdirSync(referenceDir).sort();
-      const bytesBefore = filesBefore.map((name) => readFileSync(join(referenceDir, name)));
-      expect(() => address()).toThrow('backend-unavailable');
-      expect(readdirSync(referenceDir).sort()).toEqual(filesBefore);
-      expect(
-        filesBefore.every((name, index) =>
-          readFileSync(join(referenceDir, name)).equals(bytesBefore[index]!)
-        )
-      ).toBe(true);
-      writeFileSync(currentPath, currentBefore, { mode: 0o600 });
+        now = '2026-07-05T01:01:11.000Z';
+        const address = () =>
+          operation === 'rotation'
+            ? backend.rotate({ referenceId, material: 'synthetic_fourth_material' })
+            : backend.listReferences();
+        // Expired material must survive until the entire addressed reference authenticates.
+        const currentPath = join(referenceDir, '3.enc');
+        const currentBefore = readFileSync(currentPath);
+        writeFileSync(currentPath, '{"schemaVersion":', { mode: 0o600 });
+        const filesBefore = readdirSync(referenceDir).sort();
+        const bytesBefore = filesBefore.map((name) => readFileSync(join(referenceDir, name)));
+        expect(() => address()).toThrow('backend-unavailable');
+        expect(readdirSync(referenceDir).sort()).toEqual(filesBefore);
+        expect(
+          filesBefore.every((name, index) =>
+            readFileSync(join(referenceDir, name)).equals(bytesBefore[index]!)
+          )
+        ).toBe(true);
+        writeFileSync(currentPath, currentBefore, { mode: 0o600 });
 
-      address();
+        address();
 
-      // Version one is never requested after expiry; the addressed boundary owns destruction.
-      expect.soft(existsSync(join(referenceDir, '1.enc'))).toBe(false);
-      expect(existsSync(join(referenceDir, '2.enc'))).toBe(true);
-      expect(existsSync(currentPath)).toBe(true);
-      expect(
-        Buffer.from(backend.resolve({ referenceId, version: 2 })).equals(
-          Buffer.from('synthetic_second_material')
-        )
-      ).toBe(true);
-      const currentVersion = operation === 'rotation' ? 4 : 3;
-      const currentMaterial =
-        operation === 'rotation' ? 'synthetic_fourth_material' : 'synthetic_third_material';
-      expect(existsSync(join(referenceDir, `${currentVersion}.enc`))).toBe(true);
-      expect(
-        Buffer.from(backend.resolve({ referenceId })).equals(Buffer.from(currentMaterial))
-      ).toBe(true);
-      expect(backend.listReferences()).toMatchObject([
-        { referenceId, currentVersion, versionCount: currentVersion, revoked: false },
-      ]);
-    } finally {
-      rmSync(storeDir, { recursive: true, force: true });
+        // Version one is never requested after expiry; the addressed boundary owns destruction.
+        expect.soft(existsSync(join(referenceDir, '1.enc'))).toBe(false);
+        expect(existsSync(join(referenceDir, '2.enc'))).toBe(true);
+        expect(existsSync(currentPath)).toBe(true);
+        expect(
+          Buffer.from(backend.resolve({ referenceId, version: 2 })).equals(
+            Buffer.from('synthetic_second_material')
+          )
+        ).toBe(true);
+        const currentVersion = operation === 'rotation' ? 4 : 3;
+        const currentMaterial =
+          operation === 'rotation' ? 'synthetic_fourth_material' : 'synthetic_third_material';
+        expect(existsSync(join(referenceDir, `${currentVersion}.enc`))).toBe(true);
+        expect(
+          Buffer.from(backend.resolve({ referenceId })).equals(Buffer.from(currentMaterial))
+        ).toBe(true);
+        expect(backend.listReferences()).toMatchObject([
+          { referenceId, currentVersion, versionCount: currentVersion, revoked: false },
+        ]);
+      } finally {
+        rmSync(storeDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('expires prior versions after rotation grace', () => {
     const timestamps = [
@@ -1225,69 +1225,67 @@ describe('encrypted-file vault backend', () => {
     ).toContain('"1": "2026-07-05T01:11:00.000Z"');
   });
 
-  it.each([
-    'lock',
-    'revoke',
-    'entry-corruption',
-    'state-corruption',
-  ] as const)('revalidates a selected version without resolving material after %s', (withdrawal) => {
-    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-revalidation-'));
-    const referenceId = testEntityId('vault', `revalidation_${withdrawal}`);
-    const material = 'synthetic_revalidation_material';
-    const state = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      now: () => '2026-07-05T01:00:00.000Z',
-      storeDir,
-    });
-    state.unlock({ masterKey: Buffer.alloc(32, 9) });
-    const backend = state.backend();
-    const resolve = vi.spyOn(backend, 'resolve');
-    try {
-      backend.store({ referenceId, material, metadata: { ownerScope: 'server' } });
-      // Backend Implementation: only material resolution may return material.
-      expect(backend.assertResolutionCurrent({ referenceId })).toBeUndefined();
-      expect(backend.assertResolutionCurrent({ referenceId, version: 1 })).toBeUndefined();
-      if (withdrawal === 'lock') state.lock();
-      else if (withdrawal === 'revoke') backend.revoke({ referenceId });
-      else {
-        // Fault injection starts only after the real store owner produced valid state.
-        const name = withdrawal === 'entry-corruption' ? '1.enc' : 'state.json';
-        const path = join(storeDir, 'entries', referenceId, name);
-        const corrupted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-        if (withdrawal === 'entry-corruption') {
-          const tag = Buffer.from(corrupted.tag as string, 'base64');
-          tag[0] = tag[0]! ^ 1;
-          corrupted.tag = tag.toString('base64');
-        } else {
-          corrupted.updatedAt = '2026-07-05T01:00:00.001Z';
-        }
-        writeFileSync(path, `${JSON.stringify(corrupted)}\n`, { mode: 0o600 });
-      }
-      let failure: unknown;
-      try {
-        backend.assertResolutionCurrent({ referenceId, version: 1 });
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toBeInstanceOf(VaultBackendError);
-      expect(failure).toMatchObject({
-        code:
-          withdrawal === 'lock'
-            ? 'vault-locked'
-            : withdrawal === 'revoke'
-              ? 'reference-revoked'
-              : 'backend-unavailable',
+  it.each(['lock', 'revoke', 'entry-corruption', 'state-corruption'] as const)(
+    'revalidates a selected version without resolving material after %s',
+    (withdrawal) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-revalidation-'));
+      const referenceId = testEntityId('vault', `revalidation_${withdrawal}`);
+      const material = 'synthetic_revalidation_material';
+      const state = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        now: () => '2026-07-05T01:00:00.000Z',
+        storeDir,
       });
-      expect(String(failure)).not.toContain(material);
-      expect(String(failure)).not.toContain(storeDir);
-      // Validation is not another material-resolution attempt (Backend Implementation, Vault-Use).
-      expect(resolve).not.toHaveBeenCalled();
-    } finally {
-      resolve.mockRestore();
-      state.lock();
-      rmSync(storeDir, { recursive: true, force: true });
+      state.unlock({ masterKey: Buffer.alloc(32, 9) });
+      const backend = state.backend();
+      const resolve = vi.spyOn(backend, 'resolve');
+      try {
+        backend.store({ referenceId, material, metadata: { ownerScope: 'server' } });
+        // Backend Implementation: only material resolution may return material.
+        expect(backend.assertResolutionCurrent({ referenceId })).toBeUndefined();
+        expect(backend.assertResolutionCurrent({ referenceId, version: 1 })).toBeUndefined();
+        if (withdrawal === 'lock') state.lock();
+        else if (withdrawal === 'revoke') backend.revoke({ referenceId });
+        else {
+          // Fault injection starts only after the real store owner produced valid state.
+          const name = withdrawal === 'entry-corruption' ? '1.enc' : 'state.json';
+          const path = join(storeDir, 'entries', referenceId, name);
+          const corrupted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+          if (withdrawal === 'entry-corruption') {
+            const tag = Buffer.from(corrupted.tag as string, 'base64');
+            tag[0] = tag[0]! ^ 1;
+            corrupted.tag = tag.toString('base64');
+          } else {
+            corrupted.updatedAt = '2026-07-05T01:00:00.001Z';
+          }
+          writeFileSync(path, `${JSON.stringify(corrupted)}\n`, { mode: 0o600 });
+        }
+        let failure: unknown;
+        try {
+          backend.assertResolutionCurrent({ referenceId, version: 1 });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(VaultBackendError);
+        expect(failure).toMatchObject({
+          code:
+            withdrawal === 'lock'
+              ? 'vault-locked'
+              : withdrawal === 'revoke'
+                ? 'reference-revoked'
+                : 'backend-unavailable',
+        });
+        expect(String(failure)).not.toContain(material);
+        expect(String(failure)).not.toContain(storeDir);
+        // Validation is not another material-resolution attempt (Backend Implementation, Vault-Use).
+        expect(resolve).not.toHaveBeenCalled();
+      } finally {
+        resolve.mockRestore();
+        state.lock();
+        rmSync(storeDir, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('revalidates exact prior-version grace and destroys expired material without resolving it', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-revalidation-grace-'));

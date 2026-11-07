@@ -443,55 +443,55 @@ function expectOneFinal(
 describe('Core cancellation-only final admission', () => {
   afterEach(() => vi.useRealTimers());
 
-  it.each([
-    'cancelled',
-    'interrupted',
-  ] as const)('preserves the %s first final after refused ordinary output and seals all route families', async (status) => {
-    const fixture = await createFixture();
-    try {
-      fixture.close();
-      const product = fixture.productState();
-      expect(product.attempt).toMatchObject({
-        phase: 'closing',
-        terminalCause: 'turn-cancelled',
-        fenceRef: null,
-        outcomeRef: null,
-      });
-      expectOrdinaryEffectsRefused(fixture);
-      expect(
-        resolveWorkerControlFinalStatusTokenBinding(fixture.coreDb, {
-          lineage: fixture.lineage,
-          sandboxBindingRef: BINDING,
-          token: CONTROL_TOKEN,
-          tokenFamily: 'worker-control',
-        })
-      ).toMatchObject({ status: 'accepted' });
-      expect(await fixture.gateway.recordFinalStatus(finalInput(fixture, status))).toMatchObject({
-        accepted: true,
-        nextExpectedSequence: 9,
-      });
-      expectOneFinal(fixture, status);
-      expect(fixture.productState()).toEqual(product);
-      const accepted = fixture.durableState();
-      expect(await fixture.gateway.recordFinalStatus(finalInput(fixture, status))).toMatchObject({
-        accepted: true,
-        nextExpectedSequence: 9,
-      });
-      expect(fixture.durableState()).toEqual(accepted);
-      expectOrdinaryEffectsRefused(fixture);
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus({ ...finalInput(fixture, status), sequence: 9 })
-      );
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus({
-          ...finalInput(fixture, status),
-          diagnostics: { reason: 'changed terminal payload' },
-        })
-      );
-    } finally {
-      fixture.dispose();
+  it.each(['cancelled', 'interrupted'] as const)(
+    'preserves the %s first final after refused ordinary output and seals all route families',
+    async (status) => {
+      const fixture = await createFixture();
+      try {
+        fixture.close();
+        const product = fixture.productState();
+        expect(product.attempt).toMatchObject({
+          phase: 'closing',
+          terminalCause: 'turn-cancelled',
+          fenceRef: null,
+          outcomeRef: null,
+        });
+        expectOrdinaryEffectsRefused(fixture);
+        expect(
+          resolveWorkerControlFinalStatusTokenBinding(fixture.coreDb, {
+            lineage: fixture.lineage,
+            sandboxBindingRef: BINDING,
+            token: CONTROL_TOKEN,
+            tokenFamily: 'worker-control',
+          })
+        ).toMatchObject({ status: 'accepted' });
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture, status))).toMatchObject({
+          accepted: true,
+          nextExpectedSequence: 9,
+        });
+        expectOneFinal(fixture, status);
+        expect(fixture.productState()).toEqual(product);
+        const accepted = fixture.durableState();
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture, status))).toMatchObject({
+          accepted: true,
+          nextExpectedSequence: 9,
+        });
+        expect(fixture.durableState()).toEqual(accepted);
+        expectOrdinaryEffectsRefused(fixture);
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus({ ...finalInput(fixture, status), sequence: 9 })
+        );
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus({
+            ...finalInput(fixture, status),
+            diagnostics: { reason: 'changed terminal payload' },
+          })
+        );
+      } finally {
+        fixture.dispose();
+      }
     }
-  });
+  );
 
   it('refuses reconnect on closing authority without consuming its exact first final', async () => {
     const fixture = await createFixture();
@@ -517,29 +517,28 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it.each([
-    'turn-cancelled',
-    'raw-output-exhausted',
-    'raw-output-unavailable',
-  ])('rebuilds a %s first-final opportunity after restart without changing its deadline', async (cause) => {
-    const fixture = await createFixture();
-    try {
-      fixture.close(cause);
-      expectOrdinaryEffectsRefused(fixture);
-      const before = fixture.durableState();
-      fixture.restart();
-      expect(fixture.durableState()).toEqual(before);
-      expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
-        accepted: true,
-      });
-      expectOneFinal(fixture, 'cancelled');
-      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID).deadline).toBe(
-        (before.attempts[0] as { deadline: string }).deadline
-      );
-    } finally {
-      fixture.dispose();
+  it.each(['turn-cancelled', 'raw-output-exhausted', 'raw-output-unavailable'])(
+    'rebuilds a %s first-final opportunity after restart without changing its deadline',
+    async (cause) => {
+      const fixture = await createFixture();
+      try {
+        fixture.close(cause);
+        expectOrdinaryEffectsRefused(fixture);
+        const before = fixture.durableState();
+        fixture.restart();
+        expect(fixture.durableState()).toEqual(before);
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
+          accepted: true,
+        });
+        expectOneFinal(fixture, 'cancelled');
+        expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID).deadline).toBe(
+          (before.attempts[0] as { deadline: string }).deadline
+        );
+      } finally {
+        fixture.dispose();
+      }
     }
-  });
+  );
 
   it('replays the exact accepted final after restart on both closing and closed lineage', async () => {
     const fixture = await createFixture();
@@ -596,21 +595,24 @@ describe('Core cancellation-only final admission', () => {
     ['blocked', 'length'],
     ['cancelled', 'completed'],
     ['interrupted', 'error'],
-  ] as const)('refuses closing first final %s/%s without consuming the valid cancellation final', async (status, stopReason) => {
-    const fixture = await createFixture();
-    try {
-      fixture.close();
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus({ ...finalInput(fixture), status, stopReason })
-      );
-      expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
-        accepted: true,
-      });
-      expectOneFinal(fixture, 'cancelled');
-    } finally {
-      fixture.dispose();
+  ] as const)(
+    'refuses closing first final %s/%s without consuming the valid cancellation final',
+    async (status, stopReason) => {
+      const fixture = await createFixture();
+      try {
+        fixture.close();
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus({ ...finalInput(fixture), status, stopReason })
+        );
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
+          accepted: true,
+        });
+        expectOneFinal(fixture, 'cancelled');
+      } finally {
+        fixture.dispose();
+      }
     }
-  });
+  );
 
   it('refuses invalid final schema without consuming the valid cancellation final', async () => {
     const fixture = await createFixture();
@@ -631,21 +633,20 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it.each([
-    'worker-final-status',
-    'restart-native-recovery',
-    'authority-revoked',
-  ])('refuses the first final when closing belongs to %s', async (cause) => {
-    const fixture = await createFixture();
-    try {
-      fixture.close(cause);
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus(finalInput(fixture))
-      );
-    } finally {
-      fixture.dispose();
+  it.each(['worker-final-status', 'restart-native-recovery', 'authority-revoked'])(
+    'refuses the first final when closing belongs to %s',
+    async (cause) => {
+      const fixture = await createFixture();
+      try {
+        fixture.close(cause);
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus(finalInput(fixture))
+        );
+      } finally {
+        fixture.dispose();
+      }
     }
-  });
+  );
 
   it('rejects each changed lineage field and each wrong token without consuming the first final', async () => {
     const fixture = await createFixture();
@@ -744,53 +745,53 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('refuses expired cancellation authority after restart=%s', async (restart) => {
-    const fixture = await createFixture();
-    try {
-      fixture.close();
-      const attempt = requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
-      vi.setSystemTime(new Date(attempt.deadline!));
-      if (restart) fixture.restart();
-      expectOrdinaryEffectsRefused(fixture);
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus(finalInput(fixture))
-      );
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it.each([
-    'startup',
-    'heartbeat',
-  ] as const)('refuses a first cancellation final at the expired Native %s deadline', async (kind) => {
-    const fixture = await createFixture();
-    try {
-      if (kind === 'heartbeat') {
-        await fixture.gateway.recordHeartbeat({
-          authorization: `Bearer ${CONTROL_TOKEN}`,
-          lineage: fixture.lineage,
-          operation: 'heartbeat',
-          schemaVersion: 2,
-          sequence: 1,
-          body: { status: 'running' },
-        });
+  it.each([false, true])(
+    'refuses expired cancellation authority after restart=%s',
+    async (restart) => {
+      const fixture = await createFixture();
+      try {
+        fixture.close();
+        const attempt = requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
+        vi.setSystemTime(new Date(attempt.deadline!));
+        if (restart) fixture.restart();
+        expectOrdinaryEffectsRefused(fixture);
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus(finalInput(fixture))
+        );
+      } finally {
+        fixture.dispose();
       }
-      fixture.close();
-      const attempt = requireNanoHostExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
-      vi.setSystemTime(
-        new Date(kind === 'startup' ? attempt.startupDeadline : attempt.heartbeatDeadline)
-      );
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus(finalInput(fixture))
-      );
-    } finally {
-      fixture.dispose();
     }
-  });
+  );
+
+  it.each(['startup', 'heartbeat'] as const)(
+    'refuses a first cancellation final at the expired Native %s deadline',
+    async (kind) => {
+      const fixture = await createFixture();
+      try {
+        if (kind === 'heartbeat') {
+          await fixture.gateway.recordHeartbeat({
+            authorization: `Bearer ${CONTROL_TOKEN}`,
+            lineage: fixture.lineage,
+            operation: 'heartbeat',
+            schemaVersion: 2,
+            sequence: 1,
+            body: { status: 'running' },
+          });
+        }
+        fixture.close();
+        const attempt = requireNanoHostExecutionAttempt(fixture.coreDb, ATTEMPT_ID);
+        vi.setSystemTime(
+          new Date(kind === 'startup' ? attempt.startupDeadline : attempt.heartbeatDeadline)
+        );
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus(finalInput(fixture))
+        );
+      } finally {
+        fixture.dispose();
+      }
+    }
+  );
 
   it('refuses contradictory cancellation and recovery evidence without resetting deadlines', async () => {
     const fixture = await createFixture();
@@ -835,64 +836,18 @@ describe('Core cancellation-only final admission', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('preserves the real-backend first final through startup classification and maintenance=%s', async (maintenance) => {
-    const fixture = await createFixture();
-    const ports = recoveryPorts();
-    try {
-      const backend = await recordLaunchedBackend(fixture);
-      expect(backend).toMatchObject({
-        state: 'launching',
-        workspaceHandoffState: 'complete',
-        physicalCleanedAt: null,
-      });
-      await fixture.gateway.recordHeartbeat({
-        authorization: `Bearer ${CONTROL_TOKEN}`,
-        lineage: fixture.lineage,
-        operation: 'heartbeat',
-        schemaVersion: 2,
-        sequence: 1,
-        body: { status: 'running' },
-      });
-      fixture.close();
-      const deadlines = nativeDeadlines(fixture);
-      const canonical = fixture.productState().canonical;
-      await fixture.restartThroughStartup(ports.input);
-      if (maintenance) await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input);
-      expect(nativeDeadlines(fixture)).toEqual(deadlines);
-      expectOrdinaryEffectsRefused(fixture);
-      expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
-        accepted: true,
-      });
-      expectOneFinal(fixture, 'cancelled');
-      expect(fixture.productState().canonical).toEqual(canonical);
-      expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toEqual(backend);
-      expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
-      expect(ports.input.executionBackend.submit).not.toHaveBeenCalled();
-      expect(ports.input.executionBackend.cancel).not.toHaveBeenCalled();
-      expect(ports.input.executionBackend.release).not.toHaveBeenCalled();
-      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
-        phase: 'closing',
-        terminalCause: 'turn-cancelled',
-        fenceRef: null,
-      });
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it.each([
-    'startup',
-    'heartbeat',
-    'absolute',
-  ] as const)('refuses the real-backend first final and retains cleanup at the original %s deadline', async (kind) => {
-    const fixture = await createFixture();
-    const ports = recoveryPorts();
-    try {
-      const backend = await recordLaunchedBackend(fixture);
-      if (kind === 'heartbeat')
+  it.each([false, true])(
+    'preserves the real-backend first final through startup classification and maintenance=%s',
+    async (maintenance) => {
+      const fixture = await createFixture();
+      const ports = recoveryPorts();
+      try {
+        const backend = await recordLaunchedBackend(fixture);
+        expect(backend).toMatchObject({
+          state: 'launching',
+          workspaceHandoffState: 'complete',
+          physicalCleanedAt: null,
+        });
         await fixture.gateway.recordHeartbeat({
           authorization: `Bearer ${CONTROL_TOKEN}`,
           lineage: fixture.lineage,
@@ -901,51 +856,96 @@ describe('Core cancellation-only final admission', () => {
           sequence: 1,
           body: { status: 'running' },
         });
-      fixture.close();
-      const deadlines = nativeDeadlines(fixture);
-      const canonical = fixture.productState().canonical;
-      vi.setSystemTime(
-        new Date(
-          kind === 'startup'
-            ? deadlines.startupDeadline
-            : kind === 'heartbeat'
-              ? deadlines.heartbeatDeadline
-              : deadlines.deadline!
-        )
-      );
-      await fixture.restartThroughStartup(ports.input);
-      expectOrdinaryEffectsRefused(fixture);
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus(finalInput(fixture))
-      );
-      await expect(
-        runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
-      ).rejects.toThrow('Native attempt recovery failed');
-      expect(ports.cleanupBackendSession).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          agentSessionId: backend.agentSessionId,
-          backendSessionId: backend.backendSessionId,
-          packageSnapshotId: backend.packageSnapshotId,
-          runtimeTargetId: backend.runtimeTargetId,
-          deploymentId: backend.deploymentId,
-        })
-      );
-      expect(nativeDeadlines(fixture)).toEqual(deadlines);
-      expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
-        state: 'cleanup-failed',
-        workspaceHandoffState: 'complete',
-        physicalCleanedAt: null,
-      });
-      expect(fixture.productState().canonical).toEqual(canonical);
-      expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
-        phase: 'closing',
-        terminalCause: 'turn-cancelled',
-        fenceRef: null,
-      });
-    } finally {
-      fixture.dispose();
+        fixture.close();
+        const deadlines = nativeDeadlines(fixture);
+        const canonical = fixture.productState().canonical;
+        await fixture.restartThroughStartup(ports.input);
+        if (maintenance) await runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input);
+        expect(nativeDeadlines(fixture)).toEqual(deadlines);
+        expectOrdinaryEffectsRefused(fixture);
+        expect(await fixture.gateway.recordFinalStatus(finalInput(fixture))).toMatchObject({
+          accepted: true,
+        });
+        expectOneFinal(fixture, 'cancelled');
+        expect(fixture.productState().canonical).toEqual(canonical);
+        expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toEqual(backend);
+        expect(ports.cleanupBackendSession).not.toHaveBeenCalled();
+        expect(ports.input.executionBackend.submit).not.toHaveBeenCalled();
+        expect(ports.input.executionBackend.cancel).not.toHaveBeenCalled();
+        expect(ports.input.executionBackend.release).not.toHaveBeenCalled();
+        expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+          phase: 'closing',
+          terminalCause: 'turn-cancelled',
+          fenceRef: null,
+        });
+      } finally {
+        fixture.dispose();
+      }
     }
-  });
+  );
+
+  it.each(['startup', 'heartbeat', 'absolute'] as const)(
+    'refuses the real-backend first final and retains cleanup at the original %s deadline',
+    async (kind) => {
+      const fixture = await createFixture();
+      const ports = recoveryPorts();
+      try {
+        const backend = await recordLaunchedBackend(fixture);
+        if (kind === 'heartbeat')
+          await fixture.gateway.recordHeartbeat({
+            authorization: `Bearer ${CONTROL_TOKEN}`,
+            lineage: fixture.lineage,
+            operation: 'heartbeat',
+            schemaVersion: 2,
+            sequence: 1,
+            body: { status: 'running' },
+          });
+        fixture.close();
+        const deadlines = nativeDeadlines(fixture);
+        const canonical = fixture.productState().canonical;
+        vi.setSystemTime(
+          new Date(
+            kind === 'startup'
+              ? deadlines.startupDeadline
+              : kind === 'heartbeat'
+                ? deadlines.heartbeatDeadline
+                : deadlines.deadline!
+          )
+        );
+        await fixture.restartThroughStartup(ports.input);
+        expectOrdinaryEffectsRefused(fixture);
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus(finalInput(fixture))
+        );
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
+        ).rejects.toThrow('Native attempt recovery failed');
+        expect(ports.cleanupBackendSession).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            agentSessionId: backend.agentSessionId,
+            backendSessionId: backend.backendSessionId,
+            packageSnapshotId: backend.packageSnapshotId,
+            runtimeTargetId: backend.runtimeTargetId,
+            deploymentId: backend.deploymentId,
+          })
+        );
+        expect(nativeDeadlines(fixture)).toEqual(deadlines);
+        expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+          state: 'cleanup-failed',
+          workspaceHandoffState: 'complete',
+          physicalCleanedAt: null,
+        });
+        expect(fixture.productState().canonical).toEqual(canonical);
+        expect(requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+          phase: 'closing',
+          terminalCause: 'turn-cancelled',
+          fenceRef: null,
+        });
+      } finally {
+        fixture.dispose();
+      }
+    }
+  );
 
   it.each([
     'cleanup-pending',
@@ -953,63 +953,66 @@ describe('Core cancellation-only final admission', () => {
     'needs-evidence',
     'fenced',
     'non-cancellation',
-  ] as const)('does not wait for a real-backend first final with existing %s evidence', async (contradiction) => {
-    const fixture = await createFixture();
-    const ports = recoveryPorts();
-    try {
-      await recordLaunchedBackend(fixture);
-      fixture.close(contradiction === 'non-cancellation' ? 'execution-failed' : 'turn-cancelled');
-      if (contradiction === 'cleanup-pending')
-        await transitionWorkerBackendSessionState(fixture.coreDb, {
-          attemptId: ATTEMPT_ID,
-          fromState: 'launching',
-          toState: 'cleanup-pending',
-          now: () => fixture.now,
+  ] as const)(
+    'does not wait for a real-backend first final with existing %s evidence',
+    async (contradiction) => {
+      const fixture = await createFixture();
+      const ports = recoveryPorts();
+      try {
+        await recordLaunchedBackend(fixture);
+        fixture.close(contradiction === 'non-cancellation' ? 'execution-failed' : 'turn-cancelled');
+        if (contradiction === 'cleanup-pending')
+          await transitionWorkerBackendSessionState(fixture.coreDb, {
+            attemptId: ATTEMPT_ID,
+            fromState: 'launching',
+            toState: 'cleanup-pending',
+            now: () => fixture.now,
+          });
+        if (contradiction === 'handoff-pending')
+          fixture.coreDb.sqlite
+            .prepare(
+              "UPDATE worker_backend_sessions SET workspace_handoff_state = 'pending' WHERE attempt_id = ?"
+            )
+            .run(ATTEMPT_ID);
+        if (contradiction === 'needs-evidence')
+          fixture.coreDb.sqlite
+            .prepare(
+              "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ?"
+            )
+            .run(ATTEMPT_ID);
+        if (contradiction === 'fenced')
+          acceptSchedulerExecutionObservation(fixture.coreDb, {
+            ...schedulerExecutionCorrelation(
+              requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)
+            ),
+            disposition: 'accepted',
+            execution: 'terminal',
+            outcomeRef: null,
+            fenceRef: 'fence:existing-cancellation-cleanup',
+          });
+        const deadlines = nativeDeadlines(fixture);
+        const canonical = fixture.productState().canonical;
+        await fixture.restartThroughStartup(ports.input);
+        expectOrdinaryEffectsRefused(fixture);
+        await expectAsyncRefusal(fixture, () =>
+          fixture.gateway.recordFinalStatus(finalInput(fixture))
+        );
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
+        ).rejects.toThrow('Native attempt recovery failed');
+        expect(ports.cleanupBackendSession).toHaveBeenCalledTimes(1);
+        expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
+          state: 'cleanup-failed',
+          workspaceHandoffState: contradiction === 'handoff-pending' ? 'pending' : 'complete',
+          physicalCleanedAt: null,
         });
-      if (contradiction === 'handoff-pending')
-        fixture.coreDb.sqlite
-          .prepare(
-            "UPDATE worker_backend_sessions SET workspace_handoff_state = 'pending' WHERE attempt_id = ?"
-          )
-          .run(ATTEMPT_ID);
-      if (contradiction === 'needs-evidence')
-        fixture.coreDb.sqlite
-          .prepare(
-            "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ?"
-          )
-          .run(ATTEMPT_ID);
-      if (contradiction === 'fenced')
-        acceptSchedulerExecutionObservation(fixture.coreDb, {
-          ...schedulerExecutionCorrelation(
-            requireSchedulerExecutionAttempt(fixture.coreDb, ATTEMPT_ID)
-          ),
-          disposition: 'accepted',
-          execution: 'terminal',
-          outcomeRef: null,
-          fenceRef: 'fence:existing-cancellation-cleanup',
-        });
-      const deadlines = nativeDeadlines(fixture);
-      const canonical = fixture.productState().canonical;
-      await fixture.restartThroughStartup(ports.input);
-      expectOrdinaryEffectsRefused(fixture);
-      await expectAsyncRefusal(fixture, () =>
-        fixture.gateway.recordFinalStatus(finalInput(fixture))
-      );
-      await expect(
-        runNanoHostAttemptRecoveryMaintenance(fixture.coreDb, ports.input)
-      ).rejects.toThrow('Native attempt recovery failed');
-      expect(ports.cleanupBackendSession).toHaveBeenCalledTimes(1);
-      expect(getWorkerBackendSession(fixture.coreDb, ATTEMPT_ID)).toMatchObject({
-        state: 'cleanup-failed',
-        workspaceHandoffState: contradiction === 'handoff-pending' ? 'pending' : 'complete',
-        physicalCleanedAt: null,
-      });
-      expect(nativeDeadlines(fixture)).toEqual(deadlines);
-      expect(fixture.productState().canonical).toEqual(canonical);
-    } finally {
-      fixture.dispose();
+        expect(nativeDeadlines(fixture)).toEqual(deadlines);
+        expect(fixture.productState().canonical).toEqual(canonical);
+      } finally {
+        fixture.dispose();
+      }
     }
-  });
+  );
 
   it('accepts the P03 cancellation envelope after HTTP append refusal and preserves incomplete evidence through exact replay', async () => {
     const fixture = await createFixture();

@@ -862,34 +862,34 @@ describe('complete native terminal owner', () => {
     expect(f.goal.revision()).toBe(0);
   });
 
-  it.each([
-    'terminal-publication',
-    'release',
-  ])('refuses cancelled publication with empty evidence when the original %s obligation is missing', async (stepId) => {
-    const f = await emptyEvidenceTerminal('cancelled');
-    await expect(f.publication()).resolves.toEqual({
-      execution: f.input.execution,
-      evidence: [],
-    });
-    expect(
-      f.db.sqlite
-        .prepare('DELETE FROM control_execution_steps WHERE execution_id=? AND step_id=?')
-        .run(f.journal.admission.ref.executionId, stepId).changes
-    ).toBe(1);
-    const before = f.state();
-    await expect(f.publication()).rejects.toThrow(
-      'Worker terminal journal requires original terminal and release obligations.'
-    );
-    await expect(f.client.terminal(f.database, f.input)).rejects.toMatchObject({
-      code: 'precondition',
-      commit: 'not-committed',
-    });
-    expect(f.state()).toEqual(before);
-    expect(f.goal.revision()).toBe(0);
-    const root = await f.journal.reader.readExecution(f.journal.admission.ref);
-    expect(root.phase).toBe('open');
-    expect(root.exclusionRefs).toEqual(['fixture:pending-cleanup']);
-  });
+  it.each(['terminal-publication', 'release'])(
+    'refuses cancelled publication with empty evidence when the original %s obligation is missing',
+    async (stepId) => {
+      const f = await emptyEvidenceTerminal('cancelled');
+      await expect(f.publication()).resolves.toEqual({
+        execution: f.input.execution,
+        evidence: [],
+      });
+      expect(
+        f.db.sqlite
+          .prepare('DELETE FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+          .run(f.journal.admission.ref.executionId, stepId).changes
+      ).toBe(1);
+      const before = f.state();
+      await expect(f.publication()).rejects.toThrow(
+        'Worker terminal journal requires original terminal and release obligations.'
+      );
+      await expect(f.client.terminal(f.database, f.input)).rejects.toMatchObject({
+        code: 'precondition',
+        commit: 'not-committed',
+      });
+      expect(f.state()).toEqual(before);
+      expect(f.goal.revision()).toBe(0);
+      const root = await f.journal.reader.readExecution(f.journal.admission.ref);
+      expect(root.phase).toBe('open');
+      expect(root.exclusionRefs).toEqual(['fixture:pending-cleanup']);
+    }
+  );
 
   it('publishes interruption with empty evidence and the complete original journal while retaining physical exclusion', async () => {
     const f = await emptyEvidenceTerminal('interrupted');
@@ -1075,33 +1075,33 @@ describe('complete native terminal owner', () => {
     );
     expect(f.db.sqlite.prepare('SELECT count(*) AS n FROM control_turns').get()).toEqual({ n: 0 });
   });
-  it.each([
-    'file',
-    'parent',
-  ] as const)('refuses a new terminal reference when actual %s synchronization fails', async (target) => {
-    const f = fixture('workspace');
-    const input = withCommand(f);
-    const fault = target === 'file' ? join(f.mount.root, 'event.json') : f.mount.root;
-    // Storage and DX Commit Rule require actual new bytes and their parent to be durable before reference.
-    await expect(f.apply(input, 'apply', input, [fault])).rejects.toThrow(
-      'injected content synchronization failure'
-    );
-    for (const table of [
-      'control_turns',
-      'control_product_entries',
-      'control_work_observations',
-      'idempotency_requests',
-      'audit_events',
-    ])
-      expect(f.db.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
-    await expect(f.apply(input)).resolves.toMatchObject({
-      replayed: false,
-      response: { kind: 'turn', id: f.turnId },
-    });
-    expect(f.db.sqlite.prepare('SELECT request_key FROM idempotency_requests').get()).toEqual({
-      request_key: input.command!.receipt.key,
-    });
-  });
+  it.each(['file', 'parent'] as const)(
+    'refuses a new terminal reference when actual %s synchronization fails',
+    async (target) => {
+      const f = fixture('workspace');
+      const input = withCommand(f);
+      const fault = target === 'file' ? join(f.mount.root, 'event.json') : f.mount.root;
+      // Storage and DX Commit Rule require actual new bytes and their parent to be durable before reference.
+      await expect(f.apply(input, 'apply', input, [fault])).rejects.toThrow(
+        'injected content synchronization failure'
+      );
+      for (const table of [
+        'control_turns',
+        'control_product_entries',
+        'control_work_observations',
+        'idempotency_requests',
+        'audit_events',
+      ])
+        expect(f.db.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+      await expect(f.apply(input)).resolves.toMatchObject({
+        replayed: false,
+        response: { kind: 'turn', id: f.turnId },
+      });
+      expect(f.db.sqlite.prepare('SELECT request_key FROM idempotency_requests').get()).toEqual({
+        request_key: input.command!.receipt.key,
+      });
+    }
+  );
   it('fills absent sealed metadata without replacing its original terminal event or changing a populated field', async () => {
     const f = fixture();
     const event = JSON.parse(readFileSync(join(f.mount.root, 'event.json'), 'utf8'));

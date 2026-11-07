@@ -239,25 +239,25 @@ describe('deletion closure real domain and Storage composition', () => {
     );
   });
 
-  it.each([
-    'records/core-workspace-registry.jsonl',
-    'workspace-closure.json',
-  ])('removes only the selected unsealed root after a real %s write fails', async (path) => {
-    const f = await fixture();
-    const sibling = join(f.root, '..', 'retained-sibling');
-    mkdirSync(sibling, { recursive: true });
-    writeFileSync(join(sibling, 'retained'), retainedBytes);
-    const failure = new Error('injected closure write acknowledgement failure');
-    physical.failAfterWrite = join(f.root, path);
-    physical.failure = failure;
-    expect(() => createWorkspaceDeletionClosure(f.input)).toThrow(failure);
-    expect(physical.writes).toContain(path);
-    expect(existsSync(f.root)).toBe(false);
-    expect(readFileSync(join(sibling, 'retained'))).toEqual(retainedBytes);
-    expect(readFileSync(f.source)).toEqual(retainedBytes);
-    expect(f.selectedDb()!.sqlite.open).toBe(false);
-    expect(getWorkspaceRegistryLifecycleFact(f.input.coreDb, f.input.workspaceId)).toEqual(
-      f.registry
-    );
-  });
+  it.each(['records/core-workspace-registry.jsonl', 'workspace-closure.json'])(
+    'removes only the selected unsealed root after a real %s write fails',
+    async (path) => {
+      const f = await fixture();
+      const sibling = join(f.root, '..', 'retained-sibling');
+      mkdirSync(sibling, { recursive: true });
+      writeFileSync(join(sibling, 'retained'), retainedBytes);
+      const failure = new Error('injected closure write acknowledgement failure');
+      physical.failAfterWrite = join(f.root, path);
+      physical.failure = failure;
+      expect(() => createWorkspaceDeletionClosure(f.input)).toThrow(failure);
+      expect(physical.writes).toContain(path);
+      expect(existsSync(f.root)).toBe(false);
+      expect(readFileSync(join(sibling, 'retained'))).toEqual(retainedBytes);
+      expect(readFileSync(f.source)).toEqual(retainedBytes);
+      expect(f.selectedDb()!.sqlite.open).toBe(false);
+      expect(getWorkspaceRegistryLifecycleFact(f.input.coreDb, f.input.workspaceId)).toEqual(
+        f.registry
+      );
+    }
+  );
 });

@@ -71,21 +71,26 @@ describe('caller-selected private tree removal', () => {
     expect(await readFile(join(root, 'ready.json'), 'utf8')).toBe('ready');
   });
 
-  it.each([
-    'nested',
-    'files-root',
-  ])('refuses unselected residue at %s before marker removal', async (location) => {
-    const root = await fixture();
-    await mkdir(join(root, 'files', 'nested'), { recursive: true });
-    const retained = join(root, 'files', ...(location === 'nested' ? ['nested'] : []), 'retained');
-    await writeFile(retained, 'keep');
+  it.each(['nested', 'files-root'])(
+    'refuses unselected residue at %s before marker removal',
+    async (location) => {
+      const root = await fixture();
+      await mkdir(join(root, 'files', 'nested'), { recursive: true });
+      const retained = join(
+        root,
+        'files',
+        ...(location === 'nested' ? ['nested'] : []),
+        'retained'
+      );
+      await writeFile(retained, 'keep');
 
-    await expect(removePrivateTreeInventory(root, true, [], ['nested'])).rejects.toMatchObject({
-      code: 'ENOTEMPTY',
-    });
-    expect(await readFile(retained, 'utf8')).toBe('keep');
-    expect(await readFile(join(root, 'ready.json'), 'utf8')).toBe('ready');
-  });
+      await expect(removePrivateTreeInventory(root, true, [], ['nested'])).rejects.toMatchObject({
+        code: 'ENOTEMPTY',
+      });
+      expect(await readFile(retained, 'utf8')).toBe('keep');
+      expect(await readFile(join(root, 'ready.json'), 'utf8')).toBe('ready');
+    }
+  );
 
   it('does not remove an unselected files root and propagates final root refusal', async () => {
     const root = await fixture();

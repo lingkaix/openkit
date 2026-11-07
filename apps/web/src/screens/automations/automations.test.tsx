@@ -360,34 +360,37 @@ it('blocks duplicate pending actions and isolates late responses after a Workspa
 it.each([
   { kind: 'transport', failure: new TypeError('private transport detail') },
   { kind: 'HTTP 500', failure: new ApiCallError(500, 'private transport detail') },
-])('$kind: hides denied reads, keeps errors safe and prevents blind retry after an unknown create outcome', async ({
-  failure,
-}) => {
-  const user = userEvent.setup();
-  const denied = new ApiCallError(403, 'private dependency diagnostics', {
-    code: 'workspace_access_denied',
-  });
-  const listed = vi
-    .fn<CoreClient['operations']['automation.list']>()
-    .mockRejectedValueOnce(denied)
-    .mockResolvedValue({ items: [] });
-  const create = vi.fn<CoreClient['operations']['automation.create']>().mockRejectedValue(failure);
-  fixture({ 'automation.list': listed, 'automation.create': create }, []);
-  expect(await screen.findByText('Access denied.')).toBeInTheDocument();
-  expect(screen.queryByText('No automations')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: 'Refresh automations' }));
-  await user.type(await screen.findByLabelText('Name'), 'Check');
-  await user.type(screen.getByLabelText('Worker input'), 'Inspect');
-  await user.click(screen.getByRole('button', { name: /Target Thread/ }));
-  await user.click(screen.getByRole('option', { name: 'Target thread' }));
-  await user.click(screen.getByRole('button', { name: 'Create paused automation' }));
-  expect(await screen.findByText(/Outcome unknown/)).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Create paused automation' })).toBeDisabled();
-  expect(
-    screen.queryByText(/private transport detail|private dependency diagnostics/)
-  ).not.toBeInTheDocument();
-});
+])(
+  '$kind: hides denied reads, keeps errors safe and prevents blind retry after an unknown create outcome',
+  async ({ failure }) => {
+    const user = userEvent.setup();
+    const denied = new ApiCallError(403, 'private dependency diagnostics', {
+      code: 'workspace_access_denied',
+    });
+    const listed = vi
+      .fn<CoreClient['operations']['automation.list']>()
+      .mockRejectedValueOnce(denied)
+      .mockResolvedValue({ items: [] });
+    const create = vi
+      .fn<CoreClient['operations']['automation.create']>()
+      .mockRejectedValue(failure);
+    fixture({ 'automation.list': listed, 'automation.create': create }, []);
+    expect(await screen.findByText('Access denied.')).toBeInTheDocument();
+    expect(screen.queryByText('No automations')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Refresh automations' }));
+    await user.type(await screen.findByLabelText('Name'), 'Check');
+    await user.type(screen.getByLabelText('Worker input'), 'Inspect');
+    await user.click(screen.getByRole('button', { name: /Target Thread/ }));
+    await user.click(screen.getByRole('option', { name: 'Target thread' }));
+    await user.click(screen.getByRole('button', { name: 'Create paused automation' }));
+    expect(await screen.findByText(/Outcome unknown/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create paused automation' })).toBeDisabled();
+    expect(
+      screen.queryByText(/private transport detail|private dependency diagnostics/)
+    ).not.toBeInTheDocument();
+  }
+);
 
 it('isolates a late collection response after the selected Workspace changes', async () => {
   let resolve!: (value: { items: AutomationRecord[] }) => void;
@@ -447,42 +450,43 @@ it('retains a conflicted draft and requires a read before a new revision-bound r
   );
 });
 
-it.each([
-  'edit',
-  'resume',
-] as const)('keeps the opened %s revision after a newer definition is read', async (mode) => {
-  const user = userEvent.setup();
-  let listed = original;
-  const update = vi
-    .fn<CoreClient['operations']['automation.update']>()
-    .mockRejectedValue(new ApiCallError(409, 'Changed definition'));
-  fixture({
-    'automation.list': vi
-      .fn<CoreClient['operations']['automation.list']>()
-      .mockImplementation(async () => ({ items: [listed] })),
-    'automation.update': update,
-  });
-  await user.click(
-    await screen.findByRole('button', {
-      name: `${mode === 'edit' ? 'Edit' : 'Resume'} Poll status`,
-    })
-  );
-  if (mode === 'edit') {
-    await user.clear(screen.getByLabelText('Edit name'));
-    await user.type(screen.getByLabelText('Edit name'), 'My existing draft');
-  } else await user.type(screen.getByLabelText('Next nominal instant (UTC)'), resumeAt);
-  listed = { ...original, revision: 2, intervalSeconds: 90 };
-  await user.click(screen.getByRole('button', { name: 'Refresh automations' }));
-  await screen.findByText('Every 90 seconds · revision 2');
-  await user.click(
-    screen.getByRole('button', { name: mode === 'edit' ? 'Save changes' : 'Confirm resume' })
-  );
-  await waitFor(() =>
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }))
-  );
-  expect(await screen.findByText(/The automation changed/)).toBeInTheDocument();
-  if (mode === 'edit') expect(screen.getByLabelText('Edit name')).toHaveValue('My existing draft');
-});
+it.each(['edit', 'resume'] as const)(
+  'keeps the opened %s revision after a newer definition is read',
+  async (mode) => {
+    const user = userEvent.setup();
+    let listed = original;
+    const update = vi
+      .fn<CoreClient['operations']['automation.update']>()
+      .mockRejectedValue(new ApiCallError(409, 'Changed definition'));
+    fixture({
+      'automation.list': vi
+        .fn<CoreClient['operations']['automation.list']>()
+        .mockImplementation(async () => ({ items: [listed] })),
+      'automation.update': update,
+    });
+    await user.click(
+      await screen.findByRole('button', {
+        name: `${mode === 'edit' ? 'Edit' : 'Resume'} Poll status`,
+      })
+    );
+    if (mode === 'edit') {
+      await user.clear(screen.getByLabelText('Edit name'));
+      await user.type(screen.getByLabelText('Edit name'), 'My existing draft');
+    } else await user.type(screen.getByLabelText('Next nominal instant (UTC)'), resumeAt);
+    listed = { ...original, revision: 2, intervalSeconds: 90 };
+    await user.click(screen.getByRole('button', { name: 'Refresh automations' }));
+    await screen.findByText('Every 90 seconds · revision 2');
+    await user.click(
+      screen.getByRole('button', { name: mode === 'edit' ? 'Save changes' : 'Confirm resume' })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }))
+    );
+    expect(await screen.findByText(/The automation changed/)).toBeInTheDocument();
+    if (mode === 'edit')
+      expect(screen.getByLabelText('Edit name')).toHaveValue('My existing draft');
+  }
+);
 
 it('keeps known definitions readable while disabling changes during a disconnected state', async () => {
   connection.failed = true;
@@ -514,52 +518,56 @@ it('removes previously readable rows when an explicit refetch is denied', async 
   ).not.toBeInTheDocument();
 });
 
-it.each([
-  'turn_missing',
-  'turn_contradictory',
-] as const)('shows %s without a Turn link and cancels only the existing queued admission', async (publicationIssue) => {
-  const user = userEvent.setup();
-  let cancelled = false;
-  let finish!: (value: { cancelled: boolean }) => void;
-  const history = vi
-    .fn<CoreClient['operations']['automation.history']>()
-    .mockImplementation(async () => ({
-      items: [
-        {
-          kind: 'occurrence',
-          record: occurrenceRecord({
-            publicationIssue,
-            turnId: publicationIssue === 'turn_missing' ? null : 'turn1',
-            schedulerStatus: cancelled ? 'cancelled' : 'queued',
-          }),
-        },
-      ],
-      nextBefore: null,
-    }));
-  const cancel = vi.fn<CoreClient['operations']['scheduler.cancel']>().mockImplementation(
-    () =>
-      new Promise((resolve) => {
-        finish = (value) => {
-          cancelled = true;
-          resolve(value);
-        };
-      })
-  );
-  const { operations } = fixture({ 'automation.history': history, 'scheduler.cancel': cancel });
-  await user.click(await screen.findByRole('button', { name: 'History Poll status' }));
-  expect(await screen.findByText(/Inspection required \(recovery_required\)/)).toBeInTheDocument();
-  expect(screen.queryByRole('link', { name: /View Turn/ })).not.toBeInTheDocument();
-  await user.dblClick(screen.getByRole('button', { name: 'Cancel queued admission' }));
-  expect(cancel).toHaveBeenCalledTimes(1);
-  expect(cancel).toHaveBeenCalledWith({ workspaceId: 'ws1', queueEntryId: 'queue1' });
-  expect(screen.getByRole('button', { name: 'Cancelling queued admission…' })).toBeDisabled();
-  await act(async () => finish({ cancelled: true }));
-  expect(await screen.findByText('Scheduler: cancelled')).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Cancel queued admission' })).not.toBeInTheDocument();
-  expect(operations['automation.create']).not.toHaveBeenCalled();
-  expect(operations['automation.update']).not.toHaveBeenCalled();
-  expect(history).toHaveBeenCalledTimes(2);
-});
+it.each(['turn_missing', 'turn_contradictory'] as const)(
+  'shows %s without a Turn link and cancels only the existing queued admission',
+  async (publicationIssue) => {
+    const user = userEvent.setup();
+    let cancelled = false;
+    let finish!: (value: { cancelled: boolean }) => void;
+    const history = vi
+      .fn<CoreClient['operations']['automation.history']>()
+      .mockImplementation(async () => ({
+        items: [
+          {
+            kind: 'occurrence',
+            record: occurrenceRecord({
+              publicationIssue,
+              turnId: publicationIssue === 'turn_missing' ? null : 'turn1',
+              schedulerStatus: cancelled ? 'cancelled' : 'queued',
+            }),
+          },
+        ],
+        nextBefore: null,
+      }));
+    const cancel = vi.fn<CoreClient['operations']['scheduler.cancel']>().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = (value) => {
+            cancelled = true;
+            resolve(value);
+          };
+        })
+    );
+    const { operations } = fixture({ 'automation.history': history, 'scheduler.cancel': cancel });
+    await user.click(await screen.findByRole('button', { name: 'History Poll status' }));
+    expect(
+      await screen.findByText(/Inspection required \(recovery_required\)/)
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /View Turn/ })).not.toBeInTheDocument();
+    await user.dblClick(screen.getByRole('button', { name: 'Cancel queued admission' }));
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith({ workspaceId: 'ws1', queueEntryId: 'queue1' });
+    expect(screen.getByRole('button', { name: 'Cancelling queued admission…' })).toBeDisabled();
+    await act(async () => finish({ cancelled: true }));
+    expect(await screen.findByText('Scheduler: cancelled')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Cancel queued admission' })
+    ).not.toBeInTheDocument();
+    expect(operations['automation.create']).not.toHaveBeenCalled();
+    expect(operations['automation.update']).not.toHaveBeenCalled();
+    expect(history).toHaveBeenCalledTimes(2);
+  }
+);
 
 it('does not replay a queue cancellation after an unknown outcome', async () => {
   const user = userEvent.setup();

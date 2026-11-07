@@ -248,22 +248,22 @@ describe('Goal Task classification at the final Policy interception seam', () =>
     expect(row).toMatchObject({ result: 'require_escalation', reasonCode: 'require_approval' });
   });
 
-  it.each([
-    'task',
-    'no-goal',
-  ] as const)('keeps the ordinary %s allow path and final use unchanged', async (mode) => {
-    const input = fixture();
-    const decision = await new PolicyInterception().decide({
-      ...input,
-      authorizationUses: mode === 'task' ? input.authorizationUses : [],
-      finalKernel: () => (mode === 'task' ? evaluate({ resources: [resource] }) : humanKernel()),
-    });
-    expect(decision.result).toBe('allow');
-    expect(decision).not.toHaveProperty('escalation');
-    expect(
-      readPolicyStatementUseCount(input.workspaceDb, input.authorizationUses[0]!.statement)
-    ).toBe(mode === 'task' ? 1 : 0);
-  });
+  it.each(['task', 'no-goal'] as const)(
+    'keeps the ordinary %s allow path and final use unchanged',
+    async (mode) => {
+      const input = fixture();
+      const decision = await new PolicyInterception().decide({
+        ...input,
+        authorizationUses: mode === 'task' ? input.authorizationUses : [],
+        finalKernel: () => (mode === 'task' ? evaluate({ resources: [resource] }) : humanKernel()),
+      });
+      expect(decision.result).toBe('allow');
+      expect(decision).not.toHaveProperty('escalation');
+      expect(
+        readPolicyStatementUseCount(input.workspaceDb, input.authorizationUses[0]!.statement)
+      ).toBe(mode === 'task' ? 1 : 0);
+    }
+  );
 
   it.each([
     ['missing domain', { domain: null }],
@@ -296,44 +296,52 @@ describe('Goal Task classification at the final Policy interception seam', () =>
         },
       },
     ],
-  ] satisfies [
-    string,
-    Partial<GoalTaskAccessInput>,
-  ][])('does not route %s to the Coordinator', async (_name, changes) => {
-    const input = fixture();
-    const final = evaluate(changes);
-    expect(final.inGoalEnvelope).toBe(false);
-    const decision = await new PolicyInterception().decide({ ...input, finalKernel: () => final });
-    expect(decision.result).toBe('deny');
-    expect(decision).not.toHaveProperty('escalation');
-    expect(
-      readPolicyStatementUseCount(input.workspaceDb, input.authorizationUses[0]!.statement)
-    ).toBe(0);
-  });
+  ] satisfies [string, Partial<GoalTaskAccessInput>][])(
+    'does not route %s to the Coordinator',
+    async (_name, changes) => {
+      const input = fixture();
+      const final = evaluate(changes);
+      expect(final.inGoalEnvelope).toBe(false);
+      const decision = await new PolicyInterception().decide({
+        ...input,
+        finalKernel: () => final,
+      });
+      expect(decision.result).toBe('deny');
+      expect(decision).not.toHaveProperty('escalation');
+      expect(
+        readPolicyStatementUseCount(input.workspaceDb, input.authorizationUses[0]!.statement)
+      ).toBe(0);
+    }
+  );
 
-  it.each([
-    'missing',
-    'prohibited',
-  ] as const)('preserves the current human %s refusal and its real Kernel evidence', async (effect) => {
-    const input = fixture();
-    const currentHuman = humanKernel(effect);
-    expect(currentHuman.effect).toBe('deny');
-    const final = evaluate({ humanKernel: currentHuman });
-    expect(final.inGoalEnvelope).toBe(true);
-    expect(final.kernel).toEqual(currentHuman);
-    const decision = await new PolicyInterception().decide({ ...input, finalKernel: () => final });
-    expect(decision.result).toBe('deny');
-    expect(decision).not.toHaveProperty('escalation');
-    const row = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
-      (value) => value.decisionId === decision.decisionId
-    );
-    expect(row).toMatchObject({
-      reasonCode: effect === 'prohibited' ? 'prohibited' : 'not_granted',
-      contextSummary: {
-        kernelTrace: { matchedProhibitions: effect === 'prohibited' ? ['human-prohibition'] : [] },
-      },
-    });
-  });
+  it.each(['missing', 'prohibited'] as const)(
+    'preserves the current human %s refusal and its real Kernel evidence',
+    async (effect) => {
+      const input = fixture();
+      const currentHuman = humanKernel(effect);
+      expect(currentHuman.effect).toBe('deny');
+      const final = evaluate({ humanKernel: currentHuman });
+      expect(final.inGoalEnvelope).toBe(true);
+      expect(final.kernel).toEqual(currentHuman);
+      const decision = await new PolicyInterception().decide({
+        ...input,
+        finalKernel: () => final,
+      });
+      expect(decision.result).toBe('deny');
+      expect(decision).not.toHaveProperty('escalation');
+      const row = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
+        (value) => value.decisionId === decision.decisionId
+      );
+      expect(row).toMatchObject({
+        reasonCode: effect === 'prohibited' ? 'prohibited' : 'not_granted',
+        contextSummary: {
+          kernelTrace: {
+            matchedProhibitions: effect === 'prohibited' ? ['human-prohibition'] : [],
+          },
+        },
+      });
+    }
+  );
 
   it('keeps a human-only approval condition as the destination of the same missing Task association', async () => {
     const input = fixture();
@@ -356,72 +364,71 @@ describe('Goal Task classification at the final Policy interception seam', () =>
     ).toBe(0);
   });
 
-  it.each([
-    'deny',
-    'failure',
-  ] as const)('keeps participant %s ahead of Coordinator routing and evaluates the real Kernel last', async (outcome) => {
-    const input = fixture([binding()]);
-    const order: string[] = [];
-    const pipeline = new PolicyInterception({
-      id: 'reviewer',
-      version,
-      invoke: async () => {
-        order.push('participant');
-        if (outcome === 'failure') throw new Error('required participant unavailable');
-        return { decision: 'deny' };
-      },
-    });
-    const decision = await pipeline.decide({
-      ...input,
-      finalKernel: () => {
-        order.push('kernel');
-        return evaluate();
-      },
-    });
-    expect(order).toEqual(['participant', 'kernel']);
-    expect(decision).not.toHaveProperty('escalation');
-    const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
-    const gate = rows.find((value) => value.mediation?.role === 'gate');
-    expect(gate).toMatchObject({
-      result: outcome === 'deny' ? 'deny' : 'require_escalation',
-    });
-    expect(
-      listWorkspaceAuditEvents(input.workspaceDb, workspaceId).find(
-        (event) => event.permissionDecisionId === gate?.decisionId
-      )
-    ).toMatchObject({
-      policyInvocation: { outcome: outcome === 'deny' ? 'completed' : 'error' },
-    });
-    expect(rows.find((value) => value.decisionId === decision.decisionId)).toMatchObject({
-      mediation: {
-        kernel: { effect: 'deny', reason: 'missing-privilege' },
-        invocations: [{ kind: 'decision' }],
-        consumedStatements: [],
-      },
-    });
-    expect(decision.result).toBe(outcome === 'deny' ? 'deny' : 'require_escalation');
-  });
+  it.each(['deny', 'failure'] as const)(
+    'keeps participant %s ahead of Coordinator routing and evaluates the real Kernel last',
+    async (outcome) => {
+      const input = fixture([binding()]);
+      const order: string[] = [];
+      const pipeline = new PolicyInterception({
+        id: 'reviewer',
+        version,
+        invoke: async () => {
+          order.push('participant');
+          if (outcome === 'failure') throw new Error('required participant unavailable');
+          return { decision: 'deny' };
+        },
+      });
+      const decision = await pipeline.decide({
+        ...input,
+        finalKernel: () => {
+          order.push('kernel');
+          return evaluate();
+        },
+      });
+      expect(order).toEqual(['participant', 'kernel']);
+      expect(decision).not.toHaveProperty('escalation');
+      const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+      const gate = rows.find((value) => value.mediation?.role === 'gate');
+      expect(gate).toMatchObject({
+        result: outcome === 'deny' ? 'deny' : 'require_escalation',
+      });
+      expect(
+        listWorkspaceAuditEvents(input.workspaceDb, workspaceId).find(
+          (event) => event.permissionDecisionId === gate?.decisionId
+        )
+      ).toMatchObject({
+        policyInvocation: { outcome: outcome === 'deny' ? 'completed' : 'error' },
+      });
+      expect(rows.find((value) => value.decisionId === decision.decisionId)).toMatchObject({
+        mediation: {
+          kernel: { effect: 'deny', reason: 'missing-privilege' },
+          invocations: [{ kind: 'decision' }],
+          consumedStatements: [],
+        },
+      });
+      expect(decision.result).toBe(outcome === 'deny' ? 'deny' : 'require_escalation');
+    }
+  );
 
-  it.each([
-    'unknown-operation',
-    'stale',
-    'unavailable',
-  ] as const)('fails closed on %s instead of requesting a Coordinator', async (fault) => {
-    const input = fixture();
-    const decision = await new PolicyInterception().decide({
-      ...input,
-      stillCurrent: () => fault !== 'stale',
-      finalKernel: () => {
-        if (fault === 'unavailable') throw new Error('current Goal read unavailable');
-        return evaluate(fault === 'unknown-operation' ? { operation: 'unknown.operation' } : {});
-      },
-    });
-    expect(decision.result).toBe('error');
-    expect(decision).not.toHaveProperty('escalation');
-    expect(
-      readPolicyStatementUseCount(input.workspaceDb, input.authorizationUses[0]!.statement)
-    ).toBe(0);
-  });
+  it.each(['unknown-operation', 'stale', 'unavailable'] as const)(
+    'fails closed on %s instead of requesting a Coordinator',
+    async (fault) => {
+      const input = fixture();
+      const decision = await new PolicyInterception().decide({
+        ...input,
+        stillCurrent: () => fault !== 'stale',
+        finalKernel: () => {
+          if (fault === 'unavailable') throw new Error('current Goal read unavailable');
+          return evaluate(fault === 'unknown-operation' ? { operation: 'unknown.operation' } : {});
+        },
+      });
+      expect(decision.result).toBe('error');
+      expect(decision).not.toHaveProperty('escalation');
+      expect(
+        readPolicyStatementUseCount(input.workspaceDb, input.authorizationUses[0]!.statement)
+      ).toBe(0);
+    }
+  );
 
   it('requires a new current evaluation after a Coordinator grant before any finite use is spent', async () => {
     const input = fixture();

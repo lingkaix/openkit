@@ -359,83 +359,86 @@ describe('native Skill management command evidence', () => {
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
   });
 
-  it.each([
-    'import',
-    'select',
-    'pin',
-    'remove',
-  ] as const)('audits %s and replays its receipt without repeating the catalog effect', async (kind) => {
-    const f = await fixture();
-    const requestId = randomUUID();
-    const operation = `catalog.skill-${kind}` as const;
-    const common = { requestId, expectedRevision: 2 };
-    const input: Record<string, unknown> =
-      kind === 'import'
-        ? {
-            ...common,
-            id: 'uploaded-example',
-            displayName: 'Uploaded Example',
-            activate: false,
-            tree: tree('Uploaded content'),
-          }
-        : kind === 'select'
+  it.each(['import', 'select', 'pin', 'remove'] as const)(
+    'audits %s and replays its receipt without repeating the catalog effect',
+    async (kind) => {
+      const f = await fixture();
+      const requestId = randomUUID();
+      const operation = `catalog.skill-${kind}` as const;
+      const common = { requestId, expectedRevision: 2 };
+      const input: Record<string, unknown> =
+        kind === 'import'
           ? {
               ...common,
-              skillId: 'management-example',
-              digest: f.second,
-              expectedCurrentDigest: f.first,
+              id: 'uploaded-example',
+              displayName: 'Uploaded Example',
+              activate: false,
+              tree: tree('Uploaded content'),
             }
-          : kind === 'pin'
-            ? { ...common, skillId: 'management-example', digest: f.first, expectedPinDigest: null }
-            : { ...common, skillId: 'management-example' };
-    const status = kind === 'import' ? 201 : 200;
-    const first = await f.call(operation, input);
-    expect(first.status, await first.clone().text()).toBe(status);
-    const original = await first.json();
-    const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
-    const replay = await f.call(operation, input);
-    expect(replay.status, await replay.clone().text()).toBe(status);
-    expect(await replay.json()).toEqual(original);
-    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(catalog);
-    const events = listWorkspaceAuditEvents(f.workspaceDb, f.workspace.id).filter(
-      (event) =>
-        event.requestId === requestId &&
-        event.action.startsWith(operation) &&
-        event.outcome === 'succeeded'
-    );
-    expect(
-      events.some(
-        (event) =>
-          event.outcome === 'succeeded' &&
-          event.actor?.kind === 'user' &&
-          event.actor.id === f.userId &&
-          event.resourceRevision === 3
-      )
-    ).toBe(true);
-    if (kind === 'select' || kind === 'pin') {
-      expect(events.map((event) => `${event.resource} ${event.summary}`).join('\n')).toContain(
-        f.first
-      );
-      if (kind === 'select')
-        expect(events.map((event) => event.summary).join('\n')).toContain(f.second);
-    }
-    const changed =
-      kind === 'import'
-        ? { ...input, displayName: 'Changed input' }
-        : kind === 'select' || kind === 'pin'
-          ? { ...input, digest: kind === 'select' ? f.first : f.second }
-          : { ...input, expectedRevision: 3 };
-    const conflict = await f.call(operation, changed);
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(catalog);
-    expect(
-      listWorkspaceAuditEvents(f.workspaceDb, f.workspace.id).filter(
+          : kind === 'select'
+            ? {
+                ...common,
+                skillId: 'management-example',
+                digest: f.second,
+                expectedCurrentDigest: f.first,
+              }
+            : kind === 'pin'
+              ? {
+                  ...common,
+                  skillId: 'management-example',
+                  digest: f.first,
+                  expectedPinDigest: null,
+                }
+              : { ...common, skillId: 'management-example' };
+      const status = kind === 'import' ? 201 : 200;
+      const first = await f.call(operation, input);
+      expect(first.status, await first.clone().text()).toBe(status);
+      const original = await first.json();
+      const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
+      const replay = await f.call(operation, input);
+      expect(replay.status, await replay.clone().text()).toBe(status);
+      expect(await replay.json()).toEqual(original);
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(catalog);
+      const events = listWorkspaceAuditEvents(f.workspaceDb, f.workspace.id).filter(
         (event) =>
           event.requestId === requestId &&
           event.action.startsWith(operation) &&
           event.outcome === 'succeeded'
-      )
-    ).toEqual(events);
-  });
+      );
+      expect(
+        events.some(
+          (event) =>
+            event.outcome === 'succeeded' &&
+            event.actor?.kind === 'user' &&
+            event.actor.id === f.userId &&
+            event.resourceRevision === 3
+        )
+      ).toBe(true);
+      if (kind === 'select' || kind === 'pin') {
+        expect(events.map((event) => `${event.resource} ${event.summary}`).join('\n')).toContain(
+          f.first
+        );
+        if (kind === 'select')
+          expect(events.map((event) => event.summary).join('\n')).toContain(f.second);
+      }
+      const changed =
+        kind === 'import'
+          ? { ...input, displayName: 'Changed input' }
+          : kind === 'select' || kind === 'pin'
+            ? { ...input, digest: kind === 'select' ? f.first : f.second }
+            : { ...input, expectedRevision: 3 };
+      const conflict = await f.call(operation, changed);
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(catalog);
+      expect(
+        listWorkspaceAuditEvents(f.workspaceDb, f.workspace.id).filter(
+          (event) =>
+            event.requestId === requestId &&
+            event.action.startsWith(operation) &&
+            event.outcome === 'succeeded'
+        )
+      ).toEqual(events);
+    }
+  );
 });

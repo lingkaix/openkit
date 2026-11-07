@@ -265,31 +265,31 @@ it('acknowledges the complete Artifact, native reference, Review and one origina
   ).toEqual(f.bytes);
 });
 
-it.each([
-  'artifact_reviews',
-  'idempotency_requests',
-] as const)('leaves no new tuple or orphan Item after an abort at %s', async (table) => {
-  const f = await fixture();
-  f.workspaceDb.sqlite.exec(`CREATE TRIGGER reject_submission
+it.each(['artifact_reviews', 'idempotency_requests'] as const)(
+  'leaves no new tuple or orphan Item after an abort at %s',
+  async (table) => {
+    const f = await fixture();
+    f.workspaceDb.sqlite.exec(`CREATE TRIGGER reject_submission
     BEFORE INSERT ON ${table}
     ${table === 'idempotency_requests' ? "WHEN NEW.command_name='artifact.submit'" : ''}
     BEGIN SELECT fixture_submission_writer(3); SELECT RAISE(ABORT,'submission rejected'); END`);
-  const [result] = await Promise.allSettled([f.submit(randomUUID())]);
-  expect(result!.status).toBe('rejected');
-  expect(Atomics.load(f.state, 10)).toBe(1);
-  await f.drain();
-  const live = f.snapshot();
-  const reopened = await f
-    .reopen()
-    .then(() => f.snapshot())
-    .catch((error: Error) => ({
-      reopenError: error.message,
-    }));
-  expect({ live, reopened }).toEqual({
-    live: { artifacts: [], references: [], reviews: [], receipts: [] },
-    reopened: { artifacts: [], references: [], reviews: [], receipts: [] },
-  });
-});
+    const [result] = await Promise.allSettled([f.submit(randomUUID())]);
+    expect(result!.status).toBe('rejected');
+    expect(Atomics.load(f.state, 10)).toBe(1);
+    await f.drain();
+    const live = f.snapshot();
+    const reopened = await f
+      .reopen()
+      .then(() => f.snapshot())
+      .catch((error: Error) => ({
+        reopenError: error.message,
+      }));
+    expect({ live, reopened }).toEqual({
+      live: { artifacts: [], references: [], reviews: [], receipts: [] },
+      reopened: { artifacts: [], references: [], reviews: [], receipts: [] },
+    });
+  }
+);
 
 it('keeps competing submissions on one native writer while its real commit acknowledgement is held', async () => {
   const f = await fixture();

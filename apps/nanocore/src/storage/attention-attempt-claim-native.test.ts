@@ -411,33 +411,32 @@ it('rolls back both writes when the original in-transaction get encounters real 
   expectUnclaimed(f);
 });
 
-it.each([
-  'queued',
-  'missing',
-  'stale-attempt',
-] as const)('preserves the original guard/invalid-clock precedence and rollback: %s', async (mode) => {
-  const f = fixture();
-  f.options.now = () => 'not-a-date';
-  f.coreDb.sqlite.pragma('query_only = ON');
-  await expect(
-    send(
-      f,
-      mode === 'missing'
-        ? { deliveryId: randomUUID() }
-        : mode === 'stale-attempt'
-          ? { expectedAttemptId: 1 }
-          : {}
-    )
-  ).rejects.toMatchObject({
-    code:
-      mode === 'missing'
-        ? 'attention_not_found'
-        : mode === 'stale-attempt'
-          ? 'attention_attempt_conflict'
-          : 'invalid_attention_input',
-  });
-  expectUnclaimed(f);
-});
+it.each(['queued', 'missing', 'stale-attempt'] as const)(
+  'preserves the original guard/invalid-clock precedence and rollback: %s',
+  async (mode) => {
+    const f = fixture();
+    f.options.now = () => 'not-a-date';
+    f.coreDb.sqlite.pragma('query_only = ON');
+    await expect(
+      send(
+        f,
+        mode === 'missing'
+          ? { deliveryId: randomUUID() }
+          : mode === 'stale-attempt'
+            ? { expectedAttemptId: 1 }
+            : {}
+      )
+    ).rejects.toMatchObject({
+      code:
+        mode === 'missing'
+          ? 'attention_not_found'
+          : mode === 'stale-attempt'
+            ? 'attention_attempt_conflict'
+            : 'invalid_attention_input',
+    });
+    expectUnclaimed(f);
+  }
+);
 
 it('preserves a local clock exception without serializing its details or leaving a frozen channel', async () => {
   const f = fixture();
@@ -551,47 +550,49 @@ it('keeps exact prior-attempt CAS, channel freeze and explicit same-channel retr
   expect(f.notifications.get(f.delivery.id)?.channel).toBe('discord');
 });
 
-it.each([
-  'sent',
-  'delivery-unknown',
-] as const)('never retries an original terminal %s delivery', async (status) => {
-  const f = fixture();
-  const first = await send(
-    f,
-    {},
-    {
-      isEligible: () => true,
-      transport: async () => {
-        f.counters.sends += 1;
-        return { status };
-      },
-    }
-  );
-  await expect(
-    send(f, { retry: true, expectedAttemptId: first.attempt!.id })
-  ).rejects.toMatchObject({ code: 'attention_not_sendable' });
-  expect(count(f)).toBe(1);
-  expect(f.counters.sends).toBe(1);
-});
+it.each(['sent', 'delivery-unknown'] as const)(
+  'never retries an original terminal %s delivery',
+  async (status) => {
+    const f = fixture();
+    const first = await send(
+      f,
+      {},
+      {
+        isEligible: () => true,
+        transport: async () => {
+          f.counters.sends += 1;
+          return { status };
+        },
+      }
+    );
+    await expect(
+      send(f, { retry: true, expectedAttemptId: first.attempt!.id })
+    ).rejects.toMatchObject({ code: 'attention_not_sendable' });
+    expect(count(f)).toBe(1);
+    expect(f.counters.sends).toBe(1);
+  }
+);
 
-it.each([
-  'connection',
-  'path',
-  'scope',
-] as const)('refuses the wrong physical Core %s before any native frame, route or contact', async (mode) => {
-  const f = fixture();
-  const other = fixture();
-  f.options.nativeCoreDb =
-    mode === 'connection'
-      ? other.coreDb
-      : mode === 'path'
-        ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
-        : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
-  await expect(send(f)).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
-  expect(fault.posts).toHaveLength(0);
-  expectUnclaimed(f);
-  expectUnclaimed(other);
-});
+it.each(['connection', 'path', 'scope'] as const)(
+  'refuses the wrong physical Core %s before any native frame, route or contact',
+  async (mode) => {
+    const f = fixture();
+    const other = fixture();
+    f.options.nativeCoreDb =
+      mode === 'connection'
+        ? other.coreDb
+        : mode === 'path'
+          ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
+          : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
+    await expect(send(f)).rejects.toMatchObject({
+      code: 'invalid-request',
+      commit: 'not-committed',
+    });
+    expect(fault.posts).toHaveLength(0);
+    expectUnclaimed(f);
+    expectUnclaimed(other);
+  }
+);
 
 it('checks the genuine cached opening binding before posting another claim', async () => {
   const f = fixture();

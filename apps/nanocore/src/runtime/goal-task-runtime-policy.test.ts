@@ -1173,37 +1173,37 @@ describe('Goal Coordinator missing Task grant routing', () => {
 });
 
 describe('Goal-domain Task consumers', () => {
-  it.each([
-    'missing-domain',
-    'wrong-worker',
-  ] as const)('refuses %s before Task reservation and Worker entry', async (reason) => {
-    const f = await fixture({ publish: reason !== 'missing-domain' });
-    const before = f.db.sqlite
-      .prepare('SELECT thread_id FROM goal_card_tasks ORDER BY thread_id')
-      .all();
-    const { result, startWorker } = await f.dispatch(
-      reason === 'wrong-worker' ? 'unselected-worker' : f.agentId
-    );
-    expect(result.isError).toBe(true);
-    expect(startWorker).not.toHaveBeenCalled();
-    expect(
-      f.db.sqlite.prepare('SELECT thread_id FROM goal_card_tasks ORDER BY thread_id').all()
-    ).toEqual(before);
-    const refusal = JSON.parse(result.content[0]!.text);
-    expect(refusal.code).toBe('task_admission_failed');
-    if (reason === 'missing-domain') {
-      expect(refusal.message).toMatch(
-        /Goal domain.*(?:not admitted|unavailable)|no admitted Goal domain/i
+  it.each(['missing-domain', 'wrong-worker'] as const)(
+    'refuses %s before Task reservation and Worker entry',
+    async (reason) => {
+      const f = await fixture({ publish: reason !== 'missing-domain' });
+      const before = f.db.sqlite
+        .prepare('SELECT thread_id FROM goal_card_tasks ORDER BY thread_id')
+        .all();
+      const { result, startWorker } = await f.dispatch(
+        reason === 'wrong-worker' ? 'unselected-worker' : f.agentId
       );
-      expect(refusal.message).toMatch(/retry.*publication|publication.*retry/i);
-      expect(refusal.message).toMatch(/recorded.*approval/i);
-      expect(refusal.message).toMatch(/current.*authority/i);
-    } else {
-      expect(refusal.message).toBe(
-        'The selected Task Worker or resources are outside the current Goal domain.'
-      );
+      expect(result.isError).toBe(true);
+      expect(startWorker).not.toHaveBeenCalled();
+      expect(
+        f.db.sqlite.prepare('SELECT thread_id FROM goal_card_tasks ORDER BY thread_id').all()
+      ).toEqual(before);
+      const refusal = JSON.parse(result.content[0]!.text);
+      expect(refusal.code).toBe('task_admission_failed');
+      if (reason === 'missing-domain') {
+        expect(refusal.message).toMatch(
+          /Goal domain.*(?:not admitted|unavailable)|no admitted Goal domain/i
+        );
+        expect(refusal.message).toMatch(/retry.*publication|publication.*retry/i);
+        expect(refusal.message).toMatch(/recorded.*approval/i);
+        expect(refusal.message).toMatch(/current.*authority/i);
+      } else {
+        expect(refusal.message).toBe(
+          'The selected Task Worker or resources are outside the current Goal domain.'
+        );
+      }
     }
-  });
+  );
 
   it('lets an admitted selected Worker reach ordinary Task execution', async () => {
     const f = await fixture();
@@ -1639,65 +1639,65 @@ it.each([
   }
 });
 
-it.each([
-  'B01',
-  'RG',
-] as const)('reads retained unsupported %s domain bytes without activating or rewriting them', async (shape) => {
-  const f = await fixture({ publish: false });
-  const record = readPendingRequest(f.db.sqlite, f.plan.pendingRequestId)!;
-  const intent = structuredClone(record.governedIntent!);
-  const captured = intent.goalDomain as {
-    statement: { scope: { actions: string[]; resources: unknown[] } };
-    digest: string;
-  };
-  captured.statement.scope.actions =
-    shape === 'B01'
-      ? ['read', 'propose', 'review']
-      : ['read', 'propose', 'knowledge-candidate', 'knowledge-review'];
-  captured.statement.scope.resources = (
-    shape === 'B01'
-      ? ['workspace-knowledge', 'goal-artifacts']
-      : ['workspace', 'knowledge', 'artifact']
-  ).map((kind) => ({
-    kind: 'container',
-    container: {
-      owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
-      kind,
-      id: kind === 'workspace' ? f.scope.workspaceId : 'retained-descriptive-id',
-    },
-  }));
-  captured.digest = policyDigest(captured.statement as never);
-  // A retained-format fixture, not a new proposal or permission grant. Only the reader is invoked.
-  const bytes = JSON.stringify(intent);
-  expect(
-    f.db.sqlite
-      .prepare('UPDATE pending_requests SET governed_intent_json=? WHERE request_id=?')
-      .run(bytes, record.requestId).changes
-  ).toBe(1);
-  const view = await executeGoalOperation(
-    'goal.read',
-    f.scope,
-    { actor: f.actor },
-    new FsStore({ dataRoot: f.dataRoot }),
-    f.db,
-    f.services
-  );
-  expect(view.goal?.activePlanVersionId).toBe(f.plan.planVersionId);
-  expect(view.requests).toContainEqual(
-    expect.objectContaining({
-      requestId: record.requestId,
-      claim: 'finished',
-      disposition: 'approved-executed',
-      exactIntent: intent,
-    })
-  );
-  expect(
-    f.db.sqlite
-      .prepare('SELECT governed_intent_json FROM pending_requests WHERE request_id=?')
-      .get(record.requestId)
-  ).toEqual({ governed_intent_json: bytes });
-  expect(f.domains.read(f.scope)).toBeNull();
-});
+it.each(['B01', 'RG'] as const)(
+  'reads retained unsupported %s domain bytes without activating or rewriting them',
+  async (shape) => {
+    const f = await fixture({ publish: false });
+    const record = readPendingRequest(f.db.sqlite, f.plan.pendingRequestId)!;
+    const intent = structuredClone(record.governedIntent!);
+    const captured = intent.goalDomain as {
+      statement: { scope: { actions: string[]; resources: unknown[] } };
+      digest: string;
+    };
+    captured.statement.scope.actions =
+      shape === 'B01'
+        ? ['read', 'propose', 'review']
+        : ['read', 'propose', 'knowledge-candidate', 'knowledge-review'];
+    captured.statement.scope.resources = (
+      shape === 'B01'
+        ? ['workspace-knowledge', 'goal-artifacts']
+        : ['workspace', 'knowledge', 'artifact']
+    ).map((kind) => ({
+      kind: 'container',
+      container: {
+        owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+        kind,
+        id: kind === 'workspace' ? f.scope.workspaceId : 'retained-descriptive-id',
+      },
+    }));
+    captured.digest = policyDigest(captured.statement as never);
+    // A retained-format fixture, not a new proposal or permission grant. Only the reader is invoked.
+    const bytes = JSON.stringify(intent);
+    expect(
+      f.db.sqlite
+        .prepare('UPDATE pending_requests SET governed_intent_json=? WHERE request_id=?')
+        .run(bytes, record.requestId).changes
+    ).toBe(1);
+    const view = await executeGoalOperation(
+      'goal.read',
+      f.scope,
+      { actor: f.actor },
+      new FsStore({ dataRoot: f.dataRoot }),
+      f.db,
+      f.services
+    );
+    expect(view.goal?.activePlanVersionId).toBe(f.plan.planVersionId);
+    expect(view.requests).toContainEqual(
+      expect.objectContaining({
+        requestId: record.requestId,
+        claim: 'finished',
+        disposition: 'approved-executed',
+        exactIntent: intent,
+      })
+    );
+    expect(
+      f.db.sqlite
+        .prepare('SELECT governed_intent_json FROM pending_requests WHERE request_id=?')
+        .get(record.requestId)
+    ).toEqual({ governed_intent_json: bytes });
+    expect(f.domains.read(f.scope)).toBeNull();
+  }
+);
 
 // Real Goal/Policy/Task owners; only inference and the unresolved Knowledge dependency are external fixtures.
 it.each([
@@ -2307,329 +2307,330 @@ it.each([
 
 // Ruling Emphasis 2: actual Goal Tools reuse operation admission and immutable Task AEP scope.
 describe('credential carrier Goal Tools and Task scope acceptance', () => {
-  it.each([
-    'scope',
-    'active-plan-loss',
-    'finite-use',
-  ] as const)('uses real Goal Tools, linked Task plans and current Policy (%s)', async (mode) => {
-    const f = await fixture({
-      credentialFile: true,
-      ...(mode === 'finite-use' ? { uses: 2 } : {}),
-    });
-    const first = await f.setupMcp();
-    const sibling = mode === 'scope' ? await f.setupMcp() : null;
-    const admission = new WorkspaceMutationAdmission();
-    f.store.setWorkspaceMutationAdmission(admission);
-    const interception = new PolicyInterception();
-    const resolve = vi.spyOn(f.fileVault!.backend(), 'resolve');
-    const invoke = createOperationInvocation({
-      coreDb: f.coreDb,
-      store: f.store,
-      repositoryWorkspaceDb: (id) => openWorkspaceDb(f.dataRoot, id),
-      inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: admission,
-      policyInterception: interception,
-      readRuntimePolicy: () => f.manager.current().openKitConfig.policy?.mediation,
-      goalTaskPolicy: f.goalTaskPolicy,
-      vaultUnlockState: f.fileVault!,
-      goalServices: f.services,
-    });
-    const tools = createGoalTools({
-      store: f.store,
-      db: f.db,
-      actor: f.actor,
-      goalId: f.goal.goalId,
-      turnId: f.coordinator.id,
-      services: f.services,
-      invoke,
-    });
-    const ids = [
-      'vault.injection-plan-list',
-      'vault.injection-receipt-list',
-      'vault.binding-deliver',
-      'vault.binding-replace',
-      'vault.binding-revoke',
-    ];
-    expect(ids.every((id) => tools.some((tool) => tool.name === id))).toBe(true);
-    const tool = tools.find((entry) => entry.name === 'vault.injection-plan-list')!;
-    const execution = {
-      callId: randomUUID(),
-      toolOccurrence: 1,
-      signal: new AbortController().signal,
-    };
-    const listed = await tool.execute({}, execution);
-    expect(listed.isError).not.toBe(true);
-    const body = JSON.parse((listed.content[0] as { text: string }).text) as {
-      items: { planId: string }[];
-    };
-    const plans = listVaultInjectionPlans(f.coreDb);
-    const own = plans.find((plan) => plan.packageSnapshotId === first.packageSnapshotId)!;
-    expect(own !== undefined && body.items.some((plan) => plan.planId === own.planId)).toBe(true);
-    expect(listVaultInjectionReceipts(f.coreDb)).toEqual([]);
-    expect(listVaultUseRecords(f.coreDb)).toEqual([]);
-    const worker = (prepared: typeof first) => ({
-      kind: 'worker' as const,
-      actor: prepared.environmentPackage.scope.triggerActor,
-      lineage: {
-        ...prepared.environmentPackage.scope,
-        packageSnapshotId: prepared.packageSnapshotId,
-      },
-      requestId: randomUUID(),
-      bindings: { workspaceId: f.scope.workspaceId },
-    });
-    const read = () =>
-      invoke('vault.injection-plan-list', { workspaceId: f.scope.workspaceId }, worker(first));
-    const decisions = () =>
-      listExportableWorkspacePermissionDecisions(f.db, f.scope.workspaceId).filter(
-        (row) => row.enforcementPoint === 'vault.injection-plan-list@decide'
-      );
-    try {
-      if (mode === 'scope') {
-        const other = plans.find((plan) => plan.packageSnapshotId === sibling!.packageSnapshotId)!;
-        expect(other !== undefined && body.items.some((plan) => plan.planId === other.planId)).toBe(
-          true
+  it.each(['scope', 'active-plan-loss', 'finite-use'] as const)(
+    'uses real Goal Tools, linked Task plans and current Policy (%s)',
+    async (mode) => {
+      const f = await fixture({
+        credentialFile: true,
+        ...(mode === 'finite-use' ? { uses: 2 } : {}),
+      });
+      const first = await f.setupMcp();
+      const sibling = mode === 'scope' ? await f.setupMcp() : null;
+      const admission = new WorkspaceMutationAdmission();
+      f.store.setWorkspaceMutationAdmission(admission);
+      const interception = new PolicyInterception();
+      const resolve = vi.spyOn(f.fileVault!.backend(), 'resolve');
+      const invoke = createOperationInvocation({
+        coreDb: f.coreDb,
+        store: f.store,
+        repositoryWorkspaceDb: (id) => openWorkspaceDb(f.dataRoot, id),
+        inflightCommands: new WeakMap(),
+        workspaceMutationAdmission: admission,
+        policyInterception: interception,
+        readRuntimePolicy: () => f.manager.current().openKitConfig.policy?.mediation,
+        goalTaskPolicy: f.goalTaskPolicy,
+        vaultUnlockState: f.fileVault!,
+        goalServices: f.services,
+      });
+      const tools = createGoalTools({
+        store: f.store,
+        db: f.db,
+        actor: f.actor,
+        goalId: f.goal.goalId,
+        turnId: f.coordinator.id,
+        services: f.services,
+        invoke,
+      });
+      const ids = [
+        'vault.injection-plan-list',
+        'vault.injection-receipt-list',
+        'vault.binding-deliver',
+        'vault.binding-replace',
+        'vault.binding-revoke',
+      ];
+      expect(ids.every((id) => tools.some((tool) => tool.name === id))).toBe(true);
+      const tool = tools.find((entry) => entry.name === 'vault.injection-plan-list')!;
+      const execution = {
+        callId: randomUUID(),
+        toolOccurrence: 1,
+        signal: new AbortController().signal,
+      };
+      const listed = await tool.execute({}, execution);
+      expect(listed.isError).not.toBe(true);
+      const body = JSON.parse((listed.content[0] as { text: string }).text) as {
+        items: { planId: string }[];
+      };
+      const plans = listVaultInjectionPlans(f.coreDb);
+      const own = plans.find((plan) => plan.packageSnapshotId === first.packageSnapshotId)!;
+      expect(own !== undefined && body.items.some((plan) => plan.planId === own.planId)).toBe(true);
+      expect(listVaultInjectionReceipts(f.coreDb)).toEqual([]);
+      expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+      const worker = (prepared: typeof first) => ({
+        kind: 'worker' as const,
+        actor: prepared.environmentPackage.scope.triggerActor,
+        lineage: {
+          ...prepared.environmentPackage.scope,
+          packageSnapshotId: prepared.packageSnapshotId,
+        },
+        requestId: randomUUID(),
+        bindings: { workspaceId: f.scope.workspaceId },
+      });
+      const read = () =>
+        invoke('vault.injection-plan-list', { workspaceId: f.scope.workspaceId }, worker(first));
+      const decisions = () =>
+        listExportableWorkspacePermissionDecisions(f.db, f.scope.workspaceId).filter(
+          (row) => row.enforcementPoint === 'vault.injection-plan-list@decide'
         );
-        const ownRead = await read();
-        expect(ownRead.items.some((plan) => plan.planId === own.planId)).toBe(true);
-        expect(ownRead.items.some((plan) => plan.planId === other.planId)).toBe(false);
-        const siblingRead = await invoke(
-          'vault.injection-plan-list',
-          { workspaceId: f.scope.workspaceId },
-          worker(sibling!)
-        );
-        expect(siblingRead.items.some((plan) => plan.planId === own.planId)).toBe(false);
-        expect(siblingRead.items.some((plan) => plan.planId === other.planId)).toBe(true);
-        const outside = (
-          await executeGoalOperation(
-            'goal.create',
+      try {
+        if (mode === 'scope') {
+          const other = plans.find(
+            (plan) => plan.packageSnapshotId === sibling!.packageSnapshotId
+          )!;
+          expect(
+            other !== undefined && body.items.some((plan) => plan.planId === other.planId)
+          ).toBe(true);
+          const ownRead = await read();
+          expect(ownRead.items.some((plan) => plan.planId === own.planId)).toBe(true);
+          expect(ownRead.items.some((plan) => plan.planId === other.planId)).toBe(false);
+          const siblingRead = await invoke(
+            'vault.injection-plan-list',
+            { workspaceId: f.scope.workspaceId },
+            worker(sibling!)
+          );
+          expect(siblingRead.items.some((plan) => plan.planId === own.planId)).toBe(false);
+          expect(siblingRead.items.some((plan) => plan.planId === other.planId)).toBe(true);
+          const outside = (
+            await executeGoalOperation(
+              'goal.create',
+              {
+                workspaceId: f.scope.workspaceId,
+                requestId: randomUUID(),
+                intent: 'Separate Goal',
+              },
+              { actor: f.actor },
+              f.store,
+              f.db,
+              f.services
+            )
+          ).goal!;
+          const outsideScope = {
+            workspaceId: f.scope.workspaceId,
+            threadId: outside.threadId,
+            goalId: outside.goalId,
+          };
+          const outsideCardView = await executeGoalOperation(
+            'goal.card.create',
             {
-              workspaceId: f.scope.workspaceId,
+              ...outsideScope,
               requestId: randomUUID(),
-              intent: 'Separate Goal',
+              description: 'Separate work',
+              priority: 1,
             },
             { actor: f.actor },
             f.store,
             f.db,
             f.services
-          )
-        ).goal!;
-        const outsideScope = {
-          workspaceId: f.scope.workspaceId,
-          threadId: outside.threadId,
-          goalId: outside.goalId,
-        };
-        const outsideCardView = await executeGoalOperation(
-          'goal.card.create',
-          {
-            ...outsideScope,
-            requestId: randomUUID(),
-            description: 'Separate work',
-            priority: 1,
-          },
-          { actor: f.actor },
-          f.store,
-          f.db,
-          f.services
-        );
-        const card = outsideCardView.cards[0]!;
-        const outsideCoordinator = await f.store.createTurn(
-          f.scope.workspaceId,
-          outside.threadId,
-          'Plan separate Goal',
-          { kind: 'user', id: f.actor.userId },
-          null,
-          { executorKind: 'coordinator', agentId: 'goal-coordinator' }
-        );
-        const outsideProposal = await executeGoalOperation(
-          'goal.plan.propose',
-          {
-            ...outsideScope,
-            requestId: randomUUID(),
-            expectedRevision: outsideCardView.goal!.changeRevision,
-            commitment: {
-              intentBasis: { revision: 0, intent: outside.intent },
-              cards: [
-                {
-                  cardId: card.cardId,
-                  revision: card.revision,
-                  description: card.description,
-                  priority: card.priority,
-                },
-              ],
-              permittedAdjustments: 'Inspect only separate work',
-              completionEvidence: ['Separate result'],
-              boundaries: 'Separate Goal',
-            },
-            goalDomain: {
-              id: 'separate-inspection-domain',
-              scope: {
-                subjects: [{ kind: 'agent', id: f.agentId }],
-                actions: ['vault.admin'],
-                resources: [
+          );
+          const card = outsideCardView.cards[0]!;
+          const outsideCoordinator = await f.store.createTurn(
+            f.scope.workspaceId,
+            outside.threadId,
+            'Plan separate Goal',
+            { kind: 'user', id: f.actor.userId },
+            null,
+            { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+          );
+          const outsideProposal = await executeGoalOperation(
+            'goal.plan.propose',
+            {
+              ...outsideScope,
+              requestId: randomUUID(),
+              expectedRevision: outsideCardView.goal!.changeRevision,
+              commitment: {
+                intentBasis: { revision: 0, intent: outside.intent },
+                cards: [
                   {
-                    kind: 'container',
-                    container: {
-                      owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
-                      kind: 'workspace',
-                      id: f.scope.workspaceId,
-                    },
+                    cardId: card.cardId,
+                    revision: card.revision,
+                    description: card.description,
+                    priority: card.priority,
                   },
                 ],
+                permittedAdjustments: 'Inspect only separate work',
+                completionEvidence: ['Separate result'],
+                boundaries: 'Separate Goal',
               },
-              lifetime: {
-                anchor: {
-                  owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
-                  kind: 'goal',
-                  id: outside.goalId,
+              goalDomain: {
+                id: 'separate-inspection-domain',
+                scope: {
+                  subjects: [{ kind: 'agent', id: f.agentId }],
+                  actions: ['vault.admin'],
+                  resources: [
+                    {
+                      kind: 'container',
+                      container: {
+                        owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+                        kind: 'workspace',
+                        id: f.scope.workspaceId,
+                      },
+                    },
+                  ],
+                },
+                lifetime: {
+                  anchor: {
+                    owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+                    kind: 'goal',
+                    id: outside.goalId,
+                  },
                 },
               },
             },
-          },
-          { actor: f.actor, coordinatorTurnId: outsideCoordinator.id },
-          f.store,
-          f.db,
-          f.services
-        );
-        const outsideTurn = outsideCoordinator;
-        const outsideApproval = {
-          ...outsideScope,
-          pendingRequestId: outsideProposal.versions[0]!.pendingRequestId,
-          decision: 'granted' as const,
-          requestId: randomUUID(),
-        };
-        await executeGoalOperation(
-          'goal.plan.approve',
-          outsideApproval,
-          { actor: f.actor },
-          f.store,
-          f.db,
-          f.services
-        );
-        await executeGoalOperation(
-          'goal.plan.approve',
-          { ...outsideApproval, requestId: randomUUID() },
-          { actor: f.actor, coordinatorTurnId: outsideTurn.id },
-          f.store,
-          f.db,
-          f.services
-        );
-        expect(readGoalView(f.store, f.db, outside.goalId).goal!.activePlanVersionId).toBe(
-          outsideProposal.versions[0]!.planVersionId
-        );
-        const outsideTools = createGoalTools({
-          store: f.store,
-          db: f.db,
-          actor: f.actor,
-          goalId: outside.goalId,
-          turnId: outsideTurn.id,
-          services: f.services,
-          invoke,
-        });
-        const outsideRead = await outsideTools
-          .find((entry) => entry.name === ids[0])!
-          .execute({}, execution);
-        // An active Plan on this other Goal sees only its own linked Task plans.
-        expect(outsideRead.isError).not.toBe(true);
-        expect(JSON.parse((outsideRead.content[0] as { text: string }).text).items).toEqual([]);
-        expect(
-          listVaultInjectionPlans(f.coreDb).find((plan) => plan.planId === own.planId)?.status
-        ).toBe(own.status);
-      } else if (mode === 'finite-use') {
-        const statement = { id: f.domain!.id, digest: policyDigest(f.domain) };
-        expect(readPolicyStatementUseCount(f.db, statement)).toBe(0);
-        expect((await read()).items.some((plan) => plan.planId === own.planId)).toBe(true);
-        expect(readPolicyStatementUseCount(f.db, statement)).toBe(1);
-        const receipts = await invoke(
-          'vault.injection-receipt-list',
-          { workspaceId: f.scope.workspaceId },
-          worker(first)
-        );
-        expect(receipts.items).toEqual([]);
-        expect(readPolicyStatementUseCount(f.db, statement)).toBe(2);
-        await expect(read()).rejects.toBeDefined();
-        expect(readPolicyStatementUseCount(f.db, statement)).toBe(2);
-      } else {
-        const before = readGoalView(f.store, f.db, f.goal.goalId);
-        const proposed = await executeGoalOperation(
-          'goal.plan.propose',
-          {
-            ...f.scope,
+            { actor: f.actor, coordinatorTurnId: outsideCoordinator.id },
+            f.store,
+            f.db,
+            f.services
+          );
+          const outsideTurn = outsideCoordinator;
+          const outsideApproval = {
+            ...outsideScope,
+            pendingRequestId: outsideProposal.versions[0]!.pendingRequestId,
+            decision: 'granted' as const,
             requestId: randomUUID(),
-            expectedRevision: before.goal!.changeRevision,
-            commitment: f.plan.commitment,
-            goalDomain: {
-              id: 'successor-inspection-domain',
-              scope: f.domain!.scope,
-              lifetime: {
-                anchor: {
-                  owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
-                  kind: 'goal',
-                  id: f.goal.goalId,
+          };
+          await executeGoalOperation(
+            'goal.plan.approve',
+            outsideApproval,
+            { actor: f.actor },
+            f.store,
+            f.db,
+            f.services
+          );
+          await executeGoalOperation(
+            'goal.plan.approve',
+            { ...outsideApproval, requestId: randomUUID() },
+            { actor: f.actor, coordinatorTurnId: outsideTurn.id },
+            f.store,
+            f.db,
+            f.services
+          );
+          expect(readGoalView(f.store, f.db, outside.goalId).goal!.activePlanVersionId).toBe(
+            outsideProposal.versions[0]!.planVersionId
+          );
+          const outsideTools = createGoalTools({
+            store: f.store,
+            db: f.db,
+            actor: f.actor,
+            goalId: outside.goalId,
+            turnId: outsideTurn.id,
+            services: f.services,
+            invoke,
+          });
+          const outsideRead = await outsideTools
+            .find((entry) => entry.name === ids[0])!
+            .execute({}, execution);
+          // An active Plan on this other Goal sees only its own linked Task plans.
+          expect(outsideRead.isError).not.toBe(true);
+          expect(JSON.parse((outsideRead.content[0] as { text: string }).text).items).toEqual([]);
+          expect(
+            listVaultInjectionPlans(f.coreDb).find((plan) => plan.planId === own.planId)?.status
+          ).toBe(own.status);
+        } else if (mode === 'finite-use') {
+          const statement = { id: f.domain!.id, digest: policyDigest(f.domain) };
+          expect(readPolicyStatementUseCount(f.db, statement)).toBe(0);
+          expect((await read()).items.some((plan) => plan.planId === own.planId)).toBe(true);
+          expect(readPolicyStatementUseCount(f.db, statement)).toBe(1);
+          const receipts = await invoke(
+            'vault.injection-receipt-list',
+            { workspaceId: f.scope.workspaceId },
+            worker(first)
+          );
+          expect(receipts.items).toEqual([]);
+          expect(readPolicyStatementUseCount(f.db, statement)).toBe(2);
+          await expect(read()).rejects.toBeDefined();
+          expect(readPolicyStatementUseCount(f.db, statement)).toBe(2);
+        } else {
+          const before = readGoalView(f.store, f.db, f.goal.goalId);
+          const proposed = await executeGoalOperation(
+            'goal.plan.propose',
+            {
+              ...f.scope,
+              requestId: randomUUID(),
+              expectedRevision: before.goal!.changeRevision,
+              commitment: f.plan.commitment,
+              goalDomain: {
+                id: 'successor-inspection-domain',
+                scope: f.domain!.scope,
+                lifetime: {
+                  anchor: {
+                    owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+                    kind: 'goal',
+                    id: f.goal.goalId,
+                  },
                 },
               },
             },
-          },
-          f.coordinatorContext,
-          f.store,
-          f.db,
-          f.services
+            f.coordinatorContext,
+            f.store,
+            f.db,
+            f.services
+          );
+          // A proposal alone does not revoke the active Plan.
+          expect((await read()).items.some((plan) => plan.planId === own.planId)).toBe(true);
+          const successor = proposed.versions.at(-1)!;
+          const approval = {
+            ...f.scope,
+            pendingRequestId: successor.pendingRequestId,
+            decision: 'granted' as const,
+            requestId: randomUUID(),
+          };
+          await executeGoalOperation(
+            'goal.plan.approve',
+            approval,
+            { actor: f.actor },
+            f.store,
+            f.db,
+            f.services
+          );
+          await executeGoalOperation(
+            'goal.plan.approve',
+            { ...approval, requestId: randomUUID() },
+            f.coordinatorContext,
+            f.store,
+            f.db,
+            f.services
+          );
+          expect(readGoalView(f.store, f.db, f.goal.goalId).goal!.activePlanVersionId).toBe(
+            successor.planVersionId
+          );
+          expect(successor.planVersionId === before.goal!.activePlanVersionId).toBe(false);
+          await expect(read()).rejects.toBeDefined();
+          const after = await tool.execute({}, execution);
+          expect(after.isError).not.toBe(true);
+          expect(JSON.parse((after.content[0] as { text: string }).text).items).toEqual([]);
+        }
+        const final = decisions().find(
+          (row) => row.mediation?.role === 'final' && row.result === 'allow'
         );
-        // A proposal alone does not revoke the active Plan.
-        expect((await read()).items.some((plan) => plan.planId === own.planId)).toBe(true);
-        const successor = proposed.versions.at(-1)!;
-        const approval = {
-          ...f.scope,
-          pendingRequestId: successor.pendingRequestId,
-          decision: 'granted' as const,
-          requestId: randomUUID(),
-        };
-        await executeGoalOperation(
-          'goal.plan.approve',
-          approval,
-          { actor: f.actor },
-          f.store,
-          f.db,
-          f.services
-        );
-        await executeGoalOperation(
-          'goal.plan.approve',
-          { ...approval, requestId: randomUUID() },
-          f.coordinatorContext,
-          f.store,
-          f.db,
-          f.services
-        );
-        expect(readGoalView(f.store, f.db, f.goal.goalId).goal!.activePlanVersionId).toBe(
-          successor.planVersionId
-        );
-        expect(successor.planVersionId === before.goal!.activePlanVersionId).toBe(false);
-        await expect(read()).rejects.toBeDefined();
-        const after = await tool.execute({}, execution);
-        expect(after.isError).not.toBe(true);
-        expect(JSON.parse((after.content[0] as { text: string }).text).items).toEqual([]);
+        expect(final?.action).toBe('vault.admin');
+        expect(
+          listWorkspaceAuditEvents(f.db, f.scope.workspaceId).some(
+            (event) => event.id === final?.auditEventId
+          )
+        ).toBe(true);
+        expect(resolve).not.toHaveBeenCalled();
+        expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+        expect(
+          [f.fileMaterial].some((value) =>
+            JSON.stringify([
+              listed,
+              decisions(),
+              listWorkspaceAuditEvents(f.db, f.scope.workspaceId),
+            ]).includes(value)
+          )
+        ).toBe(false);
+      } finally {
+        resolve.mockRestore();
       }
-      const final = decisions().find(
-        (row) => row.mediation?.role === 'final' && row.result === 'allow'
-      );
-      expect(final?.action).toBe('vault.admin');
-      expect(
-        listWorkspaceAuditEvents(f.db, f.scope.workspaceId).some(
-          (event) => event.id === final?.auditEventId
-        )
-      ).toBe(true);
-      expect(resolve).not.toHaveBeenCalled();
-      expect(listVaultUseRecords(f.coreDb)).toEqual([]);
-      expect(
-        [f.fileMaterial].some((value) =>
-          JSON.stringify([
-            listed,
-            decisions(),
-            listWorkspaceAuditEvents(f.db, f.scope.workspaceId),
-          ]).includes(value)
-        )
-      ).toBe(false);
-    } finally {
-      resolve.mockRestore();
     }
-  });
+  );
 });

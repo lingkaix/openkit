@@ -214,54 +214,58 @@ describe('Store publishes only persisted record candidates', () => {
     expect(new FsStore({ dataRoot: f.root }).getAgentSession(session.id)).toEqual(session);
   });
 
-  it.each([
-    'create',
-    'update',
-  ] as const)('returns its own acknowledged Thread %s while later heads remain current reads', async (operation) => {
-    const f = await fixture();
-    const other = new FsStore({ dataRoot: f.root });
-    const threadId = operation === 'create' ? allocateEntityId('th') : f.thread.id;
-    const gate = holdProductReply();
-    let firstSettled = false;
-    const mutation =
-      operation === 'create'
-        ? f.store.createThread(f.workspace.id, 'First acknowledged candidate', threadId)
-        : f.store.updateThread(f.workspace.id, threadId, { name: 'First acknowledged candidate' });
-    const first = mutation.then(
-      (value) => {
-        firstSettled = true;
-        return { value };
-      },
-      (error: unknown) => {
-        firstSettled = true;
-        return { error };
-      }
-    );
-    pending.push(first);
-    try {
-      await gate.reached;
-      const acknowledged = other.getThread(f.workspace.id, threadId);
-      expect(acknowledged).toMatchObject({
-        id: threadId,
-        owner: { kind: 'workspace', workspaceId: f.workspace.id },
-        name: 'First acknowledged candidate',
-      });
-      const later = other.updateThread(f.workspace.id, threadId, { name: 'Later committed head' });
-      pending.push(later);
-      const current = await later;
-      expect(current.name).toBe('Later committed head');
-      expect(firstSettled).toBe(false);
-      gate.release();
-      expect.soft(await first).toEqual({ value: acknowledged });
-      expect(f.store.getThread(f.workspace.id, threadId)).toEqual(current);
-      await shutdownControlStoreWorkerClient();
-      expect(new FsStore({ dataRoot: f.root }).getThread(f.workspace.id, threadId)).toEqual(
-        current
+  it.each(['create', 'update'] as const)(
+    'returns its own acknowledged Thread %s while later heads remain current reads',
+    async (operation) => {
+      const f = await fixture();
+      const other = new FsStore({ dataRoot: f.root });
+      const threadId = operation === 'create' ? allocateEntityId('th') : f.thread.id;
+      const gate = holdProductReply();
+      let firstSettled = false;
+      const mutation =
+        operation === 'create'
+          ? f.store.createThread(f.workspace.id, 'First acknowledged candidate', threadId)
+          : f.store.updateThread(f.workspace.id, threadId, {
+              name: 'First acknowledged candidate',
+            });
+      const first = mutation.then(
+        (value) => {
+          firstSettled = true;
+          return { value };
+        },
+        (error: unknown) => {
+          firstSettled = true;
+          return { error };
+        }
       );
-    } finally {
-      gate.release();
+      pending.push(first);
+      try {
+        await gate.reached;
+        const acknowledged = other.getThread(f.workspace.id, threadId);
+        expect(acknowledged).toMatchObject({
+          id: threadId,
+          owner: { kind: 'workspace', workspaceId: f.workspace.id },
+          name: 'First acknowledged candidate',
+        });
+        const later = other.updateThread(f.workspace.id, threadId, {
+          name: 'Later committed head',
+        });
+        pending.push(later);
+        const current = await later;
+        expect(current.name).toBe('Later committed head');
+        expect(firstSettled).toBe(false);
+        gate.release();
+        expect.soft(await first).toEqual({ value: acknowledged });
+        expect(f.store.getThread(f.workspace.id, threadId)).toEqual(current);
+        await shutdownControlStoreWorkerClient();
+        expect(new FsStore({ dataRoot: f.root }).getThread(f.workspace.id, threadId)).toEqual(
+          current
+        );
+      } finally {
+        gate.release();
+      }
     }
-  });
+  );
 
   it('reads native private-Thread selection and original receipt replay from their current acknowledged owner', async () => {
     const f = await fixture();
@@ -377,52 +381,55 @@ describe('Store publishes only persisted record candidates', () => {
     }
   });
 
-  it.each([
-    'quarantine',
-    'missing-database',
-  ] as const)('preserves the current Thread refusal after FULL COMMIT and before reply delivery: %s', async (fault) => {
-    const f = await fixture();
-    const other = new FsStore({ dataRoot: f.root });
-    const gate = holdProductReply();
-    const result = f.store
-      .updateThread(f.workspace.id, f.thread.id, { name: 'Acknowledged before refusal' })
-      .then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error })
-      );
-    pending.push(result);
-    const databasePath = join(f.root, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite');
-    const heldPath = `${databasePath}.held`;
-    try {
-      await gate.reached;
-      expect(other.getThread(f.workspace.id, f.thread.id).name).toBe('Acknowledged before refusal');
-      if (fault === 'quarantine')
-        refuseScope(f.root, { scope: 'workspace', id: f.workspace.id, check: 'recovery' });
-      else renameSync(databasePath, heldPath);
-      let expected: unknown;
+  it.each(['quarantine', 'missing-database'] as const)(
+    'preserves the current Thread refusal after FULL COMMIT and before reply delivery: %s',
+    async (fault) => {
+      const f = await fixture();
+      const other = new FsStore({ dataRoot: f.root });
+      const gate = holdProductReply();
+      const result = f.store
+        .updateThread(f.workspace.id, f.thread.id, { name: 'Acknowledged before refusal' })
+        .then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error })
+        );
+      pending.push(result);
+      const databasePath = join(f.root, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite');
+      const heldPath = `${databasePath}.held`;
       try {
-        other.getThread(f.workspace.id, f.thread.id);
-      } catch (error) {
-        expected = error;
+        await gate.reached;
+        expect(other.getThread(f.workspace.id, f.thread.id).name).toBe(
+          'Acknowledged before refusal'
+        );
+        if (fault === 'quarantine')
+          refuseScope(f.root, { scope: 'workspace', id: f.workspace.id, check: 'recovery' });
+        else renameSync(databasePath, heldPath);
+        let expected: unknown;
+        try {
+          other.getThread(f.workspace.id, f.thread.id);
+        } catch (error) {
+          expected = error;
+        }
+        expect(expected).toBeInstanceOf(Error);
+        if (!(expected instanceof Error))
+          throw new Error('The selected Thread must be unavailable.');
+        expect(expected).toMatchObject({
+          code: fault === 'quarantine' ? 'recovery_required' : 'ENOENT',
+        });
+        gate.release();
+        expect(await result).toEqual({
+          error: expect.objectContaining({
+            name: expected.name,
+            message: expected.message,
+            ...('code' in expected ? { code: expected.code } : {}),
+          }),
+        });
+      } finally {
+        gate.release();
+        if (existsSync(heldPath)) renameSync(heldPath, databasePath);
       }
-      expect(expected).toBeInstanceOf(Error);
-      if (!(expected instanceof Error)) throw new Error('The selected Thread must be unavailable.');
-      expect(expected).toMatchObject({
-        code: fault === 'quarantine' ? 'recovery_required' : 'ENOENT',
-      });
-      gate.release();
-      expect(await result).toEqual({
-        error: expect.objectContaining({
-          name: expected.name,
-          message: expected.message,
-          ...('code' in expected ? { code: expected.code } : {}),
-        }),
-      });
-    } finally {
-      gate.release();
-      if (existsSync(heldPath)) renameSync(heldPath, databasePath);
     }
-  });
+  );
 
   it('returns its own AgentSession candidate when a later revision commits before its reply arrives', async () => {
     const f = await fixture();

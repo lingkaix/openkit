@@ -621,42 +621,48 @@ describe('Assistant exact source-bound history ranges', () => {
     'unread range revision',
     'source Turn outcome',
     'membership removal',
-  ] as const)('denies publication and retained trace reads after %s while preserving trace bytes', async (fault) => {
-    const f = await fixture();
-    const output = result(await execute(f, { range: range(f), limit: 1 }));
-    expect(output.hits).toHaveLength(1);
-    expect(output.hits[0]!.reference.itemId).toBe(f.items[0]!.id);
-    const guard = () =>
-      assertConversationRetrievalTraceReadable({
-        ...f.context,
-        retrievalTraceRef: output.retrievalTraceRef,
-      });
-    expect(() => f.history.assertCurrent()).not.toThrow();
-    expect(guard).not.toThrow();
-    const before = traces(f);
-    if (fault === 'membership removal') {
-      f.coreDb.sqlite
-        .prepare(
-          "UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
-        )
-        .run(timestamp, f.workspace.id, LOCAL_USER_ID);
-    } else if (fault === 'source Turn outcome') {
-      // Current canonical source proof includes its accepted outcome, not only Item bytes.
-      await f.store.updateTurn(f.sourceTurn.id, {
-        status: 'failed',
-        completedAt: timestamp,
-        error: { code: 'source_work_failed', message: 'The source work failed after observation.' },
-      });
-    } else
-      await f.store.updateItem(f.items[fault === 'selected source revision' ? 0 : 1]!.id, {
-        text: 'Source revision changed after observation.',
-      });
-    expect(() => f.history.assertCurrent()).toThrow(
-      expect.objectContaining({ code: 'history_unavailable' })
-    );
-    expect(guard).toThrow(expect.objectContaining({ code: 'history_unavailable' }));
-    expect(traces(f)).toEqual(before);
-    expectUnavailable(await execute(f, { range: range(f) }));
-    expect(traces(f)).toEqual(before);
-  });
+  ] as const)(
+    'denies publication and retained trace reads after %s while preserving trace bytes',
+    async (fault) => {
+      const f = await fixture();
+      const output = result(await execute(f, { range: range(f), limit: 1 }));
+      expect(output.hits).toHaveLength(1);
+      expect(output.hits[0]!.reference.itemId).toBe(f.items[0]!.id);
+      const guard = () =>
+        assertConversationRetrievalTraceReadable({
+          ...f.context,
+          retrievalTraceRef: output.retrievalTraceRef,
+        });
+      expect(() => f.history.assertCurrent()).not.toThrow();
+      expect(guard).not.toThrow();
+      const before = traces(f);
+      if (fault === 'membership removal') {
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+          )
+          .run(timestamp, f.workspace.id, LOCAL_USER_ID);
+      } else if (fault === 'source Turn outcome') {
+        // Current canonical source proof includes its accepted outcome, not only Item bytes.
+        await f.store.updateTurn(f.sourceTurn.id, {
+          status: 'failed',
+          completedAt: timestamp,
+          error: {
+            code: 'source_work_failed',
+            message: 'The source work failed after observation.',
+          },
+        });
+      } else
+        await f.store.updateItem(f.items[fault === 'selected source revision' ? 0 : 1]!.id, {
+          text: 'Source revision changed after observation.',
+        });
+      expect(() => f.history.assertCurrent()).toThrow(
+        expect.objectContaining({ code: 'history_unavailable' })
+      );
+      expect(guard).toThrow(expect.objectContaining({ code: 'history_unavailable' }));
+      expect(traces(f)).toEqual(before);
+      expectUnavailable(await execute(f, { range: range(f) }));
+      expect(traces(f)).toEqual(before);
+    }
+  );
 });

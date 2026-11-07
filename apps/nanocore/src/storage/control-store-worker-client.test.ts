@@ -513,88 +513,88 @@ describe('control writer parent admission', () => {
     expect(statSync(scope.path).ino).toBe(inode);
   });
 
-  it.each([
-    'before',
-    'after',
-  ] as const)('keeps healthy Workspace ACKs independent of a sibling held %s COMMIT and its lost host', async (point) => {
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    const f = await poolFixture(2, point);
-    const original = f.scope(0);
-    const healthy = f.scope(1);
-    Atomics.store(f.gate!, 0, 0);
-    const write = f.client
-      .write(original.database, nativeRequest('original'))
-      .catch((error: unknown) => error);
-    try {
-      await waitForHold(f.gate!);
-      expect(nativeRequests(original.path)).toEqual(point === 'after' ? ['original'] : []);
-      // This must finish while the other native thread is still blocked, without a shorter test deadline.
-      await expect(
-        f.client.write(healthy.database, nativeRequest('healthy'))
-      ).resolves.toHaveLength(1);
-      expect(nativeRequests(healthy.path)).toEqual(['healthy']);
-      expect(Atomics.load(f.gate!, 1)).toBe(0);
-      const call = posted.mock.calls.findIndex(
-        ([request]) => request.database === original.database && request.operation === 'write'
-      );
-      const failedHost = posted.mock.contexts[call] as NativeWorker;
-      await failedHost.terminate();
-      expect(await write).toMatchObject({ code: 'unavailable', commit: 'unknown' });
-      await expect(
-        f.client.write(original.database, nativeRequest('no-retry'))
-      ).rejects.toMatchObject({
-        code: 'unavailable',
-        commit: 'not-committed',
-      });
-      await expect(f.client.write(healthy.database, nativeRequest('later'))).resolves.toHaveLength(
-        1
-      );
-      expect(nativeRequests(original.path)).toEqual(point === 'after' ? ['original'] : []);
-      expect(nativeRequests(healthy.path)).toEqual(['healthy', 'later']);
-      expect(
-        posted.mock.calls.filter(
-          ([request]) => request.database === original.database && request.operation === 'write'
-        )
-      ).toHaveLength(1);
-    } finally {
-      release(f.gate);
-    }
-  });
-
-  it.each([
-    false,
-    true,
-  ])('excludes canonical and hardlink aliases process-wide with held fresh ACK = %s', async (held) => {
-    const f = await poolFixture(4, held ? 'open-ack' : undefined);
-    const original = f.scope(held ? 4 : 0);
-    let opening: Promise<unknown> | undefined;
-    if (held) {
+  it.each(['before', 'after'] as const)(
+    'keeps healthy Workspace ACKs independent of a sibling held %s COMMIT and its lost host',
+    async (point) => {
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      const f = await poolFixture(2, point);
+      const original = f.scope(0);
+      const healthy = f.scope(1);
       Atomics.store(f.gate!, 0, 0);
-      opening = f.client.open(original);
-      await waitForHold(f.gate!);
-    }
-    try {
-      // In the held case these real initialized bytes exist before the successful open reply is delivered.
-      expect(nativeRequests(original.path)).toEqual([]);
-      const canonicalAlias = join(f.root, 'canonical-alias.sqlite');
-      const hardlink = join(f.root, 'hardlink-alias.sqlite');
-      symlinkSync(original.path, canonicalAlias);
-      linkSync(original.path, hardlink);
-      for (const [index, path] of [original.path, canonicalAlias, hardlink].entries()) {
+      const write = f.client
+        .write(original.database, nativeRequest('original'))
+        .catch((error: unknown) => error);
+      try {
+        await waitForHold(f.gate!);
+        expect(nativeRequests(original.path)).toEqual(point === 'after' ? ['original'] : []);
+        // This must finish while the other native thread is still blocked, without a shorter test deadline.
         await expect(
-          f.client.open({
-            database: `alias-${index}`,
-            path,
-            create: false,
-            initialize: 'workspace',
-          })
-        ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+          f.client.write(healthy.database, nativeRequest('healthy'))
+        ).resolves.toHaveLength(1);
+        expect(nativeRequests(healthy.path)).toEqual(['healthy']);
+        expect(Atomics.load(f.gate!, 1)).toBe(0);
+        const call = posted.mock.calls.findIndex(
+          ([request]) => request.database === original.database && request.operation === 'write'
+        );
+        const failedHost = posted.mock.contexts[call] as NativeWorker;
+        await failedHost.terminate();
+        expect(await write).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+        await expect(
+          f.client.write(original.database, nativeRequest('no-retry'))
+        ).rejects.toMatchObject({
+          code: 'unavailable',
+          commit: 'not-committed',
+        });
+        await expect(
+          f.client.write(healthy.database, nativeRequest('later'))
+        ).resolves.toHaveLength(1);
+        expect(nativeRequests(original.path)).toEqual(point === 'after' ? ['original'] : []);
+        expect(nativeRequests(healthy.path)).toEqual(['healthy', 'later']);
+        expect(
+          posted.mock.calls.filter(
+            ([request]) => request.database === original.database && request.operation === 'write'
+          )
+        ).toHaveLength(1);
+      } finally {
+        release(f.gate);
       }
-    } finally {
-      release(f.gate);
-      await opening;
     }
-  });
+  );
+
+  it.each([false, true])(
+    'excludes canonical and hardlink aliases process-wide with held fresh ACK = %s',
+    async (held) => {
+      const f = await poolFixture(4, held ? 'open-ack' : undefined);
+      const original = f.scope(held ? 4 : 0);
+      let opening: Promise<unknown> | undefined;
+      if (held) {
+        Atomics.store(f.gate!, 0, 0);
+        opening = f.client.open(original);
+        await waitForHold(f.gate!);
+      }
+      try {
+        // In the held case these real initialized bytes exist before the successful open reply is delivered.
+        expect(nativeRequests(original.path)).toEqual([]);
+        const canonicalAlias = join(f.root, 'canonical-alias.sqlite');
+        const hardlink = join(f.root, 'hardlink-alias.sqlite');
+        symlinkSync(original.path, canonicalAlias);
+        linkSync(original.path, hardlink);
+        for (const [index, path] of [original.path, canonicalAlias, hardlink].entries()) {
+          await expect(
+            f.client.open({
+              database: `alias-${index}`,
+              path,
+              create: false,
+              initialize: 'workspace',
+            })
+          ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+        }
+      } finally {
+        release(f.gate);
+        await opening;
+      }
+    }
+  );
 
   it('admits only one writer when a fresh target races its pre-existing dangling leaf symlink', async () => {
     const f = await poolFixture(4, 'open-ack');
@@ -1572,166 +1572,166 @@ describe('control writer parent admission', () => {
 
 // A real native COMMIT hold decides User publication timing; awaiting a promise alone cannot prove it.
 describe('User Policy covering FULL acknowledgement', () => {
-  it.each([
-    'before',
-    'after',
-  ] as const)('holds the User decision tuple and participant Audit return %s their covering COMMIT', async (point) => {
-    const root = mkdtempSync(join(tmpdir(), 'control-user-policy-full-'));
-    roots.push(root);
-    const userId = FIXTURE_LOCAL_USER_ID;
-    const userDb = openUserDb(root, userId);
-    try {
-      applyScopedMigrations(userDb);
-      userDb.sqlite.pragma('query_only = ON');
-      interception.gate = new SharedArrayBuffer(8);
-      interception.point = point;
-      const gate = new Int32Array(interception.gate);
-      Atomics.store(gate, 0, 1); // Open and initialization stay outside the measured COMMIT.
-      client = getControlStoreWorkerClient();
-      const database = `user:${userDbPath(root, userId)}`;
-      await client.open({
-        database,
-        path: userDbPath(root, userId),
-        create: false,
-        initialize: 'user',
-      });
-      // SQLite value 2 is FULL on the actual native writer connection, not this Main reader.
-      await expect(
-        client.write(database, [
-          {
-            mode: 'get',
-            sql: 'SELECT synchronous AS synchronization FROM pragma_synchronous',
-            parameters: [],
+  it.each(['before', 'after'] as const)(
+    'holds the User decision tuple and participant Audit return %s their covering COMMIT',
+    async (point) => {
+      const root = mkdtempSync(join(tmpdir(), 'control-user-policy-full-'));
+      roots.push(root);
+      const userId = FIXTURE_LOCAL_USER_ID;
+      const userDb = openUserDb(root, userId);
+      try {
+        applyScopedMigrations(userDb);
+        userDb.sqlite.pragma('query_only = ON');
+        interception.gate = new SharedArrayBuffer(8);
+        interception.point = point;
+        const gate = new Int32Array(interception.gate);
+        Atomics.store(gate, 0, 1); // Open and initialization stay outside the measured COMMIT.
+        client = getControlStoreWorkerClient();
+        const database = `user:${userDbPath(root, userId)}`;
+        await client.open({
+          database,
+          path: userDbPath(root, userId),
+          create: false,
+          initialize: 'user',
+        });
+        // SQLite value 2 is FULL on the actual native writer connection, not this Main reader.
+        await expect(
+          client.write(database, [
+            {
+              mode: 'get',
+              sql: 'SELECT synchronous AS synchronization FROM pragma_synchronous',
+              parameters: [],
+            },
+          ])
+        ).resolves.toMatchObject([{ mode: 'get', row: { synchronization: 2n } }]);
+        const decisionId = allocateEntityId('pd');
+        const digest = `sha256:${'a'.repeat(64)}`;
+        const actor = { kind: 'user' as const, id: userId };
+        const event = prepareAuditEvent({
+          workspaceId: null,
+          action: 'policy.participant',
+          category: 'approval',
+          outcome: 'succeeded',
+          summary: 'Completed User Policy observation.',
+          actor,
+          policyInvocation: {
+            binding: { id: 'user-observer', digest },
+            operation: 'vault.binding-replace',
+            stage: 'completed',
+            mode: 'observe',
+            policyRevision: digest,
+            authorizationRevision: digest,
+            proposalDigest: digest,
+            subject: {
+              principal: { kind: 'human', id: userId },
+              onBehalfOf: null,
+              actor,
+              process: null,
+              credentialKind: 'local',
+              responsibleHumanId: userId,
+            },
+            participant: { id: 'test', version: digest },
+            inputDigest: digest,
+            outputDigest: digest,
+            outcome: 'completed',
+            startedAt: '2026-10-18T00:00:00Z',
+            completedAt: '2026-10-18T00:00:01Z',
+            capabilityCallId: null,
           },
-        ])
-      ).resolves.toMatchObject([{ mode: 'get', row: { synchronization: 2n } }]);
-      const decisionId = allocateEntityId('pd');
-      const digest = `sha256:${'a'.repeat(64)}`;
-      const actor = { kind: 'user' as const, id: userId };
-      const event = prepareAuditEvent({
-        workspaceId: null,
-        action: 'policy.participant',
-        category: 'approval',
-        outcome: 'succeeded',
-        summary: 'Completed User Policy observation.',
-        actor,
-        policyInvocation: {
-          binding: { id: 'user-observer', digest },
-          operation: 'vault.binding-replace',
-          stage: 'completed',
-          mode: 'observe',
-          policyRevision: digest,
-          authorizationRevision: digest,
-          proposalDigest: digest,
-          subject: {
-            principal: { kind: 'human', id: userId },
-            onBehalfOf: null,
-            actor,
-            process: null,
-            credentialKind: 'local',
-            responsibleHumanId: userId,
-          },
-          participant: { id: 'test', version: digest },
-          inputDigest: digest,
-          outputDigest: digest,
-          outcome: 'completed',
-          startedAt: '2026-10-18T00:00:00Z',
-          completedAt: '2026-10-18T00:00:01Z',
-          capabilityCallId: null,
-        },
-        now: new Date('2026-10-18T00:00:01Z'),
-      });
-      for (const kind of ['decision', 'participant'] as const) {
-        Atomics.store(gate, 1, 0);
-        Atomics.store(gate, 0, 0);
-        let returned = false;
-        const pending = Promise.resolve()
-          .then(() =>
-            kind === 'decision'
-              ? recordProductPermissionDecision({
-                  userDb,
-                  decisionId,
-                  ownerScope: 'user',
-                  workspaceId: null,
-                  policyEngineVersion: 'nanocore-policy:v1',
-                  policySnapshotId: digest,
-                  subjectSummary: { kind: 'human', id: userId },
-                  action: 'vault.use',
-                  resourceSummary: {
-                    kind: 'container',
-                    container: { kind: 'user', id: userId, owner: { kind: 'user', userId } },
-                  },
-                  contextSummary: {},
-                  result: 'allow',
-                  reasonCode: 'granted',
-                  enforcementPoint: 'vault.binding-replace@decide',
-                  auditActor: actor,
-                })
-              : client!.userCapability(userDb, { kind: 'user-participant-audit', userId, event })
-          )
-          .then((value) => {
-            returned = true;
-            return value;
-          });
-        try {
-          await Promise.race([
-            waitForHold(gate),
-            pending.then(() => {
-              throw new Error('User publication returned before the real native COMMIT hold.');
-            }),
-          ]);
-          await nextTurn();
-          expect(returned).toBe(false);
-          expect(Atomics.load(gate, 1)).toBe(0);
-          const reader = new Database(userDbPath(root, userId), {
-            readonly: true,
-            fileMustExist: true,
-          });
+          now: new Date('2026-10-18T00:00:01Z'),
+        });
+        for (const kind of ['decision', 'participant'] as const) {
+          Atomics.store(gate, 1, 0);
+          Atomics.store(gate, 0, 0);
+          let returned = false;
+          const pending = Promise.resolve()
+            .then(() =>
+              kind === 'decision'
+                ? recordProductPermissionDecision({
+                    userDb,
+                    decisionId,
+                    ownerScope: 'user',
+                    workspaceId: null,
+                    policyEngineVersion: 'nanocore-policy:v1',
+                    policySnapshotId: digest,
+                    subjectSummary: { kind: 'human', id: userId },
+                    action: 'vault.use',
+                    resourceSummary: {
+                      kind: 'container',
+                      container: { kind: 'user', id: userId, owner: { kind: 'user', userId } },
+                    },
+                    contextSummary: {},
+                    result: 'allow',
+                    reasonCode: 'granted',
+                    enforcementPoint: 'vault.binding-replace@decide',
+                    auditActor: actor,
+                  })
+                : client!.userCapability(userDb, { kind: 'user-participant-audit', userId, event })
+            )
+            .then((value) => {
+              returned = true;
+              return value;
+            });
           try {
-            reader.pragma('query_only = ON');
-            const rows = reader
-              .prepare('SELECT * FROM permission_decisions')
-              .all()
-              .map(readPermissionDecisionRowV1);
-            const events = listSqliteAuditEvents(reader);
-            expect(rows).toHaveLength(kind === 'decision' && point === 'before' ? 0 : 1);
-            expect(events).toHaveLength(
-              (kind === 'participant' ? 1 : 0) + (point === 'after' ? 1 : 0)
-            );
-            if (rows.length)
-              expect(events.find((value) => value.id === rows[0]!.auditEventId)).toMatchObject({
-                permissionDecisionId: decisionId,
-                workspaceId: null,
-              });
-            if (kind === 'participant' && point === 'after')
-              expect(events.find((value) => value.id === event.id)).toEqual(event);
+            await Promise.race([
+              waitForHold(gate),
+              pending.then(() => {
+                throw new Error('User publication returned before the real native COMMIT hold.');
+              }),
+            ]);
+            await nextTurn();
+            expect(returned).toBe(false);
+            expect(Atomics.load(gate, 1)).toBe(0);
+            const reader = new Database(userDbPath(root, userId), {
+              readonly: true,
+              fileMustExist: true,
+            });
+            try {
+              reader.pragma('query_only = ON');
+              const rows = reader
+                .prepare('SELECT * FROM permission_decisions')
+                .all()
+                .map(readPermissionDecisionRowV1);
+              const events = listSqliteAuditEvents(reader);
+              expect(rows).toHaveLength(kind === 'decision' && point === 'before' ? 0 : 1);
+              expect(events).toHaveLength(
+                (kind === 'participant' ? 1 : 0) + (point === 'after' ? 1 : 0)
+              );
+              if (rows.length)
+                expect(events.find((value) => value.id === rows[0]!.auditEventId)).toMatchObject({
+                  permissionDecisionId: decisionId,
+                  workspaceId: null,
+                });
+              if (kind === 'participant' && point === 'after')
+                expect(events.find((value) => value.id === event.id)).toEqual(event);
+            } finally {
+              reader.close();
+            }
           } finally {
-            reader.close();
+            release(gate);
+            await Promise.allSettled([pending]);
           }
-        } finally {
-          release(gate);
-          await Promise.allSettled([pending]);
+          await pending;
+          expect(returned).toBe(true);
         }
-        await pending;
-        expect(returned).toBe(true);
+        const rows = userDb.sqlite
+          .prepare('SELECT * FROM permission_decisions')
+          .all()
+          .map(readPermissionDecisionRowV1);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ decisionId, ownerScope: 'user', workspaceId: null });
+        const events = listSqliteAuditEvents(userDb.sqlite);
+        expect(events).toHaveLength(2);
+        expect(events.find((value) => value.id === rows[0]!.auditEventId)).toMatchObject({
+          permissionDecisionId: decisionId,
+          outcome: 'succeeded',
+          workspaceId: null,
+        });
+        expect(events.find((value) => value.id === event.id)).toEqual(event);
+      } finally {
+        if (interception.gate !== undefined) release(new Int32Array(interception.gate));
+        userDb.sqlite.close();
       }
-      const rows = userDb.sqlite
-        .prepare('SELECT * FROM permission_decisions')
-        .all()
-        .map(readPermissionDecisionRowV1);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ decisionId, ownerScope: 'user', workspaceId: null });
-      const events = listSqliteAuditEvents(userDb.sqlite);
-      expect(events).toHaveLength(2);
-      expect(events.find((value) => value.id === rows[0]!.auditEventId)).toMatchObject({
-        permissionDecisionId: decisionId,
-        outcome: 'succeeded',
-        workspaceId: null,
-      });
-      expect(events.find((value) => value.id === event.id)).toEqual(event);
-    } finally {
-      if (interception.gate !== undefined) release(new Int32Array(interception.gate));
-      userDb.sqlite.close();
     }
-  });
+  );
 });

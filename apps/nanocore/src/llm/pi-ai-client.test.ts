@@ -86,44 +86,46 @@ function expectedAdapterCostTotal(
 }
 
 describe('PiAiGatewayClient', () => {
-  it.each([
-    false,
-    true,
-  ])('uses the same malformed metadata diagnostic on native and bridged Responses before Provider access; stream=%s', async (stream) => {
-    const faux = fauxProvider({
-      provider: 'openai-codex',
-      api: 'openai-responses',
-      models: [{ id: 'gpt-test', reasoning: true }],
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    const client = new PiAiGatewayClient({ models });
-    for (const metadata of [null, [], false, 'not-an-object', 9]) {
-      for (const native of [false, true]) {
-        const config = providerConfig(
-          native ? { adapterId: 'openai-codex', subscriptionProviderId: 'openai-codex' } : {}
-        );
-        const request = {
-          model: 'gpt-test',
-          input: 'hello',
-          stream,
-          metadata,
-          ...(native
-            ? {}
-            : { tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }] }),
-        };
-        const pending = stream
-          ? client.createResponsesStream(config, request)
-          : client.createResponses(config, request);
-        await expect(pending).rejects.toMatchObject({
-          code: 'unsupported_gateway_feature',
-          feature: 'pi-ai metadata',
-          status: 400,
-        });
+  it.each([false, true])(
+    'uses the same malformed metadata diagnostic on native and bridged Responses before Provider access; stream=%s',
+    async (stream) => {
+      const faux = fauxProvider({
+        provider: 'openai-codex',
+        api: 'openai-responses',
+        models: [{ id: 'gpt-test', reasoning: true }],
+      });
+      const models = createModels();
+      models.setProvider(faux.provider);
+      const client = new PiAiGatewayClient({ models });
+      for (const metadata of [null, [], false, 'not-an-object', 9]) {
+        for (const native of [false, true]) {
+          const config = providerConfig(
+            native ? { adapterId: 'openai-codex', subscriptionProviderId: 'openai-codex' } : {}
+          );
+          const request = {
+            model: 'gpt-test',
+            input: 'hello',
+            stream,
+            metadata,
+            ...(native
+              ? {}
+              : {
+                  tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }],
+                }),
+          };
+          const pending = stream
+            ? client.createResponsesStream(config, request)
+            : client.createResponses(config, request);
+          await expect(pending).rejects.toMatchObject({
+            code: 'unsupported_gateway_feature',
+            feature: 'pi-ai metadata',
+            status: 400,
+          });
+        }
       }
+      expect(faux.state.callCount).toBe(0);
     }
-    expect(faux.state.callCount).toBe(0);
-  });
+  );
 
   it('observes admitted response deltas before native Responses defers public text', async () => {
     const faux = fauxProvider({
@@ -167,59 +169,63 @@ describe('PiAiGatewayClient', () => {
     expect(observed).toContainEqual({ type: 'interrupted' });
   });
 
-  it.each([
-    false,
-    true,
-  ])('keeps synthetic Responses item identities unique across requests (stream=%s)', async (stream) => {
-    const faux = fauxProvider({
-      api: 'openai-completions',
-      provider: 'openrouter',
-      models: [{ id: 'stealth/ox-alpha', reasoning: true }],
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    faux.setResponses(
-      [0, 1].map(() =>
-        fauxAssistantMessage([fauxThinking('Checking.'), fauxText('Final answer.')], {
-          timestamp: 1783260591000,
-        })
-      )
-    );
-    const client = new PiAiGatewayClient({ models });
-    const provider = providerConfig({
-      adapterId: 'openrouter',
-      models: ['stealth/ox-alpha'],
-      subscriptionProviderId: 'openrouter',
-    });
-    const request = {
-      model: 'stealth/ox-alpha',
-      input: 'Check the answer.',
-      tools: [{ type: 'function', name: 'check', parameters: { type: 'object', properties: {} } }],
-    };
-    const identities: unknown[][] = [];
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (!stream) {
-        const response = await client.createResponses(provider, request);
-        identities.push(response.output.map((item) => item.id));
-        continue;
+  it.each([false, true])(
+    'keeps synthetic Responses item identities unique across requests (stream=%s)',
+    async (stream) => {
+      const faux = fauxProvider({
+        api: 'openai-completions',
+        provider: 'openrouter',
+        models: [{ id: 'stealth/ox-alpha', reasoning: true }],
+      });
+      const models = createModels();
+      models.setProvider(faux.provider);
+      faux.setResponses(
+        [0, 1].map(() =>
+          fauxAssistantMessage([fauxThinking('Checking.'), fauxText('Final answer.')], {
+            timestamp: 1783260591000,
+          })
+        )
+      );
+      const client = new PiAiGatewayClient({ models });
+      const provider = providerConfig({
+        adapterId: 'openrouter',
+        models: ['stealth/ox-alpha'],
+        subscriptionProviderId: 'openrouter',
+      });
+      const request = {
+        model: 'stealth/ox-alpha',
+        input: 'Check the answer.',
+        tools: [
+          { type: 'function', name: 'check', parameters: { type: 'object', properties: {} } },
+        ],
+      };
+      const identities: unknown[][] = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (!stream) {
+          const response = await client.createResponses(provider, request);
+          identities.push(response.output.map((item) => item.id));
+          continue;
+        }
+        const body = await new Response(
+          await client.createResponsesStream(provider, request)
+        ).text();
+        const events = body
+          .split('\n')
+          .filter((line) => line.startsWith('data: {'))
+          .map((line) => JSON.parse(line.slice(6)));
+        const output = events.find((event) => event.type === 'response.completed').response.output;
+        expect(output.map((item: { type: string }) => item.type)).toEqual(['reasoning', 'message']);
+        for (const event of events) {
+          if (event.item) expect(event.item.id).toBe(output[event.output_index].id);
+          if (event.item_id) expect(event.item_id).toBe(output[event.output_index].id);
+        }
+        identities.push(output.map((item: { id: string }) => item.id));
       }
-      const body = await new Response(await client.createResponsesStream(provider, request)).text();
-      const events = body
-        .split('\n')
-        .filter((line) => line.startsWith('data: {'))
-        .map((line) => JSON.parse(line.slice(6)));
-      const output = events.find((event) => event.type === 'response.completed').response.output;
-      expect(output.map((item: { type: string }) => item.type)).toEqual(['reasoning', 'message']);
-      for (const event of events) {
-        if (event.item) expect(event.item.id).toBe(output[event.output_index].id);
-        if (event.item_id) expect(event.item_id).toBe(output[event.output_index].id);
-      }
-      identities.push(output.map((item: { id: string }) => item.id));
+      expect(identities[0]).toHaveLength(2);
+      expect(identities[1]).toHaveLength(2);
+      expect(new Set(identities.flat()).size).toBe(4);
     }
-    expect(identities[0]).toHaveLength(2);
-    expect(identities[1]).toHaveLength(2);
-    expect(new Set(identities.flat()).size).toBe(4);
-  });
+  );
 
   it('accepts the empty include list and null reasoning emitted by Codex', () => {
     expect(() =>
@@ -1114,271 +1120,271 @@ describe('PiAiGatewayClient', () => {
     ).rejects.toThrow('does not expose model');
   });
 
-  it.each([
-    'grok-openkit-uncatalogued-test',
-    'xai/grok-openkit-uncatalogued-test',
-  ])('dispatches configured uncatalogued xAI model %s through its authenticated pair', async (modelId) => {
-    const stock = xaiProvider();
-    expect(stock.getModels().some((model) => model.id === 'grok-openkit-uncatalogued-test')).toBe(
-      false
-    );
-    const credential: OAuthCredential = {
-      type: 'oauth',
-      access: 'work-pair-access',
-      refresh: 'work-pair-refresh',
-      expires: Date.now() + 3_600_000,
-    };
-    const read = vi.fn(async (providerId: string) =>
-      providerId === 'xai' ? credential : undefined
-    );
-    const credentials: CredentialStore = {
-      async list() {
-        return [{ providerId: 'xai', type: 'oauth' }];
-      },
-      read,
-      async modify() {
-        throw new Error('The unexpired test credential must not refresh.');
-      },
-      async delete() {},
-    };
-    let seenModel: Model<string> | undefined;
-    let seenOptions: StreamOptions | undefined;
-    const faux = fauxProvider({
-      api: 'openai-completions',
-      provider: 'xai',
-      models: [{ id: 'grok-4.3' }],
-    });
-    const pairModels = createModels({ credentials });
-    pairModels.setProvider({
-      ...faux.provider,
-      baseUrl: stock.baseUrl,
-      auth: { oauth: stock.auth.oauth! },
-    });
-    const originalModels = structuredClone(pairModels.getModels('xai'));
-    faux.setResponses([
-      (_context, options, _state, model) => {
-        seenModel = model;
-        seenOptions = options;
-        return fauxAssistantMessage('Grok response');
-      },
-    ]);
-    const config = providerConfig({
-      accountSlotId: 'work',
-      adapterId: 'xai',
-      subscriptionProviderId: 'xai',
-      id: 'xai-work',
-      apiKey: null,
-      requiresApiKey: false,
-      models: [modelId],
-      modelMetadata: {
-        [modelId]: {
-          limit: { context: 360_000 },
-          reasoning: true,
-          modalities: { input: ['text', 'image'], output: ['text'] },
+  it.each(['grok-openkit-uncatalogued-test', 'xai/grok-openkit-uncatalogued-test'])(
+    'dispatches configured uncatalogued xAI model %s through its authenticated pair',
+    async (modelId) => {
+      const stock = xaiProvider();
+      expect(stock.getModels().some((model) => model.id === 'grok-openkit-uncatalogued-test')).toBe(
+        false
+      );
+      const credential: OAuthCredential = {
+        type: 'oauth',
+        access: 'work-pair-access',
+        refresh: 'work-pair-refresh',
+        expires: Date.now() + 3_600_000,
+      };
+      const read = vi.fn(async (providerId: string) =>
+        providerId === 'xai' ? credential : undefined
+      );
+      const credentials: CredentialStore = {
+        async list() {
+          return [{ providerId: 'xai', type: 'oauth' }];
         },
-      },
-    });
-    const request = { messages: [{ content: 'Hello', role: 'user' as const }], model: modelId };
-    const observed: unknown[] = [];
-    const client = new PiAiGatewayClient();
-    const response = await client.createChatCompletion(
-      config,
-      request,
-      (usage) => observed.push(usage),
-      {},
-      pairModels
-    );
-
-    expect(response.choices[0]?.message.content).toBe('Grok response');
-    expect(seenModel).toMatchObject({
-      id: 'grok-openkit-uncatalogued-test',
-      provider: 'xai',
-      api: 'openai-completions',
-      baseUrl: stock.baseUrl,
-      contextWindow: 360_000,
-      reasoning: true,
-      input: ['text', 'image'],
-    });
-    expect(seenOptions?.apiKey).toBe('work-pair-access');
-    expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
-    expect(pairModels.getModels('xai')).toEqual(originalModels);
-    expect(pairModels.getModel('xai', 'grok-openkit-uncatalogued-test')).toBeUndefined();
-    expect(observed).toHaveLength(1);
-    expect(observed[0]).not.toHaveProperty('cost');
-
-    await expect(
-      client.createChatCompletion({ ...config, models: [] }, request, undefined, {}, pairModels)
-    ).rejects.toThrow('does not expose model');
-    await expect(
-      client.createChatCompletion(
-        { ...config, modelMetadata: {} },
+        read,
+        async modify() {
+          throw new Error('The unexpired test credential must not refresh.');
+        },
+        async delete() {},
+      };
+      let seenModel: Model<string> | undefined;
+      let seenOptions: StreamOptions | undefined;
+      const faux = fauxProvider({
+        api: 'openai-completions',
+        provider: 'xai',
+        models: [{ id: 'grok-4.3' }],
+      });
+      const pairModels = createModels({ credentials });
+      pairModels.setProvider({
+        ...faux.provider,
+        baseUrl: stock.baseUrl,
+        auth: { oauth: stock.auth.oauth! },
+      });
+      const originalModels = structuredClone(pairModels.getModels('xai'));
+      faux.setResponses([
+        (_context, options, _state, model) => {
+          seenModel = model;
+          seenOptions = options;
+          return fauxAssistantMessage('Grok response');
+        },
+      ]);
+      const config = providerConfig({
+        accountSlotId: 'work',
+        adapterId: 'xai',
+        subscriptionProviderId: 'xai',
+        id: 'xai-work',
+        apiKey: null,
+        requiresApiKey: false,
+        models: [modelId],
+        modelMetadata: {
+          [modelId]: {
+            limit: { context: 360_000 },
+            reasoning: true,
+            modalities: { input: ['text', 'image'], output: ['text'] },
+          },
+        },
+      });
+      const request = { messages: [{ content: 'Hello', role: 'user' as const }], model: modelId };
+      const observed: unknown[] = [];
+      const client = new PiAiGatewayClient();
+      const response = await client.createChatCompletion(
+        config,
         request,
-        undefined,
+        (usage) => observed.push(usage),
         {},
         pairModels
-      )
-    ).rejects.toThrow('does not expose model');
-    await expect(
-      client.createChatCompletion(config, request, undefined, {}, createModels())
-    ).rejects.toThrow('does not expose model');
-  });
+      );
 
-  it.each([
-    false,
-    true,
-  ])('lowers xAI Worker custom tools through its authenticated pair and restores public identity; stream=%s', async (stream) => {
-    const stock = xaiProvider();
-    const credential: OAuthCredential = {
-      type: 'oauth',
-      access: 'work-pair-access',
-      refresh: 'work-pair-refresh',
-      expires: Date.now() + 3_600_000,
-    };
-    const read = vi.fn(async (providerId: string) =>
-      providerId === 'xai' ? credential : undefined
-    );
-    const credentials: CredentialStore = {
-      async list() {
-        return [{ providerId: 'xai', type: 'oauth' }];
-      },
-      read,
-      async modify() {
-        throw new Error('The unexpired test credential must not refresh.');
-      },
-      async delete() {},
-    };
-    const faux = fauxProvider({
-      api: 'openai-responses',
-      provider: 'xai',
-      models: [{ id: 'grok-4.3' }],
-    });
-    const pairModels = createModels({ credentials });
-    pairModels.setProvider({
-      ...faux.provider,
-      baseUrl: stock.baseUrl,
-      auth: { oauth: stock.auth.oauth! },
-    });
-    const additionalTools = {
-      role: 'developer',
-      tools: [
-        { type: 'custom', name: 'exec', description: 'Run a command.', format: { type: 'text' } },
-      ],
-      type: 'additional_tools',
-    } as const;
-    const userInput = {
-      role: 'user',
-      content: [{ type: 'input_text', text: 'Check the working directory.' }],
-    } as const;
-    let seenContext: TranscriptContext | undefined;
-    let seenModel: Model<string> | undefined;
-    let seenOptions: StreamOptions | undefined;
-    let seenPayload: unknown;
-    faux.setResponses([
-      async (context, options, _state, model) => {
-        seenContext = context;
-        seenModel = model;
-        seenOptions = options;
-        // This faux Provider observes the handoff; the stock xAI test owns wire serialization.
-        const payload = { input: [userInput], model: 'grok-4.3' };
-        seenPayload = (await options?.onPayload?.(payload, model)) ?? payload;
-        return fauxAssistantMessage(
-          [
-            fauxText('Checking the directory.'),
-            fauxToolCall('exec', { input: 'pwd' }, { id: 'call_xai_exec' }),
-          ],
-          { responseId: 'resp_xai_native', stopReason: 'toolUse' }
-        );
-      },
-    ]);
-    const profile = {
-      id: 'xai-work',
-      kind: 'oauth' as const,
-      vendor: 'xai',
-      models: ['xai/grok-4.3'],
-      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
-    };
-    const config = providerConfig({
-      accountSlotId: 'work',
-      adapterId: 'xai',
-      apiKey: null,
-      gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
-      id: profile.id,
-      models: profile.models,
-      requiresApiKey: false,
-      subscriptionProviderId: 'xai',
-    });
-    const request = {
-      input: [additionalTools, userInput],
-      model: 'xai/grok-4.3',
-      tools: [],
-      stream,
-    };
-    const client = new PiAiGatewayClient();
-    let response: Awaited<ReturnType<PiAiGatewayClient['createResponses']>>;
-    if (stream) {
-      const body = await new Response(
-        await client.createResponsesStream(config, request, undefined, {}, pairModels)
-      ).text();
-      const events = body
-        .split('\n')
-        .filter((line) => line.startsWith('data: {'))
-        .map((line) => JSON.parse(line.slice(6)));
-      expect(events.at(-1)?.type).toBe('response.completed');
-      expect(events.filter((event) => event.type === 'response.completed')).toHaveLength(1);
-      response = events.at(-1).response;
-      expect(
-        events
-          .filter((event) => event.type === 'response.output_item.done')
-          .map((event) => event.item)
-      ).toMatchObject(response.output);
-      for (const event of events) {
-        if (event.item) expect(event.item.id).toBe(response.output[event.output_index]?.id);
-        if (event.item_id) expect(event.item_id).toBe(response.output[event.output_index]?.id);
-      }
-    } else {
-      response = await client.createResponses(config, request, undefined, {}, pairModels);
+      expect(response.choices[0]?.message.content).toBe('Grok response');
+      expect(seenModel).toMatchObject({
+        id: 'grok-openkit-uncatalogued-test',
+        provider: 'xai',
+        api: 'openai-completions',
+        baseUrl: stock.baseUrl,
+        contextWindow: 360_000,
+        reasoning: true,
+        input: ['text', 'image'],
+      });
+      expect(seenOptions?.apiKey).toBe('work-pair-access');
+      expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
+      expect(pairModels.getModels('xai')).toEqual(originalModels);
+      expect(pairModels.getModel('xai', 'grok-openkit-uncatalogued-test')).toBeUndefined();
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).not.toHaveProperty('cost');
+
+      await expect(
+        client.createChatCompletion({ ...config, models: [] }, request, undefined, {}, pairModels)
+      ).rejects.toThrow('does not expose model');
+      await expect(
+        client.createChatCompletion(
+          { ...config, modelMetadata: {} },
+          request,
+          undefined,
+          {},
+          pairModels
+        )
+      ).rejects.toThrow('does not expose model');
+      await expect(
+        client.createChatCompletion(config, request, undefined, {}, createModels())
+      ).rejects.toThrow('does not expose model');
     }
+  );
 
-    expect(response).toMatchObject({
-      id: 'resp_xai_native',
-      model: 'xai/grok-4.3',
-      status: 'completed',
-      output: [
-        { type: 'message', content: [{ type: 'output_text', text: 'Checking the directory.' }] },
-        { type: 'custom_tool_call', call_id: 'call_xai_exec', name: 'exec', input: 'pwd' },
-      ],
-    });
-    expect(seenModel).toMatchObject({ api: 'openai-responses', id: 'grok-4.3', provider: 'xai' });
-    expect(seenOptions?.apiKey).toBe('work-pair-access');
-    expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
-    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toMatchObject([
-      {
-        name: 'exec',
-        parameters: {
-          type: 'object',
-          properties: { input: { type: 'string' } },
-          required: ['input'],
+  it.each([false, true])(
+    'lowers xAI Worker custom tools through its authenticated pair and restores public identity; stream=%s',
+    async (stream) => {
+      const stock = xaiProvider();
+      const credential: OAuthCredential = {
+        type: 'oauth',
+        access: 'work-pair-access',
+        refresh: 'work-pair-refresh',
+        expires: Date.now() + 3_600_000,
+      };
+      const read = vi.fn(async (providerId: string) =>
+        providerId === 'xai' ? credential : undefined
+      );
+      const credentials: CredentialStore = {
+        async list() {
+          return [{ providerId: 'xai', type: 'oauth' }];
         },
-      },
-    ]);
-    expect((seenPayload as { input: unknown }).input).toEqual([userInput]);
-    expect(seenPayload).toMatchObject({ model: 'grok-4.3' });
-    const payloadTools = (seenPayload as { tools?: unknown }).tools;
-    if (payloadTools !== undefined) {
-      expect(payloadTools).toEqual([
-        expect.objectContaining({
-          type: 'function',
+        read,
+        async modify() {
+          throw new Error('The unexpired test credential must not refresh.');
+        },
+        async delete() {},
+      };
+      const faux = fauxProvider({
+        api: 'openai-responses',
+        provider: 'xai',
+        models: [{ id: 'grok-4.3' }],
+      });
+      const pairModels = createModels({ credentials });
+      pairModels.setProvider({
+        ...faux.provider,
+        baseUrl: stock.baseUrl,
+        auth: { oauth: stock.auth.oauth! },
+      });
+      const additionalTools = {
+        role: 'developer',
+        tools: [
+          { type: 'custom', name: 'exec', description: 'Run a command.', format: { type: 'text' } },
+        ],
+        type: 'additional_tools',
+      } as const;
+      const userInput = {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Check the working directory.' }],
+      } as const;
+      let seenContext: TranscriptContext | undefined;
+      let seenModel: Model<string> | undefined;
+      let seenOptions: StreamOptions | undefined;
+      let seenPayload: unknown;
+      faux.setResponses([
+        async (context, options, _state, model) => {
+          seenContext = context;
+          seenModel = model;
+          seenOptions = options;
+          // This faux Provider observes the handoff; the stock xAI test owns wire serialization.
+          const payload = { input: [userInput], model: 'grok-4.3' };
+          seenPayload = (await options?.onPayload?.(payload, model)) ?? payload;
+          return fauxAssistantMessage(
+            [
+              fauxText('Checking the directory.'),
+              fauxToolCall('exec', { input: 'pwd' }, { id: 'call_xai_exec' }),
+            ],
+            { responseId: 'resp_xai_native', stopReason: 'toolUse' }
+          );
+        },
+      ]);
+      const profile = {
+        id: 'xai-work',
+        kind: 'oauth' as const,
+        vendor: 'xai',
+        models: ['xai/grok-4.3'],
+        extensions: { openkit: { subscriptionAccount: { accountSlotId: 'work' } } },
+      };
+      const config = providerConfig({
+        accountSlotId: 'work',
+        adapterId: 'xai',
+        apiKey: null,
+        gatewayCapabilities: gatewayCapabilitiesForProfile(profile),
+        id: profile.id,
+        models: profile.models,
+        requiresApiKey: false,
+        subscriptionProviderId: 'xai',
+      });
+      const request = {
+        input: [additionalTools, userInput],
+        model: 'xai/grok-4.3',
+        tools: [],
+        stream,
+      };
+      const client = new PiAiGatewayClient();
+      let response: Awaited<ReturnType<PiAiGatewayClient['createResponses']>>;
+      if (stream) {
+        const body = await new Response(
+          await client.createResponsesStream(config, request, undefined, {}, pairModels)
+        ).text();
+        const events = body
+          .split('\n')
+          .filter((line) => line.startsWith('data: {'))
+          .map((line) => JSON.parse(line.slice(6)));
+        expect(events.at(-1)?.type).toBe('response.completed');
+        expect(events.filter((event) => event.type === 'response.completed')).toHaveLength(1);
+        response = events.at(-1).response;
+        expect(
+          events
+            .filter((event) => event.type === 'response.output_item.done')
+            .map((event) => event.item)
+        ).toMatchObject(response.output);
+        for (const event of events) {
+          if (event.item) expect(event.item.id).toBe(response.output[event.output_index]?.id);
+          if (event.item_id) expect(event.item_id).toBe(response.output[event.output_index]?.id);
+        }
+      } else {
+        response = await client.createResponses(config, request, undefined, {}, pairModels);
+      }
+
+      expect(response).toMatchObject({
+        id: 'resp_xai_native',
+        model: 'xai/grok-4.3',
+        status: 'completed',
+        output: [
+          { type: 'message', content: [{ type: 'output_text', text: 'Checking the directory.' }] },
+          { type: 'custom_tool_call', call_id: 'call_xai_exec', name: 'exec', input: 'pwd' },
+        ],
+      });
+      expect(seenModel).toMatchObject({ api: 'openai-responses', id: 'grok-4.3', provider: 'xai' });
+      expect(seenOptions?.apiKey).toBe('work-pair-access');
+      expect(read.mock.calls.map(([providerId]) => providerId)).toEqual(['xai']);
+      expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toMatchObject([
+        {
           name: 'exec',
-          parameters: expect.objectContaining({
+          parameters: {
             type: 'object',
             properties: { input: { type: 'string' } },
             required: ['input'],
-          }),
-        }),
+          },
+        },
       ]);
+      expect((seenPayload as { input: unknown }).input).toEqual([userInput]);
+      expect(seenPayload).toMatchObject({ model: 'grok-4.3' });
+      const payloadTools = (seenPayload as { tools?: unknown }).tools;
+      if (payloadTools !== undefined) {
+        expect(payloadTools).toEqual([
+          expect.objectContaining({
+            type: 'function',
+            name: 'exec',
+            parameters: expect.objectContaining({
+              type: 'object',
+              properties: { input: { type: 'string' } },
+              required: ['input'],
+            }),
+          }),
+        ]);
+      }
+      expect(faux.state.callCount).toBe(1);
     }
-    expect(faux.state.callCount).toBe(1);
-  });
+  );
 
   it('serves configured uncatalogued xAI Responses through the existing Chat conversion and exact pair', async () => {
     const stock = xaiProvider();
@@ -1943,93 +1949,93 @@ describe('PiAiGatewayClient', () => {
     });
   });
 
-  it.each([
-    'at_01234567-89ab-5def-8abc-0123456789ab',
-    'at_01a19111-cab6-7a43-b046-6d06765a54c2',
-  ])('preserves the Codex canonical prefix and namespaced custom-tool semantics (%s)', async (id) => {
-    let seenContext: TranscriptContext | undefined;
-    let seenPayload: unknown;
-    const faux = fauxProvider({
-      api: 'openai-codex-responses',
-      provider: 'openai-codex',
-      models: [{ id: 'gpt-5.6-sol', reasoning: true }],
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    const additionalTools = {
-      id,
-      role: 'developer',
-      tools: [
-        {
-          description: 'Local callable tools.',
-          name: 'functions',
-          tools: [
-            {
-              description: 'Run a command.',
-              format: { type: 'text' },
-              name: 'exec',
-              type: 'custom',
-            },
-          ],
-          type: 'namespace',
+  it.each(['at_01234567-89ab-5def-8abc-0123456789ab', 'at_01a19111-cab6-7a43-b046-6d06765a54c2'])(
+    'preserves the Codex canonical prefix and namespaced custom-tool semantics (%s)',
+    async (id) => {
+      let seenContext: TranscriptContext | undefined;
+      let seenPayload: unknown;
+      const faux = fauxProvider({
+        api: 'openai-codex-responses',
+        provider: 'openai-codex',
+        models: [{ id: 'gpt-5.6-sol', reasoning: true }],
+      });
+      const models = createModels();
+      models.setProvider(faux.provider);
+      const additionalTools = {
+        id,
+        role: 'developer',
+        tools: [
+          {
+            description: 'Local callable tools.',
+            name: 'functions',
+            tools: [
+              {
+                description: 'Run a command.',
+                format: { type: 'text' },
+                name: 'exec',
+                type: 'custom',
+              },
+            ],
+            type: 'namespace',
+          },
+        ],
+        type: 'additional_tools',
+      } as const;
+      const userInput = {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Run the check.' }],
+      } as const;
+      faux.setResponses([
+        async (context, options, _state, model) => {
+          seenContext = context;
+          seenPayload = await options?.onPayload?.(
+            { input: [userInput], model: 'gpt-5.6-sol' },
+            model
+          );
+          return fauxAssistantMessage(
+            { ...fauxToolCall('exec', { input: 'text(true);' }), namespace: 'functions' },
+            { stopReason: 'toolUse' }
+          );
         },
-      ],
-      type: 'additional_tools',
-    } as const;
-    const userInput = {
-      role: 'user',
-      content: [{ type: 'input_text', text: 'Run the check.' }],
-    } as const;
-    faux.setResponses([
-      async (context, options, _state, model) => {
-        seenContext = context;
-        seenPayload = await options?.onPayload?.(
-          { input: [userInput], model: 'gpt-5.6-sol' },
-          model
-        );
-        return fauxAssistantMessage(
-          { ...fauxToolCall('exec', { input: 'text(true);' }), namespace: 'functions' },
-          { stopReason: 'toolUse' }
-        );
-      },
-    ]);
+      ]);
 
-    const response = await new PiAiGatewayClient().createResponses(
-      providerConfig({
-        accountSlotId: 'team',
-        adapterId: 'openai-codex',
-        apiKey: null,
-        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-        id: 'codex-team',
-        models: ['openai-codex/gpt-5.6-sol'],
-        requiresApiKey: false,
-        subscriptionProviderId: 'openai-codex',
-      } as Partial<ResolvedLLMProviderConfig>),
-      {
+      const response = await new PiAiGatewayClient().createResponses(
+        providerConfig({
+          accountSlotId: 'team',
+          adapterId: 'openai-codex',
+          apiKey: null,
+          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          id: 'codex-team',
+          models: ['openai-codex/gpt-5.6-sol'],
+          requiresApiKey: false,
+          subscriptionProviderId: 'openai-codex',
+        } as Partial<ResolvedLLMProviderConfig>),
+        {
+          input: [additionalTools, userInput],
+          model: 'openai-codex/gpt-5.6-sol',
+          tools: [],
+        },
+        undefined,
+        {},
+        models
+      );
+
+      expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([]);
+      expect(seenPayload).toEqual({
         input: [additionalTools, userInput],
-        model: 'openai-codex/gpt-5.6-sol',
-        tools: [],
-      },
-      undefined,
-      {},
-      models
-    );
-
-    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([]);
-    expect(seenPayload).toEqual({
-      input: [additionalTools, userInput],
-      model: 'gpt-5.6-sol',
-      tools: additionalTools.tools,
-    });
-    expect(response.output).toContainEqual(
-      expect.objectContaining({
-        input: 'text(true);',
-        name: 'exec',
-        namespace: 'functions',
-        type: 'custom_tool_call',
-      })
-    );
-  });
+        model: 'gpt-5.6-sol',
+        tools: additionalTools.tools,
+      });
+      expect(response.output).toContainEqual(
+        expect.objectContaining({
+          input: 'text(true);',
+          name: 'exec',
+          namespace: 'functions',
+          type: 'custom_tool_call',
+        })
+      );
+    }
+  );
 
   it('rejects an undeclared provider tool call instead of publishing it', async () => {
     const faux = fauxProvider({
@@ -2074,418 +2080,418 @@ describe('PiAiGatewayClient', () => {
     ).rejects.toBeInstanceOf(GatewayUnsupportedFeatureError);
   });
 
-  it.each([
-    'gpt-5.6-sol',
-    'gpt-6-astra',
-  ])('preserves stock Codex tool search for %s', async (apiModelId) => {
-    const accessToken = [
-      'e30',
-      Buffer.from(
-        JSON.stringify({
-          'https://api.openai.com/auth': { chatgpt_account_id: 'account-search' },
-        })
-      ).toString('base64url'),
-      'signature',
-    ].join('.');
-    const credential: OAuthCredential = {
-      access: accessToken,
-      expires: Date.now() + 60 * 60_000,
-      refresh: 'refresh-search',
-      type: 'oauth',
-    };
-    const credentials: CredentialStore = {
-      async delete() {},
-      async list() {
-        return [{ providerId: 'openai-codex', type: 'oauth' }];
-      },
-      async modify(_providerId, fn) {
-        return fn(credential);
-      },
-      async read() {
-        return credential;
-      },
-    };
-    const models = createModels({ credentials });
-    models.setProvider(openaiCodexProvider());
-    const searchCall = {
-      arguments: '{"query":"local tools","limit":2}',
-      call_id: 'call_search',
-      id: 'fc_search',
-      name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
-      namespace: 'functions',
-      status: 'completed',
-      type: 'function_call',
-    } as const;
-    const secondSearchCall = {
-      arguments: '{"query":"more local tools","limit":1}',
-      call_id: 'call_search_again',
-      id: 'fc_search_again',
-      name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
-      status: 'completed',
-      type: 'function_call',
-    } as const;
-    const discoveredFunctionCall = {
-      arguments: '{"task_name":"inspect"}',
-      call_id: 'call_discovered_function',
-      id: 'fc_discovered_function',
-      name: 'send_message',
-      namespace: 'collaboration',
-      status: 'completed',
-      type: 'function_call',
-    } as const;
-    const discoveredCustomCall = {
-      call_id: 'call_discovered_custom',
-      id: 'ctc_discovered_custom',
-      input: 'text(true);',
-      name: 'run',
-      namespace: 'shell',
-      status: 'completed',
-      type: 'custom_tool_call',
-    } as const;
-    const responseBody = (items: readonly Record<string, unknown>[]): string => {
-      const events: Record<string, unknown>[] = [
-        {
-          response: { id: 'resp_search', model: apiModelId, output: [], status: 'in_progress' },
-          type: 'response.created',
+  it.each(['gpt-5.6-sol', 'gpt-6-astra'])(
+    'preserves stock Codex tool search for %s',
+    async (apiModelId) => {
+      const accessToken = [
+        'e30',
+        Buffer.from(
+          JSON.stringify({
+            'https://api.openai.com/auth': { chatgpt_account_id: 'account-search' },
+          })
+        ).toString('base64url'),
+        'signature',
+      ].join('.');
+      const credential: OAuthCredential = {
+        access: accessToken,
+        expires: Date.now() + 60 * 60_000,
+        refresh: 'refresh-search',
+        type: 'oauth',
+      };
+      const credentials: CredentialStore = {
+        async delete() {},
+        async list() {
+          return [{ providerId: 'openai-codex', type: 'oauth' }];
         },
-      ];
-      items.forEach((item, outputIndex) => {
-        if (item.type === 'function_call') {
-          events.push(
-            {
-              item: { ...item, arguments: '', status: 'in_progress' },
-              output_index: outputIndex,
-              type: 'response.output_item.added',
-            },
-            {
-              call_id: item.call_id,
-              delta: item.arguments,
-              output_index: outputIndex,
-              type: 'response.function_call_arguments.delta',
-            },
-            { item, output_index: outputIndex, type: 'response.output_item.done' }
-          );
-        } else {
-          events.push(
-            {
-              item: { ...item, input: '', status: 'in_progress' },
-              output_index: outputIndex,
-              type: 'response.output_item.added',
-            },
-            {
-              delta: item.input,
-              output_index: outputIndex,
-              type: 'response.custom_tool_call_input.delta',
-            },
-            { item, output_index: outputIndex, type: 'response.output_item.done' }
-          );
-        }
-      });
-      events.push({
-        response: {
-          id: 'resp_search',
-          model: apiModelId,
-          output: items,
-          status: 'completed',
-          usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
+        async modify(_providerId, fn) {
+          return fn(credential);
         },
-        type: 'response.completed',
-      });
-      return `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`;
-    };
-    const upstreamRequests: Record<string, unknown>[] = [];
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const requestBody = Buffer.from(init?.body as Uint8Array);
-      const decodedBody =
-        new Headers(init?.headers).get('content-encoding') === 'zstd'
-          ? zstdDecompressSync(requestBody)
-          : requestBody;
-      upstreamRequests.push(JSON.parse(decodedBody.toString()) as Record<string, unknown>);
-      const callIndex = upstreamRequests.length - 1;
-      return new Response(
-        callIndex === 0
-          ? responseBody([searchCall])
-          : responseBody([secondSearchCall, discoveredFunctionCall, discoveredCustomCall]),
-        { headers: { 'content-type': 'text/event-stream' }, status: 200 }
-      );
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const rootFunction = {
-      description: 'Root function sharing the exec name.',
-      name: 'exec',
-      parameters: { type: 'object', properties: { command: { type: 'string' } } },
-      type: 'function',
-    } as const;
-    const namespacedCustom = {
-      description: 'Namespaced custom tool sharing the exec name.',
-      format: { type: 'text' },
-      name: 'exec',
-      type: 'custom',
-    } as const;
-    const additionalTools = {
-      id: 'at_01234567-89ab-5def-8abc-0123456789ab',
-      role: 'developer',
-      tools: [
-        {
-          description: 'Search local callable tools.',
-          execution: 'client',
-          parameters: {
-            type: 'object',
-            properties: { query: { type: 'string' }, limit: { type: 'number' } },
-            required: ['query'],
-          },
-          type: 'tool_search',
+        async read() {
+          return credential;
         },
-        rootFunction,
-        {
-          description: 'Namespaced local callable tools.',
-          name: 'shell',
-          tools: [namespacedCustom],
-          type: 'namespace',
-        },
-      ],
-      type: 'additional_tools',
-    } as const;
-    const discoveredTools = [
-      {
-        description: 'Coordinate discovered work.',
-        name: 'collaboration',
-        tools: [
-          {
-            defer_loading: true,
-            description: 'Send one message.',
-            name: 'send_message',
-            parameters: { type: 'object', properties: { task_name: { type: 'string' } } },
-            type: 'function',
-          },
-        ],
-        type: 'namespace',
-      },
-      {
-        description: 'Discovered shell tools.',
-        name: 'shell',
-        tools: [
-          {
-            defer_loading: true,
-            description: 'Run source text.',
-            format: { type: 'text' },
-            name: 'run',
-            type: 'custom',
-          },
-        ],
-        type: 'namespace',
-      },
-    ] as const;
-    const nullableReasoning = {
-      content: null,
-      encrypted_content: null,
-      id: 'rs_nullable_content',
-      summary: [{ text: 'Retain the native reasoning item.', type: 'summary_text' }],
-      type: 'reasoning',
-    } as const;
-    const phasedMessage = {
-      content: [{ text: 'Preserve this output phase.', type: 'output_text' }],
-      id: 'msg_phase',
-      phase: 'commentary',
-      role: 'assistant',
-      type: 'message',
-    } as const;
-    const provider = providerConfig({
-      accountSlotId: 'team',
-      adapterId: 'openai-codex',
-      apiKey: null,
-      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-      id: 'codex-team',
-      models: [`openai-codex/${apiModelId}`],
-      modelMetadata: {
-        [`openai-codex/${apiModelId}`]: {
-          limit: { context: 256_000, output: 128_000 },
-          reasoning: true,
-        },
-      },
-      requiresApiKey: false,
-      subscriptionProviderId: 'openai-codex',
-    } as Partial<ResolvedLLMProviderConfig>);
-    const client = new PiAiGatewayClient();
-
-    try {
-      const first = await client.createResponses(
-        provider,
-        {
-          input: [
-            additionalTools,
-            { content: 'Retain this input-scoped instruction.', role: 'developer' },
-            { content: 'Find local tools.', role: 'user' },
-          ],
-          instructions: 'Retain this request instruction.',
-          model: `openai-codex/${apiModelId}`,
-          tools: [],
-        },
-        undefined,
-        {},
-        models
-      );
-      expect(upstreamRequests[0]?.model).toBe(apiModelId);
-      const publicSearchCall = first.output?.[0];
-      expect(publicSearchCall).toEqual({
-        arguments: { query: 'local tools', limit: 2 },
+      };
+      const models = createModels({ credentials });
+      models.setProvider(openaiCodexProvider());
+      const searchCall = {
+        arguments: '{"query":"local tools","limit":2}',
         call_id: 'call_search',
-        execution: 'client',
         id: 'fc_search',
+        name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+        namespace: 'functions',
         status: 'completed',
-        type: 'tool_search_call',
+        type: 'function_call',
+      } as const;
+      const secondSearchCall = {
+        arguments: '{"query":"more local tools","limit":1}',
+        call_id: 'call_search_again',
+        id: 'fc_search_again',
+        name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+        status: 'completed',
+        type: 'function_call',
+      } as const;
+      const discoveredFunctionCall = {
+        arguments: '{"task_name":"inspect"}',
+        call_id: 'call_discovered_function',
+        id: 'fc_discovered_function',
+        name: 'send_message',
+        namespace: 'collaboration',
+        status: 'completed',
+        type: 'function_call',
+      } as const;
+      const discoveredCustomCall = {
+        call_id: 'call_discovered_custom',
+        id: 'ctc_discovered_custom',
+        input: 'text(true);',
+        name: 'run',
+        namespace: 'shell',
+        status: 'completed',
+        type: 'custom_tool_call',
+      } as const;
+      const responseBody = (items: readonly Record<string, unknown>[]): string => {
+        const events: Record<string, unknown>[] = [
+          {
+            response: { id: 'resp_search', model: apiModelId, output: [], status: 'in_progress' },
+            type: 'response.created',
+          },
+        ];
+        items.forEach((item, outputIndex) => {
+          if (item.type === 'function_call') {
+            events.push(
+              {
+                item: { ...item, arguments: '', status: 'in_progress' },
+                output_index: outputIndex,
+                type: 'response.output_item.added',
+              },
+              {
+                call_id: item.call_id,
+                delta: item.arguments,
+                output_index: outputIndex,
+                type: 'response.function_call_arguments.delta',
+              },
+              { item, output_index: outputIndex, type: 'response.output_item.done' }
+            );
+          } else {
+            events.push(
+              {
+                item: { ...item, input: '', status: 'in_progress' },
+                output_index: outputIndex,
+                type: 'response.output_item.added',
+              },
+              {
+                delta: item.input,
+                output_index: outputIndex,
+                type: 'response.custom_tool_call_input.delta',
+              },
+              { item, output_index: outputIndex, type: 'response.output_item.done' }
+            );
+          }
+        });
+        events.push({
+          response: {
+            id: 'resp_search',
+            model: apiModelId,
+            output: items,
+            status: 'completed',
+            usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
+          },
+          type: 'response.completed',
+        });
+        return `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`;
+      };
+      const upstreamRequests: Record<string, unknown>[] = [];
+      const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const requestBody = Buffer.from(init?.body as Uint8Array);
+        const decodedBody =
+          new Headers(init?.headers).get('content-encoding') === 'zstd'
+            ? zstdDecompressSync(requestBody)
+            : requestBody;
+        upstreamRequests.push(JSON.parse(decodedBody.toString()) as Record<string, unknown>);
+        const callIndex = upstreamRequests.length - 1;
+        return new Response(
+          callIndex === 0
+            ? responseBody([searchCall])
+            : responseBody([secondSearchCall, discoveredFunctionCall, discoveredCustomCall]),
+          { headers: { 'content-type': 'text/event-stream' }, status: 200 }
+        );
       });
-
-      const stream = await client.createResponsesStream(
-        provider,
+      vi.stubGlobal('fetch', fetchMock);
+      const rootFunction = {
+        description: 'Root function sharing the exec name.',
+        name: 'exec',
+        parameters: { type: 'object', properties: { command: { type: 'string' } } },
+        type: 'function',
+      } as const;
+      const namespacedCustom = {
+        description: 'Namespaced custom tool sharing the exec name.',
+        format: { type: 'text' },
+        name: 'exec',
+        type: 'custom',
+      } as const;
+      const additionalTools = {
+        id: 'at_01234567-89ab-5def-8abc-0123456789ab',
+        role: 'developer',
+        tools: [
+          {
+            description: 'Search local callable tools.',
+            execution: 'client',
+            parameters: {
+              type: 'object',
+              properties: { query: { type: 'string' }, limit: { type: 'number' } },
+              required: ['query'],
+            },
+            type: 'tool_search',
+          },
+          rootFunction,
+          {
+            description: 'Namespaced local callable tools.',
+            name: 'shell',
+            tools: [namespacedCustom],
+            type: 'namespace',
+          },
+        ],
+        type: 'additional_tools',
+      } as const;
+      const discoveredTools = [
         {
-          input: [
-            additionalTools,
-            { content: 'Use the discovered tools.', role: 'user' },
-            nullableReasoning,
-            phasedMessage,
-            {
-              arguments: '{"command":"pwd"}',
-              call_id: 'call_root_exec',
-              id: 'fc_root_exec',
-              name: 'exec',
-              type: 'function_call',
-            },
-            { call_id: 'call_root_exec', output: '/workspace', type: 'function_call_output' },
-            {
-              call_id: 'call_namespaced_exec',
-              id: 'ctc_namespaced_exec',
-              input: 'text(false);',
-              name: 'exec',
-              namespace: 'shell',
-              type: 'custom_tool_call',
-            },
-            {
-              call_id: 'call_namespaced_exec',
-              output: 'false',
-              type: 'custom_tool_call_output',
-            },
-            publicSearchCall,
-            {
-              call_id: 'call_search',
-              execution: 'client',
-              status: 'completed',
-              tools: discoveredTools,
-              type: 'tool_search_output',
-            },
-          ],
-          model: `openai-codex/${apiModelId}`,
-          stream: true,
-          tools: [],
-        },
-        undefined,
-        {},
-        models
-      );
-      const body = await new Response(stream).text();
-      const events = body
-        .split('\n')
-        .filter((line) => line.startsWith('data: {'))
-        .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
-      expect(events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            item: expect.objectContaining({
-              arguments: { query: 'more local tools', limit: 1 },
-              call_id: 'call_search_again',
-              execution: 'client',
-              type: 'tool_search_call',
-            }),
-            type: 'response.output_item.done',
-          }),
-          expect.objectContaining({
-            item: expect.objectContaining({
-              arguments: '{"task_name":"inspect"}',
-              name: 'send_message',
-              namespace: 'collaboration',
-              type: 'function_call',
-            }),
-            type: 'response.output_item.done',
-          }),
-          expect.objectContaining({
-            item: expect.objectContaining({
-              input: 'text(true);',
-              name: 'run',
-              namespace: 'shell',
-              type: 'custom_tool_call',
-            }),
-            type: 'response.output_item.done',
-          }),
-        ])
-      );
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      const firstRequest = upstreamRequests[0];
-      const firstInput = firstRequest?.input as readonly Record<string, unknown>[];
-      const secondInput = upstreamRequests[1]?.input as readonly Record<string, unknown>[];
-      expect(firstRequest?.instructions).toBe('Retain this request instruction.');
-      expect(firstInput).toEqual([
-        {
-          ...additionalTools,
+          description: 'Coordinate discovered work.',
+          name: 'collaboration',
           tools: [
             {
-              description: 'Search local callable tools.',
-              name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
-              parameters: additionalTools.tools[0].parameters,
+              defer_loading: true,
+              description: 'Send one message.',
+              name: 'send_message',
+              parameters: { type: 'object', properties: { task_name: { type: 'string' } } },
               type: 'function',
             },
-            rootFunction,
+          ],
+          type: 'namespace',
+        },
+        {
+          description: 'Discovered shell tools.',
+          name: 'shell',
+          tools: [
             {
-              description: 'Namespaced local callable tools.',
-              name: 'shell',
-              tools: [namespacedCustom],
-              type: 'namespace',
+              defer_loading: true,
+              description: 'Run source text.',
+              format: { type: 'text' },
+              name: 'run',
+              type: 'custom',
             },
           ],
+          type: 'namespace',
         },
-        { content: 'Retain this input-scoped instruction.', role: 'developer' },
-        { content: 'Find local tools.', role: 'user' },
-      ]);
-      expect(secondInput).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            call_id: 'call_root_exec',
-            name: 'exec',
-            type: 'function_call',
-          }),
-          expect.objectContaining({
-            call_id: 'call_namespaced_exec',
-            name: 'exec',
-            namespace: 'shell',
-            type: 'custom_tool_call',
-          }),
-          expect.objectContaining({
-            call_id: 'call_search',
-            name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
-            type: 'function_call',
-          }),
-          {
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'output_text', text: 'Retain the native reasoning item.' }],
+      ] as const;
+      const nullableReasoning = {
+        content: null,
+        encrypted_content: null,
+        id: 'rs_nullable_content',
+        summary: [{ text: 'Retain the native reasoning item.', type: 'summary_text' }],
+        type: 'reasoning',
+      } as const;
+      const phasedMessage = {
+        content: [{ text: 'Preserve this output phase.', type: 'output_text' }],
+        id: 'msg_phase',
+        phase: 'commentary',
+        role: 'assistant',
+        type: 'message',
+      } as const;
+      const provider = providerConfig({
+        accountSlotId: 'team',
+        adapterId: 'openai-codex',
+        apiKey: null,
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        id: 'codex-team',
+        models: [`openai-codex/${apiModelId}`],
+        modelMetadata: {
+          [`openai-codex/${apiModelId}`]: {
+            limit: { context: 256_000, output: 128_000 },
+            reasoning: true,
           },
-          phasedMessage,
-        ])
-      );
-      const searchResultIndex = secondInput.findIndex(
-        (item) => item.type === 'function_call_output' && item.call_id === 'call_search'
-      );
-      expect(secondInput[searchResultIndex + 1]).toEqual({
-        role: 'developer',
-        tools: discoveredTools.map((namespace) => ({
-          ...namespace,
-          tools: namespace.tools.map(({ defer_loading: _deferLoading, ...tool }) => tool),
-        })),
-        type: 'additional_tools',
-      });
-    } finally {
-      vi.unstubAllGlobals();
+        },
+        requiresApiKey: false,
+        subscriptionProviderId: 'openai-codex',
+      } as Partial<ResolvedLLMProviderConfig>);
+      const client = new PiAiGatewayClient();
+
+      try {
+        const first = await client.createResponses(
+          provider,
+          {
+            input: [
+              additionalTools,
+              { content: 'Retain this input-scoped instruction.', role: 'developer' },
+              { content: 'Find local tools.', role: 'user' },
+            ],
+            instructions: 'Retain this request instruction.',
+            model: `openai-codex/${apiModelId}`,
+            tools: [],
+          },
+          undefined,
+          {},
+          models
+        );
+        expect(upstreamRequests[0]?.model).toBe(apiModelId);
+        const publicSearchCall = first.output?.[0];
+        expect(publicSearchCall).toEqual({
+          arguments: { query: 'local tools', limit: 2 },
+          call_id: 'call_search',
+          execution: 'client',
+          id: 'fc_search',
+          status: 'completed',
+          type: 'tool_search_call',
+        });
+
+        const stream = await client.createResponsesStream(
+          provider,
+          {
+            input: [
+              additionalTools,
+              { content: 'Use the discovered tools.', role: 'user' },
+              nullableReasoning,
+              phasedMessage,
+              {
+                arguments: '{"command":"pwd"}',
+                call_id: 'call_root_exec',
+                id: 'fc_root_exec',
+                name: 'exec',
+                type: 'function_call',
+              },
+              { call_id: 'call_root_exec', output: '/workspace', type: 'function_call_output' },
+              {
+                call_id: 'call_namespaced_exec',
+                id: 'ctc_namespaced_exec',
+                input: 'text(false);',
+                name: 'exec',
+                namespace: 'shell',
+                type: 'custom_tool_call',
+              },
+              {
+                call_id: 'call_namespaced_exec',
+                output: 'false',
+                type: 'custom_tool_call_output',
+              },
+              publicSearchCall,
+              {
+                call_id: 'call_search',
+                execution: 'client',
+                status: 'completed',
+                tools: discoveredTools,
+                type: 'tool_search_output',
+              },
+            ],
+            model: `openai-codex/${apiModelId}`,
+            stream: true,
+            tools: [],
+          },
+          undefined,
+          {},
+          models
+        );
+        const body = await new Response(stream).text();
+        const events = body
+          .split('\n')
+          .filter((line) => line.startsWith('data: {'))
+          .map((line) => JSON.parse(line.slice('data: '.length)) as Record<string, unknown>);
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              item: expect.objectContaining({
+                arguments: { query: 'more local tools', limit: 1 },
+                call_id: 'call_search_again',
+                execution: 'client',
+                type: 'tool_search_call',
+              }),
+              type: 'response.output_item.done',
+            }),
+            expect.objectContaining({
+              item: expect.objectContaining({
+                arguments: '{"task_name":"inspect"}',
+                name: 'send_message',
+                namespace: 'collaboration',
+                type: 'function_call',
+              }),
+              type: 'response.output_item.done',
+            }),
+            expect.objectContaining({
+              item: expect.objectContaining({
+                input: 'text(true);',
+                name: 'run',
+                namespace: 'shell',
+                type: 'custom_tool_call',
+              }),
+              type: 'response.output_item.done',
+            }),
+          ])
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        const firstRequest = upstreamRequests[0];
+        const firstInput = firstRequest?.input as readonly Record<string, unknown>[];
+        const secondInput = upstreamRequests[1]?.input as readonly Record<string, unknown>[];
+        expect(firstRequest?.instructions).toBe('Retain this request instruction.');
+        expect(firstInput).toEqual([
+          {
+            ...additionalTools,
+            tools: [
+              {
+                description: 'Search local callable tools.',
+                name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+                parameters: additionalTools.tools[0].parameters,
+                type: 'function',
+              },
+              rootFunction,
+              {
+                description: 'Namespaced local callable tools.',
+                name: 'shell',
+                tools: [namespacedCustom],
+                type: 'namespace',
+              },
+            ],
+          },
+          { content: 'Retain this input-scoped instruction.', role: 'developer' },
+          { content: 'Find local tools.', role: 'user' },
+        ]);
+        expect(secondInput).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              call_id: 'call_root_exec',
+              name: 'exec',
+              type: 'function_call',
+            }),
+            expect.objectContaining({
+              call_id: 'call_namespaced_exec',
+              name: 'exec',
+              namespace: 'shell',
+              type: 'custom_tool_call',
+            }),
+            expect.objectContaining({
+              call_id: 'call_search',
+              name: WORKER_CLIENT_TOOL_SEARCH_FUNCTION,
+              type: 'function_call',
+            }),
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Retain the native reasoning item.' }],
+            },
+            phasedMessage,
+          ])
+        );
+        const searchResultIndex = secondInput.findIndex(
+          (item) => item.type === 'function_call_output' && item.call_id === 'call_search'
+        );
+        expect(secondInput[searchResultIndex + 1]).toEqual({
+          role: 'developer',
+          tools: discoveredTools.map((namespace) => ({
+            ...namespace,
+            tools: namespace.tools.map(({ defer_loading: _deferLoading, ...tool }) => tool),
+          })),
+          type: 'additional_tools',
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
     }
-  });
+  );
 
   it.each([
     [false, 'functions', false],
@@ -2496,210 +2502,217 @@ describe('PiAiGatewayClient', () => {
     [true, 'functions', true],
     [false, 'mcp__openkit', true],
     [true, 'mcp__openkit', true],
-  ] as const)('preserves a Responses function loop (stream=%s, namespace=%s, anchored=%s)', async (stream, namespace, anchored) => {
-    const contexts: TranscriptContext[] = [];
-    const faux = fauxProvider({
-      api: 'openai-completions',
-      provider: 'openrouter',
-      models: [{ id: 'stealth/ox-alpha' }],
-    });
-    const models = createModels();
-    models.setProvider(faux.provider);
-    faux.setResponses([
-      async (context) => {
-        contexts.push(context);
-        return fauxAssistantMessage(
-          [
-            fauxToolCall(
-              getCurrentTools(context.messages)[0]!.name,
-              { path: 'README.md' },
-              { id: 'call_read' }
-            ),
-          ],
-          { stopReason: 'toolUse' }
-        );
-      },
-      async (context) => {
-        contexts.push(context);
-        return fauxAssistantMessage([fauxText('Verified.')]);
-      },
-    ]);
-    const provider = providerConfig({
-      adapterId: 'openrouter',
-      apiKey: 'test-secret',
-      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
-      id: 'openrouter-a1',
-      models: ['stealth/ox-alpha'],
-      subscriptionProviderId: 'openrouter',
-    });
-    const client = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient({ models }),
-    });
-    const request = {
-      model: 'stealth/ox-alpha',
-      instructions: 'Be precise.',
-      input: [
-        { role: 'developer', content: 'Keep this instruction.' },
-        { role: 'user', content: 'Read README.md.' },
-      ],
-      tools: [
+  ] as const)(
+    'preserves a Responses function loop (stream=%s, namespace=%s, anchored=%s)',
+    async (stream, namespace, anchored) => {
+      const contexts: TranscriptContext[] = [];
+      const faux = fauxProvider({
+        api: 'openai-completions',
+        provider: 'openrouter',
+        models: [{ id: 'stealth/ox-alpha' }],
+      });
+      const models = createModels();
+      models.setProvider(faux.provider);
+      faux.setResponses([
+        async (context) => {
+          contexts.push(context);
+          return fauxAssistantMessage(
+            [
+              fauxToolCall(
+                getCurrentTools(context.messages)[0]!.name,
+                { path: 'README.md' },
+                { id: 'call_read' }
+              ),
+            ],
+            { stopReason: 'toolUse' }
+          );
+        },
+        async (context) => {
+          contexts.push(context);
+          return fauxAssistantMessage([fauxText('Verified.')]);
+        },
+      ]);
+      const provider = providerConfig({
+        adapterId: 'openrouter',
+        apiKey: 'test-secret',
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+        id: 'openrouter-a1',
+        models: ['stealth/ox-alpha'],
+        subscriptionProviderId: 'openrouter',
+      });
+      const client = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+      });
+      const request = {
+        model: 'stealth/ox-alpha',
+        instructions: 'Be precise.',
+        input: [
+          { role: 'developer', content: 'Keep this instruction.' },
+          { role: 'user', content: 'Read README.md.' },
+        ],
+        tools: [
+          {
+            type: 'namespace',
+            name: namespace,
+            description: 'Workspace tools.',
+            tools: [
+              {
+                type: 'function',
+                name: 'read_file',
+                description: 'Read a file.',
+                parameters: { type: 'object', properties: { path: { type: 'string' } } },
+              },
+            ],
+          },
+        ],
+      };
+      if (namespace !== 'functions')
+        request.tools.push({ ...request.tools[0]!, name: 'another_namespace' });
+      const wireRequest = anchored
+        ? {
+            ...request,
+            tools: [],
+            input: [
+              { type: 'additional_tools', role: 'developer', tools: request.tools },
+              ...request.input,
+            ],
+          }
+        : request;
+      let call: Record<string, unknown>;
+      if (stream) {
+        const body = await new Response(
+          await client.createResponsesStream(provider, { ...wireRequest, stream: true }, { models })
+        ).text();
+        const events = body
+          .split('\n')
+          .filter((line) => line.startsWith('data: {'))
+          .map((line) => JSON.parse(line.slice(6)));
+        call = events.find(
+          (event) =>
+            event.type === 'response.output_item.done' && event.item?.type === 'function_call'
+        ).item;
+        expect(
+          events.find((event) => event.type === 'response.completed').response.output
+        ).toContainEqual(call);
+        expect(
+          events.find(
+            (event) =>
+              event.type === 'response.output_item.added' && event.item?.type === 'function_call'
+          ).item
+        ).toMatchObject({ name: 'read_file', ...(namespace === 'functions' ? {} : { namespace }) });
+        expect(
+          events.find((event) => event.type === 'response.function_call_arguments.done').name
+        ).toBe('read_file');
+      } else {
+        const response = await client.createResponses(provider, wireRequest, { models });
+        call = response.output.find((item) => item.type === 'function_call')!;
+      }
+      expect(call).toMatchObject({
+        type: 'function_call',
+        name: 'read_file',
+        call_id: 'call_read',
+        arguments: '{"path":"README.md"}',
+      });
+      expect(call.namespace ?? 'functions').toBe(namespace);
+      const response = await client.createResponses(
+        provider,
         {
-          type: 'namespace',
-          name: namespace,
-          description: 'Workspace tools.',
-          tools: [
-            {
-              type: 'function',
-              name: 'read_file',
-              description: 'Read a file.',
-              parameters: { type: 'object', properties: { path: { type: 'string' } } },
-            },
+          ...wireRequest,
+          input: [
+            ...wireRequest.input,
+            { ...call, namespace },
+            { type: 'function_call_output', call_id: call.call_id, output: 'File contents.' },
           ],
         },
-      ],
-    };
-    if (namespace !== 'functions')
-      request.tools.push({ ...request.tools[0]!, name: 'another_namespace' });
-    const wireRequest = anchored
-      ? {
-          ...request,
-          tools: [],
-          input: [
-            { type: 'additional_tools', role: 'developer', tools: request.tools },
-            ...request.input,
-          ],
-        }
-      : request;
-    let call: Record<string, unknown>;
-    if (stream) {
-      const body = await new Response(
-        await client.createResponsesStream(provider, { ...wireRequest, stream: true }, { models })
-      ).text();
-      const events = body
-        .split('\n')
-        .filter((line) => line.startsWith('data: {'))
-        .map((line) => JSON.parse(line.slice(6)));
-      call = events.find(
-        (event) =>
-          event.type === 'response.output_item.done' && event.item?.type === 'function_call'
-      ).item;
-      expect(
-        events.find((event) => event.type === 'response.completed').response.output
-      ).toContainEqual(call);
-      expect(
-        events.find(
-          (event) =>
-            event.type === 'response.output_item.added' && event.item?.type === 'function_call'
-        ).item
-      ).toMatchObject({ name: 'read_file', ...(namespace === 'functions' ? {} : { namespace }) });
-      expect(
-        events.find((event) => event.type === 'response.function_call_arguments.done').name
-      ).toBe('read_file');
-    } else {
-      const response = await client.createResponses(provider, wireRequest, { models });
-      call = response.output.find((item) => item.type === 'function_call')!;
-    }
-    expect(call).toMatchObject({
-      type: 'function_call',
-      name: 'read_file',
-      call_id: 'call_read',
-      arguments: '{"path":"README.md"}',
-    });
-    expect(call.namespace ?? 'functions').toBe(namespace);
-    const response = await client.createResponses(
-      provider,
-      {
-        ...wireRequest,
-        input: [
-          ...wireRequest.input,
-          { ...call, namespace },
-          { type: 'function_call_output', call_id: call.call_id, output: 'File contents.' },
-        ],
-      },
-      { models }
-    );
-    expect(response.output).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'message',
-          content: [expect.objectContaining({ text: 'Verified.' })],
-        }),
-      ])
-    );
-    expect(contexts).toHaveLength(2);
-    expect(getCurrentSystemPrompt(contexts[0]!.messages)).toBe(
-      'Be precise.\n\nKeep this instruction.'
-    );
-    const providerName = getCurrentTools(contexts[0]!.messages)[0]!.name;
-    expect(providerName).toMatch(/^[a-zA-Z0-9_]{1,64}$/);
-    if (namespace !== 'functions') {
-      expect(getCurrentTools(contexts[0]!.messages)[0]!.description).toContain(
-        `${namespace}.read_file`
+        { models }
       );
-    }
-    expect(new Set(getCurrentTools(contexts[0]!.messages).map((tool) => tool.name)).size).toBe(
-      request.tools.length
-    );
-    expect(getCurrentTools(contexts[0]!.messages)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          name: providerName,
-          description: expect.stringContaining('Workspace tools.\n\nRead a file.'),
-        }),
-      ])
-    );
-    expect(contexts[1]?.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'assistant',
-          content: [
-            expect.objectContaining({
-              type: 'toolCall',
-              id: expect.stringContaining('call_read'),
-              name: providerName,
-              arguments: { path: 'README.md' },
-            }),
-          ],
-        }),
-      ])
-    );
-    expect(contexts[1]?.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'toolResult',
-          toolName: providerName,
-          content: [{ type: 'text', text: 'File contents.' }],
-        }),
-      ])
-    );
-    for (const tools of [
-      [{ ...request.tools[0], name: 'functions' }, request.tools[0]!.tools[0]],
-      [{ type: 'custom', name: 'patch', format: { type: 'text' } }],
-      [request.tools[0]!, { ...request.tools[0]!.tools[0]!, name: providerName }],
-    ]) {
-      await expect(
-        client.createResponses(provider, { ...request, tools }, { models })
-      ).rejects.toThrow(GatewayUnsupportedFeatureError);
-    }
-    expect(contexts).toHaveLength(2);
-    faux.setResponses([
-      async () =>
-        fauxAssistantMessage([fauxToolCall('undeclared', {}, { id: 'bad_call' })], {
-          stopReason: 'toolUse',
-        }),
-    ]);
-    if (stream) {
-      await expect(
-        new Response(
-          await client.createResponsesStream(provider, { ...wireRequest, stream: true }, { models })
-        ).text()
-      ).rejects.toThrow('undeclared provider tool output');
-    } else {
-      await expect(client.createResponses(provider, wireRequest, { models })).rejects.toThrow(
-        'undeclared provider tool output'
+      expect(response.output).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'message',
+            content: [expect.objectContaining({ text: 'Verified.' })],
+          }),
+        ])
       );
+      expect(contexts).toHaveLength(2);
+      expect(getCurrentSystemPrompt(contexts[0]!.messages)).toBe(
+        'Be precise.\n\nKeep this instruction.'
+      );
+      const providerName = getCurrentTools(contexts[0]!.messages)[0]!.name;
+      expect(providerName).toMatch(/^[a-zA-Z0-9_]{1,64}$/);
+      if (namespace !== 'functions') {
+        expect(getCurrentTools(contexts[0]!.messages)[0]!.description).toContain(
+          `${namespace}.read_file`
+        );
+      }
+      expect(new Set(getCurrentTools(contexts[0]!.messages).map((tool) => tool.name)).size).toBe(
+        request.tools.length
+      );
+      expect(getCurrentTools(contexts[0]!.messages)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: providerName,
+            description: expect.stringContaining('Workspace tools.\n\nRead a file.'),
+          }),
+        ])
+      );
+      expect(contexts[1]?.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'assistant',
+            content: [
+              expect.objectContaining({
+                type: 'toolCall',
+                id: expect.stringContaining('call_read'),
+                name: providerName,
+                arguments: { path: 'README.md' },
+              }),
+            ],
+          }),
+        ])
+      );
+      expect(contexts[1]?.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'toolResult',
+            toolName: providerName,
+            content: [{ type: 'text', text: 'File contents.' }],
+          }),
+        ])
+      );
+      for (const tools of [
+        [{ ...request.tools[0], name: 'functions' }, request.tools[0]!.tools[0]],
+        [{ type: 'custom', name: 'patch', format: { type: 'text' } }],
+        [request.tools[0]!, { ...request.tools[0]!.tools[0]!, name: providerName }],
+      ]) {
+        await expect(
+          client.createResponses(provider, { ...request, tools }, { models })
+        ).rejects.toThrow(GatewayUnsupportedFeatureError);
+      }
+      expect(contexts).toHaveLength(2);
+      faux.setResponses([
+        async () =>
+          fauxAssistantMessage([fauxToolCall('undeclared', {}, { id: 'bad_call' })], {
+            stopReason: 'toolUse',
+          }),
+      ]);
+      if (stream) {
+        await expect(
+          new Response(
+            await client.createResponsesStream(
+              provider,
+              { ...wireRequest, stream: true },
+              { models }
+            )
+          ).text()
+        ).rejects.toThrow('undeclared provider tool output');
+      } else {
+        await expect(client.createResponses(provider, wireRequest, { models })).rejects.toThrow(
+          'undeclared provider tool output'
+        );
+      }
     }
-  });
+  );
 
   it('advertises function-only additional_tools when bridging Responses through Chat Completions', async () => {
     let seenContext: TranscriptContext | undefined;
@@ -4465,79 +4478,77 @@ describe('Round 3 observed terminal failure precedes callback abort', () => {
     }
   }
 
-  it.each([
-    'chat',
-    'native-responses',
-    'bridged-responses',
-  ] as const)('%s keeps exact cancellation before any terminal failure', async (path) => {
-    const { faux, models, provider, client } = terminalOrderingFixture(path);
-    const events = createAssistantMessageEventStream();
-    let started!: () => void;
-    const active = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    Object.assign(faux.provider, {
-      stream: () => {
-        started();
-        return events;
-      },
-    });
-    const caller = new AbortController();
-    const reason = new Error('caller cancellation before terminal');
-    const usage = vi.fn();
-    const operation =
-      path === 'chat'
-        ? client.createChatCompletion(
-            provider,
-            { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
-            usage,
-            { signal: caller.signal },
-            models
-          )
-        : client.createResponses(
-            provider,
-            { model: 'gpt-test', input: 'hello' },
-            usage,
-            { signal: caller.signal },
-            models
-          );
-    const outcome = operation.catch((error: unknown) => error);
-    await active;
-    caller.abort(reason);
-    expect(await outcome).toBe(reason);
-    expect(reason).toMatchObject({ failure: { kind: 'cancelled', settled: false } });
-    expect(usage).not.toHaveBeenCalled();
-    events.end(fauxAssistantMessage([]));
-  });
+  it.each(['chat', 'native-responses', 'bridged-responses'] as const)(
+    '%s keeps exact cancellation before any terminal failure',
+    async (path) => {
+      const { faux, models, provider, client } = terminalOrderingFixture(path);
+      const events = createAssistantMessageEventStream();
+      let started!: () => void;
+      const active = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      Object.assign(faux.provider, {
+        stream: () => {
+          started();
+          return events;
+        },
+      });
+      const caller = new AbortController();
+      const reason = new Error('caller cancellation before terminal');
+      const usage = vi.fn();
+      const operation =
+        path === 'chat'
+          ? client.createChatCompletion(
+              provider,
+              { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+              usage,
+              { signal: caller.signal },
+              models
+            )
+          : client.createResponses(
+              provider,
+              { model: 'gpt-test', input: 'hello' },
+              usage,
+              { signal: caller.signal },
+              models
+            );
+      const outcome = operation.catch((error: unknown) => error);
+      await active;
+      caller.abort(reason);
+      expect(await outcome).toBe(reason);
+      expect(reason).toMatchObject({ failure: { kind: 'cancelled', settled: false } });
+      expect(usage).not.toHaveBeenCalled();
+      events.end(fauxAssistantMessage([]));
+    }
+  );
 
-  it.each([
-    'chat',
-    'native-responses',
-    'bridged-responses',
-  ] as const)('%s retains cancellation from successful terminal usage', async (path) => {
-    const { faux, models, provider, client } = terminalOrderingFixture(path);
-    faux.setResponses([fauxAssistantMessage('Successful Provider answer.')]);
-    const caller = new AbortController();
-    const reason = new Error('caller stops before successful result release');
-    const usage = vi.fn(() => caller.abort(reason));
-    const operation =
-      path === 'chat'
-        ? client.createChatCompletion(
-            provider,
-            { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
-            usage,
-            { signal: caller.signal },
-            models
-          )
-        : client.createResponses(
-            provider,
-            { model: 'gpt-test', input: 'hello' },
-            usage,
-            { signal: caller.signal },
-            models
-          );
-    await expect(operation).rejects.toBe(reason);
-    expect(usage).toHaveBeenCalledTimes(1);
-    expect(faux.state.callCount).toBe(1);
-  });
+  it.each(['chat', 'native-responses', 'bridged-responses'] as const)(
+    '%s retains cancellation from successful terminal usage',
+    async (path) => {
+      const { faux, models, provider, client } = terminalOrderingFixture(path);
+      faux.setResponses([fauxAssistantMessage('Successful Provider answer.')]);
+      const caller = new AbortController();
+      const reason = new Error('caller stops before successful result release');
+      const usage = vi.fn(() => caller.abort(reason));
+      const operation =
+        path === 'chat'
+          ? client.createChatCompletion(
+              provider,
+              { model: 'gpt-test', messages: [{ role: 'user', content: 'hello' }] },
+              usage,
+              { signal: caller.signal },
+              models
+            )
+          : client.createResponses(
+              provider,
+              { model: 'gpt-test', input: 'hello' },
+              usage,
+              { signal: caller.signal },
+              models
+            );
+      await expect(operation).rejects.toBe(reason);
+      expect(usage).toHaveBeenCalledTimes(1);
+      expect(faux.state.callCount).toBe(1);
+    }
+  );
 });

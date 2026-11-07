@@ -285,23 +285,21 @@ describe('app run script', () => {
       launch: false,
     },
     { label: 'seed-only without signing secret', source: 'seed', secret: '', launch: false },
-  ])('preserves safe app launch and backup mounts with $label', async ({
-    source,
-    secret,
-    launch,
-  }) => {
-    const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
-    const bin = await mkdtemp(join(tmpdir(), 'openkit-app-bin-'));
-    const argvPath = join(bin, 'docker-argv');
-    const effectsPath = join(bin, 'docker-effects');
-    const envFile = join(dataRoot, 'secrets', 'openkit.env');
-    if (source === 'file') {
-      mkdirSync(dirname(envFile), { recursive: true });
-      writeFileSync(envFile, `BETTER_AUTH_SECRET='${secret}'\n`, { mode: 0o600 });
-    }
-    writeFileSync(
-      join(bin, 'docker'),
-      `#!/usr/bin/env bash
+  ])(
+    'preserves safe app launch and backup mounts with $label',
+    async ({ source, secret, launch }) => {
+      const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-app-data-'));
+      const bin = await mkdtemp(join(tmpdir(), 'openkit-app-bin-'));
+      const argvPath = join(bin, 'docker-argv');
+      const effectsPath = join(bin, 'docker-effects');
+      const envFile = join(dataRoot, 'secrets', 'openkit.env');
+      if (source === 'file') {
+        mkdirSync(dirname(envFile), { recursive: true });
+        writeFileSync(envFile, `BETTER_AUTH_SECRET='${secret}'\n`, { mode: 0o600 });
+      }
+      writeFileSync(
+        join(bin, 'docker'),
+        `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\0' "$@" >> "\${DOCKER_EFFECTS_FILE}"
 if [[ "\${1:-}" == image && "\${2:-}" == inspect ]]; then
@@ -317,55 +315,56 @@ if [[ "\${1:-}" == run ]]; then
 fi
 exit 99
 `
-    );
-    writeFileSync(join(bin, 'curl'), '#!/usr/bin/env bash\nexit 0\n');
-    chmodSync(join(bin, 'docker'), 0o755);
-    chmodSync(join(bin, 'curl'), 0o755);
+      );
+      writeFileSync(join(bin, 'curl'), '#!/usr/bin/env bash\nexit 0\n');
+      chmodSync(join(bin, 'docker'), 0o755);
+      chmodSync(join(bin, 'curl'), 0o755);
 
-    const result = spawnSync('bash', [appRunScript], {
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
-        DOCKER_ARGV_FILE: argvPath,
-        DOCKER_EFFECTS_FILE: effectsPath,
-        BETTER_AUTH_SECRET: source === 'process' ? secret : '',
-        OPENKIT_TEST_EXPECTED_AUTH_SECRET: secret,
-        OPENKIT_APP_ENV_FILE: envFile,
-        OPENKIT_APP_SEED_ONLY: source === 'seed' ? '1' : '0',
-        OPENKIT_APP_DATA_ROOT: dataRoot,
-        OPENKIT_APP_IMAGE: 'openkit/app:fixture',
-        OPENKIT_APP_CONTAINER: 'openkit-app-fixture',
-        OPENKIT_APP_PORT: '18099',
-      },
-    });
+      const result = spawnSync('bash', [appRunScript], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          DOCKER_ARGV_FILE: argvPath,
+          DOCKER_EFFECTS_FILE: effectsPath,
+          BETTER_AUTH_SECRET: source === 'process' ? secret : '',
+          OPENKIT_TEST_EXPECTED_AUTH_SECRET: secret,
+          OPENKIT_APP_ENV_FILE: envFile,
+          OPENKIT_APP_SEED_ONLY: source === 'seed' ? '1' : '0',
+          OPENKIT_APP_DATA_ROOT: dataRoot,
+          OPENKIT_APP_IMAGE: 'openkit/app:fixture',
+          OPENKIT_APP_CONTAINER: 'openkit-app-fixture',
+          OPENKIT_APP_PORT: '18099',
+        },
+      });
 
-    const output = `${result.stderr}\n${result.stdout}`;
-    if (secret) expect(output).not.toContain(secret);
-    if (!launch) {
-      if (source === 'seed') {
-        expect(result.status, output).toBe(0);
-        expect(result.stdout).toContain('Seed-only mode complete.');
-      } else {
-        expect(result.status, output).not.toBe(0);
-        expect(output).toContain('BETTER_AUTH_SECRET');
+      const output = `${result.stderr}\n${result.stdout}`;
+      if (secret) expect(output).not.toContain(secret);
+      if (!launch) {
+        if (source === 'seed') {
+          expect(result.status, output).toBe(0);
+          expect(result.stdout).toContain('Seed-only mode complete.');
+        } else {
+          expect(result.status, output).not.toBe(0);
+          expect(output).toContain('BETTER_AUTH_SECRET');
+        }
+        expect(existsSync(effectsPath)).toBe(false);
+        expect(existsSync(argvPath)).toBe(false);
+        return;
       }
-      expect(existsSync(effectsPath)).toBe(false);
-      expect(existsSync(argvPath)).toBe(false);
-      return;
+      expect(result.status, output).toBe(0);
+      const args = readFileSync(argvPath, 'utf8').split('\0').filter(Boolean);
+      expect(args).toContain('OPENKIT_CORE_MODE=server');
+      const authOriginIndex = args.indexOf('BETTER_AUTH_URL=http://127.0.0.1:18099');
+      expect(authOriginIndex).toBeGreaterThan(0);
+      expect(args[authOriginIndex - 1]).toBe('--env');
+      const signingNameIndex = args.indexOf('BETTER_AUTH_SECRET');
+      expect(signingNameIndex).toBeGreaterThan(0);
+      expect(args[signingNameIndex - 1]).toBe('--env');
+      expect(args.join(' ')).not.toContain(secret);
+      expect(args).toContain(`${dataRoot}:/data/openkit`);
+      expect(args).toContain(`${dataRoot}.backups:/data/openkit.backups`);
+      expect(existsSync(`${dataRoot}.backups`)).toBe(true);
     }
-    expect(result.status, output).toBe(0);
-    const args = readFileSync(argvPath, 'utf8').split('\0').filter(Boolean);
-    expect(args).toContain('OPENKIT_CORE_MODE=server');
-    const authOriginIndex = args.indexOf('BETTER_AUTH_URL=http://127.0.0.1:18099');
-    expect(authOriginIndex).toBeGreaterThan(0);
-    expect(args[authOriginIndex - 1]).toBe('--env');
-    const signingNameIndex = args.indexOf('BETTER_AUTH_SECRET');
-    expect(signingNameIndex).toBeGreaterThan(0);
-    expect(args[signingNameIndex - 1]).toBe('--env');
-    expect(args.join(' ')).not.toContain(secret);
-    expect(args).toContain(`${dataRoot}:/data/openkit`);
-    expect(args).toContain(`${dataRoot}.backups:/data/openkit.backups`);
-    expect(existsSync(`${dataRoot}.backups`)).toBe(true);
-  });
+  );
 });

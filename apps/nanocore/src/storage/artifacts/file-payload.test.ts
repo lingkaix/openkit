@@ -68,24 +68,23 @@ describe('private streamed Artifact payloads', () => {
     expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
   });
 
-  it.each([
-    'short',
-    'long',
-    'digest',
-  ])('refuses %s metadata and removes incomplete private staging', async (fault) => {
-    const state = await fixture();
-    const bytes = Buffer.from('actual file');
-    await expect(
-      stageArtifactPayload({
-        ...state,
-        source: Readable.from([bytes]),
-        expectedByteLength: bytes.length + (fault === 'short' ? 1 : fault === 'long' ? -1 : 0),
-        expectedDigest: digest(fault === 'digest' ? Buffer.from('changed file') : bytes),
-      })
-    ).rejects.toThrow('file byte');
-    expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
-    state.reservation.release();
-  });
+  it.each(['short', 'long', 'digest'])(
+    'refuses %s metadata and removes incomplete private staging',
+    async (fault) => {
+      const state = await fixture();
+      const bytes = Buffer.from('actual file');
+      await expect(
+        stageArtifactPayload({
+          ...state,
+          source: Readable.from([bytes]),
+          expectedByteLength: bytes.length + (fault === 'short' ? 1 : fault === 'long' ? -1 : 0),
+          expectedDigest: digest(fault === 'digest' ? Buffer.from('changed file') : bytes),
+        })
+      ).rejects.toThrow('file byte');
+      expect(await readdir(join(state.root, 'workspaces', '.staging'))).toEqual([]);
+      state.reservation.release();
+    }
+  );
 
   it('counts separate file streams against the same submission limit before writing', async () => {
     const state = await fixture();

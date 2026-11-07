@@ -396,155 +396,162 @@ describe('workspace review application', () => {
     'contentDigest',
     'changeSetId',
     'targetRootIdentity',
-  ] as const)('rejects filesystem staging with mismatched %s before mutating the target', async (lineageField) => {
-    const suffix = lineageField.toLowerCase();
-    const dataRoot = mkdtempSync(join(tmpdir(), `openkit-filesystem-lineage-${suffix}-data-`));
-    const targetRoot = mkdtempSync(join(tmpdir(), `openkit-filesystem-lineage-${suffix}-target-`));
-    const workerRoot = mkdtempSync(join(tmpdir(), `openkit-filesystem-lineage-${suffix}-worker-`));
-    const stagingRoot = mkdtempSync(
-      join(tmpdir(), `openkit-filesystem-lineage-${suffix}-staging-`)
-    );
-    temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
+  ] as const)(
+    'rejects filesystem staging with mismatched %s before mutating the target',
+    async (lineageField) => {
+      const suffix = lineageField.toLowerCase();
+      const dataRoot = mkdtempSync(join(tmpdir(), `openkit-filesystem-lineage-${suffix}-data-`));
+      const targetRoot = mkdtempSync(
+        join(tmpdir(), `openkit-filesystem-lineage-${suffix}-target-`)
+      );
+      const workerRoot = mkdtempSync(
+        join(tmpdir(), `openkit-filesystem-lineage-${suffix}-worker-`)
+      );
+      const stagingRoot = mkdtempSync(
+        join(tmpdir(), `openkit-filesystem-lineage-${suffix}-staging-`)
+      );
+      temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
 
-    const workspaceId = testEntityId('ws', `ws_filesystem_lineage_${suffix}`);
-    const reviewId = `swr_filesystem_lineage_${suffix}`;
-    const changeSetId = `wcs_filesystem_lineage_${suffix}`;
-    const timestamp = '2026-07-11T00:00:00.000Z';
-    writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
-    writeFileSync(join(workerRoot, 'review.txt'), 'after\n', 'utf8');
+      const workspaceId = testEntityId('ws', `ws_filesystem_lineage_${suffix}`);
+      const reviewId = `swr_filesystem_lineage_${suffix}`;
+      const changeSetId = `wcs_filesystem_lineage_${suffix}`;
+      const timestamp = '2026-07-11T00:00:00.000Z';
+      writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
+      writeFileSync(join(workerRoot, 'review.txt'), 'after\n', 'utf8');
 
-    const before = await createFilesystemSnapshotManifest({
-      createdAt: timestamp,
-      resourceId: 'fs_default',
-      rootPath: targetRoot,
-      workspaceId,
-    });
-    const after = await createFilesystemSnapshotManifest({
-      createdAt: timestamp,
-      resourceId: 'fs_default',
-      rootPath: workerRoot,
-      workspaceId,
-    });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
-      after,
-      before,
-      changeSetId,
-      createdAt: timestamp,
-      inputSnapshotId: `wis_filesystem_lineage_${suffix}`,
-      materializationRecordId: `wmr_filesystem_lineage_${suffix}`,
-    });
-    await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
-
-    const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
-    const store = new FsStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    try {
-      const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
-        artifactId: testEntityId('ar', `ar_filesystem_lineage_${suffix}`),
-        changeSet,
-        patchPayload: null,
-        review: {
-          actionCenterRowId: `workspace-review:${reviewId}`,
-          changeSetId,
-          createdAt: timestamp,
-          diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
-          id: reviewId,
-          riskSummary: '1 changed path staged for human review.',
-          staging: {
-            branch: null,
-            ref: `filesystem-staging://${reviewId}`,
-            strategy: 'filesystem_staging',
-          },
-          status: 'pending',
-          updatedAt: timestamp,
-          validation: [],
-          workspaceId,
-        },
-      };
-      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
-      recordWorkspaceSyncReview(workspaceDb, { item });
-      recordFilesystemWorkspaceStagingRoot(workspaceDb, {
-        before: {
-          ...before,
-          contentDigest:
-            lineageField === 'contentDigest' ? `sha256:${'0'.repeat(64)}` : before.contentDigest,
-          resourceId: lineageField === 'resourceId' ? 'fs_other' : before.resourceId,
-          workspaceId:
-            lineageField === 'workspaceId'
-              ? 'ws_00000000-0000-71f5-922f-6fd42f52f580'
-              : before.workspaceId,
-        },
-        changeSetId: lineageField === 'changeSetId' ? 'wcs_other' : changeSetId,
+      const before = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
-        reviewId,
-        stagingRootPath: stagingRoot,
-        targetRootPath: targetRoot,
+        resourceId: 'fs_default',
+        rootPath: targetRoot,
         workspaceId,
       });
-      let originalTargetRoot: string | null = null;
-      if (lineageField === 'targetRootIdentity') {
-        originalTargetRoot = `${targetRoot}-original`;
-        temporaryRoots.push(originalTargetRoot);
-        renameSync(targetRoot, originalTargetRoot);
-        mkdirSync(targetRoot);
-        writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
-      }
+      const after = await createFilesystemSnapshotManifest({
+        createdAt: timestamp,
+        resourceId: 'fs_default',
+        rootPath: workerRoot,
+        workspaceId,
+      });
+      const changeSet = buildFilesystemWorkspaceChangeSet({
+        after,
+        before,
+        changeSetId,
+        createdAt: timestamp,
+        inputSnapshotId: `wis_filesystem_lineage_${suffix}`,
+        materializationRecordId: `wmr_filesystem_lineage_${suffix}`,
+      });
+      await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
 
-      let decisionError: unknown;
+      const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+      const store = new FsStore({ dataRoot });
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       try {
-        await decideWorkspaceSyncReview({
-          authorityActor: LOCAL_AUTHORITY_ACTOR,
-          coreDb,
-          decidedAt: timestamp,
-          decision: 'accepted',
-          requestId: `request-filesystem-lineage-${suffix}`,
+        const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+          artifactId: testEntityId('ar', `ar_filesystem_lineage_${suffix}`),
+          changeSet,
+          patchPayload: null,
+          review: {
+            actionCenterRowId: `workspace-review:${reviewId}`,
+            changeSetId,
+            createdAt: timestamp,
+            diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
+            id: reviewId,
+            riskSummary: '1 changed path staged for human review.',
+            staging: {
+              branch: null,
+              ref: `filesystem-staging://${reviewId}`,
+              strategy: 'filesystem_staging',
+            },
+            status: 'pending',
+            updatedAt: timestamp,
+            validation: [],
+            workspaceId,
+          },
+        };
+        recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+        recordWorkspaceSyncReview(workspaceDb, { item });
+        recordFilesystemWorkspaceStagingRoot(workspaceDb, {
+          before: {
+            ...before,
+            contentDigest:
+              lineageField === 'contentDigest' ? `sha256:${'0'.repeat(64)}` : before.contentDigest,
+            resourceId: lineageField === 'resourceId' ? 'fs_other' : before.resourceId,
+            workspaceId:
+              lineageField === 'workspaceId'
+                ? 'ws_00000000-0000-71f5-922f-6fd42f52f580'
+                : before.workspaceId,
+          },
+          changeSetId: lineageField === 'changeSetId' ? 'wcs_other' : changeSetId,
+          createdAt: timestamp,
           reviewId,
-          store,
-          workspaceDb,
+          stagingRootPath: stagingRoot,
+          targetRootPath: targetRoot,
           workspaceId,
         });
-      } catch (error) {
-        decisionError = error;
-      }
+        let originalTargetRoot: string | null = null;
+        if (lineageField === 'targetRootIdentity') {
+          originalTargetRoot = `${targetRoot}-original`;
+          temporaryRoots.push(originalTargetRoot);
+          renameSync(targetRoot, originalTargetRoot);
+          mkdirSync(targetRoot);
+          writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
+        }
 
-      expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('before\n');
-      expect(decisionError).toBeInstanceOf(Error);
-      expect(getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId)?.review.status).toBe(
-        'pending'
-      );
-      if (originalTargetRoot) {
-        rmSync(targetRoot, { force: true, recursive: true });
-        renameSync(originalTargetRoot, targetRoot);
-        const retried = await decideWorkspaceSyncReview({
-          authorityActor: LOCAL_AUTHORITY_ACTOR,
-          coreDb,
-          decidedAt: '2026-07-11T00:00:01.000Z',
-          decision: 'accepted',
-          requestId: `request-filesystem-lineage-${suffix}-retry`,
-          reviewId,
-          store,
-          workspaceDb,
-          workspaceId,
-        });
+        let decisionError: unknown;
+        try {
+          await decideWorkspaceSyncReview({
+            authorityActor: LOCAL_AUTHORITY_ACTOR,
+            coreDb,
+            decidedAt: timestamp,
+            decision: 'accepted',
+            requestId: `request-filesystem-lineage-${suffix}`,
+            reviewId,
+            store,
+            workspaceDb,
+            workspaceId,
+          });
+        } catch (error) {
+          decisionError = error;
+        }
 
-        expect(retried.workspaceApplyResult?.appliedAt).toBe(timestamp);
-        const attribution = workspaceDb.sqlite
-          .prepare(
-            "SELECT actor_json FROM audit_events WHERE action IN ('workspace.apply.finish', 'workspace.review.decide') ORDER BY action"
-          )
-          .all() as Array<{ actor_json: string }>;
-        expect(attribution).toHaveLength(2);
-        expect(attribution.map((row) => JSON.parse(row.actor_json))).toEqual([
-          LOCAL_AUTHORITY_ACTOR,
-          LOCAL_AUTHORITY_ACTOR,
-        ]);
+        expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('before\n');
+        expect(decisionError).toBeInstanceOf(Error);
+        expect(getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId)?.review.status).toBe(
+          'pending'
+        );
+        if (originalTargetRoot) {
+          rmSync(targetRoot, { force: true, recursive: true });
+          renameSync(originalTargetRoot, targetRoot);
+          const retried = await decideWorkspaceSyncReview({
+            authorityActor: LOCAL_AUTHORITY_ACTOR,
+            coreDb,
+            decidedAt: '2026-07-11T00:00:01.000Z',
+            decision: 'accepted',
+            requestId: `request-filesystem-lineage-${suffix}-retry`,
+            reviewId,
+            store,
+            workspaceDb,
+            workspaceId,
+          });
+
+          expect(retried.workspaceApplyResult?.appliedAt).toBe(timestamp);
+          const attribution = workspaceDb.sqlite
+            .prepare(
+              "SELECT actor_json FROM audit_events WHERE action IN ('workspace.apply.finish', 'workspace.review.decide') ORDER BY action"
+            )
+            .all() as Array<{ actor_json: string }>;
+          expect(attribution).toHaveLength(2);
+          expect(attribution.map((row) => JSON.parse(row.actor_json))).toEqual([
+            LOCAL_AUTHORITY_ACTOR,
+            LOCAL_AUTHORITY_ACTOR,
+          ]);
+        }
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
       }
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('removes committed filesystem rollback data when an accepted decision is replayed', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-filesystem-cleanup-data-'));

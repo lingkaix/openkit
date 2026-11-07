@@ -123,14 +123,15 @@ describe('Round 2 full logical contract admission', () => {
     { inputModalities: ['text', 'image', 'audio', 'video', 'pdf'] },
     { inputModalities: [] },
     { inputModalities: null },
-  ])('preserves known, empty or unknown input modalities: $inputModalities', ({
-    inputModalities,
-  }) => {
-    const input = diagnosticsWithInputModalities(inputModalities);
-    expect(
-      AppDiagnosticsResponseSchema.parse(input).gateway.models[0]?.contract?.inputModalities
-    ).toEqual(inputModalities);
-  });
+  ])(
+    'preserves known, empty or unknown input modalities: $inputModalities',
+    ({ inputModalities }) => {
+      const input = diagnosticsWithInputModalities(inputModalities);
+      expect(
+        AppDiagnosticsResponseSchema.parse(input).gateway.models[0]?.contract?.inputModalities
+      ).toEqual(inputModalities);
+    }
+  );
 });
 
 it('admits missing API key supply as an unavailable route reason', () => {

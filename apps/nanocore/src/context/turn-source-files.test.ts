@@ -100,43 +100,43 @@ it('keeps exact original identity and emits only the bounded UTF-8 preview', asy
   expect(`sha256:${hash.digest('hex')}`).toBe(sha256(state.body));
 });
 
-it.each([
-  Buffer.alloc(0),
-  Buffer.from('\ufeffexact\r\noriginal\n'),
-])('preserves exact small UTF-8 bytes including empty and BOM inputs', async (body) => {
-  const state = await fixture(body);
-  const [source] = await prepareTurnFileSourceInputs(state.input);
-  expect(Buffer.from(source!.deliveredBytes)).toEqual(body);
-  expect(source!.projection).toMatchObject({
-    kind: 'body',
-    truncated: false,
-    availability: 'available',
-  });
-});
+it.each([Buffer.alloc(0), Buffer.from('\ufeffexact\r\noriginal\n')])(
+  'preserves exact small UTF-8 bytes including empty and BOM inputs',
+  async (body) => {
+    const state = await fixture(body);
+    const [source] = await prepareTurnFileSourceInputs(state.input);
+    expect(Buffer.from(source!.deliveredBytes)).toEqual(body);
+    expect(source!.projection).toMatchObject({
+      kind: 'body',
+      truncated: false,
+      availability: 'available',
+    });
+  }
+);
 
-it.each([
-  'application/octet-stream',
-  'text/plain',
-])('uses a truthful descriptor for binary originals declared as %s', async (mediaType) => {
-  const state = await fixture(Buffer.from([0xff, 0x80, 0]), mediaType);
-  const [source] = await prepareTurnFileSourceInputs(state.input);
-  expect(source!.projection).toMatchObject({
-    kind: 'descriptor',
-    truncated: true,
-    availability: 'unavailable',
-    ranges: [],
-  });
-  const descriptor = JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8'));
-  expect(descriptor).toMatchObject({
-    status: 'unavailable',
-    reason: mediaType === 'text/plain' ? 'invalid_utf8' : 'unsupported',
-    originalDigest: sha256(state.body),
-    byteLength: 3,
-  });
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of source!.open(new AbortController().signal)) chunks.push(chunk);
-  expect(Buffer.concat(chunks)).toEqual(state.body);
-});
+it.each(['application/octet-stream', 'text/plain'])(
+  'uses a truthful descriptor for binary originals declared as %s',
+  async (mediaType) => {
+    const state = await fixture(Buffer.from([0xff, 0x80, 0]), mediaType);
+    const [source] = await prepareTurnFileSourceInputs(state.input);
+    expect(source!.projection).toMatchObject({
+      kind: 'descriptor',
+      truncated: true,
+      availability: 'unavailable',
+      ranges: [],
+    });
+    const descriptor = JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8'));
+    expect(descriptor).toMatchObject({
+      status: 'unavailable',
+      reason: mediaType === 'text/plain' ? 'invalid_utf8' : 'unsupported',
+      originalDigest: sha256(state.body),
+      byteLength: 3,
+    });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of source!.open(new AbortController().signal)) chunks.push(chunk);
+    expect(Buffer.concat(chunks)).toEqual(state.body);
+  }
+);
 
 it('rechecks current authority before reopening an admitted source', async () => {
   const state = await fixture(Buffer.from('original'));
@@ -152,30 +152,28 @@ it('rechecks current authority before reopening an admitted source', async () =>
   ).rejects.toThrow(/revoked/);
 });
 
-it.each([
-  'replacement',
-  'symlink',
-  'hardlink',
-  'corrupt',
-] as const)('refuses a %s original without a substitute body', async (kind) => {
-  const state = await fixture(Buffer.from('original'));
-  const [source] = await prepareTurnFileSourceInputs(state.input);
-  if (kind === 'hardlink') linkSync(state.path, join(state.root, 'other-owner'));
-  else if (kind === 'corrupt') writeFileSync(state.path, 'changed!');
-  else {
-    rmSync(state.path);
-    if (kind === 'symlink') symlinkSync(join(state.root, 'original'), state.path);
-    else writeFileSync(state.path, state.body);
+it.each(['replacement', 'symlink', 'hardlink', 'corrupt'] as const)(
+  'refuses a %s original without a substitute body',
+  async (kind) => {
+    const state = await fixture(Buffer.from('original'));
+    const [source] = await prepareTurnFileSourceInputs(state.input);
+    if (kind === 'hardlink') linkSync(state.path, join(state.root, 'other-owner'));
+    else if (kind === 'corrupt') writeFileSync(state.path, 'changed!');
+    else {
+      rmSync(state.path);
+      if (kind === 'symlink') symlinkSync(join(state.root, 'original'), state.path);
+      else writeFileSync(state.path, state.body);
+    }
+    await expect(source!.assertUnchanged()).rejects.toThrow();
+    await expect(
+      (async () => {
+        for await (const _chunk of source!.open(new AbortController().signal)) {
+          /* No substitute bytes. */
+        }
+      })()
+    ).rejects.toThrow();
   }
-  await expect(source!.assertUnchanged()).rejects.toThrow();
-  await expect(
-    (async () => {
-      for await (const _chunk of source!.open(new AbortController().signal)) {
-        /* No substitute bytes. */
-      }
-    })()
-  ).rejects.toThrow();
-});
+);
 
 it('closes a large source iterator when cancellation wins between chunks', async () => {
   const state = await fixture(Buffer.alloc(256_000, 120));

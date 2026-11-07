@@ -552,79 +552,79 @@ describe('Pi frame projection', () => {
     );
   });
 
-  it.each([
-    0, 1, 47,
-  ])('carries the real inference failure producer through a split private frame at byte %s', (split) => {
-    const tracker = new PiTurnOutcomeTracker();
-    const route = { model: 'logical-a', provider: 'openkit-worker-inference' };
-    const message = {
-      role: 'assistant',
-      ...route,
-      stopReason: 'error',
-      content: [],
-      errorMessage: 'private provider detail',
-    };
-    tracker.observe({ type: 'message_end', message });
-    tracker.observe({ type: 'turn_end', message });
-    tracker.observe({ type: 'agent_end', messages: [message], willRetry: false });
-    tracker.observe({ type: 'agent_settled' });
-    const outcome = tracker.finish({ route, interrupted: false, promptFailed: false });
-    const encoded = Buffer.from(
-      encodeFrame(
-        {
-          event: 'turn_settled',
-          turnId: 'turn-1',
-          outcome,
-          nativeHandle: { state: 'unknown' },
-          compactionEntryIds: [],
-          reasoningEffort: 'unknown',
+  it.each([0, 1, 47])(
+    'carries the real inference failure producer through a split private frame at byte %s',
+    (split) => {
+      const tracker = new PiTurnOutcomeTracker();
+      const route = { model: 'logical-a', provider: 'openkit-worker-inference' };
+      const message = {
+        role: 'assistant',
+        ...route,
+        stopReason: 'error',
+        content: [],
+        errorMessage: 'private provider detail',
+      };
+      tracker.observe({ type: 'message_end', message });
+      tracker.observe({ type: 'turn_end', message });
+      tracker.observe({ type: 'agent_end', messages: [message], willRetry: false });
+      tracker.observe({ type: 'agent_settled' });
+      const outcome = tracker.finish({ route, interrupted: false, promptFailed: false });
+      const encoded = Buffer.from(
+        encodeFrame(
+          {
+            event: 'turn_settled',
+            turnId: 'turn-1',
+            outcome,
+            nativeHandle: { state: 'unknown' },
+            compactionEntryIds: [],
+            reasoningEffort: 'unknown',
+          },
+          []
+        )
+      );
+      const projected: ReturnType<typeof projectPiTurnSettlement>[] = [];
+      const reader = createPiLineReader(
+        (line) => {
+          const frame = parsePiHostFrame(line);
+          expect(frame.kind).toBe('settled');
+          if (frame.kind === 'settled')
+            projected.push(
+              projectPiTurnSettlement(frame.settled, { expectedHandleText: null, secrets: [] })
+            );
         },
-        []
-      )
-    );
-    const projected: ReturnType<typeof projectPiTurnSettlement>[] = [];
-    const reader = createPiLineReader(
-      (line) => {
-        const frame = parsePiHostFrame(line);
-        expect(frame.kind).toBe('settled');
-        if (frame.kind === 'settled')
-          projected.push(
-            projectPiTurnSettlement(frame.settled, { expectedHandleText: null, secrets: [] })
-          );
-      },
-      () => {
-        throw new Error('The admitted private frame must not overflow.');
-      }
-    );
-    reader(encoded.subarray(0, split));
-    expect(projected).toEqual([]);
-    reader(encoded.subarray(split));
-    reader.finish();
-    expect(projected).toEqual([
-      expect.objectContaining({
+        () => {
+          throw new Error('The admitted private frame must not overflow.');
+        }
+      );
+      reader(encoded.subarray(0, split));
+      expect(projected).toEqual([]);
+      reader(encoded.subarray(split));
+      reader.finish();
+      expect(projected).toEqual([
+        expect.objectContaining({
+          status: 'failed',
+          stopReason: 'pi-inference-failed',
+          assistantText: null,
+          establishes: false,
+          validEvidence: true,
+        }),
+      ]);
+      expect(encoded.toString()).not.toContain('private provider detail');
+    }
+  );
+
+  it.each(['pi-inference-failed-unknown', 'PI-INFERENCE-FAILED', 'future-reason'])(
+    'rejects the unknown private inference failure reason %s',
+    (reason) => {
+      expect(project({ status: 'failed', reason })).toMatchObject({
         status: 'failed',
-        stopReason: 'pi-inference-failed',
+        stopReason: 'pi-output-malformed',
         assistantText: null,
         establishes: false,
-        validEvidence: true,
-      }),
-    ]);
-    expect(encoded.toString()).not.toContain('private provider detail');
-  });
-
-  it.each([
-    'pi-inference-failed-unknown',
-    'PI-INFERENCE-FAILED',
-    'future-reason',
-  ])('rejects the unknown private inference failure reason %s', (reason) => {
-    expect(project({ status: 'failed', reason })).toMatchObject({
-      status: 'failed',
-      stopReason: 'pi-output-malformed',
-      assistantText: null,
-      establishes: false,
-      validEvidence: false,
-    });
-  });
+        validEvidence: false,
+      });
+    }
+  );
 
   it('admits the exact private inference failure without a successful assistant candidate', () => {
     expect(project({ status: 'failed', reason: 'pi-inference-failed' })).toMatchObject({
@@ -1088,17 +1088,16 @@ describe('Pi controlled channel faults', () => {
     return { dirs, loopback, session };
   }
 
-  it.each([
-    'ready-closing',
-    'ready-open',
-    'ready-error',
-  ])('rejects %s as fresh-host readiness after proving process absence', async (mode) => {
-    await expect(peer(mode)).rejects.toThrow('Pi unopened host readiness was not proved.');
-    const child = spawnControl.children.at(-1);
-    if (!child || child.pid === undefined) throw new Error('No host process was spawned.');
-    expect(child.signalCode).toBe('SIGKILL');
-    expect(() => process.kill(child.pid as number, 0)).toThrow();
-  });
+  it.each(['ready-closing', 'ready-open', 'ready-error'])(
+    'rejects %s as fresh-host readiness after proving process absence',
+    async (mode) => {
+      await expect(peer(mode)).rejects.toThrow('Pi unopened host readiness was not proved.');
+      const child = spawnControl.children.at(-1);
+      if (!child || child.pid === undefined) throw new Error('No host process was spawned.');
+      expect(child.signalCode).toBe('SIGKILL');
+      expect(() => process.kill(child.pid as number, 0)).toThrow();
+    }
+  );
 
   it('landing omits unobserved evidence and reports independent terminal and close facts', async () => {
     const running = await peer('interrupt-no-terminal', undefined, { requestTimeoutMs: 100 });
@@ -1219,121 +1218,120 @@ describe('Pi controlled channel faults', () => {
     expect(await readFile(files[0]!)).toEqual(retained);
   });
 
-  it.each([
-    'off',
-    'on',
-  ] as const)('landing collects structural facts with content %s', async (value) => {
-    const { dirs, session } = await peer('ordinary');
-    const input = turnInput(dirs);
-    const records: RuntimeObservation[] = [];
-    const bodies: Uint8Array[] = [];
-    const turn = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'server', value },
-        emit: async (record, body) => {
-          records.push(record);
-          if (body) bodies.push(body);
+  it.each(['off', 'on'] as const)(
+    'landing collects structural facts with content %s',
+    async (value) => {
+      const { dirs, session } = await peer('ordinary');
+      const input = turnInput(dirs);
+      const records: RuntimeObservation[] = [];
+      const bodies: Uint8Array[] = [];
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value },
+          emit: async (record, body) => {
+            records.push(record);
+            if (body) bodies.push(body);
+          },
         },
-      },
-    });
-    await turn.settled;
-    expect(records.map((record) => record.fact)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'origin', phase: 'started' }),
-        expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
-        expect.objectContaining({ kind: 'coverage', coverage: 'ended' }),
-      ])
-    );
-    expect(bodies.map((body) => Buffer.from(body).toString())).toEqual(
-      value === 'on' ? ['answer'] : []
-    );
-    await session.close();
-  });
-
-  it.each([
-    'off',
-    'on',
-    'aborted',
-  ] as const)('landing captures native tools and outward text with content %s', async (value) => {
-    let channel!: Duplex;
-    const { dirs, session } = await peer('ordinary', undefined, {
-      observeChannel: (observed) => {
-        channel = observed;
-      },
-    });
-    const input = turnInput(dirs);
-    const records: RuntimeObservation[] = [];
-    const bodies: string[] = [];
-    const write = channel.write.bind(channel);
-    vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
-      const request = JSON.parse(String(bytes));
-      if (request.op === 'turn') {
-        for (const data of [
-          {
-            type: 'tool_execution_start',
-            toolCallId: '/private/call-identity',
-            toolName: 'echo',
-            args: { text: 'input' },
-          },
-          {
-            type: 'tool_execution_end',
-            toolCallId: '/private/call-identity',
-            toolName: 'echo',
-            isError: false,
-            result: { content: [{ type: 'text', text: 'result' }] },
-          },
-          {
-            type: 'message_end',
-            message: {
-              role: 'assistant',
-              stopReason: value === 'aborted' ? 'aborted' : 'stop',
-              content: [
-                { type: 'thinking', thinking: 'private-reasoning' },
-                { type: 'text', text: 'outward' },
-              ],
-            },
-          },
+      });
+      await turn.settled;
+      expect(records.map((record) => record.fact)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'origin', phase: 'started' }),
+          expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+          expect.objectContaining({ kind: 'coverage', coverage: 'ended' }),
         ])
-          channel.emit(
-            'data',
-            Buffer.from(`${JSON.stringify({ event: 'native', turnId: request.turnId, data })}\n`)
-          );
-      }
-      return write(bytes as string);
-    }) as typeof channel.write);
-    const turn = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'server', value: value === 'off' ? 'off' : 'on' },
-        emit: async (record, body) => {
-          records.push(record);
-          if (body) bodies.push(Buffer.from(body).toString());
+      );
+      expect(bodies.map((body) => Buffer.from(body).toString())).toEqual(
+        value === 'on' ? ['answer'] : []
+      );
+      await session.close();
+    }
+  );
+
+  it.each(['off', 'on', 'aborted'] as const)(
+    'landing captures native tools and outward text with content %s',
+    async (value) => {
+      let channel!: Duplex;
+      const { dirs, session } = await peer('ordinary', undefined, {
+        observeChannel: (observed) => {
+          channel = observed;
         },
-      },
-    });
-    await turn.settled;
-    expect(records.map((record) => record.fact)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'tool', phase: 'started', toolName: 'echo' }),
-        expect.objectContaining({ kind: 'tool', phase: 'completed', toolName: 'echo' }),
-        expect.objectContaining({
-          kind: 'assistant',
-          phase: value === 'aborted' ? 'interrupted' : 'completed',
-        }),
-      ])
-    );
-    expect(bodies).toEqual(
-      value !== 'off'
-        ? ['{"text":"input"}', '{"content":[{"type":"text","text":"result"}]}', 'outward']
-        : []
-    );
-    expect(JSON.stringify(records)).not.toContain('/private/call-identity');
-    expect(JSON.stringify(records) + bodies.join('')).not.toContain('private-reasoning');
-    await session.close();
-  });
+      });
+      const input = turnInput(dirs);
+      const records: RuntimeObservation[] = [];
+      const bodies: string[] = [];
+      const write = channel.write.bind(channel);
+      vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
+        const request = JSON.parse(String(bytes));
+        if (request.op === 'turn') {
+          for (const data of [
+            {
+              type: 'tool_execution_start',
+              toolCallId: '/private/call-identity',
+              toolName: 'echo',
+              args: { text: 'input' },
+            },
+            {
+              type: 'tool_execution_end',
+              toolCallId: '/private/call-identity',
+              toolName: 'echo',
+              isError: false,
+              result: { content: [{ type: 'text', text: 'result' }] },
+            },
+            {
+              type: 'message_end',
+              message: {
+                role: 'assistant',
+                stopReason: value === 'aborted' ? 'aborted' : 'stop',
+                content: [
+                  { type: 'thinking', thinking: 'private-reasoning' },
+                  { type: 'text', text: 'outward' },
+                ],
+              },
+            },
+          ])
+            channel.emit(
+              'data',
+              Buffer.from(`${JSON.stringify({ event: 'native', turnId: request.turnId, data })}\n`)
+            );
+        }
+        return write(bytes as string);
+      }) as typeof channel.write);
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value: value === 'off' ? 'off' : 'on' },
+          emit: async (record, body) => {
+            records.push(record);
+            if (body) bodies.push(Buffer.from(body).toString());
+          },
+        },
+      });
+      await turn.settled;
+      expect(records.map((record) => record.fact)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'tool', phase: 'started', toolName: 'echo' }),
+          expect.objectContaining({ kind: 'tool', phase: 'completed', toolName: 'echo' }),
+          expect.objectContaining({
+            kind: 'assistant',
+            phase: value === 'aborted' ? 'interrupted' : 'completed',
+          }),
+        ])
+      );
+      expect(bodies).toEqual(
+        value !== 'off'
+          ? ['{"text":"input"}', '{"content":[{"type":"text","text":"result"}]}', 'outward']
+          : []
+      );
+      expect(JSON.stringify(records)).not.toContain('/private/call-identity');
+      expect(JSON.stringify(records) + bodies.join('')).not.toContain('private-reasoning');
+      await session.close();
+    }
+  );
 
   it('landing preserves original terminal text separately from the trimmed Turn result', async () => {
     let channel!: Duplex;
@@ -1456,110 +1454,113 @@ describe('Pi controlled channel faults', () => {
     ['on', 'interrupt'],
     ['off', 'recovery'],
     ['on', 'recovery'],
-  ] as const)('keeps native terminal and interrupt progress under capture backlog pressure with content %s during %s', async (value, disposition) => {
-    let channel!: Duplex;
-    const { dirs, session } = await peer('ordinary', undefined, {
-      observeChannel: (observed) => {
-        channel = observed;
-      },
-    });
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const accepted: RuntimeObservation[] = [];
-    const toolBodies: string[] = [];
-    let blocked = false;
-    const write = channel.write.bind(channel);
-    vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
-      const request = JSON.parse(String(bytes));
-      if (request.op === 'turn') {
-        for (let index = 0; index < 4_096; index += 1)
-          channel.emit(
-            'data',
-            Buffer.from(
-              `${JSON.stringify({
-                event: 'native',
-                turnId: request.turnId,
-                data: {
-                  type: 'tool_execution_start',
-                  toolCallId: `pressure-${index}`,
-                  toolName: 'echo',
-                  args: { text: `value-${index}` },
-                },
-              })}\n`
-            )
-          );
-      }
-      return write(bytes as string);
-    }) as typeof channel.write);
-    const input = turnInput(dirs);
-    const turn = await session.startTurn({
-      ...input,
-      runtimeCapture: {
-        ...input.runtimeCapture,
-        captureCoverage: { scope: 'server', value },
-        emit: async (record, body) => {
-          if (!blocked && record.fact.kind === 'tool') {
-            blocked = true;
-            entered.resolve();
-            await release.promise;
-          }
-          accepted.push(record);
-          if (body && record.fact.kind === 'tool') toolBodies.push(Buffer.from(body).toString());
+  ] as const)(
+    'keeps native terminal and interrupt progress under capture backlog pressure with content %s during %s',
+    async (value, disposition) => {
+      let channel!: Duplex;
+      const { dirs, session } = await peer('ordinary', undefined, {
+        observeChannel: (observed) => {
+          channel = observed;
         },
-      },
-    });
-    try {
-      await entered.promise;
-      // Inspection crosses the same private channel while capture publication is stalled.
-      await expect(session.nativeHandle()).resolves.toMatchObject({ state: 'ready' });
-      const before = accepted.slice();
-      if (disposition === 'recovery') release.resolve();
-      else await turn.interrupt(new LifecycleDeadline(100, 30));
-      expect(await turn.settled).toMatchObject({
-        assistantText: 'answer',
-        status: 'completed',
-        nativeEvidence: { nativeTerminal: true },
-        diagnostics: { runtimeCapture: 'incomplete' },
       });
-      if (disposition === 'interrupt') {
-        expect(accepted).toEqual(before);
-        release.resolve();
-        await waitFor(() => accepted.length === before.length + 1);
-        expect(accepted.slice(before.length).map((record) => record.fact)).toEqual([
-          expect.objectContaining({ kind: 'tool', phase: 'started' }),
-        ]);
-      } else {
-        expect(accepted.map((record) => record.fact)).toContainEqual(
-          expect.objectContaining({
-            kind: 'coverage',
-            family: 'primary-content',
-            coverage: 'unavailable',
-            reason: 'limit-exceeded',
-          })
-        );
-        expect(accepted.map((record) => record.fact)).toContainEqual(
-          expect.objectContaining({ kind: 'origin', phase: 'completed' })
-        );
-        const tools = accepted.filter((record) => record.fact.kind === 'tool');
-        expect(tools.length).toBeGreaterThan(1);
-        expect(tools.length).toBeLessThan(4_096);
-        if (value === 'off') expect(toolBodies).toEqual([]);
-        else {
-          expect(toolBodies.length).toBeGreaterThan(1);
-          expect(toolBodies).toEqual(
-            Array.from({ length: toolBodies.length }, (_, index) =>
-              JSON.stringify({ text: `value-${index}` })
-            )
-          );
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const accepted: RuntimeObservation[] = [];
+      const toolBodies: string[] = [];
+      let blocked = false;
+      const write = channel.write.bind(channel);
+      vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
+        const request = JSON.parse(String(bytes));
+        if (request.op === 'turn') {
+          for (let index = 0; index < 4_096; index += 1)
+            channel.emit(
+              'data',
+              Buffer.from(
+                `${JSON.stringify({
+                  event: 'native',
+                  turnId: request.turnId,
+                  data: {
+                    type: 'tool_execution_start',
+                    toolCallId: `pressure-${index}`,
+                    toolName: 'echo',
+                    args: { text: `value-${index}` },
+                  },
+                })}\n`
+              )
+            );
         }
+        return write(bytes as string);
+      }) as typeof channel.write);
+      const input = turnInput(dirs);
+      const turn = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'server', value },
+          emit: async (record, body) => {
+            if (!blocked && record.fact.kind === 'tool') {
+              blocked = true;
+              entered.resolve();
+              await release.promise;
+            }
+            accepted.push(record);
+            if (body && record.fact.kind === 'tool') toolBodies.push(Buffer.from(body).toString());
+          },
+        },
+      });
+      try {
+        await entered.promise;
+        // Inspection crosses the same private channel while capture publication is stalled.
+        await expect(session.nativeHandle()).resolves.toMatchObject({ state: 'ready' });
+        const before = accepted.slice();
+        if (disposition === 'recovery') release.resolve();
+        else await turn.interrupt(new LifecycleDeadline(100, 30));
+        expect(await turn.settled).toMatchObject({
+          assistantText: 'answer',
+          status: 'completed',
+          nativeEvidence: { nativeTerminal: true },
+          diagnostics: { runtimeCapture: 'incomplete' },
+        });
+        if (disposition === 'interrupt') {
+          expect(accepted).toEqual(before);
+          release.resolve();
+          await waitFor(() => accepted.length === before.length + 1);
+          expect(accepted.slice(before.length).map((record) => record.fact)).toEqual([
+            expect.objectContaining({ kind: 'tool', phase: 'started' }),
+          ]);
+        } else {
+          expect(accepted.map((record) => record.fact)).toContainEqual(
+            expect.objectContaining({
+              kind: 'coverage',
+              family: 'primary-content',
+              coverage: 'unavailable',
+              reason: 'limit-exceeded',
+            })
+          );
+          expect(accepted.map((record) => record.fact)).toContainEqual(
+            expect.objectContaining({ kind: 'origin', phase: 'completed' })
+          );
+          const tools = accepted.filter((record) => record.fact.kind === 'tool');
+          expect(tools.length).toBeGreaterThan(1);
+          expect(tools.length).toBeLessThan(4_096);
+          if (value === 'off') expect(toolBodies).toEqual([]);
+          else {
+            expect(toolBodies.length).toBeGreaterThan(1);
+            expect(toolBodies).toEqual(
+              Array.from({ length: toolBodies.length }, (_, index) =>
+                JSON.stringify({ text: `value-${index}` })
+              )
+            );
+          }
+        }
+        expect(accepted.slice(0, before.length)).toEqual(before);
+        await session.close();
+        expect(session.childState()).toBe('absent');
+      } finally {
+        release.resolve();
       }
-      expect(accepted.slice(0, before.length)).toEqual(before);
-      await session.close();
-      expect(session.childState()).toBe('absent');
-    } finally {
-      release.resolve();
     }
-  });
+  );
 
   it('landing bounds a short join without another interrupt or signal owner', async () => {
     const { dirs, session } = await peer('interrupt-silent', undefined, { requestTimeoutMs: 400 });
@@ -1578,73 +1579,69 @@ describe('Pi controlled channel faults', () => {
     expect(kill).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    'malformed',
-    'partial',
-    'duplicate',
-    'native',
-    'native-inline',
-    'omitted',
-  ])('landing parses the %s channel tail after exit before close proof', async (tail) => {
-    let channel!: Duplex;
-    const { dirs, session } = await peer('ordinary', undefined, {
-      closeExitTimeoutMs: 100,
-      observeChannel: (value) => {
-        channel = value;
-      },
-    });
-    await (await session.startTurn(turnInput(dirs))).settled;
-    const child = spawnControl.children.at(-1)!;
-    const write = channel.write.bind(channel);
-    vi.spyOn(channel, 'write').mockImplementation(((
-      bytes: unknown,
-      callback?: (error?: Error) => void
-    ) => {
-      const request = JSON.parse(String(bytes));
-      if (request.op !== 'close') return write(bytes as string);
-      callback?.();
-      channel.emit(
-        'data',
-        Buffer.from(
-          `${JSON.stringify({ id: request.id, ok: true, result: { state: 'closed' } })}\n${tail === 'native-inline' ? `${JSON.stringify({ event: 'native', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c', data: { type: 'message_end' } })}\n` : ''}`
-        )
-      );
-      setImmediate(() => {
-        child.emit('exit', 0, null);
+  it.each(['malformed', 'partial', 'duplicate', 'native', 'native-inline', 'omitted'])(
+    'landing parses the %s channel tail after exit before close proof',
+    async (tail) => {
+      let channel!: Duplex;
+      const { dirs, session } = await peer('ordinary', undefined, {
+        closeExitTimeoutMs: 100,
+        observeChannel: (value) => {
+          channel = value;
+        },
+      });
+      await (await session.startTurn(turnInput(dirs))).settled;
+      const child = spawnControl.children.at(-1)!;
+      const write = channel.write.bind(channel);
+      vi.spyOn(channel, 'write').mockImplementation(((
+        bytes: unknown,
+        callback?: (error?: Error) => void
+      ) => {
+        const request = JSON.parse(String(bytes));
+        if (request.op !== 'close') return write(bytes as string);
+        callback?.();
         channel.emit(
           'data',
           Buffer.from(
-            tail === 'native-inline'
-              ? '\n'
-              : tail === 'malformed'
-                ? '{bad}\n'
-                : tail === 'partial'
-                  ? '{"event":'
-                  : tail === 'omitted'
-                    ? `${JSON.stringify({ event: 'native_omitted', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })}\n`
-                    : tail === 'native'
-                      ? `${JSON.stringify({ event: 'native', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c', data: { type: 'message_end' } })}\n`
-                      : `${JSON.stringify({
-                          event: 'turn_settled',
-                          turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
-                          outcome: { status: 'failed', reason: 'pi-prompt-failed' },
-                          nativeHandle: { state: 'pending' },
-                          compactionEntryIds: [],
-                        })}\n`
+            `${JSON.stringify({ id: request.id, ok: true, result: { state: 'closed' } })}\n${tail === 'native-inline' ? `${JSON.stringify({ event: 'native', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c', data: { type: 'message_end' } })}\n` : ''}`
           )
         );
-        channel.emit('end');
-        child.stdout!.emit('end');
-        child.stderr!.emit('end');
+        setImmediate(() => {
+          child.emit('exit', 0, null);
+          channel.emit(
+            'data',
+            Buffer.from(
+              tail === 'native-inline'
+                ? '\n'
+                : tail === 'malformed'
+                  ? '{bad}\n'
+                  : tail === 'partial'
+                    ? '{"event":'
+                    : tail === 'omitted'
+                      ? `${JSON.stringify({ event: 'native_omitted', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c' })}\n`
+                      : tail === 'native'
+                        ? `${JSON.stringify({ event: 'native', turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c', data: { type: 'message_end' } })}\n`
+                        : `${JSON.stringify({
+                            event: 'turn_settled',
+                            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+                            outcome: { status: 'failed', reason: 'pi-prompt-failed' },
+                            nativeHandle: { state: 'pending' },
+                            compactionEntryIds: [],
+                          })}\n`
+            )
+          );
+          channel.emit('end');
+          child.stdout!.emit('end');
+          child.stderr!.emit('end');
+        });
+        return true;
+      }) as typeof channel.write);
+      await expect(session.close()).rejects.toThrow('not proved');
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        persistencePreservingClose: false,
       });
-      return true;
-    }) as typeof channel.write);
-    await expect(session.close()).rejects.toThrow('not proved');
-    expect(session.nativeEvidence?.()).toMatchObject({
-      processExited: true,
-      persistencePreservingClose: false,
-    });
-  });
+    }
+  );
 
   it('landing refuses retaining close without both diagnostic pipe EOFs', async () => {
     const { session } = await peer('ordinary', undefined, { closeExitTimeoutMs: 40 });
@@ -1808,44 +1805,37 @@ describe('Pi controlled channel faults', () => {
     }
   });
 
-  it.each([
-    'array',
-    'object',
-    'null',
-    'number',
-    'unknown',
-    'negative',
-    'silent',
-    'no-terminal',
-  ])('R4 bounded interrupt %s', async (kind) => {
-    const { dirs, session } = await peer(`interrupt-${kind}`, undefined, { requestTimeoutMs: 100 });
-    const turn = await session.startTurn(turnInput(dirs));
-    const result = await Promise.race([
-      turn.interrupt().then(
-        () => 'resolved',
-        () => 'rejected'
-      ),
-      new Promise((resolve) => setTimeout(() => resolve('pending'), 1400)),
-    ]);
-    expect(result).not.toBe('pending');
-    expect(session.childState()).toBe('absent');
-    expect(await turn.settled).toMatchObject({ status: 'failed' });
-  });
+  it.each(['array', 'object', 'null', 'number', 'unknown', 'negative', 'silent', 'no-terminal'])(
+    'R4 bounded interrupt %s',
+    async (kind) => {
+      const { dirs, session } = await peer(`interrupt-${kind}`, undefined, {
+        requestTimeoutMs: 100,
+      });
+      const turn = await session.startTurn(turnInput(dirs));
+      const result = await Promise.race([
+        turn.interrupt().then(
+          () => 'resolved',
+          () => 'rejected'
+        ),
+        new Promise((resolve) => setTimeout(() => resolve('pending'), 1400)),
+      ]);
+      expect(result).not.toBe('pending');
+      expect(session.childState()).toBe('absent');
+      expect(await turn.settled).toMatchObject({ status: 'failed' });
+    }
+  );
 
-  it.each([
-    'array',
-    'object',
-    'null',
-    'number',
-    'unknown',
-  ])('R4 rejects closed interrupt shape %s after completion', async (kind) => {
-    const { dirs, session } = await peer(`interrupt-after-${kind}`, undefined, {
-      requestTimeoutMs: 100,
-    });
-    const turn = await session.startTurn(turnInput(dirs));
-    expect(await turn.settled).toMatchObject({ status: 'completed' });
-    await expect(turn.interrupt()).rejects.toThrow('Pi host interrupt response is invalid.');
-  });
+  it.each(['array', 'object', 'null', 'number', 'unknown'])(
+    'R4 rejects closed interrupt shape %s after completion',
+    async (kind) => {
+      const { dirs, session } = await peer(`interrupt-after-${kind}`, undefined, {
+        requestTimeoutMs: 100,
+      });
+      const turn = await session.startTurn(turnInput(dirs));
+      expect(await turn.settled).toMatchObject({ status: 'completed' });
+      await expect(turn.interrupt()).rejects.toThrow('Pi host interrupt response is invalid.');
+    }
+  );
 
   it.each([
     'interrupt-array',
@@ -1938,17 +1928,18 @@ describe('Pi controlled channel faults', () => {
     await expect(second).rejects.toThrow('Pi host close exit timed out.');
   });
 
-  it.each([
-    'malformed',
-    'disconnect',
-  ])('does not settle a %s channel fault before stop proof', async (mode) => {
-    spawnControl.blockKill = true;
-    const { dirs, session } = await peer(mode, join((await createDirs()).root, 'late'));
-    const turn = await session.startTurn(turnInput(dirs));
-    await expect(turn.settled).rejects.toThrow('Pi native stop was not proved.');
-    expect(session.childState()).toBe('unknown');
-    await expect(turn.interrupt()).rejects.toThrow('Pi host channel is lost.');
-  }, 15_000);
+  it.each(['malformed', 'disconnect'])(
+    'does not settle a %s channel fault before stop proof',
+    async (mode) => {
+      spawnControl.blockKill = true;
+      const { dirs, session } = await peer(mode, join((await createDirs()).root, 'late'));
+      const turn = await session.startTurn(turnInput(dirs));
+      await expect(turn.settled).rejects.toThrow('Pi native stop was not proved.');
+      expect(session.childState()).toBe('unknown');
+      await expect(turn.interrupt()).rejects.toThrow('Pi host channel is lost.');
+    },
+    15_000
+  );
 
   it('rejects duplicate correlated settlements in one chunk', async () => {
     const { dirs, session } = await peer('duplicate');
@@ -1986,16 +1977,15 @@ describe('Pi controlled channel faults', () => {
     await expect(stuck.session.close()).rejects.toThrow('Pi host close exit timed out.');
   });
 
-  it.each([
-    'unknown-state',
-    'mismatched-handle',
-    'bad-digest',
-  ])('fails inspection on %s identity evidence', async (mode) => {
-    const { dirs, session } = await peer(mode);
-    const turn = await session.startTurn(turnInput(dirs));
-    expect(await turn.settled).toMatchObject({ status: 'completed' });
-    expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
-  });
+  it.each(['unknown-state', 'mismatched-handle', 'bad-digest'])(
+    'fails inspection on %s identity evidence',
+    async (mode) => {
+      const { dirs, session } = await peer(mode);
+      const turn = await session.startTurn(turnInput(dirs));
+      expect(await turn.settled).toMatchObject({ status: 'completed' });
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+    }
+  );
 
   it('refuses new input once close starts during an active Turn', async () => {
     const { dirs, session } = await peer('silent');
@@ -3444,86 +3434,87 @@ async function snapshot(root: string): Promise<Record<string, string>> {
   return result;
 }
 
-it.each([
-  { levels: [] },
-  { levels: ['low'] },
-])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
-  levels,
-}) => {
-  const f = await fixture(() => ({ text: 'effort-answer' }), []);
-  const session = await f.open();
-  const base = turnInput(f.dirs, { mcpServerIds: [] });
-  const reasoning = {
-    ...base.llmRoute,
-    reasoningEffortLevels: levels as ReasoningEffort[],
-    modelParameters: {
-      ...base.llmRoute.modelParameters!,
-      reasoning: true,
-      inputModalities: ['text', 'image', 'pdf'] as const,
-    },
-  };
-  const plain = {
-    ...reasoning,
-    model: 'logical-b',
-    id: 'logical-b',
-    reasoningEffortLevels: undefined,
-  };
-  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
-    ...base,
-    turnId: allocateEntityId('tu'),
-    turnInput: text,
-    llmRoute,
-    allowedLlmRoutes: [reasoning, plain],
-  });
-  const bodies = () => f.inference.requests.map((request) => request.body);
-  const level = (body: Record<string, unknown>) => body.reasoning_effort;
-  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
-  for (const [index, effort] of (
-    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
-  ).entries()) {
-    // Live Gateway advertisement never resets or restricts the retained native selection.
-    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+it.each([{ levels: [] }, { levels: ['low'] }])(
+  's4: delivers effort on retained native conversation and reports native selection %j',
+  async ({ levels }) => {
+    const f = await fixture(() => ({ text: 'effort-answer' }), []);
+    const session = await f.open();
+    const base = turnInput(f.dirs, { mcpServerIds: [] });
+    const reasoning = {
+      ...base.llmRoute,
+      reasoningEffortLevels: levels as ReasoningEffort[],
+      modelParameters: {
+        ...base.llmRoute.modelParameters!,
+        reasoning: true,
+        inputModalities: ['text', 'image', 'pdf'] as const,
+      },
+    };
+    const plain = {
+      ...reasoning,
+      model: 'logical-b',
+      id: 'logical-b',
+      reasoningEffortLevels: undefined,
+    };
+    const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
+      ...base,
+      turnId: allocateEntityId('tu'),
+      turnInput: text,
+      llmRoute,
+      allowedLlmRoutes: [reasoning, plain],
+    });
+    const bodies = () => f.inference.requests.map((request) => request.body);
+    const level = (body: Record<string, unknown>) => body.reasoning_effort;
+    let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+    for (const [index, effort] of (
+      ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+    ).entries()) {
+      // Live Gateway advertisement never resets or restricts the retained native selection.
+      if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+      const before = bodies().length;
+      const admitted = input(`effort-${index}`);
+      const result = await (
+        await session.startTurn({
+          ...admitted,
+          ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        })
+      ).settled;
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+      const expected = effort ?? 'high';
+      expect(bodies().slice(before).map(level)).toEqual([expected]);
+      expect(result.diagnostics?.reasoningEffort).toBe(expected);
+      expect(result.diagnostics?.omittedModalities).toBe('pdf');
+      if (handle) expect(await session.nativeHandle()).toEqual(handle);
+      else handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+    }
     const before = bodies().length;
-    const admitted = input(`effort-${index}`);
     const result = await (
-      await session.startTurn({
-        ...admitted,
-        ...(effort === undefined ? {} : { reasoningEffort: effort }),
-      })
+      await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
     ).settled;
     expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-    const expected = effort ?? 'high';
-    expect(bodies().slice(before).map(level)).toEqual([expected]);
-    expect(result.diagnostics?.reasoningEffort).toBe(expected);
-    expect(result.diagnostics?.omittedModalities).toBe('pdf');
-    if (handle) expect(await session.nativeHandle()).toEqual(handle);
-    else handle = await session.nativeHandle();
-    expect(handle.state).toBe('ready');
-  }
-  const before = bodies().length;
-  const result = await (
-    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
-  ).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(bodies().slice(before).map(level)).toEqual([undefined]);
-  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
-  expect(result.diagnostics?.reasoningEffort).toBe('none');
-  expect(await session.nativeHandle()).toEqual(handle);
-  const count = bodies().length;
-  await expect(
-    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
-  await expect(
-    session.startTurn({
-      ...input('unknown-route'),
-      llmRoute: invalidRoute,
-      allowedLlmRoutes: [invalidRoute, plain],
-    })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-}, 180000);
+    expect(bodies().slice(before).map(level)).toEqual([undefined]);
+    expect(result.diagnostics?.reasoningEffortDelivery).toBe(
+      'not-delivered: model has no reasoning'
+    );
+    expect(result.diagnostics?.reasoningEffort).toBe('none');
+    expect(await session.nativeHandle()).toEqual(handle);
+    const count = bodies().length;
+    await expect(
+      session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+    const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+    await expect(
+      session.startTurn({
+        ...input('unknown-route'),
+        llmRoute: invalidRoute,
+        allowedLlmRoutes: [invalidRoute, plain],
+      })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+  },
+  180000
+);
 
 it('s4: refuses modality subset without text before native inference', async () => {
   const f = await fixture(() => ({ text: 'unexpected' }), []);

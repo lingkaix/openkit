@@ -306,38 +306,38 @@ it.each([
   expect(listOwnedServerAdminAccessTokens(f.coreDb, f.userId).defaultTokenId).not.toBe(tokenId);
 });
 
-it.each([
-  'revoked',
-  'disabled',
-] as const)('decides current %s facts after the selection is prepared', async (kind) => {
-  const f = await fixture();
-  const held = f.hold('request');
-  expect(await Promise.race([held.arrived.then(() => true), held.result.then(() => false)])).toBe(
-    true
-  );
-  if (kind === 'revoked') {
-    await f.operations['token.revoke']({ tokenId: f.target.tokenId }, f.context);
-  } else {
-    // The actual User owner keeps disable, lifecycle Audit and receipt in its original Core tuple.
-    const operations = createWorkspaceSharingOperationImplementations({
-      coreDb: f.coreDb,
-      store: new FsStore({ dataRoot: f.dataRoot }),
-      inflightCommands: new Map(),
-    });
-    await operations['user.disable'](
-      { targetUserId: f.userId, requestId: randomUUID() },
-      f.context
+it.each(['revoked', 'disabled'] as const)(
+  'decides current %s facts after the selection is prepared',
+  async (kind) => {
+    const f = await fixture();
+    const held = f.hold('request');
+    expect(await Promise.race([held.arrived.then(() => true), held.result.then(() => false)])).toBe(
+      true
     );
+    if (kind === 'revoked') {
+      await f.operations['token.revoke']({ tokenId: f.target.tokenId }, f.context);
+    } else {
+      // The actual User owner keeps disable, lifecycle Audit and receipt in its original Core tuple.
+      const operations = createWorkspaceSharingOperationImplementations({
+        coreDb: f.coreDb,
+        store: new FsStore({ dataRoot: f.dataRoot }),
+        inflightCommands: new Map(),
+      });
+      await operations['user.disable'](
+        { targetUserId: f.userId, requestId: randomUUID() },
+        f.context
+      );
+    }
+    fault.mode = '';
+    fault.release?.();
+    fault.release = undefined;
+    const result = await held.result;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('Expected current eligibility refusal.');
+    expect(isRecord(result.error) && result.error.status === 400).toBe(true);
+    expect(held.published()).toBe(false);
   }
-  fault.mode = '';
-  fault.release?.();
-  fault.release = undefined;
-  const result = await held.result;
-  expect(result.ok).toBe(false);
-  if (result.ok) throw new Error('Expected current eligibility refusal.');
-  expect(isRecord(result.error) && result.error.status === 400).toBe(true);
-  expect(held.published()).toBe(false);
-});
+);
 
 it('does not overwrite an unsupported future-version retained default', async () => {
   const f = await fixture();

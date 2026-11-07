@@ -249,66 +249,64 @@ function expectUnsettledUnknown(error: unknown) {
 }
 
 describe('internal Gateway HTTP rejection diagnostic consumer', () => {
-  it.each([
-    false,
-    true,
-  ])('logs stock Codex HTTP401 without changing unknown no-replay failure, loggerThrows=%s', async (loggerThrows) => {
-    const models = createModels();
-    models.setProvider(openaiCodexProvider());
-    const model = models
-      .getModels()
-      .find(
-        (entry) =>
-          entry.api === 'openai-codex-responses' && entry.contextWindow - entry.maxTokens > 8192
+  it.each([false, true])(
+    'logs stock Codex HTTP401 without changing unknown no-replay failure, loggerThrows=%s',
+    async (loggerThrows) => {
+      const models = createModels();
+      models.setProvider(openaiCodexProvider());
+      const model = models
+        .getModels()
+        .find(
+          (entry) =>
+            entry.api === 'openai-codex-responses' && entry.contextWindow - entry.maxTokens > 8192
+        );
+      if (!model) throw new Error('The stock Codex fixture needs a usable physical model.');
+      const fetch = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: { message: opaqueMessage } }), {
+            status: 401,
+            headers: { 'content-type': 'application/json', 'x-private-header': 'header-canary' },
+          })
       );
-    if (!model) throw new Error('The stock Codex fixture needs a usable physical model.');
-    const fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ error: { message: opaqueMessage } }), {
-          status: 401,
-          headers: { 'content-type': 'application/json', 'x-private-header': 'header-canary' },
-        })
-    );
-    vi.stubGlobal('fetch', fetch);
-    const f = await bindProvider(models, model, { loggerThrows });
+      vi.stubGlobal('fetch', fetch);
+      const f = await bindProvider(models, model, { loggerThrows });
 
-    const error = await f.provider(f.request).catch((failure: unknown) => failure);
+      const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
-    expectUnsettledUnknown(error);
-    expect(error).toHaveProperty('cause.message', opaqueMessage);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(
-      listWorkspaceCapabilityCalls(
-        f.capture.workspaceDb,
-        workspaceIdForOwner(f.capture.turn.owner)
-      )[0]?.errorCode
-    ).toBe('internal_inference_failed');
-    expectDiagnostic(f, { phase: 'provider-response', failureKind: 'unknown', httpStatus: 401 });
-  });
+      expectUnsettledUnknown(error);
+      expect(error).toHaveProperty('cause.message', opaqueMessage);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(
+        listWorkspaceCapabilityCalls(
+          f.capture.workspaceDb,
+          workspaceIdForOwner(f.capture.turn.owner)
+        )[0]?.errorCode
+      ).toBe('internal_inference_failed');
+      expectDiagnostic(f, { phase: 'provider-response', failureKind: 'unknown', httpStatus: 401 });
+    }
+  );
 
-  it.each([
-    'absent',
-    'accepted',
-    'malformed',
-    'foreign',
-  ] as const)('does not infer HTTP rejection from %s hook evidence', async (kind) => {
-    const semantic = semanticFixture([
-      {
-        observe: async (options, model) => {
-          if (kind === 'accepted') await observe(options, model, 200);
-          if (kind === 'malformed') await observe(options, model, 401.5);
-          if (kind === 'foreign') await observe(options, { ...model, id: 'foreign-model' }, 401);
+  it.each(['absent', 'accepted', 'malformed', 'foreign'] as const)(
+    'does not infer HTTP rejection from %s hook evidence',
+    async (kind) => {
+      const semantic = semanticFixture([
+        {
+          observe: async (options, model) => {
+            if (kind === 'accepted') await observe(options, model, 200);
+            if (kind === 'malformed') await observe(options, model, 401.5);
+            if (kind === 'foreign') await observe(options, { ...model, id: 'foreign-model' }, 401);
+          },
         },
-      },
-    ]);
-    const f = await bindProvider(semantic.models, semantic.model);
+      ]);
+      const f = await bindProvider(semantic.models, semantic.model);
 
-    const error = await f.provider(f.request).catch((failure: unknown) => failure);
+      const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
-    expectUnsettledUnknown(error);
-    expect(semantic.calls.callCount).toBe(1);
-    expectDiagnostic(f, { phase: 'transport', failureKind: 'unknown' });
-  });
+      expectUnsettledUnknown(error);
+      expect(semantic.calls.callCount).toBe(1);
+      expectDiagnostic(f, { phase: 'transport', failureKind: 'unknown' });
+    }
+  );
 
   it.each([
     { status: 422, expected: 422, failureKind: 'invalid_request', settled: true },
@@ -334,65 +332,63 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
     });
   });
 
-  it.each([
-    'retry',
-    'member',
-    'late-member',
-    'resolver',
-  ] as const)('attributes only the terminating attempt after %s', async (kind) => {
-    let previous: (() => Promise<void>) | undefined;
-    const semantic = semanticFixture([
-      {
-        errorMessage: kind === 'retry' ? 'rate_limit_exceeded' : 'invalid_api_key',
-        observe: async (options, model) => {
-          await observe(options, model, 401);
-          previous = () => observe(options, model, 429);
+  it.each(['retry', 'member', 'late-member', 'resolver'] as const)(
+    'attributes only the terminating attempt after %s',
+    async (kind) => {
+      let previous: (() => Promise<void>) | undefined;
+      const semantic = semanticFixture([
+        {
+          errorMessage: kind === 'retry' ? 'rate_limit_exceeded' : 'invalid_api_key',
+          observe: async (options, model) => {
+            await observe(options, model, 401);
+            previous = () => observe(options, model, 429);
+          },
         },
-      },
-      {
-        observe: async (options, model) => {
-          if (kind === 'late-member') {
-            await observe(options, model, 403);
-            await previous?.();
-          }
+        {
+          observe: async (options, model) => {
+            if (kind === 'late-member') {
+              await observe(options, model, 403);
+              await previous?.();
+            }
+          },
         },
-      },
-    ]);
-    const f = await bindProvider(semantic.models, semantic.model, {
-      members: kind === 'retry' ? ['primary'] : ['primary', 'backup'],
-      ...(kind === 'resolver'
-        ? {
-            resolve: (id: string) => {
-              if (id === 'backup')
-                throw new OpenAICompatibleProviderError({
-                  code: 'provider_not_configured',
-                  message: 'Private resolver-canary.',
-                  status: 503,
-                });
-              return providerConfig(semantic.model, id);
-            },
-          }
-        : {}),
-    });
+      ]);
+      const f = await bindProvider(semantic.models, semantic.model, {
+        members: kind === 'retry' ? ['primary'] : ['primary', 'backup'],
+        ...(kind === 'resolver'
+          ? {
+              resolve: (id: string) => {
+                if (id === 'backup')
+                  throw new OpenAICompatibleProviderError({
+                    code: 'provider_not_configured',
+                    message: 'Private resolver-canary.',
+                    status: 503,
+                  });
+                return providerConfig(semantic.model, id);
+              },
+            }
+          : {}),
+      });
 
-    const error = await f.provider(f.request).catch((failure: unknown) => failure);
+      const error = await f.provider(f.request).catch((failure: unknown) => failure);
 
-    if (kind === 'resolver')
-      expect(error).toHaveProperty('code', 'gateway_logical_model_unavailable');
-    else expectUnsettledUnknown(error);
-    expect(semantic.calls.callCount).toBe(kind === 'resolver' ? 1 : 2);
-    expectDiagnostic(f, {
-      phase:
-        kind === 'resolver'
-          ? 'pre-transport'
-          : kind === 'late-member'
-            ? 'provider-response'
-            : 'transport',
-      failureKind: kind === 'resolver' ? 'provider_unavailable' : 'unknown',
-      ...(kind === 'late-member' ? { httpStatus: 403 } : {}),
-      attempt: 1,
-    });
-  });
+      if (kind === 'resolver')
+        expect(error).toHaveProperty('code', 'gateway_logical_model_unavailable');
+      else expectUnsettledUnknown(error);
+      expect(semantic.calls.callCount).toBe(kind === 'resolver' ? 1 : 2);
+      expectDiagnostic(f, {
+        phase:
+          kind === 'resolver'
+            ? 'pre-transport'
+            : kind === 'late-member'
+              ? 'provider-response'
+              : 'transport',
+        failureKind: kind === 'resolver' ? 'provider_unavailable' : 'unknown',
+        ...(kind === 'late-member' ? { httpStatus: 403 } : {}),
+        attempt: 1,
+      });
+    }
+  );
 
   it('retains affirmative local prefixItems rejection over callback status', async () => {
     const semantic = semanticFixture([

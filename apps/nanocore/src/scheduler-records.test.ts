@@ -886,38 +886,35 @@ describe('scheduler records', () => {
     }
   });
 
-  it.each(
-    terminalAccountingCorruptions
-  )('refuses Native terminal inspection without changing either owner for $name', async ({
-    apply,
-    expectedError,
-    name,
-  }) => {
-    const coreDb = createMigratedCoreDb();
-    const suffix = `terminal_corrupt_${name.replaceAll(' ', '_')}`;
+  it.each(terminalAccountingCorruptions)(
+    'refuses Native terminal inspection without changing either owner for $name',
+    async ({ apply, expectedError, name }) => {
+      const coreDb = createMigratedCoreDb();
+      const suffix = `terminal_corrupt_${name.replaceAll(' ', '_')}`;
 
-    try {
-      createPreparedAttempt(coreDb, `lease_${suffix}`);
-      apply(coreDb, suffix);
-      const before = terminalAccountingSnapshot(coreDb, suffix);
+      try {
+        createPreparedAttempt(coreDb, `lease_${suffix}`);
+        apply(coreDb, suffix);
+        const before = terminalAccountingSnapshot(coreDb, suffix);
 
-      const backend = createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
-        .executionBackend!;
-      await expect(
-        backend.inspect(
-          attemptActionOwners.schedulerExecutionCorrelation(
-            attemptActionOwners.requireSchedulerExecutionAttempt(
-              coreDb,
-              testEntityId('attempt', `lease_${suffix}`)
+        const backend = createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
+          .executionBackend!;
+        await expect(
+          backend.inspect(
+            attemptActionOwners.schedulerExecutionCorrelation(
+              attemptActionOwners.requireSchedulerExecutionAttempt(
+                coreDb,
+                testEntityId('attempt', `lease_${suffix}`)
+              )
             )
           )
-        )
-      ).rejects.toThrow(expectedError);
-      expect(terminalAccountingSnapshot(coreDb, suffix)).toEqual(before);
-    } finally {
-      coreDb.sqlite.close();
+        ).rejects.toThrow(expectedError);
+        expect(terminalAccountingSnapshot(coreDb, suffix)).toEqual(before);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('blocks attempt closeout until the backend session is durably cleaned', async () => {
     const coreDb = createMigratedCoreDb();
@@ -1015,46 +1012,46 @@ describe('scheduler records', () => {
     }
   });
 
-  it.each([
-    'active',
-    'releasing',
-  ] as const)('holds exclusion for %s NanoHost observations that are missing their durable backend anchor', async (status) => {
-    const coreDb = createMigratedCoreDb();
+  it.each(['active', 'releasing'] as const)(
+    'holds exclusion for %s NanoHost observations that are missing their durable backend anchor',
+    async (status) => {
+      const coreDb = createMigratedCoreDb();
 
-    try {
-      createPreparedAttempt(coreDb, `lease_missing_anchor_${status}`);
-      if (status === 'active') {
-        acceptNanoHostAttemptHeartbeat(coreDb, {
-          heartbeatTimeoutMs: 30_000,
-          attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
-          now: () => '2026-07-05T00:00:10.000Z',
-          workerSequence: 1,
-        });
-      } else {
-        beginOwnedAttemptCloseout(coreDb, {
-          attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
-          now: () => '2026-07-05T00:00:10.000Z',
-          firstTerminalCause: 'worker-final-status',
-        });
+      try {
+        createPreparedAttempt(coreDb, `lease_missing_anchor_${status}`);
+        if (status === 'active') {
+          acceptNanoHostAttemptHeartbeat(coreDb, {
+            heartbeatTimeoutMs: 30_000,
+            attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
+            now: () => '2026-07-05T00:00:10.000Z',
+            workerSequence: 1,
+          });
+        } else {
+          beginOwnedAttemptCloseout(coreDb, {
+            attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
+            now: () => '2026-07-05T00:00:10.000Z',
+            firstTerminalCause: 'worker-final-status',
+          });
+        }
+
+        expect(
+          await closeOwnedExecutionAttempt(coreDb, {
+            attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
+            firstTerminalCause: 'turn-failed',
+            outcome: 'failed',
+          })
+        ).toMatchObject({ state: 'pending', fenceRef: null });
+        expect(['open', 'closing']).toContain(
+          observeExecutionAttempts(coreDb).find(
+            (attempt) =>
+              attempt.attempt_id === testEntityId('attempt', `lease_missing_anchor_${status}`)
+          )?.phase
+        );
+      } finally {
+        coreDb.sqlite.close();
       }
-
-      expect(
-        await closeOwnedExecutionAttempt(coreDb, {
-          attemptId: testEntityId('attempt', `lease_missing_anchor_${status}`),
-          firstTerminalCause: 'turn-failed',
-          outcome: 'failed',
-        })
-      ).toMatchObject({ state: 'pending', fenceRef: null });
-      expect(['open', 'closing']).toContain(
-        observeExecutionAttempts(coreDb).find(
-          (attempt) =>
-            attempt.attempt_id === testEntityId('attempt', `lease_missing_anchor_${status}`)
-        )?.phase
-      );
-    } finally {
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('preserves closing exclusion while backend cleanup is incomplete', async () => {
     const coreDb = createMigratedCoreDb();
@@ -1126,79 +1123,63 @@ describe('scheduler records', () => {
     }
   });
 
-  it.each([
-    'completed',
-    'interrupted',
-    'cancelled',
-    'failed',
-  ] as const)('closes the exact attempt for %s product turns after complete cleanup', async (turnStatus) => {
-    const coreDb = createMigratedCoreDb();
-    const suffix = `turn_${turnStatus}`;
+  it.each(['completed', 'interrupted', 'cancelled', 'failed'] as const)(
+    'closes the exact attempt for %s product turns after complete cleanup',
+    async (turnStatus) => {
+      const coreDb = createMigratedCoreDb();
+      const suffix = `turn_${turnStatus}`;
 
-    try {
-      createPreparedAttempt(coreDb, `lease_${suffix}`);
-      completeTerminalAttempt(coreDb, {
-        id: testEntityId('tu', `turn_${suffix}`),
-        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        threadId: testEntityId('th', `thread_${suffix}`),
-        status: turnStatus,
-      });
-
-      await releaseModeledAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`));
-      expect(
-        observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-        )?.phase
-      ).toBe('closed');
-      const first = observeExecutionAttempts(coreDb).find(
-        (row) => row.attempt_id === testEntityId('attempt', `lease_${suffix}`)
-      )!;
-      expect(first.terminal_cause).toEqual(expect.any(String));
-      expect(first.outcome_ref).toBe(`turn:${testEntityId('tu', `turn_${suffix}`)}:${turnStatus}`);
-      /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
-      const protectedFacts = (db: typeof coreDb) => {
-        const rows = observeExecutionAttempts(db);
-        const row = rows.find((candidate) => candidate.attempt_id === first.attempt_id);
-        expect(row).toBeDefined();
-        expect(row!.disposition).toBe('unknown');
-        expect(row!.operation_id).toBe(
-          `fixture-submit:${testEntityId('attempt', `lease_${suffix}`)}`
-        );
-        expect(row!.fence_ref).toBe(`self-check:${testEntityId('attempt', `lease_${suffix}`)}`);
-        expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
-        expect(rows.map((candidate) => candidate.attempt_id)).toEqual([first.attempt_id]);
-        return {
-          attemptId: row!.attempt_id,
-          phase: row!.phase,
-          firstTerminalCause: row!.terminal_cause,
-          outcomeRef: row!.outcome_ref,
-          disposition: row!.disposition,
-          fenceRef: row!.fence_ref,
-        };
-      };
-      const protectedFirst = protectedFacts(coreDb);
-      // Product closeout replay protects these facts without freezing lawful evidence refinement.
-      for (const lateStatus of [turnStatus, turnStatus === 'completed' ? 'failed' : 'completed']) {
-        try {
-          completeTerminalAttempt(coreDb, {
-            id: testEntityId('tu', `turn_${suffix}`),
-            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-            threadId: testEntityId('th', `thread_${suffix}`),
-            status: lateStatus,
-          });
-        } catch (error) {
-          expect(error).toBeInstanceOf(Error);
-        }
-        expect(protectedFacts(coreDb)).toEqual(protectedFirst);
-      }
-      const reopened = openCoreDb(coreDb.dataRoot);
       try {
+        createPreparedAttempt(coreDb, `lease_${suffix}`);
+        completeTerminalAttempt(coreDb, {
+          id: testEntityId('tu', `turn_${suffix}`),
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          threadId: testEntityId('th', `thread_${suffix}`),
+          status: turnStatus,
+        });
+
+        await releaseModeledAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`));
+        expect(
+          observeExecutionAttempts(coreDb).find(
+            (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
+          )?.phase
+        ).toBe('closed');
+        const first = observeExecutionAttempts(coreDb).find(
+          (row) => row.attempt_id === testEntityId('attempt', `lease_${suffix}`)
+        )!;
+        expect(first.terminal_cause).toEqual(expect.any(String));
+        expect(first.outcome_ref).toBe(
+          `turn:${testEntityId('tu', `turn_${suffix}`)}:${turnStatus}`
+        );
+        /** Projects only closed-core facts; evidence, diagnostics and timestamps may refine. */
+        const protectedFacts = (db: typeof coreDb) => {
+          const rows = observeExecutionAttempts(db);
+          const row = rows.find((candidate) => candidate.attempt_id === first.attempt_id);
+          expect(row).toBeDefined();
+          expect(row!.disposition).toBe('unknown');
+          expect(row!.operation_id).toBe(
+            `fixture-submit:${testEntityId('attempt', `lease_${suffix}`)}`
+          );
+          expect(row!.fence_ref).toBe(`self-check:${testEntityId('attempt', `lease_${suffix}`)}`);
+          expect(rows.filter((candidate) => candidate.phase !== 'closed')).toEqual([]);
+          expect(rows.map((candidate) => candidate.attempt_id)).toEqual([first.attempt_id]);
+          return {
+            attemptId: row!.attempt_id,
+            phase: row!.phase,
+            firstTerminalCause: row!.terminal_cause,
+            outcomeRef: row!.outcome_ref,
+            disposition: row!.disposition,
+            fenceRef: row!.fence_ref,
+          };
+        };
+        const protectedFirst = protectedFacts(coreDb);
+        // Product closeout replay protects these facts without freezing lawful evidence refinement.
         for (const lateStatus of [
           turnStatus,
           turnStatus === 'completed' ? 'failed' : 'completed',
         ]) {
           try {
-            completeTerminalAttempt(reopened, {
+            completeTerminalAttempt(coreDb, {
               id: testEntityId('tu', `turn_${suffix}`),
               owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
               threadId: testEntityId('th', `thread_${suffix}`),
@@ -1207,15 +1188,37 @@ describe('scheduler records', () => {
           } catch (error) {
             expect(error).toBeInstanceOf(Error);
           }
-          expect(protectedFacts(reopened)).toEqual(protectedFirst);
+          expect(protectedFacts(coreDb)).toEqual(protectedFirst);
+        }
+        const reopened = openCoreDb(coreDb.dataRoot);
+        try {
+          for (const lateStatus of [
+            turnStatus,
+            turnStatus === 'completed' ? 'failed' : 'completed',
+          ]) {
+            try {
+              completeTerminalAttempt(reopened, {
+                id: testEntityId('tu', `turn_${suffix}`),
+                owner: {
+                  kind: 'workspace',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                },
+                threadId: testEntityId('th', `thread_${suffix}`),
+                status: lateStatus,
+              });
+            } catch (error) {
+              expect(error).toBeInstanceOf(Error);
+            }
+            expect(protectedFacts(reopened)).toEqual(protectedFirst);
+          }
+        } finally {
+          reopened.sqlite.close();
         }
       } finally {
-        reopened.sqlite.close();
+        coreDb.sqlite.close();
       }
-    } finally {
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('keeps a non-terminal Turn attempt open', () => {
     const coreDb = createMigratedCoreDb();

@@ -577,156 +577,155 @@ describe('direct Knowledge saved-source lineage', () => {
     }
   });
 
-  it.each([
-    'missing',
-    'stale-digest',
-    'foreign',
-  ] as const)('refuses %s Source evidence before publishing a page', async (condition) => {
-    const f = await sourceFixture();
-    try {
-      const targetWorkspaceId =
-        condition === 'foreign'
-          ? (await f.store.createWorkspace('Foreign source owner')).id
-          : DEMO_WORKSPACE_ID;
-      if (targetWorkspaceId !== DEMO_WORKSPACE_ID)
-        recordWorkspaceOwnerMembership({
-          coreDb: f.coreDb,
+  it.each(['missing', 'stale-digest', 'foreign'] as const)(
+    'refuses %s Source evidence before publishing a page',
+    async (condition) => {
+      const f = await sourceFixture();
+      try {
+        const targetWorkspaceId =
+          condition === 'foreign'
+            ? (await f.store.createWorkspace('Foreign source owner')).id
+            : DEMO_WORKSPACE_ID;
+        if (targetWorkspaceId !== DEMO_WORKSPACE_ID)
+          recordWorkspaceOwnerMembership({
+            coreDb: f.coreDb,
+            workspaceId: targetWorkspaceId,
+            ownerUserId: LOCAL_USER_ID,
+          });
+        const { source } = await f.client.operations['knowledge.source.register']({
           workspaceId: targetWorkspaceId,
-          ownerUserId: LOCAL_USER_ID,
-        });
-      const { source } = await f.client.operations['knowledge.source.register']({
-        workspaceId: targetWorkspaceId,
-        requestId: crypto.randomUUID(),
-        kind: 'document',
-        title: 'Exact source',
-        content: 'The reading room opens at eight.',
-      });
-      const reference =
-        condition === 'missing'
-          ? `source:${allocateEntityId('ks')}@${source.contentDigest}`
-          : `source:${source.id}@${condition === 'stale-digest' ? `sha256:${'a'.repeat(64)}` : source.contentDigest}`;
-      const before = await f.client.operations['knowledge.notebook.list']({
-        workspaceId: DEMO_WORKSPACE_ID,
-      });
-      const requestId = crypto.randomUUID();
-      const scope = { workspaceId: DEMO_WORKSPACE_ID, actorId: LOCAL_USER_ID };
-      expect(f.store.getCommandRequest('knowledge.notebook.create', requestId, scope)).toBeNull();
-      const page = knowledgePageFixture(
-        {
-          id: 'must-not-publish',
-          title: 'Must not publish',
+          requestId: crypto.randomUUID(),
+          kind: 'document',
+          title: 'Exact source',
           content: 'The reading room opens at eight.',
-          sourceReferences: [reference],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
-      );
-      const refusal = await f.client.operations['knowledge.notebook.create']({
-        workspaceId: DEMO_WORKSPACE_ID,
-        requestId,
-        baseRevision: before.notebookRevision,
-        path: page.path,
-        content: page.content,
-        summary: 'Refuse invalid Source evidence before publication.',
-      }).catch((error: unknown) => error);
-      expect(refusal).toMatchObject({ status: 400, code: 'invalid_request' });
-      expect(JSON.stringify(refusal)).not.toContain('The reading room opens at eight.');
-      expect(JSON.stringify(refusal)).not.toContain('Changed captured bytes.');
-      expect(f.store.getCommandRequest('knowledge.notebook.create', requestId, scope)).toBeNull();
-      expect(
-        await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
-      ).toEqual(before);
-      const indexes = await f.client.operations['knowledge.indexes']({
-        workspaceId: DEMO_WORKSPACE_ID,
-      });
-      expect(indexes.sourceReferences.references.some((row) => row.reference === reference)).toBe(
-        false
-      );
-    } finally {
-      await f.close();
+        });
+        const reference =
+          condition === 'missing'
+            ? `source:${allocateEntityId('ks')}@${source.contentDigest}`
+            : `source:${source.id}@${condition === 'stale-digest' ? `sha256:${'a'.repeat(64)}` : source.contentDigest}`;
+        const before = await f.client.operations['knowledge.notebook.list']({
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        const requestId = crypto.randomUUID();
+        const scope = { workspaceId: DEMO_WORKSPACE_ID, actorId: LOCAL_USER_ID };
+        expect(f.store.getCommandRequest('knowledge.notebook.create', requestId, scope)).toBeNull();
+        const page = knowledgePageFixture(
+          {
+            id: 'must-not-publish',
+            title: 'Must not publish',
+            content: 'The reading room opens at eight.',
+            sourceReferences: [reference],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+        );
+        const refusal = await f.client.operations['knowledge.notebook.create']({
+          workspaceId: DEMO_WORKSPACE_ID,
+          requestId,
+          baseRevision: before.notebookRevision,
+          path: page.path,
+          content: page.content,
+          summary: 'Refuse invalid Source evidence before publication.',
+        }).catch((error: unknown) => error);
+        expect(refusal).toMatchObject({ status: 400, code: 'invalid_request' });
+        expect(JSON.stringify(refusal)).not.toContain('The reading room opens at eight.');
+        expect(JSON.stringify(refusal)).not.toContain('Changed captured bytes.');
+        expect(f.store.getCommandRequest('knowledge.notebook.create', requestId, scope)).toBeNull();
+        expect(
+          await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).toEqual(before);
+        const indexes = await f.client.operations['knowledge.indexes']({
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        expect(indexes.sourceReferences.references.some((row) => row.reference === reference)).toBe(
+          false
+        );
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    'changed',
-    'missing',
-  ] as const)('keeps an exact Source-backed saved page when original bytes are %s', async (condition) => {
-    const f = await sourceFixture();
-    try {
-      const { source } = await f.client.operations['knowledge.source.register']({
-        workspaceId: DEMO_WORKSPACE_ID,
-        requestId: crypto.randomUUID(),
-        kind: 'document',
-        title: 'Independent original',
-        content: 'Retained original bytes.',
-      });
-      const reference = `source:${source.id}@${source.contentDigest}`;
-      const current = await f.client.operations['knowledge.notebook.list']({
-        workspaceId: DEMO_WORKSPACE_ID,
-      });
-      const page = knowledgePageFixture(
-        {
-          id: 'independent-saved-page',
-          title: 'Independent saved page',
-          content: 'Saved bytes remain exact.',
-          sourceReferences: [reference],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
-      );
-      const command = {
-        workspaceId: DEMO_WORKSPACE_ID,
-        requestId: crypto.randomUUID(),
-        baseRevision: current.notebookRevision,
-        path: page.path,
-        content: page.content,
-        summary: 'Save the exact Source-backed page.',
-      };
-      const entry = await f.client.operations['knowledge.notebook.create'](command);
-      const before = await f.client.operations['knowledge.notebook.list']({
-        workspaceId: DEMO_WORKSPACE_ID,
-      });
-      const saved = before.pages.find((item) => item.id === page.id)!;
-      expect(saved.content).toBe(page.content);
-      const path = join(
-        f.dataRoot,
-        'workspaces',
-        DEMO_WORKSPACE_ID,
-        'knowledge',
-        'raw',
-        'sources',
-        source.id,
-        'original'
-      );
-      if (condition === 'changed') writeFileSync(path, 'Changed captured bytes.');
-      else rmSync(path);
-      expect(
-        (
-          await readWorkspaceSourceFixture({
-            ...f,
-            userId: LOCAL_USER_ID,
-            workspaceId: DEMO_WORKSPACE_ID,
-            sourceId: source.id,
-          })
-        ).status
-      ).not.toBe('ok');
-      expect(await f.client.operations['knowledge.notebook.create'](command)).toEqual(entry);
-      const retained = await f.client.operations['knowledge.notebook.list']({
-        workspaceId: DEMO_WORKSPACE_ID,
-      });
-      expect(retained.pages.find((item) => item.id === page.id)).toEqual(saved);
-      const indexes = await f.client.operations['knowledge.indexes']({
-        workspaceId: DEMO_WORKSPACE_ID,
-      });
-      expect(indexes.sourceReferences.references).toContainEqual(
-        expect.objectContaining({ conceptId: page.id, reference, resolved: true })
-      );
-    } finally {
-      await f.close();
+  it.each(['changed', 'missing'] as const)(
+    'keeps an exact Source-backed saved page when original bytes are %s',
+    async (condition) => {
+      const f = await sourceFixture();
+      try {
+        const { source } = await f.client.operations['knowledge.source.register']({
+          workspaceId: DEMO_WORKSPACE_ID,
+          requestId: crypto.randomUUID(),
+          kind: 'document',
+          title: 'Independent original',
+          content: 'Retained original bytes.',
+        });
+        const reference = `source:${source.id}@${source.contentDigest}`;
+        const current = await f.client.operations['knowledge.notebook.list']({
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        const page = knowledgePageFixture(
+          {
+            id: 'independent-saved-page',
+            title: 'Independent saved page',
+            content: 'Saved bytes remain exact.',
+            sourceReferences: [reference],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+        );
+        const command = {
+          workspaceId: DEMO_WORKSPACE_ID,
+          requestId: crypto.randomUUID(),
+          baseRevision: current.notebookRevision,
+          path: page.path,
+          content: page.content,
+          summary: 'Save the exact Source-backed page.',
+        };
+        const entry = await f.client.operations['knowledge.notebook.create'](command);
+        const before = await f.client.operations['knowledge.notebook.list']({
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        const saved = before.pages.find((item) => item.id === page.id)!;
+        expect(saved.content).toBe(page.content);
+        const path = join(
+          f.dataRoot,
+          'workspaces',
+          DEMO_WORKSPACE_ID,
+          'knowledge',
+          'raw',
+          'sources',
+          source.id,
+          'original'
+        );
+        if (condition === 'changed') writeFileSync(path, 'Changed captured bytes.');
+        else rmSync(path);
+        expect(
+          (
+            await readWorkspaceSourceFixture({
+              ...f,
+              userId: LOCAL_USER_ID,
+              workspaceId: DEMO_WORKSPACE_ID,
+              sourceId: source.id,
+            })
+          ).status
+        ).not.toBe('ok');
+        expect(await f.client.operations['knowledge.notebook.create'](command)).toEqual(entry);
+        const retained = await f.client.operations['knowledge.notebook.list']({
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        expect(retained.pages.find((item) => item.id === page.id)).toEqual(saved);
+        const indexes = await f.client.operations['knowledge.indexes']({
+          workspaceId: DEMO_WORKSPACE_ID,
+        });
+        expect(indexes.sourceReferences.references).toContainEqual(
+          expect.objectContaining({ conceptId: page.id, reference, resolved: true })
+        );
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('rechecks the current actor before an exact successful command can be replayed', async () => {
     const f = await sourceFixture();

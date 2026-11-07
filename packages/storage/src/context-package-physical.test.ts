@@ -146,33 +146,32 @@ describe('Context Package physical member publication', () => {
     expect(capacity.released).toBe(1);
   });
 
-  it.each([
-    'regular',
-    'symlink',
-    'hardlink',
-  ] as const)('refuses an existing %s destination without changing retained bytes', (kind) => {
-    const { path, root } = fixture();
-    const retained = Buffer.from([0, 255, 42]);
-    const target = join(root, 'retained');
-    writeFileSync(target, retained);
-    if (kind === 'regular') writeFileSync(path, retained);
-    else if (kind === 'symlink') symlinkSync(target, path);
-    else linkSync(target, path);
-    const capacity = reservation();
+  it.each(['regular', 'symlink', 'hardlink'] as const)(
+    'refuses an existing %s destination without changing retained bytes',
+    (kind) => {
+      const { path, root } = fixture();
+      const retained = Buffer.from([0, 255, 42]);
+      const target = join(root, 'retained');
+      writeFileSync(target, retained);
+      if (kind === 'regular') writeFileSync(path, retained);
+      else if (kind === 'symlink') symlinkSync(target, path);
+      else linkSync(target, path);
+      const capacity = reservation();
 
-    expect(() =>
-      publishContextPackageMember(
-        path,
-        { path: 'instructions.md', bytes: Buffer.from('new') },
-        capacity
-      )
-    ).toThrow();
+      expect(() =>
+        publishContextPackageMember(
+          path,
+          { path: 'instructions.md', bytes: Buffer.from('new') },
+          capacity
+        )
+      ).toThrow();
 
-    expect(readFileSync(path)).toEqual(retained);
-    expect(readFileSync(target)).toEqual(retained);
-    expect(capacity.written).toBe(0);
-    expect(capacity.released).toBe(1);
-  });
+      expect(readFileSync(path)).toEqual(retained);
+      expect(readFileSync(target)).toEqual(retained);
+      expect(capacity.written).toBe(0);
+      expect(capacity.released).toBe(1);
+    }
+  );
 
   it('checks current reservation before creating bytes and releases a refused reservation', () => {
     const { path, root } = fixture();
@@ -233,58 +232,57 @@ describe('Context Package physical member publication', () => {
     expect(capacity.released).toBe(1);
   });
 
-  it.each([
-    'no progress',
-    'payload synchronization',
-    'digest proof',
-  ] as const)('removes partial manifest bytes and synchronizes cleanup after %s failure', (failure) => {
-    const { path, root, temporary } = fixture('package.json');
-    fault.limit = 3;
-    if (failure === 'no progress') fault.stopAfter = 3;
-    if (failure === 'payload synchronization') fault.fileSync = new Error('payload sync failed');
-    if (failure === 'digest proof') fault.corrupt = true;
-    const capacity = reservation(() => {
+  it.each(['no progress', 'payload synchronization', 'digest proof'] as const)(
+    'removes partial manifest bytes and synchronizes cleanup after %s failure',
+    (failure) => {
+      const { path, root, temporary } = fixture('package.json');
+      fault.limit = 3;
+      if (failure === 'no progress') fault.stopAfter = 3;
+      if (failure === 'payload synchronization') fault.fileSync = new Error('payload sync failed');
+      if (failure === 'digest proof') fault.corrupt = true;
+      const capacity = reservation(() => {
+        expect(existsSync(path)).toBe(false);
+        expect(existsSync(temporary)).toBe(false);
+        expect(fault.events.at(-1)).toBe('parent synchronized');
+      });
+
+      expect(() =>
+        publishContextPackageMember(
+          path,
+          { path: 'package.json', bytes: Buffer.from('manifest bytes') },
+          capacity
+        )
+      ).toThrow();
+
+      expect(readdirSync(root)).toEqual([]);
+      expect(capacity.written).toBe(failure === 'no progress' ? 3 : 14);
+      expect(capacity.released).toBe(1);
+    }
+  );
+
+  it.each(['removal', 'cleanup synchronization'] as const)(
+    'retains capacity when %s cannot prove cleanup',
+    (failure) => {
+      const { path, temporary } = fixture('package.json');
+      fault.fileSync = new Error('payload sync failed');
+      if (failure === 'removal') fault.removal = new Error('cleanup removal failed');
+      else fault.parentSyncFailures = 1;
+      const capacity = reservation();
+
+      expect(() =>
+        publishContextPackageMember(
+          path,
+          { path: 'package.json', bytes: Buffer.from('partial') },
+          capacity
+        )
+      ).toThrow();
+
       expect(existsSync(path)).toBe(false);
-      expect(existsSync(temporary)).toBe(false);
-      expect(fault.events.at(-1)).toBe('parent synchronized');
-    });
-
-    expect(() =>
-      publishContextPackageMember(
-        path,
-        { path: 'package.json', bytes: Buffer.from('manifest bytes') },
-        capacity
-      )
-    ).toThrow();
-
-    expect(readdirSync(root)).toEqual([]);
-    expect(capacity.written).toBe(failure === 'no progress' ? 3 : 14);
-    expect(capacity.released).toBe(1);
-  });
-
-  it.each([
-    'removal',
-    'cleanup synchronization',
-  ] as const)('retains capacity when %s cannot prove cleanup', (failure) => {
-    const { path, temporary } = fixture('package.json');
-    fault.fileSync = new Error('payload sync failed');
-    if (failure === 'removal') fault.removal = new Error('cleanup removal failed');
-    else fault.parentSyncFailures = 1;
-    const capacity = reservation();
-
-    expect(() =>
-      publishContextPackageMember(
-        path,
-        { path: 'package.json', bytes: Buffer.from('partial') },
-        capacity
-      )
-    ).toThrow();
-
-    expect(existsSync(path)).toBe(false);
-    expect(existsSync(temporary)).toBe(failure === 'removal');
-    expect(capacity.written).toBe(7);
-    expect(capacity.released).toBe(0);
-  });
+      expect(existsSync(temporary)).toBe(failure === 'removal');
+      expect(capacity.written).toBe(7);
+      expect(capacity.released).toBe(0);
+    }
+  );
 
   it('reports failed manifest acknowledgement while preserving already-renamed bytes', () => {
     const { path, temporary } = fixture('package.json');
@@ -307,42 +305,39 @@ describe('Context Package physical member publication', () => {
 });
 
 describe('Context Package retained file proof', () => {
-  it.each([
-    'length',
-    'digest',
-    'same-length changed bytes',
-  ] as const)('refuses a %s mismatch without modifying retained bytes', (kind) => {
-    const { path } = fixture();
-    const bytes = Buffer.from([0, 255, 128, 13, 10]);
-    const expected = proof(bytes);
-    const retained =
-      kind === 'same-length changed bytes' ? Buffer.from([1, 255, 128, 13, 10]) : bytes;
-    writeFileSync(path, retained);
-    if (kind === 'length') expected.byteLength++;
-    if (kind === 'digest') expected.contentDigest = `sha256:${'0'.repeat(64)}`;
+  it.each(['length', 'digest', 'same-length changed bytes'] as const)(
+    'refuses a %s mismatch without modifying retained bytes',
+    (kind) => {
+      const { path } = fixture();
+      const bytes = Buffer.from([0, 255, 128, 13, 10]);
+      const expected = proof(bytes);
+      const retained =
+        kind === 'same-length changed bytes' ? Buffer.from([1, 255, 128, 13, 10]) : bytes;
+      writeFileSync(path, retained);
+      if (kind === 'length') expected.byteLength++;
+      if (kind === 'digest') expected.contentDigest = `sha256:${'0'.repeat(64)}`;
 
-    expect(() => assertContextPackageFileProof(path, expected)).toThrow();
+      expect(() => assertContextPackageFileProof(path, expected)).toThrow();
 
-    expect(readFileSync(path)).toEqual(retained);
-  });
+      expect(readFileSync(path)).toEqual(retained);
+    }
+  );
 
-  it.each([
-    'missing',
-    'directory',
-    'symlink',
-    'hardlink',
-  ] as const)('refuses a %s instead of proving a unique regular file', (kind) => {
-    const { path, root } = fixture();
-    const target = join(root, 'target');
-    const bytes = Buffer.from([0, 255, 128]);
-    writeFileSync(target, bytes);
-    if (kind === 'directory') mkdirSync(path);
-    if (kind === 'symlink') symlinkSync(target, path);
-    if (kind === 'hardlink') linkSync(target, path);
+  it.each(['missing', 'directory', 'symlink', 'hardlink'] as const)(
+    'refuses a %s instead of proving a unique regular file',
+    (kind) => {
+      const { path, root } = fixture();
+      const target = join(root, 'target');
+      const bytes = Buffer.from([0, 255, 128]);
+      writeFileSync(target, bytes);
+      if (kind === 'directory') mkdirSync(path);
+      if (kind === 'symlink') symlinkSync(target, path);
+      if (kind === 'hardlink') linkSync(target, path);
 
-    expect(() => assertContextPackageFileProof(path, proof(bytes))).toThrow();
+      expect(() => assertContextPackageFileProof(path, proof(bytes))).toThrow();
 
-    expect(readFileSync(target)).toEqual(bytes);
-    expect(existsSync(path)).toBe(kind !== 'missing');
-  });
+      expect(readFileSync(target)).toEqual(bytes);
+      expect(existsSync(path)).toBe(kind !== 'missing');
+    }
+  );
 });

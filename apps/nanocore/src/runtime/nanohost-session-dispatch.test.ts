@@ -30,218 +30,217 @@ import {
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
-  it.each([
-    'enabled',
-    'disabled',
-    'refused',
-  ] as const)('carries initiating context over native H2 independently of poll and export: %s', async (mode) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-effect-trace-'));
-    const coreDb = openCoreDb(root);
-    applyMigrations(coreDb);
-    const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
-    const exporter = new InMemorySpanExporter();
-    const target = { deploymentId: 'trace', identityId: 'trace', targetId: 'trace' };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target,
-      observedAt: new Date().toISOString(),
-    });
-    const app = new Hono<{ Variables: AuthVariables }>();
-    app.use(createHttpTelemetryMiddleware());
-    const requestId = 'b'.repeat(64);
-    const command = { sandboxId: 'private-body-canary', requestId };
-    let result: Promise<unknown> | undefined;
-    app.post('/enqueue/:id', (c) => {
-      result = dispatch.effect({ kind: 'sandbox.delete', requestId, input: command });
-      return c.body(null, 202);
-    });
-    const importBody = Buffer.from('raw-body-canary');
-    const importId = 'e'.repeat(64);
-    let imported: Promise<unknown> | undefined;
-    app.post('/import/:id', (c) => {
-      imported = dispatch.effect({
-        kind: 'reference.import',
-        requestId: importId,
-        input: {
-          sandboxId: 'fixture-sandbox',
-          slot: 'worktree',
-          entryKind: 'file',
-          executable: false,
-          relativePath: 'fixture.txt',
-          body: importBody,
-          byteLength: importBody.length,
-          sha256: `sha256:${createHash('sha256').update(importBody).digest('hex')}`,
-        },
+  it.each(['enabled', 'disabled', 'refused'] as const)(
+    'carries initiating context over native H2 independently of poll and export: %s',
+    async (mode) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-effect-trace-'));
+      const coreDb = openCoreDb(root);
+      applyMigrations(coreDb);
+      const authority = createNanoHostTransportSessionAuthority();
+      const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const exporter = new InMemorySpanExporter();
+      const target = { deploymentId: 'trace', identityId: 'trace', targetId: 'trace' };
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: new Date().toISOString(),
       });
-      return c.body(null, 202);
-    });
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
-    registerNanoHostSessionEffectRoutes({ app, dispatch });
-    const listener = getRequestListener(app.fetch);
-    let admitted = false;
-    const server = createHttp2Server((request, response) => {
-      if (!admitted) {
-        authority.admit({
-          identityId: target.identityId,
-          connectionGeneration: 1,
-          physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
-        });
-        admitted = true;
-      }
-      void listener(request, response);
-    });
-    let client: ReturnType<typeof connectHttp2> | undefined;
-    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
-    try {
-      startTelemetry({
-        bootId: 'trace-core-fixture',
-        env:
-          mode === 'disabled'
-            ? { OTEL_SDK_DISABLED: 'true' }
-            : { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' },
-        exporter:
-          mode === 'refused'
-            ? { export: (_spans, done) => done({ code: 1 }), shutdown: async () => {} }
-            : exporter,
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use(createHttpTelemetryMiddleware());
+      const requestId = 'b'.repeat(64);
+      const command = { sandboxId: 'private-body-canary', requestId };
+      let result: Promise<unknown> | undefined;
+      app.post('/enqueue/:id', (c) => {
+        result = dispatch.effect({ kind: 'sandbox.delete', requestId, input: command });
+        return c.body(null, 202);
       });
-      server.listen(0, '127.0.0.1');
-      await once(server, 'listening');
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('Missing trace fixture address.');
-      client = connectHttp2(`http://127.0.0.1:${address.port}`);
-      const post = async (path: string, body: unknown, headers: Record<string, string> = {}) => {
-        const stream = client!.request({
-          ':method': 'POST',
-          ':path': path,
-          'content-type': 'application/json',
-          ...headers,
+      const importBody = Buffer.from('raw-body-canary');
+      const importId = 'e'.repeat(64);
+      let imported: Promise<unknown> | undefined;
+      app.post('/import/:id', (c) => {
+        imported = dispatch.effect({
+          kind: 'reference.import',
+          requestId: importId,
+          input: {
+            sandboxId: 'fixture-sandbox',
+            slot: 'worktree',
+            entryKind: 'file',
+            executable: false,
+            relativePath: 'fixture.txt',
+            body: importBody,
+            byteLength: importBody.length,
+            sha256: `sha256:${createHash('sha256').update(importBody).digest('hex')}`,
+          },
         });
-        const received = once(stream, 'response');
-        stream.end(JSON.stringify(body));
-        const [responseHeaders] = await received;
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-        return { headers: responseHeaders, body: Buffer.concat(chunks).toString() };
-      };
-      const path = '/api/nanohost/transport/effects/sandbox.delete';
-      expect(
-        (
-          await post('/api/nanohost/transport/session/readiness', {
-            physicalEpoch: 'a'.repeat(64),
-          })
-        ).headers[':status']
-      ).toBe(204);
-      expect((await post('/enqueue/turn-private-canary', {})).headers[':status']).toBe(202);
-      const carried = await post(path, {});
-      expect(carried.headers[':status']).toBe(200);
-      expect(JSON.parse(carried.body)).toEqual(command);
-      const hostTraceId = 'c'.repeat(32);
-      const hostSpanId = 'd'.repeat(16);
-      const response = { requestId, sandboxId: command.sandboxId, state: 'deleted' };
-      const returned = {
-        traceparent: `00-${hostTraceId}-${hostSpanId}-01`,
-        tracestate: 'vendor=private-header-canary',
-      };
-      expect((await post(`${path}/result`, response, returned)).headers[':status']).toBe(204);
-      await expect(result).resolves.toEqual({ sandboxId: command.sandboxId, state: 'deleted' });
-      // An acknowledged duplicate is delivery replay, not another effect acceptance.
-      expect((await post(`${path}/result`, response, returned)).headers[':status']).toBe(204);
-      const idle = await post(path, {});
-      expect(idle.headers[':status']).toBe(204);
-      expect(idle.headers.traceparent).toBeUndefined();
-      if (mode === 'disabled') {
-        expect(carried.headers.traceparent).toBeUndefined();
-        expect(exporter.getFinishedSpans()).toEqual([]);
-      } else {
-        expect(carried.headers.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
-        if (mode === 'enabled') {
-          const spans = exporter.getFinishedSpans();
-          const origin = spans.find((span) => span.attributes['http.route'] === '/enqueue/:id')!;
-          expect(carried.headers.traceparent).toBe(
-            `00-${origin.spanContext().traceId}-${origin.spanContext().spanId}-01`
-          );
-          const acceptance = spans.filter((span) => span.name === 'nanohost.effect.accept');
-          expect(acceptance).toHaveLength(1);
-          expect(acceptance[0]!.spanContext().traceId).toBe(hostTraceId);
-          expect(acceptance[0]!.parentSpanContext?.spanId).toBe(hostSpanId);
-          expect(
-            JSON.stringify(
-              spans.map((span) => ({
-                attributes: span.attributes,
-                events: span.events,
-                status: span.status,
-              }))
-            )
-          ).not.toMatch(/private-(body|header)-canary|turn-private-canary/);
-          expect((await post('/import/known-turn', {})).headers[':status']).toBe(202);
-          const importedCommand = await post(
-            '/api/nanohost/transport/effects/reference.import',
-            {}
-          );
-          expect(importedCommand.headers['content-type']).toBe('application/octet-stream');
-          expect(importedCommand.body).toBe(importBody.toString());
-          const importOrigin = exporter
-            .getFinishedSpans()
-            .find((span) => span.attributes['http.route'] === '/import/:id')!;
-          expect(importedCommand.headers.traceparent).toBe(
-            `00-${importOrigin.spanContext().traceId}-${importOrigin.spanContext().spanId}-01`
-          );
-          const importResult = {
-            requestId: importId,
-            byteLength: importBody.length,
-            reference: 'sandbox://fixture-sandbox/worktree/fixture.txt',
-          };
-          expect(
-            (
-              await post(
-                '/api/nanohost/transport/effects/reference.import/result',
-                importResult,
-                returned
-              )
-            ).headers[':status']
-          ).toBe(204);
-          await expect(imported).resolves.toEqual({
-            byteLength: importBody.length,
-            reference: importResult.reference,
+        return c.body(null, 202);
+      });
+      registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+      registerNanoHostSessionEffectRoutes({ app, dispatch });
+      const listener = getRequestListener(app.fetch);
+      let admitted = false;
+      const server = createHttp2Server((request, response) => {
+        if (!admitted) {
+          authority.admit({
+            identityId: target.identityId,
+            connectionGeneration: 1,
+            physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
           });
-          // Observe the real registrar and dispatcher: a query cannot select bearer routing.
-          const classified = vi.spyOn(dispatch, 'route');
-          try {
-            for (const operation of ['poll', 'result']) {
-              const path = `/worker-control/harness/${operation}`;
-              classified.mockClear();
-              const refused = await post(
-                `${path}?proof=sec2a`,
-                { schemaVersion: 0 },
-                {
-                  'x-openkit-integration-binding': 'unknown-sec2a-binding',
-                }
-              );
-              expect(refused.headers[':status']).toBe(409);
-              expect(classified).toHaveBeenCalledExactlyOnceWith(
-                expect.any(Object),
-                expect.objectContaining({
-                  path,
-                  family: 'worker-control',
-                  credentialClass: 'harness',
-                })
-              );
+          admitted = true;
+        }
+        void listener(request, response);
+      });
+      let client: ReturnType<typeof connectHttp2> | undefined;
+      const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+      try {
+        startTelemetry({
+          bootId: 'trace-core-fixture',
+          env:
+            mode === 'disabled'
+              ? { OTEL_SDK_DISABLED: 'true' }
+              : { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' },
+          exporter:
+            mode === 'refused'
+              ? { export: (_spans, done) => done({ code: 1 }), shutdown: async () => {} }
+              : exporter,
+        });
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        const address = server.address();
+        if (!address || typeof address === 'string')
+          throw new Error('Missing trace fixture address.');
+        client = connectHttp2(`http://127.0.0.1:${address.port}`);
+        const post = async (path: string, body: unknown, headers: Record<string, string> = {}) => {
+          const stream = client!.request({
+            ':method': 'POST',
+            ':path': path,
+            'content-type': 'application/json',
+            ...headers,
+          });
+          const received = once(stream, 'response');
+          stream.end(JSON.stringify(body));
+          const [responseHeaders] = await received;
+          const chunks: Buffer[] = [];
+          for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+          return { headers: responseHeaders, body: Buffer.concat(chunks).toString() };
+        };
+        const path = '/api/nanohost/transport/effects/sandbox.delete';
+        expect(
+          (
+            await post('/api/nanohost/transport/session/readiness', {
+              physicalEpoch: 'a'.repeat(64),
+            })
+          ).headers[':status']
+        ).toBe(204);
+        expect((await post('/enqueue/turn-private-canary', {})).headers[':status']).toBe(202);
+        const carried = await post(path, {});
+        expect(carried.headers[':status']).toBe(200);
+        expect(JSON.parse(carried.body)).toEqual(command);
+        const hostTraceId = 'c'.repeat(32);
+        const hostSpanId = 'd'.repeat(16);
+        const response = { requestId, sandboxId: command.sandboxId, state: 'deleted' };
+        const returned = {
+          traceparent: `00-${hostTraceId}-${hostSpanId}-01`,
+          tracestate: 'vendor=private-header-canary',
+        };
+        expect((await post(`${path}/result`, response, returned)).headers[':status']).toBe(204);
+        await expect(result).resolves.toEqual({ sandboxId: command.sandboxId, state: 'deleted' });
+        // An acknowledged duplicate is delivery replay, not another effect acceptance.
+        expect((await post(`${path}/result`, response, returned)).headers[':status']).toBe(204);
+        const idle = await post(path, {});
+        expect(idle.headers[':status']).toBe(204);
+        expect(idle.headers.traceparent).toBeUndefined();
+        if (mode === 'disabled') {
+          expect(carried.headers.traceparent).toBeUndefined();
+          expect(exporter.getFinishedSpans()).toEqual([]);
+        } else {
+          expect(carried.headers.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+          if (mode === 'enabled') {
+            const spans = exporter.getFinishedSpans();
+            const origin = spans.find((span) => span.attributes['http.route'] === '/enqueue/:id')!;
+            expect(carried.headers.traceparent).toBe(
+              `00-${origin.spanContext().traceId}-${origin.spanContext().spanId}-01`
+            );
+            const acceptance = spans.filter((span) => span.name === 'nanohost.effect.accept');
+            expect(acceptance).toHaveLength(1);
+            expect(acceptance[0]!.spanContext().traceId).toBe(hostTraceId);
+            expect(acceptance[0]!.parentSpanContext?.spanId).toBe(hostSpanId);
+            expect(
+              JSON.stringify(
+                spans.map((span) => ({
+                  attributes: span.attributes,
+                  events: span.events,
+                  status: span.status,
+                }))
+              )
+            ).not.toMatch(/private-(body|header)-canary|turn-private-canary/);
+            expect((await post('/import/known-turn', {})).headers[':status']).toBe(202);
+            const importedCommand = await post(
+              '/api/nanohost/transport/effects/reference.import',
+              {}
+            );
+            expect(importedCommand.headers['content-type']).toBe('application/octet-stream');
+            expect(importedCommand.body).toBe(importBody.toString());
+            const importOrigin = exporter
+              .getFinishedSpans()
+              .find((span) => span.attributes['http.route'] === '/import/:id')!;
+            expect(importedCommand.headers.traceparent).toBe(
+              `00-${importOrigin.spanContext().traceId}-${importOrigin.spanContext().spanId}-01`
+            );
+            const importResult = {
+              requestId: importId,
+              byteLength: importBody.length,
+              reference: 'sandbox://fixture-sandbox/worktree/fixture.txt',
+            };
+            expect(
+              (
+                await post(
+                  '/api/nanohost/transport/effects/reference.import/result',
+                  importResult,
+                  returned
+                )
+              ).headers[':status']
+            ).toBe(204);
+            await expect(imported).resolves.toEqual({
+              byteLength: importBody.length,
+              reference: importResult.reference,
+            });
+            // Observe the real registrar and dispatcher: a query cannot select bearer routing.
+            const classified = vi.spyOn(dispatch, 'route');
+            try {
+              for (const operation of ['poll', 'result']) {
+                const path = `/worker-control/harness/${operation}`;
+                classified.mockClear();
+                const refused = await post(
+                  `${path}?proof=sec2a`,
+                  { schemaVersion: 0 },
+                  {
+                    'x-openkit-integration-binding': 'unknown-sec2a-binding',
+                  }
+                );
+                expect(refused.headers[':status']).toBe(409);
+                expect(classified).toHaveBeenCalledExactlyOnceWith(
+                  expect.any(Object),
+                  expect.objectContaining({
+                    path,
+                    family: 'worker-control',
+                    credentialClass: 'harness',
+                  })
+                );
+              }
+            } finally {
+              classified.mockRestore();
             }
-          } finally {
-            classified.mockRestore();
           }
         }
+      } finally {
+        client?.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await shutdownTelemetry();
+        log.mockRestore();
+        coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
       }
-    } finally {
-      client?.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await shutdownTelemetry();
-      log.mockRestore();
-      coreDb.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
     }
-  });
+  );
 
   it('carries bounded delete resource summaries without changing cleanup or receipt identity', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-delete-resources-'));
@@ -1018,164 +1017,165 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  it.each([
-    'bridge.close',
-    'sandbox.delete',
-  ] as const)('joins only the exact aborted accepted %s slot and retains its original consumer', async (kind) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-aborted-cleanup-join-'));
-    const coreDb = openCoreDb(root);
-    applyMigrations(coreDb);
-    const authority = createNanoHostTransportSessionAuthority();
-    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
-    const target = {
-      deploymentId: 'cleanup-join',
-      identityId: 'cleanup-join',
-      targetId: 'cleanup-join',
-    };
-    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target,
-      observedAt: new Date().toISOString(),
-    });
-    const connected = Promise.withResolvers<object>();
-    const server = createHttp2Server((request, response) => {
-      connected.resolve(readNanoHostPhysicalConnectionContext(request)!);
-      response.writeHead(204).end();
-    });
-    const abort = new AbortController();
-    const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-    const commit = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-    const refusal = new Error('Original receipt consumption rolled back.');
-    const deliveries: Promise<void>[] = [];
-    let client: ReturnType<typeof connectHttp2> | undefined;
-    let original: Promise<unknown> | undefined;
-    try {
-      server.listen(0, '127.0.0.1');
-      await once(server, 'listening');
-      const address = server.address();
-      if (!address || typeof address === 'string') throw new Error('Missing cleanup join address.');
-      client = connectHttp2(`http://127.0.0.1:${address.port}`);
-      client.request({ ':method': 'POST', ':path': '/' }).end();
-      const physical = await connected.promise;
-      authority.admit({
-        identityId: target.identityId,
-        connectionGeneration: 1,
-        physicalConnection: physical,
-      });
-      const epoch = 'a'.repeat(64);
-      await dispatch.readiness!(physical, Buffer.from(JSON.stringify({ physicalEpoch: epoch })), {
-        ...target,
-        coreDb,
-      });
-      const requestId = 'b'.repeat(64);
-      const sandboxId = 'retained-cleanup';
-      const body = { sandboxId, state: kind === 'bridge.close' ? 'closed' : 'deleted' };
-      const consumer = vi.fn(async (value: unknown) => {
-        const index = consumer.mock.calls.length - 1;
-        expect(value).toEqual(body);
-        if (index > 1) throw new Error('Unexpected extra original consumption.');
-        entered[index]!.resolve();
-        await commit[index]!.promise;
-        if (index === 0) throw refusal;
-      });
-      const replacementConsumer = vi.fn(async () => {});
-      original = dispatch.effect({
-        kind,
-        requestId,
-        input: { sandboxId },
-        signal: abort.signal,
-        consumeResult: consumer,
-      });
-      void original.catch(() => undefined);
-      await expect(dispatch.poll(physical, kind)).resolves.toEqual({ sandboxId, requestId });
-      const expectation = {
-        kind,
-        requestId,
-        originPhysicalEpoch: epoch,
-        consumeResult: replacementConsumer,
+  it.each(['bridge.close', 'sandbox.delete'] as const)(
+    'joins only the exact aborted accepted %s slot and retains its original consumer',
+    async (kind) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-aborted-cleanup-join-'));
+      const coreDb = openCoreDb(root);
+      applyMigrations(coreDb);
+      const authority = createNanoHostTransportSessionAuthority();
+      const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      const target = {
+        deploymentId: 'cleanup-join',
+        identityId: 'cleanup-join',
+        targetId: 'cleanup-join',
       };
-      // DX Physical Receipt Consumption: a live producer cannot be displaced by inspection.
-      expect(() => dispatch.expectResultOnly!([expectation])).toThrow(/conflict|pending/i);
-      abort.abort();
-      await expect(original).rejects.toThrow(
-        'NanoHost original effect allowance ended; outcome requires inspection.'
-      );
-      for (const mismatch of [
-        { ...expectation, requestId: 'c'.repeat(64) },
-        { ...expectation, originPhysicalEpoch: 'd'.repeat(64) },
-      ])
-        expect(() => dispatch.expectResultOnly!([mismatch])).toThrow(/conflict|pending|origin/i);
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: new Date().toISOString(),
+      });
+      const connected = Promise.withResolvers<object>();
+      const server = createHttp2Server((request, response) => {
+        connected.resolve(readNanoHostPhysicalConnectionContext(request)!);
+        response.writeHead(204).end();
+      });
+      const abort = new AbortController();
+      const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+      const commit = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+      const refusal = new Error('Original receipt consumption rolled back.');
+      const deliveries: Promise<void>[] = [];
+      let client: ReturnType<typeof connectHttp2> | undefined;
+      let original: Promise<unknown> | undefined;
+      try {
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        const address = server.address();
+        if (!address || typeof address === 'string')
+          throw new Error('Missing cleanup join address.');
+        client = connectHttp2(`http://127.0.0.1:${address.port}`);
+        client.request({ ':method': 'POST', ':path': '/' }).end();
+        const physical = await connected.promise;
+        authority.admit({
+          identityId: target.identityId,
+          connectionGeneration: 1,
+          physicalConnection: physical,
+        });
+        const epoch = 'a'.repeat(64);
+        await dispatch.readiness!(physical, Buffer.from(JSON.stringify({ physicalEpoch: epoch })), {
+          ...target,
+          coreDb,
+        });
+        const requestId = 'b'.repeat(64);
+        const sandboxId = 'retained-cleanup';
+        const body = { sandboxId, state: kind === 'bridge.close' ? 'closed' : 'deleted' };
+        const consumer = vi.fn(async (value: unknown) => {
+          const index = consumer.mock.calls.length - 1;
+          expect(value).toEqual(body);
+          if (index > 1) throw new Error('Unexpected extra original consumption.');
+          entered[index]!.resolve();
+          await commit[index]!.promise;
+          if (index === 0) throw refusal;
+        });
+        const replacementConsumer = vi.fn(async () => {});
+        original = dispatch.effect({
+          kind,
+          requestId,
+          input: { sandboxId },
+          signal: abort.signal,
+          consumeResult: consumer,
+        });
+        void original.catch(() => undefined);
+        await expect(dispatch.poll(physical, kind)).resolves.toEqual({ sandboxId, requestId });
+        const expectation = {
+          kind,
+          requestId,
+          originPhysicalEpoch: epoch,
+          consumeResult: replacementConsumer,
+        };
+        // DX Physical Receipt Consumption: a live producer cannot be displaced by inspection.
+        expect(() => dispatch.expectResultOnly!([expectation])).toThrow(/conflict|pending/i);
+        abort.abort();
+        await expect(original).rejects.toThrow(
+          'NanoHost original effect allowance ended; outcome requires inspection.'
+        );
+        for (const mismatch of [
+          { ...expectation, requestId: 'c'.repeat(64) },
+          { ...expectation, originPhysicalEpoch: 'd'.repeat(64) },
+        ])
+          expect(() => dispatch.expectResultOnly!([mismatch])).toThrow(/conflict|pending|origin/i);
 
-      // DX373: same operation/request/origin joins retained ownership without another contact.
-      const retained = dispatch.expectResultOnly!([expectation]);
-      void retained.catch(() => undefined);
-      let joined = false;
-      void retained.then(
-        () => {
-          joined = true;
-        },
-        () => {}
-      );
-      await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
-      await expect(
-        dispatch.effect({ kind, requestId: 'e'.repeat(64), input: { sandboxId: 'excluded' } })
-      ).rejects.toThrow(/pending|enqueued|busy/i);
-      const result = { ...body, requestId };
-      const refused = dispatch.result(physical, kind, result);
-      deliveries.push(refused);
-      void refused.catch(() => undefined);
-      await Promise.race([
-        entered[0]!.promise,
-        refused.then(() => {
-          throw new Error('Result bypassed original consumer.');
-        }),
-      ]);
-      expect(joined).toBe(false);
-      expect(replacementConsumer).not.toHaveBeenCalled();
-      commit[0]!.resolve();
-      await expect(refused).rejects.toBe(refusal);
-      expect(joined).toBe(false);
-      await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
-      const retried = dispatch.result(physical, kind, result);
-      deliveries.push(retried);
-      let acknowledged = false;
-      void retried.then(
-        () => {
-          acknowledged = true;
-        },
-        () => {}
-      );
-      await Promise.race([
-        entered[1]!.promise,
-        retried.then(() => {
-          throw new Error('Retry bypassed original consumer.');
-        }),
-      ]);
-      // The callback models the owning FULL barrier; Factory proves the actual native commit.
-      expect(acknowledged).toBe(false);
-      expect(joined).toBe(false);
-      expect(consumer).toHaveBeenCalledTimes(2);
-      expect(replacementConsumer).not.toHaveBeenCalled();
-      commit[1]!.resolve();
-      await retried;
-      await expect(retained).resolves.toEqual({ kind, result: body });
-      expect(acknowledged).toBe(true);
-      await expect(original).rejects.toThrow(/allowance ended/);
-      await expect(dispatch.result(physical, kind, result)).resolves.toBeUndefined();
-      expect(consumer).toHaveBeenCalledTimes(2);
-      expect(replacementConsumer).not.toHaveBeenCalled();
-      await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
-      expect(authority.mayCarryWork(physical)).toBe(true);
-    } finally {
-      abort.abort();
-      for (const gate of commit) gate.resolve();
-      await Promise.allSettled(deliveries);
-      await original?.catch(() => undefined);
-      client?.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      coreDb.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
+        // DX373: same operation/request/origin joins retained ownership without another contact.
+        const retained = dispatch.expectResultOnly!([expectation]);
+        void retained.catch(() => undefined);
+        let joined = false;
+        void retained.then(
+          () => {
+            joined = true;
+          },
+          () => {}
+        );
+        await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
+        await expect(
+          dispatch.effect({ kind, requestId: 'e'.repeat(64), input: { sandboxId: 'excluded' } })
+        ).rejects.toThrow(/pending|enqueued|busy/i);
+        const result = { ...body, requestId };
+        const refused = dispatch.result(physical, kind, result);
+        deliveries.push(refused);
+        void refused.catch(() => undefined);
+        await Promise.race([
+          entered[0]!.promise,
+          refused.then(() => {
+            throw new Error('Result bypassed original consumer.');
+          }),
+        ]);
+        expect(joined).toBe(false);
+        expect(replacementConsumer).not.toHaveBeenCalled();
+        commit[0]!.resolve();
+        await expect(refused).rejects.toBe(refusal);
+        expect(joined).toBe(false);
+        await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
+        const retried = dispatch.result(physical, kind, result);
+        deliveries.push(retried);
+        let acknowledged = false;
+        void retried.then(
+          () => {
+            acknowledged = true;
+          },
+          () => {}
+        );
+        await Promise.race([
+          entered[1]!.promise,
+          retried.then(() => {
+            throw new Error('Retry bypassed original consumer.');
+          }),
+        ]);
+        // The callback models the owning FULL barrier; Factory proves the actual native commit.
+        expect(acknowledged).toBe(false);
+        expect(joined).toBe(false);
+        expect(consumer).toHaveBeenCalledTimes(2);
+        expect(replacementConsumer).not.toHaveBeenCalled();
+        commit[1]!.resolve();
+        await retried;
+        await expect(retained).resolves.toEqual({ kind, result: body });
+        expect(acknowledged).toBe(true);
+        await expect(original).rejects.toThrow(/allowance ended/);
+        await expect(dispatch.result(physical, kind, result)).resolves.toBeUndefined();
+        expect(consumer).toHaveBeenCalledTimes(2);
+        expect(replacementConsumer).not.toHaveBeenCalled();
+        await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
+        expect(authority.mayCarryWork(physical)).toBe(true);
+      } finally {
+        abort.abort();
+        for (const gate of commit) gate.resolve();
+        await Promise.allSettled(deliveries);
+        await original?.catch(() => undefined);
+        client?.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('polls every declared effect route while idle and admits additive baseline results', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));

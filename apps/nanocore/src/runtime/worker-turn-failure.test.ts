@@ -465,51 +465,49 @@ describe('governed worker turn failure projection', () => {
     ).toEqual([]);
   });
 
-  it.each([
-    'completed',
-    'interrupted',
-    'cancelled',
-    'failed',
-  ] as const)('preserves an authoritative %s turn instead of replacing its outcome', async (status) => {
-    const { dataRoot, store } = await createFixture();
-    const originalError =
-      status === 'failed'
-        ? { code: 'original_product_failure', message: 'Preserve the original failure.' }
-        : null;
+  it.each(['completed', 'interrupted', 'cancelled', 'failed'] as const)(
+    'preserves an authoritative %s turn instead of replacing its outcome',
+    async (status) => {
+      const { dataRoot, store } = await createFixture();
+      const originalError =
+        status === 'failed'
+          ? { code: 'original_product_failure', message: 'Preserve the original failure.' }
+          : null;
 
-    await seedHistoricalTurn(store, 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
-      completedAt: '2026-07-15T00:00:30.000Z',
-      error: originalError,
-      status,
-    });
-    await store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
-      message: 'Authoritative terminal session state.',
-      status: 'idle',
-      updatedAt: '2026-07-15T00:00:30.000Z',
-    });
+      await seedHistoricalTurn(store, 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
+        completedAt: '2026-07-15T00:00:30.000Z',
+        error: originalError,
+        status,
+      });
+      await store.updateAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5', {
+        message: 'Authoritative terminal session state.',
+        status: 'idle',
+        updatedAt: '2026-07-15T00:00:30.000Z',
+      });
 
-    expect(await projectFailure(store)).toMatchObject({ status });
+      expect(await projectFailure(store)).toMatchObject({ status });
 
-    const reloaded = new FsStore({ dataRoot });
-    expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
-      error: originalError,
-      status,
-    });
-    expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
-      message: 'Authoritative terminal session state.',
-      status: 'idle',
-    });
-    expect(
-      reloaded
-        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
-        .filter(
-          (event) =>
-            event.event === 'turn.completed' &&
-            event.data.type === 'turn-completed' &&
-            event.data.stopReason === 'error'
-        )
-    ).toEqual([]);
-  });
+      const reloaded = new FsStore({ dataRoot });
+      expect(reloaded.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
+        error: originalError,
+        status,
+      });
+      expect(reloaded.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
+        message: 'Authoritative terminal session state.',
+        status: 'idle',
+      });
+      expect(
+        reloaded
+          .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
+          .filter(
+            (event) =>
+              event.event === 'turn.completed' &&
+              event.data.type === 'turn-completed' &&
+              event.data.stopReason === 'error'
+          )
+      ).toEqual([]);
+    }
+  );
 
   it('repairs session and terminal-event projections after the failed turn write persisted', async () => {
     const { dataRoot, store } = await createFixture();
@@ -545,85 +543,85 @@ describe('governed worker turn failure projection', () => {
     ).toHaveLength(1);
   });
 
-  it.each([
-    'worker_governance_restart_recovery',
-    'unsupported_gateway_feature',
-  ])('repairs a missing terminal event after a cold retry of %s without replacing its diagnostic', async (errorCode) => {
-    const { dataRoot, store } = await createFixture();
-    const originalError = {
-      code: errorCode,
-      message:
-        errorCode === 'unsupported_gateway_feature'
-          ? 'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.'
-          : 'Worker execution stopped during NanoCore restart recovery.',
-    };
-    const completedAt = '2026-07-15T00:00:45.000Z';
-    const terminalEventWrite = vi
-      .spyOn(store, 'completeTurn')
-      .mockImplementation(async (turnId, patch) => {
-        // The fixture models a retained pre-transfer partial decision, before the native atomic terminal owner existed.
-        await seedHistoricalTurn(store, turnId, patch);
-        throw new Error('terminal event store unavailable');
-      });
+  it.each(['worker_governance_restart_recovery', 'unsupported_gateway_feature'])(
+    'repairs a missing terminal event after a cold retry of %s without replacing its diagnostic',
+    async (errorCode) => {
+      const { dataRoot, store } = await createFixture();
+      const originalError = {
+        code: errorCode,
+        message:
+          errorCode === 'unsupported_gateway_feature'
+            ? 'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.'
+            : 'Worker execution stopped during NanoCore restart recovery.',
+      };
+      const completedAt = '2026-07-15T00:00:45.000Z';
+      const terminalEventWrite = vi
+        .spyOn(store, 'completeTurn')
+        .mockImplementation(async (turnId, patch) => {
+          // The fixture models a retained pre-transfer partial decision, before the native atomic terminal owner existed.
+          await seedHistoricalTurn(store, turnId, patch);
+          throw new Error('terminal event store unavailable');
+        });
 
-    await expect(
-      terminalizeGovernedWorkerTurn({
-        agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
+      await expect(
+        terminalizeGovernedWorkerTurn({
+          agentSessionId: 'as_00000000-0000-770e-a08d-6c9479c1d1f5',
+          completedAt,
+          errorCode,
+          message: originalError.message,
+          outcome: 'failed',
+          requestId: null,
+          store,
+          turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
+        })
+      ).rejects.toThrow(AggregateError);
+      terminalEventWrite.mockRestore();
+
+      const partial = new FsStore({ dataRoot });
+      expect(partial.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
         completedAt,
-        errorCode,
+        error: originalError,
+        status: 'failed',
+      });
+      expect(partial.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
+        status: 'failed',
+      });
+      expect(
+        partial
+          .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
+          .filter((event) => event.event === 'turn.completed')
+      ).toEqual([]);
+
+      expect(await projectFailure(partial)).toMatchObject({ status: 'failed' });
+      const repaired = new FsStore({ dataRoot });
+      expect(repaired.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
+        completedAt,
+        error: originalError,
+        status: 'failed',
+      });
+      expect(repaired.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
         message: originalError.message,
-        outcome: 'failed',
-        requestId: null,
-        store,
-        turnId: 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9',
-      })
-    ).rejects.toThrow(AggregateError);
-    terminalEventWrite.mockRestore();
-
-    const partial = new FsStore({ dataRoot });
-    expect(partial.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
-      completedAt,
-      error: originalError,
-      status: 'failed',
-    });
-    expect(partial.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
-      status: 'failed',
-    });
-    expect(
-      partial
+        status: 'failed',
+      });
+      const terminalEvents = repaired
         .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
-        .filter((event) => event.event === 'turn.completed')
-    ).toEqual([]);
-
-    expect(await projectFailure(partial)).toMatchObject({ status: 'failed' });
-    const repaired = new FsStore({ dataRoot });
-    expect(repaired.getTurnById('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')).toMatchObject({
-      completedAt,
-      error: originalError,
-      status: 'failed',
-    });
-    expect(repaired.getAgentSession('as_00000000-0000-770e-a08d-6c9479c1d1f5')).toMatchObject({
-      message: originalError.message,
-      status: 'failed',
-    });
-    const terminalEvents = repaired
-      .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
-      .filter((event) => event.event === 'turn.completed');
-    expect(terminalEvents).toHaveLength(1);
-    expect(SseEventEnvelopeSchema.parse(terminalEvents[0])).toMatchObject({
-      data: {
-        type: 'turn-completed',
-        stopReason: 'error',
-        turn: { completedAt, error: originalError, status: 'failed' },
-      },
-    });
-    await projectFailure(repaired);
-    expect(
-      new FsStore({ dataRoot })
-        .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
-        .filter((event) => event.event === 'turn.completed')
-    ).toEqual(terminalEvents);
-  });
+        .filter((event) => event.event === 'turn.completed');
+      expect(terminalEvents).toHaveLength(1);
+      expect(SseEventEnvelopeSchema.parse(terminalEvents[0])).toMatchObject({
+        data: {
+          type: 'turn-completed',
+          stopReason: 'error',
+          turn: { completedAt, error: originalError, status: 'failed' },
+        },
+      });
+      await projectFailure(repaired);
+      expect(
+        new FsStore({ dataRoot })
+          .getTurnEvents('tu_00000000-0000-7cfa-813c-d5549b2b9ef9')
+          .filter((event) => event.event === 'turn.completed')
+      ).toEqual(terminalEvents);
+    }
+  );
 
   it('repairs a partial normal worker failure during restart without replacing its error', async () => {
     const { dataRoot, store } = await createFixture();

@@ -385,19 +385,22 @@ describe('durable work observations', () => {
       `extra Skill ${key}`,
       { catalogRevision: 7, skills: [{ ...admittedSkill, [key]: 'unowned content' }] },
     ]),
-  ])('rejects malformed Assistant Skill admission before persistence: %s', async (_name, admission) => {
-    const f = await fixture('off');
-    const observation = environment(f.db.workspaceId, admission);
-    expect(() =>
-      parseWorkObservationRecord({ ...observation, turnId: f.owner.turnId, v: 1, seq: 1 })
-    ).toThrow();
-    await expect(
-      appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })
-    ).rejects.toThrow();
-    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
-    expect(observationAuthority(f).read()).toBe('');
-    expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
-  });
+  ])(
+    'rejects malformed Assistant Skill admission before persistence: %s',
+    async (_name, admission) => {
+      const f = await fixture('off');
+      const observation = environment(f.db.workspaceId, admission);
+      expect(() =>
+        parseWorkObservationRecord({ ...observation, turnId: f.owner.turnId, v: 1, seq: 1 })
+      ).toThrow();
+      await expect(
+        appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })
+      ).rejects.toThrow();
+      expect(readWorkObservations(f.db, f.owner)).toEqual([]);
+      expect(observationAuthority(f).read()).toBe('');
+      expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
+    }
+  );
 
   it('reads appends and reopens observations with annotated owning Turn attribution', async () => {
     const f = await fixture();
@@ -439,47 +442,47 @@ describe('durable work observations', () => {
     );
   });
 
-  it.each([
-    'running',
-    'pending',
-  ] as const)('does constant prior-row parse work in the native SQL body for a %s Turn', async (status) => {
-    const f = await fixture('off');
-    await f.store.updateTurn(f.owner.turnId, { status });
-    await appendWorkObservation(f.db, { ...f.owner, observation: model('warm'), bodies: [] });
-    await shutdownControlStoreWorkerClient();
-    // This L1 check proves SQL-body parsing only; transport acknowledgement is covered by append/reopen checks.
-    // A Main-thread spy cannot observe worker parsing.
-    const parse = vi.spyOn(JSON, 'parse');
-    try {
-      for (let index = 0; index < 20; index++) {
-        parse.mockClear();
-        const id = `delta-${index}`;
-        f.db.sqlite.transaction(() =>
-          applyControlWorkObservation(
-            f.db.sqlite,
-            { kind: 'workspace', workspaceId: f.db.workspaceId },
-            prepareControlWorkObservation(
+  it.each(['running', 'pending'] as const)(
+    'does constant prior-row parse work in the native SQL body for a %s Turn',
+    async (status) => {
+      const f = await fixture('off');
+      await f.store.updateTurn(f.owner.turnId, { status });
+      await appendWorkObservation(f.db, { ...f.owner, observation: model('warm'), bodies: [] });
+      await shutdownControlStoreWorkerClient();
+      // This L1 check proves SQL-body parsing only; transport acknowledgement is covered by append/reopen checks.
+      // A Main-thread spy cannot observe worker parsing.
+      const parse = vi.spyOn(JSON, 'parse');
+      try {
+        for (let index = 0; index < 20; index++) {
+          parse.mockClear();
+          const id = `delta-${index}`;
+          f.db.sqlite.transaction(() =>
+            applyControlWorkObservation(
+              f.db.sqlite,
               { kind: 'workspace', workspaceId: f.db.workspaceId },
-              { ...f.owner, observation: model(id), bodies: [] }
+              prepareControlWorkObservation(
+                { kind: 'workspace', workspaceId: f.db.workspaceId },
+                { ...f.owner, observation: model(id), bodies: [] }
+              )
             )
-          )
-        )();
-        const priorRows = parse.mock.calls.filter(
-          ([text]) =>
-            typeof text === 'string' &&
-            text.includes('"seq":') &&
-            text.includes('"type":"model.observed"') &&
-            !text.includes(`"id":"${id}"`)
-        );
-        expect(priorRows).toHaveLength(0);
+          )();
+          const priorRows = parse.mock.calls.filter(
+            ([text]) =>
+              typeof text === 'string' &&
+              text.includes('"seq":') &&
+              text.includes('"type":"model.observed"') &&
+              !text.includes(`"id":"${id}"`)
+          );
+          expect(priorRows).toHaveLength(0);
+        }
+        parse.mockClear();
+        expect(readWorkObservations(f.db, f.owner)).toHaveLength(21);
+        expect(parse.mock.calls.filter(([text]) => text.includes('"seq":'))).toHaveLength(21);
+      } finally {
+        parse.mockRestore();
       }
-      parse.mockClear();
-      expect(readWorkObservations(f.db, f.owner)).toHaveLength(21);
-      expect(parse.mock.calls.filter(([text]) => text.includes('"seq":'))).toHaveLength(21);
-    } finally {
-      parse.mockRestore();
     }
-  });
+  );
 
   it('revalidates externally changed ledgers and does not trust returned observation objects', async () => {
     const f = await fixture('off');
@@ -1110,49 +1113,49 @@ process.kill(process.pid, 'SIGKILL');`
     expect(observationAuthority(f).read()).toBe(beforeRefusal);
   });
 
-  it.each([
-    'missing',
-    'stale',
-  ] as const)('uses committed native coverage with a %s disposable Turn projection', async (projection) => {
-    const f = await fixture();
-    const turnPath = join(f.turnRoot, 'turn.json');
-    if (projection === 'stale') {
-      mkdirSync(f.turnRoot, { recursive: true });
-      writeFileSync(
-        turnPath,
-        JSON.stringify({ captureCoverage: { scope: 'server', value: 'off' } })
-      );
-    }
-    const bytes = Buffer.from('Native coverage remains authoritative.');
-    await appendWorkObservation(f.db, {
-      ...f.owner,
-      observation: model(),
-      bodies: [{ id: 'body', bytes, mediaType: 'text/plain', boundary: 'test' }],
-    });
-    await shutdownControlStoreWorkerClient();
-    f.db.sqlite.close();
-    f.db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
-    databases.push(f.db);
-    const rows = readWorkObservations(f.db, f.owner);
-    expect(rows.map((row) => row.type)).toEqual(['model.observed', 'content.published']);
-    const ref = rows[1]!.refs![0]!;
-    expect(
-      readWorkObservationBody(f.db, {
+  it.each(['missing', 'stale'] as const)(
+    'uses committed native coverage with a %s disposable Turn projection',
+    async (projection) => {
+      const f = await fixture();
+      const turnPath = join(f.turnRoot, 'turn.json');
+      if (projection === 'stale') {
+        mkdirSync(f.turnRoot, { recursive: true });
+        writeFileSync(
+          turnPath,
+          JSON.stringify({ captureCoverage: { scope: 'server', value: 'off' } })
+        );
+      }
+      const bytes = Buffer.from('Native coverage remains authoritative.');
+      await appendWorkObservation(f.db, {
         ...f.owner,
-        bundleId: ref.locator,
-        sha256: ref.digest!,
-        createdAt: rows[0]!.ts,
-      })
-    ).toEqual(bytes);
-    expect(
-      readThreadRuntimeActivity(f.db, {
-        threadId: f.owner.threadId,
-        turnIds: [f.owner.turnId],
-      })[0]?.contentCapture
-    ).toBe('on');
-    if (projection === 'missing') expect(existsSync(turnPath)).toBe(false);
-    else expect(JSON.parse(readFileSync(turnPath, 'utf8')).captureCoverage.value).toBe('off');
-  });
+        observation: model(),
+        bodies: [{ id: 'body', bytes, mediaType: 'text/plain', boundary: 'test' }],
+      });
+      await shutdownControlStoreWorkerClient();
+      f.db.sqlite.close();
+      f.db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+      databases.push(f.db);
+      const rows = readWorkObservations(f.db, f.owner);
+      expect(rows.map((row) => row.type)).toEqual(['model.observed', 'content.published']);
+      const ref = rows[1]!.refs![0]!;
+      expect(
+        readWorkObservationBody(f.db, {
+          ...f.owner,
+          bundleId: ref.locator,
+          sha256: ref.digest!,
+          createdAt: rows[0]!.ts,
+        })
+      ).toEqual(bytes);
+      expect(
+        readThreadRuntimeActivity(f.db, {
+          threadId: f.owner.threadId,
+          turnIds: [f.owner.turnId],
+        })[0]?.contentCapture
+      ).toBe('on');
+      if (projection === 'missing') expect(existsSync(turnPath)).toBe(false);
+      else expect(JSON.parse(readFileSync(turnPath, 'utf8')).captureCoverage.value).toBe('off');
+    }
+  );
 
   it('refuses missing native owner authority without rebuilding it from readable projections', async () => {
     const f = await fixture();
@@ -1308,203 +1311,202 @@ process.kill(process.pid, 'SIGKILL');`
     ).toEqual(activity);
   });
 
-  it.each([
-    'intact',
-    'denied',
-    'missing',
-    'corrupt',
-  ] as const)('does not read %s restricted bodies when projecting admitted ordinary Items', async (state) => {
-    const f = await fixture();
-    const reply = await admitReply(f, 'Ordinary source canary.');
-    const bytes = Buffer.from('Different restricted capture canary.');
-    const observation = assistant(bytes);
-    await appendWorkObservation(f.db, {
-      ...f.owner,
-      observation,
-      bodies: [{ id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' }],
-    });
-    const publication = readWorkObservations(f.db, f.owner)[1]!;
-    const ref = publication.refs![0]!;
-    const rawInput = {
-      ...f.owner,
-      bundleId: ref.locator,
-      createdAt: observation.ts,
-      sha256: ref.digest!,
-    };
-    const rawPath = join(
-      f.dataRoot,
-      'workspaces',
-      f.db.workspaceId,
-      'evidence',
-      'backend',
-      ref.locator,
-      'raw',
-      'content'
-    );
-    expect(readWorkObservationBody(f.db, rawInput)).toEqual(bytes);
-    expect(listWorkspaceEvidenceBundles(f.db, f.db.workspaceId)).toEqual([]);
-    expect(
-      f.db.sqlite
-        .prepare('SELECT retention_class FROM evidence_bundles WHERE evidence_bundle_id = ?')
-        .get(ref.locator)
-    ).toEqual({ retention_class: 'restricted-raw' });
-    if (state === 'missing') rmSync(rawPath);
-    if (state === 'corrupt') writeFileSync(rawPath, 'corrupt fixture bytes');
-    const openSync = fs.openSync;
-    const opened = vi.spyOn(fs, 'openSync').mockImplementation((path, flags, mode) => {
-      if (state === 'denied' && String(path) === rawPath) {
-        throw Object.assign(new Error('F1 injected raw-file denial'), { code: 'EACCES' });
+  it.each(['intact', 'denied', 'missing', 'corrupt'] as const)(
+    'does not read %s restricted bodies when projecting admitted ordinary Items',
+    async (state) => {
+      const f = await fixture();
+      const reply = await admitReply(f, 'Ordinary source canary.');
+      const bytes = Buffer.from('Different restricted capture canary.');
+      const observation = assistant(bytes);
+      await appendWorkObservation(f.db, {
+        ...f.owner,
+        observation,
+        bodies: [
+          { id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' },
+        ],
+      });
+      const publication = readWorkObservations(f.db, f.owner)[1]!;
+      const ref = publication.refs![0]!;
+      const rawInput = {
+        ...f.owner,
+        bundleId: ref.locator,
+        createdAt: observation.ts,
+        sha256: ref.digest!,
+      };
+      const rawPath = join(
+        f.dataRoot,
+        'workspaces',
+        f.db.workspaceId,
+        'evidence',
+        'backend',
+        ref.locator,
+        'raw',
+        'content'
+      );
+      expect(readWorkObservationBody(f.db, rawInput)).toEqual(bytes);
+      expect(listWorkspaceEvidenceBundles(f.db, f.db.workspaceId)).toEqual([]);
+      expect(
+        f.db.sqlite
+          .prepare('SELECT retention_class FROM evidence_bundles WHERE evidence_bundle_id = ?')
+          .get(ref.locator)
+      ).toEqual({ retention_class: 'restricted-raw' });
+      if (state === 'missing') rmSync(rawPath);
+      if (state === 'corrupt') writeFileSync(rawPath, 'corrupt fixture bytes');
+      const openSync = fs.openSync;
+      const opened = vi.spyOn(fs, 'openSync').mockImplementation((path, flags, mode) => {
+        if (state === 'denied' && String(path) === rawPath) {
+          throw Object.assign(new Error('F1 injected raw-file denial'), { code: 'EACCES' });
+        }
+        return openSync(path, flags, mode);
+      });
+      syncBuiltinESMExports();
+      const rawRead = vi.spyOn(evidenceBundles, 'readWorkObservationBody');
+      try {
+        // Prove each fault reaches the real retained-body reader before testing that ordinary reads never enter it.
+        if (state === 'denied')
+          expect(() => readWorkObservationBody(f.db, rawInput)).toThrow(
+            'F1 injected raw-file denial'
+          );
+        if (state === 'corrupt')
+          expect(() => readWorkObservationBody(f.db, rawInput)).toThrow(
+            'retained observation body mismatch'
+          );
+        if (state === 'missing') expect(readWorkObservationBody(f.db, rawInput)).toBeNull();
+        opened.mockClear();
+        rawRead.mockClear();
+        const activity = readThreadRuntimeActivity(f.db, {
+          threadId: f.owner.threadId,
+          turnIds: [f.owner.turnId],
+        })[0]!;
+        expect.soft(rawRead).not.toHaveBeenCalled();
+        expect.soft(opened.mock.calls.filter(([path]) => String(path) === rawPath)).toEqual([]);
+        expect
+          .soft(activity)
+          .toMatchObject({ coverage: 'collecting', contentCapture: 'on', omittedEntryCount: 0 });
+        expect.soft(activity.entries).toEqual([
+          {
+            sequence: 1,
+            observedAt: observation.ts,
+            kind: 'result',
+            label: 'Worker: response completed',
+            textTruncated: false,
+          },
+          expect.objectContaining({
+            label: expect.stringMatching(/turn reply/i),
+            observedAt: reply.createdAt,
+            text: reply.text,
+            textTruncated: false,
+          }),
+        ]);
+        expect.soft(JSON.stringify(activity)).not.toContain(bytes.toString());
+        expect.soft(JSON.stringify(activity)).not.toMatch(/message-one|origin-child|source-one/);
+        expect.soft(f.store.getTurnById(f.owner.turnId)?.status).toBe('running');
+      } finally {
+        rawRead.mockRestore();
+        opened.mockRestore();
+        syncBuiltinESMExports();
       }
-      return openSync(path, flags, mode);
-    });
-    syncBuiltinESMExports();
-    const rawRead = vi.spyOn(evidenceBundles, 'readWorkObservationBody');
-    try {
-      // Prove each fault reaches the real retained-body reader before testing that ordinary reads never enter it.
-      if (state === 'denied')
-        expect(() => readWorkObservationBody(f.db, rawInput)).toThrow(
-          'F1 injected raw-file denial'
-        );
-      if (state === 'corrupt')
-        expect(() => readWorkObservationBody(f.db, rawInput)).toThrow(
-          'retained observation body mismatch'
-        );
-      if (state === 'missing') expect(readWorkObservationBody(f.db, rawInput)).toBeNull();
-      opened.mockClear();
-      rawRead.mockClear();
+    }
+  );
+
+  it.each(['absent', 'user-message', 'reasoning', 'empty-reply'] as const)(
+    'does not fall back to a published raw body when the ordinary Item is %s',
+    async (source) => {
+      const f = await fixture();
+      const bytes = Buffer.from('Safe-looking raw text must stay restricted.');
+      await appendWorkObservation(f.db, {
+        ...f.owner,
+        observation: assistant(bytes),
+        bodies: [
+          { id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' },
+        ],
+      });
+      if (source === 'empty-reply') await admitReply(f, '');
+      if (source === 'user-message' || source === 'reasoning') {
+        await f.store.createItem({
+          id: testEntityId('it', `not-a-reply-${source}`),
+          owner: { kind: 'workspace', workspaceId: f.db.workspaceId },
+          ...f.owner,
+          ...(source === 'reasoning'
+            ? {
+                type: 'reasoning',
+                summary: ['Private reasoning canary.'],
+                content: ['Private reasoning body.'],
+              }
+            : {
+                type: 'user-message',
+                actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                text: 'Non-reply Item canary.',
+              }),
+          status: 'completed',
+          createdAt: '2026-09-22T00:00:10.000Z',
+          completedAt: '2026-09-22T00:00:10.000Z',
+        });
+      }
       const activity = readThreadRuntimeActivity(f.db, {
         threadId: f.owner.threadId,
         turnIds: [f.owner.turnId],
       })[0]!;
-      expect.soft(rawRead).not.toHaveBeenCalled();
-      expect.soft(opened.mock.calls.filter(([path]) => String(path) === rawPath)).toEqual([]);
-      expect
-        .soft(activity)
-        .toMatchObject({ coverage: 'collecting', contentCapture: 'on', omittedEntryCount: 0 });
+      expect(activity).toMatchObject({
+        coverage: 'collecting',
+        entries: [{ label: 'Worker: response completed' }],
+      });
+      expect(activity.entries).toHaveLength(1);
+      expect(activity.entries[0]).not.toHaveProperty('text');
+      expect(activity.entries[0]?.textTruncated).toBe(false);
+    }
+  );
+
+  it.each(['absent', 'unsupported', 'unavailable'] as const)(
+    'keeps ordinary Items with capture off and %s collection without claiming completion',
+    async (collector) => {
+      const f = await fixture('off');
+      const reply = await admitReply(f, 'Admitted reply with full capture off.');
+      if (collector !== 'absent') {
+        await appendWorkObservation(f.db, {
+          ...f.owner,
+          observation: {
+            id: 'collector-state',
+            type: 'runtime.observed',
+            ts: '2026-09-22T00:00:00.000Z',
+            obs: 'worker-shim',
+            payload: {
+              observationId: 'collector-state',
+              sourceRef: 'source-one',
+              sourceSequence: 1,
+              observedAt: '2026-09-22T00:00:00.000Z',
+              fact: {
+                kind: 'coverage',
+                runtimeOriginRef: null,
+                family: 'child-content',
+                coverage: collector,
+                ...(collector === 'unavailable' ? { reason: 'collector-failed' } : {}),
+              },
+              content: { state: 'not-applicable' },
+            },
+          },
+          bodies: [],
+        });
+      }
+      const activity = readThreadRuntimeActivity(f.db, {
+        threadId: f.owner.threadId,
+        turnIds: [f.owner.turnId],
+      })[0]!;
+      expect.soft(activity.coverage).toBe('unavailable');
+      expect.soft(activity.contentCapture).toBe('off');
       expect.soft(activity.entries).toEqual([
-        {
-          sequence: 1,
-          observedAt: observation.ts,
-          kind: 'result',
-          label: 'Worker: response completed',
-          textTruncated: false,
-        },
         expect.objectContaining({
           label: expect.stringMatching(/turn reply/i),
-          observedAt: reply.createdAt,
           text: reply.text,
-          textTruncated: false,
+          observedAt: reply.createdAt,
         }),
       ]);
-      expect.soft(JSON.stringify(activity)).not.toContain(bytes.toString());
-      expect.soft(JSON.stringify(activity)).not.toMatch(/message-one|origin-child|source-one/);
-      expect.soft(f.store.getTurnById(f.owner.turnId)?.status).toBe('running');
-    } finally {
-      rawRead.mockRestore();
-      opened.mockRestore();
-      syncBuiltinESMExports();
-    }
-  });
-
-  it.each([
-    'absent',
-    'user-message',
-    'reasoning',
-    'empty-reply',
-  ] as const)('does not fall back to a published raw body when the ordinary Item is %s', async (source) => {
-    const f = await fixture();
-    const bytes = Buffer.from('Safe-looking raw text must stay restricted.');
-    await appendWorkObservation(f.db, {
-      ...f.owner,
-      observation: assistant(bytes),
-      bodies: [{ id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' }],
-    });
-    if (source === 'empty-reply') await admitReply(f, '');
-    if (source === 'user-message' || source === 'reasoning') {
-      await f.store.createItem({
-        id: testEntityId('it', `not-a-reply-${source}`),
-        owner: { kind: 'workspace', workspaceId: f.db.workspaceId },
-        ...f.owner,
-        ...(source === 'reasoning'
-          ? {
-              type: 'reasoning',
-              summary: ['Private reasoning canary.'],
-              content: ['Private reasoning body.'],
-            }
-          : {
-              type: 'user-message',
-              actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-              text: 'Non-reply Item canary.',
-            }),
-        status: 'completed',
-        createdAt: '2026-09-22T00:00:10.000Z',
-        completedAt: '2026-09-22T00:00:10.000Z',
+      expect(f.store.getTurnById(f.owner.turnId)?.status).toBe('running');
+      expect(f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()).toEqual({
+        count: 0,
       });
     }
-    const activity = readThreadRuntimeActivity(f.db, {
-      threadId: f.owner.threadId,
-      turnIds: [f.owner.turnId],
-    })[0]!;
-    expect(activity).toMatchObject({
-      coverage: 'collecting',
-      entries: [{ label: 'Worker: response completed' }],
-    });
-    expect(activity.entries).toHaveLength(1);
-    expect(activity.entries[0]).not.toHaveProperty('text');
-    expect(activity.entries[0]?.textTruncated).toBe(false);
-  });
-
-  it.each([
-    'absent',
-    'unsupported',
-    'unavailable',
-  ] as const)('keeps ordinary Items with capture off and %s collection without claiming completion', async (collector) => {
-    const f = await fixture('off');
-    const reply = await admitReply(f, 'Admitted reply with full capture off.');
-    if (collector !== 'absent') {
-      await appendWorkObservation(f.db, {
-        ...f.owner,
-        observation: {
-          id: 'collector-state',
-          type: 'runtime.observed',
-          ts: '2026-09-22T00:00:00.000Z',
-          obs: 'worker-shim',
-          payload: {
-            observationId: 'collector-state',
-            sourceRef: 'source-one',
-            sourceSequence: 1,
-            observedAt: '2026-09-22T00:00:00.000Z',
-            fact: {
-              kind: 'coverage',
-              runtimeOriginRef: null,
-              family: 'child-content',
-              coverage: collector,
-              ...(collector === 'unavailable' ? { reason: 'collector-failed' } : {}),
-            },
-            content: { state: 'not-applicable' },
-          },
-        },
-        bodies: [],
-      });
-    }
-    const activity = readThreadRuntimeActivity(f.db, {
-      threadId: f.owner.threadId,
-      turnIds: [f.owner.turnId],
-    })[0]!;
-    expect.soft(activity.coverage).toBe('unavailable');
-    expect.soft(activity.contentCapture).toBe('off');
-    expect.soft(activity.entries).toEqual([
-      expect.objectContaining({
-        label: expect.stringMatching(/turn reply/i),
-        text: reply.text,
-        observedAt: reply.createdAt,
-      }),
-    ]);
-    expect(f.store.getTurnById(f.owner.turnId)?.status).toBe('running');
-    expect(f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()).toEqual({
-      count: 0,
-    });
-  });
+  );
 
   it('screens the entire ordinary source before truncation without exposing reasoning or native identities', async () => {
     const f = await fixture('off');
@@ -1595,68 +1597,68 @@ process.kill(process.pid, 'SIGKILL');`
     );
   });
 
-  it.each([
-    'malformed-frame',
-    'partial-frame',
-  ] as const)('keeps observed child activity partial after a %s collection gap', async (reason) => {
-    const f = await fixture();
-    await appendWorkObservation(f.db, {
-      ...f.owner,
-      observation: {
-        id: 'observed-child',
-        type: 'runtime.observed',
-        ts: '2026-09-22T00:00:00.000Z',
-        obs: 'worker-shim',
-        payload: {
-          observationId: 'observed-child',
-          sourceRef: 'source-one',
-          sourceSequence: 0,
-          observedAt: '2026-09-22T00:00:00.000Z',
-          fact: {
-            kind: 'origin',
-            runtimeOriginRef: 'origin-child',
-            parentRuntimeOriginRef: 'origin-parent',
-            phase: 'started',
+  it.each(['malformed-frame', 'partial-frame'] as const)(
+    'keeps observed child activity partial after a %s collection gap',
+    async (reason) => {
+      const f = await fixture();
+      await appendWorkObservation(f.db, {
+        ...f.owner,
+        observation: {
+          id: 'observed-child',
+          type: 'runtime.observed',
+          ts: '2026-09-22T00:00:00.000Z',
+          obs: 'worker-shim',
+          payload: {
+            observationId: 'observed-child',
+            sourceRef: 'source-one',
+            sourceSequence: 0,
+            observedAt: '2026-09-22T00:00:00.000Z',
+            fact: {
+              kind: 'origin',
+              runtimeOriginRef: 'origin-child',
+              parentRuntimeOriginRef: 'origin-parent',
+              phase: 'started',
+            },
+            content: { state: 'not-applicable' },
           },
-          content: { state: 'not-applicable' },
         },
-      },
-      bodies: [],
-    });
-    await appendWorkObservation(f.db, {
-      ...f.owner,
-      observation: {
-        id: `gap-${reason}`,
-        type: 'runtime.observed',
-        ts: '2026-09-22T00:00:01.000Z',
-        obs: 'worker-shim',
-        payload: {
-          observationId: `gap-${reason}`,
-          sourceRef: 'source-one',
-          sourceSequence: 1,
-          observedAt: '2026-09-22T00:00:01.000Z',
-          fact: {
-            kind: 'coverage',
-            runtimeOriginRef: null,
-            family: 'child-content',
-            coverage: 'unavailable',
-            reason,
+        bodies: [],
+      });
+      await appendWorkObservation(f.db, {
+        ...f.owner,
+        observation: {
+          id: `gap-${reason}`,
+          type: 'runtime.observed',
+          ts: '2026-09-22T00:00:01.000Z',
+          obs: 'worker-shim',
+          payload: {
+            observationId: `gap-${reason}`,
+            sourceRef: 'source-one',
+            sourceSequence: 1,
+            observedAt: '2026-09-22T00:00:01.000Z',
+            fact: {
+              kind: 'coverage',
+              runtimeOriginRef: null,
+              family: 'child-content',
+              coverage: 'unavailable',
+              reason,
+            },
+            content: { state: 'not-applicable' },
           },
-          content: { state: 'not-applicable' },
         },
-      },
-      bodies: [],
-    });
+        bodies: [],
+      });
 
-    expect(
-      readThreadRuntimeActivity(f.db, {
-        threadId: f.owner.threadId,
-        turnIds: [f.owner.turnId],
-      })[0]
-    ).toMatchObject({
-      coverage: 'partial',
-      contentCapture: 'on',
-      entries: [{ kind: 'child-started', label: 'Child 1 started' }],
-    });
-  });
+      expect(
+        readThreadRuntimeActivity(f.db, {
+          threadId: f.owner.threadId,
+          turnIds: [f.owner.turnId],
+        })[0]
+      ).toMatchObject({
+        coverage: 'partial',
+        contentCapture: 'on',
+        entries: [{ kind: 'child-started', label: 'Child 1 started' }],
+      });
+    }
+  );
 });

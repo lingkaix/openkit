@@ -416,34 +416,35 @@ describe('source-bound internal rolling context', () => {
     expect(prepared.messages.at(-1)).toEqual(currentMessage);
   });
 
-  it.each([
-    'source digest',
-    'environment',
-    'dependent evidence',
-  ] as const)('refuses an invalid %s without using it to truncate history', async (fault) => {
-    const f = await fixture();
-    await prepareInternalAgentContext(input(f));
-    const latest = summaries(f).at(-1)!;
-    if (fault === 'source digest')
-      await f.store.updateItem(latest.id, {
-        sourceRange: { ...latest.sourceRange, sourceDigest: `sha256:${'0'.repeat(64)}` },
+  it.each(['source digest', 'environment', 'dependent evidence'] as const)(
+    'refuses an invalid %s without using it to truncate history',
+    async (fault) => {
+      const f = await fixture();
+      await prepareInternalAgentContext(input(f));
+      const latest = summaries(f).at(-1)!;
+      if (fault === 'source digest')
+        await f.store.updateItem(latest.id, {
+          sourceRange: { ...latest.sourceRange, sourceDigest: `sha256:${'0'.repeat(64)}` },
+        });
+      const request = input(f, {
+        ...(fault === 'environment' ? { systemPrompt: 'A changed role environment.' } : {}),
+        ...(fault === 'dependent evidence'
+          ? { readEvidence: () => `sha256:${'0'.repeat(64)}` }
+          : {}),
       });
-    const request = input(f, {
-      ...(fault === 'environment' ? { systemPrompt: 'A changed role environment.' } : {}),
-      ...(fault === 'dependent evidence' ? { readEvidence: () => `sha256:${'0'.repeat(64)}` } : {}),
-    });
-    const before = summaries(f);
-    await expect(prepareInternalAgentContext(request)).rejects.toMatchObject({
-      code: 'internal_agent_context_exceeded',
-    });
-    expect(request.callProvider).not.toHaveBeenCalled();
-    expect(summaries(f)).toEqual(before);
-    expect(
-      f.store
-        .listThreadItems(f.workspace.id, f.thread.id)
-        .filter((item) => f.history.some((source) => source.id === item.id))
-    ).toEqual(f.history);
-  });
+      const before = summaries(f);
+      await expect(prepareInternalAgentContext(request)).rejects.toMatchObject({
+        code: 'internal_agent_context_exceeded',
+      });
+      expect(request.callProvider).not.toHaveBeenCalled();
+      expect(summaries(f)).toEqual(before);
+      expect(
+        f.store
+          .listThreadItems(f.workspace.id, f.thread.id)
+          .filter((item) => f.history.some((source) => source.id === item.id))
+      ).toEqual(f.history);
+    }
+  );
 
   it('rechecks current source authority after production and accepts no revoked summary', async () => {
     const f = await fixture();
@@ -530,57 +531,54 @@ describe('source-bound internal rolling context', () => {
     expect(summaries(f)).toEqual([]);
   });
 
-  it.each([
-    'tool call',
-    'truncated',
-    'empty',
-    'oversized',
-    'nonreducing',
-  ] as const)('rejects %s summary output before any Tool closure executes', async (kind) => {
-    const f = await fixture();
-    const execute = vi.fn(async () => ({ content: [] }));
-    const tool: AgentTool = {
-      name: 'test.effect',
-      description: 'A supplied Tool.',
-      inputSchema: { type: 'object' },
-      execute,
-    };
-    const output = response(
-      kind === 'oversized'
-        ? 'x'.repeat(65_537)
-        : kind === 'nonreducing'
-          ? 'x'.repeat(12_000)
-          : kind === 'empty'
-            ? ''
-            : summaryText
-    );
-    const request = input(f, {
-      tools: [tool],
-      callProvider: vi.fn(async () => ({
-        message: {
-          ...output.message,
-          truncated: kind === 'truncated',
-          ...(kind === 'tool call'
-            ? {
-                content: [
-                  {
-                    type: 'toolCall' as const,
-                    callId: 'effect-call',
-                    name: 'test.effect',
-                    arguments: {},
-                  },
-                ],
-              }
-            : {}),
-        },
-      })),
-    });
-    await expect(prepareInternalAgentContext(request)).rejects.toMatchObject({
-      code: 'internal_agent_summary_invalid',
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(summaries(f)).toEqual([]);
-  });
+  it.each(['tool call', 'truncated', 'empty', 'oversized', 'nonreducing'] as const)(
+    'rejects %s summary output before any Tool closure executes',
+    async (kind) => {
+      const f = await fixture();
+      const execute = vi.fn(async () => ({ content: [] }));
+      const tool: AgentTool = {
+        name: 'test.effect',
+        description: 'A supplied Tool.',
+        inputSchema: { type: 'object' },
+        execute,
+      };
+      const output = response(
+        kind === 'oversized'
+          ? 'x'.repeat(65_537)
+          : kind === 'nonreducing'
+            ? 'x'.repeat(12_000)
+            : kind === 'empty'
+              ? ''
+              : summaryText
+      );
+      const request = input(f, {
+        tools: [tool],
+        callProvider: vi.fn(async () => ({
+          message: {
+            ...output.message,
+            truncated: kind === 'truncated',
+            ...(kind === 'tool call'
+              ? {
+                  content: [
+                    {
+                      type: 'toolCall' as const,
+                      callId: 'effect-call',
+                      name: 'test.effect',
+                      arguments: {},
+                    },
+                  ],
+                }
+              : {}),
+          },
+        })),
+      });
+      await expect(prepareInternalAgentContext(request)).rejects.toMatchObject({
+        code: 'internal_agent_summary_invalid',
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(summaries(f)).toEqual([]);
+    }
+  );
 
   it('reserves the ordinary answer model turn and retains completed batches when the shared budget runs out', async () => {
     const f = await fixture();
@@ -620,45 +618,45 @@ describe('source-bound internal rolling context', () => {
 });
 
 // One admitted deadline covers preparation, summarization and ordinary execution.
-it.each([
-  'summary',
-  'ordinary',
-] as const)('labels the shared %s deadline without inventing a phase', async (phase) => {
-  vi.useFakeTimers();
-  const f = await fixture(phase === 'summary' ? 8 : 0, false);
-  let release!: (value: InternalAgentProviderResponse) => void;
-  const request = input(f, {
-    limits: { ...limits, deadlineMs: 25 },
-    callProvider: vi.fn(
-      () =>
-        new Promise<InternalAgentProviderResponse>((resolve) => {
-          release = resolve;
-        })
-    ),
-  });
-  let failure: unknown;
-  if (phase === 'summary') {
-    const pending = prepareInternalAgentContext(request).catch((error: unknown) => {
-      failure = error;
+it.each(['summary', 'ordinary'] as const)(
+  'labels the shared %s deadline without inventing a phase',
+  async (phase) => {
+    vi.useFakeTimers();
+    const f = await fixture(phase === 'summary' ? 8 : 0, false);
+    let release!: (value: InternalAgentProviderResponse) => void;
+    const request = input(f, {
+      limits: { ...limits, deadlineMs: 25 },
+      callProvider: vi.fn(
+        () =>
+          new Promise<InternalAgentProviderResponse>((resolve) => {
+            release = resolve;
+          })
+      ),
     });
-    await vi.advanceTimersByTimeAsync(25);
-    await pending;
-    release(response('PRIVATE_LATE_SUMMARY'));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(summaries(f)).toEqual([]);
-  } else {
-    const prepared = await prepareInternalAgentContext(request);
-    await vi.advanceTimersByTimeAsync(26);
-    try {
-      prepared.assertCurrent();
-    } catch (error) {
-      failure = error;
+    let failure: unknown;
+    if (phase === 'summary') {
+      const pending = prepareInternalAgentContext(request).catch((error: unknown) => {
+        failure = error;
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      await pending;
+      release(response('PRIVATE_LATE_SUMMARY'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(summaries(f)).toEqual([]);
+    } else {
+      const prepared = await prepareInternalAgentContext(request);
+      await vi.advanceTimersByTimeAsync(26);
+      try {
+        prepared.assertCurrent();
+      } catch (error) {
+        failure = error;
+      }
+      expect(request.callProvider).not.toHaveBeenCalled();
     }
-    expect(request.callProvider).not.toHaveBeenCalled();
+    expect(failure).toMatchObject({ code: 'internal_agent_context_deadline' });
+    expect(internalContextFailure(failure)).toEqual({
+      code: 'internal_agent_context_deadline',
+      message: 'The admitted internal Agent deadline expired.',
+    });
   }
-  expect(failure).toMatchObject({ code: 'internal_agent_context_deadline' });
-  expect(internalContextFailure(failure)).toEqual({
-    code: 'internal_agent_context_deadline',
-    message: 'The admitted internal Agent deadline expired.',
-  });
-});
+);

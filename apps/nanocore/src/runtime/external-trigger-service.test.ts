@@ -271,143 +271,153 @@ function queueCount(db: CoreDb): number {
 }
 
 describe('bounded scheduled poll event admission', () => {
-  it.each([
-    'acknowledged',
-    'revoked-source',
-    'lost-ack',
-  ] as const)('retains original event work across initial native publication: %s', async (outcome) => {
-    const f = await fixture();
-    const duplicateSource = await f.nextPoll();
-    const before = queueCount(f.db);
-    const createTurn = vi.spyOn(f.store, 'createTurn');
-    // Hold the actual native reply after COMMIT; admission and SQL remain unchanged.
-    let entered!: () => void;
-    const reached = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const held: { id?: number; worker?: Worker; deliver?: () => void } = {};
-    const post = Worker.prototype.postMessage;
-    const emit = Worker.prototype.emit;
-    vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (this: Worker, ...args) {
-      const request: unknown = args[0];
-      if (
-        held.id === undefined &&
-        isControlWorkerRequest(request) &&
-        request.operation === 'products' &&
-        request.transition.products.some(
-          (product) => product.kind === 'turn' && product.expectedRevision === 0
-        )
+  it.each(['acknowledged', 'revoked-source', 'lost-ack'] as const)(
+    'retains original event work across initial native publication: %s',
+    async (outcome) => {
+      const f = await fixture();
+      const duplicateSource = await f.nextPoll();
+      const before = queueCount(f.db);
+      const createTurn = vi.spyOn(f.store, 'createTurn');
+      // Hold the actual native reply after COMMIT; admission and SQL remain unchanged.
+      let entered!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held: { id?: number; worker?: Worker; deliver?: () => void } = {};
+      const post = Worker.prototype.postMessage;
+      const emit = Worker.prototype.emit;
+      vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        ...args
       ) {
-        held.id = request.id;
-        held.worker = this;
-      }
-      return post.apply(this, args);
-    });
-    vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
-      const reply = args[0];
-      if (
-        this === held.worker &&
-        event === 'message' &&
-        typeof reply === 'object' &&
-        reply !== null &&
-        'id' in reply &&
-        reply.id === held.id
+        const request: unknown = args[0];
+        if (
+          held.id === undefined &&
+          isControlWorkerRequest(request) &&
+          request.operation === 'products' &&
+          request.transition.products.some(
+            (product) => product.kind === 'turn' && product.expectedRevision === 0
+          )
+        ) {
+          held.id = request.id;
+          held.worker = this;
+        }
+        return post.apply(this, args);
+      });
+      vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+        this: Worker,
+        event,
+        ...args
       ) {
-        held.deliver = () => {
-          emit.call(this, event, ...args);
-        };
-        entered();
-        return true;
-      }
-      return emit.call(this, event, ...args);
-    });
-    let originalSettled = false;
-    let duplicateSettled = false;
-    let duplicate: Promise<PromiseSettledResult<Awaited<ReturnType<typeof f.admit>>>> | undefined;
-    const original = Promise.allSettled([f.admit()]).then((results) => {
-      originalSettled = true;
-      return results[0]!;
-    });
-    try {
-      await reached;
-      const accepted = findExternalTriggerAdmission(f.db, f.schedule.id, f.dependencies.eventKey)!;
-      const entry = requireSchedulerAdmissionEntry(f.db, accepted.queueEntryId);
-      duplicate = Promise.allSettled([
-        f.admit({
-          source: duplicateSource,
-          input: 'Changed content must not replace the original brief.',
-        }),
-      ]).then((results) => {
-        duplicateSettled = true;
+        const reply = args[0];
+        if (
+          this === held.worker &&
+          event === 'message' &&
+          typeof reply === 'object' &&
+          reply !== null &&
+          'id' in reply &&
+          reply.id === held.id
+        ) {
+          held.deliver = () => {
+            emit.call(this, event, ...args);
+          };
+          entered();
+          return true;
+        }
+        return emit.call(this, event, ...args);
+      });
+      let originalSettled = false;
+      let duplicateSettled = false;
+      let duplicate: Promise<PromiseSettledResult<Awaited<ReturnType<typeof f.admit>>>> | undefined;
+      const original = Promise.allSettled([f.admit()]).then((results) => {
+        originalSettled = true;
         return results[0]!;
       });
-      // A real independent admission establishes progress without a guessed timer delay.
-      const distinct = await f.admit({
-        eventKey: 'mail:independent',
-        input: 'Handle another event.',
-      });
-      expect(originalSettled).toBe(false);
-      expect(duplicateSettled).toBe(false);
-      expect(distinct.entry.threadId).not.toBe(entry.threadId);
-      expect(distinct.entry.turnId).not.toBe(entry.turnId);
-      if (outcome === 'revoked-source')
-        f.store.setWorkspaceResourcePolicyProjection(() =>
-          managedThreadPolicy({
-            workspaceId: f.schedule.workspaceId,
-            threadId: duplicateSource.threadId,
-            userId: f.userId,
-          })
-        );
-      if (outcome === 'lost-ack') {
-        held.deliver = undefined;
-        await held.worker!.terminate();
-      } else {
+      try {
+        await reached;
+        const accepted = findExternalTriggerAdmission(
+          f.db,
+          f.schedule.id,
+          f.dependencies.eventKey
+        )!;
+        const entry = requireSchedulerAdmissionEntry(f.db, accepted.queueEntryId);
+        duplicate = Promise.allSettled([
+          f.admit({
+            source: duplicateSource,
+            input: 'Changed content must not replace the original brief.',
+          }),
+        ]).then((results) => {
+          duplicateSettled = true;
+          return results[0]!;
+        });
+        // A real independent admission establishes progress without a guessed timer delay.
+        const distinct = await f.admit({
+          eventKey: 'mail:independent',
+          input: 'Handle another event.',
+        });
+        expect(originalSettled).toBe(false);
+        expect(duplicateSettled).toBe(false);
+        expect(distinct.entry.threadId).not.toBe(entry.threadId);
+        expect(distinct.entry.turnId).not.toBe(entry.turnId);
+        if (outcome === 'revoked-source')
+          f.store.setWorkspaceResourcePolicyProjection(() =>
+            managedThreadPolicy({
+              workspaceId: f.schedule.workspaceId,
+              threadId: duplicateSource.threadId,
+              userId: f.userId,
+            })
+          );
+        if (outcome === 'lost-ack') {
+          held.deliver = undefined;
+          await held.worker!.terminate();
+        } else {
+          held.deliver?.();
+          held.deliver = undefined;
+        }
+        const [first, repeated] = await Promise.all([original, duplicate]);
+        if (outcome !== 'lost-ack') expect(first.status).toBe('fulfilled');
+        if (outcome === 'revoked-source')
+          expect(repeated).toMatchObject({
+            status: 'rejected',
+            reason: { code: 'external_event_denied' },
+          });
+        else if (outcome === 'acknowledged') {
+          expect(repeated).toEqual({
+            status: 'fulfilled',
+            value: {
+              ...(first as PromiseFulfilledResult<Awaited<ReturnType<typeof f.admit>>>).value,
+              duplicate: true,
+            },
+          });
+        }
+        if (outcome === 'lost-ack') {
+          // A valid committed tuple can be inspected; reply loss alone does not prove damage.
+          for (const result of [first, repeated]) {
+            if (result.status === 'rejected')
+              expect(result.reason).toMatchObject({ code: 'recovery_required' });
+            else {
+              expect(result.value.admission).toEqual(accepted);
+              expect(result.value.entry).toEqual(entry);
+            }
+          }
+          await shutdownControlStoreWorkerClient();
+        }
+        const replay = await f.admit({ input: 'No replacement after publication uncertainty.' });
+        expect(replay.admission).toEqual(accepted);
+        expect(replay.entry).toEqual(entry);
+        expect(replay.entry.turnInput).toBe(f.dependencies.input);
+        expect(replay.admission.sourceTurnId).toBe(f.source.turnId);
+        expect(replay.turn.status).toBe('pending');
+        expect(replay.turn.agentSessionId ?? null).toBeNull();
+        expect(createTurn).toHaveBeenCalledTimes(2);
+        expect(queueCount(f.db)).toBe(before + 2);
+      } finally {
         held.deliver?.();
         held.deliver = undefined;
+        await Promise.all([original, duplicate]);
       }
-      const [first, repeated] = await Promise.all([original, duplicate]);
-      if (outcome !== 'lost-ack') expect(first.status).toBe('fulfilled');
-      if (outcome === 'revoked-source')
-        expect(repeated).toMatchObject({
-          status: 'rejected',
-          reason: { code: 'external_event_denied' },
-        });
-      else if (outcome === 'acknowledged') {
-        expect(repeated).toEqual({
-          status: 'fulfilled',
-          value: {
-            ...(first as PromiseFulfilledResult<Awaited<ReturnType<typeof f.admit>>>).value,
-            duplicate: true,
-          },
-        });
-      }
-      if (outcome === 'lost-ack') {
-        // A valid committed tuple can be inspected; reply loss alone does not prove damage.
-        for (const result of [first, repeated]) {
-          if (result.status === 'rejected')
-            expect(result.reason).toMatchObject({ code: 'recovery_required' });
-          else {
-            expect(result.value.admission).toEqual(accepted);
-            expect(result.value.entry).toEqual(entry);
-          }
-        }
-        await shutdownControlStoreWorkerClient();
-      }
-      const replay = await f.admit({ input: 'No replacement after publication uncertainty.' });
-      expect(replay.admission).toEqual(accepted);
-      expect(replay.entry).toEqual(entry);
-      expect(replay.entry.turnInput).toBe(f.dependencies.input);
-      expect(replay.admission.sourceTurnId).toBe(f.source.turnId);
-      expect(replay.turn.status).toBe('pending');
-      expect(replay.turn.agentSessionId ?? null).toBeNull();
-      expect(createTurn).toHaveBeenCalledTimes(2);
-      expect(queueCount(f.db)).toBe(before + 2);
-    } finally {
-      held.deliver?.();
-      held.deliver = undefined;
-      await Promise.all([original, duplicate]);
     }
-  });
+  );
 
   it('joins the native Work Tool to isolated admission and refuses substituted scope and human entry', async () => {
     const f = await fixture();
@@ -674,25 +684,25 @@ describe('bounded scheduled poll event admission', () => {
     expect(queueCount(db)).toBe(3);
   });
 
-  it.each([
-    'failed',
-    'interrupted',
-  ] as const)('never relaunches accepted %s work', async (status) => {
-    const f = await fixture();
-    const first = await f.admit();
-    f.db.sqlite
-      .prepare(
-        "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
-      )
-      .run(first.entry.queueEntryId);
-    await f.store.updateTurn(first.turn.id, { status, completedAt: '2026-10-18T00:01:00.000Z' });
-    const createTurn = vi.spyOn(f.store, 'createTurn');
-    const repeated = await f.admit({ input: 'Try a replacement' });
-    expect(repeated.turn.status).toBe(status);
-    expect(repeated.admission).toEqual(first.admission);
-    expect(createTurn).not.toHaveBeenCalled();
-    expect(queueCount(f.db)).toBe(2);
-  });
+  it.each(['failed', 'interrupted'] as const)(
+    'never relaunches accepted %s work',
+    async (status) => {
+      const f = await fixture();
+      const first = await f.admit();
+      f.db.sqlite
+        .prepare(
+          "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
+        )
+        .run(first.entry.queueEntryId);
+      await f.store.updateTurn(first.turn.id, { status, completedAt: '2026-10-18T00:01:00.000Z' });
+      const createTurn = vi.spyOn(f.store, 'createTurn');
+      const repeated = await f.admit({ input: 'Try a replacement' });
+      expect(repeated.turn.status).toBe(status);
+      expect(repeated.admission).toEqual(first.admission);
+      expect(createTurn).not.toHaveBeenCalled();
+      expect(queueCount(f.db)).toBe(2);
+    }
+  );
 
   it('accepts ordinary manifest-default reasoning effort without treating it as explicit queue input', async () => {
     const f = await fixture();
@@ -833,34 +843,34 @@ describe('bounded scheduled poll event admission', () => {
     expect(queueCount(f.db)).toBe(2);
   });
 
-  it.each([
-    'missing',
-    'contradictory',
-  ] as const)('requires inspection for %s canonical accepted work', async (damage) => {
-    const f = await fixture();
-    const first = await f.admit();
-    if (damage === 'missing') {
-      await shutdownControlStoreWorkerClient();
-      const db = openWorkspaceDb(f.root, first.entry.workspaceId);
-      try {
-        // Deliberate canonical-history loss after acknowledged admission, never successful setup.
-        db.sqlite.transaction(() => {
-          db.sqlite
-            .prepare('DELETE FROM control_product_entries WHERE turn_id = ?')
-            .run(first.turn.id);
-          expect(
-            db.sqlite.prepare('DELETE FROM control_turns WHERE id = ?').run(first.turn.id).changes
-          ).toBe(1);
-        })();
-      } finally {
-        db.sqlite.close();
-      }
-    } else await f.store.updateTurn(first.turn.id, { agentId: 'other-agent' });
-    const createTurn = vi.spyOn(f.store, 'createTurn');
-    await expect(f.admit()).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(createTurn).not.toHaveBeenCalled();
-    expect(queueCount(f.db)).toBe(2);
-  });
+  it.each(['missing', 'contradictory'] as const)(
+    'requires inspection for %s canonical accepted work',
+    async (damage) => {
+      const f = await fixture();
+      const first = await f.admit();
+      if (damage === 'missing') {
+        await shutdownControlStoreWorkerClient();
+        const db = openWorkspaceDb(f.root, first.entry.workspaceId);
+        try {
+          // Deliberate canonical-history loss after acknowledged admission, never successful setup.
+          db.sqlite.transaction(() => {
+            db.sqlite
+              .prepare('DELETE FROM control_product_entries WHERE turn_id = ?')
+              .run(first.turn.id);
+            expect(
+              db.sqlite.prepare('DELETE FROM control_turns WHERE id = ?').run(first.turn.id).changes
+            ).toBe(1);
+          })();
+        } finally {
+          db.sqlite.close();
+        }
+      } else await f.store.updateTurn(first.turn.id, { agentId: 'other-agent' });
+      const createTurn = vi.spyOn(f.store, 'createTurn');
+      await expect(f.admit()).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(createTurn).not.toHaveBeenCalled();
+      expect(queueCount(f.db)).toBe(2);
+    }
+  );
 
   it('reads acknowledged canonical target history through an earlier Store', async () => {
     const f = await fixture();

@@ -948,38 +948,39 @@ const scopes: KnowledgeOwnerScope[] = [
 ];
 
 describe('direct human page bytes at the scoped profile boundary', () => {
-  it.each(
-    scopes
-  )('serializes exact complete owner $kind with required semantics and no counter', (ownerScope) => {
-    const content = serializeKnowledgePageFixture(
-      {
-        title: 'Human note',
-        content: 'Exact human text.',
-        createdAt: '2026-10-16T00:00:00.000Z',
-        updatedAt: '2026-10-16T00:00:00.000Z',
-      },
-      ownerScope
-    );
-    const parsed = parseOkfDocument({ path: 'human-note.md', content });
-    expect(parsed.ok).toBe(true);
-    expect(parsed.document?.frontmatter.scope).toEqual(ownerScope);
-    expect(parsed.document?.frontmatter.requiredFeatures).toEqual(
-      REQUIRED_SCOPED_KNOWLEDGE_FEATURES
-    );
-    expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_entry_kind');
-    expect(parsed.document?.frontmatter).not.toHaveProperty('owner_scope');
-    expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_revision');
-    expect(parsed.document?.body).toBe('Exact human text.\n');
-    expect(
-      validateKnowledgePageCandidate({
-        path: 'human-note.md',
-        content,
-        expectedOwnerScope: ownerScope,
-        registeredSources: new Map(),
-        knowledgeIds: new Set(['human-note']),
-      })
-    ).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
-  });
+  it.each(scopes)(
+    'serializes exact complete owner $kind with required semantics and no counter',
+    (ownerScope) => {
+      const content = serializeKnowledgePageFixture(
+        {
+          title: 'Human note',
+          content: 'Exact human text.',
+          createdAt: '2026-10-16T00:00:00.000Z',
+          updatedAt: '2026-10-16T00:00:00.000Z',
+        },
+        ownerScope
+      );
+      const parsed = parseOkfDocument({ path: 'human-note.md', content });
+      expect(parsed.ok).toBe(true);
+      expect(parsed.document?.frontmatter.scope).toEqual(ownerScope);
+      expect(parsed.document?.frontmatter.requiredFeatures).toEqual(
+        REQUIRED_SCOPED_KNOWLEDGE_FEATURES
+      );
+      expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_entry_kind');
+      expect(parsed.document?.frontmatter).not.toHaveProperty('owner_scope');
+      expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_revision');
+      expect(parsed.document?.body).toBe('Exact human text.\n');
+      expect(
+        validateKnowledgePageCandidate({
+          path: 'human-note.md',
+          content,
+          expectedOwnerScope: ownerScope,
+          registeredSources: new Map(),
+          knowledgeIds: new Set(['human-note']),
+        })
+      ).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    }
+  );
 });
 
 const workspaceId = allocateEntityId('ws');
@@ -1026,46 +1027,42 @@ function validate(content: string) {
 }
 
 describe('governed Claim and reusable Observation fields', () => {
-  it.each([
-    0, 0.75, 1,
-  ])('preserves numeric Claim confidence %s and descriptive extensions', (confidence) => {
-    const content = page('Claim', {
-      confidence,
-      custom_annotation: { confidence: 'not an assessment', retained: true },
-    });
-    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
-    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
-    expect(parsed.document.frontmatter.confidence).toBe(confidence);
-    expect(parsed.document.frontmatter.custom_annotation).toEqual({
-      confidence: 'not an assessment',
-      retained: true,
-    });
-  });
+  it.each([0, 0.75, 1])(
+    'preserves numeric Claim confidence %s and descriptive extensions',
+    (confidence) => {
+      const content = page('Claim', {
+        confidence,
+        custom_annotation: { confidence: 'not an assessment', retained: true },
+      });
+      expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+      const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+      expect(parsed.document.frontmatter.confidence).toBe(confidence);
+      expect(parsed.document.frontmatter.custom_annotation).toEqual({
+        confidence: 'not an assessment',
+        retained: true,
+      });
+    }
+  );
 
-  it.each([
-    undefined,
-    null,
-    '0.75',
-    -0.01,
-    1.01,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-  ])('refuses missing or invalid Claim confidence %s', (confidence) => {
-    const report = validate(page('Claim', { confidence }));
-    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'confidence' }));
-  });
+  it.each([undefined, null, '0.75', -0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY])(
+    'refuses missing or invalid Claim confidence %s',
+    (confidence) => {
+      const report = validate(page('Claim', { confidence }));
+      expect(report.errors).toContainEqual(expect.objectContaining({ field: 'confidence' }));
+    }
+  );
 
-  it.each([
-    'unresolved',
-    'resolved',
-  ])('retains only conflict-specific Claim state %s', (conflict_status) => {
-    expect(validate(page('Claim', { confidence: 0.75, conflict_status }))).toMatchObject({
-      conformance: 'scope-schema-valid',
-      errors: [],
-    });
-  });
+  it.each(['unresolved', 'resolved'])(
+    'retains only conflict-specific Claim state %s',
+    (conflict_status) => {
+      expect(validate(page('Claim', { confidence: 0.75, conflict_status }))).toMatchObject({
+        conformance: 'scope-schema-valid',
+        errors: [],
+      });
+    }
+  );
 
   it.each([
     'none',
@@ -1136,12 +1133,13 @@ describe('governed Claim and reusable Observation fields', () => {
     });
   });
 
-  it.each(
-    [undefined, [], [{}]].map((value) => [value])
-  )('requires structured conflict subjects %j', (subject_refs) => {
-    const report = validate(page('Observation', { conflict_status: 'unresolved', subject_refs }));
-    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'subject_refs' }));
-  });
+  it.each([undefined, [], [{}]].map((value) => [value]))(
+    'requires structured conflict subjects %j',
+    (subject_refs) => {
+      const report = validate(page('Observation', { conflict_status: 'unresolved', subject_refs }));
+      expect(report.errors).toContainEqual(expect.objectContaining({ field: 'subject_refs' }));
+    }
+  );
 
   it('retains a canonical conflict subject separately from supporting source evidence', () => {
     const content = page('Observation', {
@@ -1253,26 +1251,28 @@ function registerOkfScopedProfileTests() {
       );
     });
 
-    it.each(
-      [undefined, null, 'openkit.knowledge-owner-scope.v1', [1]].map((value) => [value])
-    )('rejects missing or malformed required features %j', (requiredFeatures) => {
-      expect(
-        validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
-      ).toContainEqual(expect.objectContaining({ field: 'requiredFeatures' }));
-    });
+    it.each([undefined, null, 'openkit.knowledge-owner-scope.v1', [1]].map((value) => [value]))(
+      'rejects missing or malformed required features %j',
+      (requiredFeatures) => {
+        expect(
+          validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
+        ).toContainEqual(expect.objectContaining({ field: 'requiredFeatures' }));
+      }
+    );
 
-    it.each(
-      [[], [features[0]], [features[1]]].map((value) => [value])
-    )('rejects an omitted v4 semantic %j', (requiredFeatures) => {
-      expect(
-        validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
-      ).toContainEqual(
-        expect.objectContaining({
-          code: 'profile.missing_required_feature',
-          field: 'requiredFeatures',
-        })
-      );
-    });
+    it.each([[], [features[0]], [features[1]]].map((value) => [value]))(
+      'rejects an omitted v4 semantic %j',
+      (requiredFeatures) => {
+        expect(
+          validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
+        ).toContainEqual(
+          expect.objectContaining({
+            code: 'profile.missing_required_feature',
+            field: 'requiredFeatures',
+          })
+        );
+      }
+    );
 
     it('refuses unknown required semantics without rejecting the external OKF envelope', () => {
       const document = parsedPage({ requiredFeatures: [...features, 'openkit.future.v1'] });
@@ -1282,15 +1282,14 @@ function registerOkfScopedProfileTests() {
       });
     });
 
-    it.each([
-      { owner_scope: workspace },
-      { openkit_revision: 1 },
-      { openkit_revision: '1' },
-    ])('refuses a second owner or page counter (case %#)', (fields) => {
-      expect(validateOpenKitKnowledgeProfile(parsedPage(fields)).errors).toContainEqual(
-        expect.objectContaining({ code: 'profile.obsolete_authority_field' })
-      );
-    });
+    it.each([{ owner_scope: workspace }, { openkit_revision: 1 }, { openkit_revision: '1' }])(
+      'refuses a second owner or page counter (case %#)',
+      (fields) => {
+        expect(validateOpenKitKnowledgeProfile(parsedPage(fields)).errors).toContainEqual(
+          expect.objectContaining({ code: 'profile.obsolete_authority_field' })
+        );
+      }
+    );
 
     it('retains unknown additive metadata through a governed edit', () => {
       const extension = { nested: [{ label: 'annotation', count: 3 }] };
@@ -1324,24 +1323,27 @@ function registerOkfScopedProfileTests() {
       [user, { ...user, userId: allocateEntityId('usr') }],
       [workspace, { ...workspace, workspaceId: allocateEntityId('ws') }],
       [{ kind: 'server' }, user],
-    ])('refuses a valid page owned by another admitted notebook (case %#)', (scope, expectedOwnerScope) => {
-      const document = parsedPage({ scope });
-      const expected = KnowledgeOwnerScopeSchema.parse(expectedOwnerScope);
-      expect(validateScopeKnowledgeSchema(document, undefined, expected)).toMatchObject({
-        conformance: 'OKF-compatible',
-        errors: [expect.objectContaining({ code: 'profile.scope_mismatch', field: 'scope' })],
-      });
-      expect(isActiveOpenKitKnowledgePage(document, undefined, expected)).toBe(false);
-      expect(
-        validateKnowledgePageCandidate({
-          path: 'pages/scoped.md',
-          content: page({ scope }),
-          expectedOwnerScope: expected,
-          registeredSources: new Map(),
-          knowledgeIds: new Set(),
-        }).errors
-      ).toContainEqual(expect.objectContaining({ code: 'profile.scope_mismatch' }));
-    });
+    ])(
+      'refuses a valid page owned by another admitted notebook (case %#)',
+      (scope, expectedOwnerScope) => {
+        const document = parsedPage({ scope });
+        const expected = KnowledgeOwnerScopeSchema.parse(expectedOwnerScope);
+        expect(validateScopeKnowledgeSchema(document, undefined, expected)).toMatchObject({
+          conformance: 'OKF-compatible',
+          errors: [expect.objectContaining({ code: 'profile.scope_mismatch', field: 'scope' })],
+        });
+        expect(isActiveOpenKitKnowledgePage(document, undefined, expected)).toBe(false);
+        expect(
+          validateKnowledgePageCandidate({
+            path: 'pages/scoped.md',
+            content: page({ scope }),
+            expectedOwnerScope: expected,
+            registeredSources: new Map(),
+            knowledgeIds: new Set(),
+          }).errors
+        ).toContainEqual(expect.objectContaining({ code: 'profile.scope_mismatch' }));
+      }
+    );
 
     it('compares normalized owner values independent of YAML key order', () => {
       expect(

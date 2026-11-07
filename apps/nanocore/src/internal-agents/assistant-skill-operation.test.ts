@@ -204,31 +204,37 @@ describe('definition-derived Skill model projection', () => {
     ['workspace_access_denied', 'resource_access_denied'],
     ['core.auth.unauthenticated', 'resource_access_denied'],
     ['other_private_engine_code', 'resource_unavailable'],
-  ] as const)('maps known nominal operation failure %s without exposing private fields', async (code, expected) => {
-    const failure = new OperationError(code, '/private/path source-content-canary', 403, {
-      details: { private: 'details-canary' },
-      path: ['private-path-canary'],
-      cause: new Error('cause-canary'),
-    });
-    const result = await createAssistantSkillReadTool(async () => {
-      throw failure;
-    }).execute(rawInput, execution());
+  ] as const)(
+    'maps known nominal operation failure %s without exposing private fields',
+    async (code, expected) => {
+      const failure = new OperationError(code, '/private/path source-content-canary', 403, {
+        details: { private: 'details-canary' },
+        path: ['private-path-canary'],
+        cause: new Error('cause-canary'),
+      });
+      const result = await createAssistantSkillReadTool(async () => {
+        throw failure;
+      }).execute(rawInput, execution());
 
-    refusal(result, expected);
-    expect(JSON.stringify(result)).not.toMatch(/canary|private\/path/);
-  });
+      refusal(result, expected);
+      expect(JSON.stringify(result)).not.toMatch(/canary|private\/path/);
+    }
+  );
 
   it.each([
     new Error('/private/path unknown-exception-canary'),
     { code: 'workspace_access_denied', message: 'forged-error-canary', status: 403 },
-  ])('does not trust unknown exceptions or structural OperationError lookalikes', async (failure) => {
-    const result = await createAssistantSkillReadTool(async () => {
-      throw failure;
-    }).execute(rawInput, execution());
+  ])(
+    'does not trust unknown exceptions or structural OperationError lookalikes',
+    async (failure) => {
+      const result = await createAssistantSkillReadTool(async () => {
+        throw failure;
+      }).execute(rawInput, execution());
 
-    refusal(result);
-    expect(JSON.stringify(result)).not.toContain('canary');
-  });
+      refusal(result);
+      expect(JSON.stringify(result)).not.toContain('canary');
+    }
+  );
 
   it('preserves cancellation before invocation with zero invoker contact', async () => {
     const controller = new AbortController();

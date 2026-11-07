@@ -285,51 +285,50 @@ describe('attention delivery owner', () => {
     expect(transport).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    'throw',
-    'unknown',
-    'invalid',
-  ] as const)('keeps %s transport results unknown and prevents retry or channel fallback', async (mode) => {
-    const { notifications, delivery } = fixture();
-    const input = {
-      deliveryId: delivery.id,
-      expectedAttemptId: null,
-      recipientUserId: aliceId,
-      channel: 'discord' as const,
-    };
-    const transport = vi.fn<AttentionTransport>().mockImplementation(async () => {
-      if (mode === 'throw') throw new Error('secret upstream details');
-      if (mode === 'invalid') return { status: 'unexpected' } as never;
-      return { status: 'delivery-unknown' };
-    });
-    const dependencies = { isEligible: () => true, transport };
-    expect(await notifications.deliver(input, dependencies)).toMatchObject({
-      status: 'delivery-unknown',
-      attempt: { failureCode: 'transport-unknown' },
-    });
-    await expect(
-      notifications.deliver(
-        {
-          ...input,
-          retry: true,
-          expectedAttemptId: notifications.get(delivery.id)?.attempt?.id ?? null,
-        },
-        dependencies
-      )
-    ).rejects.toThrow('attention_not_sendable');
-    await expect(
-      notifications.deliver(
-        {
-          ...input,
-          channel: 'email',
-          retry: true,
-          expectedAttemptId: notifications.get(delivery.id)?.attempt?.id ?? null,
-        },
-        dependencies
-      )
-    ).rejects.toThrow('attention_channel_conflict');
-    expect(transport).toHaveBeenCalledTimes(1);
-  });
+  it.each(['throw', 'unknown', 'invalid'] as const)(
+    'keeps %s transport results unknown and prevents retry or channel fallback',
+    async (mode) => {
+      const { notifications, delivery } = fixture();
+      const input = {
+        deliveryId: delivery.id,
+        expectedAttemptId: null,
+        recipientUserId: aliceId,
+        channel: 'discord' as const,
+      };
+      const transport = vi.fn<AttentionTransport>().mockImplementation(async () => {
+        if (mode === 'throw') throw new Error('secret upstream details');
+        if (mode === 'invalid') return { status: 'unexpected' } as never;
+        return { status: 'delivery-unknown' };
+      });
+      const dependencies = { isEligible: () => true, transport };
+      expect(await notifications.deliver(input, dependencies)).toMatchObject({
+        status: 'delivery-unknown',
+        attempt: { failureCode: 'transport-unknown' },
+      });
+      await expect(
+        notifications.deliver(
+          {
+            ...input,
+            retry: true,
+            expectedAttemptId: notifications.get(delivery.id)?.attempt?.id ?? null,
+          },
+          dependencies
+        )
+      ).rejects.toThrow('attention_not_sendable');
+      await expect(
+        notifications.deliver(
+          {
+            ...input,
+            channel: 'email',
+            retry: true,
+            expectedAttemptId: notifications.get(delivery.id)?.attempt?.id ?? null,
+          },
+          dependencies
+        )
+      ).rejects.toThrow('attention_channel_conflict');
+      expect(transport).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('refuses concurrent and wrong-recipient sends before any additional contact', async () => {
     const { sqlite, notifications, delivery } = fixture();

@@ -247,84 +247,85 @@ describe('vault use audited backend', () => {
     }
   });
 
-  it.each([
-    'absent',
-    'unissued',
-    'revoked',
-  ] as const)('rejects mismatched resolution scope with an %s grant', async (grantState) => {
-    const { coreDb, workspaceDb } = createDbs();
-    const backend = createEncryptedFileVaultBackend({
-      masterKey: Buffer.alloc(32, 9),
-      now: () => '2026-07-05T02:00:00.000Z',
-      storeDir: mkdtempSync(join(tmpdir(), 'openkit-vault-backend-')),
-    });
-
-    const delegatedResolve = vi.spyOn(backend, 'resolve');
-
-    try {
-      backend.store({
-        material: 'server_only_secret',
-        metadata: { ownerScope: 'server' },
-        referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+  it.each(['absent', 'unissued', 'revoked'] as const)(
+    'rejects mismatched resolution scope with an %s grant',
+    async (grantState) => {
+      const { coreDb, workspaceDb } = createDbs();
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        now: () => '2026-07-05T02:00:00.000Z',
+        storeDir: mkdtempSync(join(tmpdir(), 'openkit-vault-backend-')),
       });
 
-      const grantId =
-        grantState === 'absent' ? undefined : 'grant_00000000-0000-7919-a9bd-25953b88f539';
-      if (grantState === 'revoked') {
-        await createVaultReference(coreDb, {
-          backendKind: backend.kind,
-          displayName: 'Scope refusal fixture',
-          ownerScope: 'server',
+      const delegatedResolve = vi.spyOn(backend, 'resolve');
+
+      try {
+        backend.store({
+          material: 'server_only_secret',
+          metadata: { ownerScope: 'server' },
           referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
-          secretKind: 'mcp-credential',
         });
-        await createVaultGrant(coreDb, {
-          allowedInjectionPaths: ['gateway-only'],
-          grantId: grantId!,
-          lifetime: 'server',
-          ownerScope: 'server',
-          vaultReferenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
-        });
-        expect((await revokeVaultGrant(coreDb, { grantId: grantId! })).status).toBe('revoked');
-      }
 
-      const audited = createVaultUseAuditedBackend({
-        backend,
-        createUseId: () => 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
-        db: workspaceDb,
-        ...(grantId ? { grantId } : {}),
-        now: () => '2026-07-05T02:04:00.000Z',
-        ownerScope: 'workspace',
-        resolvingPath: 'provider',
-        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-      });
+        const grantId =
+          grantState === 'absent' ? undefined : 'grant_00000000-0000-7919-a9bd-25953b88f539';
+        if (grantState === 'revoked') {
+          await createVaultReference(coreDb, {
+            backendKind: backend.kind,
+            displayName: 'Scope refusal fixture',
+            ownerScope: 'server',
+            referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+            secretKind: 'mcp-credential',
+          });
+          await createVaultGrant(coreDb, {
+            allowedInjectionPaths: ['gateway-only'],
+            grantId: grantId!,
+            lifetime: 'server',
+            ownerScope: 'server',
+            vaultReferenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+          });
+          expect((await revokeVaultGrant(coreDb, { grantId: grantId! })).status).toBe('revoked');
+        }
 
-      await expect(
-        audited.resolve({ referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860' })
-      ).rejects.toThrow(
-        'backend-unavailable: Vault reference scope does not match resolution scope.'
-      );
-      expect(delegatedResolve).not.toHaveBeenCalled();
-      expect(listVaultUseRecords(workspaceDb)).toEqual([
-        expect.objectContaining({
-          failureCode: 'backend-unavailable',
-          grantId: grantId ?? null,
-          materialVersion: null,
-          outcome: 'failed',
+        const audited = createVaultUseAuditedBackend({
+          backend,
+          createUseId: () => 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
+          db: workspaceDb,
+          ...(grantId ? { grantId } : {}),
+          now: () => '2026-07-05T02:04:00.000Z',
           ownerScope: 'workspace',
-          useId: 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
-          vaultReferenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+          resolvingPath: 'provider',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        }),
-      ]);
-      expect(JSON.stringify(listVaultUseRecords(workspaceDb))).not.toContain('server_only_secret');
-    } finally {
-      delegatedResolve.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+        });
+
+        await expect(
+          audited.resolve({ referenceId: 'vault_00000000-0000-7747-b360-a66ad994b860' })
+        ).rejects.toThrow(
+          'backend-unavailable: Vault reference scope does not match resolution scope.'
+        );
+        expect(delegatedResolve).not.toHaveBeenCalled();
+        expect(listVaultUseRecords(workspaceDb)).toEqual([
+          expect.objectContaining({
+            failureCode: 'backend-unavailable',
+            grantId: grantId ?? null,
+            materialVersion: null,
+            outcome: 'failed',
+            ownerScope: 'workspace',
+            useId: 'vu_00000000-0000-71b5-a3a6-2e8ee6b25407',
+            vaultReferenceId: 'vault_00000000-0000-7747-b360-a66ad994b860',
+            workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          }),
+        ]);
+        expect(JSON.stringify(listVaultUseRecords(workspaceDb))).not.toContain(
+          'server_only_secret'
+        );
+      } finally {
+        delegatedResolve.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('records locked backend failures without listing locked inventory', async () => {
     const { coreDb, workspaceDb } = createDbs();
@@ -361,198 +362,199 @@ describe('vault use audited backend', () => {
     }
   });
 
-  it.each([
-    'explicit-grace',
-    'explicit-expired',
-    'implicit-generation',
-  ] as const)('revalidates %s after the actual terminal Audit acknowledgement without another material resolve', async (scenario) => {
-    const { coreDb, workspaceDb } = createDbs();
-    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-audit-revalidation-'));
-    const referenceId = 'vault_00000000-0000-7f73-bffa-d96a61ee4d70';
-    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
-    const firstMaterial = 'synthetic_audited_prior_material';
-    const currentMaterial = 'synthetic_audited_current_material';
-    const actor = {
-      kind: 'system' as const,
-      id: 'vault-revalidation-test',
-      responsibleUserId: null,
-    };
-    let now = '2026-07-05T01:00:00.000Z';
-    const backend = createEncryptedFileVaultBackend({
-      masterKey: Buffer.alloc(32, 9),
-      now: () => now,
-      rotationGraceMs: 1_000,
-      storeDir,
-    });
-    const resolve = vi.spyOn(backend, 'resolve');
-    const emit = Worker.prototype.emit;
-    const reached = Promise.withResolvers<void>();
-    let deliver: (() => void) | undefined;
-    let taken = false;
-    let enabled = true;
-    let settled = false;
-    let outcome: Promise<{ ok: true; matches: boolean } | { ok: false; code: string }> | undefined;
-    const hold = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
-      this: Worker,
-      event: string | symbol,
-      ...args: unknown[]
-    ) {
-      const reply = args[0] as
-        | {
-            operation?: string;
-            status?: string;
-            result?: { kind?: string; value?: { resource?: string; workspaceId?: string } };
-          }
-        | undefined;
-      if (
-        enabled &&
-        !taken &&
-        event === 'message' &&
-        reply?.operation === 'vault' &&
-        reply.status === 'ok' &&
-        reply.result?.kind === 'audit-insert' &&
-        reply.result.value?.resource === `vault:${referenceId}` &&
-        reply.result.value.workspaceId === workspaceId
-      ) {
-        taken = true;
-        // Preserve the original successful reply: its real Workspace commit already completed.
-        deliver = () => emit.call(this, event, ...args);
-        reached.resolve();
-        return true;
-      }
-      return emit.call(this, event, ...args);
-    });
-    const release = () => {
-      enabled = false;
-      const pending = deliver;
-      deliver = undefined;
-      pending?.();
-    };
-    try {
-      backend.store({
-        referenceId,
-        material: firstMaterial,
-        metadata: { ownerScope: 'workspace', workspaceId },
-      });
-      await createVaultReference(coreDb, {
-        referenceId,
-        backendKind: backend.kind,
-        displayName: 'Held Audit version fixture',
-        secretKind: 'mcp-credential',
-        ownerScope: 'workspace',
-        workspaceId,
-      });
-      if (scenario !== 'implicit-generation') {
-        now = '2026-07-05T01:00:10.000Z';
-        expect(backend.rotate({ referenceId, material: currentMaterial }).currentVersion).toBe(2);
-        expect(
-          (await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: 2 }))
-            .currentVersion
-        ).toBe(2);
-      }
-      now = '2026-07-05T01:00:10.500Z';
-      const audited = createVaultUseAuditedBackend({
-        backend,
-        db: workspaceDb,
-        ownerScope: 'workspace',
-        workspaceId,
-        actor,
-        resolvingPath: 'admin',
+  it.each(['explicit-grace', 'explicit-expired', 'implicit-generation'] as const)(
+    'revalidates %s after the actual terminal Audit acknowledgement without another material resolve',
+    async (scenario) => {
+      const { coreDb, workspaceDb } = createDbs();
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-audit-revalidation-'));
+      const referenceId = 'vault_00000000-0000-7f73-bffa-d96a61ee4d70';
+      const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+      const firstMaterial = 'synthetic_audited_prior_material';
+      const currentMaterial = 'synthetic_audited_current_material';
+      const actor = {
+        kind: 'system' as const,
+        id: 'vault-revalidation-test',
+        responsibleUserId: null,
+      };
+      let now = '2026-07-05T01:00:00.000Z';
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
         now: () => now,
+        rotationGraceMs: 1_000,
+        storeDir,
       });
-      const requested =
-        scenario === 'implicit-generation' ? { referenceId } : { referenceId, version: 1 };
-      // Normalize to booleans/codes immediately so a failed oracle cannot print material.
-      outcome = audited.resolve(requested).then(
-        (material) => {
-          settled = true;
-          return {
-            ok: true as const,
-            matches: Buffer.from(material).equals(Buffer.from(firstMaterial)),
-          };
-        },
-        (error: unknown) => {
-          settled = true;
-          return {
-            ok: false as const,
-            code: error instanceof VaultBackendError ? error.code : 'unexpected-error',
-          };
+      const resolve = vi.spyOn(backend, 'resolve');
+      const emit = Worker.prototype.emit;
+      const reached = Promise.withResolvers<void>();
+      let deliver: (() => void) | undefined;
+      let taken = false;
+      let enabled = true;
+      let settled = false;
+      let outcome:
+        | Promise<{ ok: true; matches: boolean } | { ok: false; code: string }>
+        | undefined;
+      const hold = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+        this: Worker,
+        event: string | symbol,
+        ...args: unknown[]
+      ) {
+        const reply = args[0] as
+          | {
+              operation?: string;
+              status?: string;
+              result?: { kind?: string; value?: { resource?: string; workspaceId?: string } };
+            }
+          | undefined;
+        if (
+          enabled &&
+          !taken &&
+          event === 'message' &&
+          reply?.operation === 'vault' &&
+          reply.status === 'ok' &&
+          reply.result?.kind === 'audit-insert' &&
+          reply.result.value?.resource === `vault:${referenceId}` &&
+          reply.result.value.workspaceId === workspaceId
+        ) {
+          taken = true;
+          // Preserve the original successful reply: its real Workspace commit already completed.
+          deliver = () => emit.call(this, event, ...args);
+          reached.resolve();
+          return true;
         }
-      );
-      await Promise.race([
-        reached.promise,
-        outcome.then(() => {
-          throw new Error('Resolution settled before the real terminal Audit reply.');
-        }),
-      ]);
-      expect(settled).toBe(false);
-      expect(resolve).toHaveBeenCalledTimes(1);
-      const uses = listVaultUseRecords(workspaceDb);
-      expect(uses).toEqual([
-        expect.objectContaining({
-          vaultReferenceId: referenceId,
+        return emit.call(this, event, ...args);
+      });
+      const release = () => {
+        enabled = false;
+        const pending = deliver;
+        deliver = undefined;
+        pending?.();
+      };
+      try {
+        backend.store({
+          referenceId,
+          material: firstMaterial,
+          metadata: { ownerScope: 'workspace', workspaceId },
+        });
+        await createVaultReference(coreDb, {
+          referenceId,
+          backendKind: backend.kind,
+          displayName: 'Held Audit version fixture',
+          secretKind: 'mcp-credential',
           ownerScope: 'workspace',
           workspaceId,
-          materialVersion: 1,
-          outcome: 'succeeded',
+        });
+        if (scenario !== 'implicit-generation') {
+          now = '2026-07-05T01:00:10.000Z';
+          expect(backend.rotate({ referenceId, material: currentMaterial }).currentVersion).toBe(2);
+          expect(
+            (await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: 2 }))
+              .currentVersion
+          ).toBe(2);
+        }
+        now = '2026-07-05T01:00:10.500Z';
+        const audited = createVaultUseAuditedBackend({
+          backend,
+          db: workspaceDb,
+          ownerScope: 'workspace',
+          workspaceId,
+          actor,
           resolvingPath: 'admin',
-          failureCode: null,
-          usedAt: '2026-07-05T01:00:10.500Z',
-          capabilityCallId: null,
-          agentSessionId: null,
-        }),
-      ]);
-      const audits = workspaceDb.sqlite
-        .prepare("SELECT * FROM audit_events WHERE action = 'vault.resolve'")
-        .all();
-      expect(audits).toEqual([
-        expect.objectContaining({
-          audit_event_id: uses[0]?.auditEventId,
-          workspace_id: workspaceId,
-          resource: `vault:${referenceId}`,
-          outcome: 'succeeded',
-          error_code: null,
-        }),
-      ]);
-      expect(JSON.parse((audits[0] as { actor_json: string }).actor_json)).toEqual(actor);
-      if (scenario === 'implicit-generation') {
-        expect(backend.rotate({ referenceId, material: currentMaterial }).currentVersion).toBe(2);
-        expect(
-          (await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: 2 }))
-            .currentVersion
-        ).toBe(2);
-      } else {
-        now =
-          scenario === 'explicit-grace' ? '2026-07-05T01:00:10.999Z' : '2026-07-05T01:00:11.001Z';
-      }
-      expect(settled).toBe(false);
-      release();
-      expect(await outcome).toEqual(
-        scenario === 'explicit-grace'
-          ? { ok: true, matches: true }
-          : { ok: false, code: 'version-expired' }
-      );
-      // Backend Implementation requires one Use per material resolve; validation adds neither.
-      expect(resolve).toHaveBeenCalledTimes(1);
-      expect(listVaultUseRecords(workspaceDb)).toEqual(uses);
-      expect(
-        workspaceDb.sqlite
+          now: () => now,
+        });
+        const requested =
+          scenario === 'implicit-generation' ? { referenceId } : { referenceId, version: 1 };
+        // Normalize to booleans/codes immediately so a failed oracle cannot print material.
+        outcome = audited.resolve(requested).then(
+          (material) => {
+            settled = true;
+            return {
+              ok: true as const,
+              matches: Buffer.from(material).equals(Buffer.from(firstMaterial)),
+            };
+          },
+          (error: unknown) => {
+            settled = true;
+            return {
+              ok: false as const,
+              code: error instanceof VaultBackendError ? error.code : 'unexpected-error',
+            };
+          }
+        );
+        await Promise.race([
+          reached.promise,
+          outcome.then(() => {
+            throw new Error('Resolution settled before the real terminal Audit reply.');
+          }),
+        ]);
+        expect(settled).toBe(false);
+        expect(resolve).toHaveBeenCalledTimes(1);
+        const uses = listVaultUseRecords(workspaceDb);
+        expect(uses).toEqual([
+          expect.objectContaining({
+            vaultReferenceId: referenceId,
+            ownerScope: 'workspace',
+            workspaceId,
+            materialVersion: 1,
+            outcome: 'succeeded',
+            resolvingPath: 'admin',
+            failureCode: null,
+            usedAt: '2026-07-05T01:00:10.500Z',
+            capabilityCallId: null,
+            agentSessionId: null,
+          }),
+        ]);
+        const audits = workspaceDb.sqlite
           .prepare("SELECT * FROM audit_events WHERE action = 'vault.resolve'")
-          .all()
-      ).toEqual(audits);
-      const evidence = JSON.stringify({ uses, audits });
-      for (const material of [firstMaterial, currentMaterial]) {
-        expect(evidence.includes(material)).toBe(false);
+          .all();
+        expect(audits).toEqual([
+          expect.objectContaining({
+            audit_event_id: uses[0]?.auditEventId,
+            workspace_id: workspaceId,
+            resource: `vault:${referenceId}`,
+            outcome: 'succeeded',
+            error_code: null,
+          }),
+        ]);
+        expect(JSON.parse((audits[0] as { actor_json: string }).actor_json)).toEqual(actor);
+        if (scenario === 'implicit-generation') {
+          expect(backend.rotate({ referenceId, material: currentMaterial }).currentVersion).toBe(2);
+          expect(
+            (await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: 2 }))
+              .currentVersion
+          ).toBe(2);
+        } else {
+          now =
+            scenario === 'explicit-grace' ? '2026-07-05T01:00:10.999Z' : '2026-07-05T01:00:11.001Z';
+        }
+        expect(settled).toBe(false);
+        release();
+        expect(await outcome).toEqual(
+          scenario === 'explicit-grace'
+            ? { ok: true, matches: true }
+            : { ok: false, code: 'version-expired' }
+        );
+        // Backend Implementation requires one Use per material resolve; validation adds neither.
+        expect(resolve).toHaveBeenCalledTimes(1);
+        expect(listVaultUseRecords(workspaceDb)).toEqual(uses);
+        expect(
+          workspaceDb.sqlite
+            .prepare("SELECT * FROM audit_events WHERE action = 'vault.resolve'")
+            .all()
+        ).toEqual(audits);
+        const evidence = JSON.stringify({ uses, audits });
+        for (const material of [firstMaterial, currentMaterial]) {
+          expect(evidence.includes(material)).toBe(false);
+        }
+      } finally {
+        release();
+        await outcome;
+        hold.mockRestore();
+        resolve.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(storeDir, { recursive: true, force: true });
       }
-    } finally {
-      release();
-      await outcome;
-      hold.mockRestore();
-      resolve.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(storeDir, { recursive: true, force: true });
     }
-  });
+  );
 });

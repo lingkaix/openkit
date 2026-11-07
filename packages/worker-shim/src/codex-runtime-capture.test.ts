@@ -381,134 +381,134 @@ describe('incremental Codex capture', () => {
     }
   });
 
-  it.each([
-    'on',
-    'off',
-  ] as const)('retains nested child activity before quiet parent completion with capture %s', async (value) => {
-    const f = await fixture(value);
-    const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
-    const text = '  child outward 💡\n\n';
-    const args = ' {"command":"read file"}  ';
-    const result = '  exact result\n';
-    try {
-      await writeFile(f.path('root'), lines(meta('root')));
-      await capture.writeStdout(
-        Buffer.from(
+  it.each(['on', 'off'] as const)(
+    'retains nested child activity before quiet parent completion with capture %s',
+    async (value) => {
+      const f = await fixture(value);
+      const capture = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
+      const text = '  child outward 💡\n\n';
+      const args = ' {"command":"read file"}  ';
+      const result = '  exact result\n';
+      try {
+        await writeFile(f.path('root'), lines(meta('root')));
+        await capture.writeStdout(
+          Buffer.from(
+            lines(
+              { type: 'thread.started', thread_id: 'root' },
+              {
+                type: 'item.completed',
+                item: {
+                  type: 'collab_tool_call',
+                  id: 'spawn-1',
+                  tool: 'spawn_agent',
+                  sender_thread_id: 'root',
+                  receiver_thread_ids: ['child'],
+                  status: 'completed',
+                  agents_states: { child: { status: 'running', message: null } },
+                },
+              }
+            )
+          )
+        );
+        // No subsequent parent stdout: periodic tailing must discover the child and grandchild.
+        await writeFile(
+          f.path('child'),
           lines(
-            { type: 'thread.started', thread_id: 'root' },
+            meta('child', 'root'),
             {
-              type: 'item.completed',
-              item: {
-                type: 'collab_tool_call',
-                id: 'spawn-1',
-                tool: 'spawn_agent',
-                sender_thread_id: 'root',
-                receiver_thread_ids: ['child'],
-                status: 'completed',
-                agents_states: { child: { status: 'running', message: null } },
+              type: 'response_item',
+              payload: { type: 'function_call', call_id: 'call-1', name: 'shell', arguments: args },
+            },
+            {
+              type: 'response_item',
+              payload: { type: 'function_call_output', call_id: 'call-1', output: result },
+            },
+            {
+              type: 'response_item',
+              payload: { type: 'reasoning', summary: [{ text: 'hidden-reasoning-canary' }] },
+            },
+            {
+              type: 'response_item',
+              payload: {
+                type: 'message',
+                role: 'assistant',
+                channel: 'analysis',
+                content: [{ type: 'output_text', text: 'hidden-analysis-canary' }],
+              },
+            },
+            {
+              type: 'response_item',
+              payload: {
+                type: 'message',
+                role: 'assistant',
+                channel: 'final',
+                content: [{ type: 'output_text', text }],
               },
             }
           )
-        )
-      );
-      // No subsequent parent stdout: periodic tailing must discover the child and grandchild.
-      await writeFile(
-        f.path('child'),
-        lines(
-          meta('child', 'root'),
-          {
-            type: 'response_item',
-            payload: { type: 'function_call', call_id: 'call-1', name: 'shell', arguments: args },
-          },
-          {
-            type: 'response_item',
-            payload: { type: 'function_call_output', call_id: 'call-1', output: result },
-          },
-          {
-            type: 'response_item',
-            payload: { type: 'reasoning', summary: [{ text: 'hidden-reasoning-canary' }] },
-          },
-          {
+        );
+        await writeFile(
+          f.path('grandchild'),
+          lines(meta('grandchild', 'child'), {
             type: 'response_item',
             payload: {
               type: 'message',
               role: 'assistant',
-              channel: 'analysis',
-              content: [{ type: 'output_text', text: 'hidden-analysis-canary' }],
+              content: [{ type: 'output_text', text: 'grandchild answer' }],
             },
-          },
-          {
-            type: 'response_item',
-            payload: {
-              type: 'message',
-              role: 'assistant',
-              channel: 'final',
-              content: [{ type: 'output_text', text }],
-            },
-          }
-        )
-      );
-      await writeFile(
-        f.path('grandchild'),
-        lines(meta('grandchild', 'child'), {
-          type: 'response_item',
-          payload: {
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'output_text', text: 'grandchild answer' }],
-          },
-        })
-      );
-      await vi.waitFor(() =>
+          })
+        );
+        await vi.waitFor(() =>
+          expect(
+            f.received.some(
+              ({ record }) =>
+                record.fact.runtimeOriginRef === runtimeOriginRef('aep_live', 'grandchild') &&
+                record.fact.kind === 'assistant'
+            )
+          ).toBe(true)
+        );
+        const childRef = runtimeOriginRef('aep_live', 'child');
+        expect(
+          f.received
+            .filter(
+              ({ record }) =>
+                record.fact.kind === 'origin' && record.fact.runtimeOriginRef === childRef
+            )
+            .map(({ record }) => record.fact.phase)
+        ).not.toContain('completed');
         expect(
           f.received.some(
             ({ record }) =>
-              record.fact.runtimeOriginRef === runtimeOriginRef('aep_live', 'grandchild') &&
-              record.fact.kind === 'assistant'
+              record.fact.parentRuntimeOriginRef === childRef &&
+              record.fact.runtimeOriginRef === runtimeOriginRef('aep_live', 'grandchild')
           )
-        ).toBe(true)
-      );
-      const childRef = runtimeOriginRef('aep_live', 'child');
-      expect(
-        f.received
-          .filter(
-            ({ record }) =>
-              record.fact.kind === 'origin' && record.fact.runtimeOriginRef === childRef
-          )
-          .map(({ record }) => record.fact.phase)
-      ).not.toContain('completed');
-      expect(
-        f.received.some(
-          ({ record }) =>
-            record.fact.parentRuntimeOriginRef === childRef &&
-            record.fact.runtimeOriginRef === runtimeOriginRef('aep_live', 'grandchild')
-        )
-      ).toBe(true);
-      const tools = f.received.filter(
-        ({ record, body }) =>
-          record.fact.kind === 'tool' &&
-          record.fact.runtimeOriginRef === childRef &&
-          (value === 'off' || body !== undefined)
-      );
-      expect(tools.map(({ record }) => record.fact.phase)).toEqual(['started', 'completed']);
-      expect(tools[0]?.record.fact.callRef).toBe(tools[1]?.record.fact.callRef);
-      if (value === 'on') {
-        expect(tools.map(({ body }) => Buffer.from(body!).toString())).toEqual([args, result]);
-        expect(f.received.some(({ body }) => body && Buffer.from(body).toString() === text)).toBe(
-          true
+        ).toBe(true);
+        const tools = f.received.filter(
+          ({ record, body }) =>
+            record.fact.kind === 'tool' &&
+            record.fact.runtimeOriginRef === childRef &&
+            (value === 'off' || body !== undefined)
         );
-      } else {
-        expect(f.received.every(({ body }) => body === undefined)).toBe(true);
-        expect(tools.every(({ record }) => record.content.state === 'off')).toBe(true);
+        expect(tools.map(({ record }) => record.fact.phase)).toEqual(['started', 'completed']);
+        expect(tools[0]?.record.fact.callRef).toBe(tools[1]?.record.fact.callRef);
+        if (value === 'on') {
+          expect(tools.map(({ body }) => Buffer.from(body!).toString())).toEqual([args, result]);
+          expect(f.received.some(({ body }) => body && Buffer.from(body).toString() === text)).toBe(
+            true
+          );
+        } else {
+          expect(f.received.every(({ body }) => body === undefined)).toBe(true);
+          expect(tools.every(({ record }) => record.content.state === 'off')).toBe(true);
+        }
+        expect(JSON.stringify(f.received)).not.toContain('hidden-');
+        await capture.finalize();
+        expect(f.received.some(({ record }) => record.fact.coverage === 'ended')).toBe(true);
+      } finally {
+        await capture.invalidate();
+        await rm(f.home, { recursive: true, force: true });
       }
-      expect(JSON.stringify(f.received)).not.toContain('hidden-');
-      await capture.finalize();
-      expect(f.received.some(({ record }) => record.fact.coverage === 'ended')).toBe(true);
-    } finally {
-      await capture.invalidate();
-      await rm(f.home, { recursive: true, force: true });
     }
-  });
+  );
 
   it('excludes pre-launch retained bodies and never turns wait receivers into children', async () => {
     const f = await fixture('on');

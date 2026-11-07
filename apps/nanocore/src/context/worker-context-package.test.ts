@@ -872,109 +872,109 @@ describe('worker Context Package owner', () => {
     expect(supplied.packageRootDigest).not.toBe(baseline.packageRootDigest);
   });
 
-  it.each([
-    false,
-    true,
-  ])('verifies additive annotation bytes and reopens (Knowledge: %s)', async (knowledge) => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-extended-'));
-    const fixture = await createAcceptedFixture(workspaceRoot, { knowledge });
-    const packagePath = join(
-      workspaceRoot,
-      'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package/package.json'
-    );
-    const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
-    manifest.annotation = 'manifest';
-    manifest.materialSelections[0].annotation = 'manifest selection';
-    if (knowledge) manifest.knowledgeSelections[0].annotation = 'manifest Knowledge selection';
-    const canonical = (value: unknown): string => {
-      const sort = (entry: unknown): unknown => {
-        if (Array.isArray(entry)) return entry.map(sort);
-        if (entry && typeof entry === 'object')
-          return Object.fromEntries(
-            Object.entries(entry)
-              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-              .map(([key, item]) => [key, sort(item)])
-          );
-        return entry;
-      };
-      return JSON.stringify(sort(value));
-    };
-    const bytes = canonical(manifest);
-    writeFileSync(packagePath, bytes);
-    const raw = JSON.parse(JSON.stringify(fixture.trace));
-    raw.annotation = 'trace';
-    raw.retainedTrace = {
-      ignored: 'untrusted metadata cannot replace trace bytes',
-      a: 'historical',
-      Z: 'trace',
-    };
-    if (knowledge) {
-      raw.knowledgeSelectionInput.annotation = 'retrieval input';
-      raw.knowledgeSelectionInput.retrievalTraceRef.annotation = 'qualified reference';
-      raw.knowledgeSelections = structuredClone(manifest.knowledgeSelections);
-      raw.knowledgeExclusions[0].annotation = 'Knowledge exclusion';
-    }
-    // Selected payload annotations now have one retained owner: the manifest.
-    raw.materialSelections = structuredClone(manifest.materialSelections);
-    raw.materialExclusions[0].annotation = 'exclusion';
-    raw.excludedItems[0].annotation = 'item';
-    const entry = raw.fileInventory.find(
-      (entry: { path: string }) => entry.path === 'package.json'
-    );
-    entry.byteLength = Buffer.byteLength(bytes);
-    entry.contentDigest = sha256(bytes);
-    const { contextPackageDigest: _prior, ...withoutDigest } = raw;
-    raw.contextPackageDigest = `ctxpkg_sha256_${sha256(canonical(withoutDigest)).slice(7)}`;
-    const originalAuthorities = fixture.authorities;
-    const packageRootDigest = sha256(canonical(raw.fileInventory));
-    fixture.authorities = {
-      ...originalAuthorities,
-      readWorkspaceInputSnapshot: (...args) => ({
-        ...originalAuthorities.readWorkspaceInputSnapshot(...args)!,
-        base: { commit: null, contentDigest: packageRootDigest },
-      }),
-      readAgentEnvironmentPackage: (...args) => {
-        const aep = structuredClone(originalAuthorities.readAgentEnvironmentPackage(...args)!);
-        aep.workspace.inputs[0]!.materialization!.contentDigest = packageRootDigest;
-        return aep;
-      },
-      readWorkspaceMaterializationRecord: (...args) => ({
-        ...originalAuthorities.readWorkspaceMaterializationRecord(...args)!,
-        base: { commit: null, contentDigest: packageRootDigest },
-      }),
-    };
-    const read = parseWorkerContextPackageTrace(raw);
-    expect(read).not.toHaveProperty('annotation');
-    expect(JSON.stringify(read)).not.toContain('annotation');
-    expect(
-      verifyWorkerContextPackageTrace({ ...fixture, trace: read, workspaceRoot })
-        .contextPackageDigest
-    ).toBe(raw.contextPackageDigest);
-    writeWorkerContextPackageTrace({ ...fixture, trace: read, workspaceRoot });
-    expect(
-      readWorkerContextPackageTrace({
-        authorities: fixture.authorities,
-        workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
-        threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
-        turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
+  it.each([false, true])(
+    'verifies additive annotation bytes and reopens (Knowledge: %s)',
+    async (knowledge) => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-extended-'));
+      const fixture = await createAcceptedFixture(workspaceRoot, { knowledge });
+      const packagePath = join(
         workspaceRoot,
-      })
-    ).toEqual(read);
-    expect(readFileSync(packagePath, 'utf8')).toBe(bytes);
-    const serialized = serializeWorkerContextPackageTrace(read);
-    expect(JSON.parse(serialized).annotation).toBe('trace');
-    expect(parseWorkerContextPackageTrace(JSON.parse(serialized), Buffer.from(bytes))).toEqual(
-      read
-    );
-    expect(
-      serializeWorkerContextPackageTrace(
-        parseWorkerContextPackageTrace(JSON.parse(serialized), Buffer.from(bytes))
-      )
-    ).toBe(serialized);
-    Object.assign(read, { requestId: 'req_changed' });
-    expect(() => parseWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
-    expect(() => serializeWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
-  });
+        'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-71df-9e29-90f5b5578e47/context-package/package.json'
+      );
+      const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
+      manifest.annotation = 'manifest';
+      manifest.materialSelections[0].annotation = 'manifest selection';
+      if (knowledge) manifest.knowledgeSelections[0].annotation = 'manifest Knowledge selection';
+      const canonical = (value: unknown): string => {
+        const sort = (entry: unknown): unknown => {
+          if (Array.isArray(entry)) return entry.map(sort);
+          if (entry && typeof entry === 'object')
+            return Object.fromEntries(
+              Object.entries(entry)
+                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                .map(([key, item]) => [key, sort(item)])
+            );
+          return entry;
+        };
+        return JSON.stringify(sort(value));
+      };
+      const bytes = canonical(manifest);
+      writeFileSync(packagePath, bytes);
+      const raw = JSON.parse(JSON.stringify(fixture.trace));
+      raw.annotation = 'trace';
+      raw.retainedTrace = {
+        ignored: 'untrusted metadata cannot replace trace bytes',
+        a: 'historical',
+        Z: 'trace',
+      };
+      if (knowledge) {
+        raw.knowledgeSelectionInput.annotation = 'retrieval input';
+        raw.knowledgeSelectionInput.retrievalTraceRef.annotation = 'qualified reference';
+        raw.knowledgeSelections = structuredClone(manifest.knowledgeSelections);
+        raw.knowledgeExclusions[0].annotation = 'Knowledge exclusion';
+      }
+      // Selected payload annotations now have one retained owner: the manifest.
+      raw.materialSelections = structuredClone(manifest.materialSelections);
+      raw.materialExclusions[0].annotation = 'exclusion';
+      raw.excludedItems[0].annotation = 'item';
+      const entry = raw.fileInventory.find(
+        (entry: { path: string }) => entry.path === 'package.json'
+      );
+      entry.byteLength = Buffer.byteLength(bytes);
+      entry.contentDigest = sha256(bytes);
+      const { contextPackageDigest: _prior, ...withoutDigest } = raw;
+      raw.contextPackageDigest = `ctxpkg_sha256_${sha256(canonical(withoutDigest)).slice(7)}`;
+      const originalAuthorities = fixture.authorities;
+      const packageRootDigest = sha256(canonical(raw.fileInventory));
+      fixture.authorities = {
+        ...originalAuthorities,
+        readWorkspaceInputSnapshot: (...args) => ({
+          ...originalAuthorities.readWorkspaceInputSnapshot(...args)!,
+          base: { commit: null, contentDigest: packageRootDigest },
+        }),
+        readAgentEnvironmentPackage: (...args) => {
+          const aep = structuredClone(originalAuthorities.readAgentEnvironmentPackage(...args)!);
+          aep.workspace.inputs[0]!.materialization!.contentDigest = packageRootDigest;
+          return aep;
+        },
+        readWorkspaceMaterializationRecord: (...args) => ({
+          ...originalAuthorities.readWorkspaceMaterializationRecord(...args)!,
+          base: { commit: null, contentDigest: packageRootDigest },
+        }),
+      };
+      const read = parseWorkerContextPackageTrace(raw);
+      expect(read).not.toHaveProperty('annotation');
+      expect(JSON.stringify(read)).not.toContain('annotation');
+      expect(
+        verifyWorkerContextPackageTrace({ ...fixture, trace: read, workspaceRoot })
+          .contextPackageDigest
+      ).toBe(raw.contextPackageDigest);
+      writeWorkerContextPackageTrace({ ...fixture, trace: read, workspaceRoot });
+      expect(
+        readWorkerContextPackageTrace({
+          authorities: fixture.authorities,
+          workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
+          threadId: 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
+          turnId: 'tu_00000000-0000-71df-9e29-90f5b5578e47',
+          workspaceRoot,
+        })
+      ).toEqual(read);
+      expect(readFileSync(packagePath, 'utf8')).toBe(bytes);
+      const serialized = serializeWorkerContextPackageTrace(read);
+      expect(JSON.parse(serialized).annotation).toBe('trace');
+      expect(parseWorkerContextPackageTrace(JSON.parse(serialized), Buffer.from(bytes))).toEqual(
+        read
+      );
+      expect(
+        serializeWorkerContextPackageTrace(
+          parseWorkerContextPackageTrace(JSON.parse(serialized), Buffer.from(bytes))
+        )
+      ).toBe(serialized);
+      Object.assign(read, { requestId: 'req_changed' });
+      expect(() => parseWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
+      expect(() => serializeWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
+    }
+  );
 
   it('builds deterministic files, inventory, digests, and the exact generated AEP input', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-'));
@@ -1347,29 +1347,29 @@ describe('worker Context Package owner', () => {
         'req_other'
       ),
     },
-  ])('rejects null Knowledge for $name before immutable trace write', async ({
-    triggerActor,
-    turnId,
-  }) => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-chat-reject-'));
-    const fixture = await createLiveNullKnowledgeFixture(workspaceRoot, { triggerActor, turnId });
+  ])(
+    'rejects null Knowledge for $name before immutable trace write',
+    async ({ triggerActor, turnId }) => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-chat-reject-'));
+      const fixture = await createLiveNullKnowledgeFixture(workspaceRoot, { triggerActor, turnId });
 
-    expect(() =>
-      writeWorkerContextPackageTrace({
-        authorities: fixture.authorities,
-        trace: fixture.trace,
-        workspaceRoot,
-      })
-    ).toThrow();
-    expect(
-      existsSync(
-        join(
+      expect(() =>
+        writeWorkerContextPackageTrace({
+          authorities: fixture.authorities,
+          trace: fixture.trace,
           workspaceRoot,
-          `threads/${fixture.trace.threadId}/turns/${turnId}/context-package.json`
+        })
+      ).toThrow();
+      expect(
+        existsSync(
+          join(
+            workspaceRoot,
+            `threads/${fixture.trace.threadId}/turns/${turnId}/context-package.json`
+          )
         )
-      )
-    ).toBe(false);
-  });
+      ).toBe(false);
+    }
+  );
 
   it('persists one immutable trace and verifies every durable owner without a checkpoint', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-trace-'));
@@ -1479,18 +1479,18 @@ describe('worker Context Package owner', () => {
     expect(reopened?.fileInventory.some((file) => file.path.startsWith(excludedRoot))).toBe(false);
   });
 
-  it.each([
-    'policy_excluded',
-    'budget_exceeded',
-  ] as const)('refuses a restricted Material trace mislabeled %s', async (reason) => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-restricted-reason-'));
-    const fixture = await createAcceptedFixture(workspaceRoot, {
-      restrictedExclusionReason: reason,
-    });
-    expect(() => writeWorkerContextPackageTrace({ ...fixture, workspaceRoot })).toThrow(
-      'Restricted Material exclusion reason is invalid.'
-    );
-  });
+  it.each(['policy_excluded', 'budget_exceeded'] as const)(
+    'refuses a restricted Material trace mislabeled %s',
+    async (reason) => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-restricted-reason-'));
+      const fixture = await createAcceptedFixture(workspaceRoot, {
+        restrictedExclusionReason: reason,
+      });
+      expect(() => writeWorkerContextPackageTrace({ ...fixture, workspaceRoot })).toThrow(
+        'Restricted Material exclusion reason is invalid.'
+      );
+    }
+  );
 
   it('retains the exact excluded Knowledge notebook revision across trace publication and reopening', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-exclusion-revision-'));
@@ -1514,143 +1514,145 @@ describe('worker Context Package owner', () => {
     expect(reopened?.knowledgeExclusions).toEqual(fixture.trace.knowledgeExclusions);
   });
 
-  it.each([
-    'live',
-    'imported',
-  ] as const)('retains manifest payload once while reopening the full %s trace view', async (kind) => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-manifest-authority-'));
-    const fixture =
-      kind === 'live'
-        ? await createAcceptedFixture(workspaceRoot, { knowledge: true })
-        : await createImportedHistoryFixture(workspaceRoot);
-    const turnRoot = join(
-      workspaceRoot,
-      'threads',
-      fixture.trace.threadId,
-      'turns',
-      fixture.trace.turnId
-    );
-    const manifestPath = join(turnRoot, 'context-package/package.json');
-    const manifestBytes = readFileSync(manifestPath);
-    const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    expect(
-      manifest.fileInventory.some((entry: { path: string }) => entry.path === 'package.json')
-    ).toBe(false);
+  it.each(['live', 'imported'] as const)(
+    'retains manifest payload once while reopening the full %s trace view',
+    async (kind) => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-manifest-authority-'));
+      const fixture =
+        kind === 'live'
+          ? await createAcceptedFixture(workspaceRoot, { knowledge: true })
+          : await createImportedHistoryFixture(workspaceRoot);
+      const turnRoot = join(
+        workspaceRoot,
+        'threads',
+        fixture.trace.threadId,
+        'turns',
+        fixture.trace.turnId
+      );
+      const manifestPath = join(turnRoot, 'context-package/package.json');
+      const manifestBytes = readFileSync(manifestPath);
+      const manifest = JSON.parse(manifestBytes.toString('utf8'));
+      expect(
+        manifest.fileInventory.some((entry: { path: string }) => entry.path === 'package.json')
+      ).toBe(false);
 
-    if (kind === 'live') {
-      expect(writeWorkerContextPackageTrace({ ...fixture, workspaceRoot })).toEqual(fixture.trace);
-    } else {
-      writeFileSync(
-        join(turnRoot, 'context-package.json'),
-        serializeWorkerContextPackageTrace(fixture.trace)
-      );
-    }
-    const selectors = {
-      authorities: fixture.authorities,
-      workspaceId: fixture.trace.workspaceId,
-      threadId: fixture.trace.threadId,
-      turnId: fixture.trace.turnId,
-      workspaceRoot,
-    };
-    // Reopen through the retained files, without passing the producer's in-memory trace.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const reopened = readPortableWorkerContextPackageTrace(selectors);
-      expect(reopened).toEqual({
-        trace: fixture.trace,
-        verification: kind === 'live' ? 'strict' : 'imported-history',
-      });
-      // Retained traces that predate exclusion revisions remain readable without inventing one.
-      if (kind === 'live')
-        expect(reopened.trace.knowledgeExclusions[0]).not.toHaveProperty('notebookRevision');
-      expect(reopened.trace.fileInventory).toEqual(
-        [
-          ...manifest.fileInventory,
-          {
-            path: 'package.json',
-            byteLength: manifestBytes.byteLength,
-            contentDigest: sha256(manifestBytes),
-          },
-        ].sort((left, right) => left.path.localeCompare(right.path))
-      );
       if (kind === 'live') {
-        expect(readWorkerContextPackageTrace(selectors)).toEqual(fixture.trace);
+        expect(writeWorkerContextPackageTrace({ ...fixture, workspaceRoot })).toEqual(
+          fixture.trace
+        );
       } else {
-        expect(() => readWorkerContextPackageTrace(selectors)).toThrow(
-          'strict delivery rejects reserved import lineage'
+        writeFileSync(
+          join(turnRoot, 'context-package.json'),
+          serializeWorkerContextPackageTrace(fixture.trace)
+        );
+      }
+      const selectors = {
+        authorities: fixture.authorities,
+        workspaceId: fixture.trace.workspaceId,
+        threadId: fixture.trace.threadId,
+        turnId: fixture.trace.turnId,
+        workspaceRoot,
+      };
+      // Reopen through the retained files, without passing the producer's in-memory trace.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const reopened = readPortableWorkerContextPackageTrace(selectors);
+        expect(reopened).toEqual({
+          trace: fixture.trace,
+          verification: kind === 'live' ? 'strict' : 'imported-history',
+        });
+        // Retained traces that predate exclusion revisions remain readable without inventing one.
+        if (kind === 'live')
+          expect(reopened.trace.knowledgeExclusions[0]).not.toHaveProperty('notebookRevision');
+        expect(reopened.trace.fileInventory).toEqual(
+          [
+            ...manifest.fileInventory,
+            {
+              path: 'package.json',
+              byteLength: manifestBytes.byteLength,
+              contentDigest: sha256(manifestBytes),
+            },
+          ].sort((left, right) => left.path.localeCompare(right.path))
+        );
+        if (kind === 'live') {
+          expect(readWorkerContextPackageTrace(selectors)).toEqual(fixture.trace);
+        } else {
+          expect(() => readWorkerContextPackageTrace(selectors)).toThrow(
+            'strict delivery rejects reserved import lineage'
+          );
+        }
+      }
+      expect(readFileSync(manifestPath)).toEqual(manifestBytes);
+
+      const retained = JSON.parse(readFileSync(join(turnRoot, 'context-package.json'), 'utf8'));
+      expect(retained).toMatchObject({
+        agentSessionId: fixture.trace.agentSessionId,
+        excludedItems: fixture.trace.excludedItems,
+        knowledgeExclusions: fixture.trace.knowledgeExclusions,
+        knowledgeSelectionInput: fixture.trace.knowledgeSelectionInput,
+        materialExclusions: fixture.trace.materialExclusions,
+        packageSnapshotId: fixture.trace.packageSnapshotId,
+        requestId: fixture.trace.requestId,
+      });
+      for (const field of [
+        'fileInventory',
+        'includedItemIds',
+        'knowledgeSelections',
+        'materialSelections',
+        'policyVersion',
+        'sourceFiles',
+        'workerRequestDigest',
+        'workerRequestItemId',
+      ]) {
+        expect(retained, `Retained trace duplicates manifest field: ${field}`).not.toHaveProperty(
+          field
         );
       }
     }
-    expect(readFileSync(manifestPath)).toEqual(manifestBytes);
+  );
 
-    const retained = JSON.parse(readFileSync(join(turnRoot, 'context-package.json'), 'utf8'));
-    expect(retained).toMatchObject({
-      agentSessionId: fixture.trace.agentSessionId,
-      excludedItems: fixture.trace.excludedItems,
-      knowledgeExclusions: fixture.trace.knowledgeExclusions,
-      knowledgeSelectionInput: fixture.trace.knowledgeSelectionInput,
-      materialExclusions: fixture.trace.materialExclusions,
-      packageSnapshotId: fixture.trace.packageSnapshotId,
-      requestId: fixture.trace.requestId,
-    });
-    for (const field of [
-      'fileInventory',
-      'includedItemIds',
-      'knowledgeSelections',
-      'materialSelections',
-      'policyVersion',
-      'sourceFiles',
-      'workerRequestDigest',
-      'workerRequestItemId',
-    ]) {
-      expect(retained, `Retained trace duplicates manifest field: ${field}`).not.toHaveProperty(
-        field
+  it.each(['live', 'imported'] as const)(
+    'refuses altered exact manifest bytes when reopening %s history',
+    async (kind) => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-manifest-integrity-'));
+      const fixture =
+        kind === 'live'
+          ? await createAcceptedFixture(workspaceRoot)
+          : await createImportedHistoryFixture(workspaceRoot);
+      const turnRoot = join(
+        workspaceRoot,
+        'threads',
+        fixture.trace.threadId,
+        'turns',
+        fixture.trace.turnId
       );
-    }
-  });
-
-  it.each([
-    'live',
-    'imported',
-  ] as const)('refuses altered exact manifest bytes when reopening %s history', async (kind) => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-manifest-integrity-'));
-    const fixture =
-      kind === 'live'
-        ? await createAcceptedFixture(workspaceRoot)
-        : await createImportedHistoryFixture(workspaceRoot);
-    const turnRoot = join(
-      workspaceRoot,
-      'threads',
-      fixture.trace.threadId,
-      'turns',
-      fixture.trace.turnId
-    );
-    if (kind === 'live') {
-      writeWorkerContextPackageTrace({ ...fixture, workspaceRoot });
-    } else {
-      writeFileSync(
-        join(turnRoot, 'context-package.json'),
-        serializeWorkerContextPackageTrace(fixture.trace)
+      if (kind === 'live') {
+        writeWorkerContextPackageTrace({ ...fixture, workspaceRoot });
+      } else {
+        writeFileSync(
+          join(turnRoot, 'context-package.json'),
+          serializeWorkerContextPackageTrace(fixture.trace)
+        );
+      }
+      const selectors = {
+        authorities: fixture.authorities,
+        workspaceId: fixture.trace.workspaceId,
+        threadId: fixture.trace.threadId,
+        turnId: fixture.trace.turnId,
+        workspaceRoot,
+      };
+      expect(readPortableWorkerContextPackageTrace(selectors).trace).toEqual(fixture.trace);
+      const manifestPath = join(turnRoot, 'context-package/package.json');
+      const originalBytes = readFileSync(manifestPath);
+      chmodSync(manifestPath, 0o600);
+      // The parsed manifest is unchanged, but delivery proof binds the original exact bytes.
+      writeFileSync(manifestPath, Buffer.concat([originalBytes, Buffer.from('\n')]));
+      expect(() => readPortableWorkerContextPackageTrace(selectors)).toThrow(
+        /digest mismatch|manifest is malformed/
       );
+      writeFileSync(manifestPath, originalBytes);
+      expect(readPortableWorkerContextPackageTrace(selectors).trace).toEqual(fixture.trace);
     }
-    const selectors = {
-      authorities: fixture.authorities,
-      workspaceId: fixture.trace.workspaceId,
-      threadId: fixture.trace.threadId,
-      turnId: fixture.trace.turnId,
-      workspaceRoot,
-    };
-    expect(readPortableWorkerContextPackageTrace(selectors).trace).toEqual(fixture.trace);
-    const manifestPath = join(turnRoot, 'context-package/package.json');
-    const originalBytes = readFileSync(manifestPath);
-    chmodSync(manifestPath, 0o600);
-    // The parsed manifest is unchanged, but delivery proof binds the original exact bytes.
-    writeFileSync(manifestPath, Buffer.concat([originalBytes, Buffer.from('\n')]));
-    expect(() => readPortableWorkerContextPackageTrace(selectors)).toThrow(
-      /digest mismatch|manifest is malformed/
-    );
-    writeFileSync(manifestPath, originalBytes);
-    expect(readPortableWorkerContextPackageTrace(selectors).trace).toEqual(fixture.trace);
-  });
+  );
 
   it('rejects reserved import lineage before consulting live authorities', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-import-lineage-'));
@@ -2384,68 +2386,66 @@ describe('S39 bounded delivery and publication refusal', () => {
     );
   });
 
-  it.each([
-    'corrupt',
-    'overrun',
-    'drift',
-    'abort',
-    'oversized-chunk',
-  ] as const)('refuses invalid current original after %s and leaves no readiness manifest', async (failure) => {
-    const root = mkdtempSync(join(tmpdir(), 's39-original-refusal-'));
-    try {
-      const source = sourceFixture(
-        failure === 'oversized-chunk' ? Buffer.alloc(65_537) : undefined
-      );
-      const controller = new AbortController();
-      let checks = 0;
-      const modified = {
-        ...source,
-        originalDigest: failure === 'corrupt' ? `sha256:${'0'.repeat(64)}` : source.originalDigest,
-        byteLength: failure === 'overrun' ? source.byteLength - 1 : source.byteLength,
-        assertUnchanged() {
-          if (++checks === 2 && failure === 'drift') throw new Error('Original drift.');
-        },
-        async *open() {
-          if (failure === 'abort') controller.abort();
-          yield failure === 'oversized-chunk' ? Buffer.alloc(65_537) : Buffer.from([0, 255, 1]);
-        },
-      };
-      const files = createWorkerContextPackageFiles({
-        ...boundedInputs(),
-        sourceFiles: [modified],
-      });
-      const admission = new FileStorageAdmission(root, () => 0n);
-      const release = vi.fn();
-      const realReserve = admission.reserve.bind(admission);
-      vi.spyOn(admission, 'reserve').mockImplementation((writes) => {
-        const reservation = realReserve(writes);
-        return {
-          ...reservation,
-          release() {
-            release();
-            reservation.release();
+  it.each(['corrupt', 'overrun', 'drift', 'abort', 'oversized-chunk'] as const)(
+    'refuses invalid current original after %s and leaves no readiness manifest',
+    async (failure) => {
+      const root = mkdtempSync(join(tmpdir(), 's39-original-refusal-'));
+      try {
+        const source = sourceFixture(
+          failure === 'oversized-chunk' ? Buffer.alloc(65_537) : undefined
+        );
+        const controller = new AbortController();
+        let checks = 0;
+        const modified = {
+          ...source,
+          originalDigest:
+            failure === 'corrupt' ? `sha256:${'0'.repeat(64)}` : source.originalDigest,
+          byteLength: failure === 'overrun' ? source.byteLength - 1 : source.byteLength,
+          assertUnchanged() {
+            if (++checks === 2 && failure === 'drift') throw new Error('Original drift.');
+          },
+          async *open() {
+            if (failure === 'abort') controller.abort();
+            yield failure === 'oversized-chunk' ? Buffer.alloc(65_537) : Buffer.from([0, 255, 1]);
           },
         };
-      });
-      await expect(
-        writeWorkerContextPackageFiles(root, files, { admission, signal: controller.signal })
-      ).rejects.toThrow();
-      const packageRoot = join(
-        root,
-        'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package'
-      );
-      expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
-      expect(existsSync(join(packageRoot, 'originals'))).toBe(false);
-      expect(release).toHaveBeenCalledTimes(1);
-      const walk = (path: string): string[] =>
-        readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
-          entry.isDirectory() ? walk(join(path, entry.name)) : [entry.name]
+        const files = createWorkerContextPackageFiles({
+          ...boundedInputs(),
+          sourceFiles: [modified],
+        });
+        const admission = new FileStorageAdmission(root, () => 0n);
+        const release = vi.fn();
+        const realReserve = admission.reserve.bind(admission);
+        vi.spyOn(admission, 'reserve').mockImplementation((writes) => {
+          const reservation = realReserve(writes);
+          return {
+            ...reservation,
+            release() {
+              release();
+              reservation.release();
+            },
+          };
+        });
+        await expect(
+          writeWorkerContextPackageFiles(root, files, { admission, signal: controller.signal })
+        ).rejects.toThrow();
+        const packageRoot = join(
+          root,
+          'threads/th_00000000-0000-7ba9-ab4a-4397e62aa2e5/turns/tu_00000000-0000-7000-8000-0000000003fb/context-package'
         );
-      expect(walk(packageRoot)).toEqual([]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+        expect(existsSync(join(packageRoot, 'package.json'))).toBe(false);
+        expect(existsSync(join(packageRoot, 'originals'))).toBe(false);
+        expect(release).toHaveBeenCalledTimes(1);
+        const walk = (path: string): string[] =>
+          readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
+            entry.isDirectory() ? walk(join(path, entry.name)) : [entry.name]
+          );
+        expect(walk(packageRoot)).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('refuses source capture before opening when the shared configured reserve cannot admit it', async () => {
     const root = mkdtempSync(join(tmpdir(), 's39-shared-reserve-'));
@@ -2740,58 +2740,55 @@ describe('S39 one bound Material delivery path', () => {
     ).toBe(selected.packagePath);
   });
 
-  it.each([
-    'identity',
-    'path',
-    'projection',
-    'digest',
-    'size',
-    'bytes',
-    'kind',
-  ] as const)('refuses mismatched shared Material %s before publication', (change) => {
-    const input = sharedMaterialInputs();
-    const source = input.sourceFiles![0]!;
-    const modified: WorkerContextPackageSourceFileInput = {
-      ...source,
-      ...(change === 'identity'
-        ? {
-            source: {
-              kind: 'material' as const,
-              reference: {
-                scopeId: 'material/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
-                objectId: 'mat_00000000-0000-7000-8000-0000000003f2',
+  it.each(['identity', 'path', 'projection', 'digest', 'size', 'bytes', 'kind'] as const)(
+    'refuses mismatched shared Material %s before publication',
+    (change) => {
+      const input = sharedMaterialInputs();
+      const source = input.sourceFiles![0]!;
+      const modified: WorkerContextPackageSourceFileInput = {
+        ...source,
+        ...(change === 'identity'
+          ? {
+              source: {
+                kind: 'material' as const,
+                reference: {
+                  scopeId: 'material/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+                  objectId: 'mat_00000000-0000-7000-8000-0000000003f2',
+                },
+                revisionId: 'mrev_00000000-0000-7000-8000-0000000003f8',
               },
-              revisionId: 'mrev_00000000-0000-7000-8000-0000000003f8',
-            },
-          }
-        : {}),
-      ...(change === 'path'
-        ? {
-            packagePath:
-              'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f6.md',
-          }
-        : {}),
-      ...(change === 'projection'
-        ? { projection: { ...source.projection, representationId: 'other-representation' } }
-        : {}),
-      ...(change === 'digest' ? { originalDigest: `sha256:${'0'.repeat(64)}` } : {}),
-      ...(change === 'size' ? { byteLength: source.byteLength + 1 } : {}),
-      ...(change === 'bytes' ? { deliveredBytes: Buffer.from('Changed body') } : {}),
-      ...(change === 'kind'
-        ? {
-            source: {
-              kind: 'artifact' as const,
-              reference: {
-                scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
-                objectId: 'mat_00000000-0000-7000-8000-0000000003f4',
+            }
+          : {}),
+        ...(change === 'path'
+          ? {
+              packagePath:
+                'workspace/materials/mat_00000000-0000-7000-8000-0000000003f4/mrev_00000000-0000-7000-8000-0000000003f6.md',
+            }
+          : {}),
+        ...(change === 'projection'
+          ? { projection: { ...source.projection, representationId: 'other-representation' } }
+          : {}),
+        ...(change === 'digest' ? { originalDigest: `sha256:${'0'.repeat(64)}` } : {}),
+        ...(change === 'size' ? { byteLength: source.byteLength + 1 } : {}),
+        ...(change === 'bytes' ? { deliveredBytes: Buffer.from('Changed body') } : {}),
+        ...(change === 'kind'
+          ? {
+              source: {
+                kind: 'artifact' as const,
+                reference: {
+                  scopeId: 'artifact/workspace/ws_00000000-0000-7990-bde7-4411160ea0db',
+                  objectId: 'mat_00000000-0000-7000-8000-0000000003f4',
+                },
+                artifactVersion: 1,
               },
-              artifactVersion: 1,
-            },
-          }
-        : {}),
-    };
-    expect(() => createWorkerContextPackageFiles({ ...input, sourceFiles: [modified] })).toThrow();
-  });
+            }
+          : {}),
+      };
+      expect(() =>
+        createWorkerContextPackageFiles({ ...input, sourceFiles: [modified] })
+      ).toThrow();
+    }
+  );
 });
 
 describe('S39 empty original stream', () => {

@@ -703,124 +703,130 @@ describe('native Store authority and immutable closure', () => {
     });
   });
 
-  it.each([
-    'running',
-    'completed',
-  ] as const)('imports every initial native family and complete descriptive history (%s)', async (status) => {
-    const f = await workspaceFixture();
-    const targetId = allocateEntityId('ws');
-    const threadId = allocateEntityId('th');
-    const turnId = allocateEntityId('tu');
-    const sessionId = allocateEntityId('as');
-    const owner = { kind: 'workspace', workspaceId: targetId } as const;
-    const timestamp = f.turn.startedAt!;
-    const first = {
-      ...message(f.turn, 'Before'),
-      owner,
-      threadId,
-      turnId,
-      note: 'retained annotation',
-    };
-    const last = { ...first, text: 'After' };
-    const turn = {
-      ...f.turn,
-      id: turnId,
-      threadId,
-      owner,
-      agentSessionId: sessionId,
-      status,
-      completedAt: status === 'completed' ? timestamp : null,
-      durationMs: status === 'completed' ? 0 : null,
-      items: [last],
-    };
-    const event = {
-      ...SseEventEnvelopeSchema.parse({
-        protocolVersion: PROTOCOL_VERSION,
-        requestId: null,
-        workspaceId: targetId,
+  it.each(['running', 'completed'] as const)(
+    'imports every initial native family and complete descriptive history (%s)',
+    async (status) => {
+      const f = await workspaceFixture();
+      const targetId = allocateEntityId('ws');
+      const threadId = allocateEntityId('th');
+      const turnId = allocateEntityId('tu');
+      const sessionId = allocateEntityId('as');
+      const owner = { kind: 'workspace', workspaceId: targetId } as const;
+      const timestamp = f.turn.startedAt!;
+      const first = {
+        ...message(f.turn, 'Before'),
+        owner,
         threadId,
         turnId,
-        sequence: 1,
-        timestamp,
-        event: status === 'completed' ? 'turn.completed' : 'turn.updated',
-        data:
-          status === 'completed'
-            ? { type: 'turn-completed', turn, stopReason: 'completed' }
-            : { type: 'turn-updated', turn },
-      }),
-      note: 'event annotation',
-    };
-    await f.store.importWorkspaceSnapshot({
-      workspace: { ...f.workspace, id: targetId },
-      threads: [{ ...f.thread, id: threadId, owner }],
-      turns: [turn],
-      knowledge: [],
-      itemRevisions: [first, last],
-      artifacts: [],
-      agentSessions: [
-        {
-          id: sessionId,
+        note: 'retained annotation',
+      };
+      const last = { ...first, text: 'After' };
+      const turn = {
+        ...f.turn,
+        id: turnId,
+        threadId,
+        owner,
+        agentSessionId: sessionId,
+        status,
+        completedAt: status === 'completed' ? timestamp : null,
+        durationMs: status === 'completed' ? 0 : null,
+        items: [last],
+      };
+      const event = {
+        ...SseEventEnvelopeSchema.parse({
+          protocolVersion: PROTOCOL_VERSION,
+          requestId: null,
           workspaceId: targetId,
           threadId,
-          agentId: 'agent_codex_host',
-          status: status === 'completed' ? 'closed' : 'ready',
-          message: null,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          configVersion: null,
-          environmentPackageSnapshotId: null,
-          nativeHandleDigest: null,
-          retainedStorage: null,
-          policySnapshotId: null,
-          sessionCompatibilityKey: null,
-          stale: false,
-          workspaceRoots: [],
-          sandboxSummary: null,
-        },
-      ],
-      turnEvents: [
-        [
           turnId,
-          Array.from({ length: status === 'completed' ? 129 : 1 }, (_, index) => ({
-            ...event,
-            sequence: index + 1,
-          })),
+          sequence: 1,
+          timestamp,
+          event: status === 'completed' ? 'turn.completed' : 'turn.updated',
+          data:
+            status === 'completed'
+              ? { type: 'turn-completed', turn, stopReason: 'completed' }
+              : { type: 'turn-updated', turn },
+        }),
+        note: 'event annotation',
+      };
+      await f.store.importWorkspaceSnapshot({
+        workspace: { ...f.workspace, id: targetId },
+        threads: [{ ...f.thread, id: threadId, owner }],
+        turns: [turn],
+        knowledge: [],
+        itemRevisions: [first, last],
+        artifacts: [],
+        agentSessions: [
+          {
+            id: sessionId,
+            workspaceId: targetId,
+            threadId,
+            agentId: 'agent_codex_host',
+            status: status === 'completed' ? 'closed' : 'ready',
+            message: null,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            configVersion: null,
+            environmentPackageSnapshotId: null,
+            nativeHandleDigest: null,
+            retainedStorage: null,
+            policySnapshotId: null,
+            sessionCompatibilityKey: null,
+            stale: false,
+            workspaceRoots: [],
+            sandboxSummary: null,
+          },
         ],
-      ],
-      notebookInitialization: {
-        requestId: randomUUID(),
-        producer: actor,
-        instructionReference: 'native-import-test',
-      },
-    });
-    const reopened = new FsStore({ dataRoot: f.root });
-    expect(reopened.getTurn(targetId, threadId, turnId).items[0]).toMatchObject({ text: 'After' });
-    expect(reopened.getAgentSession(sessionId).status).toBe(
-      status === 'completed' ? 'closed' : 'ready'
-    );
-    expect(reopened.listWorkspaceItemRevisions(targetId)).toMatchObject([
-      { text: 'Before', note: first.note },
-      { text: 'After', note: first.note },
-    ]);
-    expect(reopened.getTurnEventsForExport(turnId)[0]).toMatchObject({ note: 'event annotation' });
-    const count = status === 'completed' ? 129 : 1;
-    expect(reopened.getTurnEventsForExport(turnId).map((entry) => entry.sequence)).toEqual(
-      Array.from({ length: count }, (_, index) => index + 1)
-    );
-    expect(reopened.getTurnEvents(turnId)).toHaveLength(Math.min(count, 100));
-    const scope = nativeProductScope(f.root, owner);
-    expect(readNativeProductEntries(scope, turnId, 'item').map((row) => row.revision)).toEqual([
-      1, 2,
-    ]);
-    expect(readNativeTurnHistory(scope, turnId)!.turn.items[0]).toMatchObject({ note: first.note });
-    if (status === 'running') {
-      await reopened.updateItem(first.id, { text: 'Later' });
-      expect(reopened.listWorkspaceItemRevisions(targetId)[2]).toMatchObject({
-        text: 'Later',
+        turnEvents: [
+          [
+            turnId,
+            Array.from({ length: status === 'completed' ? 129 : 1 }, (_, index) => ({
+              ...event,
+              sequence: index + 1,
+            })),
+          ],
+        ],
+        notebookInitialization: {
+          requestId: randomUUID(),
+          producer: actor,
+          instructionReference: 'native-import-test',
+        },
+      });
+      const reopened = new FsStore({ dataRoot: f.root });
+      expect(reopened.getTurn(targetId, threadId, turnId).items[0]).toMatchObject({
+        text: 'After',
+      });
+      expect(reopened.getAgentSession(sessionId).status).toBe(
+        status === 'completed' ? 'closed' : 'ready'
+      );
+      expect(reopened.listWorkspaceItemRevisions(targetId)).toMatchObject([
+        { text: 'Before', note: first.note },
+        { text: 'After', note: first.note },
+      ]);
+      expect(reopened.getTurnEventsForExport(turnId)[0]).toMatchObject({
+        note: 'event annotation',
+      });
+      const count = status === 'completed' ? 129 : 1;
+      expect(reopened.getTurnEventsForExport(turnId).map((entry) => entry.sequence)).toEqual(
+        Array.from({ length: count }, (_, index) => index + 1)
+      );
+      expect(reopened.getTurnEvents(turnId)).toHaveLength(Math.min(count, 100));
+      const scope = nativeProductScope(f.root, owner);
+      expect(readNativeProductEntries(scope, turnId, 'item').map((row) => row.revision)).toEqual([
+        1, 2,
+      ]);
+      expect(readNativeTurnHistory(scope, turnId)!.turn.items[0]).toMatchObject({
         note: first.note,
       });
+      if (status === 'running') {
+        await reopened.updateItem(first.id, { text: 'Later' });
+        expect(reopened.listWorkspaceItemRevisions(targetId)[2]).toMatchObject({
+          text: 'Later',
+          note: first.note,
+        });
+      }
     }
-  });
+  );
 
   it('reuses the readonly product connection for complete native Turn history', async () => {
     const f = await workspaceFixture();
@@ -1088,56 +1094,55 @@ describe('FsStore borrowed native owner binding', () => {
     }
   });
 
-  it.each([
-    'root',
-    'mount',
-    'knowledgeBaseId',
-  ] as const)('refuses a contentMount-only %s contradiction before product metadata reads', async (field) => {
-    const f = await workspaceFixture();
-    const db = openWorkspaceDb(f.root, f.workspace.id);
-    // The original physical owner supplies this tuple; the test defines no default binding.
-    const contentMount = {
-      ...f.scope.contentMount,
-      ...(field === 'root'
-        ? { root: join(f.scope.contentMount.root, 'contradictory-root') }
-        : field === 'mount'
-          ? { mount: `${f.scope.contentMount.mount}-contradictory` }
-          : { knowledgeBaseId: allocateEntityId('kb') }),
-    };
-    const prepare = db.sqlite.prepare;
-    const metadataReads: string[] = [];
-    // Observe the original connection without substituting a query or its result.
-    db.sqlite.prepare = function (this: typeof db.sqlite, sql: string) {
-      if (/\bcontrol_(workspaces|threads|turns|agent_sessions)\b/i.test(sql))
-        metadataReads.push(sql);
-      return Reflect.apply(prepare, this, [sql]);
-    } as typeof prepare;
-    try {
-      db.sqlite.exec('BEGIN');
-      expect(
-        () =>
-          new FsStore({
-            dataRoot: f.root,
-            nativeProductScope: { ...f.scope, contentMount, sqlite: db.sqlite },
-          })
-      ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
-      expect(metadataReads).toEqual([]);
-      expect(db.sqlite.open).toBe(true);
-      expect(db.sqlite.inTransaction).toBe(true);
-      const bound = new FsStore({
-        dataRoot: f.root,
-        nativeProductScope: { ...f.scope, sqlite: db.sqlite },
-      });
-      expect(bound.getWorkspace(f.workspace.id).name).toBe(f.workspace.name);
-      expect(db.sqlite.inTransaction).toBe(true);
-      db.sqlite.exec('ROLLBACK');
-      expect(db.sqlite.open).toBe(true);
-    } finally {
-      db.sqlite.prepare = prepare;
-      if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
-      db.sqlite.close();
+  it.each(['root', 'mount', 'knowledgeBaseId'] as const)(
+    'refuses a contentMount-only %s contradiction before product metadata reads',
+    async (field) => {
+      const f = await workspaceFixture();
+      const db = openWorkspaceDb(f.root, f.workspace.id);
+      // The original physical owner supplies this tuple; the test defines no default binding.
+      const contentMount = {
+        ...f.scope.contentMount,
+        ...(field === 'root'
+          ? { root: join(f.scope.contentMount.root, 'contradictory-root') }
+          : field === 'mount'
+            ? { mount: `${f.scope.contentMount.mount}-contradictory` }
+            : { knowledgeBaseId: allocateEntityId('kb') }),
+      };
+      const prepare = db.sqlite.prepare;
+      const metadataReads: string[] = [];
+      // Observe the original connection without substituting a query or its result.
+      db.sqlite.prepare = function (this: typeof db.sqlite, sql: string) {
+        if (/\bcontrol_(workspaces|threads|turns|agent_sessions)\b/i.test(sql))
+          metadataReads.push(sql);
+        return Reflect.apply(prepare, this, [sql]);
+      } as typeof prepare;
+      try {
+        db.sqlite.exec('BEGIN');
+        expect(
+          () =>
+            new FsStore({
+              dataRoot: f.root,
+              nativeProductScope: { ...f.scope, contentMount, sqlite: db.sqlite },
+            })
+        ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+        expect(metadataReads).toEqual([]);
+        expect(db.sqlite.open).toBe(true);
+        expect(db.sqlite.inTransaction).toBe(true);
+        const bound = new FsStore({
+          dataRoot: f.root,
+          nativeProductScope: { ...f.scope, sqlite: db.sqlite },
+        });
+        expect(bound.getWorkspace(f.workspace.id).name).toBe(f.workspace.name);
+        expect(db.sqlite.inTransaction).toBe(true);
+        db.sqlite.exec('ROLLBACK');
+        expect(db.sqlite.open).toBe(true);
+      } finally {
+        db.sqlite.prepare = prepare;
+        if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+        db.sqlite.close();
+      }
     }
-  });
+  );
 
   it('reads both Artifact origins and exact Item-backed revisions through the original S39 owner', async () => {
     const f = await workspaceFixture();

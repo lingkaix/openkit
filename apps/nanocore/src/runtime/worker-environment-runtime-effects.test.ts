@@ -476,62 +476,57 @@ describe('image environment defaults', () => {
     ).toMatchObject({ environmentDefaults: { defaultsDigest, values } });
   });
 
-  it.each([
-    'outer',
-    'defaults',
-    'platform',
-    'layout',
-    'target',
-  ])('strips inert image metadata at %s', (location) => {
-    const input = {
-      ...IMAGE_INSPECTION,
-      environmentDefaults: {
-        defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
-        values: {},
-      },
-    };
-    const extended = structuredClone(input);
-    const envelope = imageEnvelope(extended, location);
-    envelope.note = { future: 'inert' };
-    expect(parseNanoHostImageInspection(extended)).toEqual(parseNanoHostImageInspection(input));
-  });
-
-  it.each([
-    'outer',
-    'defaults',
-    'platform',
-    'layout',
-    'target',
-  ])('strips optional image metadata names at %s', (location) => {
-    for (const key of [
-      'requiredFeatures',
-      'minCoreVersion',
-      'command',
-      'env',
-      'runtimeEnvironment',
-      'nativeEnvironment',
-      'credentials',
-      'credentialRef',
-      'credentialDeclarations',
-      'token',
-      'process',
-    ]) {
-      const input = structuredClone({
+  it.each(['outer', 'defaults', 'platform', 'layout', 'target'])(
+    'strips inert image metadata at %s',
+    (location) => {
+      const input = {
         ...IMAGE_INSPECTION,
         environmentDefaults: {
           defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
           values: {},
         },
-      });
-      const envelope = imageEnvelope(input, location);
-      envelope[key] = { description: 'inert metadata' };
-      const baseline = structuredClone(input);
-      delete imageEnvelope(baseline, location)[key];
-      expect(parseNanoHostImageInspection(input), key).toEqual(
-        parseNanoHostImageInspection(baseline)
-      );
+      };
+      const extended = structuredClone(input);
+      const envelope = imageEnvelope(extended, location);
+      envelope.note = { future: 'inert' };
+      expect(parseNanoHostImageInspection(extended)).toEqual(parseNanoHostImageInspection(input));
     }
-  });
+  );
+
+  it.each(['outer', 'defaults', 'platform', 'layout', 'target'])(
+    'strips optional image metadata names at %s',
+    (location) => {
+      for (const key of [
+        'requiredFeatures',
+        'minCoreVersion',
+        'command',
+        'env',
+        'runtimeEnvironment',
+        'nativeEnvironment',
+        'credentials',
+        'credentialRef',
+        'credentialDeclarations',
+        'token',
+        'process',
+      ]) {
+        const input = structuredClone({
+          ...IMAGE_INSPECTION,
+          environmentDefaults: {
+            defaultsDigest:
+              'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+            values: {},
+          },
+        });
+        const envelope = imageEnvelope(input, location);
+        envelope[key] = { description: 'inert metadata' };
+        const baseline = structuredClone(input);
+        delete imageEnvelope(baseline, location)[key];
+        expect(parseNanoHostImageInspection(input), key).toEqual(
+          parseNanoHostImageInspection(baseline)
+        );
+      }
+    }
+  );
 
   it('distinguishes unavailable inspection from verified empty defaults', () => {
     expect(parseNanoHostImageInspection(IMAGE_INSPECTION).environmentDefaults).toBeUndefined();
@@ -545,22 +540,27 @@ describe('image environment defaults', () => {
     ['nonstring', { A: null }],
     ['entry count', Object.fromEntries(Array.from({ length: 129 }, (_, i) => [`A${i}`, '']))],
     ['bytes', { A: 'x'.repeat(16377) }],
-  ])('refuses %s metadata even with a matching digest and value-free diagnostics', (_name, values) => {
-    const sorted = Object.fromEntries(
-      Object.entries(values as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b, 'en'))
-    );
-    const defaultsDigest = `sha256:${createHash('sha256').update(JSON.stringify(sorted)).digest('hex')}`;
-    try {
-      parseNanoHostImageInspection({
-        ...IMAGE_INSPECTION,
-        environmentDefaults: { defaultsDigest, values },
-      });
-      throw new Error('accepted invalid metadata');
-    } catch (error) {
-      expect((error as Error).message).not.toContain('canary-default');
-      expect((error as Error).message).not.toBe('accepted invalid metadata');
+  ])(
+    'refuses %s metadata even with a matching digest and value-free diagnostics',
+    (_name, values) => {
+      const sorted = Object.fromEntries(
+        Object.entries(values as Record<string, unknown>).sort(([a], [b]) =>
+          a.localeCompare(b, 'en')
+        )
+      );
+      const defaultsDigest = `sha256:${createHash('sha256').update(JSON.stringify(sorted)).digest('hex')}`;
+      try {
+        parseNanoHostImageInspection({
+          ...IMAGE_INSPECTION,
+          environmentDefaults: { defaultsDigest, values },
+        });
+        throw new Error('accepted invalid metadata');
+      } catch (error) {
+        expect((error as Error).message).not.toContain('canary-default');
+        expect((error as Error).message).not.toBe('accepted invalid metadata');
+      }
     }
-  });
+  );
   it('refuses digest mismatch while stripping an unknown envelope declaration', () => {
     expect(() =>
       parseNanoHostImageInspection({

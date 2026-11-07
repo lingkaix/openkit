@@ -60,93 +60,91 @@ describe('release-declared catalog Skill supply', () => {
     await disposeTestStore(coreDb.dataRoot, coreDb);
   });
 
-  it.each([
-    'codex',
-    'pi',
-    'opencode',
-    'deepseek',
-  ])('admits qualified %s catalog Skill materialization', async (adapter) => {
-    const resolved = await resolveAgentEnvironmentPackage({
-      captureCoverage: { scope: 'server', value: 'off' },
-      agentSetup: createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] }),
-      agentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',
-      backend: { kind: 'openshell' },
-      coreDb,
-      createdAt: '2026-10-05T00:00:00.000Z',
-      requestId: null,
-      turn,
-      triggerActor: turn.triggerActor,
-      workspaceRoots: [],
-    });
-    expect(resolved.supply.skills).toEqual([
-      expect.objectContaining({
-        id: 'repo-guidelines',
-        integrity: { sha256: digest },
-        allowedRuntimeAdapters: Object.entries(WORKER_ADAPTER_SUPPLY_FORMS)
-          .filter(([, forms]) => forms.includes('skill-filesystem-copy'))
-          .map(([id]) => id),
-        materialization: {
-          kind: 'filesystem-copy',
-          targetPath:
-            '/openkit/sessions/as_00000000-0000-7754-ade8-f02f25e307a0/supply/inputs/repo-guidelines',
-        },
-      }),
-    ]);
-  });
-
-  it.each([
-    'unqualified',
-    '__proto__',
-  ])('refuses undeclared %s with a typed error before Sandbox effects despite a supply self-report', async (adapter) => {
-    const agentSetup = createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] });
-    // Inert runtime additions cannot grant release-owned supply qualification.
-    Object.assign(agentSetup.manifest.runtime, { supplyForms: ['skill-filesystem-copy'] });
-    admitTestNativeEnvironment(coreDb, agentSetup.manifest);
-    const unexpectedBackendCall = vi.fn(() => {
-      throw new Error('Unexpected backend effect');
-    });
-    const backend: WorkerGovernanceBackend = {
-      id: 'nanohost',
-      submit: unexpectedBackendCall,
-      inspect: unexpectedBackendCall,
-      cancel: unexpectedBackendCall,
-      release: unexpectedBackendCall,
-      describeCapabilities: unexpectedBackendCall,
-      validatePackage: unexpectedBackendCall,
-      planSession: unexpectedBackendCall,
-      prepareAgentSessionContinuity: unexpectedBackendCall,
-      cleanupSession: unexpectedBackendCall,
-      materialize: unexpectedBackendCall,
-      prepareLaunch: unexpectedBackendCall,
-      update: unexpectedBackendCall,
-      collectEvidence: unexpectedBackendCall,
-      collectTranscript: unexpectedBackendCall,
-      collectWorkspaceChanges: unexpectedBackendCall,
-    };
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-    });
-    const failure = await executor
-      .prepareAgentSessionForTurn(store, {
-        agentSetup,
-        freshAgentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',
+  it.each(['codex', 'pi', 'opencode', 'deepseek'])(
+    'admits qualified %s catalog Skill materialization',
+    async (adapter) => {
+      const resolved = await resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] }),
+        agentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',
+        backend: { kind: 'openshell' },
+        coreDb,
+        createdAt: '2026-10-05T00:00:00.000Z',
         requestId: null,
         turn,
-        turnInput: 'Use catalog Skill',
-        workspaceCwd: null,
+        triggerActor: turn.triggerActor,
         workspaceRoots: [],
-      })
-      .catch((error: unknown) => error);
-    expect(unexpectedBackendCall).not.toHaveBeenCalled();
-    expect(failure).toBeInstanceOf(DeterministicAgentPreparationError);
-    expect(failure).toMatchObject({
-      code: 'turn_start_failed',
-      message: `Worker skill catalog entry is not allowed for ${adapter}: repo-guidelines`,
-    });
-    expect(store.listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
-      []
-    );
-  });
+      });
+      expect(resolved.supply.skills).toEqual([
+        expect.objectContaining({
+          id: 'repo-guidelines',
+          integrity: { sha256: digest },
+          allowedRuntimeAdapters: Object.entries(WORKER_ADAPTER_SUPPLY_FORMS)
+            .filter(([, forms]) => forms.includes('skill-filesystem-copy'))
+            .map(([id]) => id),
+          materialization: {
+            kind: 'filesystem-copy',
+            targetPath:
+              '/openkit/sessions/as_00000000-0000-7754-ade8-f02f25e307a0/supply/inputs/repo-guidelines',
+          },
+        }),
+      ]);
+    }
+  );
+
+  it.each(['unqualified', '__proto__'])(
+    'refuses undeclared %s with a typed error before Sandbox effects despite a supply self-report',
+    async (adapter) => {
+      const agentSetup = createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] });
+      // Inert runtime additions cannot grant release-owned supply qualification.
+      Object.assign(agentSetup.manifest.runtime, { supplyForms: ['skill-filesystem-copy'] });
+      admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+      const unexpectedBackendCall = vi.fn(() => {
+        throw new Error('Unexpected backend effect');
+      });
+      const backend: WorkerGovernanceBackend = {
+        id: 'nanohost',
+        submit: unexpectedBackendCall,
+        inspect: unexpectedBackendCall,
+        cancel: unexpectedBackendCall,
+        release: unexpectedBackendCall,
+        describeCapabilities: unexpectedBackendCall,
+        validatePackage: unexpectedBackendCall,
+        planSession: unexpectedBackendCall,
+        prepareAgentSessionContinuity: unexpectedBackendCall,
+        cleanupSession: unexpectedBackendCall,
+        materialize: unexpectedBackendCall,
+        prepareLaunch: unexpectedBackendCall,
+        update: unexpectedBackendCall,
+        collectEvidence: unexpectedBackendCall,
+        collectTranscript: unexpectedBackendCall,
+        collectWorkspaceChanges: unexpectedBackendCall,
+      };
+      const executor = new WorkerGovernanceTurnExecutor({
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+      });
+      const failure = await executor
+        .prepareAgentSessionForTurn(store, {
+          agentSetup,
+          freshAgentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',
+          requestId: null,
+          turn,
+          turnInput: 'Use catalog Skill',
+          workspaceCwd: null,
+          workspaceRoots: [],
+        })
+        .catch((error: unknown) => error);
+      expect(unexpectedBackendCall).not.toHaveBeenCalled();
+      expect(failure).toBeInstanceOf(DeterministicAgentPreparationError);
+      expect(failure).toMatchObject({
+        code: 'turn_start_failed',
+        message: `Worker skill catalog entry is not allowed for ${adapter}: repo-guidelines`,
+      });
+      expect(store.listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
+        []
+      );
+    }
+  );
 });

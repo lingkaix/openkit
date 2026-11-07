@@ -560,89 +560,89 @@ describe('Assistant history Tool through canonical Items and real R2', () => {
     expect(outputs[0]!.bytes).not.toContain(PRIVATE_DETAIL);
   });
 
-  it.each([
-    'source revision',
-    'destination membership',
-  ] as const)('withholds an old private answer when %s changes after Tool observation and before publication', async (fault) => {
-    const { assertConversationRetrievalTraceReadable } = await import(
-      './internal-agents/assistant-history.js'
-    );
-    const f = await fixture([{ query: PAST_QUERY, mode: 'exact', limit: 2 }], true);
-    if (fault === 'destination membership') {
-      const transferred = await f.app.request(
-        ...operationRequest(
-          'workspace.ownership-transfer',
-          {
-            workspaceId: f.selectors.workspaceId,
-          },
-          {
-            body: JSON.stringify({
-              requestId: randomUUID(),
-              targetUserId: f.otherUserId,
-              expectedRegistryRevision: 1,
-            }),
-          }
-        )
+  it.each(['source revision', 'destination membership'] as const)(
+    'withholds an old private answer when %s changes after Tool observation and before publication',
+    async (fault) => {
+      const { assertConversationRetrievalTraceReadable } = await import(
+        './internal-agents/assistant-history.js'
       );
-      expect(transferred.status, await transferred.clone().text()).toBe(200);
-    }
-    let changed = false;
-    let queryTurnId = '';
-    let retainedTraceFiles: ReturnType<typeof traces> = [];
-    f.beforeAnswer(async () => {
-      // The fault follows a real, authorized kernel result already observed by the model.
-      const observed = toolResults(f.requests)[0]!.result;
-      expect(observed.hits.some((hit) => hit.reference.itemId === f.privateItem.id)).toBe(true);
-      const scope = parseReferenceScope(observed.retrievalTraceRef.scopeId);
-      expect(scope?.family).toBe('retrieval-trace');
-      if (scope?.family !== 'retrieval-trace' || scope.kind !== 'turn')
-        throw new Error('Missing querying Turn reference.');
-      queryTurnId = scope.turnId;
-      retainedTraceFiles = traces(f, queryTurnId);
-      const readContext = {
-        store: f.store,
-        coreDb: f.coreDb,
-        actor: { kind: 'local' as const, userId: LOCAL_USER_ID },
-        workspaceId: f.selectors.workspaceId,
-        retrievalTraceRef: observed.retrievalTraceRef,
-      };
-      expect(() => assertConversationRetrievalTraceReadable(readContext)).not.toThrow();
-      if (fault === 'source revision') {
-        await f.store.updateItem(f.privateItem.id, {
-          text: 'Source content was revised before publication.',
-        });
-      } else {
-        f.coreDb.sqlite
-          .prepare(
-            `UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1
-             WHERE workspace_id = ? AND user_id = ?`
+      const f = await fixture([{ query: PAST_QUERY, mode: 'exact', limit: 2 }], true);
+      if (fault === 'destination membership') {
+        const transferred = await f.app.request(
+          ...operationRequest(
+            'workspace.ownership-transfer',
+            {
+              workspaceId: f.selectors.workspaceId,
+            },
+            {
+              body: JSON.stringify({
+                requestId: randomUUID(),
+                targetUserId: f.otherUserId,
+                expectedRegistryRevision: 1,
+              }),
+            }
           )
-          .run(new Date().toISOString(), f.selectors.workspaceId, LOCAL_USER_ID);
+        );
+        expect(transferred.status, await transferred.clone().text()).toBe(200);
       }
-      changed = true;
-      expect(() => assertConversationRetrievalTraceReadable(readContext)).toThrow();
-    }, `${PRIVATE_DETAIL} ${f.privateItem.id}`);
-    const response = await f.submit();
-    expectHistoryTool(f.requests);
-    expect(f.scriptErrors).toEqual([]);
-    expect(changed).toBe(true);
-    const raw = await response.text();
-    expect(response.status, raw).toBe(403);
-    const body = JSON.parse(raw);
-    expect(body.code).toBe(
-      fault === 'source revision' ? 'history_unavailable' : 'workspace_access_denied'
-    );
-    expect(JSON.stringify(body)).not.toContain(PRIVATE_DETAIL);
-    expect(JSON.stringify(body)).not.toContain(f.privateItem.id);
-    expect(
-      f.store
-        .listThreadItems(f.selectors.workspaceId, f.selectors.threadId)
-        .filter(
-          (item) =>
-            item.type === 'assistant-message' &&
-            (item.text.includes(PRIVATE_DETAIL) || item.text.includes(f.privateItem.id))
-        )
-    ).toEqual([]);
-    expect(traces(f, queryTurnId)).toEqual(retainedTraceFiles);
-  });
+      let changed = false;
+      let queryTurnId = '';
+      let retainedTraceFiles: ReturnType<typeof traces> = [];
+      f.beforeAnswer(async () => {
+        // The fault follows a real, authorized kernel result already observed by the model.
+        const observed = toolResults(f.requests)[0]!.result;
+        expect(observed.hits.some((hit) => hit.reference.itemId === f.privateItem.id)).toBe(true);
+        const scope = parseReferenceScope(observed.retrievalTraceRef.scopeId);
+        expect(scope?.family).toBe('retrieval-trace');
+        if (scope?.family !== 'retrieval-trace' || scope.kind !== 'turn')
+          throw new Error('Missing querying Turn reference.');
+        queryTurnId = scope.turnId;
+        retainedTraceFiles = traces(f, queryTurnId);
+        const readContext = {
+          store: f.store,
+          coreDb: f.coreDb,
+          actor: { kind: 'local' as const, userId: LOCAL_USER_ID },
+          workspaceId: f.selectors.workspaceId,
+          retrievalTraceRef: observed.retrievalTraceRef,
+        };
+        expect(() => assertConversationRetrievalTraceReadable(readContext)).not.toThrow();
+        if (fault === 'source revision') {
+          await f.store.updateItem(f.privateItem.id, {
+            text: 'Source content was revised before publication.',
+          });
+        } else {
+          f.coreDb.sqlite
+            .prepare(
+              `UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1
+             WHERE workspace_id = ? AND user_id = ?`
+            )
+            .run(new Date().toISOString(), f.selectors.workspaceId, LOCAL_USER_ID);
+        }
+        changed = true;
+        expect(() => assertConversationRetrievalTraceReadable(readContext)).toThrow();
+      }, `${PRIVATE_DETAIL} ${f.privateItem.id}`);
+      const response = await f.submit();
+      expectHistoryTool(f.requests);
+      expect(f.scriptErrors).toEqual([]);
+      expect(changed).toBe(true);
+      const raw = await response.text();
+      expect(response.status, raw).toBe(403);
+      const body = JSON.parse(raw);
+      expect(body.code).toBe(
+        fault === 'source revision' ? 'history_unavailable' : 'workspace_access_denied'
+      );
+      expect(JSON.stringify(body)).not.toContain(PRIVATE_DETAIL);
+      expect(JSON.stringify(body)).not.toContain(f.privateItem.id);
+      expect(
+        f.store
+          .listThreadItems(f.selectors.workspaceId, f.selectors.threadId)
+          .filter(
+            (item) =>
+              item.type === 'assistant-message' &&
+              (item.text.includes(PRIVATE_DETAIL) || item.text.includes(f.privateItem.id))
+          )
+      ).toEqual([]);
+      expect(traces(f, queryTurnId)).toEqual(retainedTraceFiles);
+    }
+  );
 });

@@ -148,120 +148,115 @@ function expectClosedDescriptors(): void {
 }
 
 describe('canonical path publication through the original NanoCore exports', () => {
-  it.each(
-    publishers
-  )('$name publication commits a complete tree before rename and both parents afterward', async ({
-    publish,
-  }) => {
-    const f = fixture();
-    const child = join(f.staged, 'child');
-    const nestedFile = join(child, 'nested.bin');
-    const directFile = join(f.staged, 'direct.bin');
-    mkdirSync(f.staged);
-    mkdirSync(child);
-    writeFileSync(nestedFile, sourceBytes);
-    writeFileSync(directFile, 'Direct tree bytes.');
+  it.each(publishers)(
+    '$name publication commits a complete tree before rename and both parents afterward',
+    async ({ publish }) => {
+      const f = fixture();
+      const child = join(f.staged, 'child');
+      const nestedFile = join(child, 'nested.bin');
+      const directFile = join(f.staged, 'direct.bin');
+      mkdirSync(f.staged);
+      mkdirSync(child);
+      writeFileSync(nestedFile, sourceBytes);
+      writeFileSync(directFile, 'Direct tree bytes.');
 
-    await publish(f.staged, f.destination);
+      await publish(f.staged, f.destination);
 
-    // Storage requires durable bytes before publication; this observes completed real fsync calls.
-    const renameAt = io.events.findIndex((event) => event.operation === 'rename');
-    expect(renameAt).toBeGreaterThan(0);
-    const beforeRename = io.events.slice(0, renameAt);
-    expect(beforeRename.every((event) => event.operation === 'sync')).toBe(true);
-    const synced = beforeRename.map((event) => event.path);
-    expect([...synced].sort()).toEqual([nestedFile, directFile, child, f.staged].sort());
-    expect(synced.indexOf(nestedFile)).toBeLessThan(synced.indexOf(child));
-    expect(synced.indexOf(child)).toBeLessThan(synced.indexOf(f.staged));
-    expect(synced.indexOf(directFile)).toBeLessThan(synced.indexOf(f.staged));
-    // Preserve the existing destination-then-distinct-source acknowledgement boundary.
-    expect(io.events.slice(renameAt)).toEqual([
-      { operation: 'rename', from: f.staged, path: f.destination },
-      { operation: 'sync', path: f.destinationParent },
-      { operation: 'sync', path: f.sourceParent },
-    ]);
-    expect(existsSync(f.staged)).toBe(false);
-    expect(readFileSync(join(f.destination, 'child', 'nested.bin'))).toEqual(sourceBytes);
-    expect(readFileSync(join(f.destination, 'direct.bin'), 'utf8')).toBe('Direct tree bytes.');
-    expectClosedDescriptors();
-  });
-
-  it.each(
-    publishers
-  )('$name same-parent publication replaces a file and commits its parent once', async ({
-    publish,
-  }) => {
-    const f = fixture(true);
-    writeFileSync(f.staged, sourceBytes);
-    writeFileSync(f.destination, priorBytes);
-
-    await publish(f.staged, f.destination);
-
-    // A shared source/destination parent has one existing acknowledgement barrier.
-    expect(io.events).toEqual([
-      { operation: 'sync', path: f.staged },
-      { operation: 'rename', from: f.staged, path: f.destination },
-      { operation: 'sync', path: f.destinationParent },
-    ]);
-    expect(existsSync(f.staged)).toBe(false);
-    expect(readFileSync(f.destination)).toEqual(sourceBytes);
-    expectClosedDescriptors();
-  });
-
-  it.each(
-    publishers
-  )('$name publication preserves both files and the raw error when staging sync fails', async ({
-    publish,
-  }) => {
-    const f = fixture();
-    writeFileSync(f.staged, sourceBytes);
-    writeFileSync(f.destination, priorBytes);
-    io.failSync = f.staged;
-
-    expect(await refusal(() => publish(f.staged, f.destination))).toBe(io.failure);
-
-    // No acknowledgement or replacement is allowed before the staged bytes are durable.
-    expect(io.events).toEqual([]);
-    expect(readFileSync(f.staged)).toEqual(sourceBytes);
-    expect(readFileSync(f.destination)).toEqual(priorBytes);
-    expectClosedDescriptors();
-  });
-
-  it.each(
-    publishers
-  )('$name publication refuses acknowledgement after a real rename without rollback', async ({
-    name,
-    publish,
-  }) => {
-    const f = fixture();
-    writeFileSync(f.staged, sourceBytes);
-    writeFileSync(f.destination, priorBytes);
-    io.failSync = f.sourceParent;
-
-    const error = await refusal(() => publish(f.staged, f.destination));
-
-    // Characterization: only sync publication classifies a post-rename parent failure.
-    if (name === 'synchronous') {
-      expect(error).toBeInstanceOf(CanonicalPublicationError);
-      expect(error).toMatchObject({
-        name: 'CanonicalPublicationError',
-        code: 'recovery_required',
-        status: 409,
-        cause: io.failure,
-      });
-      expect((error as CanonicalPublicationError).cause).toBe(io.failure);
-    } else {
-      expect(error).toBe(io.failure);
+      // Storage requires durable bytes before publication; this observes completed real fsync calls.
+      const renameAt = io.events.findIndex((event) => event.operation === 'rename');
+      expect(renameAt).toBeGreaterThan(0);
+      const beforeRename = io.events.slice(0, renameAt);
+      expect(beforeRename.every((event) => event.operation === 'sync')).toBe(true);
+      const synced = beforeRename.map((event) => event.path);
+      expect([...synced].sort()).toEqual([nestedFile, directFile, child, f.staged].sort());
+      expect(synced.indexOf(nestedFile)).toBeLessThan(synced.indexOf(child));
+      expect(synced.indexOf(child)).toBeLessThan(synced.indexOf(f.staged));
+      expect(synced.indexOf(directFile)).toBeLessThan(synced.indexOf(f.staged));
+      // Preserve the existing destination-then-distinct-source acknowledgement boundary.
+      expect(io.events.slice(renameAt)).toEqual([
+        { operation: 'rename', from: f.staged, path: f.destination },
+        { operation: 'sync', path: f.destinationParent },
+        { operation: 'sync', path: f.sourceParent },
+      ]);
+      expect(existsSync(f.staged)).toBe(false);
+      expect(readFileSync(join(f.destination, 'child', 'nested.bin'))).toEqual(sourceBytes);
+      expect(readFileSync(join(f.destination, 'direct.bin'), 'utf8')).toBe('Direct tree bytes.');
+      expectClosedDescriptors();
     }
-    expect(io.events).toEqual([
-      { operation: 'sync', path: f.staged },
-      { operation: 'rename', from: f.staged, path: f.destination },
-      { operation: 'sync', path: f.destinationParent },
-    ]);
-    expect(existsSync(f.staged)).toBe(false);
-    expect(readFileSync(f.destination)).toEqual(sourceBytes);
-    expectClosedDescriptors();
-  });
+  );
+
+  it.each(publishers)(
+    '$name same-parent publication replaces a file and commits its parent once',
+    async ({ publish }) => {
+      const f = fixture(true);
+      writeFileSync(f.staged, sourceBytes);
+      writeFileSync(f.destination, priorBytes);
+
+      await publish(f.staged, f.destination);
+
+      // A shared source/destination parent has one existing acknowledgement barrier.
+      expect(io.events).toEqual([
+        { operation: 'sync', path: f.staged },
+        { operation: 'rename', from: f.staged, path: f.destination },
+        { operation: 'sync', path: f.destinationParent },
+      ]);
+      expect(existsSync(f.staged)).toBe(false);
+      expect(readFileSync(f.destination)).toEqual(sourceBytes);
+      expectClosedDescriptors();
+    }
+  );
+
+  it.each(publishers)(
+    '$name publication preserves both files and the raw error when staging sync fails',
+    async ({ publish }) => {
+      const f = fixture();
+      writeFileSync(f.staged, sourceBytes);
+      writeFileSync(f.destination, priorBytes);
+      io.failSync = f.staged;
+
+      expect(await refusal(() => publish(f.staged, f.destination))).toBe(io.failure);
+
+      // No acknowledgement or replacement is allowed before the staged bytes are durable.
+      expect(io.events).toEqual([]);
+      expect(readFileSync(f.staged)).toEqual(sourceBytes);
+      expect(readFileSync(f.destination)).toEqual(priorBytes);
+      expectClosedDescriptors();
+    }
+  );
+
+  it.each(publishers)(
+    '$name publication refuses acknowledgement after a real rename without rollback',
+    async ({ name, publish }) => {
+      const f = fixture();
+      writeFileSync(f.staged, sourceBytes);
+      writeFileSync(f.destination, priorBytes);
+      io.failSync = f.sourceParent;
+
+      const error = await refusal(() => publish(f.staged, f.destination));
+
+      // Characterization: only sync publication classifies a post-rename parent failure.
+      if (name === 'synchronous') {
+        expect(error).toBeInstanceOf(CanonicalPublicationError);
+        expect(error).toMatchObject({
+          name: 'CanonicalPublicationError',
+          code: 'recovery_required',
+          status: 409,
+          cause: io.failure,
+        });
+        expect((error as CanonicalPublicationError).cause).toBe(io.failure);
+      } else {
+        expect(error).toBe(io.failure);
+      }
+      expect(io.events).toEqual([
+        { operation: 'sync', path: f.staged },
+        { operation: 'rename', from: f.staged, path: f.destination },
+        { operation: 'sync', path: f.destinationParent },
+      ]);
+      expect(existsSync(f.staged)).toBe(false);
+      expect(readFileSync(f.destination)).toEqual(sourceBytes);
+      expectClosedDescriptors();
+    }
+  );
 
   it('standalone asynchronous tree synchronization refuses a link without changing either target', async () => {
     const f = fixture();

@@ -406,284 +406,284 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(() => result.assertContextCurrent?.()).not.toThrow();
   });
 
-  it.each([
-    true,
-    false,
-  ])('commits exact admission before first dispatch with capture off and selected=%s', async (selected) => {
-    const f = await fixture(selected);
-    const usage = { input_tokens: 17, output_tokens: 3, total_tokens: 20 };
-    const providerResponse = { ...response(), usage };
-    f.createResponses.mockImplementation(async (_provider, _request, context) => {
-      const rows = environments(f);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        id: `env:${f.turn.id}`,
-        ts: f.turn.startedAt,
-        obs: 'nanocore',
-        ret: 'turn-evidence',
-        turnId: f.turn.id,
-        payload: {
-          workspaceId: f.workspaceId,
-          assistantSkillAdmission: selected
-            ? {
-                catalogRevision: f.resources.admission.catalogRevision,
-                skills: [
-                  {
-                    skillId: 'alpha',
-                    versionId: f.imported!.version.digest,
-                    contentDigest: f.imported!.version.digest,
-                  },
-                ],
-              }
-            : { catalogRevision: null, skills: [] },
-          tools: [
-            {
-              name: 'skill.read',
-              inputSchemaDigest: createHash('sha256')
-                .update(JSON.stringify(f.skillTool.inputSchema))
-                .digest('hex'),
-            },
-          ],
-        },
-      });
-      expect(rows[0]!.refs ?? []).toEqual([]);
-      expect(rows[0]!.payload.bodies).toBeUndefined();
-      expect(JSON.stringify(rows)).not.toContain('Selected metadata name');
-      expect(JSON.stringify(rows)).not.toContain('Original retained guidance');
-      expect(context?.capture).toMatchObject({ threadId: f.threadId, turnId: f.turn.id });
-      expect(context?.capture?.workspaceDb).toBe(f.workspaceDb);
-      expect(context?.usageEndpoint).toBe('quick_chat');
-      return providerResponse;
-    });
-
-    const result = await runAssistantCommand(f.input);
-
-    expect(result).toEqual({
-      id: 'provider-response-original',
-      content: 'Bounded answer.',
-      providerId: 'provider',
-      usage,
-      assertContextCurrent: expect.any(Function),
-    });
-    expect(result.usage).toBe(usage);
-    const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({
-      status: 'succeeded',
-      owner: { kind: 'workspace', workspaceId: f.workspaceId },
-      requestId: null,
-      threadId: f.threadId,
-      turnId: f.turn.id,
-      agentId: 'quick-chat',
-      capabilityId: 'inference.local.quick_chat',
-      operation: 'quick_chat',
-    });
-    const records = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
-    expect(records).toHaveLength(2);
-    expect([...records].sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))).toEqual(
-      [
-        ['input', 17],
-        ['output', 3],
-      ].map(([component, quantity]) =>
-        expect.objectContaining({
-          workspaceId: f.workspaceId,
-          responsibleUserId: SKILL_READER_ID,
-          requestId: null,
-          threadId: f.threadId,
+  it.each([true, false])(
+    'commits exact admission before first dispatch with capture off and selected=%s',
+    async (selected) => {
+      const f = await fixture(selected);
+      const usage = { input_tokens: 17, output_tokens: 3, total_tokens: 20 };
+      const providerResponse = { ...response(), usage };
+      f.createResponses.mockImplementation(async (_provider, _request, context) => {
+        const rows = environments(f);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: `env:${f.turn.id}`,
+          ts: f.turn.startedAt,
+          obs: 'nanocore',
+          ret: 'turn-evidence',
           turnId: f.turn.id,
-          providerRef: 'provider',
-          capabilityCallId: calls[0]!.id,
-          quantity,
-          source: `llm-gateway-adapter-reported:${component}`,
-          unit: 'tokens',
-        })
-      )
-    );
-    expect(records.reduce((total, record) => total + record.quantity, 0)).toBe(20);
-    expect(
-      f.workspaceDb.sqlite
-        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
-        .all(calls[0]!.id)
-    ).toEqual([
-      expect.objectContaining({
-        action: 'capability.admit',
-        request_id: requestId,
-        actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
-        authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
-      }),
-      expect.objectContaining({
-        action: 'capability.finish',
-        capability_call_id: calls[0]!.id,
-        request_id: requestId,
-        workspace_id: f.workspaceId,
-        thread_id: f.threadId,
-        turn_id: f.turn.id,
-        outcome: 'succeeded',
-      }),
-    ]);
-    expect(f.execute).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    false,
-    true,
-  ])('accounts summary production and refuses revoked overview publication=%s', async (revokeOverview) => {
-    const f = await fixture(false, undefined, true);
-    await f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
-    const assembly = await assembleAssistantCommandRun({
-      resources: f.resources,
-      tools: f.tools,
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
-    });
-    const profileId = 'assistant-summary-profile';
-    const selectedLimits = { maxModelTurns: 8, maxToolCalls: 5, deadlineMs: 20_000 };
-    let summaryCalls = 0;
-    f.createResponses.mockImplementation(async (_provider, request) => {
-      expect(environments(f)).toHaveLength(1);
-      expect(f.store.getTurnById(f.turn.id).internalExecution).toMatchObject({
-        profileId,
-        limits: selectedLimits,
-      });
-      const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
-      expect(JSON.stringify(request.input).includes('knowledge_overviews')).toBe(!summary);
-      if (summary) {
-        summaryCalls += 1;
-        if (revokeOverview) {
-          const notebook = new KnowledgeNotebook({
-            repositoryPath: join(
-              f.dataRoot,
-              'workspaces',
-              f.workspaceId,
-              'knowledge',
-              'notebook.git'
-            ),
-          });
-          const baseRevision = notebook.publishedRevision();
-          const candidateRevision = notebook.prepare({
-            baseRevision,
-            changes: {
-              'index.md':
-                '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted overview\n',
-            },
-            metadata: {
-              summary: 'Restrict index during summary inference',
-              producer: { kind: 'user', id: f.actor.userId },
-              authority: { kind: 'direct', instructionReference: 'test:restrict-overview' },
-              changeRequest: {
-                requestId: '00000000-0000-4000-8000-000000000145',
-                inputDigest: `sha256:${'a'.repeat(64)}`,
+          payload: {
+            workspaceId: f.workspaceId,
+            assistantSkillAdmission: selected
+              ? {
+                  catalogRevision: f.resources.admission.catalogRevision,
+                  skills: [
+                    {
+                      skillId: 'alpha',
+                      versionId: f.imported!.version.digest,
+                      contentDigest: f.imported!.version.digest,
+                    },
+                  ],
+                }
+              : { catalogRevision: null, skills: [] },
+            tools: [
+              {
+                name: 'skill.read',
+                inputSchemaDigest: createHash('sha256')
+                  .update(JSON.stringify(f.skillTool.inputSchema))
+                  .digest('hex'),
               },
-              sourceReferences: [],
-            },
-          });
-          notebook.publish({ baseRevision, candidateRevision });
-        }
-      }
-      return {
-        ...response(
-          summary
-            ? 'Keep the exact unresolved constraint and source references.'
-            : 'Bounded answer.',
-          `response-${summaryCalls}-${summary ? 'summary' : 'answer'}`
-        ),
-        usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
-      };
-    });
-    const boundedModel = {
-      ...logicalModel,
-      contract: { context: 14_000, output: 512, inputModalities: ['text'], reasoning: false },
-    };
-    const pending = runAssistantCommand({
-      ...f.input,
-      assembly,
-      turn: f.store.getTurnById(f.turn.id),
-      readContextEvidence: (items) =>
-        readInternalContextEvidence({
-          store: f.store,
-          coreDb: f.coreDb,
-          actor: f.actor,
-          workspaceId: f.workspaceId,
-          threadId: f.threadId,
-          items,
-        }),
-      profileId,
-      limits: selectedLimits,
-      gateway: {
-        ...f.input.gateway,
-        logicalModel: boundedModel,
-        resolveLogicalModel: () => boundedModel,
-      },
-    });
-    if (revokeOverview) {
-      await expect(pending).rejects.toThrow();
-      expect(
-        f.store
-          .listThreadItems(f.workspaceId, f.threadId)
-          .filter((item) => item.type === 'context-summary')
-      ).toEqual([]);
-      expect(f.createResponses).toHaveBeenCalledTimes(1);
-      return;
-    }
-    const result = await pending;
-    expect(summaryCalls).toBeGreaterThan(0);
-    expect(f.createResponses).toHaveBeenCalledTimes(summaryCalls + 1);
-    expect(result.content).toBe('Bounded answer.');
-    expect(result.assertContextCurrent).toEqual(expect.any(Function));
-    expect(() => result.assertContextCurrent!()).not.toThrow();
-    expect(environments(f)).toHaveLength(1);
-    const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
-    expect(calls).toHaveLength(summaryCalls + 1);
-    for (const call of calls) {
-      expect(call).toMatchObject({
-        status: 'succeeded',
-        turnId: f.turn.id,
-        requestId: null,
-        capabilityId: 'inference.local.quick_chat',
+            ],
+          },
+        });
+        expect(rows[0]!.refs ?? []).toEqual([]);
+        expect(rows[0]!.payload.bodies).toBeUndefined();
+        expect(JSON.stringify(rows)).not.toContain('Selected metadata name');
+        expect(JSON.stringify(rows)).not.toContain('Original retained guidance');
+        expect(context?.capture).toMatchObject({ threadId: f.threadId, turnId: f.turn.id });
+        expect(context?.capture?.workspaceDb).toBe(f.workspaceDb);
+        expect(context?.usageEndpoint).toBe('quick_chat');
+        return providerResponse;
       });
-      expect(
-        f.workspaceDb.sqlite
-          .prepare(
-            'SELECT request_id FROM audit_events WHERE capability_call_id = ? AND action = ?'
-          )
-          .get(call.id, 'capability.finish')
-      ).toEqual({ request_id: requestId });
-    }
-    const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
-    expect(usage).toHaveLength((summaryCalls + 1) * 2);
-    expect(usage.every((record) => record.requestId === null)).toBe(true);
-    for (const call of calls) {
-      const callUsage = usage
-        .filter((record) => record.capabilityCallId === call.id)
-        .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''));
-      expect(callUsage).toEqual(
+
+      const result = await runAssistantCommand(f.input);
+
+      expect(result).toEqual({
+        id: 'provider-response-original',
+        content: 'Bounded answer.',
+        providerId: 'provider',
+        usage,
+        assertContextCurrent: expect.any(Function),
+      });
+      expect(result.usage).toBe(usage);
+      const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        status: 'succeeded',
+        owner: { kind: 'workspace', workspaceId: f.workspaceId },
+        requestId: null,
+        threadId: f.threadId,
+        turnId: f.turn.id,
+        agentId: 'quick-chat',
+        capabilityId: 'inference.local.quick_chat',
+        operation: 'quick_chat',
+      });
+      const records = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
+      expect(records).toHaveLength(2);
+      expect([...records].sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))).toEqual(
         [
-          ['input', 7],
+          ['input', 17],
           ['output', 3],
         ].map(([component, quantity]) =>
           expect.objectContaining({
-            capabilityCallId: call.id,
-            requestId: null,
             workspaceId: f.workspaceId,
+            responsibleUserId: SKILL_READER_ID,
+            requestId: null,
             threadId: f.threadId,
             turnId: f.turn.id,
+            providerRef: 'provider',
+            capabilityCallId: calls[0]!.id,
             quantity,
             source: `llm-gateway-adapter-reported:${component}`,
             unit: 'tokens',
           })
         )
       );
-      expect(callUsage.reduce((total, record) => total + record.quantity, 0)).toBe(10);
+      expect(records.reduce((total, record) => total + record.quantity, 0)).toBe(20);
+      expect(
+        f.workspaceDb.sqlite
+          .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+          .all(calls[0]!.id)
+      ).toEqual([
+        expect.objectContaining({
+          action: 'capability.admit',
+          request_id: requestId,
+          actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
+          authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
+        }),
+        expect.objectContaining({
+          action: 'capability.finish',
+          capability_call_id: calls[0]!.id,
+          request_id: requestId,
+          workspace_id: f.workspaceId,
+          thread_id: f.threadId,
+          turn_id: f.turn.id,
+          outcome: 'succeeded',
+        }),
+      ]);
+      expect(f.execute).not.toHaveBeenCalled();
     }
-    expect(usage.reduce((total, record) => total + record.quantity, 0)).toBe(
-      (summaryCalls + 1) * 10
-    );
-    expect(
-      f.store
-        .listThreadItems(f.workspaceId, f.threadId)
-        .filter((item) => item.type === 'context-summary')
-    ).toHaveLength(summaryCalls);
-    expect(f.execute).not.toHaveBeenCalled();
-  });
+  );
+
+  it.each([false, true])(
+    'accounts summary production and refuses revoked overview publication=%s',
+    async (revokeOverview) => {
+      const f = await fixture(false, undefined, true);
+      await f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
+      const assembly = await assembleAssistantCommandRun({
+        resources: f.resources,
+        tools: f.tools,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
+      });
+      const profileId = 'assistant-summary-profile';
+      const selectedLimits = { maxModelTurns: 8, maxToolCalls: 5, deadlineMs: 20_000 };
+      let summaryCalls = 0;
+      f.createResponses.mockImplementation(async (_provider, request) => {
+        expect(environments(f)).toHaveLength(1);
+        expect(f.store.getTurnById(f.turn.id).internalExecution).toMatchObject({
+          profileId,
+          limits: selectedLimits,
+        });
+        const summary = JSON.stringify(request.input).includes('openkit_context_summary_task');
+        expect(JSON.stringify(request.input).includes('knowledge_overviews')).toBe(!summary);
+        if (summary) {
+          summaryCalls += 1;
+          if (revokeOverview) {
+            const notebook = new KnowledgeNotebook({
+              repositoryPath: join(
+                f.dataRoot,
+                'workspaces',
+                f.workspaceId,
+                'knowledge',
+                'notebook.git'
+              ),
+            });
+            const baseRevision = notebook.publishedRevision();
+            const candidateRevision = notebook.prepare({
+              baseRevision,
+              changes: {
+                'index.md':
+                  '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted overview\n',
+              },
+              metadata: {
+                summary: 'Restrict index during summary inference',
+                producer: { kind: 'user', id: f.actor.userId },
+                authority: { kind: 'direct', instructionReference: 'test:restrict-overview' },
+                changeRequest: {
+                  requestId: '00000000-0000-4000-8000-000000000145',
+                  inputDigest: `sha256:${'a'.repeat(64)}`,
+                },
+                sourceReferences: [],
+              },
+            });
+            notebook.publish({ baseRevision, candidateRevision });
+          }
+        }
+        return {
+          ...response(
+            summary
+              ? 'Keep the exact unresolved constraint and source references.'
+              : 'Bounded answer.',
+            `response-${summaryCalls}-${summary ? 'summary' : 'answer'}`
+          ),
+          usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+        };
+      });
+      const boundedModel = {
+        ...logicalModel,
+        contract: { context: 14_000, output: 512, inputModalities: ['text'], reasoning: false },
+      };
+      const pending = runAssistantCommand({
+        ...f.input,
+        assembly,
+        turn: f.store.getTurnById(f.turn.id),
+        readContextEvidence: (items) =>
+          readInternalContextEvidence({
+            store: f.store,
+            coreDb: f.coreDb,
+            actor: f.actor,
+            workspaceId: f.workspaceId,
+            threadId: f.threadId,
+            items,
+          }),
+        profileId,
+        limits: selectedLimits,
+        gateway: {
+          ...f.input.gateway,
+          logicalModel: boundedModel,
+          resolveLogicalModel: () => boundedModel,
+        },
+      });
+      if (revokeOverview) {
+        await expect(pending).rejects.toThrow();
+        expect(
+          f.store
+            .listThreadItems(f.workspaceId, f.threadId)
+            .filter((item) => item.type === 'context-summary')
+        ).toEqual([]);
+        expect(f.createResponses).toHaveBeenCalledTimes(1);
+        return;
+      }
+      const result = await pending;
+      expect(summaryCalls).toBeGreaterThan(0);
+      expect(f.createResponses).toHaveBeenCalledTimes(summaryCalls + 1);
+      expect(result.content).toBe('Bounded answer.');
+      expect(result.assertContextCurrent).toEqual(expect.any(Function));
+      expect(() => result.assertContextCurrent!()).not.toThrow();
+      expect(environments(f)).toHaveLength(1);
+      const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
+      expect(calls).toHaveLength(summaryCalls + 1);
+      for (const call of calls) {
+        expect(call).toMatchObject({
+          status: 'succeeded',
+          turnId: f.turn.id,
+          requestId: null,
+          capabilityId: 'inference.local.quick_chat',
+        });
+        expect(
+          f.workspaceDb.sqlite
+            .prepare(
+              'SELECT request_id FROM audit_events WHERE capability_call_id = ? AND action = ?'
+            )
+            .get(call.id, 'capability.finish')
+        ).toEqual({ request_id: requestId });
+      }
+      const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
+      expect(usage).toHaveLength((summaryCalls + 1) * 2);
+      expect(usage.every((record) => record.requestId === null)).toBe(true);
+      for (const call of calls) {
+        const callUsage = usage
+          .filter((record) => record.capabilityCallId === call.id)
+          .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''));
+        expect(callUsage).toEqual(
+          [
+            ['input', 7],
+            ['output', 3],
+          ].map(([component, quantity]) =>
+            expect.objectContaining({
+              capabilityCallId: call.id,
+              requestId: null,
+              workspaceId: f.workspaceId,
+              threadId: f.threadId,
+              turnId: f.turn.id,
+              quantity,
+              source: `llm-gateway-adapter-reported:${component}`,
+              unit: 'tokens',
+            })
+          )
+        );
+        expect(callUsage.reduce((total, record) => total + record.quantity, 0)).toBe(10);
+      }
+      expect(usage.reduce((total, record) => total + record.quantity, 0)).toBe(
+        (summaryCalls + 1) * 10
+      );
+      expect(
+        f.store
+          .listThreadItems(f.workspaceId, f.threadId)
+          .filter((item) => item.type === 'context-summary')
+      ).toHaveLength(summaryCalls);
+      expect(f.execute).not.toHaveBeenCalled();
+    }
+  );
 
   it('refuses inference and resource access after membership is removed', async () => {
     const f = await fixture();
@@ -719,65 +719,65 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     ).toEqual([]);
   });
 
-  it.each([
-    'disabled',
-    'revoked',
-  ] as const)('reauthorizes inference after authority is %s between model rounds', async (condition) => {
-    const f = await fixture();
-    f.createResponses.mockResolvedValueOnce(skillCall(f));
-    f.execute.mockImplementationOnce(async (...args) => {
-      const result = await f.skillTool.execute(...args);
-      expect(result.isError).not.toBe(true);
-      if (condition === 'disabled')
-        f.coreDb.sqlite
-          .prepare(
-            "UPDATE users SET status = 'disabled', disabled_at = '2026-10-16T00:00:00.000Z' WHERE id = ?"
-          )
-          .run(SKILL_READER_ID);
-      else
-        f.coreDb.sqlite
-          .prepare(
-            "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
-          )
-          .run(f.workspaceId, SKILL_READER_ID);
-      return result;
-    });
+  it.each(['disabled', 'revoked'] as const)(
+    'reauthorizes inference after authority is %s between model rounds',
+    async (condition) => {
+      const f = await fixture();
+      f.createResponses.mockResolvedValueOnce(skillCall(f));
+      f.execute.mockImplementationOnce(async (...args) => {
+        const result = await f.skillTool.execute(...args);
+        expect(result.isError).not.toBe(true);
+        if (condition === 'disabled')
+          f.coreDb.sqlite
+            .prepare(
+              "UPDATE users SET status = 'disabled', disabled_at = '2026-10-16T00:00:00.000Z' WHERE id = ?"
+            )
+            .run(SKILL_READER_ID);
+        else
+          f.coreDb.sqlite
+            .prepare(
+              "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+            )
+            .run(f.workspaceId, SKILL_READER_ID);
+        return result;
+      });
 
-    const error = await runAssistantCommand(f.input).catch((failure: unknown) => failure);
+      const error = await runAssistantCommand(f.input).catch((failure: unknown) => failure);
 
-    expect(f.createResponses).toHaveBeenCalledOnce();
-    expect(f.execute).toHaveBeenCalledOnce();
-    expect(error).toBeInstanceOf(AssistantSkillResourceError);
-    expect(error).toHaveProperty('code', 'resource_access_denied');
-    const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ requestId: null, status: 'succeeded', turnId: f.turn.id });
-    expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId)).toEqual([
-      expect.objectContaining({
-        capabilityCallId: calls[0]!.id,
-        responsibleUserId: SKILL_READER_ID,
-      }),
-    ]);
-    expect(
-      f.workspaceDb.sqlite
-        .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
-        .all(calls[0]!.id)
-    ).toEqual([
-      expect.objectContaining({
-        action: 'capability.admit',
-        request_id: requestId,
-        outcome: 'unknown',
-        actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
-        authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
-      }),
-      expect.objectContaining({
-        action: 'capability.finish',
-        request_id: requestId,
-        outcome: 'succeeded',
-      }),
-    ]);
-    expect(environments(f)).toHaveLength(1);
-  });
+      expect(f.createResponses).toHaveBeenCalledOnce();
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(error).toBeInstanceOf(AssistantSkillResourceError);
+      expect(error).toHaveProperty('code', 'resource_access_denied');
+      const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ requestId: null, status: 'succeeded', turnId: f.turn.id });
+      expect(listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId)).toEqual([
+        expect.objectContaining({
+          capabilityCallId: calls[0]!.id,
+          responsibleUserId: SKILL_READER_ID,
+        }),
+      ]);
+      expect(
+        f.workspaceDb.sqlite
+          .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
+          .all(calls[0]!.id)
+      ).toEqual([
+        expect.objectContaining({
+          action: 'capability.admit',
+          request_id: requestId,
+          outcome: 'unknown',
+          actor_json: JSON.stringify({ kind: 'user', id: f.actor.userId }),
+          authentication_json: JSON.stringify({ credentialKind: f.actor.kind, credentialId: null }),
+        }),
+        expect.objectContaining({
+          action: 'capability.finish',
+          request_id: requestId,
+          outcome: 'succeeded',
+        }),
+      ]);
+      expect(environments(f)).toHaveLength(1);
+    }
+  );
 
   it('keeps two inference rounds distinct while audit retains the admitted command request', async () => {
     const f = await fixture();
@@ -883,22 +883,21 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     }
   });
 
-  it.each([
-    undefined,
-    '',
-    'invalid-command-request',
-  ] as const)('rejects missing or invalid command request %s before capture or Provider dispatch', async (invalidRequest) => {
-    const f = await fixture();
-    const input = { ...f.input, requestId: invalidRequest } as RunInput;
+  it.each([undefined, '', 'invalid-command-request'] as const)(
+    'rejects missing or invalid command request %s before capture or Provider dispatch',
+    async (invalidRequest) => {
+      const f = await fixture();
+      const input = { ...f.input, requestId: invalidRequest } as RunInput;
 
-    const error = await runAssistantCommand(input).catch((failure: unknown) => failure);
-    expect(error).toBeInstanceOf(AssistantSkillResourceError);
-    expect(error).toHaveProperty('code', 'resource_access_denied');
+      const error = await runAssistantCommand(input).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(AssistantSkillResourceError);
+      expect(error).toHaveProperty('code', 'resource_access_denied');
 
-    expect(f.createResponses).not.toHaveBeenCalled();
-    expect(environments(f)).toEqual([]);
-    expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId)).toEqual([]);
-  });
+      expect(f.createResponses).not.toHaveBeenCalled();
+      expect(environments(f)).toEqual([]);
+      expect(listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId)).toEqual([]);
+    }
+  );
 
   it('retains the original tuple, index and read closure after defaults and pins change without claiming command replay', async () => {
     const f = await fixture();
@@ -965,36 +964,35 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(f.createResponses).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'missing',
-    'extra-metadata',
-    'digest-mismatch',
-  ] as const)('refuses %s admission before model dispatch', async (condition) => {
-    const f = await fixture();
-    const selected = f.resources.admission.skills[0]!;
-    const assistantSkillAdmission =
-      condition === 'missing'
-        ? undefined
-        : {
-            catalogRevision: f.resources.admission.catalogRevision,
-            skills: [
-              {
-                ...selected,
-                ...(condition === 'extra-metadata'
-                  ? { name: 'not-evidence' }
-                  : { contentDigest: `sha256:${'f'.repeat(64)}` }),
-              },
-            ],
-          };
-    const assembly = { ...f.assembly, assistantSkillAdmission } as RunInput['assembly'];
+  it.each(['missing', 'extra-metadata', 'digest-mismatch'] as const)(
+    'refuses %s admission before model dispatch',
+    async (condition) => {
+      const f = await fixture();
+      const selected = f.resources.admission.skills[0]!;
+      const assistantSkillAdmission =
+        condition === 'missing'
+          ? undefined
+          : {
+              catalogRevision: f.resources.admission.catalogRevision,
+              skills: [
+                {
+                  ...selected,
+                  ...(condition === 'extra-metadata'
+                    ? { name: 'not-evidence' }
+                    : { contentDigest: `sha256:${'f'.repeat(64)}` }),
+                },
+              ],
+            };
+      const assembly = { ...f.assembly, assistantSkillAdmission } as RunInput['assembly'];
 
-    await expect(runAssistantCommand({ ...f.input, assembly })).rejects.toBeInstanceOf(
-      ModelCaptureError
-    );
+      await expect(runAssistantCommand({ ...f.input, assembly })).rejects.toBeInstanceOf(
+        ModelCaptureError
+      );
 
-    expect(f.createResponses).not.toHaveBeenCalled();
-    expect(environments(f)).toEqual([]);
-  });
+      expect(f.createResponses).not.toHaveBeenCalled();
+      expect(environments(f)).toEqual([]);
+    }
+  );
 
   it('propagates real append refusal as ModelCaptureError with zero dispatch', async () => {
     const f = await fixture();
@@ -1069,54 +1067,50 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     ).toEqual({ ...nativeTurnBefore, record_json: missingAdmission });
   });
 
-  it.each([
-    'actor',
-    'turn',
-    'cache-workspace',
-    'revoked',
-    'removed',
-    'missing-version',
-  ] as const)('refuses changed %s binding or current authority before dispatch', async (condition) => {
-    const f = await fixture(true, undefined, condition === 'turn');
-    let input = f.input;
-    if (condition === 'actor')
-      input = { ...input, actor: { kind: 'session', userId: FIXTURE_LOCAL_USER_ID } };
-    if (condition === 'turn')
-      input = {
-        ...input,
-        // Reuse admitted history while the assembly stays bound to its current live Turn.
-        turn: f.store
-          .listThreadTurns(f.workspaceId, f.threadId)
-          .find((turn) => turn.id !== f.turn.id)!,
-      };
-    if (condition === 'cache-workspace')
-      input = {
-        ...input,
-        gateway: {
-          ...input.gateway,
-          promptCacheScope: {
-            sessionId: f.threadId,
-            workspaceId: testEntityId('ws', 'another-workspace'),
+  it.each(['actor', 'turn', 'cache-workspace', 'revoked', 'removed', 'missing-version'] as const)(
+    'refuses changed %s binding or current authority before dispatch',
+    async (condition) => {
+      const f = await fixture(true, undefined, condition === 'turn');
+      let input = f.input;
+      if (condition === 'actor')
+        input = { ...input, actor: { kind: 'session', userId: FIXTURE_LOCAL_USER_ID } };
+      if (condition === 'turn')
+        input = {
+          ...input,
+          // Reuse admitted history while the assembly stays bound to its current live Turn.
+          turn: f.store
+            .listThreadTurns(f.workspaceId, f.threadId)
+            .find((turn) => turn.id !== f.turn.id)!,
+        };
+      if (condition === 'cache-workspace')
+        input = {
+          ...input,
+          gateway: {
+            ...input.gateway,
+            promptCacheScope: {
+              sessionId: f.threadId,
+              workspaceId: testEntityId('ws', 'another-workspace'),
+            },
           },
-        },
-      };
-    if (condition === 'revoked')
-      f.coreDb.sqlite
-        .prepare(
-          "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = ?"
-        )
-        .run(f.workspaceId, SKILL_READER_ID);
-    if (condition === 'removed' || condition === 'missing-version') {
-      const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
-      if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';
-      else catalog.skills.versions = [];
-      publishWorkspaceResourceCatalog({ ...f, catalog, expectedRevision: catalog.revision });
+        };
+      if (condition === 'revoked')
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE workspace_members SET status = 'removed', removed_at = updated_at WHERE workspace_id = ? AND user_id = ?"
+          )
+          .run(f.workspaceId, SKILL_READER_ID);
+      if (condition === 'removed' || condition === 'missing-version') {
+        const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId);
+        if (condition === 'removed') catalog.skills.entries[0]!.availability = 'removed';
+        else catalog.skills.versions = [];
+        publishWorkspaceResourceCatalog({ ...f, catalog, expectedRevision: catalog.revision });
+      }
+
+      await expect(runAssistantCommand(input)).rejects.toBeInstanceOf(AssistantSkillResourceError);
+
+      expect(f.createResponses).not.toHaveBeenCalled();
     }
-
-    await expect(runAssistantCommand(input)).rejects.toBeInstanceOf(AssistantSkillResourceError);
-
-    expect(f.createResponses).not.toHaveBeenCalled();
-  });
+  );
 });
 
 describe('ordinary Assistant results and cancellation', () => {
@@ -1139,41 +1133,44 @@ describe('ordinary Assistant results and cancellation', () => {
     'malformed-output',
     'truncated',
     'needs-feedback',
-  ] as const)('rejects %s output through the existing invalid-response failure', async (condition) => {
-    const f = await fixture();
-    f.createResponses.mockResolvedValue(
-      condition === 'needs-feedback'
-        ? skillCall(f)
-        : condition === 'truncated'
-          ? { ...response(), status: 'incomplete' }
-          : condition === 'no-output'
-            ? { ...response(), output: [] }
-            : condition === 'reasoning-only'
-              ? {
-                  ...response(),
-                  output: [{ type: 'reasoning', id: 'reasoning-only', summary: [] }],
-                }
-              : condition === 'compaction'
+  ] as const)(
+    'rejects %s output through the existing invalid-response failure',
+    async (condition) => {
+      const f = await fixture();
+      f.createResponses.mockResolvedValue(
+        condition === 'needs-feedback'
+          ? skillCall(f)
+          : condition === 'truncated'
+            ? { ...response(), status: 'incomplete' }
+            : condition === 'no-output'
+              ? { ...response(), output: [] }
+              : condition === 'reasoning-only'
                 ? {
                     ...response(),
-                    output: [
-                      { type: 'compaction', id: 'checkpoint', encrypted_content: 'unusable' },
-                    ],
+                    output: [{ type: 'reasoning', id: 'reasoning-only', summary: [] }],
                   }
-                : condition === 'malformed-output'
-                  ? ({
+                : condition === 'compaction'
+                  ? {
                       ...response(),
-                      output: [null],
-                    } as unknown as OpenAICompatibleResponsesResponse)
-                  : response('   ')
-    );
+                      output: [
+                        { type: 'compaction', id: 'checkpoint', encrypted_content: 'unusable' },
+                      ],
+                    }
+                  : condition === 'malformed-output'
+                    ? ({
+                        ...response(),
+                        output: [null],
+                      } as unknown as OpenAICompatibleResponsesResponse)
+                    : response('   ')
+      );
 
-    await expectEntryFailure(
-      runAssistantCommand({ ...f.input, limits: { ...limits, maxModelTurns: 1 } }),
-      'provider_response_invalid',
-      502
-    );
-  });
+      await expectEntryFailure(
+        runAssistantCommand({ ...f.input, limits: { ...limits, maxModelTurns: 1 } }),
+        'provider_response_invalid',
+        502
+      );
+    }
+  );
 
   it('propagates caller abort to the Provider and discards its late result', async () => {
     const f = await fixture();

@@ -335,17 +335,20 @@ describe('rendered service worker', () => {
     ['a no-store response', {}, { 'cache-control': 'no-store' }],
     ['a private response', {}, { 'cache-control': 'private, max-age=60' }],
     ['a set-cookie response', {}, { 'set-cookie': 'session=secret' }],
-  ] as const)('does not cache a shell asset with %s', async (_label, requestHeaders, responseHeaders) => {
-    const worker = await loadWorker(shellPrecacheUrls(['assets/app-8fK2d9.js']));
-    const body = shellResponse({ 'content-type': 'text/javascript', ...responseHeaders });
-    worker.fetchMock.mockResolvedValue(body);
-    worker.match.mockResolvedValue(undefined);
+  ] as const)(
+    'does not cache a shell asset with %s',
+    async (_label, requestHeaders, responseHeaders) => {
+      const worker = await loadWorker(shellPrecacheUrls(['assets/app-8fK2d9.js']));
+      const body = shellResponse({ 'content-type': 'text/javascript', ...responseHeaders });
+      worker.fetchMock.mockResolvedValue(body);
+      worker.match.mockResolvedValue(undefined);
 
-    await expect(
-      dispatchWorker(worker, 'fetch', { request: assetRequest(requestHeaders) })
-    ).resolves.toBe(body);
-    expect(worker.put).not.toHaveBeenCalled();
-  });
+      await expect(
+        dispatchWorker(worker, 'fetch', { request: assetRequest(requestHeaders) })
+      ).resolves.toBe(body);
+      expect(worker.put).not.toHaveBeenCalled();
+    }
+  );
 
   it('caches a basic hashed script after a cache miss', async () => {
     const worker = await loadWorker(shellPrecacheUrls(['assets/app-8fK2d9.js']));

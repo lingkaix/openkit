@@ -332,155 +332,153 @@ describe('exact Artifact file import and download', () => {
     }
   });
 
-  it.each([
-    'binary-file',
-    'text-file',
-    'retained-bytes',
-    'retained-lines',
-  ] as const)('refuses %s before effects when a reviewed original has no exact Worker delivery', async (kind) => {
-    const decision = kind === 'binary-file' ? 'needs_refinement' : 'redo';
-    const agentId = 'review-file-agent';
-    const state = await fixture([
-      createTestAgentSetup({ agentId, displayName: 'Review file agent' }).manifest,
-    ]);
-    const { coreDb, dataRoot, workspace, store } = state;
-    const thread = await store.createThread(
-      workspace.id,
-      'File Review',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: LOCAL_USER_ID,
-      }
-    );
-    const turn = await store.createTurn(workspace.id, thread.id, 'Produce original', {
-      kind: 'user',
-      id: LOCAL_USER_ID,
-    });
-    await store.updateTurn(turn.id, { agentId });
-    const bytes =
-      kind === 'retained-lines'
-        ? Buffer.from(`${'line\n'.repeat(50)}end`)
-        : kind === 'binary-file'
-          ? Buffer.from([0, 255, 128])
-          : Buffer.alloc(2049, 120);
-    const admission = new FileStorageAdmission(dataRoot, () => 0n);
-    const reservation = admission.reserve({
-      stagingBytes: BigInt(bytes.length),
-      extractionBytes: 0n,
-      derivativeBytes: 0n,
-      publicationBytes: 65_536n,
-    });
-    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    const staged = kind.startsWith('retained')
-      ? undefined
-      : await stageArtifactPayload({
-          workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
-          source: Readable.from([bytes]),
-          expectedByteLength: bytes.length,
-          expectedDigest: digest,
-          reservation,
-        });
-    const artifactId = allocateEntityId('ar');
-    const recordedAt = new Date().toISOString();
-    try {
-      await store.createArtifact(
+  it.each(['binary-file', 'text-file', 'retained-bytes', 'retained-lines'] as const)(
+    'refuses %s before effects when a reviewed original has no exact Worker delivery',
+    async (kind) => {
+      const decision = kind === 'binary-file' ? 'needs_refinement' : 'redo';
+      const agentId = 'review-file-agent';
+      const state = await fixture([
+        createTestAgentSetup({ agentId, displayName: 'Review file agent' }).manifest,
+      ]);
+      const { coreDb, dataRoot, workspace, store } = state;
+      const thread = await store.createThread(
+        workspace.id,
+        'File Review',
+        undefined,
+        'conversation',
         {
-          id: artifactId,
-          workspaceId: workspace.id,
-          threadId: thread.id,
-          turnId: turn.id,
-          kind: 'file',
-          title: 'Reviewed exact original',
-          status: 'ready',
-          summary: null,
-          version: 1,
-          content: kind.startsWith('retained')
-            ? { format: 'text', body: bytes.toString('utf8') }
-            : {
-                format: 'file',
-                mediaType: decision === 'redo' ? 'text/plain' : 'application/octet-stream',
-                byteLength: bytes.length,
-              },
-          contentDigest: digest,
-          lastMutationRequestId: 'produce-review-file',
-          origin: {
-            kind: 'turn-output',
-            requestId: 'produce-review-file',
+          visibility: 'private',
+          privateOwnerUserId: LOCAL_USER_ID,
+        }
+      );
+      const turn = await store.createTurn(workspace.id, thread.id, 'Produce original', {
+        kind: 'user',
+        id: LOCAL_USER_ID,
+      });
+      await store.updateTurn(turn.id, { agentId });
+      const bytes =
+        kind === 'retained-lines'
+          ? Buffer.from(`${'line\n'.repeat(50)}end`)
+          : kind === 'binary-file'
+            ? Buffer.from([0, 255, 128])
+            : Buffer.alloc(2049, 120);
+      const admission = new FileStorageAdmission(dataRoot, () => 0n);
+      const reservation = admission.reserve({
+        stagingBytes: BigInt(bytes.length),
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: 65_536n,
+      });
+      const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      const staged = kind.startsWith('retained')
+        ? undefined
+        : await stageArtifactPayload({
+            workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
+            source: Readable.from([bytes]),
+            expectedByteLength: bytes.length,
+            expectedDigest: digest,
+            reservation,
+          });
+      const artifactId = allocateEntityId('ar');
+      const recordedAt = new Date().toISOString();
+      try {
+        await store.createArtifact(
+          {
+            id: artifactId,
+            workspaceId: workspace.id,
             threadId: thread.id,
             turnId: turn.id,
+            kind: 'file',
+            title: 'Reviewed exact original',
+            status: 'ready',
+            summary: null,
+            version: 1,
+            content: kind.startsWith('retained')
+              ? { format: 'text', body: bytes.toString('utf8') }
+              : {
+                  format: 'file',
+                  mediaType: decision === 'redo' ? 'text/plain' : 'application/octet-stream',
+                  byteLength: bytes.length,
+                },
+            contentDigest: digest,
+            lastMutationRequestId: 'produce-review-file',
+            origin: {
+              kind: 'turn-output',
+              requestId: 'produce-review-file',
+              threadId: thread.id,
+              turnId: turn.id,
+            },
+            createdAt: recordedAt,
+            updatedAt: recordedAt,
           },
+          staged
+        );
+      } finally {
+        await staged?.remove();
+        reservation.release();
+      }
+      await store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt });
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      try {
+        createArtifactReview(db, {
+          artifactId,
+          artifactVersion: 1,
+          contentDigest: digest,
+          sourceThreadId: thread.id,
+          sourceTurnId: turn.id,
+          sourceAgentId: agentId,
+          materialProposal: null,
           createdAt: recordedAt,
-          updatedAt: recordedAt,
-        },
-        staged
-      );
-    } finally {
-      await staged?.remove();
-      reservation.release();
+        });
+        const startModeWorkerTurn = vi.fn(async () => {
+          throw new Error('A Worker must not start without its reviewed original.');
+        });
+        const handlers = createArtifactOperationImplementations({
+          store,
+          coreDb,
+          inflightCommands: new WeakMap(),
+          repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, workspace.id),
+          startModeWorkerTurn,
+        });
+        const beforeReceipts = store.listCommandRequests();
+        const requestId = randomUUID();
+        await expect(
+          handlers['artifact.review.decide'](
+            {
+              workspaceId: workspace.id,
+              artifactId,
+              artifactVersion: 1,
+              decision,
+              feedback: 'Use the original file.',
+              requestId,
+            },
+            {
+              kind: 'public',
+              actor: { kind: 'local', userId: LOCAL_USER_ID },
+              actorRef: { kind: 'user', id: LOCAL_USER_ID },
+              scope: { kind: 'workspace', workspaceId: workspace.id },
+              delivery: 'human',
+            }
+          )
+        ).rejects.toMatchObject({ code: 'artifact_input_unavailable', status: 503 });
+        expect(startModeWorkerTurn).not.toHaveBeenCalled();
+        expect(getArtifactReview(db, artifactId, 1).decision).toBeNull();
+        expect(
+          store.listThreadTurns(workspace.id, thread.id).map((candidate) => candidate.id)
+        ).toEqual([turn.id]);
+        expect(store.listCommandRequests()).toEqual(beforeReceipts);
+        expect(
+          db.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
+        ).toEqual({ count: 0 });
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
+        ).toEqual({ count: 0 });
+      } finally {
+        db.sqlite.close();
+      }
     }
-    await store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt });
-    const db = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
-    try {
-      createArtifactReview(db, {
-        artifactId,
-        artifactVersion: 1,
-        contentDigest: digest,
-        sourceThreadId: thread.id,
-        sourceTurnId: turn.id,
-        sourceAgentId: agentId,
-        materialProposal: null,
-        createdAt: recordedAt,
-      });
-      const startModeWorkerTurn = vi.fn(async () => {
-        throw new Error('A Worker must not start without its reviewed original.');
-      });
-      const handlers = createArtifactOperationImplementations({
-        store,
-        coreDb,
-        inflightCommands: new WeakMap(),
-        repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, workspace.id),
-        startModeWorkerTurn,
-      });
-      const beforeReceipts = store.listCommandRequests();
-      const requestId = randomUUID();
-      await expect(
-        handlers['artifact.review.decide'](
-          {
-            workspaceId: workspace.id,
-            artifactId,
-            artifactVersion: 1,
-            decision,
-            feedback: 'Use the original file.',
-            requestId,
-          },
-          {
-            kind: 'public',
-            actor: { kind: 'local', userId: LOCAL_USER_ID },
-            actorRef: { kind: 'user', id: LOCAL_USER_ID },
-            scope: { kind: 'workspace', workspaceId: workspace.id },
-            delivery: 'human',
-          }
-        )
-      ).rejects.toMatchObject({ code: 'artifact_input_unavailable', status: 503 });
-      expect(startModeWorkerTurn).not.toHaveBeenCalled();
-      expect(getArtifactReview(db, artifactId, 1).decision).toBeNull();
-      expect(
-        store.listThreadTurns(workspace.id, thread.id).map((candidate) => candidate.id)
-      ).toEqual([turn.id]);
-      expect(store.listCommandRequests()).toEqual(beforeReceipts);
-      expect(
-        db.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_turn_checkpoints').get()
-      ).toEqual({ count: 0 });
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
-      ).toEqual({ count: 0 });
-    } finally {
-      db.sqlite.close();
-    }
-  });
+  );
 
   it('preserves exact binary originals through an authorized Workspace export', async () => {
     const state = await fixture();
@@ -572,32 +570,33 @@ describe('exact Artifact file import and download', () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ code: 'recovery_required' });
   });
-  it.each(
-    corpus.originals
-  )('round-trips the frozen $id original and retains metadata without a body', async (original) => {
-    const state = await fixture();
-    const imported = await upload(state, original);
-    expect(imported.status).toBe(201);
-    const accepted = (await imported.json()) as { artifactId: string; artifactVersion: number };
-    const artifact = state.store.getArtifact(state.workspace.id, accepted.artifactId);
-    expect(artifact.content).toEqual({
-      format: 'file',
-      mediaType: 'application/octet-stream',
-      byteLength: original.size,
-    });
-    expect(artifact.contentDigest).toBe(original.sha256);
-    expect(artifact.origin).toMatchObject({ kind: 'imported', sourceDigest: original.sha256 });
-    const response = await download(state, accepted.artifactId);
-    expect(response.status).toBe(200);
-    expect(response.headers.get('content-length')).toBe(String(original.size));
-    expect(response.headers.get('x-openkit-byte-length')).toBe(String(original.size));
-    expect(response.headers.get('x-openkit-content-digest')).toBe(original.sha256);
-    expect(Buffer.from(await response.arrayBuffer())).toEqual(
-      Buffer.from(original.patternHex.repeat(original.repeats), 'hex')
-    );
-    const restarted = new FsStore({ dataRoot: state.dataRoot });
-    expect(restarted.getArtifact(state.workspace.id, accepted.artifactId)).toEqual(artifact);
-  });
+  it.each(corpus.originals)(
+    'round-trips the frozen $id original and retains metadata without a body',
+    async (original) => {
+      const state = await fixture();
+      const imported = await upload(state, original);
+      expect(imported.status).toBe(201);
+      const accepted = (await imported.json()) as { artifactId: string; artifactVersion: number };
+      const artifact = state.store.getArtifact(state.workspace.id, accepted.artifactId);
+      expect(artifact.content).toEqual({
+        format: 'file',
+        mediaType: 'application/octet-stream',
+        byteLength: original.size,
+      });
+      expect(artifact.contentDigest).toBe(original.sha256);
+      expect(artifact.origin).toMatchObject({ kind: 'imported', sourceDigest: original.sha256 });
+      const response = await download(state, accepted.artifactId);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-length')).toBe(String(original.size));
+      expect(response.headers.get('x-openkit-byte-length')).toBe(String(original.size));
+      expect(response.headers.get('x-openkit-content-digest')).toBe(original.sha256);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(
+        Buffer.from(original.patternHex.repeat(original.repeats), 'hex')
+      );
+      const restarted = new FsStore({ dataRoot: state.dataRoot });
+      expect(restarted.getArtifact(state.workspace.id, accepted.artifactId)).toEqual(artifact);
+    }
+  );
 
   it('replays an accepted request without recapturing changed retry bytes', async () => {
     const state = await fixture();

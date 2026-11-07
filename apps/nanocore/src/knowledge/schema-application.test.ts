@@ -138,37 +138,37 @@ it.each([
   { name: 'previous schema', digest: baseSchemaDigest, extension: 'yaml' },
   { name: 'candidate schema', digest: candidateSchemaDigest, extension: 'yaml' },
   { name: 'report pair', digest: reportDigest, extension: 'json' },
-])('refuses a corrupt existing $name without overwriting retained bytes', async ({
-  digest,
-  extension,
-}) => {
-  const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-winner-corruption-'));
-  onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
-  const input = {
-    workspaceRoot,
-    previousSchemaText,
-    candidateSchemaText,
-    report: reviewedReport,
-    actualReport,
-  };
-  await prepareSchemaApplicationHistory(input);
-  const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
-  const corruptedPath = join(historyRoot, `${digest.slice(7)}.${extension}`);
-  // Corrupt an owner-published winner at the same byte length, so existence and size are insufficient.
-  const corruptedBytes = Buffer.from(readFileSync(corruptedPath));
-  corruptedBytes[0] = corruptedBytes[0]! ^ 1;
-  chmodSync(corruptedPath, 0o644);
-  writeFileSync(corruptedPath, corruptedBytes);
-  const originalMembers = readdirSync(historyRoot).sort();
-  const retainedBytes = originalMembers.map((name) => readFileSync(join(historyRoot, name)));
-  await expect(
-    Promise.resolve().then(() => prepareSchemaApplicationHistory(input))
-  ).rejects.toThrow();
-  expect(readdirSync(historyRoot).sort()).toEqual(originalMembers);
-  expect(originalMembers.map((name) => readFileSync(join(historyRoot, name)))).toEqual(
-    retainedBytes
-  );
-});
+])(
+  'refuses a corrupt existing $name without overwriting retained bytes',
+  async ({ digest, extension }) => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-winner-corruption-'));
+    onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
+    const input = {
+      workspaceRoot,
+      previousSchemaText,
+      candidateSchemaText,
+      report: reviewedReport,
+      actualReport,
+    };
+    await prepareSchemaApplicationHistory(input);
+    const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
+    const corruptedPath = join(historyRoot, `${digest.slice(7)}.${extension}`);
+    // Corrupt an owner-published winner at the same byte length, so existence and size are insufficient.
+    const corruptedBytes = Buffer.from(readFileSync(corruptedPath));
+    corruptedBytes[0] = corruptedBytes[0]! ^ 1;
+    chmodSync(corruptedPath, 0o644);
+    writeFileSync(corruptedPath, corruptedBytes);
+    const originalMembers = readdirSync(historyRoot).sort();
+    const retainedBytes = originalMembers.map((name) => readFileSync(join(historyRoot, name)));
+    await expect(
+      Promise.resolve().then(() => prepareSchemaApplicationHistory(input))
+    ).rejects.toThrow();
+    expect(readdirSync(historyRoot).sort()).toEqual(originalMembers);
+    expect(originalMembers.map((name) => readFileSync(join(historyRoot, name)))).toEqual(
+      retainedBytes
+    );
+  }
+);
 
 it('retains both exact reports and replays the applied Notebook revision', async () => {
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-pair-'));

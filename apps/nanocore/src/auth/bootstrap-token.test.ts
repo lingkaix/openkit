@@ -127,122 +127,125 @@ describe('server bootstrap token', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('emits once and preserves atomic owner creation with cleanup blocked=%s', async (cleanupBlocked) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-'));
-    const coreDb = openCoreDb(dataRoot);
+  it.each([false, true])(
+    'emits once and preserves atomic owner creation with cleanup blocked=%s',
+    async (cleanupBlocked) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-'));
+      const coreDb = openCoreDb(dataRoot);
 
-    try {
-      applyMigrations(coreDb);
+      try {
+        applyMigrations(coreDb);
 
-      const issued = ensureServerBootstrapToken(coreDb, {
-        now: new Date('2026-07-06T00:00:00.000Z'),
-      });
-      const secondIssue = ensureServerBootstrapToken(coreDb, {
-        now: new Date('2026-07-06T00:01:00.000Z'),
-      });
-      const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
-      expect(statSync(emission.path).mode & 0o777).toBe(0o600);
-      const consumeInput = {
-        displayName: 'Owner',
-        email: 'owner@example.com',
-        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        password: 'password123456',
-        token: issued!.token,
-        tokenExpiresAt: '2026-07-07T00:00:00.000Z',
-        now: new Date('2026-07-06T00:02:00.000Z'),
-      };
+        const issued = ensureServerBootstrapToken(coreDb, {
+          now: new Date('2026-07-06T00:00:00.000Z'),
+        });
+        const secondIssue = ensureServerBootstrapToken(coreDb, {
+          now: new Date('2026-07-06T00:01:00.000Z'),
+        });
+        const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
+        expect(statSync(emission.path).mode & 0o777).toBe(0o600);
+        const consumeInput = {
+          displayName: 'Owner',
+          email: 'owner@example.com',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          password: 'password123456',
+          token: issued!.token,
+          tokenExpiresAt: '2026-07-07T00:00:00.000Z',
+          now: new Date('2026-07-06T00:02:00.000Z'),
+        };
 
-      if (cleanupBlocked) {
-        // Fault the delivered destination; failed cleanup must not consume authority or create an owner.
-        rmSync(emission.path);
-        mkdirSync(emission.path);
-        const status = await consumeServerBootstrapToken(coreDb, consumeInput).then(
-          (result) => result.status,
-          () => 'refused'
-        );
-        expect.soft(status === 'consumed').toBe(false);
-        for (const table of ['users', 'account', 'openkit_access_tokens']) {
-          const row = coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
-            count: number;
-          };
-          expect.soft(row.count).toBe(0);
+        if (cleanupBlocked) {
+          // Fault the delivered destination; failed cleanup must not consume authority or create an owner.
+          rmSync(emission.path);
+          mkdirSync(emission.path);
+          const status = await consumeServerBootstrapToken(coreDb, consumeInput).then(
+            (result) => result.status,
+            () => 'refused'
+          );
+          expect.soft(status === 'consumed').toBe(false);
+          for (const table of ['users', 'account', 'openkit_access_tokens']) {
+            const row = coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+              count: number;
+            };
+            expect.soft(row.count).toBe(0);
+          }
+          const setting = coreDb.sqlite
+            .prepare('SELECT value FROM server_settings WHERE key = ?')
+            .get('auth.bootstrap_token') as { value: string };
+          expect.soft(JSON.parse(setting.value).consumedAt === null).toBe(true);
+          return;
         }
-        const setting = coreDb.sqlite
-          .prepare('SELECT value FROM server_settings WHERE key = ?')
-          .get('auth.bootstrap_token') as { value: string };
-        expect.soft(JSON.parse(setting.value).consumedAt === null).toBe(true);
-        return;
-      }
-      const consumed = await consumeServerBootstrapToken(coreDb, consumeInput);
-      const secondConsume = await consumeServerBootstrapToken(coreDb, {
-        displayName: 'Owner',
-        email: 'owner@example.com',
-        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        password: 'password123456',
-        token: issued!.token,
-        tokenExpiresAt: '2026-07-07T00:00:00.000Z',
-        now: new Date('2026-07-06T00:03:00.000Z'),
-      });
-      const userCount = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
-        count: number;
-      };
-      const user = coreDb.sqlite
-        .prepare('SELECT display_name, email, email_verified, kind FROM users WHERE id = ?')
-        .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as {
-        display_name: string;
-        email: string;
-        email_verified: number;
-        kind: string;
-      };
-      const credentialAccount = coreDb.sqlite
-        .prepare(
-          `SELECT account_id, provider_id
+        const consumed = await consumeServerBootstrapToken(coreDb, consumeInput);
+        const secondConsume = await consumeServerBootstrapToken(coreDb, {
+          displayName: 'Owner',
+          email: 'owner@example.com',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          password: 'password123456',
+          token: issued!.token,
+          tokenExpiresAt: '2026-07-07T00:00:00.000Z',
+          now: new Date('2026-07-06T00:03:00.000Z'),
+        });
+        const userCount = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+          count: number;
+        };
+        const user = coreDb.sqlite
+          .prepare('SELECT display_name, email, email_verified, kind FROM users WHERE id = ?')
+          .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as {
+          display_name: string;
+          email: string;
+          email_verified: number;
+          kind: string;
+        };
+        const credentialAccount = coreDb.sqlite
+          .prepare(
+            `SELECT account_id, provider_id
            FROM account
            WHERE user_id = ?`
-        )
-        .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as {
-        account_id: string;
-        provider_id: string;
-      };
+          )
+          .get('usr_00000000-0000-7011-88df-c2b1e8466b6f') as {
+          account_id: string;
+          provider_id: string;
+        };
 
-      expect(issued?.token).toMatch(/^okt_/);
-      expect(secondIssue).toBeNull();
-      // #468 permits removal of the file or its token line; file identity is not the safety oracle.
-      const remainingEmission = existsSync(emission.path)
-        ? readFileSync(emission.path, 'utf8')
-        : '';
-      expect.soft(remainingEmission.includes(issued!.token)).toBe(false);
-      expect.soft(/^\s*Token:/im.test(remainingEmission)).toBe(false);
-      expect(consumed).toMatchObject({
-        record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
-      });
-      expect(
-        (
-          await verifyOpenKitAccessTokenRecord(coreDb, consumed?.secret ?? '', {
-            now: new Date('2026-07-06T00:02:30.000Z'),
-          })
-        )?.scope
-      ).toBe('server-admin');
-      expect(secondConsume?.status).toBe('unavailable');
-      expect(userCount.count).toBe(1);
-      expect(user).toEqual({
-        display_name: 'Owner',
-        email: 'owner@example.com',
-        email_verified: 0,
-        kind: 'human',
-      });
-      expect(credentialAccount).toEqual({
-        account_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        provider_id: 'credential',
-      });
-      expect(JSON.stringify(emission)).not.toContain(consumed?.secret);
-    } finally {
-      coreDb.sqlite.close();
+        expect(issued?.token).toMatch(/^okt_/);
+        expect(secondIssue).toBeNull();
+        // #468 permits removal of the file or its token line; file identity is not the safety oracle.
+        const remainingEmission = existsSync(emission.path)
+          ? readFileSync(emission.path, 'utf8')
+          : '';
+        expect.soft(remainingEmission.includes(issued!.token)).toBe(false);
+        expect.soft(/^\s*Token:/im.test(remainingEmission)).toBe(false);
+        expect(consumed).toMatchObject({
+          record: {
+            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+            scope: 'server-admin',
+          },
+        });
+        expect(
+          (
+            await verifyOpenKitAccessTokenRecord(coreDb, consumed?.secret ?? '', {
+              now: new Date('2026-07-06T00:02:30.000Z'),
+            })
+          )?.scope
+        ).toBe('server-admin');
+        expect(secondConsume?.status).toBe('unavailable');
+        expect(userCount.count).toBe(1);
+        expect(user).toEqual({
+          display_name: 'Owner',
+          email: 'owner@example.com',
+          email_verified: 0,
+          kind: 'human',
+        });
+        expect(credentialAccount).toEqual({
+          account_id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          provider_id: 'credential',
+        });
+        expect(JSON.stringify(emission)).not.toContain(consumed?.secret);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('rejects consume after hashing when the bootstrap token expired during the wait', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-expiry-'));
@@ -295,52 +298,52 @@ describe('server bootstrap token', () => {
     }
   });
 
-  it.each([
-    'past',
-    'now',
-  ] as const)('refuses a %s administrator token expiry before any user, token, or consumedAt write', async (when) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-admin-expiry-'));
-    const coreDb = openCoreDb(dataRoot);
-    try {
-      applyMigrations(coreDb);
-      const now = new Date('2026-07-06T00:02:00.000Z');
-      const issued = ensureServerBootstrapToken(coreDb, {
-        now: new Date('2026-07-06T00:00:00.000Z'),
-      });
-      const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
-      const beforeEmission = readFileSync(emission.path, 'utf8');
-      const tokenExpiresAt =
-        when === 'now' ? now.toISOString() : new Date(now.getTime() - 1_000).toISOString();
-      const consumed = await consumeServerBootstrapToken(coreDb, {
-        displayName: 'Owner',
-        email: 'owner@example.com',
-        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-        password: 'password123456',
-        token: issued!.token,
-        tokenExpiresAt,
-        now,
-      });
-      const users = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
-        count: number;
-      };
-      const tokens = coreDb.sqlite
-        .prepare('SELECT COUNT(*) AS count FROM openkit_access_tokens')
-        .get() as { count: number };
-      const setting = JSON.parse(
-        (
-          coreDb.sqlite
-            .prepare('SELECT value FROM server_settings WHERE key = ?')
-            .get('auth.bootstrap_token') as { value: string }
-        ).value
-      ) as { consumedAt: string | null };
+  it.each(['past', 'now'] as const)(
+    'refuses a %s administrator token expiry before any user, token, or consumedAt write',
+    async (when) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-token-admin-expiry-'));
+      const coreDb = openCoreDb(dataRoot);
+      try {
+        applyMigrations(coreDb);
+        const now = new Date('2026-07-06T00:02:00.000Z');
+        const issued = ensureServerBootstrapToken(coreDb, {
+          now: new Date('2026-07-06T00:00:00.000Z'),
+        });
+        const emission = writeServerBootstrapTokenEmission(dataRoot, issued!);
+        const beforeEmission = readFileSync(emission.path, 'utf8');
+        const tokenExpiresAt =
+          when === 'now' ? now.toISOString() : new Date(now.getTime() - 1_000).toISOString();
+        const consumed = await consumeServerBootstrapToken(coreDb, {
+          displayName: 'Owner',
+          email: 'owner@example.com',
+          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+          password: 'password123456',
+          token: issued!.token,
+          tokenExpiresAt,
+          now,
+        });
+        const users = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+          count: number;
+        };
+        const tokens = coreDb.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM openkit_access_tokens')
+          .get() as { count: number };
+        const setting = JSON.parse(
+          (
+            coreDb.sqlite
+              .prepare('SELECT value FROM server_settings WHERE key = ?')
+              .get('auth.bootstrap_token') as { value: string }
+          ).value
+        ) as { consumedAt: string | null };
 
-      expect(consumed).toEqual({ status: 'admin_expiry' });
-      expect(users.count).toBe(0);
-      expect(tokens.count).toBe(0);
-      expect(setting.consumedAt).toBeNull();
-      expect(readFileSync(emission.path, 'utf8')).toBe(beforeEmission);
-    } finally {
-      coreDb.sqlite.close();
+        expect(consumed).toEqual({ status: 'admin_expiry' });
+        expect(users.count).toBe(0);
+        expect(tokens.count).toBe(0);
+        expect(setting.consumedAt).toBeNull();
+        expect(readFileSync(emission.path, 'utf8')).toBe(beforeEmission);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 });

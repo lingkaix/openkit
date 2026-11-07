@@ -420,33 +420,34 @@ describe('Configuration settings', () => {
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
 
-  it.each([
-    403, 500,
-  ])('retries a schema failure (%s) without losing the configuration draft', async (status) => {
-    const user = userEvent.setup();
-    const client = makeClient(vi.fn().mockResolvedValue(FILES));
-    vi.mocked(client.operations['runtime.schemas']).mockRejectedValueOnce(
-      new ApiCallError(status, 'Unavailable')
-    );
-    renderScreen(client);
+  it.each([403, 500])(
+    'retries a schema failure (%s) without losing the configuration draft',
+    async (status) => {
+      const user = userEvent.setup();
+      const client = makeClient(vi.fn().mockResolvedValue(FILES));
+      vi.mocked(client.operations['runtime.schemas']).mockRejectedValueOnce(
+        new ApiCallError(status, 'Unavailable')
+      );
+      renderScreen(client);
 
-    const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
-    fireEvent.change(editor, { target: { value: '{"mode":"local"}' } });
-    await user.click(screen.getByRole('button', { name: 'Show schema' }));
-    expect(
-      await screen.findByText(
-        status === 403
-          ? 'Schema access denied. Deployment-admin authority is required.'
-          : "Couldn't load configuration schemas."
-      )
-    ).toBeInTheDocument();
-    expect(screen.queryByLabelText('server JSON Schema')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByLabelText('server JSON Schema')).toHaveTextContent('"bind"');
-    expect(editor).toHaveValue('{"mode":"local"}');
-    expect(client.operations['runtime.schemas']).toHaveBeenCalledTimes(2);
-  });
+      const editor = await screen.findByRole('textbox', { name: 'server.jsonc source' });
+      fireEvent.change(editor, { target: { value: '{"mode":"local"}' } });
+      await user.click(screen.getByRole('button', { name: 'Show schema' }));
+      expect(
+        await screen.findByText(
+          status === 403
+            ? 'Schema access denied. Deployment-admin authority is required.'
+            : "Couldn't load configuration schemas."
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText('server JSON Schema')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(await screen.findByLabelText('server JSON Schema')).toHaveTextContent('"bind"');
+      expect(editor).toHaveValue('{"mode":"local"}');
+      expect(client.operations['runtime.schemas']).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it('reports a missing file-kind schema without inventing one', async () => {
     const user = userEvent.setup();

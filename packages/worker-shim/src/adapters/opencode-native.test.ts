@@ -147,129 +147,130 @@ async function fixture(
   return { session, inference, capability, turn };
 }
 
-it.each([
-  false,
-  true,
-])('loads native home and Workspace resources beside managed supply=%s', async (managed) => {
-  mkdirSync(home);
-  skill(join(home, 'skills'), 'home-skill');
-  skill(join(work, '.opencode', 'skills'), 'local-skill');
-  const managedPath = skill(join(root, 'selected'), 'managed-skill');
-  // A native same-id Skill must not replace the current managed projection.
-  skill(join(work, '.opencode', 'skills'), 'managed-skill');
-  writeFileSync(
-    join(work, '.opencode', 'skills', 'managed-skill', 'SKILL.md'),
-    '---\nname: managed-skill\ndescription: stale-native-description\n---\nstale\n'
-  );
-  const marker = join(root, 'plugin-loaded');
-  const plugin = join(root, 'plugin');
-  mkdirSync(plugin);
-  writeFileSync(join(plugin, 'package.json'), '{"type":"module"}');
-  writeFileSync(
-    join(plugin, 'index.js'),
-    `import {writeFileSync} from 'node:fs'; export default {id:'native-local',async setup(){writeFileSync(${JSON.stringify(marker)},'loaded')}};`
-  );
-  const local = await startSyntheticCapability();
-  closers.push(() => local.close());
-  const config = JSON.stringify({
-    model: 'ignored/benign-preference',
-    agents: { build: { system: 'native-setting-marker' } },
-    plugins: [plugin],
-    mcp: {
-      servers: {
-        local: { type: 'remote', url: `${local.url}/mcp/local`, oauth: false, codemode: false },
+it.each([false, true])(
+  'loads native home and Workspace resources beside managed supply=%s',
+  async (managed) => {
+    mkdirSync(home);
+    skill(join(home, 'skills'), 'home-skill');
+    skill(join(work, '.opencode', 'skills'), 'local-skill');
+    const managedPath = skill(join(root, 'selected'), 'managed-skill');
+    // A native same-id Skill must not replace the current managed projection.
+    skill(join(work, '.opencode', 'skills'), 'managed-skill');
+    writeFileSync(
+      join(work, '.opencode', 'skills', 'managed-skill', 'SKILL.md'),
+      '---\nname: managed-skill\ndescription: stale-native-description\n---\nstale\n'
+    );
+    const marker = join(root, 'plugin-loaded');
+    const plugin = join(root, 'plugin');
+    mkdirSync(plugin);
+    writeFileSync(join(plugin, 'package.json'), '{"type":"module"}');
+    writeFileSync(
+      join(plugin, 'index.js'),
+      `import {writeFileSync} from 'node:fs'; export default {id:'native-local',async setup(){writeFileSync(${JSON.stringify(marker)},'loaded')}};`
+    );
+    const local = await startSyntheticCapability();
+    closers.push(() => local.close());
+    const config = JSON.stringify({
+      model: 'ignored/benign-preference',
+      agents: { build: { system: 'native-setting-marker' } },
+      plugins: [plugin],
+      mcp: {
+        servers: {
+          local: { type: 'remote', url: `${local.url}/mcp/local`, oauth: false, codemode: false },
+        },
       },
-    },
-  });
-  writeFileSync(join(work, 'opencode.json'), config);
-  const before = snapshot(home);
-  let nativeClient: import('@opencode/client').OpenCodeClient | undefined;
-  const f = await fixture(
-    createOpenCodeAdapter({
-      async loadClient() {
-        const actual = await import('@opencode/client');
-        return {
-          OpenCode: {
-            make(options) {
-              nativeClient = actual.OpenCode.make(options);
-              return nativeClient;
+    });
+    writeFileSync(join(work, 'opencode.json'), config);
+    const before = snapshot(home);
+    let nativeClient: import('@opencode/client').OpenCodeClient | undefined;
+    const f = await fixture(
+      createOpenCodeAdapter({
+        async loadClient() {
+          const actual = await import('@opencode/client');
+          return {
+            OpenCode: {
+              make(options) {
+                nativeClient = actual.OpenCode.make(options);
+                return nativeClient;
+              },
             },
-          },
-        };
-      },
-    })
-  );
-  const result = await (
-    await f.session.startTurn(f.turn(managed ? [managedPath] : [], managed ? ['selected'] : []))
-  ).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  const request = f.inference.requests.findLast((entry) =>
-    requestTexts(entry).join(' ').includes('native-user')
-  )!;
-  const text = requestTexts(request).join('\n');
-  expect(text).toContain('native-setting-marker');
-  expect(text).toContain('home-skill-description');
-  expect(text).toContain('local-skill-description');
-  expect(text).toContain(managed ? 'managed-skill-description' : 'stale-native-description');
-  if (managed) expect(text).not.toContain('stale-native-description');
-  const tools = JSON.stringify(request.body.tools);
-  expect(tools + text).toContain('echo-local');
-  expect((tools + text).includes('echo-selected')).toBe(managed);
-  expect(existsSync(marker)).toBe(true);
-  if (!nativeClient) throw new Error('missing actual native client');
-  const nativePlugins = (await nativeClient.plugin.list({ location: { directory: work } })).data;
-  // The pin bundles its defaults. This fixture configures only two local plugins;
-  // a package source would expose an unexpected default/external installation path.
-  // This provenance check does not claim global absence of network activity.
-  expect(
-    nativePlugins.some(
-      (entry) => entry.source.type === 'builtin' && entry.state.status === 'active'
-    )
-  ).toBe(true);
-  expect(
-    nativePlugins.some(
-      (entry) =>
-        entry.id === 'native-local' &&
-        entry.source.type === 'local' &&
-        entry.state.status === 'active'
-    )
-  ).toBe(true);
-  expect(
-    nativePlugins.some(
-      (entry) =>
-        entry.id === 'openkit-loopback' &&
-        entry.source.type === 'local' &&
-        entry.state.status === 'active'
-    )
-  ).toBe(true);
-  expect(nativePlugins.some((entry) => entry.source.type === 'package')).toBe(false);
-  // Native Config entries are ordered from lowest to highest priority. Each
-  // single-valued control uses its last defined entry (Config.latest), while
-  // the existing marker proves this overlay still permits authored plugins.
-  const entries = await nativeClient.config.get({ location: { directory: work } });
-  const last = (key: 'share' | 'update' | 'lsp') =>
-    entries.findLast((entry) => entry.type === 'document' && entry.info[key] !== undefined)?.info[
-      key
-    ];
-  expect({ share: last('share'), update: last('update'), lsp: last('lsp') }).toEqual({
-    share: 'disabled',
-    update: 'disable',
-    lsp: false,
-  });
-  expect(local.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
-  expect(local.hits.every((hit) => hit.authorization === null)).toBe(true);
-  if (managed)
+          };
+        },
+      })
+    );
+    const result = await (
+      await f.session.startTurn(f.turn(managed ? [managedPath] : [], managed ? ['selected'] : []))
+    ).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    const request = f.inference.requests.findLast((entry) =>
+      requestTexts(entry).join(' ').includes('native-user')
+    )!;
+    const text = requestTexts(request).join('\n');
+    expect(text).toContain('native-setting-marker');
+    expect(text).toContain('home-skill-description');
+    expect(text).toContain('local-skill-description');
+    expect(text).toContain(managed ? 'managed-skill-description' : 'stale-native-description');
+    if (managed) expect(text).not.toContain('stale-native-description');
+    const tools = JSON.stringify(request.body.tools);
+    expect(tools + text).toContain('echo-local');
+    expect((tools + text).includes('echo-selected')).toBe(managed);
+    expect(existsSync(marker)).toBe(true);
+    if (!nativeClient) throw new Error('missing actual native client');
+    const nativePlugins = (await nativeClient.plugin.list({ location: { directory: work } })).data;
+    // The pin bundles its defaults. This fixture configures only two local plugins;
+    // a package source would expose an unexpected default/external installation path.
+    // This provenance check does not claim global absence of network activity.
     expect(
-      f.capability.hits.some(
-        (hit) => hit.authorization === 'Bearer synthetic-capability-credential'
+      nativePlugins.some(
+        (entry) => entry.source.type === 'builtin' && entry.state.status === 'active'
       )
     ).toBe(true);
-  expect(request.body.model).toBe('native-model');
-  expect(request.headers.authorization).toBe('Bearer synthetic-inference-credential');
-  await f.session.close();
-  expect(snapshot(home)).toEqual(before);
-  expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
-}, 60000);
+    expect(
+      nativePlugins.some(
+        (entry) =>
+          entry.id === 'native-local' &&
+          entry.source.type === 'local' &&
+          entry.state.status === 'active'
+      )
+    ).toBe(true);
+    expect(
+      nativePlugins.some(
+        (entry) =>
+          entry.id === 'openkit-loopback' &&
+          entry.source.type === 'local' &&
+          entry.state.status === 'active'
+      )
+    ).toBe(true);
+    expect(nativePlugins.some((entry) => entry.source.type === 'package')).toBe(false);
+    // Native Config entries are ordered from lowest to highest priority. Each
+    // single-valued control uses its last defined entry (Config.latest), while
+    // the existing marker proves this overlay still permits authored plugins.
+    const entries = await nativeClient.config.get({ location: { directory: work } });
+    const last = (key: 'share' | 'update' | 'lsp') =>
+      entries.findLast((entry) => entry.type === 'document' && entry.info[key] !== undefined)?.info[
+        key
+      ];
+    expect({ share: last('share'), update: last('update'), lsp: last('lsp') }).toEqual({
+      share: 'disabled',
+      update: 'disable',
+      lsp: false,
+    });
+    expect(local.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
+    expect(local.hits.every((hit) => hit.authorization === null)).toBe(true);
+    if (managed)
+      expect(
+        f.capability.hits.some(
+          (hit) => hit.authorization === 'Bearer synthetic-capability-credential'
+        )
+      ).toBe(true);
+    expect(request.body.model).toBe('native-model');
+    expect(request.headers.authorization).toBe('Bearer synthetic-inference-credential');
+    await f.session.close();
+    expect(snapshot(home)).toEqual(before);
+    expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
+  },
+  60000
+);
 
 it('initializes image defaults once and applies them on a native Turn', async () => {
   const source = join(image, '.config', 'opencode');
@@ -312,108 +313,106 @@ it('initializes image defaults once and applies them on a native Turn', async ()
   expect(snapshot(home)).toEqual(original);
 }, 60000);
 
-it.each([
-  'unreadable',
-  'source-parent',
-  'escape',
-  'staging',
-  'destination',
-  'special',
-])('refuses %s initialization before native work and preserves retained bytes', async (kind) => {
-  const source = join(image, '.config', 'opencode');
-  mkdirSync(source, { recursive: true });
-  const entry = join(source, 'entry');
-  if (kind === 'source-parent') chmodSync(join(image, '.config'), 0);
-  if (kind === 'special') {
-    writeFileSync(join(source, 'a-readable'), 'must-not-stage');
-    expect(spawnSync('/usr/bin/mkfifo', [entry]).status).toBe(0);
-  }
-  if (kind === 'escape') symlinkSync(work, entry);
-  if (kind === 'unreadable') {
-    writeFileSync(join(source, 'a-readable'), 'must-not-stage');
-    writeFileSync(entry, 'unreadable');
-    chmodSync(entry, 0);
-  }
-  if (kind === 'staging') {
-    mkdirSync(`${home}.initializing`);
-    writeFileSync(join(`${home}.initializing`, 'partial'), 'keep');
-  }
-  if (kind === 'destination') symlinkSync(work, home);
-  writeFileSync(join(state, 'retained-canary'), 'unchanged');
-  const before = snapshot(state);
-  try {
-    await expect(fixture()).rejects.toThrow(/EACCES|image source|initialization|native home|FIFO/);
-    expect(snapshot(state)).toEqual(before);
-    if (['unreadable', 'escape', 'special', 'source-parent'].includes(kind)) {
-      expect(existsSync(`${home}.initializing`)).toBe(false);
+it.each(['unreadable', 'source-parent', 'escape', 'staging', 'destination', 'special'])(
+  'refuses %s initialization before native work and preserves retained bytes',
+  async (kind) => {
+    const source = join(image, '.config', 'opencode');
+    mkdirSync(source, { recursive: true });
+    const entry = join(source, 'entry');
+    if (kind === 'source-parent') chmodSync(join(image, '.config'), 0);
+    if (kind === 'special') {
+      writeFileSync(join(source, 'a-readable'), 'must-not-stage');
+      expect(spawnSync('/usr/bin/mkfifo', [entry]).status).toBe(0);
     }
-    expect(readdirSync(control)).toEqual([]);
-  } finally {
-    if (kind === 'unreadable') chmodSync(entry, 0o600);
-    if (kind === 'source-parent') chmodSync(join(image, '.config'), 0o700);
+    if (kind === 'escape') symlinkSync(work, entry);
+    if (kind === 'unreadable') {
+      writeFileSync(join(source, 'a-readable'), 'must-not-stage');
+      writeFileSync(entry, 'unreadable');
+      chmodSync(entry, 0);
+    }
+    if (kind === 'staging') {
+      mkdirSync(`${home}.initializing`);
+      writeFileSync(join(`${home}.initializing`, 'partial'), 'keep');
+    }
+    if (kind === 'destination') symlinkSync(work, home);
+    writeFileSync(join(state, 'retained-canary'), 'unchanged');
+    const before = snapshot(state);
+    try {
+      await expect(fixture()).rejects.toThrow(
+        /EACCES|image source|initialization|native home|FIFO/
+      );
+      expect(snapshot(state)).toEqual(before);
+      if (['unreadable', 'escape', 'special', 'source-parent'].includes(kind)) {
+        expect(existsSync(`${home}.initializing`)).toBe(false);
+      }
+      expect(readdirSync(control)).toEqual([]);
+    } finally {
+      if (kind === 'unreadable') chmodSync(entry, 0o600);
+      if (kind === 'source-parent') chmodSync(join(image, '.config'), 0o700);
+    }
   }
-});
+);
 
-it.each([
-  'provider',
-  'mcp',
-  'mcp-stdio',
-])('overlays a native %s collision without editing configuration', async (kind) => {
-  const config = JSON.stringify(
-    kind === 'provider'
-      ? {
-          providers: {
-            [OPENCODE_PROVIDER_ID]: {
-              canonical: 'openai',
-              package: '@ai-sdk/openai-compatible',
-              models: {
-                injected: {},
-                'native-model': {
-                  modelID: 'foreign-model',
-                  package: 'file:///synthetic-missing-provider.js',
-                  headers: { authorization: 'Bearer synthetic-native-credential' },
+it.each(['provider', 'mcp', 'mcp-stdio'])(
+  'overlays a native %s collision without editing configuration',
+  async (kind) => {
+    const config = JSON.stringify(
+      kind === 'provider'
+        ? {
+            providers: {
+              [OPENCODE_PROVIDER_ID]: {
+                canonical: 'openai',
+                package: '@ai-sdk/openai-compatible',
+                models: {
+                  injected: {},
+                  'native-model': {
+                    modelID: 'foreign-model',
+                    package: 'file:///synthetic-missing-provider.js',
+                    headers: { authorization: 'Bearer synthetic-native-credential' },
+                  },
                 },
+                headers: { authorization: 'Bearer synthetic-native-credential' },
+                settings: { baseURL: 'http://127.0.0.1:9/foreign' },
               },
-              headers: { authorization: 'Bearer synthetic-native-credential' },
-              settings: { baseURL: 'http://127.0.0.1:9/foreign' },
             },
-          },
-        }
-      : {
-          mcp: {
-            servers: {
-              selected:
-                kind === 'mcp'
-                  ? { type: 'remote', url: 'http://127.0.0.1:9/mcp/selected', oauth: false }
-                  : { type: 'local', command: ['/usr/bin/false'] },
+          }
+        : {
+            mcp: {
+              servers: {
+                selected:
+                  kind === 'mcp'
+                    ? { type: 'remote', url: 'http://127.0.0.1:9/mcp/selected', oauth: false }
+                    : { type: 'local', command: ['/usr/bin/false'] },
+              },
             },
-          },
-        }
-  );
-  writeFileSync(join(work, 'opencode.json'), config);
-  const f = await fixture();
-  const result = await (
-    await f.session.startTurn(f.turn([], kind !== 'provider' ? ['selected'] : []))
-  ).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(result.diagnostics?.native).toContain('protected');
-  const request = f.inference.requests.findLast((entry) =>
-    requestTexts(entry).join(' ').includes('native-user')
-  )!;
-  expect(request.body.model).toBe('native-model');
-  expect(request.headers.authorization).toBe('Bearer synthetic-inference-credential');
-  if (kind !== 'provider') {
-    expect(requestTexts(request).join(' ')).toContain('echo-selected');
-    expect(f.capability.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
-    expect(
-      f.capability.hits.every(
-        (hit) => hit.authorization === 'Bearer synthetic-capability-credential'
-      )
-    ).toBe(true);
-  }
-  expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
-  await expect(f.session.close()).resolves.toBeUndefined();
-}, 60000);
+          }
+    );
+    writeFileSync(join(work, 'opencode.json'), config);
+    const f = await fixture();
+    const result = await (
+      await f.session.startTurn(f.turn([], kind !== 'provider' ? ['selected'] : []))
+    ).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    expect(result.diagnostics?.native).toContain('protected');
+    const request = f.inference.requests.findLast((entry) =>
+      requestTexts(entry).join(' ').includes('native-user')
+    )!;
+    expect(request.body.model).toBe('native-model');
+    expect(request.headers.authorization).toBe('Bearer synthetic-inference-credential');
+    if (kind !== 'provider') {
+      expect(requestTexts(request).join(' ')).toContain('echo-selected');
+      expect(f.capability.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
+      expect(
+        f.capability.hits.every(
+          (hit) => hit.authorization === 'Bearer synthetic-capability-credential'
+        )
+      ).toBe(true);
+    }
+    expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
+    await expect(f.session.close()).resolves.toBeUndefined();
+  },
+  60000
+);
 
 it('shadows a declared host-plugin disable with the protected inline plugin', async () => {
   const config =
@@ -430,30 +429,31 @@ it('shadows a declared host-plugin disable with the protected inline plugin', as
   expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
 }, 60000);
 
-it.each([
-  'lexical',
-  'canonical',
-])('does not seed from a %s source inside retained state', async (kind) => {
-  const retainedImage = join(state, 'retained-image');
-  const source = join(retainedImage, '.config', 'opencode');
-  if (kind === 'lexical') {
-    const outside = join(image, 'outside');
-    mkdirSync(outside);
-    mkdirSync(join(retainedImage, '.config'), { recursive: true });
-    symlinkSync(outside, source);
-  } else mkdirSync(source, { recursive: true });
-  writeFileSync(join(source, 'canary'), 'not-an-image-default');
-  if (kind === 'lexical') vi.stubEnv('HOME', retainedImage);
-  else {
-    symlinkSync(retainedImage, join(image, 'alias'));
-    vi.stubEnv('HOME', join(image, 'alias'));
-  }
-  const f = await fixture();
-  expect(existsSync(home)).toBe(true);
-  expect(snapshot(home)).toEqual({});
-  expect(readFileSync(join(source, 'canary'), 'utf8')).toBe('not-an-image-default');
-  await f.session.close();
-}, 60000);
+it.each(['lexical', 'canonical'])(
+  'does not seed from a %s source inside retained state',
+  async (kind) => {
+    const retainedImage = join(state, 'retained-image');
+    const source = join(retainedImage, '.config', 'opencode');
+    if (kind === 'lexical') {
+      const outside = join(image, 'outside');
+      mkdirSync(outside);
+      mkdirSync(join(retainedImage, '.config'), { recursive: true });
+      symlinkSync(outside, source);
+    } else mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'canary'), 'not-an-image-default');
+    if (kind === 'lexical') vi.stubEnv('HOME', retainedImage);
+    else {
+      symlinkSync(retainedImage, join(image, 'alias'));
+      vi.stubEnv('HOME', join(image, 'alias'));
+    }
+    const f = await fixture();
+    expect(existsSync(home)).toBe(true);
+    expect(snapshot(home)).toEqual({});
+    expect(readFileSync(join(source, 'canary'), 'utf8')).toBe('not-an-image-default');
+    await f.session.close();
+  },
+  60000
+);
 
 it('does not overwrite a destination published during image copying', async () => {
   const source = join(image, '.config', 'opencode');
@@ -540,26 +540,27 @@ it('requires an exact successor to clear managed Skills while preserving native 
   );
 }, 60000);
 
-it.each([
-  'id',
-  'path',
-])('refuses a loopback credential in a managed Skill %s before native projection', async (field) => {
-  const f = await fixture();
-  const selected =
-    field === 'path' ? skill(join(root, 'synthetic-capability-credential'), 'safe-skill') : work;
-  const input = {
-    ...f.turn(),
-    skillTargetPaths: [
-      {
-        id: field === 'id' ? 'synthetic-inference-credential' : 'safe-skill',
-        targetPath: selected,
-      },
-    ],
-  };
-  await expect(f.session.startTurn(input)).rejects.toThrow(/contains a loopback credential/);
-  expect(f.inference.requests).toHaveLength(0);
-  expect(readdirSync(join(control, 'skills'))).toEqual([]);
-}, 60000);
+it.each(['id', 'path'])(
+  'refuses a loopback credential in a managed Skill %s before native projection',
+  async (field) => {
+    const f = await fixture();
+    const selected =
+      field === 'path' ? skill(join(root, 'synthetic-capability-credential'), 'safe-skill') : work;
+    const input = {
+      ...f.turn(),
+      skillTargetPaths: [
+        {
+          id: field === 'id' ? 'synthetic-inference-credential' : 'safe-skill',
+          targetPath: selected,
+        },
+      ],
+    };
+    await expect(f.session.startTurn(input)).rejects.toThrow(/contains a loopback credential/);
+    expect(f.inference.requests).toHaveLength(0);
+    expect(readdirSync(join(control, 'skills'))).toEqual([]);
+  },
+  60000
+);
 
 it('loads a native MCP name outside the managed id pattern', async () => {
   const local = await startSyntheticCapability();
@@ -700,79 +701,84 @@ it('exposes a selected parameterless MCP tool in the native CodeMode catalog and
   ).toBe(true);
 }, 60000);
 
-it.each([
-  'lines',
-  'bytes',
-] as const)('bounds actual MCP output by native %s and reads the exact spill through a native Tool', async (bound) => {
-  const tail = 'bounded-output-spill-tail';
-  const output =
-    bound === 'lines'
-      ? `${Array.from({ length: 2000 }, (_, index) => `line-${index}`).join('\n')}\n${tail}`
-      : `${'x'.repeat(50 * 1024 + 1)}\n${tail}`;
-  let stage = 0;
-  let spill = '';
-  let projected = '';
-  const f = await fixture(
-    opencodeAdapter,
-    null,
-    (request) => {
-      const texts = requestTexts(request).join('\n');
-      const path = texts.match(/\b(tools(?:\.[A-Za-z_]\w*|\["[^"]+"\])\.bounded_output)\(\)/)?.[1];
-      if (stage === 0 && path) {
-        stage = 1;
-        return { toolCall: { name: 'execute', arguments: { code: `return await ${path}({});` } } };
-      }
-      const toolTexts = request.body.messages
-        .filter((message) => message.role === 'tool' && typeof message.content === 'string')
-        .map((message) => message.content as string);
-      const bounded = toolTexts.find((text) => text.includes('full output saved to '));
-      if (stage === 1 && bounded) {
-        projected = bounded;
-        spill = bounded.match(/full output saved to ([^\]]+)\]/)?.[1] ?? '';
-        stage = 2;
-        return {
-          toolCall: {
-            name: 'read',
-            arguments: { path: spill, offset: bound === 'lines' ? 2001 : 2, limit: 1 },
-          },
-        };
-      }
-      if (stage === 2 && toolTexts.some((text) => text.includes(tail))) stage = 3;
-      return { text: 'bounded-output-qualified' };
-    },
-    [{ name: 'bounded.output', inputSchema: { type: 'object' } }]
-  );
-  f.capability.callResult = { content: [{ type: 'text', text: output }] };
-  const result = await (await f.session.startTurn(f.turn([], ['bounded-output']))).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(stage).toBe(3);
-  // The native generic guard bounds model projection, while its spill preserves original bytes.
-  expect(projected).not.toContain(tail);
-  expect(Buffer.byteLength(projected)).toBeLessThan(50 * 1024 + 1024);
-  expect(projected.split('\n').length).toBeLessThanOrEqual(2001);
-  expect(readFileSync(spill, 'utf8')).toBe(output);
-  expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toHaveLength(1);
-  const handle = await f.session.nativeHandle();
-  await f.session.close();
-  // Retained native data survives ordinary close; close is not native retention cleanup.
-  expect(readFileSync(spill, 'utf8')).toBe(output);
-  if (bound === 'lines') {
-    expect(handle.state).toBe('ready');
-    if (handle.state !== 'ready') throw new Error('missing exact native reference');
-    // Fault-inject age only after native ownership produced the real spill.
-    const expired = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-    utimesSync(spill, expired, expired);
-    control = join(root, 'spill-cleanup-successor');
-    mkdirSync(control);
-    const successor = await fixture(opencodeAdapter, handle.reference);
-    expect(await successor.session.nativeHandle()).toEqual(handle);
-    expect((await (await successor.session.startTurn(successor.turn())).settled).status).toBe(
-      'completed'
+it.each(['lines', 'bytes'] as const)(
+  'bounds actual MCP output by native %s and reads the exact spill through a native Tool',
+  async (bound) => {
+    const tail = 'bounded-output-spill-tail';
+    const output =
+      bound === 'lines'
+        ? `${Array.from({ length: 2000 }, (_, index) => `line-${index}`).join('\n')}\n${tail}`
+        : `${'x'.repeat(50 * 1024 + 1)}\n${tail}`;
+    let stage = 0;
+    let spill = '';
+    let projected = '';
+    const f = await fixture(
+      opencodeAdapter,
+      null,
+      (request) => {
+        const texts = requestTexts(request).join('\n');
+        const path = texts.match(
+          /\b(tools(?:\.[A-Za-z_]\w*|\["[^"]+"\])\.bounded_output)\(\)/
+        )?.[1];
+        if (stage === 0 && path) {
+          stage = 1;
+          return {
+            toolCall: { name: 'execute', arguments: { code: `return await ${path}({});` } },
+          };
+        }
+        const toolTexts = request.body.messages
+          .filter((message) => message.role === 'tool' && typeof message.content === 'string')
+          .map((message) => message.content as string);
+        const bounded = toolTexts.find((text) => text.includes('full output saved to '));
+        if (stage === 1 && bounded) {
+          projected = bounded;
+          spill = bounded.match(/full output saved to ([^\]]+)\]/)?.[1] ?? '';
+          stage = 2;
+          return {
+            toolCall: {
+              name: 'read',
+              arguments: { path: spill, offset: bound === 'lines' ? 2001 : 2, limit: 1 },
+            },
+          };
+        }
+        if (stage === 2 && toolTexts.some((text) => text.includes(tail))) stage = 3;
+        return { text: 'bounded-output-qualified' };
+      },
+      [{ name: 'bounded.output', inputSchema: { type: 'object' } }]
     );
-    // The pin's native startup retention owner removes expired Tool-output files.
-    expect(existsSync(spill)).toBe(false);
-  }
-}, 60000);
+    f.capability.callResult = { content: [{ type: 'text', text: output }] };
+    const result = await (await f.session.startTurn(f.turn([], ['bounded-output']))).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    expect(stage).toBe(3);
+    // The native generic guard bounds model projection, while its spill preserves original bytes.
+    expect(projected).not.toContain(tail);
+    expect(Buffer.byteLength(projected)).toBeLessThan(50 * 1024 + 1024);
+    expect(projected.split('\n').length).toBeLessThanOrEqual(2001);
+    expect(readFileSync(spill, 'utf8')).toBe(output);
+    expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toHaveLength(1);
+    const handle = await f.session.nativeHandle();
+    await f.session.close();
+    // Retained native data survives ordinary close; close is not native retention cleanup.
+    expect(readFileSync(spill, 'utf8')).toBe(output);
+    if (bound === 'lines') {
+      expect(handle.state).toBe('ready');
+      if (handle.state !== 'ready') throw new Error('missing exact native reference');
+      // Fault-inject age only after native ownership produced the real spill.
+      const expired = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+      utimesSync(spill, expired, expired);
+      control = join(root, 'spill-cleanup-successor');
+      mkdirSync(control);
+      const successor = await fixture(opencodeAdapter, handle.reference);
+      expect(await successor.session.nativeHandle()).toEqual(handle);
+      expect((await (await successor.session.startTurn(successor.turn())).settled).status).toBe(
+        'completed'
+      );
+      // The pin's native startup retention owner removes expired Tool-output files.
+      expect(existsSync(spill)).toBe(false);
+    }
+  },
+  60000
+);
 
 it('qualifies shell producer truncation separately from the generic prefix guard', async () => {
   const head = 'producer-head-only-in-spill';
@@ -921,71 +927,73 @@ it('resizes a real oversized MCP image and reports an omitted undecodable image'
   expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toHaveLength(1);
 }, 60000);
 
-it.each([
-  'shell',
-  'write',
-])('executes a model-directed workspace %s and observes its effect', async (tool) => {
-  const target = join(work, `${tool}-effect.txt`);
-  let called = false;
-  const f = await fixture(opencodeAdapter, null, (request) => {
-    const names = request.body.tools?.map((entry) => entry.function?.name) ?? [];
-    if (
-      !called &&
-      names.includes(tool) &&
-      requestTexts(request).join(' ').includes('native-user')
-    ) {
-      called = true;
-      return {
-        toolCall: {
-          name: tool,
-          arguments:
-            tool === 'shell'
-              ? { command: `printf shell-observed > '${target}'` }
-              : { path: target, content: 'write-observed' },
-        },
-      };
-    }
-    return { text: 'effect-completed' };
-  });
-  const result = await (await f.session.startTurn(f.turn())).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(called).toBe(true);
-  expect(readFileSync(target, 'utf8')).toBe(`${tool}-observed`);
-  expect(
-    f.inference.requests.some((request) =>
-      request.body.messages.some((message) => message.role === 'tool')
-    )
-  ).toBe(true);
-}, 60000);
+it.each(['shell', 'write'])(
+  'executes a model-directed workspace %s and observes its effect',
+  async (tool) => {
+    const target = join(work, `${tool}-effect.txt`);
+    let called = false;
+    const f = await fixture(opencodeAdapter, null, (request) => {
+      const names = request.body.tools?.map((entry) => entry.function?.name) ?? [];
+      if (
+        !called &&
+        names.includes(tool) &&
+        requestTexts(request).join(' ').includes('native-user')
+      ) {
+        called = true;
+        return {
+          toolCall: {
+            name: tool,
+            arguments:
+              tool === 'shell'
+                ? { command: `printf shell-observed > '${target}'` }
+                : { path: target, content: 'write-observed' },
+          },
+        };
+      }
+      return { text: 'effect-completed' };
+    });
+    const result = await (await f.session.startTurn(f.turn())).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    expect(called).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe(`${tool}-observed`);
+    expect(
+      f.inference.requests.some((request) =>
+        request.body.messages.some((message) => message.role === 'tool')
+      )
+    ).toBe(true);
+  },
+  60000
+);
 
-it.each([
-  'global',
-  'agent',
-])('preserves an explicit native %s deny rule under full launch permission', async (scope) => {
-  const target = join(work, 'denied-effect');
-  const permissions = [{ action: 'shell', resource: '*', effect: 'deny' }];
-  const config = JSON.stringify(
-    scope === 'global' ? { permissions } : { agents: { build: { permissions } } }
-  );
-  writeFileSync(join(work, 'opencode.json'), config);
-  let called = false;
-  const f = await fixture(opencodeAdapter, null, (request) => {
-    if (
-      !called &&
-      (request.body.tools?.length ?? 0) > 0 &&
-      requestTexts(request).join(' ').includes('native-user')
-    ) {
-      called = true;
-      return { toolCall: { name: 'shell', arguments: { command: `touch '${target}'` } } };
-    }
-    return { text: 'deny-completed' };
-  });
-  const result = await (await f.session.startTurn(f.turn())).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  expect(called).toBe(true);
-  expect(existsSync(target)).toBe(false);
-  expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
-}, 60000);
+it.each(['global', 'agent'])(
+  'preserves an explicit native %s deny rule under full launch permission',
+  async (scope) => {
+    const target = join(work, 'denied-effect');
+    const permissions = [{ action: 'shell', resource: '*', effect: 'deny' }];
+    const config = JSON.stringify(
+      scope === 'global' ? { permissions } : { agents: { build: { permissions } } }
+    );
+    writeFileSync(join(work, 'opencode.json'), config);
+    let called = false;
+    const f = await fixture(opencodeAdapter, null, (request) => {
+      if (
+        !called &&
+        (request.body.tools?.length ?? 0) > 0 &&
+        requestTexts(request).join(' ').includes('native-user')
+      ) {
+        called = true;
+        return { toolCall: { name: 'shell', arguments: { command: `touch '${target}'` } } };
+      }
+      return { text: 'deny-completed' };
+    });
+    const result = await (await f.session.startTurn(f.turn())).settled;
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+    expect(called).toBe(true);
+    expect(existsSync(target)).toBe(false);
+    expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
+  },
+  60000
+);
 
 it('cancels a native typed-answer form without inventing an answer', async () => {
   let called = false;

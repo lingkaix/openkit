@@ -177,38 +177,38 @@ async function expectNativeReapRefusal(f: Awaited<ReturnType<typeof fixture>>, m
 }
 
 describe('native terminal recovery observations', () => {
-  it.each([
-    false,
-    true,
-  ])('records the actual recovery decision with capture off (anchored=%s)', async (anchored) => {
-    const f = await fixture();
-    expect(await recover(f, anchored)).toMatchObject({
-      status: anchored ? 'interrupted' : 'failed',
-      completedAt,
-    });
-    expect(readWorkObservations(f.db, f.owner)).toEqual([
-      {
-        v: 1,
-        seq: 1,
-        id: `turn.reap:${f.owner.turnId}`,
-        type: 'turn.reap',
-        turnId: f.owner.turnId,
-        ts: completedAt,
-        obs: 'nanocore',
-        ret: 'turn-evidence',
-        payload: {
-          reason: anchored ? 'interrupted' : 'failed',
-          lastObservedTs: null,
-          unresolvedCalls: [],
-          inferredBy: 'native-terminal-publication',
+  it.each([false, true])(
+    'records the actual recovery decision with capture off (anchored=%s)',
+    async (anchored) => {
+      const f = await fixture();
+      expect(await recover(f, anchored)).toMatchObject({
+        status: anchored ? 'interrupted' : 'failed',
+        completedAt,
+      });
+      expect(readWorkObservations(f.db, f.owner)).toEqual([
+        {
+          v: 1,
+          seq: 1,
+          id: `turn.reap:${f.owner.turnId}`,
+          type: 'turn.reap',
+          turnId: f.owner.turnId,
+          ts: completedAt,
+          obs: 'nanocore',
+          ret: 'turn-evidence',
+          payload: {
+            reason: anchored ? 'interrupted' : 'failed',
+            lastObservedTs: null,
+            unresolvedCalls: [],
+            inferredBy: 'native-terminal-publication',
+          },
         },
-      },
-    ]);
-    expect(readWorkObservationTurnBinding(f.db, f.owner).coverage).toEqual({
-      scope: 'server',
-      value: 'off',
-    });
-  });
+      ]);
+      expect(readWorkObservationTurnBinding(f.db, f.owner).coverage).toEqual({
+        scope: 'server',
+        value: 'off',
+      });
+    }
+  );
 
   it('pairs only observed model and runtime calls inside the Turn, using committed order', async () => {
     const f = await fixture();
@@ -348,29 +348,27 @@ describe('native terminal recovery observations', () => {
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
   });
 
-  it.each([
-    'completed',
-    'failed',
-    'interrupted',
-    'cancelled',
-  ] as const)('does not reap a Turn already sealed by another owner: %s', async (status) => {
-    const f = await fixture();
-    const terminal = await f.store.updateTurn(
-      f.owner.turnId,
-      {
-        status,
-        completedAt,
-        error:
-          status === 'completed'
-            ? null
-            : { code: 'worker_governance_turn_failed', message: 'Other terminal owner.' },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-    const observations = readWorkObservations(f.db, f.owner);
-    expect(await recover(f)).toMatchObject({ status: terminal.status, error: terminal.error });
-    expect(readWorkObservations(f.db, f.owner)).toEqual(observations);
-  });
+  it.each(['completed', 'failed', 'interrupted', 'cancelled'] as const)(
+    'does not reap a Turn already sealed by another owner: %s',
+    async (status) => {
+      const f = await fixture();
+      const terminal = await f.store.updateTurn(
+        f.owner.turnId,
+        {
+          status,
+          completedAt,
+          error:
+            status === 'completed'
+              ? null
+              : { code: 'worker_governance_turn_failed', message: 'Other terminal owner.' },
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
+      const observations = readWorkObservations(f.db, f.owner);
+      expect(await recover(f)).toMatchObject({ status: terminal.status, error: terminal.error });
+      expect(readWorkObservations(f.db, f.owner)).toEqual(observations);
+    }
+  );
 
   it('leaves a never-created product Turn without an observation ledger', async () => {
     const f = await fixture();

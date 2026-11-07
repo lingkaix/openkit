@@ -250,63 +250,65 @@ describe.each(['workspace', 'server', 'user'] as const)('%s notebook editor dead
     { deadlineMs: 300_000, elapsed: 0 },
     { deadlineMs: 300_000, elapsed: 150_000 },
     { deadlineMs: 600_000, elapsed: 301_000 },
-  ])('accepts a real editor Tool after $elapsed ms within its pinned $deadlineMs ms run', async ({
-    deadlineMs,
-    elapsed,
-  }) => {
-    const f = await fixture(scope, deadlineMs);
-    let editorObservation:
-      | { kind: 'returned'; result: ToolResult }
-      | { kind: 'threw'; error: unknown }
-      | undefined;
-    const run = vi.fn(async (input: MaintenanceRun) => {
-      vi.setSystemTime(Date.now() + elapsed);
-      const execute = (name: string, value: unknown) =>
-        input.tools
-          .find((tool) => tool.name === name)!
-          .execute(value, { callId: randomUUID(), toolOccurrence: 1, signal: input.signal });
-      try {
-        editorObservation = {
-          kind: 'returned',
-          result: await execute('knowledge.notebook-workspace.update', { script: 'cat index.md' }),
-        };
-      } catch (error) {
-        editorObservation = { kind: 'threw', error };
-        throw error;
-      }
-      await execute('knowledge.notebook.update', {
-        summary: 'The current overview is sufficient.',
+  ])(
+    'accepts a real editor Tool after $elapsed ms within its pinned $deadlineMs ms run',
+    async ({ deadlineMs, elapsed }) => {
+      const f = await fixture(scope, deadlineMs);
+      let editorObservation:
+        | { kind: 'returned'; result: ToolResult }
+        | { kind: 'threw'; error: unknown }
+        | undefined;
+      const run = vi.fn(async (input: MaintenanceRun) => {
+        vi.setSystemTime(Date.now() + elapsed);
+        const execute = (name: string, value: unknown) =>
+          input.tools
+            .find((tool) => tool.name === name)!
+            .execute(value, { callId: randomUUID(), toolOccurrence: 1, signal: input.signal });
+        try {
+          editorObservation = {
+            kind: 'returned',
+            result: await execute('knowledge.notebook-workspace.update', {
+              script: 'cat index.md',
+            }),
+          };
+        } catch (error) {
+          editorObservation = { kind: 'threw', error };
+          throw error;
+        }
+        await execute('knowledge.notebook.update', {
+          summary: 'The current overview is sufficient.',
+        });
+        expect(input.validateResult('{"summary":"No changes are needed."}')).toBeUndefined();
+        await f.updateTurn(input, { status: 'completed', completedAt: new Date().toISOString() });
+        return { turnId: input.turn.id, text: '{"summary":"No changes are needed."}' };
       });
-      expect(input.validateResult('{"summary":"No changes are needed."}')).toBeUndefined();
-      await f.updateTurn(input, { status: 'completed', completedAt: new Date().toISOString() });
-      return { turnId: input.turn.id, text: '{"summary":"No changes are needed."}' };
-    });
-    f.dependencies.run = run;
-    // Date alone controls the editor's absolute deadline; Git and editor I/O stay real.
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const result = await f.maintain();
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(f.readTurn(result.turnId).internalExecution?.limits?.deadlineMs).toBe(deadlineMs);
-    expect(editorObservation).toMatchObject({ kind: 'returned' });
-    if (editorObservation?.kind !== 'returned') throw new Error('Editor did not return.');
-    expect(editorObservation.result.isError).not.toBe(true);
-    expect(toolValue(editorObservation.result)).toEqual({
-      exitCode: 0,
-      stdout: f.overview,
-      stderr: '',
-      truncated: false,
-    });
-    expect(result.outcome).toBe('no-change');
-    expect(f.readTurn(result.turnId).status).toBe('completed');
-    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
-    expect(f.notebook.readRevision(f.baseRevision).files['index.md']).toBe(f.overview);
-    expect(
-      f
-        .readTurn(result.turnId)
-        .items.filter((item) => item.type === 'status' && item.knowledgeMaintenanceResult)
-        .map((item) => item.knowledgeMaintenanceResult)
-    ).toEqual([result]);
-  });
+      f.dependencies.run = run;
+      // Date alone controls the editor's absolute deadline; Git and editor I/O stay real.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const result = await f.maintain();
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(f.readTurn(result.turnId).internalExecution?.limits?.deadlineMs).toBe(deadlineMs);
+      expect(editorObservation).toMatchObject({ kind: 'returned' });
+      if (editorObservation?.kind !== 'returned') throw new Error('Editor did not return.');
+      expect(editorObservation.result.isError).not.toBe(true);
+      expect(toolValue(editorObservation.result)).toEqual({
+        exitCode: 0,
+        stdout: f.overview,
+        stderr: '',
+        truncated: false,
+      });
+      expect(result.outcome).toBe('no-change');
+      expect(f.readTurn(result.turnId).status).toBe('completed');
+      expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+      expect(f.notebook.readRevision(f.baseRevision).files['index.md']).toBe(f.overview);
+      expect(
+        f
+          .readTurn(result.turnId)
+          .items.filter((item) => item.type === 'status' && item.knowledgeMaintenanceResult)
+          .map((item) => item.knowledgeMaintenanceResult)
+      ).toEqual([result]);
+    }
+  );
   it('stops the editor on caller cancellation before the pinned run deadline', async () => {
     const f = await fixture(scope, 600_000);
     let editorObservation: 'returned' | 'threw' | undefined;
@@ -339,149 +341,149 @@ describe.each(['workspace', 'server', 'user'] as const)('%s notebook editor dead
   });
 });
 
-it.each([
-  'workspace',
-  'user',
-] as const)('returns the owned timeout code in %s maintenance without publication or retry', async (scope) => {
-  const f = await fixture(scope);
-  const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
-  const snapshot = createInMemoryRuntimeConfigSnapshot({
-    dataRoot: f.dataRoot,
-    userConfigs: [
-      {
-        userId: f.dependencies.userDb.userId,
-        path: join(f.dataRoot, 'user.jsonc'),
-        config: UserConfigSchema.parse({
-          schemaVersion: 1,
-          knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
-        }),
-      },
-    ],
-    providerRegistry: new ProviderRegistry([
-      {
-        id: 'fixture',
-        kind: 'custom',
-        displayName: 'Deferred transport',
-        baseUrl: 'https://provider.invalid/v1',
-        models: ['fixture-model'],
-        modelMetadata: { 'fixture-model': metadata },
-      },
-    ]),
-    gatewayConfig: {
-      schemaVersion: 1,
-      enabled: true,
-      requiredFeatures: [],
-      defaultLogicalModelId: 'km-model',
-      logicalModels: [
+it.each(['workspace', 'user'] as const)(
+  'returns the owned timeout code in %s maintenance without publication or retry',
+  async (scope) => {
+    const f = await fixture(scope);
+    const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: f.dataRoot,
+      userConfigs: [
         {
-          id: 'km-model',
-          displayName: 'KM',
-          contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
-          routes: [{ id: 'route', providerProfileId: 'fixture', providerModel: 'fixture-model' }],
-        },
-      ],
-    },
-    internalRoleProfiles: {
-      schemaVersion: 1,
-      profiles: [
-        {
-          id: 'explicit-cutoff',
-          roleId: 'knowledge-manager',
-          preferredLogicalModelId: 'km-model',
-          compatibleLogicalModelIds: [],
-          requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
-          limits: { maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 90_000 },
-        },
-      ],
-    },
-    workspaceConfigs: [
-      {
-        workspaceId: f.workspace.id,
-        path: join(f.dataRoot, 'workspace.jsonc'),
-        config: WorkspaceConfigSchema.parse({
-          schemaVersion: 1,
-          workspace: {
-            name: f.workspace.name,
+          userId: f.dependencies.userDb.userId,
+          path: join(f.dataRoot, 'user.jsonc'),
+          config: UserConfigSchema.parse({
+            schemaVersion: 1,
             knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
+          }),
+        },
+      ],
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'fixture',
+          kind: 'custom',
+          displayName: 'Deferred transport',
+          baseUrl: 'https://provider.invalid/v1',
+          models: ['fixture-model'],
+          modelMetadata: { 'fixture-model': metadata },
+        },
+      ]),
+      gatewayConfig: {
+        schemaVersion: 1,
+        enabled: true,
+        requiredFeatures: [],
+        defaultLogicalModelId: 'km-model',
+        logicalModels: [
+          {
+            id: 'km-model',
+            displayName: 'KM',
+            contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
+            routes: [{ id: 'route', providerProfileId: 'fixture', providerModel: 'fixture-model' }],
           },
-        }),
+        ],
       },
-    ],
-  });
-  const dispatched = Promise.withResolvers<void>();
-  const response =
-    Promise.withResolvers<Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>>();
-  const createResponses = vi.fn<LLMGatewayProviderDispatcher['createResponses']>(
-    async (_provider, _request, context) => {
-      const signal = context?.transport?.signal;
-      if (!signal) throw new Error('Provider transport has no cancellation signal.');
-      dispatched.resolve();
-      let abort!: () => void;
-      const cancelled = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(signal.reason);
-        signal.addEventListener('abort', abort, { once: true });
-      });
-      try {
-        return await Promise.race([response.promise, cancelled]);
-      } finally {
-        signal.removeEventListener('abort', abort);
+      internalRoleProfiles: {
+        schemaVersion: 1,
+        profiles: [
+          {
+            id: 'explicit-cutoff',
+            roleId: 'knowledge-manager',
+            preferredLogicalModelId: 'km-model',
+            compatibleLogicalModelIds: [],
+            requiredLogicalModelCapabilities: ['responses', 'tool-calling'],
+            limits: { maxModelTurns: 8, maxToolCalls: 24, deadlineMs: 90_000 },
+          },
+        ],
+      },
+      workspaceConfigs: [
+        {
+          workspaceId: f.workspace.id,
+          path: join(f.dataRoot, 'workspace.jsonc'),
+          config: WorkspaceConfigSchema.parse({
+            schemaVersion: 1,
+            workspace: {
+              name: f.workspace.name,
+              knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
+            },
+          }),
+        },
+      ],
+    });
+    const dispatched = Promise.withResolvers<void>();
+    const response =
+      Promise.withResolvers<Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>>();
+    const createResponses = vi.fn<LLMGatewayProviderDispatcher['createResponses']>(
+      async (_provider, _request, context) => {
+        const signal = context?.transport?.signal;
+        if (!signal) throw new Error('Provider transport has no cancellation signal.');
+        dispatched.resolve();
+        let abort!: () => void;
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          abort = () => reject(signal.reason);
+          signal.addEventListener('abort', abort, { once: true });
+        });
+        try {
+          return await Promise.race([response.promise, cancelled]);
+        } finally {
+          signal.removeEventListener('abort', abort);
+        }
       }
-    }
-  );
-  const roleDependencies = {
-    store: f.store,
-    runtimeConfig: () => snapshot,
-    dispatcher: { createResponses },
-    resolveGatewayProvider: () => ({
-      id: 'fixture',
-      displayName: 'Deferred transport',
-      adapterId: 'fixture',
-      apiKey: '',
-      baseUrl: null,
-      models: ['fixture-model'],
-      requiresApiKey: false,
-      gatewayCapabilities: { responses: 'native' as const, chatCompletions: 'native' as const },
-      modelMetadata: { 'fixture-model': metadata },
-    }),
-  };
-  f.dependencies.runtimeConfigManager = {
-    current: () => snapshot,
-  } as unknown as RuntimeConfigManager;
-  f.dependencies.pin = async (input) => {
-    if (input.turn.owner.kind === 'server') throw new Error('Expected a Workspace run.');
-    await pinKnowledgeManagerExecution(roleDependencies, input);
-  };
-  f.dependencies.run = (input) => {
-    if ('kind' in input) throw new Error('Expected a Workspace run.');
-    return runKnowledgeManagerAgent(roleDependencies, input);
-  };
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-  vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
-    const controller = new AbortController();
-    setTimeout(
-      () => controller.abort(new DOMException('Deadline elapsed.', 'TimeoutError')),
-      milliseconds
-    ).unref();
-    return controller.signal;
-  });
-  const pending = f.maintain();
-  // Observe rejection while the clock advances; awaiting the original below still fails the test.
-  void pending.catch(() => {});
-  await dispatched.promise;
-  await vi.advanceTimersByTimeAsync(90_000);
-  const result = await pending;
-  response.resolve({ id: 'late-response', object: 'response', output: [] });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(result.outcome).toBe('failed');
-  expect.soft(result.summary).toContain('knowledge_manager_timeout');
-  expect.soft(f.readTurn(result.turnId)).toMatchObject({
-    status: 'failed',
-    error: { code: 'knowledge_manager_timeout' },
-    internalExecution: { limits: { deadlineMs: 90_000 } },
-  });
-  expect(createResponses).toHaveBeenCalledTimes(1);
-  expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
-});
+    );
+    const roleDependencies = {
+      store: f.store,
+      runtimeConfig: () => snapshot,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () => ({
+        id: 'fixture',
+        displayName: 'Deferred transport',
+        adapterId: 'fixture',
+        apiKey: '',
+        baseUrl: null,
+        models: ['fixture-model'],
+        requiresApiKey: false,
+        gatewayCapabilities: { responses: 'native' as const, chatCompletions: 'native' as const },
+        modelMetadata: { 'fixture-model': metadata },
+      }),
+    };
+    f.dependencies.runtimeConfigManager = {
+      current: () => snapshot,
+    } as unknown as RuntimeConfigManager;
+    f.dependencies.pin = async (input) => {
+      if (input.turn.owner.kind === 'server') throw new Error('Expected a Workspace run.');
+      await pinKnowledgeManagerExecution(roleDependencies, input);
+    };
+    f.dependencies.run = (input) => {
+      if ('kind' in input) throw new Error('Expected a Workspace run.');
+      return runKnowledgeManagerAgent(roleDependencies, input);
+    };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException('Deadline elapsed.', 'TimeoutError')),
+        milliseconds
+      ).unref();
+      return controller.signal;
+    });
+    const pending = f.maintain();
+    // Observe rejection while the clock advances; awaiting the original below still fails the test.
+    void pending.catch(() => {});
+    await dispatched.promise;
+    await vi.advanceTimersByTimeAsync(90_000);
+    const result = await pending;
+    response.resolve({ id: 'late-response', object: 'response', output: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result.outcome).toBe('failed');
+    expect.soft(result.summary).toContain('knowledge_manager_timeout');
+    expect.soft(f.readTurn(result.turnId)).toMatchObject({
+      status: 'failed',
+      error: { code: 'knowledge_manager_timeout' },
+      internalExecution: { limits: { deadlineMs: 90_000 } },
+    });
+    expect(createResponses).toHaveBeenCalledTimes(1);
+    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+  }
+);
 
 it('returns the owned timeout code in the Server maintenance summary without publication or retry', async () => {
   const f = await fixture('server');

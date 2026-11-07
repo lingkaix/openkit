@@ -474,110 +474,111 @@ describe('Gateway deployment-admin workflow', () => {
       { state: 'quota exhaustion alone', access: false, exhausted: true },
       { state: 'both parts', access: true, exhausted: true },
       { state: 'absence', access: false, exhausted: false },
-    ])('shows $state beside unchanged live quota without requesting it', async ({
-      access,
-      exhausted,
-    }) => {
-      const user = userEvent.setup();
-      const account = ProviderSubscriptionAccountSchema.parse({
-        ...LOGGED_IN_ACCOUNT,
-        subscriptionProviderId: providerId,
-        ...(access || exhausted
-          ? {
-              inferenceObservation: {
-                ...(access ? { accessRejected: { observedAt: accessAt } } : {}),
-                ...(exhausted ? { quotaExhausted: { observedAt: exhaustedAt } } : {}),
-              },
-            }
-          : {}),
-      });
-      const getAccountQuota = vi.fn().mockResolvedValue(quotaResponse);
-      const client = makeClient({
-        operations: {
-          'provider-subscription.account-list': vi
-            .fn()
-            .mockImplementation(
-              ({ subscriptionProviderId: id }: { subscriptionProviderId: string }) =>
-                Promise.resolve(
-                  ProviderSubscriptionAccountsResponseSchema.parse({
-                    accounts: id === providerId ? [account] : [],
-                  })
-                )
-            ),
-          'provider-subscription.account-status': vi.fn().mockResolvedValue(account),
-          'provider-subscription.account-quota': getAccountQuota,
-          'provider-subscription.login-start': vi.fn().mockResolvedValue(
-            ProviderSubscriptionAccountSchema.parse({
-              ...PENDING_ACCOUNT,
-              subscriptionProviderId: providerId,
-            })
-          ),
-        },
-      });
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      // Reuse a supplied live quota response to isolate rendering from the existing page-load read.
-      queryClient.setQueryData(
-        [...settingsKeys.aiInterface, 'quota', providerId, 'primary'],
-        quotaResponse
-      );
-      renderScreen(client, queryClient);
-      const card = await screen.findByRole('region', { name: providerName });
-      await waitFor(() =>
-        expect(client.operations['provider-subscription.account-status']).toHaveBeenCalled()
-      );
-      expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
-      expect(card.querySelector(`time[datetime="${TIMESTAMP}"]`)).toBeInTheDocument();
-      if (access) expect(within(card).queryByText('Inference access rejected')).toBeInTheDocument();
-      else expect(within(card).queryByText('Inference access rejected')).not.toBeInTheDocument();
-      if (exhausted)
-        expect(within(card).queryByText('Inference quota exhausted')).toBeInTheDocument();
-      else expect(within(card).queryByText('Inference quota exhausted')).not.toBeInTheDocument();
-      if (access) expect(card.querySelector(`time[datetime="${accessAt}"]`)).toBeInTheDocument();
-      else expect(card.querySelector(`time[datetime="${accessAt}"]`)).not.toBeInTheDocument();
-      if (exhausted)
-        expect(card.querySelector(`time[datetime="${exhaustedAt}"]`)).toBeInTheDocument();
-      else expect(card.querySelector(`time[datetime="${exhaustedAt}"]`)).not.toBeInTheDocument();
-      if (access)
-        expect(within(card).queryByRole('button', { name: 'Sign in again' })).toBeInTheDocument();
-      else
-        expect(
-          within(card).queryByRole('button', { name: 'Sign in again' })
-        ).not.toBeInTheDocument();
-      expect(getAccountQuota).not.toHaveBeenCalled();
-      expect(client.operations['provider-subscription.account-logout']).not.toHaveBeenCalled();
-      expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
-      await user.click(screen.getByRole('button', { name: 'Refresh status' }));
-      await waitFor(() =>
-        expect(client.operations['provider-subscription.account-list']).toHaveBeenCalledTimes(4)
-      );
-      expect(getAccountQuota).not.toHaveBeenCalled();
-      if (access) {
-        expect(
-          within(card).getByText(/Inference was rejected for the current credential/)
-        ).toBeInTheDocument();
-        await user.click(within(card).getByRole('button', { name: 'Sign in again' }));
-        expect(
-          client.operations['provider-subscription.login-start']
-        ).toHaveBeenCalledExactlyOnceWith({
+    ])(
+      'shows $state beside unchanged live quota without requesting it',
+      async ({ access, exhausted }) => {
+        const user = userEvent.setup();
+        const account = ProviderSubscriptionAccountSchema.parse({
+          ...LOGGED_IN_ACCOUNT,
           subscriptionProviderId: providerId,
-          accountSlotId: 'primary',
-          ...{ mode: 'device_code' },
+          ...(access || exhausted
+            ? {
+                inferenceObservation: {
+                  ...(access ? { accessRejected: { observedAt: accessAt } } : {}),
+                  ...(exhausted ? { quotaExhausted: { observedAt: exhaustedAt } } : {}),
+                },
+              }
+            : {}),
         });
-        expect(getAccountQuota).not.toHaveBeenCalled();
-      } else {
-        expect(client.operations['provider-subscription.login-start']).not.toHaveBeenCalled();
-      }
-      if (exhausted) {
-        await user.click(within(card).getByRole('button', { name: 'Refresh quota' }));
+        const getAccountQuota = vi.fn().mockResolvedValue(quotaResponse);
+        const client = makeClient({
+          operations: {
+            'provider-subscription.account-list': vi
+              .fn()
+              .mockImplementation(
+                ({ subscriptionProviderId: id }: { subscriptionProviderId: string }) =>
+                  Promise.resolve(
+                    ProviderSubscriptionAccountsResponseSchema.parse({
+                      accounts: id === providerId ? [account] : [],
+                    })
+                  )
+              ),
+            'provider-subscription.account-status': vi.fn().mockResolvedValue(account),
+            'provider-subscription.account-quota': getAccountQuota,
+            'provider-subscription.login-start': vi.fn().mockResolvedValue(
+              ProviderSubscriptionAccountSchema.parse({
+                ...PENDING_ACCOUNT,
+                subscriptionProviderId: providerId,
+              })
+            ),
+          },
+        });
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        // Reuse a supplied live quota response to isolate rendering from the existing page-load read.
+        queryClient.setQueryData(
+          [...settingsKeys.aiInterface, 'quota', providerId, 'primary'],
+          quotaResponse
+        );
+        renderScreen(client, queryClient);
+        const card = await screen.findByRole('region', { name: providerName });
         await waitFor(() =>
-          expect(getAccountQuota).toHaveBeenCalledExactlyOnceWith({
-            subscriptionProviderId: providerId,
-            accountSlotId: 'primary',
-          })
+          expect(client.operations['provider-subscription.account-status']).toHaveBeenCalled()
         );
         expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
+        expect(card.querySelector(`time[datetime="${TIMESTAMP}"]`)).toBeInTheDocument();
+        if (access)
+          expect(within(card).queryByText('Inference access rejected')).toBeInTheDocument();
+        else expect(within(card).queryByText('Inference access rejected')).not.toBeInTheDocument();
+        if (exhausted)
+          expect(within(card).queryByText('Inference quota exhausted')).toBeInTheDocument();
+        else expect(within(card).queryByText('Inference quota exhausted')).not.toBeInTheDocument();
+        if (access) expect(card.querySelector(`time[datetime="${accessAt}"]`)).toBeInTheDocument();
+        else expect(card.querySelector(`time[datetime="${accessAt}"]`)).not.toBeInTheDocument();
+        if (exhausted)
+          expect(card.querySelector(`time[datetime="${exhaustedAt}"]`)).toBeInTheDocument();
+        else expect(card.querySelector(`time[datetime="${exhaustedAt}"]`)).not.toBeInTheDocument();
+        if (access)
+          expect(within(card).queryByRole('button', { name: 'Sign in again' })).toBeInTheDocument();
+        else
+          expect(
+            within(card).queryByRole('button', { name: 'Sign in again' })
+          ).not.toBeInTheDocument();
+        expect(getAccountQuota).not.toHaveBeenCalled();
+        expect(client.operations['provider-subscription.account-logout']).not.toHaveBeenCalled();
+        expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
+        await user.click(screen.getByRole('button', { name: 'Refresh status' }));
+        await waitFor(() =>
+          expect(client.operations['provider-subscription.account-list']).toHaveBeenCalledTimes(4)
+        );
+        expect(getAccountQuota).not.toHaveBeenCalled();
+        if (access) {
+          expect(
+            within(card).getByText(/Inference was rejected for the current credential/)
+          ).toBeInTheDocument();
+          await user.click(within(card).getByRole('button', { name: 'Sign in again' }));
+          expect(
+            client.operations['provider-subscription.login-start']
+          ).toHaveBeenCalledExactlyOnceWith({
+            subscriptionProviderId: providerId,
+            accountSlotId: 'primary',
+            ...{ mode: 'device_code' },
+          });
+          expect(getAccountQuota).not.toHaveBeenCalled();
+        } else {
+          expect(client.operations['provider-subscription.login-start']).not.toHaveBeenCalled();
+        }
+        if (exhausted) {
+          await user.click(within(card).getByRole('button', { name: 'Refresh quota' }));
+          await waitFor(() =>
+            expect(getAccountQuota).toHaveBeenCalledExactlyOnceWith({
+              subscriptionProviderId: providerId,
+              accountSlotId: 'primary',
+            })
+          );
+          expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
+        }
       }
-    });
+    );
 
     it('projects list observations, replaces them from detail and honors owner-cleared absence', async () => {
       const user = userEvent.setup();
@@ -2168,84 +2169,84 @@ describe('Round 2 Gateway dependency recovery', () => {
     { dependency: 'diagnostics', status: 500 },
     { dependency: 'diagnostics', status: 403 },
     { dependency: 'accounts', status: 403 },
-  ])('retains completed setup and exact failed-step retry after $dependency refresh fails with $status', async ({
-    dependency,
-    status,
-  }) => {
-    const user = userEvent.setup();
-    const getDiagnostics = vi
-      .fn()
-      .mockResolvedValueOnce(GATEWAY_DIAGNOSTICS)
-      .mockImplementation(() =>
+  ])(
+    'retains completed setup and exact failed-step retry after $dependency refresh fails with $status',
+    async ({ dependency, status }) => {
+      const user = userEvent.setup();
+      const getDiagnostics = vi
+        .fn()
+        .mockResolvedValueOnce(GATEWAY_DIAGNOSTICS)
+        .mockImplementation(() =>
+          dependency === 'diagnostics'
+            ? Promise.reject(new ApiCallError(status, 'private-diagnostics-refresh'))
+            : Promise.resolve(GATEWAY_DIAGNOSTICS)
+        );
+      let slotCreated = false;
+      const listAccounts = vi
+        .fn()
+        .mockImplementation(
+          ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+            dependency === 'accounts' && slotCreated
+              ? Promise.reject(new ApiCallError(403, 'private-account-list-refresh'))
+              : Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
+        );
+      const createAccount = vi.fn().mockImplementation(() => {
+        slotCreated = true;
+        return Promise.resolve({ ...CODEX_ACCOUNT, accountSlotId: 'secondary' });
+      });
+      const createFile = vi.fn().mockRejectedValue(new ApiCallError(403, 'private-profile-create'));
+      const client = makeClient({
+        operations: {
+          'diagnostics.app': getDiagnostics,
+          'runtime.file-create': createFile,
+          'provider-subscription.account-list': listAccounts,
+          'provider-subscription.account-create': createAccount,
+        },
+      });
+      renderScreen(client);
+      await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
+      await user.type(screen.getByLabelText('Setup account slot'), 'secondary');
+      await user.type(screen.getByLabelText('Setup models'), 'gpt-5');
+      await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
+      const diagnosticsFailure =
         dependency === 'diagnostics'
-          ? Promise.reject(new ApiCallError(status, 'private-diagnostics-refresh'))
-          : Promise.resolve(GATEWAY_DIAGNOSTICS)
-      );
-    let slotCreated = false;
-    const listAccounts = vi
-      .fn()
-      .mockImplementation(
+          ? await screen.findByText(
+              status === 403
+                ? /Access denied: Gateway diagnostics/
+                : "Couldn't load Gateway diagnostics."
+            )
+          : await screen.findByText('Access denied');
+      await waitFor(() => expect(createFile).toHaveBeenCalledTimes(1));
+      expect(screen.getByText('Slot creation: completed')).toBeInTheDocument();
+      expect(screen.getByText(/Profile creation: Access denied/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeDisabled();
+      getDiagnostics.mockResolvedValue(GATEWAY_DIAGNOSTICS);
+      listAccounts.mockImplementation(
         ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
-          dependency === 'accounts' && slotCreated
-            ? Promise.reject(new ApiCallError(403, 'private-account-list-refresh'))
-            : Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
+          Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
       );
-    const createAccount = vi.fn().mockImplementation(() => {
-      slotCreated = true;
-      return Promise.resolve({ ...CODEX_ACCOUNT, accountSlotId: 'secondary' });
-    });
-    const createFile = vi.fn().mockRejectedValue(new ApiCallError(403, 'private-profile-create'));
-    const client = makeClient({
-      operations: {
-        'diagnostics.app': getDiagnostics,
-        'runtime.file-create': createFile,
-        'provider-subscription.account-list': listAccounts,
-        'provider-subscription.account-create': createAccount,
-      },
-    });
-    renderScreen(client);
-    await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
-    await user.type(screen.getByLabelText('Setup account slot'), 'secondary');
-    await user.type(screen.getByLabelText('Setup models'), 'gpt-5');
-    await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
-    const diagnosticsFailure =
-      dependency === 'diagnostics'
-        ? await screen.findByText(
-            status === 403
-              ? /Access denied: Gateway diagnostics/
-              : "Couldn't load Gateway diagnostics."
-          )
-        : await screen.findByText('Access denied');
-    await waitFor(() => expect(createFile).toHaveBeenCalledTimes(1));
-    expect(screen.getByText('Slot creation: completed')).toBeInTheDocument();
-    expect(screen.getByText(/Profile creation: Access denied/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeDisabled();
-    getDiagnostics.mockResolvedValue(GATEWAY_DIAGNOSTICS);
-    listAccounts.mockImplementation(
-      ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
-        Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
-    );
-    await user.click(
-      dependency === 'diagnostics'
-        ? within(diagnosticsFailure.closest('[role="alert"]')!).getByRole('button', {
-            name: 'Try again',
-          })
-        : screen.getByRole('button', { name: 'Retry' })
-    );
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeEnabled()
-    );
-    createFile.mockResolvedValue({ file: { revision: 'profile-recovered' } });
-    await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
-    expect(await screen.findByText('Profile creation: completed')).toBeInTheDocument();
-    expect(screen.getByText(/Profile persisted revision: profile-recovered/)).toBeInTheDocument();
-    expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledTimes(1);
-    expect(createFile).toHaveBeenCalledTimes(2);
-    expect(createFile.mock.calls[0]).toEqual(createFile.mock.calls[1]);
-    expect(document.body.textContent).not.toMatch(
-      /private-diagnostics-refresh|private-profile-create|private-account-list-refresh/
-    );
-  });
+      await user.click(
+        dependency === 'diagnostics'
+          ? within(diagnosticsFailure.closest('[role="alert"]')!).getByRole('button', {
+              name: 'Try again',
+            })
+          : screen.getByRole('button', { name: 'Retry' })
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeEnabled()
+      );
+      createFile.mockResolvedValue({ file: { revision: 'profile-recovered' } });
+      await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
+      expect(await screen.findByText('Profile creation: completed')).toBeInTheDocument();
+      expect(screen.getByText(/Profile persisted revision: profile-recovered/)).toBeInTheDocument();
+      expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledTimes(1);
+      expect(createFile).toHaveBeenCalledTimes(2);
+      expect(createFile.mock.calls[0]).toEqual(createFile.mock.calls[1]);
+      expect(document.body.textContent).not.toMatch(
+        /private-diagnostics-refresh|private-profile-create|private-account-list-refresh/
+      );
+    }
+  );
 
   it('discloses affected tiers and preserves removal and read retry when the bound slot is initially absent', async () => {
     const user = userEvent.setup();

@@ -265,38 +265,38 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
   }
 });
 
-it.each([
-  'llm',
-  'mcp',
-] as const)('keeps unattributed Server %s diagnostics separate from Workspace admission', async (family) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-null-admission-'));
-  const coreDb = openCoreDb(dataRoot);
-  try {
-    applyMigrations(coreDb);
-    await openNativeServerLedger(coreDb);
-    const call = await startCapabilityCall({
-      workspaceDb: coreDb,
-      owner: { kind: 'server' },
-      authorityActor: null,
-      capabilityId: `${family}.server_diagnostic`,
-      family,
-      operation: 'diagnostic.observe',
-      redactionClass: 'metadata-only',
-    });
-    expect(call.context.authorityActor).toBeNull();
-    expect(listServerCapabilityCalls(coreDb)).toEqual([
-      expect.objectContaining({ id: call.id, owner: { kind: 'server' }, family }),
-    ]);
-    expect(coreDb.sqlite.prepare('SELECT workspace_id FROM capability_calls').get()).toEqual({
-      workspace_id: null,
-    });
-    expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
-  } finally {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
+it.each(['llm', 'mcp'] as const)(
+  'keeps unattributed Server %s diagnostics separate from Workspace admission',
+  async (family) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'server-null-admission-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      await openNativeServerLedger(coreDb);
+      const call = await startCapabilityCall({
+        workspaceDb: coreDb,
+        owner: { kind: 'server' },
+        authorityActor: null,
+        capabilityId: `${family}.server_diagnostic`,
+        family,
+        operation: 'diagnostic.observe',
+        redactionClass: 'metadata-only',
+      });
+      expect(call.context.authorityActor).toBeNull();
+      expect(listServerCapabilityCalls(coreDb)).toEqual([
+        expect.objectContaining({ id: call.id, owner: { kind: 'server' }, family }),
+      ]);
+      expect(coreDb.sqlite.prepare('SELECT workspace_id FROM capability_calls').get()).toEqual({
+        workspace_id: null,
+      });
+      expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(coreDb);
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   }
-});
+);
 
 it('rolls back Server admission when its actual linked Audit fails and returns no success acknowledgement', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'server-admit-audit-fault-'));

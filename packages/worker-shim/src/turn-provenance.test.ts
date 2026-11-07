@@ -126,25 +126,23 @@ function fixture(provenance: unknown, adapterId = 'codex') {
 }
 
 describe('admitted Turn provenance capture', () => {
-  it.each([
-    'codex',
-    'pi',
-    'opencode',
-    'deepseek',
-  ])('passes only the exact %s capture projection to the resident', async (adapterId) => {
-    const expected = declaration(lineage.threadId, adapterId);
-    const f = fixture(expected, adapterId);
-    try {
-      await expect(f.run()).resolves.toEqual({ status: 'completed' });
-      expect(f.startTurn).toHaveBeenCalledTimes(1);
-      expect(f.startTurn.mock.calls[0]?.[0].runtimeProvenance).toEqual({
-        ...expected,
-        lineage: { ...lineage, requestId: 'request_provenance' },
-      });
-    } finally {
-      rmSync(f.root, { recursive: true, force: true });
+  it.each(['codex', 'pi', 'opencode', 'deepseek'])(
+    'passes only the exact %s capture projection to the resident',
+    async (adapterId) => {
+      const expected = declaration(lineage.threadId, adapterId);
+      const f = fixture(expected, adapterId);
+      try {
+        await expect(f.run()).resolves.toEqual({ status: 'completed' });
+        expect(f.startTurn).toHaveBeenCalledTimes(1);
+        expect(f.startTurn.mock.calls[0]?.[0].runtimeProvenance).toEqual({
+          ...expected,
+          lineage: { ...lineage, requestId: 'request_provenance' },
+        });
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it.each([
     {

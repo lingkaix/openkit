@@ -31,49 +31,49 @@ const MATRIX_CASES: DeploymentModeMatrixCase[] = [
 ];
 
 describe('NanoCore deployment mode matrix', () => {
-  it.each(MATRIX_CASES)('boots diagnostics for core=$coreMode runtime=$runtimeTargetKind', async ({
-    coreMode,
-    runtimeTargetKind,
-  }) => {
-    const coreDb = createCoreDb();
-    const runtime = createMatrixRuntime(coreDb);
+  it.each(MATRIX_CASES)(
+    'boots diagnostics for core=$coreMode runtime=$runtimeTargetKind',
+    async ({ coreMode, runtimeTargetKind }) => {
+      const coreDb = createCoreDb();
+      const runtime = createMatrixRuntime(coreDb);
 
-    try {
-      let authorization: string | undefined;
-      if (coreDb) {
-        ensureLocalUser(coreDb);
-        const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
-          expiresAt: '2999-01-01T00:00:00.000Z',
-          ownerUserId: LOCAL_USER_ID,
-          scope: 'server-admin',
-          workspaceIds: [],
+      try {
+        let authorization: string | undefined;
+        if (coreDb) {
+          ensureLocalUser(coreDb);
+          const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
+            expiresAt: '2999-01-01T00:00:00.000Z',
+            ownerUserId: LOCAL_USER_ID,
+            scope: 'server-admin',
+            workspaceIds: [],
+          });
+          authorization = `Bearer ${serverAdmin.secret}`;
+        }
+        const app = createApp({
+          coreDb,
+          ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
+          agentManifests: [],
+          turnExecutor: runtime.turnExecutor,
         });
-        authorization = `Bearer ${serverAdmin.secret}`;
-      }
-      const app = createApp({
-        coreDb,
-        ...(coreMode === 'server' ? { auth: createSignedInAuthStub(), mode: 'server' } : {}),
-        agentManifests: [],
-        turnExecutor: runtime.turnExecutor,
-      });
-      const diagnostics = await app.request('/api/diagnostics', {
-        ...(authorization ? { headers: { authorization } } : {}),
-      });
-      const payload = await diagnostics.json();
+        const diagnostics = await app.request('/api/diagnostics', {
+          ...(authorization ? { headers: { authorization } } : {}),
+        });
+        const payload = await diagnostics.json();
 
-      expect(diagnostics.status).toBe(200);
-      expect(payload).toMatchObject({
-        auth: coreMode === 'server' ? { mode: 'server', signedIn: false } : { mode: 'local' },
-        mode: coreMode,
-      });
-      expect((runtime as unknown as { runtimeTargetKind?: string }).runtimeTargetKind).toEqual(
-        runtimeTargetKind
-      );
-      expect(runtime.turnExecutor).not.toHaveProperty('environmentBackend');
-    } finally {
-      coreDb.sqlite.close();
+        expect(diagnostics.status).toBe(200);
+        expect(payload).toMatchObject({
+          auth: coreMode === 'server' ? { mode: 'server', signedIn: false } : { mode: 'local' },
+          mode: coreMode,
+        });
+        expect((runtime as unknown as { runtimeTargetKind?: string }).runtimeTargetKind).toEqual(
+          runtimeTargetKind
+        );
+        expect(runtime.turnExecutor).not.toHaveProperty('environmentBackend');
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 });
 
 /**

@@ -22,20 +22,20 @@ const fields = [
 ];
 
 describe('Worker and Harness Core identity boundaries', () => {
-  it.each(fields)('uses the shared $kind grammar without adopting a native identity', ({
-    kind,
-    schema,
-  }) => {
-    expect(schema.safeParse(`${kind}_${uuid7}`).success).toBe(true);
-    expect(schema.safeParse(`${kind}_${uuid5}`).success).toBe(kind !== 'as');
-    for (const value of [
-      uuid7,
-      `${kind}_legacy`,
-      `native_${uuid7}`,
-      `${kind}_${uuid7.replace('-8000-', '-c000-')}`,
-      `${kind}_${uuid7}\n`,
-    ]) {
-      expect(schema.safeParse(value).success).toBe(false);
+  it.each(fields)(
+    'uses the shared $kind grammar without adopting a native identity',
+    ({ kind, schema }) => {
+      expect(schema.safeParse(`${kind}_${uuid7}`).success).toBe(true);
+      expect(schema.safeParse(`${kind}_${uuid5}`).success).toBe(kind !== 'as');
+      for (const value of [
+        uuid7,
+        `${kind}_legacy`,
+        `native_${uuid7}`,
+        `${kind}_${uuid7.replace('-8000-', '-c000-')}`,
+        `${kind}_${uuid7}\n`,
+      ]) {
+        expect(schema.safeParse(value).success).toBe(false);
+      }
     }
-  });
+  );
 });

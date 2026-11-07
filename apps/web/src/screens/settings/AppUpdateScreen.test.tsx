@@ -189,33 +189,34 @@ describe('App update administration', () => {
     expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
   });
 
-  it.each([
-    401, 403,
-  ])('hides a prepared receipt after admission %s through unresolved retry', async (status) => {
-    const user = userEvent.setup();
-    const client = makeClient();
-    const { queryClient } = renderScreen(client);
-    await fillPublishedSource(user);
-    await user.click(screen.getByRole('button', { name: 'Prepare' }));
-    await screen.findByText(REQUEST_ID);
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
-      new ApiCallError(status, 'private detail')
-    );
-    await act(() =>
-      queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] })
-    );
-    await screen.findByText('Access denied');
-    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
-    const pending = deferred<{ items: [] }>();
-    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
-    await act(async () => pending.resolve({ items: [] }));
-    await screen.findByRole('button', { name: 'Prepare' });
-    expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
-    expect(client.operations['app-update.start']).not.toHaveBeenCalled();
-  });
+  it.each([401, 403])(
+    'hides a prepared receipt after admission %s through unresolved retry',
+    async (status) => {
+      const user = userEvent.setup();
+      const client = makeClient();
+      const { queryClient } = renderScreen(client);
+      await fillPublishedSource(user);
+      await user.click(screen.getByRole('button', { name: 'Prepare' }));
+      await screen.findByText(REQUEST_ID);
+      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+        new ApiCallError(status, 'private detail')
+      );
+      await act(() =>
+        queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'admin-access'] })
+      );
+      await screen.findByText('Access denied');
+      expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+      const pending = deferred<{ items: [] }>();
+      vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
+      await act(async () => pending.resolve({ items: [] }));
+      await screen.findByRole('button', { name: 'Prepare' });
+      expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
+      expect(client.operations['app-update.start']).not.toHaveBeenCalled();
+    }
+  );
 
   it('hides prepared controls while a new admission read is pending', async () => {
     const user = userEvent.setup();
@@ -260,31 +261,32 @@ describe('App update administration', () => {
     expect(client.operations['app-update.prepare']).not.toHaveBeenCalled();
   });
 
-  it.each([
-    401, 403,
-  ])('treats diagnostics %s as denial and keeps receipts hidden during retry', async (status) => {
-    const user = userEvent.setup();
-    const client = makeClient({ 'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS) });
-    const { queryClient } = renderScreen(client);
-    await fillPublishedSource(user);
-    await user.click(screen.getByRole('button', { name: 'Prepare' }));
-    await screen.findByText(REQUEST_ID);
-    vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(
-      new ApiCallError(status, 'private detail')
-    );
-    await act(() =>
-      queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] })
-    );
-    await screen.findByText('Access denied');
-    const pending = deferred<{ items: [] }>();
-    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
-    await act(async () => pending.resolve({ items: [] }));
-    await screen.findByRole('button', { name: 'Prepare' });
-    expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
-  });
+  it.each([401, 403])(
+    'treats diagnostics %s as denial and keeps receipts hidden during retry',
+    async (status) => {
+      const user = userEvent.setup();
+      const client = makeClient({ 'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS) });
+      const { queryClient } = renderScreen(client);
+      await fillPublishedSource(user);
+      await user.click(screen.getByRole('button', { name: 'Prepare' }));
+      await screen.findByText(REQUEST_ID);
+      vi.mocked(client.operations['diagnostics.app']).mockRejectedValueOnce(
+        new ApiCallError(status, 'private detail')
+      );
+      await act(() =>
+        queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] })
+      );
+      await screen.findByText('Access denied');
+      const pending = deferred<{ items: [] }>();
+      vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+      await act(async () => pending.resolve({ items: [] }));
+      await screen.findByRole('button', { name: 'Prepare' });
+      expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('keeps prior receipts hidden when diagnostics denial is followed by a 500 retry', async () => {
     const user = userEvent.setup();

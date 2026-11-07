@@ -272,58 +272,56 @@ describe('snapshot Storage byte primitives', () => {
     expect(await readdir(f.root)).not.toContain('destination');
   });
 
-  it.each([
-    'digest',
-    'length',
-    'bound',
-  ] as const)('refuses %s failure without exposing destination bytes', async (fault) => {
-    const f = await fixture();
-    await expect(
-      copyVerifiedFile({
-        sourcePath: f.sourcePath,
-        destinationPath: f.destinationPath,
-        expectedBytes: fault === 'length' ? original.length + 1 : original.length,
-        expectedSha256:
-          fault === 'digest' ? sha256(Buffer.from('wrong original')) : sha256(original),
-        maxBytes: fault === 'bound' ? original.length - 1 : original.length,
-      })
-    ).rejects.toThrow();
-    expect(await readdir(f.root)).toEqual(['source']);
-    expect(await readFile(f.sourcePath)).toEqual(original);
-  });
-
-  it.each([
-    'source',
-    'destination',
-    'parent',
-  ] as const)('refuses a linked %s without changing outside bytes', async (link) => {
-    const f = await fixture();
-    const outside = join(f.root, 'outside');
-    await mkdir(outside);
-    const protectedPath = join(outside, 'protected');
-    await writeFile(protectedPath, original);
-    if (link === 'source') {
-      await rm(f.sourcePath);
-      await symlink(protectedPath, f.sourcePath);
-    } else if (link === 'destination') {
-      await symlink(protectedPath, f.destinationPath);
-    } else {
-      const linkedParent = join(f.root, 'linked');
-      await symlink(outside, linkedParent);
-      f.destinationPath = join(linkedParent, 'new');
+  it.each(['digest', 'length', 'bound'] as const)(
+    'refuses %s failure without exposing destination bytes',
+    async (fault) => {
+      const f = await fixture();
+      await expect(
+        copyVerifiedFile({
+          sourcePath: f.sourcePath,
+          destinationPath: f.destinationPath,
+          expectedBytes: fault === 'length' ? original.length + 1 : original.length,
+          expectedSha256:
+            fault === 'digest' ? sha256(Buffer.from('wrong original')) : sha256(original),
+          maxBytes: fault === 'bound' ? original.length - 1 : original.length,
+        })
+      ).rejects.toThrow();
+      expect(await readdir(f.root)).toEqual(['source']);
+      expect(await readFile(f.sourcePath)).toEqual(original);
     }
-    await expect(
-      copyVerifiedFile({
-        sourcePath: f.sourcePath,
-        destinationPath: f.destinationPath,
-        expectedBytes: original.length,
-        expectedSha256: sha256(original),
-        maxBytes: original.length,
-      })
-    ).rejects.toThrow();
-    expect(await readFile(protectedPath)).toEqual(original);
-    expect(await readdir(outside)).toEqual(['protected']);
-  });
+  );
+
+  it.each(['source', 'destination', 'parent'] as const)(
+    'refuses a linked %s without changing outside bytes',
+    async (link) => {
+      const f = await fixture();
+      const outside = join(f.root, 'outside');
+      await mkdir(outside);
+      const protectedPath = join(outside, 'protected');
+      await writeFile(protectedPath, original);
+      if (link === 'source') {
+        await rm(f.sourcePath);
+        await symlink(protectedPath, f.sourcePath);
+      } else if (link === 'destination') {
+        await symlink(protectedPath, f.destinationPath);
+      } else {
+        const linkedParent = join(f.root, 'linked');
+        await symlink(outside, linkedParent);
+        f.destinationPath = join(linkedParent, 'new');
+      }
+      await expect(
+        copyVerifiedFile({
+          sourcePath: f.sourcePath,
+          destinationPath: f.destinationPath,
+          expectedBytes: original.length,
+          expectedSha256: sha256(original),
+          maxBytes: original.length,
+        })
+      ).rejects.toThrow();
+      expect(await readFile(protectedPath)).toEqual(original);
+      expect(await readdir(outside)).toEqual(['protected']);
+    }
+  );
 
   it('hashes a first bounded independent copy without a previous identity', async () => {
     const f = await fixture();
@@ -366,30 +364,38 @@ describe('snapshot Storage byte primitives', () => {
     expect((await stat(f.destinationPath)).mode & 0o777).toBe(0o600);
   });
 
-  it.each([
-    'copy',
-    'publish',
-  ] as const)('does not acknowledge %s when durability fails', async (operation) => {
-    const f = await fixture();
-    faults.sync = true;
-    const pending =
-      operation === 'copy'
-        ? copyVerifiedFile({
-            sourcePath: f.sourcePath,
-            destinationPath: f.destinationPath,
-            expectedBytes: original.length,
-            expectedSha256: sha256(original),
-            maxBytes: original.length,
-          })
-        : publishDurableFile({ destinationPath: f.destinationPath, bytes: original, mode: 0o600 });
-    await expect(pending).rejects.toThrow();
-    faults.sync = false;
-    expect(await readFile(f.sourcePath)).toEqual(original);
-    // Failure before the first successful byte synchronization cannot publish a destination.
-    expect(await readdir(f.root)).toEqual(['source']);
-    await publishDurableFile({ destinationPath: f.destinationPath, bytes: original, mode: 0o600 });
-    expect(await readFile(f.destinationPath)).toEqual(original);
-  });
+  it.each(['copy', 'publish'] as const)(
+    'does not acknowledge %s when durability fails',
+    async (operation) => {
+      const f = await fixture();
+      faults.sync = true;
+      const pending =
+        operation === 'copy'
+          ? copyVerifiedFile({
+              sourcePath: f.sourcePath,
+              destinationPath: f.destinationPath,
+              expectedBytes: original.length,
+              expectedSha256: sha256(original),
+              maxBytes: original.length,
+            })
+          : publishDurableFile({
+              destinationPath: f.destinationPath,
+              bytes: original,
+              mode: 0o600,
+            });
+      await expect(pending).rejects.toThrow();
+      faults.sync = false;
+      expect(await readFile(f.sourcePath)).toEqual(original);
+      // Failure before the first successful byte synchronization cannot publish a destination.
+      expect(await readdir(f.root)).toEqual(['source']);
+      await publishDurableFile({
+        destinationPath: f.destinationPath,
+        bytes: original,
+        mode: 0o600,
+      });
+      expect(await readFile(f.destinationPath)).toEqual(original);
+    }
+  );
   it('does not acknowledge publication when final directory synchronization fails', async () => {
     const f = await fixture();
     faults.directorySync = true;

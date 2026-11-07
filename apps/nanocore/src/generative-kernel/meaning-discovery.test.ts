@@ -478,75 +478,75 @@ describe('native Light App meaning discovery', () => {
   it.each([
     { label: 'one oversized Skill', count: 1, characters: 1024 * 1024 },
     { label: 'aggregate Skills below the individual limit', count: 2, characters: 400 * 1024 },
-  ])('refuses $label when the complete UTF-8 JSON read exceeds 2 MiB', async ({
-    count,
-    characters,
-  }) => {
-    const f = await fixture();
-    // The accepted read ceiling counts encoded bytes; each non-ASCII character uses three UTF-8 bytes.
-    const maximum = 2 * 1024 * 1024;
-    let revision = 0;
-    const contents: string[] = [];
-    const references: string[] = [];
-    for (let index = 0; index < count; index++) {
-      const content = `---\nname: domain-${index}\ndescription: Interpret domain state.\n---\n${'界'.repeat(characters)}\n`;
-      const imported = importWorkspaceSkill({
-        dataRoot: f.dataRoot,
-        workspaceId: f.workspace.id,
-        producer: f.actor,
-        createdAt: NOW,
-        activate: true,
-        displayName: `Domain ${index}`,
-        expectedRevision: revision,
-        tree: [
-          {
-            kind: 'file',
-            path: 'SKILL.md',
-            contentBase64: Buffer.from(content).toString('base64'),
-          },
-        ],
-      });
-      revision = imported.catalog.revision;
-      contents.push(content);
-      references.push(
-        formatReferenceUri(
-          { scopeId: `skill/workspace/${f.workspace.id}`, objectId: imported.version.entryId },
-          imported.version.digest
-        )
-      );
-    }
-    const app = await createApp(f, references);
-    if (count > 1) {
-      for (const content of contents) {
-        expect(Buffer.byteLength(JSON.stringify(content), 'utf8')).toBeLessThan(maximum);
+  ])(
+    'refuses $label when the complete UTF-8 JSON read exceeds 2 MiB',
+    async ({ count, characters }) => {
+      const f = await fixture();
+      // The accepted read ceiling counts encoded bytes; each non-ASCII character uses three UTF-8 bytes.
+      const maximum = 2 * 1024 * 1024;
+      let revision = 0;
+      const contents: string[] = [];
+      const references: string[] = [];
+      for (let index = 0; index < count; index++) {
+        const content = `---\nname: domain-${index}\ndescription: Interpret domain state.\n---\n${'界'.repeat(characters)}\n`;
+        const imported = importWorkspaceSkill({
+          dataRoot: f.dataRoot,
+          workspaceId: f.workspace.id,
+          producer: f.actor,
+          createdAt: NOW,
+          activate: true,
+          displayName: `Domain ${index}`,
+          expectedRevision: revision,
+          tree: [
+            {
+              kind: 'file',
+              path: 'SKILL.md',
+              contentBase64: Buffer.from(content).toString('base64'),
+            },
+          ],
+        });
+        revision = imported.catalog.revision;
+        contents.push(content);
+        references.push(
+          formatReferenceUri(
+            { scopeId: `skill/workspace/${f.workspace.id}`, objectId: imported.version.entryId },
+            imported.version.digest
+          )
+        );
       }
+      const app = await createApp(f, references);
+      if (count > 1) {
+        for (const content of contents) {
+          expect(Buffer.byteLength(JSON.stringify(content), 'utf8')).toBeLessThan(maximum);
+        }
+      }
+      expect(
+        Buffer.byteLength(
+          JSON.stringify({
+            ...app,
+            meaning: references.map((reference, index) => ({
+              reference,
+              status: 'available',
+              content: contents[index],
+            })),
+          }),
+          'utf8'
+        )
+      ).toBeGreaterThan(maximum);
+      const result = await f
+        .invoke('kernel.apps.get', { workspaceId: f.workspace.id, appId: app.appId }, f.context)
+        .then(
+          (response) => ({
+            outcome: 'returned',
+            bytes: Buffer.byteLength(JSON.stringify(response), 'utf8'),
+          }),
+          (error: unknown) => ({ outcome: 'refused', error })
+        );
+      expect(result).toMatchObject({
+        outcome: 'refused',
+        error: { code: 'limit_exceeded', details: { maximum } },
+      });
+      expect(getLightApp(f.dataRoot, f.workspace.id, app.appId)).toEqual(app);
     }
-    expect(
-      Buffer.byteLength(
-        JSON.stringify({
-          ...app,
-          meaning: references.map((reference, index) => ({
-            reference,
-            status: 'available',
-            content: contents[index],
-          })),
-        }),
-        'utf8'
-      )
-    ).toBeGreaterThan(maximum);
-    const result = await f
-      .invoke('kernel.apps.get', { workspaceId: f.workspace.id, appId: app.appId }, f.context)
-      .then(
-        (response) => ({
-          outcome: 'returned',
-          bytes: Buffer.byteLength(JSON.stringify(response), 'utf8'),
-        }),
-        (error: unknown) => ({ outcome: 'refused', error })
-      );
-    expect(result).toMatchObject({
-      outcome: 'refused',
-      error: { code: 'limit_exceeded', details: { maximum } },
-    });
-    expect(getLightApp(f.dataRoot, f.workspace.id, app.appId)).toEqual(app);
-  });
+  );
 });

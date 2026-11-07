@@ -869,152 +869,160 @@ describe('worker control routes', () => {
       403,
       'worker_control_lease_not_live',
     ],
-  ] as const)('accepts restart heartbeat only for the %s', async (_case, reconnectKey, accepted, clearRuntimeTargetReadiness, beginBackendCleanup, expectedStatus, expectedErrorCode) => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-route-')));
-    const originalKey = createHash('sha256').update('route-process-key').digest('base64url');
-    const processKeyHash = createHash('sha256')
-      .update(Buffer.from(originalKey, 'base64url'))
-      .digest('base64url');
+  ] as const)(
+    'accepts restart heartbeat only for the %s',
+    async (_case, reconnectKey, accepted, clearRuntimeTargetReadiness, beginBackendCleanup, expectedStatus, expectedErrorCode) => {
+      const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-route-')));
+      const originalKey = createHash('sha256').update('route-process-key').digest('base64url');
+      const processKeyHash = createHash('sha256')
+        .update(Buffer.from(originalKey, 'base64url'))
+        .digest('base64url');
 
-    try {
-      applyMigrations(coreDb);
-      ensureLocalUser(coreDb);
-      const fixture = await createWorkerControlRouteFixture([], coreDb);
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        ownerUserId: LOCAL_USER_ID,
-      });
-      const binding = await createDurableWorkerControlLease(
-        coreDb,
-        fixture.environmentPackage,
-        fixture.lineage,
-        'process_key_reconnect'
-      );
-      const attemptId = await recordWorkerControlBackendSession(
-        coreDb,
-        fixture.environmentPackage,
-        fixture.lineage,
-        binding,
-        'sandbox-process-key-reconnect'
-      );
-      await transitionWorkerBackendSessionState(coreDb, {
-        fromState: 'materializing',
-        attemptId,
-        toState: 'materialized',
-      });
-      await transitionWorkerBackendSessionState(coreDb, {
-        fromState: 'materialized',
-        attemptId,
-        toState: 'launching',
-      });
-      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
-      const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
-      const firstGateway = createDefaultWorkerControlGateway(coreDb);
-      registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
-      const firstApp = createApp({
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
-        coreDb,
-        mode: 'server',
-        store: fixture.store,
-        workerControlGateway: firstGateway,
-      });
-      const firstHeartbeat = await firstApp.request('/api/worker-control/heartbeat', {
-        body: JSON.stringify(
-          heartbeatEnvelope(fixture.lineage, 0, 'starting', null, processKeyHash)
-        ),
-        headers: {
-          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      expect(firstHeartbeat.status).toBe(200);
-      expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
-      coreDb.sqlite
-        .prepare(
-          `UPDATE scheduler_execution_attempts
+      try {
+        applyMigrations(coreDb);
+        ensureLocalUser(coreDb);
+        const fixture = await createWorkerControlRouteFixture([], coreDb);
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          ownerUserId: LOCAL_USER_ID,
+        });
+        const binding = await createDurableWorkerControlLease(
+          coreDb,
+          fixture.environmentPackage,
+          fixture.lineage,
+          'process_key_reconnect'
+        );
+        const attemptId = await recordWorkerControlBackendSession(
+          coreDb,
+          fixture.environmentPackage,
+          fixture.lineage,
+          binding,
+          'sandbox-process-key-reconnect'
+        );
+        await transitionWorkerBackendSessionState(coreDb, {
+          fromState: 'materializing',
+          attemptId,
+          toState: 'materialized',
+        });
+        await transitionWorkerBackendSessionState(coreDb, {
+          fromState: 'materialized',
+          attemptId,
+          toState: 'launching',
+        });
+        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
+        const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
+        const firstGateway = createDefaultWorkerControlGateway(coreDb);
+        registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
+        const firstApp = createApp({
+          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+          coreDb,
+          mode: 'server',
+          store: fixture.store,
+          workerControlGateway: firstGateway,
+        });
+        const firstHeartbeat = await firstApp.request('/api/worker-control/heartbeat', {
+          body: JSON.stringify(
+            heartbeatEnvelope(fixture.lineage, 0, 'starting', null, processKeyHash)
+          ),
+          headers: {
+            authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        });
+        expect(firstHeartbeat.status).toBe(200);
+        expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
+        coreDb.sqlite
+          .prepare(
+            `UPDATE scheduler_execution_attempts
            SET recovery_state = 'awaiting-reconnect',
                recovery_deadline = '2099-01-01T00:00:00.000Z'
            WHERE attempt_id = '${testEntityId('attempt', 'lease_process_key_reconnect')}'`
-        )
-        .run();
-      if (clearRuntimeTargetReadiness) {
-        await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-          authoritativeGeneration: null,
-          closedGeneration: 1,
-          observedAt: '2026-07-05T00:00:01.000Z',
-          targetId: 'runtime-target-test',
-        });
-      }
-      if (beginBackendCleanup) {
-        await transitionWorkerBackendSessionState(coreDb, {
-          fromState: 'launching',
-          attemptId,
-          toState: 'cleanup-pending',
-        });
-      }
+          )
+          .run();
+        if (clearRuntimeTargetReadiness) {
+          await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+            authoritativeGeneration: null,
+            closedGeneration: 1,
+            observedAt: '2026-07-05T00:00:01.000Z',
+            targetId: 'runtime-target-test',
+          });
+        }
+        if (beginBackendCleanup) {
+          await transitionWorkerBackendSessionState(coreDb, {
+            fromState: 'launching',
+            attemptId,
+            toState: 'cleanup-pending',
+          });
+        }
 
-      const restartedGateway = createDefaultWorkerControlGateway(coreDb);
-      registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
-      const restartedApp = createApp({
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
-        coreDb,
-        mode: 'server',
-        store: fixture.store,
-        workerControlGateway: restartedGateway,
-      });
-      const reconnect = await restartedApp.request('/api/worker-control/heartbeat', {
-        body: JSON.stringify({
-          ...heartbeatEnvelope(fixture.lineage, 1, 'running', 'Worker survived NanoCore restart.'),
-          reconnectKey,
-        }),
-        headers: {
-          authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const lease = requireNanoHostExecutionAttempt(
-        coreDb,
-        testEntityId('attempt', 'lease_process_key_reconnect')
-      );
-      const durableWorkerControl = JSON.stringify(
-        coreDb.sqlite
-          .prepare(
-            `SELECT record_json FROM worker_control_records
+        const restartedGateway = createDefaultWorkerControlGateway(coreDb);
+        registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
+        const restartedApp = createApp({
+          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+          coreDb,
+          mode: 'server',
+          store: fixture.store,
+          workerControlGateway: restartedGateway,
+        });
+        const reconnect = await restartedApp.request('/api/worker-control/heartbeat', {
+          body: JSON.stringify({
+            ...heartbeatEnvelope(
+              fixture.lineage,
+              1,
+              'running',
+              'Worker survived NanoCore restart.'
+            ),
+            reconnectKey,
+          }),
+          headers: {
+            authorization: `Bearer ${workerRouteToken(binding, 'worker-control')}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        });
+        const lease = requireNanoHostExecutionAttempt(
+          coreDb,
+          testEntityId('attempt', 'lease_process_key_reconnect')
+        );
+        const durableWorkerControl = JSON.stringify(
+          coreDb.sqlite
+            .prepare(
+              `SELECT record_json FROM worker_control_records
              UNION ALL
              SELECT fingerprint AS record_json FROM worker_control_sequence_fingerprints`
-          )
-          .all()
-      );
+            )
+            .all()
+        );
 
-      expect(reconnect.status === 200).toBe(accepted);
-      expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
-      if (expectedErrorCode) {
-        expect(reconnect.status).toBe(expectedStatus);
-        expect(await reconnect.clone().json()).toMatchObject({ code: expectedErrorCode });
+        expect(reconnect.status === 200).toBe(accepted);
+        expect(absoluteAttemptDeadline(coreDb, fixture.lineage.turnId)).toBe(absoluteDeadline);
+        if (expectedErrorCode) {
+          expect(reconnect.status).toBe(expectedStatus);
+          expect(await reconnect.clone().json()).toMatchObject({ code: expectedErrorCode });
+        }
+        if (expectedErrorCode === 'worker_control_reconnect_required') {
+          expect(
+            listWorkerControlRejectedEvidenceForWorkspace(coreDb, fixture.lineage.workspaceId)
+          ).toEqual([]);
+        }
+        expect(lease).toMatchObject(
+          accepted
+            ? { lastWorkerSequence: 1, recoveryDeadline: null, recoveryState: null }
+            : {
+                lastWorkerSequence: 0,
+                recoveryDeadline: '2099-01-01T00:00:00.000Z',
+                recoveryState: 'awaiting-reconnect',
+              }
+        );
+        expect(await reconnect.text()).not.toContain(reconnectKey);
+        expect(durableWorkerControl).not.toContain(reconnectKey);
+      } finally {
+        coreDb.sqlite.close();
       }
-      if (expectedErrorCode === 'worker_control_reconnect_required') {
-        expect(
-          listWorkerControlRejectedEvidenceForWorkspace(coreDb, fixture.lineage.workspaceId)
-        ).toEqual([]);
-      }
-      expect(lease).toMatchObject(
-        accepted
-          ? { lastWorkerSequence: 1, recoveryDeadline: null, recoveryState: null }
-          : {
-              lastWorkerSequence: 0,
-              recoveryDeadline: '2099-01-01T00:00:00.000Z',
-              recoveryState: 'awaiting-reconnect',
-            }
-      );
-      expect(await reconnect.text()).not.toContain(reconnectKey);
-      expect(durableWorkerControl).not.toContain(reconnectKey);
-    } finally {
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('keeps event append sequence conflicts durable across default gateway instances', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-sequence-')));
@@ -1448,123 +1456,130 @@ describe('worker control routes', () => {
       'supplyRefreshAck',
       'acknowledgedAt',
     ],
-  ] as const)('replays the original native %s receipt with an inert retained annotation', async (operation, route, responseKey, timestampKey) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-descriptive-receipt-'));
-    const coreDb = openCoreDb(dataRoot);
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      if (coreDb.sqlite.open) coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture([], coreDb);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      workspaceId: lineage.workspaceId,
-      ownerUserId: LOCAL_USER_ID,
-    });
-    const binding = await createDurableWorkerControlLease(
-      coreDb,
-      environmentPackage,
-      lineage,
-      operation
-    );
-    let gateway = createDefaultWorkerControlGateway(coreDb);
-    const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-    let app = createApp({
-      coreDb,
-      mode: 'server',
-      store,
-      workerControlGateway: gateway,
-      workspaceMutationAdmission,
-    });
-    const payload =
-      operation === 'artifact_notice'
-        ? {
-            artifact: {
-              path: 'reports/result.md',
-              title: 'Original report',
-              mediaType: 'text/markdown',
-            },
-            lineage,
-            sequence: 1,
-          }
-        : {
-            body: {
-              refreshId: 'refresh_original',
-              status: 'applied',
-              message: 'Original acknowledgement',
-            },
-            lineage,
-            sequence: 1,
-            schemaVersion: 2,
-            operation,
-          };
-    const send = () =>
-      app.request(route, {
-        body: JSON.stringify(payload),
-        headers: {
-          authorization: `Bearer ${registration.token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
+  ] as const)(
+    'replays the original native %s receipt with an inert retained annotation',
+    async (operation, route, responseKey, timestampKey) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-descriptive-receipt-'));
+      const coreDb = openCoreDb(dataRoot);
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(dataRoot);
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       });
-    const first = await send();
-    expect(first.status).toBe(200);
-    const original = (await first.json()) as Record<string, Record<string, unknown>>;
-    const readReceipt = () =>
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture([], coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: lineage.workspaceId,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const binding = await createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        operation
+      );
+      let gateway = createDefaultWorkerControlGateway(coreDb);
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
+      let app = createApp({
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+        workspaceMutationAdmission,
+      });
+      const payload =
+        operation === 'artifact_notice'
+          ? {
+              artifact: {
+                path: 'reports/result.md',
+                title: 'Original report',
+                mediaType: 'text/markdown',
+              },
+              lineage,
+              sequence: 1,
+            }
+          : {
+              body: {
+                refreshId: 'refresh_original',
+                status: 'applied',
+                message: 'Original acknowledgement',
+              },
+              lineage,
+              sequence: 1,
+              schemaVersion: 2,
+              operation,
+            };
+      const send = () =>
+        app.request(route, {
+          body: JSON.stringify(payload),
+          headers: {
+            authorization: `Bearer ${registration.token}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        });
+      const first = await send();
+      expect(first.status).toBe(200);
+      const original = (await first.json()) as Record<string, Record<string, unknown>>;
+      const readReceipt = () =>
+        coreDb.sqlite
+          .prepare(
+            'SELECT accepted_at AS acceptedAt, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
+          )
+          .get(lineage.packageSnapshotId, operation, '1') as {
+          acceptedAt: string;
+          recordJson: string;
+        };
+      const accepted = readReceipt();
+      expect(JSON.parse(accepted.recordJson)).toEqual(original[responseKey]);
+      expect(original[responseKey]![timestampKey]).toBe(accepted.acceptedAt);
+      // Deliberate retained-boundary fault injection follows valid public publication; it changes no known core or request fingerprint.
+      const annotated = JSON.stringify({
+        ...JSON.parse(accepted.recordJson),
+        futureNote: 'inert descriptive annotation',
+      });
       coreDb.sqlite
         .prepare(
-          'SELECT accepted_at AS acceptedAt, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
+          'UPDATE worker_control_records SET record_json = ? WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
         )
-        .get(lineage.packageSnapshotId, operation, '1') as {
-        acceptedAt: string;
-        recordJson: string;
-      };
-    const accepted = readReceipt();
-    expect(JSON.parse(accepted.recordJson)).toEqual(original[responseKey]);
-    expect(original[responseKey]![timestampKey]).toBe(accepted.acceptedAt);
-    // Deliberate retained-boundary fault injection follows valid public publication; it changes no known core or request fingerprint.
-    const annotated = JSON.stringify({
-      ...JSON.parse(accepted.recordJson),
-      futureNote: 'inert descriptive annotation',
-    });
-    coreDb.sqlite
-      .prepare(
-        'UPDATE worker_control_records SET record_json = ? WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
-      )
-      .run(annotated, lineage.packageSnapshotId, operation, '1');
-    const beforeReplay = readReceipt();
-    const fingerprints = () =>
-      coreDb.sqlite
-        .prepare(
-          'SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = ? ORDER BY sequence'
-        )
-        .all(lineage.packageSnapshotId, operation);
-    const originalFingerprints = fingerprints();
-    // A fresh default gateway with the exact original credentials must obtain the original receipt from its durable reader.
-    gateway = createDefaultWorkerControlGateway(coreDb);
-    expect(registerDurableWorkerControlSession(gateway, environmentPackage, binding).token).toBe(
-      registration.token
-    );
-    app = createApp({
-      coreDb,
-      mode: 'server',
-      store,
-      workerControlGateway: gateway,
-      workspaceMutationAdmission,
-    });
-    const replay = await send();
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual(original);
-    // Contract Evolution's descriptive reader ignores additions without rewriting retained bytes or timestamps.
-    expect(readReceipt()).toEqual(beforeReplay);
-    expect(beforeReplay).toEqual({ acceptedAt: accepted.acceptedAt, recordJson: annotated });
-    expect(fingerprints()).toEqual(originalFingerprints);
-  });
+        .run(annotated, lineage.packageSnapshotId, operation, '1');
+      const beforeReplay = readReceipt();
+      const fingerprints = () =>
+        coreDb.sqlite
+          .prepare(
+            'SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = ? ORDER BY sequence'
+          )
+          .all(lineage.packageSnapshotId, operation);
+      const originalFingerprints = fingerprints();
+      // A fresh default gateway with the exact original credentials must obtain the original receipt from its durable reader.
+      gateway = createDefaultWorkerControlGateway(coreDb);
+      expect(registerDurableWorkerControlSession(gateway, environmentPackage, binding).token).toBe(
+        registration.token
+      );
+      app = createApp({
+        coreDb,
+        mode: 'server',
+        store,
+        workerControlGateway: gateway,
+        workspaceMutationAdmission,
+      });
+      const replay = await send();
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual(original);
+      // Contract Evolution's descriptive reader ignores additions without rewriting retained bytes or timestamps.
+      expect(readReceipt()).toEqual(beforeReplay);
+      expect(beforeReplay).toEqual({ acceptedAt: accepted.acceptedAt, recordJson: annotated });
+      expect(fingerprints()).toEqual(originalFingerprints);
+    }
+  );
 
   it('replays an ordinary native event with retained descriptive additions without a second live event', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-event-descriptive-receipt-'));
@@ -2507,45 +2522,45 @@ describe('worker control routes', () => {
     ]);
   });
 
-  it.each([
-    'turn.completed',
-    'turn.failed',
-  ] as const)('rejects direct %s event append outside final status', async (eventType) => {
-    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
-    workerControlCoreFixtures.push(coreDb);
-    ensureLocalUser(coreDb);
-    const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture([], coreDb);
-    const response = await app.request('/api/worker-control/events/append', {
-      body: JSON.stringify({
-        lineage,
-        record: {
-          event: {
-            data: {
-              evidenceManifestDigests: {},
-              status: eventType === 'turn.completed' ? 'completed' : 'failed',
-              stopReason: eventType === 'turn.completed' ? 'completed' : 'failed',
-            },
-            type: eventType,
-          },
-          kind: 'event',
+  it.each(['turn.completed', 'turn.failed'] as const)(
+    'rejects direct %s event append outside final status',
+    async (eventType) => {
+      const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+      workerControlCoreFixtures.push(coreDb);
+      ensureLocalUser(coreDb);
+      const { app, environmentPackage, gateway, lineage, token } =
+        await createWorkerControlRouteFixture([], coreDb);
+      const response = await app.request('/api/worker-control/events/append', {
+        body: JSON.stringify({
           lineage,
-          schemaVersion: 1,
-          sequence: 7,
+          record: {
+            event: {
+              data: {
+                evidenceManifestDigests: {},
+                status: eventType === 'turn.completed' ? 'completed' : 'failed',
+                stopReason: eventType === 'turn.completed' ? 'completed' : 'failed',
+              },
+              type: eventType,
+            },
+            kind: 'event',
+            lineage,
+            schemaVersion: 1,
+            sequence: 7,
+          },
+        }),
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
         },
-      }),
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
-    const responseBody = (await response.json()) as { code: string };
+        method: 'POST',
+      });
+      const responseBody = (await response.json()) as { code: string };
 
-    expect(response.status).toBe(400);
-    expect(responseBody.code).toBe('worker_control_terminal_event_requires_final_status');
-    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([]);
-  });
+      expect(response.status).toBe(400);
+      expect(responseBody.code).toBe('worker_control_terminal_event_requires_final_status');
+      expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([]);
+    }
+  );
 
   it('rolls back final status atomically before a successful restart retry', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-final-'));
@@ -4103,223 +4118,223 @@ describe('worker control routes', () => {
     }
   });
 
-  it.each([
-    'ordinary',
-    'reconnect',
-  ] as const)('keeps the native %s heartbeat tuple and memory unchanged on UPDATE and outer COMMIT failure', async (kind) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-native-rollback-'));
-    const coreDb = openCoreDb(dataRoot);
-    const gate = new Int32Array(new SharedArrayBuffer(12));
-    await shutdownControlStoreWorkerClient();
-    heartbeatNativeInterception.gate = gate.buffer as SharedArrayBuffer;
-    heartbeatNativeInterception.corePath = coreDbPath(dataRoot);
-    try {
-      applyMigrations(coreDb);
-      ensureLocalUser(coreDb);
-      const fixture = await createWorkerControlRouteFixture([], coreDb);
-      const { environmentPackage, lineage } = fixture;
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        workspaceId: lineage.workspaceId,
-        ownerUserId: LOCAL_USER_ID,
-      });
-      const binding = await createDurableWorkerControlLease(
-        coreDb,
-        environmentPackage,
-        lineage,
-        `heartbeat_native_${kind}`
-      );
-      const attemptId = testEntityId('attempt', `lease_heartbeat_native_${kind}`);
-      const backendAttemptId = await recordWorkerControlBackendSession(
-        coreDb,
-        environmentPackage,
-        lineage,
-        binding,
-        `sandbox-heartbeat-native-${kind}`
-      );
-      await transitionWorkerBackendSessionState(coreDb, {
-        attemptId: backendAttemptId,
-        fromState: 'materializing',
-        toState: 'materialized',
-      });
-      await transitionWorkerBackendSessionState(coreDb, {
-        attemptId: backendAttemptId,
-        fromState: 'materialized',
-        toState: 'launching',
-      });
-      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendAttemptId });
-      let gateway = createDefaultWorkerControlGateway(coreDb);
-      const registration = registerDurableWorkerControlSession(
-        gateway,
-        environmentPackage,
-        binding
-      );
-      const authorization = `Bearer ${registration.token}`;
-      const reconnectKey = createHash('sha256')
-        .update(`native-process-${kind}`)
-        .digest('base64url');
-      const processKeyHash = createHash('sha256')
-        .update(Buffer.from(reconnectKey, 'base64url'))
-        .digest('base64url');
-      await gateway.recordHeartbeat({
-        authorization,
-        ...heartbeatEnvelope(lineage, 0, 'starting', null, processKeyHash),
-      });
-      await gateway.recordHeartbeat({
-        authorization,
-        ...heartbeatEnvelope(lineage, 1, 'running', 'Before the fault.'),
-      });
-      if (kind === 'reconnect') {
-        // Worker Control restart adoption requires accepted sequence one before recovery can arm.
-        const restoreBackendSession = vi.fn(async () => {});
-        await classifyNanoHostAttemptsAfterRestart(coreDb, {
-          store: fixture.store,
-          executionBackend: new SimulatedTurnExecutor({ coreDb }),
-          reconcileExecutions: async () => {},
-          cleanupBackendSession: vi.fn(),
-          prepareBackendCleanup: vi.fn(() => false),
-          restoreBackendSession,
-          reconcileAcceptedFinalStatus: vi.fn(),
-          projectRecoveredTurn: vi.fn(),
+  it.each(['ordinary', 'reconnect'] as const)(
+    'keeps the native %s heartbeat tuple and memory unchanged on UPDATE and outer COMMIT failure',
+    async (kind) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-native-rollback-'));
+      const coreDb = openCoreDb(dataRoot);
+      const gate = new Int32Array(new SharedArrayBuffer(12));
+      await shutdownControlStoreWorkerClient();
+      heartbeatNativeInterception.gate = gate.buffer as SharedArrayBuffer;
+      heartbeatNativeInterception.corePath = coreDbPath(dataRoot);
+      try {
+        applyMigrations(coreDb);
+        ensureLocalUser(coreDb);
+        const fixture = await createWorkerControlRouteFixture([], coreDb);
+        const { environmentPackage, lineage } = fixture;
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          workspaceId: lineage.workspaceId,
+          ownerUserId: LOCAL_USER_ID,
         });
-        expect(restoreBackendSession).toHaveBeenCalledOnce();
-        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
-          phase: 'open',
-          recoveryState: 'awaiting-reconnect',
-          recoveryDeadline: expect.any(String),
+        const binding = await createDurableWorkerControlLease(
+          coreDb,
+          environmentPackage,
+          lineage,
+          `heartbeat_native_${kind}`
+        );
+        const attemptId = testEntityId('attempt', `lease_heartbeat_native_${kind}`);
+        const backendAttemptId = await recordWorkerControlBackendSession(
+          coreDb,
+          environmentPackage,
+          lineage,
+          binding,
+          `sandbox-heartbeat-native-${kind}`
+        );
+        await transitionWorkerBackendSessionState(coreDb, {
+          attemptId: backendAttemptId,
+          fromState: 'materializing',
+          toState: 'materialized',
         });
-        gateway = createDefaultWorkerControlGateway(coreDb);
-        registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-      }
-      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
-      // Both proofs hash their decoded bytes; the route digest is hex and the process digest is base64url.
-      expect(before.workerControlTokenHash).toBe(
-        createHash('sha256').update(Buffer.from(registration.token, 'base64url')).digest('hex')
-      );
-      expect(before.workerProcessKeyHash).toBe(processKeyHash);
-      const memoryBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat;
-      const fingerprints = () =>
-        coreDb.sqlite
-          .prepare(
-            `SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints
+        await transitionWorkerBackendSessionState(coreDb, {
+          attemptId: backendAttemptId,
+          fromState: 'materialized',
+          toState: 'launching',
+        });
+        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendAttemptId });
+        let gateway = createDefaultWorkerControlGateway(coreDb);
+        const registration = registerDurableWorkerControlSession(
+          gateway,
+          environmentPackage,
+          binding
+        );
+        const authorization = `Bearer ${registration.token}`;
+        const reconnectKey = createHash('sha256')
+          .update(`native-process-${kind}`)
+          .digest('base64url');
+        const processKeyHash = createHash('sha256')
+          .update(Buffer.from(reconnectKey, 'base64url'))
+          .digest('base64url');
+        await gateway.recordHeartbeat({
+          authorization,
+          ...heartbeatEnvelope(lineage, 0, 'starting', null, processKeyHash),
+        });
+        await gateway.recordHeartbeat({
+          authorization,
+          ...heartbeatEnvelope(lineage, 1, 'running', 'Before the fault.'),
+        });
+        if (kind === 'reconnect') {
+          // Worker Control restart adoption requires accepted sequence one before recovery can arm.
+          const restoreBackendSession = vi.fn(async () => {});
+          await classifyNanoHostAttemptsAfterRestart(coreDb, {
+            store: fixture.store,
+            executionBackend: new SimulatedTurnExecutor({ coreDb }),
+            reconcileExecutions: async () => {},
+            cleanupBackendSession: vi.fn(),
+            prepareBackendCleanup: vi.fn(() => false),
+            restoreBackendSession,
+            reconcileAcceptedFinalStatus: vi.fn(),
+            projectRecoveredTurn: vi.fn(),
+          });
+          expect(restoreBackendSession).toHaveBeenCalledOnce();
+          expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
+            phase: 'open',
+            recoveryState: 'awaiting-reconnect',
+            recoveryDeadline: expect.any(String),
+          });
+          gateway = createDefaultWorkerControlGateway(coreDb);
+          registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+        }
+        const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+        // Both proofs hash their decoded bytes; the route digest is hex and the process digest is base64url.
+        expect(before.workerControlTokenHash).toBe(
+          createHash('sha256').update(Buffer.from(registration.token, 'base64url')).digest('hex')
+        );
+        expect(before.workerProcessKeyHash).toBe(processKeyHash);
+        const memoryBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat;
+        const fingerprints = () =>
+          coreDb.sqlite
+            .prepare(
+              `SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints
            WHERE package_snapshot_id = ? AND operation = 'heartbeat' ORDER BY sequence`
-          )
-          .all(lineage.packageSnapshotId);
-      const fingerprintsBefore = fingerprints();
-      const heartbeatRows = () =>
-        coreDb.sqlite
-          .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
-          .all();
-      const request = {
-        authorization,
-        ...heartbeatEnvelope(lineage, 2, 'running', 'After the fault.'),
-        ...(kind === 'reconnect' ? { reconnectKey } : {}),
-      };
-      coreDb.sqlite.exec(`
+            )
+            .all(lineage.packageSnapshotId);
+        const fingerprintsBefore = fingerprints();
+        const heartbeatRows = () =>
+          coreDb.sqlite
+            .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
+            .all();
+        const request = {
+          authorization,
+          ...heartbeatEnvelope(lineage, 2, 'running', 'After the fault.'),
+          ...(kind === 'reconnect' ? { reconnectKey } : {}),
+        };
+        coreDb.sqlite.exec(`
           CREATE TRIGGER reject_native_heartbeat_acceptance
           BEFORE UPDATE ON scheduler_execution_attempts
           WHEN NEW.attempt_id = '${attemptId}' AND NEW.last_worker_sequence = 2
           BEGIN SELECT RAISE(ABORT, 'injected native heartbeat UPDATE failure'); END
         `);
-      coreDb.sqlite.pragma('query_only = ON');
-      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
-      await expect(gateway.recordHeartbeat(request)).rejects.toMatchObject({
-        code: 'constraint',
-        commit: 'not-committed',
-      });
-      // Storage complete-tuple rule also rolls back adoption when later liveness fails.
-      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
-      expect(fingerprints()).toEqual(fingerprintsBefore);
-      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
-        memoryBefore
-      );
-      expect(heartbeatRows()).toEqual([]);
-      coreDb.sqlite.pragma('query_only = OFF');
-      coreDb.sqlite.exec('DROP TRIGGER reject_native_heartbeat_acceptance');
-      coreDb.sqlite.pragma('query_only = ON');
-
-      armHeartbeatNativeCommit(gate, 1);
-      await expect(gateway.recordHeartbeat(request)).rejects.toMatchObject({
-        code: 'commit-unknown',
-        commit: 'unknown',
-      });
-      expect(Atomics.load(gate, 1)).toBe(1);
-      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
-      expect(fingerprints()).toEqual(fingerprintsBefore);
-      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
-        memoryBefore
-      );
-      expect(heartbeatRows()).toEqual([]);
-
-      // Native COMMIT failure poisons the owner. Inspect absence before explicit reopen and retry.
-      await shutdownControlStoreWorkerClient();
-      const scope = nativeProductScope(dataRoot, { kind: 'server' });
-      // Finish any opening/migration transaction before holding the heartbeat's own COMMIT.
-      await getControlStoreWorkerClient().open({
-        database: `core:${scope.path}`,
-        path: scope.path,
-        dataRoot,
-        create: false,
-        initialize: 'core',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
-      armHeartbeatNativeCommit(gate, 2);
-      let settled = false;
-      const retry = Promise.resolve()
-        .then(() => gateway.recordHeartbeat(request))
-        .then(
-          (ack) => {
-            settled = true;
-            return { ack };
-          },
-          (error: unknown) => {
-            settled = true;
-            return { error };
-          }
+        coreDb.sqlite.pragma('query_only = ON');
+        expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        await expect(gateway.recordHeartbeat(request)).rejects.toMatchObject({
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+        // Storage complete-tuple rule also rolls back adoption when later liveness fails.
+        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+        expect(fingerprints()).toEqual(fingerprintsBefore);
+        expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+          memoryBefore
         );
-      await waitForHeartbeatNativeObservation(() => Atomics.load(gate, 1) === 1 || settled);
-      expect(Atomics.load(gate, 1)).toBe(1);
-      expect(settled).toBe(false);
-      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
-      expect(fingerprints()).toEqual(fingerprintsBefore);
-      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
-        memoryBefore
-      );
-      releaseHeartbeatNativeCommit(gate);
-      expect(await retry).toEqual({
-        ack: { schemaVersion: 2, accepted: true, nextExpectedSequence: 3, diagnostics: [] },
-      });
-      expect(fingerprints()).toHaveLength(fingerprintsBefore.length + 1);
-      const accepted = requireNanoHostExecutionAttempt(coreDb, attemptId);
-      expect(accepted).toMatchObject({
-        phase: 'open',
-        lastWorkerSequence: 2,
-        lastAcceptedHeartbeatAt: expect.any(String),
-        recoveryState: null,
-        recoveryDeadline: null,
-        workerProcessKeyHash: processKeyHash,
-      });
-      expect(accepted.heartbeatDeadline).not.toBe(before.heartbeatDeadline);
-      expect(accepted.deadline).toBe(before.deadline);
-      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toMatchObject({
-        sequence: 2,
-        message: 'After the fault.',
-      });
-      expect(heartbeatRows()).toEqual([]);
-      // Raw process keys and route tokens never enter retained heartbeat evidence.
-      expect(JSON.stringify(fingerprints())).not.toContain(reconnectKey);
-      expect(JSON.stringify(fingerprints())).not.toContain(registration.token);
-    } finally {
-      releaseHeartbeatNativeCommit(gate);
-      await shutdownControlStoreWorkerClient();
-      heartbeatNativeInterception.gate = undefined;
-      vi.useRealTimers();
-      closeWorkspaceProductReadHandles(dataRoot);
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+        expect(heartbeatRows()).toEqual([]);
+        coreDb.sqlite.pragma('query_only = OFF');
+        coreDb.sqlite.exec('DROP TRIGGER reject_native_heartbeat_acceptance');
+        coreDb.sqlite.pragma('query_only = ON');
+
+        armHeartbeatNativeCommit(gate, 1);
+        await expect(gateway.recordHeartbeat(request)).rejects.toMatchObject({
+          code: 'commit-unknown',
+          commit: 'unknown',
+        });
+        expect(Atomics.load(gate, 1)).toBe(1);
+        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+        expect(fingerprints()).toEqual(fingerprintsBefore);
+        expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+          memoryBefore
+        );
+        expect(heartbeatRows()).toEqual([]);
+
+        // Native COMMIT failure poisons the owner. Inspect absence before explicit reopen and retry.
+        await shutdownControlStoreWorkerClient();
+        const scope = nativeProductScope(dataRoot, { kind: 'server' });
+        // Finish any opening/migration transaction before holding the heartbeat's own COMMIT.
+        await getControlStoreWorkerClient().open({
+          database: `core:${scope.path}`,
+          path: scope.path,
+          dataRoot,
+          create: false,
+          initialize: 'core',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        });
+        armHeartbeatNativeCommit(gate, 2);
+        let settled = false;
+        const retry = Promise.resolve()
+          .then(() => gateway.recordHeartbeat(request))
+          .then(
+            (ack) => {
+              settled = true;
+              return { ack };
+            },
+            (error: unknown) => {
+              settled = true;
+              return { error };
+            }
+          );
+        await waitForHeartbeatNativeObservation(() => Atomics.load(gate, 1) === 1 || settled);
+        expect(Atomics.load(gate, 1)).toBe(1);
+        expect(settled).toBe(false);
+        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+        expect(fingerprints()).toEqual(fingerprintsBefore);
+        expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+          memoryBefore
+        );
+        releaseHeartbeatNativeCommit(gate);
+        expect(await retry).toEqual({
+          ack: { schemaVersion: 2, accepted: true, nextExpectedSequence: 3, diagnostics: [] },
+        });
+        expect(fingerprints()).toHaveLength(fingerprintsBefore.length + 1);
+        const accepted = requireNanoHostExecutionAttempt(coreDb, attemptId);
+        expect(accepted).toMatchObject({
+          phase: 'open',
+          lastWorkerSequence: 2,
+          lastAcceptedHeartbeatAt: expect.any(String),
+          recoveryState: null,
+          recoveryDeadline: null,
+          workerProcessKeyHash: processKeyHash,
+        });
+        expect(accepted.heartbeatDeadline).not.toBe(before.heartbeatDeadline);
+        expect(accepted.deadline).toBe(before.deadline);
+        expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toMatchObject({
+          sequence: 2,
+          message: 'After the fault.',
+        });
+        expect(heartbeatRows()).toEqual([]);
+        // Raw process keys and route tokens never enter retained heartbeat evidence.
+        expect(JSON.stringify(fingerprints())).not.toContain(reconnectKey);
+        expect(JSON.stringify(fingerprints())).not.toContain(registration.token);
+      } finally {
+        releaseHeartbeatNativeCommit(gate);
+        await shutdownControlStoreWorkerClient();
+        heartbeatNativeInterception.gate = undefined;
+        vi.useRealTimers();
+        closeWorkspaceProductReadHandles(dataRoot);
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('refuses a heartbeat queued behind native attempt revocation using current Core authority', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-native-authority-'));

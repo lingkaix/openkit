@@ -127,28 +127,27 @@ describe('session workspace layout schema', () => {
     }
   });
 
-  it.each([
-    '/workspace',
-    '/sandbox',
-    '/openkit/threads',
-  ])('rejects Turn cleanup below the retained root %s', (retainedRoot) => {
-    const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
-    const scratch = planned.layout.slots.find((slot) => slot.id === 'scratch')!;
-    const layout = {
-      ...planned.layout,
-      root: retainedRoot,
-      workingDirectory: `${retainedRoot}/worktrees/wsl_demo`,
-      slots: [{ ...scratch, path: `${retainedRoot}/nested/turn-scratch` }],
-    };
+  it.each(['/workspace', '/sandbox', '/openkit/threads'])(
+    'rejects Turn cleanup below the retained root %s',
+    (retainedRoot) => {
+      const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
+      const scratch = planned.layout.slots.find((slot) => slot.id === 'scratch')!;
+      const layout = {
+        ...planned.layout,
+        root: retainedRoot,
+        workingDirectory: `${retainedRoot}/worktrees/wsl_demo`,
+        slots: [{ ...scratch, path: `${retainedRoot}/nested/turn-scratch` }],
+      };
 
-    expect(SessionWorkspaceLayoutSchema.safeParse(layout).success).toBe(false);
-    expect(
-      SessionWorkspaceLayoutSchema.safeParse({
-        ...layout,
-        slots: [{ ...scratch, path: '/openkit/sessions/as_demo/scratch' }],
-      }).success
-    ).toBe(true);
-  });
+      expect(SessionWorkspaceLayoutSchema.safeParse(layout).success).toBe(false);
+      expect(
+        SessionWorkspaceLayoutSchema.safeParse({
+          ...layout,
+          slots: [{ ...scratch, path: '/openkit/sessions/as_demo/scratch' }],
+        }).success
+      ).toBe(true);
+    }
+  );
 
   it('rejects Turn cleanup in the separate retained threads mount with the ordinary workspace root', () => {
     const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });
@@ -300,23 +299,26 @@ describe('session workspace planner', () => {
     ['artifact', 'openkit-artifact', 'read-only', 'artifact-input', 'copy'],
     ['attachment', 'openkit-upload', 'read-only', 'turn-inputs', 'copy'],
     ['generated', 'generated', 'read-only', 'turn-inputs', 'copy'],
-  ] as const)('binds %s inputs within the declared source, access and mode envelope', (kind, sourceKind, access, slotId, mode) => {
-    const planned = planSessionWorkspaceMaterialization({
-      environmentPackage: packageFixture({
-        workspace: {
-          root: '/workspace',
-          inputs: [{ id: 'input', kind, source: { kind: sourceKind }, access }],
-          outputs: [],
-        },
-      }),
-    });
-    const slot = planned.layout.slots.find((candidate) => candidate.id === slotId)!;
+  ] as const)(
+    'binds %s inputs within the declared source, access and mode envelope',
+    (kind, sourceKind, access, slotId, mode) => {
+      const planned = planSessionWorkspaceMaterialization({
+        environmentPackage: packageFixture({
+          workspace: {
+            root: '/workspace',
+            inputs: [{ id: 'input', kind, source: { kind: sourceKind }, access }],
+            outputs: [],
+          },
+        }),
+      });
+      const slot = planned.layout.slots.find((candidate) => candidate.id === slotId)!;
 
-    expect(planned.materialization.inputs).toEqual([{ inputId: 'input', slotId, mode, access }]);
-    expect(slot.allowedSourceKinds).toContain(sourceKind);
-    expect(slot.allowedMaterializationModes).toContain(mode);
-    expect(slot.access).toBe(access);
-  });
+      expect(planned.materialization.inputs).toEqual([{ inputId: 'input', slotId, mode, access }]);
+      expect(slot.allowedSourceKinds).toContain(sourceKind);
+      expect(slot.allowedMaterializationModes).toContain(mode);
+      expect(slot.access).toBe(access);
+    }
+  );
 
   it.each([
     ['unsupported source kind', { source: { kind: 's3' } }],
@@ -557,107 +559,106 @@ describe('session workspace planner', () => {
     expect(second.compatibilityKey.digest).toBe(first.compatibilityKey.digest);
   });
 
-  it.each([
-    'en',
-    'de',
-    'sv',
-  ])('keeps compatibility identity and strict reuse under %s collation', (locale) => {
-    const labels = { z: 'lower-z', ä: 'umlaut', Z: 'upper', Å: 'ring', a: 'lower-a' };
-    const policy = AgentEnvironmentPolicySchema.parse({
-      snapshotId: 'policy_1',
-      resources: { labels },
-    });
-    const layout = SessionWorkspaceLayoutSchema.parse({
-      schemaVersion: 1,
-      layoutId: 'layout_locale',
-      root: '/workspace',
-      workingDirectory: '/workspace',
-      slots: [
-        {
-          id: 'scratch',
-          kind: 'scratch',
-          path: '/openkit/scratch',
-          access: 'read-write',
-          allowedSourceKinds: ['generated'],
-          allowedMaterializationModes: ['create-empty'],
-          writeBack: 'discard',
-          retention: 'session',
-          lineageRequired: false,
-        },
-      ],
-      control: {
-        transcriptRoot: '/openkit/transcript',
-        contextRoot: '/openkit/context',
-        instructionsRoot: '/openkit/instructions',
-      },
-    });
-    // SessionCompatibilityKey: deterministic static identity and exact equality control V1 reuse.
-    // Keep the current envelope and SHA-256 tag; only object-member ordering changes.
-    const expectedBytes =
-      '{"agent":null,"backend":null,"control":null,"layout":{"control":{' +
-      '"contextRoot":"/openkit/context","instructionsRoot":"/openkit/instructions",' +
-      '"transcriptRoot":"/openkit/transcript"},"layoutId":"layout_locale",' +
-      '"root":"/workspace","schemaVersion":1,"slots":[{"access":"read-write",' +
-      '"allowedMaterializationModes":["create-empty"],"allowedSourceKinds":["generated"],' +
-      '"id":"scratch","kind":"scratch","lineageRequired":false,"path":"/openkit/scratch",' +
-      '"retention":"session","writeBack":"discard"}],"workingDirectory":"/workspace"},' +
-      '"policy":{"resources":{"labels":{"Z":"upper","a":"lower-a","z":"lower-z",' +
-      '"Å":"ring","ä":"umlaut"}},"snapshotId":"policy_1"},"runtime":null,"vault":null}';
-    const expectedDigest = `sha256:${createHash('sha256').update(expectedBytes, 'utf8').digest('hex')}`;
-    const initial = planSessionWorkspaceMaterialization({
-      environmentPackage: packageFixture({ policy }),
-    });
-    const existingSession = {
-      agentSessionId: 'as_00000000-0000-754f-9277-4058a2a883d1',
-      compatibilityKey: initial.compatibilityKey.digest,
-      status: 'idle' as const,
-    };
-    expect(Intl.Collator.supportedLocalesOf([locale])).toEqual([locale]);
-    const collator = new Intl.Collator(locale);
-    expect(Math.sign(collator.compare('ä', 'z'))).toBe(locale === 'sv' ? 1 : -1);
-    const comparison = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
-      this: string,
-      other: string
-    ) {
-      return collator.compare(String(this), other);
-    });
-    try {
-      expect(computeSessionCompatibilityKey(layout, { policy })).toEqual({
-        schemaVersion: 1,
-        algorithm: 'sha256',
-        digest: expectedDigest,
-      });
-      const reorderedPolicy = AgentEnvironmentPolicySchema.parse({
-        resources: { labels: Object.fromEntries(Object.entries(labels).reverse()) },
+  it.each(['en', 'de', 'sv'])(
+    'keeps compatibility identity and strict reuse under %s collation',
+    (locale) => {
+      const labels = { z: 'lower-z', ä: 'umlaut', Z: 'upper', Å: 'ring', a: 'lower-a' };
+      const policy = AgentEnvironmentPolicySchema.parse({
         snapshotId: 'policy_1',
+        resources: { labels },
       });
-      const reusable = planSessionWorkspaceMaterialization({
-        environmentPackage: packageFixture({ policy: reorderedPolicy }),
-        existingSession,
+      const layout = SessionWorkspaceLayoutSchema.parse({
+        schemaVersion: 1,
+        layoutId: 'layout_locale',
+        root: '/workspace',
+        workingDirectory: '/workspace',
+        slots: [
+          {
+            id: 'scratch',
+            kind: 'scratch',
+            path: '/openkit/scratch',
+            access: 'read-write',
+            allowedSourceKinds: ['generated'],
+            allowedMaterializationModes: ['create-empty'],
+            writeBack: 'discard',
+            retention: 'session',
+            lineageRequired: false,
+          },
+        ],
+        control: {
+          transcriptRoot: '/openkit/transcript',
+          contextRoot: '/openkit/context',
+          instructionsRoot: '/openkit/instructions',
+        },
       });
-      expect(reusable.compatibilityKey.digest).toBe(initial.compatibilityKey.digest);
-      expect(reusable.decision).toEqual({
-        kind: 'reuse',
-        agentSessionId: existingSession.agentSessionId,
+      // SessionCompatibilityKey: deterministic static identity and exact equality control V1 reuse.
+      // Keep the current envelope and SHA-256 tag; only object-member ordering changes.
+      const expectedBytes =
+        '{"agent":null,"backend":null,"control":null,"layout":{"control":{' +
+        '"contextRoot":"/openkit/context","instructionsRoot":"/openkit/instructions",' +
+        '"transcriptRoot":"/openkit/transcript"},"layoutId":"layout_locale",' +
+        '"root":"/workspace","schemaVersion":1,"slots":[{"access":"read-write",' +
+        '"allowedMaterializationModes":["create-empty"],"allowedSourceKinds":["generated"],' +
+        '"id":"scratch","kind":"scratch","lineageRequired":false,"path":"/openkit/scratch",' +
+        '"retention":"session","writeBack":"discard"}],"workingDirectory":"/workspace"},' +
+        '"policy":{"resources":{"labels":{"Z":"upper","a":"lower-a","z":"lower-z",' +
+        '"Å":"ring","ä":"umlaut"}},"snapshotId":"policy_1"},"runtime":null,"vault":null}';
+      const expectedDigest = `sha256:${createHash('sha256').update(expectedBytes, 'utf8').digest('hex')}`;
+      const initial = planSessionWorkspaceMaterialization({
+        environmentPackage: packageFixture({ policy }),
       });
-      const replacement = planSessionWorkspaceMaterialization({
-        environmentPackage: packageFixture({
-          policy: AgentEnvironmentPolicySchema.parse({
-            snapshotId: 'policy_1',
-            resources: { labels: { ...labels, z: 'changed' } },
+      const existingSession = {
+        agentSessionId: 'as_00000000-0000-754f-9277-4058a2a883d1',
+        compatibilityKey: initial.compatibilityKey.digest,
+        status: 'idle' as const,
+      };
+      expect(Intl.Collator.supportedLocalesOf([locale])).toEqual([locale]);
+      const collator = new Intl.Collator(locale);
+      expect(Math.sign(collator.compare('ä', 'z'))).toBe(locale === 'sv' ? 1 : -1);
+      const comparison = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+        this: string,
+        other: string
+      ) {
+        return collator.compare(String(this), other);
+      });
+      try {
+        expect(computeSessionCompatibilityKey(layout, { policy })).toEqual({
+          schemaVersion: 1,
+          algorithm: 'sha256',
+          digest: expectedDigest,
+        });
+        const reorderedPolicy = AgentEnvironmentPolicySchema.parse({
+          resources: { labels: Object.fromEntries(Object.entries(labels).reverse()) },
+          snapshotId: 'policy_1',
+        });
+        const reusable = planSessionWorkspaceMaterialization({
+          environmentPackage: packageFixture({ policy: reorderedPolicy }),
+          existingSession,
+        });
+        expect(reusable.compatibilityKey.digest).toBe(initial.compatibilityKey.digest);
+        expect(reusable.decision).toEqual({
+          kind: 'reuse',
+          agentSessionId: existingSession.agentSessionId,
+        });
+        const replacement = planSessionWorkspaceMaterialization({
+          environmentPackage: packageFixture({
+            policy: AgentEnvironmentPolicySchema.parse({
+              snapshotId: 'policy_1',
+              resources: { labels: { ...labels, z: 'changed' } },
+            }),
           }),
-        }),
-        existingSession,
-      });
-      expect(replacement.compatibilityKey.digest).not.toBe(initial.compatibilityKey.digest);
-      expect(replacement.decision).toEqual({
-        kind: 'replace',
-        reason: 'session-compatibility-key-mismatch',
-      });
-    } finally {
-      comparison.mockRestore();
+          existingSession,
+        });
+        expect(replacement.compatibilityKey.digest).not.toBe(initial.compatibilityKey.digest);
+        expect(replacement.decision).toEqual({
+          kind: 'replace',
+          reason: 'session-compatibility-key-mismatch',
+        });
+      } finally {
+        comparison.mockRestore();
+      }
     }
-  });
+  );
 
   it('uses strict compatibility key equality for V1 session reuse', () => {
     const planned = planSessionWorkspaceMaterialization({ environmentPackage: packageFixture() });

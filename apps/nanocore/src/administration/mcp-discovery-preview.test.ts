@@ -369,72 +369,72 @@ describe('explicit administrator MCP discovery preview', () => {
     expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
     expect(loadResourceCatalog(f.dataRoot, { kind: 'server' }).mcp.bindings).toEqual([]);
   });
-  it.each([
-    'grant',
-    'administrator',
-    'catalog',
-  ] as const)('rejects %s authority changed during actual discovery', async (changed) => {
-    const f = fixture();
-    let entered!: () => void;
-    const seen = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const upstream = await createMcpHttpStub({
-      beforeList: async () => {
-        entered();
-        await held;
-      },
-    });
-    cleanup.push(() => upstream.close());
-    cleanup.push(() => release());
-    const input = await seed(f, upstream.url);
-    const reference = await f.call('vault.server-mcp-secret-create', {
-      requestId: randomUUID(),
-      material: 'preview-fake-material-canary',
-    });
-    const grant = await f.call('vault.server-mcp-grant-create', {
-      requestId: randomUUID(),
-      referenceId: reference.referenceId,
-    });
-    const result = f.call('administration.mcp-discovery-preview', {
-      ...input,
-      timeoutMs: 5000,
-      credentialBindings: [
-        {
-          slot: 'authorization',
-          vaultGrantId: grant.grantId,
-          sink: { kind: 'header', name: 'Authorization' },
+  it.each(['grant', 'administrator', 'catalog'] as const)(
+    'rejects %s authority changed during actual discovery',
+    async (changed) => {
+      const f = fixture();
+      let entered!: () => void;
+      const seen = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const upstream = await createMcpHttpStub({
+        beforeList: async () => {
+          entered();
+          await held;
         },
-      ],
-    });
-    // Observe a rejection immediately so an early setup failure cannot become an unhandled promise.
-    const outcome = result.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error })
-    );
-    await seen;
-    if (changed === 'grant')
-      await f.call('vault.server-mcp-grant-revoke', {
-        requestId: randomUUID(),
-        grantId: grant.grantId,
       });
-    else if (changed === 'administrator') revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
-    else
-      await f.call('administration.server-mcp-remove', {
+      cleanup.push(() => upstream.close());
+      cleanup.push(() => release());
+      const input = await seed(f, upstream.url);
+      const reference = await f.call('vault.server-mcp-secret-create', {
         requestId: randomUUID(),
-        mcpId: input.mcpId,
-        expectedRevision: input.expectedRevision,
+        material: 'preview-fake-material-canary',
       });
-    release();
-    expect(await outcome).toMatchObject({ error: { status: changed === 'catalog' ? 409 : 403 } });
-    expect(upstream.observed.filter((name) => name.endsWith('|tools/list'))).toHaveLength(1);
-    expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
-    expect(listVaultInjectionReceipts(f.coreDb)).toHaveLength(1);
-  });
+      const grant = await f.call('vault.server-mcp-grant-create', {
+        requestId: randomUUID(),
+        referenceId: reference.referenceId,
+      });
+      const result = f.call('administration.mcp-discovery-preview', {
+        ...input,
+        timeoutMs: 5000,
+        credentialBindings: [
+          {
+            slot: 'authorization',
+            vaultGrantId: grant.grantId,
+            sink: { kind: 'header', name: 'Authorization' },
+          },
+        ],
+      });
+      // Observe a rejection immediately so an early setup failure cannot become an unhandled promise.
+      const outcome = result.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+      await seen;
+      if (changed === 'grant')
+        await f.call('vault.server-mcp-grant-revoke', {
+          requestId: randomUUID(),
+          grantId: grant.grantId,
+        });
+      else if (changed === 'administrator')
+        revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
+      else
+        await f.call('administration.server-mcp-remove', {
+          requestId: randomUUID(),
+          mcpId: input.mcpId,
+          expectedRevision: input.expectedRevision,
+        });
+      release();
+      expect(await outcome).toMatchObject({ error: { status: changed === 'catalog' ? 409 : 403 } });
+      expect(upstream.observed.filter((name) => name.endsWith('|tools/list'))).toHaveLength(1);
+      expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
+      expect(listVaultInjectionReceipts(f.coreDb)).toHaveLength(1);
+    }
+  );
   it('bounds the whole operation while an upstream list is held and never returns a partial observation', async () => {
     const f = fixture();
     let release!: () => void;
@@ -783,178 +783,175 @@ describe('explicit administrator MCP discovery preview', () => {
 });
 
 // mcp_catalog_management.md Explicit Bounded Discovery Preview requires current authority at disclosure.
-it.each([
-  'administrator',
-  'catalog',
-  'grant',
-  'material',
-  'deadline',
-] as const)('refuses %s withdrawal during the real terminal preview Audit ACK and retains delivered evidence', async (withdrawal) => {
-  const { Worker } = await import('node:worker_threads');
-  const f = fixture();
-  const upstream = await createMcpHttpStub();
-  cleanup.push(() => upstream.close());
-  const input = await seed(f, upstream.url);
-  const reference = await f.call('vault.server-mcp-secret-create', {
-    requestId: randomUUID(),
-    material: 'synthetic-terminal-preview',
-  });
-  const grant = await f.call('vault.server-mcp-grant-create', {
-    requestId: randomUUID(),
-    referenceId: reference.referenceId,
-    targetCapabilityId: 'mcp.list-tools',
-  });
-  const emit = Worker.prototype.emit;
-  let deliver: (() => void) | undefined;
-  let held = false;
-  let markReached!: () => void;
-  const reached = new Promise<void>((resolve) => {
-    markReached = resolve;
-  });
-  const spy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
-    this: InstanceType<typeof Worker>,
-    event: string | symbol,
-    ...args: unknown[]
-  ) {
-    const reply = args[0] as
-      | {
-          operation?: string;
-          status?: string;
-          result?: { kind?: string; value?: { action?: string; requestId?: string } };
-        }
-      | undefined;
-    // Startup has no receipt. Delivery has a different action. This selects the actual terminal ACK.
-    if (
-      !held &&
-      event === 'message' &&
-      reply?.operation === 'vault' &&
-      reply.status === 'ok' &&
-      reply.result?.kind === 'audit-insert' &&
-      reply.result.value?.action === 'administration.mcp-discovery-preview' &&
-      listVaultInjectionReceipts(f.coreDb).some((receipt) => receipt.grantId === grant.grantId)
+it.each(['administrator', 'catalog', 'grant', 'material', 'deadline'] as const)(
+  'refuses %s withdrawal during the real terminal preview Audit ACK and retains delivered evidence',
+  async (withdrawal) => {
+    const { Worker } = await import('node:worker_threads');
+    const f = fixture();
+    const upstream = await createMcpHttpStub();
+    cleanup.push(() => upstream.close());
+    const input = await seed(f, upstream.url);
+    const reference = await f.call('vault.server-mcp-secret-create', {
+      requestId: randomUUID(),
+      material: 'synthetic-terminal-preview',
+    });
+    const grant = await f.call('vault.server-mcp-grant-create', {
+      requestId: randomUUID(),
+      referenceId: reference.referenceId,
+      targetCapabilityId: 'mcp.list-tools',
+    });
+    const emit = Worker.prototype.emit;
+    let deliver: (() => void) | undefined;
+    let held = false;
+    let markReached!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      markReached = resolve;
+    });
+    const spy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: InstanceType<typeof Worker>,
+      event: string | symbol,
+      ...args: unknown[]
     ) {
-      held = true;
-      deliver = () => {
-        emit.call(this, event, ...args);
-      };
-      markReached();
-      return true;
-    }
-    return emit.call(this, event, ...args);
-  });
-  const release = () => {
-    const pending = deliver;
-    deliver = undefined;
-    pending?.();
-  };
-  cleanup.push(release);
-  let settled = false;
-  const timeoutMs = withdrawal === 'deadline' ? 1_000 : input.timeoutMs;
-  const startedAt = performance.now();
-  const outcome = f
-    .call('administration.mcp-discovery-preview', {
-      ...input,
-      timeoutMs,
-      credentialBindings: [
-        {
-          slot: 'authorization',
-          vaultGrantId: grant.grantId,
-          sink: { kind: 'header', name: 'Authorization' },
-        },
-      ],
-    })
-    .then(
-      (value) => {
-        settled = true;
-        return { ok: true as const, value };
-      },
-      (error: unknown) => {
-        settled = true;
-        return { ok: false as const, error };
+      const reply = args[0] as
+        | {
+            operation?: string;
+            status?: string;
+            result?: { kind?: string; value?: { action?: string; requestId?: string } };
+          }
+        | undefined;
+      // Startup has no receipt. Delivery has a different action. This selects the actual terminal ACK.
+      if (
+        !held &&
+        event === 'message' &&
+        reply?.operation === 'vault' &&
+        reply.status === 'ok' &&
+        reply.result?.kind === 'audit-insert' &&
+        reply.result.value?.action === 'administration.mcp-discovery-preview' &&
+        listVaultInjectionReceipts(f.coreDb).some((receipt) => receipt.grantId === grant.grantId)
+      ) {
+        held = true;
+        deliver = () => {
+          emit.call(this, event, ...args);
+        };
+        markReached();
+        return true;
       }
-    );
-  try {
-    await Promise.race([
-      reached,
-      outcome.then(() => {
-        throw new Error('Preview settled before its real terminal Audit ACK.');
-      }),
-    ]);
-    expect(settled).toBe(false);
-    expect(upstream.observed.filter((name) => name.endsWith('|tools/list'))).toHaveLength(1);
-    expect(upstream.observed.some((name) => name.endsWith('|DELETE|'))).toBe(true);
-    expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
-    expect(
-      upstream.observedHeaders.some(
-        (headers) => headers.get('authorization') === 'synthetic-terminal-preview'
-      )
-    ).toBe(true);
-    const usesBefore = listVaultUseRecords(f.coreDb);
-    expect(usesBefore).toMatchObject([
-      { outcome: 'succeeded', vaultReferenceId: reference.referenceId },
-    ]);
-    const receiptsBefore = listVaultInjectionReceipts(f.coreDb);
-    expect(receiptsBefore).toHaveLength(1);
-    expect(receiptsBefore[0]).toMatchObject({ grantId: grant.grantId });
-    const deliveryBefore = auditEvents
-      .listSqliteAuditEvents(f.coreDb.sqlite)
-      .filter((event) => event.action === 'administration.mcp-discovery-preview.delivery');
-    expect(deliveryBefore).toHaveLength(1);
-    expect(deliveryBefore[0]).toMatchObject({ outcome: 'succeeded' });
-    const contacts = upstream.observed.length;
-    if (withdrawal === 'administrator') revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
-    else if (withdrawal === 'catalog')
-      await f.call('administration.server-mcp-remove', {
-        requestId: randomUUID(),
-        mcpId: input.mcpId,
-        expectedRevision: input.expectedRevision,
-      });
-    else if (withdrawal === 'grant')
-      await f.call('vault.server-mcp-grant-revoke', {
-        requestId: randomUUID(),
-        grantId: grant.grantId,
-      });
-    else if (withdrawal === 'material') {
-      // Material withdrawal is owned by this backend; unrelated runtime closure is not this oracle.
-      const revoked = f.vaultUnlockState
-        .backend()
-        .revoke({ referenceId: String(reference.referenceId) });
-      expect(revoked.revoked).toBe(true);
-      expect(() =>
-        f.vaultUnlockState.backend().resolve({ referenceId: String(reference.referenceId) })
-      ).toThrow();
-    } else {
-      // The real whole-operation timeout started before the held terminal ACK; wait only for what remains.
-      const remaining = timeoutMs + 30 - (performance.now() - startedAt);
-      if (remaining > 0)
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, remaining);
-        });
-    }
-    expect(settled).toBe(false);
-    release();
-    const result = await outcome;
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error('Preview disclosed an observation after authority ended.');
-    expect(result.error).toHaveProperty('status');
-    if (withdrawal === 'deadline') expect(result.error).toMatchObject({ status: 503 });
-    expect(result).not.toHaveProperty('value');
-    expect(upstream.observed).toHaveLength(contacts);
-    expect(listVaultUseRecords(f.coreDb)).toEqual(usesBefore);
-    expect(
-      auditEvents
+      return emit.call(this, event, ...args);
+    });
+    const release = () => {
+      const pending = deliver;
+      deliver = undefined;
+      pending?.();
+    };
+    cleanup.push(release);
+    let settled = false;
+    const timeoutMs = withdrawal === 'deadline' ? 1_000 : input.timeoutMs;
+    const startedAt = performance.now();
+    const outcome = f
+      .call('administration.mcp-discovery-preview', {
+        ...input,
+        timeoutMs,
+        credentialBindings: [
+          {
+            slot: 'authorization',
+            vaultGrantId: grant.grantId,
+            sink: { kind: 'header', name: 'Authorization' },
+          },
+        ],
+      })
+      .then(
+        (value) => {
+          settled = true;
+          return { ok: true as const, value };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { ok: false as const, error };
+        }
+      );
+    try {
+      await Promise.race([
+        reached,
+        outcome.then(() => {
+          throw new Error('Preview settled before its real terminal Audit ACK.');
+        }),
+      ]);
+      expect(settled).toBe(false);
+      expect(upstream.observed.filter((name) => name.endsWith('|tools/list'))).toHaveLength(1);
+      expect(upstream.observed.some((name) => name.endsWith('|DELETE|'))).toBe(true);
+      expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
+      expect(
+        upstream.observedHeaders.some(
+          (headers) => headers.get('authorization') === 'synthetic-terminal-preview'
+        )
+      ).toBe(true);
+      const usesBefore = listVaultUseRecords(f.coreDb);
+      expect(usesBefore).toMatchObject([
+        { outcome: 'succeeded', vaultReferenceId: reference.referenceId },
+      ]);
+      const receiptsBefore = listVaultInjectionReceipts(f.coreDb);
+      expect(receiptsBefore).toHaveLength(1);
+      expect(receiptsBefore[0]).toMatchObject({ grantId: grant.grantId });
+      const deliveryBefore = auditEvents
         .listSqliteAuditEvents(f.coreDb.sqlite)
-        .filter((event) => event.action === 'administration.mcp-discovery-preview.delivery')
-    ).toEqual(deliveryBefore);
-    // Revocation may advance its lifecycle projection. Original successful delivery facts must survive.
-    const completionFacts = (receipts: ReturnType<typeof listVaultInjectionReceipts>) =>
-      receipts.map(({ revocationStatus: _status, ...facts }) => facts);
-    expect(completionFacts(listVaultInjectionReceipts(f.coreDb))).toEqual(
-      completionFacts(receiptsBefore)
-    );
-  } finally {
-    release();
-    await outcome;
-    spy.mockRestore();
+        .filter((event) => event.action === 'administration.mcp-discovery-preview.delivery');
+      expect(deliveryBefore).toHaveLength(1);
+      expect(deliveryBefore[0]).toMatchObject({ outcome: 'succeeded' });
+      const contacts = upstream.observed.length;
+      if (withdrawal === 'administrator') revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
+      else if (withdrawal === 'catalog')
+        await f.call('administration.server-mcp-remove', {
+          requestId: randomUUID(),
+          mcpId: input.mcpId,
+          expectedRevision: input.expectedRevision,
+        });
+      else if (withdrawal === 'grant')
+        await f.call('vault.server-mcp-grant-revoke', {
+          requestId: randomUUID(),
+          grantId: grant.grantId,
+        });
+      else if (withdrawal === 'material') {
+        // Material withdrawal is owned by this backend; unrelated runtime closure is not this oracle.
+        const revoked = f.vaultUnlockState
+          .backend()
+          .revoke({ referenceId: String(reference.referenceId) });
+        expect(revoked.revoked).toBe(true);
+        expect(() =>
+          f.vaultUnlockState.backend().resolve({ referenceId: String(reference.referenceId) })
+        ).toThrow();
+      } else {
+        // The real whole-operation timeout started before the held terminal ACK; wait only for what remains.
+        const remaining = timeoutMs + 30 - (performance.now() - startedAt);
+        if (remaining > 0)
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, remaining);
+          });
+      }
+      expect(settled).toBe(false);
+      release();
+      const result = await outcome;
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('Preview disclosed an observation after authority ended.');
+      expect(result.error).toHaveProperty('status');
+      if (withdrawal === 'deadline') expect(result.error).toMatchObject({ status: 503 });
+      expect(result).not.toHaveProperty('value');
+      expect(upstream.observed).toHaveLength(contacts);
+      expect(listVaultUseRecords(f.coreDb)).toEqual(usesBefore);
+      expect(
+        auditEvents
+          .listSqliteAuditEvents(f.coreDb.sqlite)
+          .filter((event) => event.action === 'administration.mcp-discovery-preview.delivery')
+      ).toEqual(deliveryBefore);
+      // Revocation may advance its lifecycle projection. Original successful delivery facts must survive.
+      const completionFacts = (receipts: ReturnType<typeof listVaultInjectionReceipts>) =>
+        receipts.map(({ revocationStatus: _status, ...facts }) => facts);
+      expect(completionFacts(listVaultInjectionReceipts(f.coreDb))).toEqual(
+        completionFacts(receiptsBefore)
+      );
+    } finally {
+      release();
+      await outcome;
+      spy.mockRestore();
+    }
   }
-});
+);

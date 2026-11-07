@@ -97,79 +97,79 @@ describe('loadProviderProfiles', () => {
       id: 'openai_codex',
       context: 256_000,
     },
-  ])('seeds $fileName as an opt-in profile with exact flagship metadata and routes', ({
-    fileName,
-    prefix,
-    id,
-    context,
-  }) => {
-    const { dataRoot, providersRoot } = createProviderRoot();
-    ensureLayout(dataRoot);
-    const examplePath = join(providersRoot, `${fileName}.example`);
-    expect(existsSync(examplePath)).toBe(true);
-    expect(existsSync(join(providersRoot, fileName))).toBe(false);
-    const parsed = AuthoredProviderProfileSchema.parse(
-      parseJsoncObject(readFileSync(examplePath, 'utf8'), examplePath)
-    );
-    expect(parsed.id).toBe(id);
-    const expected = [
-      { id: 'gpt-6-astra', input: 10, output: 50 },
-      { id: 'gpt-5.6-sol', input: 4, output: 20 },
-      { id: 'gpt-5.6-terra', input: 2, output: 12 },
-      { id: 'gpt-5.6-luna', input: 0.2, output: 1.2 },
-    ];
-    expect(parsed.models).toEqual(expected.map((model) => `${prefix}${model.id}`));
-    const registry = new ProviderRegistry([ProviderProfileSchema.parse(parsed)]);
-    expect(() => assertConfiguredModelsHaveKnownContext(registry)).not.toThrow();
-    for (const model of expected) {
-      const nativeId = `${prefix}${model.id}`;
-      expect(resolveEffectiveModelMetadata(parsed, nativeId)).toMatchObject({
-        limit: { context, output: 128_000 },
-        reasoning: true,
-        tool_call: true,
-        modalities: { input: ['text', 'image'], output: ['text'] },
-        cost: { input: model.input, output: model.output },
-      });
-    }
-    expect(parsed.modelMetadata?.[`${prefix}gpt-6-astra`]?.cost?.cache_read).toBe(1);
-    const route = {
-      id: 'astra',
-      providerProfileId: parsed.id,
-      providerModel: `${prefix}gpt-6-astra`,
-    };
-    const config = {
-      schemaVersion: 1 as const,
-      enabled: true,
-      defaultLogicalModelId: 'gpt-6-astra',
-      logicalModels: [
-        {
-          id: 'gpt-6-astra',
-          displayName: 'GPT-6 Astra',
-          contextManagement: [{ type: 'compaction' as const, compactThreshold: context - 128_000 }],
-          routes: [route],
-        },
-      ],
-    };
-    expect(resolveLogicalModelCatalog(config, registry)).toEqual([
-      expect.objectContaining({
-        id: 'gpt-6-astra',
-        routes: [
+  ])(
+    'seeds $fileName as an opt-in profile with exact flagship metadata and routes',
+    ({ fileName, prefix, id, context }) => {
+      const { dataRoot, providersRoot } = createProviderRoot();
+      ensureLayout(dataRoot);
+      const examplePath = join(providersRoot, `${fileName}.example`);
+      expect(existsSync(examplePath)).toBe(true);
+      expect(existsSync(join(providersRoot, fileName))).toBe(false);
+      const parsed = AuthoredProviderProfileSchema.parse(
+        parseJsoncObject(readFileSync(examplePath, 'utf8'), examplePath)
+      );
+      expect(parsed.id).toBe(id);
+      const expected = [
+        { id: 'gpt-6-astra', input: 10, output: 50 },
+        { id: 'gpt-5.6-sol', input: 4, output: 20 },
+        { id: 'gpt-5.6-terra', input: 2, output: 12 },
+        { id: 'gpt-5.6-luna', input: 0.2, output: 1.2 },
+      ];
+      expect(parsed.models).toEqual(expected.map((model) => `${prefix}${model.id}`));
+      const registry = new ProviderRegistry([ProviderProfileSchema.parse(parsed)]);
+      expect(() => assertConfiguredModelsHaveKnownContext(registry)).not.toThrow();
+      for (const model of expected) {
+        const nativeId = `${prefix}${model.id}`;
+        expect(resolveEffectiveModelMetadata(parsed, nativeId)).toMatchObject({
+          limit: { context, output: 128_000 },
+          reasoning: true,
+          tool_call: true,
+          modalities: { input: ['text', 'image'], output: ['text'] },
+          cost: { input: model.input, output: model.output },
+        });
+      }
+      expect(parsed.modelMetadata?.[`${prefix}gpt-6-astra`]?.cost?.cache_read).toBe(1);
+      const route = {
+        id: 'astra',
+        providerProfileId: parsed.id,
+        providerModel: `${prefix}gpt-6-astra`,
+      };
+      const config = {
+        schemaVersion: 1 as const,
+        enabled: true,
+        defaultLogicalModelId: 'gpt-6-astra',
+        logicalModels: [
           {
-            ...route,
-            available: true,
-            unavailableReason: null,
+            id: 'gpt-6-astra',
+            displayName: 'GPT-6 Astra',
+            contextManagement: [
+              { type: 'compaction' as const, compactThreshold: context - 128_000 },
+            ],
+            routes: [route],
           },
         ],
-      }),
-    ]);
-    config.logicalModels[0]!.contextManagement[0]!.compactThreshold = context - 128_000 + 1;
-    expect(() => resolveLogicalModelCatalog(config, registry)).toThrow(
-      'Logical model context management exceeds a route limit'
-    );
-    writeFileSync(examplePath, '// Operator copy remains unchanged.');
-    ensureLayout(dataRoot);
-    expect(readFileSync(examplePath, 'utf8')).toBe('// Operator copy remains unchanged.');
-  });
+      };
+      expect(resolveLogicalModelCatalog(config, registry)).toEqual([
+        expect.objectContaining({
+          id: 'gpt-6-astra',
+          routes: [
+            {
+              ...route,
+              available: true,
+              unavailableReason: null,
+            },
+          ],
+        }),
+      ]);
+      config.logicalModels[0]!.contextManagement[0]!.compactThreshold = context - 128_000 + 1;
+      expect(() => resolveLogicalModelCatalog(config, registry)).toThrow(
+        'Logical model context management exceeds a route limit'
+      );
+      writeFileSync(examplePath, '// Operator copy remains unchanged.');
+      ensureLayout(dataRoot);
+      expect(readFileSync(examplePath, 'utf8')).toBe('// Operator copy remains unchanged.');
+    }
+  );
 
   it('loads the provider templates through AuthoredProviderProfileSchema', () => {
     const { dataRoot, providersRoot } = createProviderRoot();

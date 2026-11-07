@@ -476,57 +476,60 @@ describe('agent gate at native I16', () => {
     ['allow', 'allow'],
     ['deny', 'deny'],
     ['escalate', 'require_escalation'],
-  ] as const)('maps the agent %s result and retains actual native evidence', async (decision, expected) => {
-    const input = fixture(agentDocument());
-    const calls: string[] = [];
-    const invoke = vi.fn(async () => {
-      calls.push('agent');
-      return assessment(decision);
-    });
-    const deterministic = vi.fn(async () => ({ decision: 'deny' }));
-    const binding = admittedBinding(input.document);
-    const pipeline = new PolicyInterception(
-      { id: agentId, version: binding.participant.version, invoke: deterministic },
-      { id: agentId, version: binding.participant.version, invoke }
-    );
-    const result = await pipeline.decide({
-      ...input,
-      finalKernel: () => {
-        calls.push('kernel');
-        return kernel();
-      },
-    });
-    expect(result.result).toBe(expected);
-    expect(calls).toEqual(['agent', 'kernel']);
-    expect(deterministic).not.toHaveBeenCalled();
-    const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
-    expect(rows).toHaveLength(2);
-    const gate = rows.find((row) => row.mediation?.role === 'gate')!;
-    const final = rows.find((row) => row.decisionId === result.decisionId)!;
-    expect(gate.result).toBe(expected);
-    expect(gate.mediation?.subject).toEqual({
-      principal: { kind: 'agent', id: agentId },
-      actor: { kind: 'agent', id: agentId, responsibleUserId: userId },
-      responsibleHumanId: userId,
-      process: proposal.subject.process,
-      onBehalfOf: null,
-      credentialKind: 'worker-package',
-    });
-    expect(final.mediation?.subject).toEqual(proposal.subject);
-    expect(final.mediation?.kernel?.effect).toBe('allow');
-    expect(final.mediation?.invocations).toEqual([{ kind: 'decision', id: gate.decisionId }]);
-    const events = input.workspaceDb.sqlite
-      .prepare('SELECT policy_invocation_json FROM audit_events WHERE permission_decision_id = ?')
-      .all(gate.decisionId) as { policy_invocation_json: string }[];
-    expect(events).toHaveLength(1);
-    expect(JSON.parse(events[0]!.policy_invocation_json)).toMatchObject({
-      participant: { id: agentId },
-      outcome: 'completed',
-      outputDigest: policyDigest(assessment(decision)),
-      subject: gate.mediation?.subject,
-    });
-    expect(events[0]!.policy_invocation_json).not.toContain(assessment(decision).rationale);
-  });
+  ] as const)(
+    'maps the agent %s result and retains actual native evidence',
+    async (decision, expected) => {
+      const input = fixture(agentDocument());
+      const calls: string[] = [];
+      const invoke = vi.fn(async () => {
+        calls.push('agent');
+        return assessment(decision);
+      });
+      const deterministic = vi.fn(async () => ({ decision: 'deny' }));
+      const binding = admittedBinding(input.document);
+      const pipeline = new PolicyInterception(
+        { id: agentId, version: binding.participant.version, invoke: deterministic },
+        { id: agentId, version: binding.participant.version, invoke }
+      );
+      const result = await pipeline.decide({
+        ...input,
+        finalKernel: () => {
+          calls.push('kernel');
+          return kernel();
+        },
+      });
+      expect(result.result).toBe(expected);
+      expect(calls).toEqual(['agent', 'kernel']);
+      expect(deterministic).not.toHaveBeenCalled();
+      const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+      expect(rows).toHaveLength(2);
+      const gate = rows.find((row) => row.mediation?.role === 'gate')!;
+      const final = rows.find((row) => row.decisionId === result.decisionId)!;
+      expect(gate.result).toBe(expected);
+      expect(gate.mediation?.subject).toEqual({
+        principal: { kind: 'agent', id: agentId },
+        actor: { kind: 'agent', id: agentId, responsibleUserId: userId },
+        responsibleHumanId: userId,
+        process: proposal.subject.process,
+        onBehalfOf: null,
+        credentialKind: 'worker-package',
+      });
+      expect(final.mediation?.subject).toEqual(proposal.subject);
+      expect(final.mediation?.kernel?.effect).toBe('allow');
+      expect(final.mediation?.invocations).toEqual([{ kind: 'decision', id: gate.decisionId }]);
+      const events = input.workspaceDb.sqlite
+        .prepare('SELECT policy_invocation_json FROM audit_events WHERE permission_decision_id = ?')
+        .all(gate.decisionId) as { policy_invocation_json: string }[];
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0]!.policy_invocation_json)).toMatchObject({
+        participant: { id: agentId },
+        outcome: 'completed',
+        outputDigest: policyDigest(assessment(decision)),
+        subject: gate.mediation?.subject,
+      });
+      expect(events[0]!.policy_invocation_json).not.toContain(assessment(decision).rationale);
+    }
+  );
 
   it('escalates failed, invalid and unavailable agent execution without inventing a substantive result', async () => {
     for (const failure of ['throw', 'invalid', 'unavailable'] as const) {
@@ -592,44 +595,41 @@ describe('agent gate at native I16', () => {
     }
   });
 
-  it.each([
-    'missing',
-    'cyclic',
-    'lost-human',
-    'lost-author',
-    'shadow-lost-authority',
-  ] as const)('suspends a %s responsibility chain before disclosure', async (fault) => {
-    const input = fixture(agentDocument(fault === 'lost-author' ? userId : otherHumanId));
-    if (fault === 'missing') input.document.statements.splice(0, 1);
-    if (fault === 'cyclic')
-      Object.assign(input.document.statements[0]!, {
-        responsibility: { kind: 'agent', id: agentId },
+  it.each(['missing', 'cyclic', 'lost-human', 'lost-author', 'shadow-lost-authority'] as const)(
+    'suspends a %s responsibility chain before disclosure',
+    async (fault) => {
+      const input = fixture(agentDocument(fault === 'lost-author' ? userId : otherHumanId));
+      if (fault === 'missing') input.document.statements.splice(0, 1);
+      if (fault === 'cyclic')
+        Object.assign(input.document.statements[0]!, {
+          responsibility: { kind: 'agent', id: agentId },
+        });
+      const binding = admittedBinding(input.document);
+      if (fault === 'shadow-lost-authority') binding.state = 'shadow';
+      const invoke = vi.fn(async () => assessment('allow'));
+      const finalKernel = vi.fn(() => kernel());
+      const result = await new PolicyInterception(undefined, {
+        id: agentId,
+        version: binding.participant.version,
+        invoke,
+      }).decide({
+        ...input,
+        authorCurrent: (id) =>
+          ((fault !== 'lost-human' && fault !== 'shadow-lost-authority') || id !== otherHumanId) &&
+          (fault !== 'lost-author' || id !== userId),
+        finalKernel,
       });
-    const binding = admittedBinding(input.document);
-    if (fault === 'shadow-lost-authority') binding.state = 'shadow';
-    const invoke = vi.fn(async () => assessment('allow'));
-    const finalKernel = vi.fn(() => kernel());
-    const result = await new PolicyInterception(undefined, {
-      id: agentId,
-      version: binding.participant.version,
-      invoke,
-    }).decide({
-      ...input,
-      authorCurrent: (id) =>
-        ((fault !== 'lost-human' && fault !== 'shadow-lost-authority') || id !== otherHumanId) &&
-        (fault !== 'lost-author' || id !== userId),
-      finalKernel,
-    });
-    expect(result.result).toBe(fault === 'shadow-lost-authority' ? 'allow' : 'error');
-    expect(invoke).not.toHaveBeenCalled();
-    expect(finalKernel).toHaveBeenCalledTimes(1);
-    if (fault === 'shadow-lost-authority')
-      expect(
-        listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
-          (row) => row.mediation?.role === 'gate'
-        )?.result
-      ).toBe('error');
-  });
+      expect(result.result).toBe(fault === 'shadow-lost-authority' ? 'allow' : 'error');
+      expect(invoke).not.toHaveBeenCalled();
+      expect(finalKernel).toHaveBeenCalledTimes(1);
+      if (fault === 'shadow-lost-authority')
+        expect(
+          listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
+            (row) => row.mediation?.role === 'gate'
+          )?.result
+        ).toBe('error');
+    }
+  );
 
   it('rechecks the current terminal human after an agent result and before release', async () => {
     const input = fixture(agentDocument(otherHumanId));

@@ -675,293 +675,117 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it.each([
-    'dispatch-then-cancel',
-    'cancel-only',
-  ] as const)('refuses a same-Store cached recurring Turn contradiction after failed persistence: %s', async (consumer) => {
-    const coreDb = createMigratedCoreDb(false);
-    const root = coreDb.dataRoot;
-    const store = await createDemoStore({ dataRoot: root });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const manifest = agentManifest();
-    const executor = await RecordingTurnExecutor.create(coreDb);
-    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
-    const instant = '2026-10-16T00:00:00.000Z';
-    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: thread.id,
-      name: 'Inspect cache disagreement',
-      prompt: 'Exact recurring input',
-      intervalSeconds: 5,
-    });
-    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
-      expectedRevision: 1,
-      status: 'active',
-      scheduledAt: instant,
-    });
-    const service = startRecurringScheduleService({
-      schedules,
-      store,
-      prepare: async () => ({
-        kind: 'ready',
-        payload: {
-          backendId: executor.executionBackend.id,
-          requestedAgentId: manifest.id,
-          profileRef: 'default',
-          modelId: 'openai/gpt-5.2',
-          workspaceRoots: [],
-          workspaceCwd: null,
-        },
-      }),
-      now: () => instant,
-      setInterval: () => 'timer',
-      clearInterval: () => {},
-    });
-    try {
-      await service.runOnce();
-      service.stop();
-      const accepted = schedules
-        .listHistory(schedule.id)
-        .items.find((entry) => entry.kind === 'occurrence')!.record;
-      expect(accepted.state).toBe('admission-accepted');
-      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
-      // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
-      const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
-      const published = readPublishedTurnFileRecords(
-        root,
-        DEMO_WORKSPACE_ID,
-        thread.id,
-        entry.turnId
-      );
-      expect(published?.turn).toMatchObject({ agentId: manifest.id, status: 'pending' });
-      const turnRoot = { root, workspaceId: DEMO_WORKSPACE_ID, turnId: entry.turnId };
-      const originalBytes = snapshotNativeTurn(turnRoot);
-      const originalTurn = store.getTurnById(entry.turnId);
-      const fault = vi
-        .spyOn(getControlStoreWorkerClient(), 'products')
-        .mockRejectedValueOnce(new Error('Turn persistence interrupted'));
-      try {
-        await expect(store.updateTurn(entry.turnId, { agentId: 'other-worker' })).rejects.toThrow(
-          'Turn persistence interrupted'
-        );
-      } finally {
-        fault.mockRestore();
-      }
-      expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
-      // A stale read projection must not overrule the native publication read.
-      projectStaleTurn(store, entry.turnId, { ...originalTurn, agentId: 'other-worker' });
-      expect(store.getTurnById(entry.turnId)).toMatchObject({
-        agentId: 'other-worker',
-        status: 'pending',
-      });
-      expect(
-        readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
-      ).toEqual(published);
-      const update = vi.spyOn(store, 'updateTurn');
-      if (consumer === 'dispatch-then-cancel') {
-        expect(
-          await runSchedulerDispatchLoop({
-            coreDb,
-            store,
-            turnExecutor: executor,
-            executionBackend: executor.executionBackend,
-            agentManifests: [manifest],
-            gatewayConfig: createTestGatewayConfig(),
-            providerRegistry: localProviderRegistry(),
-          })
-        ).toMatchObject({
-          startedTurns: [],
-          terminalResult: { status: 'queued', reason: 'recovery-required' },
-        });
-        expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
-      }
-      const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, queueEntryId: entry.queueEntryId }),
-      });
-      expect(cancelled.status, await cancelled.clone().text()).toBe(200);
-      expect(update).not.toHaveBeenCalled();
-      expect(executor.prepareCalls).toEqual([]);
-      expect(executor.calls).toEqual([]);
-      expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
-      expect(
-        readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
-      ).toEqual(published);
-      expect(snapshotNativeTurn(turnRoot)).toEqual(originalBytes);
-      expect(
-        schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
-      ).toBe('cancelled');
-      expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
-      // Only the series waiting slot was released. The original pending Turn still holds its Thread.
-      expect(store.getTurnById(entry.turnId)).toMatchObject({
-        agentId: 'other-worker',
-        status: 'pending',
-      });
-    } finally {
-      service.stop();
-      vi.restoreAllMocks();
-      coreDb.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    'none',
-    'missing',
-    'stale-cache',
-  ] as const)('dispatches event-linked work without a receipt and preserves faulty publication: %s', async (fault) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const executor = await RecordingTurnExecutor.create(coreDb);
-    const manifest = agentManifest();
-    const pollThread = await store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
-    const schedules = new AutomationStore(
-      coreDb,
-      new WorkspaceMutationAdmission(),
-      () => '2026-10-16T00:00:00.000Z'
-    );
-    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: pollThread.id,
-      name: 'External event poll',
-      prompt: 'Read the selected source.',
-      intervalSeconds: 5,
-    });
-    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
-      expectedRevision: 1,
-      status: 'active',
-      scheduledAt: '2026-10-16T00:00:00.000Z',
-    });
-    const occurrence = (await schedules.collectScanCandidates('2026-10-16T00:00:00.000Z'))[0]!;
-    await schedules.commitAttempt(occurrence.id, 2, {
-      kind: 'ready',
-      payload: {
-        backendId: executor.executionBackend.id,
-        requestedAgentId: manifest.id,
-        profileRef: 'default',
-        modelId: 'openai/gpt-5.2',
-        workspaceRoots: [],
-        workspaceCwd: null,
-      },
-    });
-    const source = schedules.getOccurrence(occurrence.id);
-    await store.createTurn(
-      DEMO_WORKSPACE_ID,
-      pollThread.id,
-      'Read the selected source.',
-      schedule.actor,
-      null,
-      { turnId: source.turnId!, status: 'pending', agentId: manifest.id, executorKind: 'worker' }
-    );
-    cancelSchedulerAdmissionEntry(coreDb, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      queueEntryId: source.queueEntryId!,
-    });
-    const caseThread = await store.createThread(
-      DEMO_WORKSPACE_ID,
-      'Isolated event case',
-      undefined,
-      'conversation',
-      { visibility: 'workspace', threadSource: 'worker', parentThreadId: pollThread.id }
-    );
-    const entry = coreDb.sqlite.transaction(() => {
-      const accepted = createSchedulerAdmissionEntry(coreDb, {
-        backendId: executor.executionBackend.id,
-        queueEntryId: 'queue_external_event',
-        requestId: 'external-event-request',
-        workspaceId: DEMO_WORKSPACE_ID,
-        threadId: caseThread.id,
-        turnId: testEntityId('tu', 'tu_external_dispatch'),
-        requestedAgentId: manifest.id,
-        triggerActor: schedule.actor,
-        turnInput: 'Only this case brief.',
-        profileRef: 'default',
-        modelId: 'openai/gpt-5.2',
-      });
-      insertExternalTriggerAdmission(coreDb, {
-        scheduleId: schedule.id,
-        eventKey: 'source/event-1',
-        sourceTurnId: source.turnId!,
-        queueEntryId: accepted.queueEntryId,
-      });
-      return accepted;
-    })();
-    await store.createTurn(
-      DEMO_WORKSPACE_ID,
-      caseThread.id,
-      entry.turnInput,
-      schedule.actor,
-      null,
-      {
-        turnId: entry.turnId,
-        status: 'pending',
-        agentId: manifest.id,
-        executorKind: 'worker',
-      }
-    );
-    const app = createApp({ coreDb, dataRoot: coreDb.dataRoot, store, automationStore: schedules });
-    const published = readPublishedTurnFileRecords(
-      coreDb.dataRoot,
-      DEMO_WORKSPACE_ID,
-      caseThread.id,
-      entry.turnId
-    );
-    const turnRoot = {
-      root: coreDb.dataRoot,
-      workspaceId: DEMO_WORKSPACE_ID,
-      turnId: entry.turnId,
-    };
-    const originalBytes = snapshotNativeTurn(turnRoot);
-    if (fault === 'stale-cache') {
-      const originalTurn = store.getTurnById(entry.turnId);
-      const persist = vi
-        .spyOn(getControlStoreWorkerClient(), 'products')
-        .mockRejectedValueOnce(new Error('Turn persistence interrupted'));
-      try {
-        await expect(store.updateTurn(entry.turnId, { agentId: 'other-worker' })).rejects.toThrow(
-          'Turn persistence interrupted'
-        );
-      } finally {
-        persist.mockRestore();
-      }
-      expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
-      // Retain the contradictory projection independently of the refused write.
-      projectStaleTurn(store, entry.turnId, { ...originalTurn, agentId: 'other-worker' });
-      expect(store.getTurnById(entry.turnId).agentId).toBe('other-worker');
-    }
-    if (fault === 'missing') await retainPublicationFault(turnRoot, 'missing');
-    const create = vi.spyOn(store, 'createTurn');
-    const update = vi.spyOn(store, 'updateTurn');
-    try {
-      const outcome = await runSchedulerDispatchLoop({
+  it.each(['dispatch-then-cancel', 'cancel-only'] as const)(
+    'refuses a same-Store cached recurring Turn contradiction after failed persistence: %s',
+    async (consumer) => {
+      const coreDb = createMigratedCoreDb(false);
+      const root = coreDb.dataRoot;
+      const store = await createDemoStore({ dataRoot: root });
+      recordWorkspaceOwnerMembership({
         coreDb,
-        store,
-        turnExecutor: executor,
-        executionBackend: executor.executionBackend,
-        agentManifests: [manifest],
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: localProviderRegistry(),
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      if (fault !== 'none') {
-        expect(outcome).toMatchObject({
-          startedTurns: [],
-          terminalResult: { status: 'queued', reason: 'recovery-required' },
+      const manifest = agentManifest();
+      const executor = await RecordingTurnExecutor.create(coreDb);
+      const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
+      const instant = '2026-10-16T00:00:00.000Z';
+      const schedules = new AutomationStore(
+        coreDb,
+        new WorkspaceMutationAdmission(),
+        () => instant
+      );
+      const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        name: 'Inspect cache disagreement',
+        prompt: 'Exact recurring input',
+        intervalSeconds: 5,
+      });
+      await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt: instant,
+      });
+      const service = startRecurringScheduleService({
+        schedules,
+        store,
+        prepare: async () => ({
+          kind: 'ready',
+          payload: {
+            backendId: executor.executionBackend.id,
+            requestedAgentId: manifest.id,
+            profileRef: 'default',
+            modelId: 'openai/gpt-5.2',
+            workspaceRoots: [],
+            workspaceCwd: null,
+          },
+        }),
+        now: () => instant,
+        setInterval: () => 'timer',
+        clearInterval: () => {},
+      });
+      try {
+        await service.runOnce();
+        service.stop();
+        const accepted = schedules
+          .listHistory(schedule.id)
+          .items.find((entry) => entry.kind === 'occurrence')!.record;
+        expect(accepted.state).toBe('admission-accepted');
+        const entry = schedulerRecords.requireSchedulerAdmissionEntry(
+          coreDb,
+          accepted.queueEntryId!
+        );
+        // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
+        const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
+        const published = readPublishedTurnFileRecords(
+          root,
+          DEMO_WORKSPACE_ID,
+          thread.id,
+          entry.turnId
+        );
+        expect(published?.turn).toMatchObject({ agentId: manifest.id, status: 'pending' });
+        const turnRoot = { root, workspaceId: DEMO_WORKSPACE_ID, turnId: entry.turnId };
+        const originalBytes = snapshotNativeTurn(turnRoot);
+        const originalTurn = store.getTurnById(entry.turnId);
+        const fault = vi
+          .spyOn(getControlStoreWorkerClient(), 'products')
+          .mockRejectedValueOnce(new Error('Turn persistence interrupted'));
+        try {
+          await expect(store.updateTurn(entry.turnId, { agentId: 'other-worker' })).rejects.toThrow(
+            'Turn persistence interrupted'
+          );
+        } finally {
+          fault.mockRestore();
+        }
+        expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
+        // A stale read projection must not overrule the native publication read.
+        projectStaleTurn(store, entry.turnId, { ...originalTurn, agentId: 'other-worker' });
+        expect(store.getTurnById(entry.turnId)).toMatchObject({
+          agentId: 'other-worker',
+          status: 'pending',
         });
-        expect(executor.calls).toEqual([]);
-        expect(executor.prepareCalls).toEqual([]);
-        expect(create).not.toHaveBeenCalled();
-        expect(update).not.toHaveBeenCalled();
+        expect(
+          readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
+        ).toEqual(published);
+        const update = vi.spyOn(store, 'updateTurn');
+        if (consumer === 'dispatch-then-cancel') {
+          expect(
+            await runSchedulerDispatchLoop({
+              coreDb,
+              store,
+              turnExecutor: executor,
+              executionBackend: executor.executionBackend,
+              agentManifests: [manifest],
+              gatewayConfig: createTestGatewayConfig(),
+              providerRegistry: localProviderRegistry(),
+            })
+          ).toMatchObject({
+            startedTurns: [],
+            terminalResult: { status: 'queued', reason: 'recovery-required' },
+          });
+          expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+        }
         const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -972,243 +796,436 @@ describe('scheduler dispatch loop', () => {
         });
         expect(cancelled.status, await cancelled.clone().text()).toBe(200);
         expect(update).not.toHaveBeenCalled();
+        expect(executor.prepareCalls).toEqual([]);
+        expect(executor.calls).toEqual([]);
+        expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
         expect(
-          readPublishedTurnFileRecords(
-            coreDb.dataRoot,
-            DEMO_WORKSPACE_ID,
-            caseThread.id,
-            entry.turnId
-          )
-        ).toEqual(fault === 'missing' ? null : published);
+          readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, entry.turnId)
+        ).toEqual(published);
+        expect(snapshotNativeTurn(turnRoot)).toEqual(originalBytes);
         expect(
           schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
         ).toBe('cancelled');
-        if (fault === 'stale-cache') expect(snapshotNativeTurn(turnRoot)).toEqual(originalBytes);
-      } else {
-        expect(outcome.startedTurns).toHaveLength(1);
-        expect(executor.calls.map((call) => call.input)).toEqual(['Only this case brief.']);
+        expect(schedules.getOccurrence(accepted.id)).toEqual(accepted);
+        // Only the series waiting slot was released. The original pending Turn still holds its Thread.
+        expect(store.getTurnById(entry.turnId)).toMatchObject({
+          agentId: 'other-worker',
+          status: 'pending',
+        });
+      } finally {
+        service.stop();
+        vi.restoreAllMocks();
+        coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
       }
-    } finally {
-      create.mockRestore();
-      update.mockRestore();
-      vi.restoreAllMocks();
-      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
-      coreDb.sqlite.close();
-      rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
-  it.each([
-    'before-publication',
-    'after-publication',
-    'cached-only',
-    'contradictory',
-  ] as const)('inspects initial recurring publication without repairing it after restart: %s', async (fault) => {
-    let coreDb = createMigratedCoreDb(false);
-    const root = coreDb.dataRoot;
-    const store = await createDemoStore({ dataRoot: root });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const manifest = agentManifest();
-    const initialExecutor = await RecordingTurnExecutor.create(coreDb);
-    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
-    const mutationAdmission = new WorkspaceMutationAdmission();
-    let instant = '2026-10-16T00:00:00.000Z';
-    const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
-    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: thread.id,
-      name: 'Inspect',
-      prompt: 'Exact recurring input',
-      intervalSeconds: 5,
-    });
-    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
-      expectedRevision: 1,
-      status: 'active',
-      scheduledAt: instant,
-    });
-    const originalCreate = store.createTurn.bind(store);
-    const initialCreate = vi.spyOn(store, 'createTurn').mockImplementationOnce(async (...args) => {
-      if (fault === 'before-publication') throw new Error('Interrupted initial publication');
-      const turn = await originalCreate(...args);
-      const retained = { root, workspaceId: DEMO_WORKSPACE_ID, turnId: turn.id };
-      if (fault === 'cached-only') await retainPublicationFault(retained, 'missing');
-      if (fault === 'contradictory') await retainPublicationFault(retained, 'contradictory');
-      throw new Error('Interrupted initial publication');
-    });
-    const prepare = async () => ({
-      kind: 'ready' as const,
-      payload: {
-        backendId: initialExecutor.executionBackend.id,
-        requestedAgentId: manifest.id,
-        profileRef: 'default',
-        modelId: 'openai/gpt-5.2',
-        workspaceRoots: [],
-        workspaceCwd: null,
-      },
-    });
-    const service = startRecurringScheduleService({
-      schedules,
-      store,
-      prepare,
-      now: () => instant,
-      setInterval: () => 'timer',
-      clearInterval: () => {},
-    });
-    try {
-      await service.runOnce();
-      expect(initialCreate).toHaveBeenCalledTimes(1);
-      await service.runOnce();
-      expect(initialCreate).toHaveBeenCalledTimes(1);
-      const accepted = schedules
-        .listHistory(schedule.id)
-        .items.find((entry) => entry.kind === 'occurrence')!.record;
-      expect(accepted).toMatchObject({ state: 'admission-accepted', attempts: [{ number: 1 }] });
-      const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
-      const expectedIssue =
-        fault === 'after-publication'
-          ? null
-          : fault === 'contradictory'
-            ? 'turn_contradictory'
-            : 'turn_missing';
-      // A cache entry created before a failed file write is not durable publication proof.
-      expect(recurringTurnPublicationIssue(store, entry)).toBe(expectedIssue);
-      service.stop();
-      initialCreate.mockRestore();
-      coreDb.sqlite.close();
-      coreDb = openCoreDb(root);
-      const reopened = await createDemoStore({ dataRoot: root });
-      const executor = await RecordingTurnExecutor.create(coreDb);
-      const restored = new AutomationStore(coreDb, mutationAdmission, () => instant);
-      const create = vi.spyOn(reopened, 'createTurn');
-      const update = vi.spyOn(reopened, 'updateTurn');
-      const projectRecoveredTurn = vi.fn();
-      await runSchedulerRestartRecovery(coreDb, {
-        store: reopened,
-        executionBackend: executor.executionBackend,
-        projectRecoveredTurn,
-      });
-      expect(projectRecoveredTurn).not.toHaveBeenCalled();
-      expect(restored.getOccurrence(accepted.id)).toEqual(accepted);
-      const dispatch = {
+  it.each(['none', 'missing', 'stale-cache'] as const)(
+    'dispatches event-linked work without a receipt and preserves faulty publication: %s',
+    async (fault) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
         coreDb,
-        store: reopened,
-        turnExecutor: executor,
-        executionBackend: executor.executionBackend,
-        agentManifests: [manifest],
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: localProviderRegistry(),
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const executor = await RecordingTurnExecutor.create(coreDb);
+      const manifest = agentManifest();
+      const pollThread = await store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
+      const schedules = new AutomationStore(
+        coreDb,
+        new WorkspaceMutationAdmission(),
+        () => '2026-10-16T00:00:00.000Z'
+      );
+      const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: pollThread.id,
+        name: 'External event poll',
+        prompt: 'Read the selected source.',
+        intervalSeconds: 5,
+      });
+      await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt: '2026-10-16T00:00:00.000Z',
+      });
+      const occurrence = (await schedules.collectScanCandidates('2026-10-16T00:00:00.000Z'))[0]!;
+      await schedules.commitAttempt(occurrence.id, 2, {
+        kind: 'ready',
+        payload: {
+          backendId: executor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      });
+      const source = schedules.getOccurrence(occurrence.id);
+      await store.createTurn(
+        DEMO_WORKSPACE_ID,
+        pollThread.id,
+        'Read the selected source.',
+        schedule.actor,
+        null,
+        { turnId: source.turnId!, status: 'pending', agentId: manifest.id, executorKind: 'worker' }
+      );
+      cancelSchedulerAdmissionEntry(coreDb, {
+        workspaceId: DEMO_WORKSPACE_ID,
+        queueEntryId: source.queueEntryId!,
+      });
+      const caseThread = await store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Isolated event case',
+        undefined,
+        'conversation',
+        { visibility: 'workspace', threadSource: 'worker', parentThreadId: pollThread.id }
+      );
+      const entry = coreDb.sqlite.transaction(() => {
+        const accepted = createSchedulerAdmissionEntry(coreDb, {
+          backendId: executor.executionBackend.id,
+          queueEntryId: 'queue_external_event',
+          requestId: 'external-event-request',
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: caseThread.id,
+          turnId: testEntityId('tu', 'tu_external_dispatch'),
+          requestedAgentId: manifest.id,
+          triggerActor: schedule.actor,
+          turnInput: 'Only this case brief.',
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+        });
+        insertExternalTriggerAdmission(coreDb, {
+          scheduleId: schedule.id,
+          eventKey: 'source/event-1',
+          sourceTurnId: source.turnId!,
+          queueEntryId: accepted.queueEntryId,
+        });
+        return accepted;
+      })();
+      await store.createTurn(
+        DEMO_WORKSPACE_ID,
+        caseThread.id,
+        entry.turnInput,
+        schedule.actor,
+        null,
+        {
+          turnId: entry.turnId,
+          status: 'pending',
+          agentId: manifest.id,
+          executorKind: 'worker',
+        }
+      );
+      const app = createApp({
+        coreDb,
+        dataRoot: coreDb.dataRoot,
+        store,
+        automationStore: schedules,
+      });
+      const published = readPublishedTurnFileRecords(
+        coreDb.dataRoot,
+        DEMO_WORKSPACE_ID,
+        caseThread.id,
+        entry.turnId
+      );
+      const turnRoot = {
+        root: coreDb.dataRoot,
+        workspaceId: DEMO_WORKSPACE_ID,
+        turnId: entry.turnId,
       };
-      if (expectedIssue) {
-        expect(await runSchedulerDispatchLoop(dispatch)).toMatchObject({
-          startedTurns: [],
-          terminalResult: { status: 'queued', reason: 'recovery-required' },
-        });
-        expect(create).not.toHaveBeenCalled();
-        expect(update).not.toHaveBeenCalled();
-        expect(executor.calls).toEqual([]);
-        expect(executor.prepareCalls).toEqual([]);
-        instant = '2026-10-16T00:00:05.000Z';
-        const held = (await restored.collectScanCandidates(instant))[0]!;
-        expect(await restored.commitAttempt(held.id, 2, await prepare())).toMatchObject({
-          state: 'pending',
-          attempts: [{ code: 'queue_backlog_full' }],
-        });
-        const app = createApp({
+      const originalBytes = snapshotNativeTurn(turnRoot);
+      if (fault === 'stale-cache') {
+        const originalTurn = store.getTurnById(entry.turnId);
+        const persist = vi
+          .spyOn(getControlStoreWorkerClient(), 'products')
+          .mockRejectedValueOnce(new Error('Turn persistence interrupted'));
+        try {
+          await expect(store.updateTurn(entry.turnId, { agentId: 'other-worker' })).rejects.toThrow(
+            'Turn persistence interrupted'
+          );
+        } finally {
+          persist.mockRestore();
+        }
+        expect(store.getTurnById(entry.turnId)).toEqual(originalTurn);
+        // Retain the contradictory projection independently of the refused write.
+        projectStaleTurn(store, entry.turnId, { ...originalTurn, agentId: 'other-worker' });
+        expect(store.getTurnById(entry.turnId).agentId).toBe('other-worker');
+      }
+      if (fault === 'missing') await retainPublicationFault(turnRoot, 'missing');
+      const create = vi.spyOn(store, 'createTurn');
+      const update = vi.spyOn(store, 'updateTurn');
+      try {
+        const outcome = await runSchedulerDispatchLoop({
           coreDb,
-          dataRoot: root,
-          store: reopened,
-          automationStore: restored,
+          store,
+          turnExecutor: executor,
+          executionBackend: executor.executionBackend,
+          agentManifests: [manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: localProviderRegistry(),
         });
-        const invoke = (operation: string, input: unknown) =>
-          app.request(`/api/app/operations/${operation}`, {
+        if (fault !== 'none') {
+          expect(outcome).toMatchObject({
+            startedTurns: [],
+            terminalResult: { status: 'queued', reason: 'recovery-required' },
+          });
+          expect(executor.calls).toEqual([]);
+          expect(executor.prepareCalls).toEqual([]);
+          expect(create).not.toHaveBeenCalled();
+          expect(update).not.toHaveBeenCalled();
+          const cancelled = await app.request('/api/app/operations/scheduler.cancel', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(input),
-          });
-        const history = await invoke('automation.history', { automationId: schedule.id });
-        expect(history.status).toBe(200);
-        expect((await history.json()).items).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              kind: 'occurrence',
-              record: expect.objectContaining({
-                id: accepted.id,
-                state: 'admission-accepted',
-                turnId: null,
-                publicationIssue: expectedIssue,
-                schedulerStatus: 'queued',
-              }),
+            body: JSON.stringify({
+              workspaceId: DEMO_WORKSPACE_ID,
+              queueEntryId: entry.queueEntryId,
             }),
-          ])
-        );
-        const cancelled = await invoke('scheduler.cancel', {
-          workspaceId: DEMO_WORKSPACE_ID,
-          queueEntryId: entry.queueEntryId,
-        });
-        expect(cancelled.status, await cancelled.clone().text()).toBe(200);
-        // Use an authorized paused target edit after cancellation; contradictory old history cannot authorize a repair.
-        if (fault === 'contradictory') {
-          const nextThread = await reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
-          await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
-            expectedRevision: 2,
-            status: 'paused',
           });
-          await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
-            expectedRevision: 3,
-            threadId: nextThread.id,
-          });
-          instant = '2026-10-16T00:00:10.000Z';
-          await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
-            expectedRevision: 4,
-            status: 'active',
-            scheduledAt: instant,
-          });
+          expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+          expect(update).not.toHaveBeenCalled();
+          expect(
+            readPublishedTurnFileRecords(
+              coreDb.dataRoot,
+              DEMO_WORKSPACE_ID,
+              caseThread.id,
+              entry.turnId
+            )
+          ).toEqual(fault === 'missing' ? null : published);
+          expect(
+            schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+          ).toBe('cancelled');
+          if (fault === 'stale-cache') expect(snapshotNativeTurn(turnRoot)).toEqual(originalBytes);
+        } else {
+          expect(outcome.startedTurns).toHaveLength(1);
+          expect(executor.calls.map((call) => call.input)).toEqual(['Only this case brief.']);
         }
+      } finally {
         create.mockRestore();
         update.mockRestore();
-        const later = startRecurringScheduleService({
-          schedules: restored,
-          store: reopened,
-          prepare,
-          now: () => instant,
-          setInterval: () => 'later',
-          clearInterval: () => {},
-        });
-        await later.runOnce();
-        later.stop();
-        expect(
-          restored
-            .listHistory(schedule.id)
-            .items.some(
-              ({ record }) =>
-                record.scheduledAt === instant &&
-                'state' in record &&
-                record.state === 'admission-accepted'
-            )
-        ).toBe(true);
-        await runSchedulerDispatchLoop(dispatch);
-        expect(executor.calls).toHaveLength(1);
-        expect(executor.calls[0]?.input).toBe('Exact recurring input');
-      } else {
-        await runSchedulerDispatchLoop(dispatch);
-        expect(executor.calls).toHaveLength(1);
-        expect(executor.calls[0]).toMatchObject({
-          input: 'Exact recurring input',
-          turnId: accepted.turnId,
-        });
-        expect(create).not.toHaveBeenCalled();
+        vi.restoreAllMocks();
+        await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+        coreDb.sqlite.close();
+        rmSync(coreDb.dataRoot, { recursive: true, force: true });
       }
-    } finally {
-      service.stop();
-      vi.restoreAllMocks();
-      if (coreDb.sqlite.open) coreDb.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
     }
-  });
+  );
+
+  it.each(['before-publication', 'after-publication', 'cached-only', 'contradictory'] as const)(
+    'inspects initial recurring publication without repairing it after restart: %s',
+    async (fault) => {
+      let coreDb = createMigratedCoreDb(false);
+      const root = coreDb.dataRoot;
+      const store = await createDemoStore({ dataRoot: root });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const manifest = agentManifest();
+      const initialExecutor = await RecordingTurnExecutor.create(coreDb);
+      const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
+      const mutationAdmission = new WorkspaceMutationAdmission();
+      let instant = '2026-10-16T00:00:00.000Z';
+      const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
+      const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        name: 'Inspect',
+        prompt: 'Exact recurring input',
+        intervalSeconds: 5,
+      });
+      await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+        expectedRevision: 1,
+        status: 'active',
+        scheduledAt: instant,
+      });
+      const originalCreate = store.createTurn.bind(store);
+      const initialCreate = vi
+        .spyOn(store, 'createTurn')
+        .mockImplementationOnce(async (...args) => {
+          if (fault === 'before-publication') throw new Error('Interrupted initial publication');
+          const turn = await originalCreate(...args);
+          const retained = { root, workspaceId: DEMO_WORKSPACE_ID, turnId: turn.id };
+          if (fault === 'cached-only') await retainPublicationFault(retained, 'missing');
+          if (fault === 'contradictory') await retainPublicationFault(retained, 'contradictory');
+          throw new Error('Interrupted initial publication');
+        });
+      const prepare = async () => ({
+        kind: 'ready' as const,
+        payload: {
+          backendId: initialExecutor.executionBackend.id,
+          requestedAgentId: manifest.id,
+          profileRef: 'default',
+          modelId: 'openai/gpt-5.2',
+          workspaceRoots: [],
+          workspaceCwd: null,
+        },
+      });
+      const service = startRecurringScheduleService({
+        schedules,
+        store,
+        prepare,
+        now: () => instant,
+        setInterval: () => 'timer',
+        clearInterval: () => {},
+      });
+      try {
+        await service.runOnce();
+        expect(initialCreate).toHaveBeenCalledTimes(1);
+        await service.runOnce();
+        expect(initialCreate).toHaveBeenCalledTimes(1);
+        const accepted = schedules
+          .listHistory(schedule.id)
+          .items.find((entry) => entry.kind === 'occurrence')!.record;
+        expect(accepted).toMatchObject({ state: 'admission-accepted', attempts: [{ number: 1 }] });
+        const entry = schedulerRecords.requireSchedulerAdmissionEntry(
+          coreDb,
+          accepted.queueEntryId!
+        );
+        const expectedIssue =
+          fault === 'after-publication'
+            ? null
+            : fault === 'contradictory'
+              ? 'turn_contradictory'
+              : 'turn_missing';
+        // A cache entry created before a failed file write is not durable publication proof.
+        expect(recurringTurnPublicationIssue(store, entry)).toBe(expectedIssue);
+        service.stop();
+        initialCreate.mockRestore();
+        coreDb.sqlite.close();
+        coreDb = openCoreDb(root);
+        const reopened = await createDemoStore({ dataRoot: root });
+        const executor = await RecordingTurnExecutor.create(coreDb);
+        const restored = new AutomationStore(coreDb, mutationAdmission, () => instant);
+        const create = vi.spyOn(reopened, 'createTurn');
+        const update = vi.spyOn(reopened, 'updateTurn');
+        const projectRecoveredTurn = vi.fn();
+        await runSchedulerRestartRecovery(coreDb, {
+          store: reopened,
+          executionBackend: executor.executionBackend,
+          projectRecoveredTurn,
+        });
+        expect(projectRecoveredTurn).not.toHaveBeenCalled();
+        expect(restored.getOccurrence(accepted.id)).toEqual(accepted);
+        const dispatch = {
+          coreDb,
+          store: reopened,
+          turnExecutor: executor,
+          executionBackend: executor.executionBackend,
+          agentManifests: [manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: localProviderRegistry(),
+        };
+        if (expectedIssue) {
+          expect(await runSchedulerDispatchLoop(dispatch)).toMatchObject({
+            startedTurns: [],
+            terminalResult: { status: 'queued', reason: 'recovery-required' },
+          });
+          expect(create).not.toHaveBeenCalled();
+          expect(update).not.toHaveBeenCalled();
+          expect(executor.calls).toEqual([]);
+          expect(executor.prepareCalls).toEqual([]);
+          instant = '2026-10-16T00:00:05.000Z';
+          const held = (await restored.collectScanCandidates(instant))[0]!;
+          expect(await restored.commitAttempt(held.id, 2, await prepare())).toMatchObject({
+            state: 'pending',
+            attempts: [{ code: 'queue_backlog_full' }],
+          });
+          const app = createApp({
+            coreDb,
+            dataRoot: root,
+            store: reopened,
+            automationStore: restored,
+          });
+          const invoke = (operation: string, input: unknown) =>
+            app.request(`/api/app/operations/${operation}`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(input),
+            });
+          const history = await invoke('automation.history', { automationId: schedule.id });
+          expect(history.status).toBe(200);
+          expect((await history.json()).items).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                kind: 'occurrence',
+                record: expect.objectContaining({
+                  id: accepted.id,
+                  state: 'admission-accepted',
+                  turnId: null,
+                  publicationIssue: expectedIssue,
+                  schedulerStatus: 'queued',
+                }),
+              }),
+            ])
+          );
+          const cancelled = await invoke('scheduler.cancel', {
+            workspaceId: DEMO_WORKSPACE_ID,
+            queueEntryId: entry.queueEntryId,
+          });
+          expect(cancelled.status, await cancelled.clone().text()).toBe(200);
+          // Use an authorized paused target edit after cancellation; contradictory old history cannot authorize a repair.
+          if (fault === 'contradictory') {
+            const nextThread = await reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
+            await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+              expectedRevision: 2,
+              status: 'paused',
+            });
+            await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+              expectedRevision: 3,
+              threadId: nextThread.id,
+            });
+            instant = '2026-10-16T00:00:10.000Z';
+            await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+              expectedRevision: 4,
+              status: 'active',
+              scheduledAt: instant,
+            });
+          }
+          create.mockRestore();
+          update.mockRestore();
+          const later = startRecurringScheduleService({
+            schedules: restored,
+            store: reopened,
+            prepare,
+            now: () => instant,
+            setInterval: () => 'later',
+            clearInterval: () => {},
+          });
+          await later.runOnce();
+          later.stop();
+          expect(
+            restored
+              .listHistory(schedule.id)
+              .items.some(
+                ({ record }) =>
+                  record.scheduledAt === instant &&
+                  'state' in record &&
+                  record.state === 'admission-accepted'
+              )
+          ).toBe(true);
+          await runSchedulerDispatchLoop(dispatch);
+          expect(executor.calls).toHaveLength(1);
+          expect(executor.calls[0]?.input).toBe('Exact recurring input');
+        } else {
+          await runSchedulerDispatchLoop(dispatch);
+          expect(executor.calls).toHaveLength(1);
+          expect(executor.calls[0]).toMatchObject({
+            input: 'Exact recurring input',
+            turnId: accepted.turnId,
+          });
+          expect(create).not.toHaveBeenCalled();
+        }
+      } finally {
+        service.stop();
+        vi.restoreAllMocks();
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it.each(
     [true, false].flatMap((separateHandle) =>
@@ -1216,365 +1233,365 @@ describe('scheduler dispatch loop', () => {
         ['leased', 'transient', 'deterministic', 'post-lease', 'denied', 'acquisition'] as const
       ).map((outcome) => ({ separateHandle, outcome }))
     )
-  )('shares background preparation with its own caller: $outcome, separate Core handle $separateHandle', async ({
-    separateHandle,
-    outcome,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const executor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const gate = Promise.withResolvers<void>();
-    const acquired = Promise.withResolvers<void>();
-    void acquired.promise.catch(() => undefined);
-    const errors: unknown[] = [];
-    const failure =
-      outcome === 'deterministic'
-        ? new DeterministicAgentPreparationError(
-            'Shared deterministic failure',
-            'agent_not_ready',
-            409
-          )
-        : new Error(`Shared ${outcome} failure`);
-    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
-    let preparations = 0;
-    executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-      preparations += 1;
-      if (outcome !== 'acquisition') await gate.promise;
-      if (outcome === 'transient' || outcome === 'deterministic') throw failure;
-      const prepared = await prepare(ownerStore, preparation);
-      if (outcome === 'denied') {
-        coreDb.sqlite
-          .prepare(
-            "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
-          )
-          .run(Date.now());
-      }
-      return prepared;
-    };
-    if (outcome === 'post-lease')
-      executor.submit = async () => {
-        throw failure;
-      };
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      agentManifests: [manifest],
-      dataRoot: null,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: localProviderRegistry(),
-    });
-    await seedLocalSchedulerTarget(coreDb);
-    const service = startSchedulerDispatchRetryService({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      executionBackend: executor.executionBackend,
-
-      intervalMs: 60_000,
-      runtimeConfigSnapshot: () => snapshot,
-      onError: (error) => errors.push(error),
-      setInterval: () => 'test-timer',
-      clearInterval: () => {},
-    });
-    let background: ReturnType<typeof service.runOnce> | undefined;
-    // This fault belongs to conditional attempt acquisition, before any preparation/native effect.
-    // Static compatibility may run on either side; the fault cannot depend on entering that helper.
-    const acquisitionFault = vi.fn(() => {
-      throw failure;
-    });
-    let dispatchSpy: { mockRestore(): void } | undefined;
-    if (outcome === 'acquisition') {
-      try {
-        expect(
-          Reflect.get(attemptCommands, 'createSchedulerExecutionAttempt'),
-          'The acquisition fault needs the current conditional attempt owner, not a legacy graph dispatcher.'
-        ).toBeTypeOf('function');
-        expect(
+  )(
+    'shares background preparation with its own caller: $outcome, separate Core handle $separateHandle',
+    async ({ separateHandle, outcome }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const executor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const gate = Promise.withResolvers<void>();
+      const acquired = Promise.withResolvers<void>();
+      void acquired.promise.catch(() => undefined);
+      const errors: unknown[] = [];
+      const failure =
+        outcome === 'deterministic'
+          ? new DeterministicAgentPreparationError(
+              'Shared deterministic failure',
+              'agent_not_ready',
+              409
+            )
+          : new Error(`Shared ${outcome} failure`);
+      const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+      let preparations = 0;
+      executor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+        preparations += 1;
+        if (outcome !== 'acquisition') await gate.promise;
+        if (outcome === 'transient' || outcome === 'deterministic') throw failure;
+        const prepared = await prepare(ownerStore, preparation);
+        if (outcome === 'denied') {
           coreDb.sqlite
             .prepare(
-              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_execution_attempts'"
+              "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
             )
-            .get(),
-          'Missing attempt storage cannot prove the absence of a reopened grant.'
-        ).toBeDefined();
-        dispatchSpy = vi
-          .spyOn(
-            attemptCommands as unknown as {
-              createSchedulerExecutionAttempt: (...args: unknown[]) => unknown;
-            },
-            'createSchedulerExecutionAttempt'
-          )
-          .mockImplementation(acquisitionFault);
-      } catch (error) {
-        service.stop();
-
-        coreDb.sqlite.close();
-        throw error;
-      }
-    } else {
-      const createAttempt = attemptCommands.createSchedulerExecutionAttempt;
-      dispatchSpy = vi
-        .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
-        .mockImplementation(async (...args) => {
-          try {
-            const attempt = await createAttempt(...args);
-            acquired.resolve();
-            return attempt;
-          } catch (error) {
-            acquired.reject(error);
-            throw error;
-          }
-        });
-    }
-    const cancelSpy = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
-    const onTurnCreated = vi.fn(() => {
-      background = service.runOnce();
-    });
-    const caller = admitTestProductTurn(
-      {
+            .run(Date.now());
+        }
+        return prepared;
+      };
+      if (outcome === 'post-lease')
+        executor.submit = async () => {
+          throw failure;
+        };
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      });
+      await seedLocalSchedulerTarget(coreDb);
+      const service = startSchedulerDispatchRetryService({
         coreDb,
         store,
         turnExecutor: executor,
-        snapshot,
+        executionBackend: executor.executionBackend,
 
-        onTurnCreated,
-
-        providerCredentialResolver: () => null,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        input: {
-          agentId: manifest.id,
-          input: 'Shared admission',
-          requestId: '00000000-0000-4000-8000-00000000f201',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-      },
-      false
-    ).then(
-      (handle) => ({ handle }),
-      (error: unknown) => ({ error })
-    );
-    try {
-      // Join native admission before measuring the existing preparation deadline.
-      await caller;
-      if (outcome === 'acquisition') {
-        await vi.waitFor(() => expect(acquisitionFault).toHaveBeenCalledTimes(2));
-        const [backgroundResult, callerResult] = await Promise.all([background, caller]);
-        expect(backgroundResult).toBeNull();
-        expect(errors).toEqual([failure]);
-        expect(callerResult).toHaveProperty('handle');
-        expect(JSON.stringify(callerResult)).not.toContain(failure.message);
-        const [accepted] = listQueuedSchedulerAdmissionEntries(coreDb);
-        expect(accepted).toMatchObject({
-          requestId: '00000000-0000-4000-8000-00000000f201',
-          status: 'queued',
-        });
-        if ('handle' in callerResult) expect(callerResult.handle.turn.id).toBe(accepted!.turnId);
-        expect(executor.calls).toEqual([]);
-        expect(preparations).toBeLessThanOrEqual(1);
-        expect(executionAttempts(coreDb).filter((attempt) => attempt.phase !== 'closed')).toEqual(
-          []
-        );
-        expect(cancelSpy).not.toHaveBeenCalled();
-        expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
-        return;
-      }
-      // The original synchronous acquisition was complete before this preparation deadline.
-      await acquired.promise;
-      await vi.waitFor(() => expect(preparations).toBe(1), { timeout: 1000 });
-      const [admission] = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        statuses: ['admitted'],
+        intervalMs: 60_000,
+        runtimeConfigSnapshot: () => snapshot,
+        onError: (error) => errors.push(error),
+        setInterval: () => 'test-timer',
+        clearInterval: () => {},
       });
-      expect(admission).toBeDefined();
-      expect(preparations).toBe(1);
-      const before = coreDb.sqlite.prepare('SELECT total_changes() AS count').get();
-      // A background overlap ends its pass; it cannot enter a second preparation or write claim state.
-      const overlapPending = service.runOnce();
-      expect(preparations).toBe(1);
-      const overlap = await overlapPending;
-      expect(overlap?.startedTurns).toEqual([]);
-      expect(coreDb.sqlite.prepare('SELECT total_changes() AS count').get()).toEqual(before);
+      let background: ReturnType<typeof service.runOnce> | undefined;
+      // This fault belongs to conditional attempt acquisition, before any preparation/native effect.
+      // Static compatibility may run on either side; the fault cannot depend on entering that helper.
+      const acquisitionFault = vi.fn(() => {
+        throw failure;
+      });
+      let dispatchSpy: { mockRestore(): void } | undefined;
+      if (outcome === 'acquisition') {
+        try {
+          expect(
+            Reflect.get(attemptCommands, 'createSchedulerExecutionAttempt'),
+            'The acquisition fault needs the current conditional attempt owner, not a legacy graph dispatcher.'
+          ).toBeTypeOf('function');
+          expect(
+            coreDb.sqlite
+              .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_execution_attempts'"
+              )
+              .get(),
+            'Missing attempt storage cannot prove the absence of a reopened grant.'
+          ).toBeDefined();
+          dispatchSpy = vi
+            .spyOn(
+              attemptCommands as unknown as {
+                createSchedulerExecutionAttempt: (...args: unknown[]) => unknown;
+              },
+              'createSchedulerExecutionAttempt'
+            )
+            .mockImplementation(acquisitionFault);
+        } catch (error) {
+          service.stop();
 
-      gate.resolve();
-      const [backgroundResult, callerResult] = await Promise.all([background, caller]);
-      expect(preparations).toBe(1);
-      expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
-      if (outcome === 'leased') {
-        expect(backgroundResult?.startedTurns).toHaveLength(1);
-        expect(callerResult).toHaveProperty('handle');
-        if ('handle' in callerResult)
-          expect(callerResult.handle.turn.id).toBe(
-            backgroundResult?.startedTurns[0]?.handle.turn.id
-          );
-        expect(onTurnCreated).toHaveBeenCalledTimes(1);
-        expect(onTurnCreated.mock.calls[0]?.[0].id).toBe(admission?.turnId);
-        expect(errors).toEqual([]);
-      } else if (
-        outcome === 'transient' ||
-        outcome === 'deterministic' ||
-        outcome === 'post-lease'
-      ) {
-        expect(callerResult).toHaveProperty('handle');
-        const failed = store.getTurnById(admission!.turnId);
-        expect(failed).toMatchObject({ status: 'failed', error: { message: failure.message } });
-        const attempt = executionAttempts(coreDb)[0]!;
-        expect(attempt).toMatchObject(
-          outcome === 'post-lease'
-            ? { phase: 'closing', disposition: 'unknown', fence_ref: null }
-            : { phase: 'closed', disposition: 'not_accepted', operation_id: null }
-        );
-        expect(backgroundResult).toBeNull();
-        expect(errors).toHaveLength(1);
-        expect(errors[0]).toBe(failure);
-        expect(
-          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, admission!.queueEntryId).status
-        ).toBe('admitted');
-        expect(cancelSpy).not.toHaveBeenCalled();
-        if (outcome === 'post-lease') {
-          expect(['open', 'closing']).toContain(executionAttempts(coreDb)[0]?.phase);
+          coreDb.sqlite.close();
+          throw error;
         }
-        expect((await service.runOnce())?.startedTurns).toEqual([]);
-        expect(preparations).toBe(1);
       } else {
-        expect(callerResult).toHaveProperty('handle');
-        expect(backgroundResult).toBeNull();
-        expect(errors).toMatchObject([{ code: 'workspace_access_denied', status: 403 }]);
-        expect(store.getTurnById(admission!.turnId).status).toBe('failed');
+        const createAttempt = attemptCommands.createSchedulerExecutionAttempt;
+        dispatchSpy = vi
+          .spyOn(attemptCommands, 'createSchedulerExecutionAttempt')
+          .mockImplementation(async (...args) => {
+            try {
+              const attempt = await createAttempt(...args);
+              acquired.resolve();
+              return attempt;
+            } catch (error) {
+              acquired.reject(error);
+              throw error;
+            }
+          });
+      }
+      const cancelSpy = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
+      const onTurnCreated = vi.fn(() => {
+        background = service.runOnce();
+      });
+      const caller = admitTestProductTurn(
+        {
+          coreDb,
+          store,
+          turnExecutor: executor,
+          snapshot,
+
+          onTurnCreated,
+
+          providerCredentialResolver: () => null,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          input: {
+            agentId: manifest.id,
+            input: 'Shared admission',
+            requestId: '00000000-0000-4000-8000-00000000f201',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+        },
+        false
+      ).then(
+        (handle) => ({ handle }),
+        (error: unknown) => ({ error })
+      );
+      try {
+        // Join native admission before measuring the existing preparation deadline.
+        await caller;
+        if (outcome === 'acquisition') {
+          await vi.waitFor(() => expect(acquisitionFault).toHaveBeenCalledTimes(2));
+          const [backgroundResult, callerResult] = await Promise.all([background, caller]);
+          expect(backgroundResult).toBeNull();
+          expect(errors).toEqual([failure]);
+          expect(callerResult).toHaveProperty('handle');
+          expect(JSON.stringify(callerResult)).not.toContain(failure.message);
+          const [accepted] = listQueuedSchedulerAdmissionEntries(coreDb);
+          expect(accepted).toMatchObject({
+            requestId: '00000000-0000-4000-8000-00000000f201',
+            status: 'queued',
+          });
+          if ('handle' in callerResult) expect(callerResult.handle.turn.id).toBe(accepted!.turnId);
+          expect(executor.calls).toEqual([]);
+          expect(preparations).toBeLessThanOrEqual(1);
+          expect(executionAttempts(coreDb).filter((attempt) => attempt.phase !== 'closed')).toEqual(
+            []
+          );
+          expect(cancelSpy).not.toHaveBeenCalled();
+          expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
+          return;
+        }
+        // The original synchronous acquisition was complete before this preparation deadline.
+        await acquired.promise;
+        await vi.waitFor(() => expect(preparations).toBe(1), { timeout: 1000 });
+        const [admission] = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          statuses: ['admitted'],
+        });
+        expect(admission).toBeDefined();
+        expect(preparations).toBe(1);
+        const before = coreDb.sqlite.prepare('SELECT total_changes() AS count').get();
+        // A background overlap ends its pass; it cannot enter a second preparation or write claim state.
+        const overlapPending = service.runOnce();
+        expect(preparations).toBe(1);
+        const overlap = await overlapPending;
+        expect(overlap?.startedTurns).toEqual([]);
+        expect(coreDb.sqlite.prepare('SELECT total_changes() AS count').get()).toEqual(before);
+
+        gate.resolve();
+        const [backgroundResult, callerResult] = await Promise.all([background, caller]);
+        expect(preparations).toBe(1);
+        expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
+        if (outcome === 'leased') {
+          expect(backgroundResult?.startedTurns).toHaveLength(1);
+          expect(callerResult).toHaveProperty('handle');
+          if ('handle' in callerResult)
+            expect(callerResult.handle.turn.id).toBe(
+              backgroundResult?.startedTurns[0]?.handle.turn.id
+            );
+          expect(onTurnCreated).toHaveBeenCalledTimes(1);
+          expect(onTurnCreated.mock.calls[0]?.[0].id).toBe(admission?.turnId);
+          expect(errors).toEqual([]);
+        } else if (
+          outcome === 'transient' ||
+          outcome === 'deterministic' ||
+          outcome === 'post-lease'
+        ) {
+          expect(callerResult).toHaveProperty('handle');
+          const failed = store.getTurnById(admission!.turnId);
+          expect(failed).toMatchObject({ status: 'failed', error: { message: failure.message } });
+          const attempt = executionAttempts(coreDb)[0]!;
+          expect(attempt).toMatchObject(
+            outcome === 'post-lease'
+              ? { phase: 'closing', disposition: 'unknown', fence_ref: null }
+              : { phase: 'closed', disposition: 'not_accepted', operation_id: null }
+          );
+          expect(backgroundResult).toBeNull();
+          expect(errors).toHaveLength(1);
+          expect(errors[0]).toBe(failure);
+          expect(
+            schedulerRecords.requireSchedulerAdmissionEntry(coreDb, admission!.queueEntryId).status
+          ).toBe('admitted');
+          expect(cancelSpy).not.toHaveBeenCalled();
+          if (outcome === 'post-lease') {
+            expect(['open', 'closing']).toContain(executionAttempts(coreDb)[0]?.phase);
+          }
+          expect((await service.runOnce())?.startedTurns).toEqual([]);
+          expect(preparations).toBe(1);
+        } else {
+          expect(callerResult).toHaveProperty('handle');
+          expect(backgroundResult).toBeNull();
+          expect(errors).toMatchObject([{ code: 'workspace_access_denied', status: 403 }]);
+          expect(store.getTurnById(admission!.turnId).status).toBe('failed');
+          expect(executionAttempts(coreDb)).toMatchObject([
+            { phase: 'closed', disposition: 'not_accepted', operation_id: null },
+          ]);
+          expect(
+            schedulerRecords.requireSchedulerAdmissionEntry(coreDb, admission!.queueEntryId).status
+          ).toBe('admitted');
+          expect(cancelSpy).not.toHaveBeenCalled();
+        }
+      } finally {
+        gate.resolve();
+        await Promise.all([background, caller]);
+        service.stop();
+
+        cancelSpy.mockRestore();
+        dispatchSpy?.mockRestore();
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'does not wait for or disclose a foreign claimed admission, separate Core handle %s',
+    async (separateHandle) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const manifest = agentManifest();
+      const executor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const gate = Promise.withResolvers<void>();
+      const failure = new Error('FOREIGN-PRIVATE preparation diagnostics');
+      let preparations = 0;
+      executor.prepareAgentSessionForTurn = async () => {
+        preparations += 1;
+        await gate.promise;
+        throw failure;
+      };
+      const foreignWorkspace = await store.createWorkspace('Foreign Workspace');
+      const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign Thread');
+      coreDb.sqlite
+        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
+      VALUES ('usr_00000000-0000-7417-adb6-8c98a2b20e22', 'Foreign', 'claim-foreign@example.invalid', false, ?, ?, 'human')`)
+        .run(Date.now(), Date.now());
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7417-adb6-8c98a2b20e22',
+        workspaceId: foreignWorkspace.id,
+      });
+      await seedLocalSchedulerTarget(coreDb);
+      await publishTestAdmission(
+        store,
+        createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: fixtureRequestId('queue_claim_foreign'),
+          requestId: fixtureRequestId('queue_claim_foreign'),
+          turnId: testEntityId('tu', 'turn_claim_foreign'),
+          workspaceId: foreignWorkspace.id,
+          threadId: foreignThread.id,
+          turnInput: 'Private foreign work',
+          requestedAgentId: manifest.id,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7417-adb6-8c98a2b20e22' },
+          now: () => '2026-07-05T00:00:00.000Z',
+        })
+      );
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+      });
+      const background = runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        providerRegistry: snapshot.providerRegistry,
+        gatewayConfig: snapshot.gatewayConfig,
+      }).catch((error: unknown) => error);
+      const caller = admitTestProductTurn(
+        {
+          coreDb,
+          store,
+          turnExecutor: executor,
+          snapshot,
+
+          providerCredentialResolver: () => null,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          input: {
+            agentId: manifest.id,
+            input: 'Own work',
+            requestId: '00000000-0000-4000-8000-00000000f202',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+        },
+        false
+      ).catch((error: unknown) => error);
+      try {
+        await vi.waitFor(() => expect(preparations).toBe(1), { timeout: 1000 });
+        const error = await caller;
+        expect(error).not.toBeInstanceOf(Error);
+        expect(JSON.stringify(error)).not.toContain('FOREIGN-PRIVATE');
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            statuses: ['queued', 'cancelled'],
+          })
+        ).toMatchObject([{ status: 'queued' }]);
+        gate.resolve();
+        expect(await background).toBe(failure);
+        expect(
+          schedulerRecords.requireSchedulerAdmissionEntry(
+            coreDb,
+            fixtureRequestId('queue_claim_foreign')
+          ).status
+        ).toBe('admitted');
         expect(executionAttempts(coreDb)).toMatchObject([
           { phase: 'closed', disposition: 'not_accepted', operation_id: null },
         ]);
-        expect(
-          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, admission!.queueEntryId).status
-        ).toBe('admitted');
-        expect(cancelSpy).not.toHaveBeenCalled();
+        expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
+      } finally {
+        gate.resolve();
+        await Promise.all([background, caller]);
+        coreDb.sqlite.close();
       }
-    } finally {
-      gate.resolve();
-      await Promise.all([background, caller]);
-      service.stop();
-
-      cancelSpy.mockRestore();
-      dispatchSpy?.mockRestore();
-      coreDb.sqlite.close();
     }
-  });
-
-  it.each([
-    true,
-    false,
-  ])('does not wait for or disclose a foreign claimed admission, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const manifest = agentManifest();
-    const executor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const gate = Promise.withResolvers<void>();
-    const failure = new Error('FOREIGN-PRIVATE preparation diagnostics');
-    let preparations = 0;
-    executor.prepareAgentSessionForTurn = async () => {
-      preparations += 1;
-      await gate.promise;
-      throw failure;
-    };
-    const foreignWorkspace = await store.createWorkspace('Foreign Workspace');
-    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign Thread');
-    coreDb.sqlite
-      .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-      VALUES ('usr_00000000-0000-7417-adb6-8c98a2b20e22', 'Foreign', 'claim-foreign@example.invalid', false, ?, ?, 'human')`)
-      .run(Date.now(), Date.now());
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7417-adb6-8c98a2b20e22',
-      workspaceId: foreignWorkspace.id,
-    });
-    await seedLocalSchedulerTarget(coreDb);
-    await publishTestAdmission(
-      store,
-      createSchedulerAdmissionEntry(coreDb, {
-        backendId: 'nanohost',
-        queueEntryId: fixtureRequestId('queue_claim_foreign'),
-        requestId: fixtureRequestId('queue_claim_foreign'),
-        turnId: testEntityId('tu', 'turn_claim_foreign'),
-        workspaceId: foreignWorkspace.id,
-        threadId: foreignThread.id,
-        turnInput: 'Private foreign work',
-        requestedAgentId: manifest.id,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7417-adb6-8c98a2b20e22' },
-        now: () => '2026-07-05T00:00:00.000Z',
-      })
-    );
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      agentManifests: [manifest],
-      dataRoot: null,
-      gatewayConfig: createTestGatewayConfig(),
-      providerRegistry: localProviderRegistry(),
-    });
-    const background = runSchedulerDispatchLoop({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      executionBackend: executor.executionBackend,
-      agentManifests: [manifest],
-      providerRegistry: snapshot.providerRegistry,
-      gatewayConfig: snapshot.gatewayConfig,
-    }).catch((error: unknown) => error);
-    const caller = admitTestProductTurn(
-      {
-        coreDb,
-        store,
-        turnExecutor: executor,
-        snapshot,
-
-        providerCredentialResolver: () => null,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        input: {
-          agentId: manifest.id,
-          input: 'Own work',
-          requestId: '00000000-0000-4000-8000-00000000f202',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-      },
-      false
-    ).catch((error: unknown) => error);
-    try {
-      await vi.waitFor(() => expect(preparations).toBe(1), { timeout: 1000 });
-      const error = await caller;
-      expect(error).not.toBeInstanceOf(Error);
-      expect(JSON.stringify(error)).not.toContain('FOREIGN-PRIVATE');
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          statuses: ['queued', 'cancelled'],
-        })
-      ).toMatchObject([{ status: 'queued' }]);
-      gate.resolve();
-      expect(await background).toBe(failure);
-      expect(
-        schedulerRecords.requireSchedulerAdmissionEntry(
-          coreDb,
-          fixtureRequestId('queue_claim_foreign')
-        ).status
-      ).toBe('admitted');
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { phase: 'closed', disposition: 'not_accepted', operation_id: null },
-      ]);
-      expect(getSchedulerPreparationClaims(coreDb).size).toBe(0);
-    } finally {
-      gate.resolve();
-      await Promise.all([background, caller]);
-      coreDb.sqlite.close();
-    }
-  });
+  );
 
   it('keys preparation owners by data root, including separate handles for the same root', () => {
     const first = createMigratedCoreDb();
@@ -1811,223 +1828,223 @@ describe('scheduler dispatch loop', () => {
         failureStage,
       }))
     )
-  )('accepts its own queued work without disclosing foreign dispatch failures: $failureStage, separate Core handle $separateHandle', async ({
-    separateHandle,
-    failureStage,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const workspace = await store.createWorkspace('Foreign Workspace');
-    const thread = await store.createThread(workspace.id, 'Foreign Thread');
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const privateText = 'FOREIGN-PRIVATE queue_foreign_race';
-    const requestId = '00000000-0000-4000-8000-00000000f124';
-
-    try {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO users
-            (id, display_name, email, email_verified, created_at, updated_at, kind)
-           VALUES ('usr_00000000-0000-7ed5-9b62-226e0a66887f', 'Foreign', 'foreign@example.invalid', false, ?, ?, 'human')`
-        )
-        .run(Date.now(), Date.now());
+  )(
+    'accepts its own queued work without disclosing foreign dispatch failures: $failureStage, separate Core handle $separateHandle',
+    async ({ separateHandle, failureStage }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
-        workspaceId: workspace.id,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      await seedLocalSchedulerTarget(coreDb);
-      await publishTestAdmission(
-        store,
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          profileRef: null,
-          queueEntryId: fixtureRequestId('queue_foreign_race'),
-          requestId: fixtureRequestId('req_foreign_race'),
-          requestedAgentId: manifest.id,
-          threadId: thread.id,
-          turnId: testEntityId('tu', 'turn_foreign_race'),
-          turnInput: 'Foreign private work',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
+      const workspace = await store.createWorkspace('Foreign Workspace');
+      const thread = await store.createThread(workspace.id, 'Foreign Thread');
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const privateText = 'FOREIGN-PRIVATE queue_foreign_race';
+      const requestId = '00000000-0000-4000-8000-00000000f124';
+
+      try {
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO users
+            (id, display_name, email, email_verified, created_at, updated_at, kind)
+           VALUES ('usr_00000000-0000-7ed5-9b62-226e0a66887f', 'Foreign', 'foreign@example.invalid', false, ?, ?, 'human')`
+          )
+          .run(Date.now(), Date.now());
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
           workspaceId: workspace.id,
-          now: () => '2026-07-05T00:00:00.000Z',
-        })
-      );
-      if (failureStage === 'queue-race') {
-        const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
-        turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-          expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_foreign_race'));
-          const prepared = await prepare(ownerStore, preparation);
-          cancelSchedulerAdmissionEntry(coreDb, {
+        });
+        await seedLocalSchedulerTarget(coreDb);
+        await publishTestAdmission(
+          store,
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost',
+            profileRef: null,
             queueEntryId: fixtureRequestId('queue_foreign_race'),
-            requestId: fixtureRequestId('queue_foreign_race'),
+            requestId: fixtureRequestId('req_foreign_race'),
+            requestedAgentId: manifest.id,
+            threadId: thread.id,
+            turnId: testEntityId('tu', 'turn_foreign_race'),
+            turnInput: 'Foreign private work',
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' },
             workspaceId: workspace.id,
-          });
-          return prepared;
-        };
-      } else {
-        coreDb.sqlite
-          .prepare(
-            'UPDATE scheduler_admission_entries SET trigger_actor_json = ? WHERE queue_entry_id = ?'
-          )
-          .run(privateText, fixtureRequestId('queue_foreign_race'));
-      }
-      const error = await admitTestProductTurn({
-        coreDb,
-        input: {
-          agentId: manifest.id,
-          input: 'Caller work',
-          requestId,
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        providerCredentialResolver: () => null,
+            now: () => '2026-07-05T00:00:00.000Z',
+          })
+        );
+        if (failureStage === 'queue-race') {
+          const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+          turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+            expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_foreign_race'));
+            const prepared = await prepare(ownerStore, preparation);
+            cancelSchedulerAdmissionEntry(coreDb, {
+              queueEntryId: fixtureRequestId('queue_foreign_race'),
+              requestId: fixtureRequestId('queue_foreign_race'),
+              workspaceId: workspace.id,
+            });
+            return prepared;
+          };
+        } else {
+          coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_admission_entries SET trigger_actor_json = ? WHERE queue_entry_id = ?'
+            )
+            .run(privateText, fixtureRequestId('queue_foreign_race'));
+        }
+        const error = await admitTestProductTurn({
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Caller work',
+            requestId,
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+          providerCredentialResolver: () => null,
 
-        snapshot: createInMemoryRuntimeConfigSnapshot({
-          agentManifests: [manifest],
-          dataRoot: null,
-          gatewayConfig: createTestGatewayConfig(),
-          providerRegistry: localProviderRegistry(),
-        }),
-        store,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        turnExecutor,
-      }).catch((caught: unknown) => caught);
-
-      expect(error).not.toBeInstanceOf(Error);
-      const projection = error;
-      for (const diagnostic of [String(error), JSON.stringify(projection)]) {
-        expect(diagnostic).not.toContain('FOREIGN-PR');
-        expect(diagnostic).not.toContain(fixtureRequestId('queue_foreign_race'));
-      }
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT status, trigger_actor_json AS actor FROM scheduler_admission_entries WHERE queue_entry_id = ?'
-          )
-          .get(fixtureRequestId('queue_foreign_race'))
-      ).toEqual({
-        status: failureStage === 'queue-race' ? 'admitted' : 'queued',
-        actor:
-          failureStage === 'queue-race'
-            ? JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' })
-            : privateText,
-      });
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          statuses: ['queued', 'cancelled'],
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject([{ requestId, status: 'queued' }]);
-
-      expect(turnExecutor.calls).toEqual([]);
-      if (failureStage === 'malformed-row') {
-        expect(turnExecutor.prepareCalls).toEqual([]);
-        expect(() => listQueuedSchedulerAdmissionEntries(coreDb)).toThrow(SyntaxError);
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    true,
-    false,
-  ])('preserves original acceptance when cancellation after acquisition refuses and later work is queued, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const thread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Later Thread'
-    );
-    const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
-    let ownQueueEntryId = '';
-    turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-      const prepared = await prepare(ownerStore, preparation);
-      const own = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        statuses: ['admitted'],
-      })[0]!;
-      expect(own.turnId).toBe(preparation.turn.id);
-      ownQueueEntryId = own.queueEntryId;
-
-      await publishTestAdmission(
-        store,
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          queueEntryId: fixtureRequestId('queue_later_race'),
-          requestId: fixtureRequestId('queue_later_race'),
-          requestedAgentId: manifest.id,
-          threadId: thread.id,
-          turnId: testEntityId('tu', 'turn_later_race'),
-          turnInput: 'Later work',
+          snapshot: createInMemoryRuntimeConfigSnapshot({
+            agentManifests: [manifest],
+            dataRoot: null,
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: localProviderRegistry(),
+          }),
+          store,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      );
+          turnExecutor,
+        }).catch((caught: unknown) => caught);
 
-      cancelSchedulerAdmissionEntry(coreDb, {
-        queueEntryId: ownQueueEntryId,
+        expect(error).not.toBeInstanceOf(Error);
+        const projection = error;
+        for (const diagnostic of [String(error), JSON.stringify(projection)]) {
+          expect(diagnostic).not.toContain('FOREIGN-PR');
+          expect(diagnostic).not.toContain(fixtureRequestId('queue_foreign_race'));
+        }
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT status, trigger_actor_json AS actor FROM scheduler_admission_entries WHERE queue_entry_id = ?'
+            )
+            .get(fixtureRequestId('queue_foreign_race'))
+        ).toEqual({
+          status: failureStage === 'queue-race' ? 'admitted' : 'queued',
+          actor:
+            failureStage === 'queue-race'
+              ? JSON.stringify({ kind: 'user', id: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' })
+              : privateText,
+        });
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['queued', 'cancelled'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toMatchObject([{ requestId, status: 'queued' }]);
+
+        expect(turnExecutor.calls).toEqual([]);
+        if (failureStage === 'malformed-row') {
+          expect(turnExecutor.prepareCalls).toEqual([]);
+          expect(() => listQueuedSchedulerAdmissionEntries(coreDb)).toThrow(SyntaxError);
+        }
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'preserves original acceptance when cancellation after acquisition refuses and later work is queued, separate Core handle %s',
+    async (separateHandle) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      return prepared;
-    };
-    try {
-      await seedLocalSchedulerTarget(coreDb);
-      await admitTestProductTurn({
-        coreDb,
-        input: {
-          agentId: manifest.id,
-          input: 'Own work',
-          requestId: '00000000-0000-4000-8000-00000000f125',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const thread = await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Later Thread'
+      );
+      const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+      let ownQueueEntryId = '';
+      turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+        const prepared = await prepare(ownerStore, preparation);
+        const own = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        providerCredentialResolver: () => null,
-
-        snapshot: createInMemoryRuntimeConfigSnapshot({
-          agentManifests: [manifest],
-          dataRoot: null,
-          gatewayConfig: createTestGatewayConfig(),
-          providerRegistry: localProviderRegistry(),
-        }),
-        store,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        turnExecutor,
-      }).catch((caught: unknown) => caught);
-      expect(ownQueueEntryId).not.toBe('');
-
-      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toMatchObject([
-        { queueEntryId: fixtureRequestId('queue_later_race') },
-      ]);
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject([{ queueEntryId: ownQueueEntryId }]);
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { phase: 'closed', disposition: 'not_accepted', operation_id: null },
-      ]);
+        })[0]!;
+        expect(own.turnId).toBe(preparation.turn.id);
+        ownQueueEntryId = own.queueEntryId;
 
-      expect(turnExecutor.calls).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
+        await publishTestAdmission(
+          store,
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost',
+            queueEntryId: fixtureRequestId('queue_later_race'),
+            requestId: fixtureRequestId('queue_later_race'),
+            requestedAgentId: manifest.id,
+            threadId: thread.id,
+            turnId: testEntityId('tu', 'turn_later_race'),
+            turnInput: 'Later work',
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        );
+
+        cancelSchedulerAdmissionEntry(coreDb, {
+          queueEntryId: ownQueueEntryId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        return prepared;
+      };
+      try {
+        await seedLocalSchedulerTarget(coreDb);
+        await admitTestProductTurn({
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Own work',
+            requestId: '00000000-0000-4000-8000-00000000f125',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+          providerCredentialResolver: () => null,
+
+          snapshot: createInMemoryRuntimeConfigSnapshot({
+            agentManifests: [manifest],
+            dataRoot: null,
+            gatewayConfig: createTestGatewayConfig(),
+            providerRegistry: localProviderRegistry(),
+          }),
+          store,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          turnExecutor,
+        }).catch((caught: unknown) => caught);
+        expect(ownQueueEntryId).not.toBe('');
+
+        expect(listQueuedSchedulerAdmissionEntries(coreDb)).toMatchObject([
+          { queueEntryId: fixtureRequestId('queue_later_race') },
+        ]);
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['admitted'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toMatchObject([{ queueEntryId: ownQueueEntryId }]);
+        expect(executionAttempts(coreDb)).toMatchObject([
+          { phase: 'closed', disposition: 'not_accepted', operation_id: null },
+        ]);
+
+        expect(turnExecutor.calls).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each(
     [true, false].flatMap((separateHandle) =>
@@ -2035,519 +2052,80 @@ describe('scheduler dispatch loop', () => {
         (failureStage) => ({ separateHandle, failureStage })
       )
     )
-  )('isolates another admission failure: $failureStage, separate Core handle $separateHandle', async ({
-    separateHandle,
-    failureStage,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const workspace = await store.createWorkspace('Other User Workspace');
-    const thread = await store.createThread(workspace.id, 'Other User Thread');
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const failureMessage = `Private diagnostics for ${workspace.id}, usr_00000000-0000-73d4-904a-d4c4b905df7c: ${failureStage}`;
-    const failure =
-      failureStage === 'deterministic-preparation'
-        ? new DeterministicAgentPreparationError(failureMessage, 'agent_not_ready', 409)
-        : new TurnStartValidationError('recovery_required', failureMessage, 503);
-    if (failureStage === 'turn-start') {
-      turnExecutor.startTurn = async (_store, turnId) => {
-        expect(turnId).toBe(testEntityId('tu', 'turn_other_failure'));
-        throw failure;
-      };
-    } else {
-      turnExecutor.prepareAgentSessionForTurn = async (_store, preparation) => {
-        expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_other_failure'));
-        throw failure;
-      };
-    }
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      agentManifests: [manifest],
-      dataRoot: null,
-      gatewayConfig: createTestGatewayConfig(),
-      openKitConfig: { defaults: { defaultAgentId: manifest.id } },
-      providerRegistry: localProviderRegistry(),
-    });
-    const requestId = '00000000-0000-4000-8000-00000000f120';
-
-    try {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO users
-            (id, display_name, email, email_verified, created_at, updated_at, kind)
-           VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other User', 'other@example.invalid', false, ?, ?, 'human')`
-        )
-        .run(Date.now(), Date.now());
+  )(
+    'isolates another admission failure: $failureStage, separate Core handle $separateHandle',
+    async ({ separateHandle, failureStage }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
-        ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-        workspaceId: workspace.id,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      await seedLocalSchedulerTarget(coreDb);
-      await publishTestAdmission(
-        store,
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          profileRef: null,
-          queueEntryId: 'queue_other_failure',
-          requestId: fixtureRequestId('req_other_failure'),
-          requestedAgentId: manifest.id,
-          threadId: thread.id,
-          turnId: testEntityId('tu', 'turn_other_failure'),
-          turnInput: 'Other user private work',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
-          workspaceId: workspace.id,
-          now: () => '2026-07-05T00:00:00.000Z',
-        })
-      );
-      const error = await admitTestProductTurn({
-        coreDb,
-        input: {
-          agentId: manifest.id,
-          input: 'New caller work',
-          requestId,
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        providerCredentialResolver: () => null,
-
-        snapshot,
-        store,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        turnExecutor,
-      }).catch((caught: unknown) => caught);
-
-      expect(error).not.toBeInstanceOf(Error);
-      expect(String(error)).not.toContain(failureMessage);
-      expect(String(error)).not.toContain(workspace.id);
-      expect(String(error)).not.toContain('usr_00000000-0000-73d4-904a-d4c4b905df7c');
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          statuses: ['queued', 'admitted', 'cancelled'],
-          workspaceId: workspace.id,
-        })
-      ).toMatchObject([
-        {
-          queueEntryId: 'queue_other_failure',
-          requestId: fixtureRequestId('req_other_failure'),
-          status: 'admitted',
-        },
-      ]);
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          statuses: ['queued', 'cancelled'],
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject([{ requestId, status: 'queued' }]);
-
-      expect(turnExecutor.calls).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    true,
-    false,
-  ])('keeps its accepted work after a later foreign row is corrupted, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const workspace = await store.createWorkspace('Later Foreign Workspace');
-    const thread = await store.createThread(workspace.id, 'Later Foreign Thread');
-    const requestId = '00000000-0000-4000-8000-00000000f126';
-    const privateText = 'FOREIGN-PRIVATE queue_later_foreign';
-    const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
-    let ownPreparationRan = false;
-    turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-      expect(workspaceIdForOwner(preparation.turn.owner)).toBe(
-        'ws_00000000-0000-7000-8000-000000000001'
-      );
-      expect(preparation.requestId).toBe(requestId);
-      ownPreparationRan = true;
-      const prepared = await prepare(ownerStore, preparation);
-      coreDb.sqlite
-        .prepare(
-          'UPDATE scheduler_admission_entries SET trigger_actor_json = ? WHERE queue_entry_id = ?'
-        )
-        .run(privateText, 'queue_later_foreign');
-      return prepared;
-    };
-    try {
-      coreDb.sqlite
-        .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
-          VALUES ('usr_00000000-0000-766c-b011-9a833a1b0fa6', 'Foreign', 'later-foreign@example.invalid', false, ?, ?, 'human')`)
-        .run(Date.now(), Date.now());
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        ownerUserId: 'usr_00000000-0000-766c-b011-9a833a1b0fa6',
-        workspaceId: workspace.id,
+      const workspace = await store.createWorkspace('Other User Workspace');
+      const thread = await store.createThread(workspace.id, 'Other User Thread');
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const failureMessage = `Private diagnostics for ${workspace.id}, usr_00000000-0000-73d4-904a-d4c4b905df7c: ${failureStage}`;
+      const failure =
+        failureStage === 'deterministic-preparation'
+          ? new DeterministicAgentPreparationError(failureMessage, 'agent_not_ready', 409)
+          : new TurnStartValidationError('recovery_required', failureMessage, 503);
+      if (failureStage === 'turn-start') {
+        turnExecutor.startTurn = async (_store, turnId) => {
+          expect(turnId).toBe(testEntityId('tu', 'turn_other_failure'));
+          throw failure;
+        };
+      } else {
+        turnExecutor.prepareAgentSessionForTurn = async (_store, preparation) => {
+          expect(preparation.turn.id).toBe(testEntityId('tu', 'turn_other_failure'));
+          throw failure;
+        };
+      }
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+        providerRegistry: localProviderRegistry(),
       });
-      await seedLocalSchedulerTarget(coreDb);
+      const requestId = '00000000-0000-4000-8000-00000000f120';
 
-      const error = await admitTestProductTurn({
-        onTurnCreated: async () => {
-          await publishTestAdmission(
-            store,
-            createSchedulerAdmissionEntry(coreDb, {
-              backendId: 'nanohost',
-              queueEntryId: 'queue_later_foreign',
-              requestId: fixtureRequestId('req_later_foreign'),
-              requestedAgentId: manifest.id,
-              threadId: thread.id,
-              turnId: testEntityId('tu', 'turn_later_foreign'),
-              turnInput: 'Private foreign work',
-              triggerActor: { kind: 'user', id: 'usr_00000000-0000-766c-b011-9a833a1b0fa6' },
-              workspaceId: workspace.id,
-              now: () => '2099-01-01T00:00:00.000Z',
-            })
-          );
-        },
-        coreDb,
-        input: {
-          agentId: manifest.id,
-          input: 'Caller work',
-          requestId,
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        providerCredentialResolver: () => null,
-
-        snapshot: createInMemoryRuntimeConfigSnapshot({
-          agentManifests: [manifest],
-          dataRoot: null,
-          gatewayConfig: createTestGatewayConfig(),
-          providerRegistry: localProviderRegistry(),
-        }),
-        store,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        turnExecutor,
-      }).catch((caught: unknown) => caught);
-      expect(ownPreparationRan).toBe(true);
-      expect(error).not.toBeInstanceOf(Error);
-      expect(String(error)).not.toContain('FOREIGN-PR');
-      expect(String(error)).not.toContain('queue_later_foreign');
-      const projection = error;
-      expect(JSON.stringify(projection)).not.toContain('FOREIGN-PR');
-      expect(JSON.stringify(projection)).not.toContain('queue_later_foreign');
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          statuses: ['admitted'],
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject([{ requestId, status: 'admitted' }]);
-      expect(
+      try {
         coreDb.sqlite
           .prepare(
-            'SELECT status, trigger_actor_json AS actor FROM scheduler_admission_entries WHERE queue_entry_id = ?'
+            `INSERT INTO users
+            (id, display_name, email, email_verified, created_at, updated_at, kind)
+           VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other User', 'other@example.invalid', false, ?, ?, 'human')`
           )
-          .get('queue_later_foreign')
-      ).toEqual({ status: 'queued', actor: privateText });
-
-      expect(turnExecutor.calls).toHaveLength(1);
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { phase: 'open', disposition: 'accepted', operation_id: expect.any(String) },
-      ]);
-      expect(() => listQueuedSchedulerAdmissionEntries(coreDb)).toThrow(SyntaxError);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    true,
-    false,
-  ])('preserves an exact own commit failure after acquisition re-attribution, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const failure = new TurnStartValidationError('recovery_required', 'Own commit failed', 503);
-    turnExecutor.commitPreparedAgentSessionForTurn = async (_store, input) => {
-      expect(['open', 'closing']).toContain(
-        executionAttempts(coreDb).find((attempt) => attempt.attempt_id === input.attemptId)?.phase
-      );
-      throw failure;
-    };
-    try {
-      await seedLocalSchedulerTarget(coreDb);
-      await expect(
-        admitTestProductTurn({
+          .run(Date.now(), Date.now());
+        recordWorkspaceOwnerMembership({
           coreDb,
-          input: {
-            agentId: manifest.id,
-            input: 'Own caller work',
-            requestId: '00000000-0000-4000-8000-00000000f127',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-          providerCredentialResolver: () => null,
-
-          snapshot: createInMemoryRuntimeConfigSnapshot({
-            agentManifests: [manifest],
-            dataRoot: null,
-            gatewayConfig: createTestGatewayConfig(),
-            providerRegistry: localProviderRegistry(),
-          }),
-          store,
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          turnExecutor,
-        })
-      ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          statuses: ['admitted'],
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toHaveLength(1);
-
-      expect(turnExecutor.calls).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each(
-    [true, false].flatMap((separateHandle) =>
-      (['deterministic-preparation', 'turn-start'] as const).map((failureStage) => ({
-        separateHandle,
-        failureStage,
-      }))
-    )
-  )('preserves the original accepted Turn failure and error provenance: $failureStage, separate Core handle $separateHandle', async ({
-    separateHandle,
-    failureStage,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const cancel = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
-    const failure =
-      failureStage === 'deterministic-preparation'
-        ? new DeterministicAgentPreparationError('Own preparation failed', 'agent_not_ready', 409)
-        : new TurnStartValidationError('recovery_required', 'Own worker launch failed', 503);
-    if (failureStage === 'turn-start') {
-      turnExecutor.submit = async () => {
-        throw failure;
-      };
-    } else {
-      turnExecutor.prepareAgentSessionForTurn = async () => {
-        throw failure;
-      };
-    }
-    try {
-      await seedLocalSchedulerTarget(coreDb);
-      await expect(
-        admitTestProductTurn({
-          coreDb,
-          input: {
-            agentId: manifest.id,
-            input: 'Own caller work',
-            requestId: '00000000-0000-4000-8000-00000000f121',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-          providerCredentialResolver: () => null,
-
-          snapshot: createInMemoryRuntimeConfigSnapshot({
-            agentManifests: [manifest],
-            dataRoot: null,
-            gatewayConfig: createTestGatewayConfig(),
-            openKitConfig: { defaults: { defaultAgentId: manifest.id } },
-            providerRegistry: localProviderRegistry(),
-          }),
-          store,
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          turnExecutor,
-        })
-      ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          statuses: ['admitted', 'cancelled'],
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject([{ status: 'admitted' }]);
-      expect(cancel).not.toHaveBeenCalled();
-    } finally {
-      cancel.mockRestore();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    {
-      earlierDeniedQueue: false,
-    },
-    {
-      earlierDeniedQueue: true,
-    },
-  ])('keeps valid admin work accepted behind another denial: $earlierDeniedQueue', async ({
-    earlierDeniedQueue,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const manifest = agentManifest();
-    const requestId = earlierDeniedQueue
-      ? '00000000-0000-4000-8000-00000000f112'
-      : '00000000-0000-4000-8000-00000000f111';
-    const now = Date.now();
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO users (
-          id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
-        ) VALUES ('usr_00000000-0000-7778-8adf-f988f1ec739e', 'Admin', 'admin-dispatch@example.com', false, ?, ?, 'human', 'active', NULL)`
-      )
-      .run(now, now);
-    createOpenKitAccessTokenRecord(coreDb, {
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
-      scope: 'server-admin',
-      tokenId: 'token_admin_dispatch',
-      workspaceIds: [],
-    });
-    if (earlierDeniedQueue) {
-      createSchedulerAdmissionEntry(coreDb, {
-        backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-782a-ba65-4f53b1392e0b' },
-        queueEntryId: 'queue_earlier_denied',
-        requestId: fixtureRequestId('req_earlier_denied'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: testEntityId('th', 'th_other'),
-        turnId: testEntityId('tu', 'turn_other'),
-        turnInput: 'A prior request',
-        requestedAgentId: manifest.id,
-        profileRef: null,
-      });
-    }
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      agentManifests: [manifest],
-      dataRoot: null,
-      gatewayConfig: createTestGatewayConfig(),
-      openKitConfig: { defaults: { defaultAgentId: manifest.id } },
-      providerRegistry: localProviderRegistry(),
-    });
-
-    try {
-      const started = admitTestProductTurn({
-        coreDb,
-        input: {
-          agentId: manifest.id,
-          input: 'Attempt admin worker dispatch.',
-          modelId: 'openai/gpt-5.2',
-          profileId: 'default',
-          requestId,
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        providerCredentialResolver: () => null,
-        requestActor: {
-          kind: 'token',
-          tokenId: 'token_admin_dispatch',
-          tokenScope: 'server-admin',
-          tokenWorkspaceIds: [],
-          userId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
-        },
-
-        snapshot,
-        store,
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7778-8adf-f988f1ec739e' },
-        turnExecutor: await RecordingTurnExecutor.create(coreDb),
-      });
-      if (earlierDeniedQueue) {
-        await expect(started).resolves.toBeDefined();
-      } else {
-        await expect(started).resolves.toMatchObject({ turn: { status: 'running' } });
-      }
-      const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        statuses: ['queued', 'admitted', 'cancelled', 'denied'],
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      expect(entries.find((entry) => entry.requestId === requestId)).toMatchObject({
-        serverAdminTokenId: 'token_admin_dispatch',
-        status: earlierDeniedQueue ? 'queued' : 'admitted',
-      });
-      if (earlierDeniedQueue) {
-        expect(
-          entries.find((entry) => entry.queueEntryId === 'queue_earlier_denied')
-        ).toMatchObject({
-          status: 'denied',
-          denialReason: 'authority-denied',
+          ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+          workspaceId: workspace.id,
         });
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    true,
-    false,
-  ])('terminalizes its own transient preparation failure without later dispatch, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const requestId = separateHandle
-      ? '00000000-0000-4000-8000-00000000f101'
-      : '00000000-0000-4000-8000-00000000f102';
-    const failure = new TurnStartValidationError(
-      'recovery_required',
-      'The active predecessor requires recovery before replacement.',
-      409
-    );
-    turnExecutor.prepareAgentSessionForTurn = async () => {
-      throw failure;
-    };
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      agentManifests: [manifest],
-      dataRoot: null,
-      gatewayConfig: createTestGatewayConfig(),
-      openKitConfig: { defaults: { defaultAgentId: manifest.id } },
-      providerRegistry: localProviderRegistry(),
-    });
-
-    try {
-      await seedLocalSchedulerTarget(coreDb);
-      await expect(
-        admitTestProductTurn({
+        await seedLocalSchedulerTarget(coreDb);
+        await publishTestAdmission(
+          store,
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost',
+            profileRef: null,
+            queueEntryId: 'queue_other_failure',
+            requestId: fixtureRequestId('req_other_failure'),
+            requestedAgentId: manifest.id,
+            threadId: thread.id,
+            turnId: testEntityId('tu', 'turn_other_failure'),
+            turnInput: 'Other user private work',
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
+            workspaceId: workspace.id,
+            now: () => '2026-07-05T00:00:00.000Z',
+          })
+        );
+        const error = await admitTestProductTurn({
           coreDb,
           input: {
             agentId: manifest.id,
-            input: 'Replace the active Worker after recovery.',
-            modelId: 'openai/gpt-5.2',
-            profileId: 'default',
+            input: 'New caller work',
             requestId,
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2558,80 +2136,105 @@ describe('scheduler dispatch loop', () => {
           store,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
-        })
-      ).resolves.toMatchObject({ turn: { status: 'failed', error: { message: failure.message } } });
+        }).catch((caught: unknown) => caught);
 
-      const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        statuses: ['admitted'],
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      }).find((entry) => entry.requestId === requestId);
-      expect(admission).toMatchObject({ requestId, status: 'admitted' });
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { phase: 'closed', disposition: 'not_accepted', operation_id: null },
-      ]);
+        expect(error).not.toBeInstanceOf(Error);
+        expect(String(error)).not.toContain(failureMessage);
+        expect(String(error)).not.toContain(workspace.id);
+        expect(String(error)).not.toContain('usr_00000000-0000-73d4-904a-d4c4b905df7c');
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['queued', 'admitted', 'cancelled'],
+            workspaceId: workspace.id,
+          })
+        ).toMatchObject([
+          {
+            queueEntryId: 'queue_other_failure',
+            requestId: fixtureRequestId('req_other_failure'),
+            status: 'admitted',
+          },
+        ]);
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['queued', 'cancelled'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toMatchObject([{ requestId, status: 'queued' }]);
 
-      const laterExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-      await expect(
-        runSchedulerDispatchLoop({
-          agentManifests: [manifest],
-          coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_cancelled_followup'),
-          createAttemptId: () => 'attempt_00000000-0000-72af-8c2e-1e6ef35d16c4',
-
-          gatewayConfig: createTestGatewayConfig(),
-
-          maxDispatches: 1,
-          providerRegistry: localProviderRegistry(),
-
-          store,
-          turnExecutor: laterExecutor,
-        })
-      ).resolves.toEqual({
-        startedTurns: [],
-        terminalResult: { status: 'queued', reason: 'no-queued-entry' },
-      });
-      expect(laterExecutor.prepareCalls).toEqual([]);
-      expect(laterExecutor.calls).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
+        expect(turnExecutor.calls).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
-  it.each(
-    [true, false].flatMap((separateHandle) =>
-      (['denied'] as const).map((outcome) => ({ separateHandle, outcome }))
-    )
-  )('preserves accepted work after its own authority revocation, separate Core handle $separateHandle', async ({
-    separateHandle,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
-    const manifest = agentManifest();
-    const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
-    turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-      const prepared = await prepare(ownerStore, preparation);
-      coreDb.sqlite
-        .prepare(
-          "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
-        )
-        .run(Date.now());
-      return prepared;
-    };
-    try {
-      await seedLocalSchedulerTarget(coreDb);
-      await expect(
-        admitTestProductTurn({
+  it.each([true, false])(
+    'keeps its accepted work after a later foreign row is corrupted, separate Core handle %s',
+    async (separateHandle) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const workspace = await store.createWorkspace('Later Foreign Workspace');
+      const thread = await store.createThread(workspace.id, 'Later Foreign Thread');
+      const requestId = '00000000-0000-4000-8000-00000000f126';
+      const privateText = 'FOREIGN-PRIVATE queue_later_foreign';
+      const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+      let ownPreparationRan = false;
+      turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+        expect(workspaceIdForOwner(preparation.turn.owner)).toBe(
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
+        expect(preparation.requestId).toBe(requestId);
+        ownPreparationRan = true;
+        const prepared = await prepare(ownerStore, preparation);
+        coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_admission_entries SET trigger_actor_json = ? WHERE queue_entry_id = ?'
+          )
+          .run(privateText, 'queue_later_foreign');
+        return prepared;
+      };
+      try {
+        coreDb.sqlite
+          .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
+          VALUES ('usr_00000000-0000-766c-b011-9a833a1b0fa6', 'Foreign', 'later-foreign@example.invalid', false, ?, ?, 'human')`)
+          .run(Date.now(), Date.now());
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: 'usr_00000000-0000-766c-b011-9a833a1b0fa6',
+          workspaceId: workspace.id,
+        });
+        await seedLocalSchedulerTarget(coreDb);
+
+        const error = await admitTestProductTurn({
+          onTurnCreated: async () => {
+            await publishTestAdmission(
+              store,
+              createSchedulerAdmissionEntry(coreDb, {
+                backendId: 'nanohost',
+                queueEntryId: 'queue_later_foreign',
+                requestId: fixtureRequestId('req_later_foreign'),
+                requestedAgentId: manifest.id,
+                threadId: thread.id,
+                turnId: testEntityId('tu', 'turn_later_foreign'),
+                turnInput: 'Private foreign work',
+                triggerActor: { kind: 'user', id: 'usr_00000000-0000-766c-b011-9a833a1b0fa6' },
+                workspaceId: workspace.id,
+                now: () => '2099-01-01T00:00:00.000Z',
+              })
+            );
+          },
           coreDb,
           input: {
             agentId: manifest.id,
-            input: 'Own optional cancellation',
-            requestId: '00000000-0000-4000-8000-00000000f128',
+            input: 'Caller work',
+            requestId,
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           },
@@ -2646,26 +2249,448 @@ describe('scheduler dispatch loop', () => {
           store,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           turnExecutor,
-        })
-      ).resolves.toMatchObject({
-        turn: { status: 'failed', error: { message: 'Workspace access denied.' } },
+        }).catch((caught: unknown) => caught);
+        expect(ownPreparationRan).toBe(true);
+        expect(error).not.toBeInstanceOf(Error);
+        expect(String(error)).not.toContain('FOREIGN-PR');
+        expect(String(error)).not.toContain('queue_later_foreign');
+        const projection = error;
+        expect(JSON.stringify(projection)).not.toContain('FOREIGN-PR');
+        expect(JSON.stringify(projection)).not.toContain('queue_later_foreign');
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['admitted'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toMatchObject([{ requestId, status: 'admitted' }]);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT status, trigger_actor_json AS actor FROM scheduler_admission_entries WHERE queue_entry_id = ?'
+            )
+            .get('queue_later_foreign')
+        ).toEqual({ status: 'queued', actor: privateText });
+
+        expect(turnExecutor.calls).toHaveLength(1);
+        expect(executionAttempts(coreDb)).toMatchObject([
+          { phase: 'open', disposition: 'accepted', operation_id: expect.any(String) },
+        ]);
+        expect(() => listQueuedSchedulerAdmissionEntries(coreDb)).toThrow(SyntaxError);
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'preserves an exact own commit failure after acquisition re-attribution, separate Core handle %s',
+    async (separateHandle) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const failure = new TurnStartValidationError('recovery_required', 'Own commit failed', 503);
+      turnExecutor.commitPreparedAgentSessionForTurn = async (_store, input) => {
+        expect(['open', 'closing']).toContain(
+          executionAttempts(coreDb).find((attempt) => attempt.attempt_id === input.attemptId)?.phase
+        );
+        throw failure;
+      };
+      try {
+        await seedLocalSchedulerTarget(coreDb);
+        await expect(
+          admitTestProductTurn({
+            coreDb,
+            input: {
+              agentId: manifest.id,
+              input: 'Own caller work',
+              requestId: '00000000-0000-4000-8000-00000000f127',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            providerCredentialResolver: () => null,
+
+            snapshot: createInMemoryRuntimeConfigSnapshot({
+              agentManifests: [manifest],
+              dataRoot: null,
+              gatewayConfig: createTestGatewayConfig(),
+              providerRegistry: localProviderRegistry(),
+            }),
+            store,
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            turnExecutor,
+          })
+        ).resolves.toMatchObject({
+          turn: { status: 'failed', error: { message: failure.message } },
+        });
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['admitted'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toHaveLength(1);
+
+        expect(turnExecutor.calls).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(
+    [true, false].flatMap((separateHandle) =>
+      (['deterministic-preparation', 'turn-start'] as const).map((failureStage) => ({
+        separateHandle,
+        failureStage,
+      }))
+    )
+  )(
+    'preserves the original accepted Turn failure and error provenance: $failureStage, separate Core handle $separateHandle',
+    async ({ separateHandle, failureStage }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const cancel = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
+      const failure =
+        failureStage === 'deterministic-preparation'
+          ? new DeterministicAgentPreparationError('Own preparation failed', 'agent_not_ready', 409)
+          : new TurnStartValidationError('recovery_required', 'Own worker launch failed', 503);
+      if (failureStage === 'turn-start') {
+        turnExecutor.submit = async () => {
+          throw failure;
+        };
+      } else {
+        turnExecutor.prepareAgentSessionForTurn = async () => {
+          throw failure;
+        };
+      }
+      try {
+        await seedLocalSchedulerTarget(coreDb);
+        await expect(
+          admitTestProductTurn({
+            coreDb,
+            input: {
+              agentId: manifest.id,
+              input: 'Own caller work',
+              requestId: '00000000-0000-4000-8000-00000000f121',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            providerCredentialResolver: () => null,
+
+            snapshot: createInMemoryRuntimeConfigSnapshot({
+              agentManifests: [manifest],
+              dataRoot: null,
+              gatewayConfig: createTestGatewayConfig(),
+              openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+              providerRegistry: localProviderRegistry(),
+            }),
+            store,
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            turnExecutor,
+          })
+        ).resolves.toMatchObject({
+          turn: { status: 'failed', error: { message: failure.message } },
+        });
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['admitted', 'cancelled'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toMatchObject([{ status: 'admitted' }]);
+        expect(cancel).not.toHaveBeenCalled();
+      } finally {
+        cancel.mockRestore();
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each([
+    {
+      earlierDeniedQueue: false,
+    },
+    {
+      earlierDeniedQueue: true,
+    },
+  ])(
+    'keeps valid admin work accepted behind another denial: $earlierDeniedQueue',
+    async ({ earlierDeniedQueue }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const manifest = agentManifest();
+      const requestId = earlierDeniedQueue
+        ? '00000000-0000-4000-8000-00000000f112'
+        : '00000000-0000-4000-8000-00000000f111';
+      const now = Date.now();
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+          id, display_name, email, email_verified, created_at, updated_at, kind, status, disabled_at
+        ) VALUES ('usr_00000000-0000-7778-8adf-f988f1ec739e', 'Admin', 'admin-dispatch@example.com', false, ?, ?, 'human', 'active', NULL)`
+        )
+        .run(now, now);
+      createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
+        scope: 'server-admin',
+        tokenId: 'token_admin_dispatch',
+        workspaceIds: [],
+      });
+      if (earlierDeniedQueue) {
+        createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-782a-ba65-4f53b1392e0b' },
+          queueEntryId: 'queue_earlier_denied',
+          requestId: fixtureRequestId('req_earlier_denied'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: testEntityId('th', 'th_other'),
+          turnId: testEntityId('tu', 'turn_other'),
+          turnInput: 'A prior request',
+          requestedAgentId: manifest.id,
+          profileRef: null,
+        });
+      }
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+        providerRegistry: localProviderRegistry(),
+      });
+
+      try {
+        const started = admitTestProductTurn({
+          coreDb,
+          input: {
+            agentId: manifest.id,
+            input: 'Attempt admin worker dispatch.',
+            modelId: 'openai/gpt-5.2',
+            profileId: 'default',
+            requestId,
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+          providerCredentialResolver: () => null,
+          requestActor: {
+            kind: 'token',
+            tokenId: 'token_admin_dispatch',
+            tokenScope: 'server-admin',
+            tokenWorkspaceIds: [],
+            userId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
+          },
+
+          snapshot,
+          store,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7778-8adf-f988f1ec739e' },
+          turnExecutor: await RecordingTurnExecutor.create(coreDb),
+        });
+        if (earlierDeniedQueue) {
+          await expect(started).resolves.toBeDefined();
+        } else {
+          await expect(started).resolves.toMatchObject({ turn: { status: 'running' } });
+        }
+        const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          statuses: ['queued', 'admitted', 'cancelled', 'denied'],
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        expect(entries.find((entry) => entry.requestId === requestId)).toMatchObject({
+          serverAdminTokenId: 'token_admin_dispatch',
+          status: earlierDeniedQueue ? 'queued' : 'admitted',
+        });
+        if (earlierDeniedQueue) {
+          expect(
+            entries.find((entry) => entry.queueEntryId === 'queue_earlier_denied')
+          ).toMatchObject({
+            status: 'denied',
+            denialReason: 'authority-denied',
+          });
+        }
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'terminalizes its own transient preparation failure without later dispatch, separate Core handle %s',
+    async (separateHandle) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const requestId = separateHandle
+        ? '00000000-0000-4000-8000-00000000f101'
+        : '00000000-0000-4000-8000-00000000f102';
+      const failure = new TurnStartValidationError(
+        'recovery_required',
+        'The active predecessor requires recovery before replacement.',
+        409
+      );
+      turnExecutor.prepareAgentSessionForTurn = async () => {
+        throw failure;
+      };
+      const snapshot = createInMemoryRuntimeConfigSnapshot({
+        agentManifests: [manifest],
+        dataRoot: null,
+        gatewayConfig: createTestGatewayConfig(),
+        openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+        providerRegistry: localProviderRegistry(),
+      });
+
+      try {
+        await seedLocalSchedulerTarget(coreDb);
+        await expect(
+          admitTestProductTurn({
+            coreDb,
+            input: {
+              agentId: manifest.id,
+              input: 'Replace the active Worker after recovery.',
+              modelId: 'openai/gpt-5.2',
+              profileId: 'default',
+              requestId,
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            providerCredentialResolver: () => null,
+
+            snapshot,
+            store,
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            turnExecutor,
+          })
+        ).resolves.toMatchObject({
+          turn: { status: 'failed', error: { message: failure.message } },
+        });
+
+        const admission = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           statuses: ['admitted'],
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).toMatchObject([
-        {
-          status: 'admitted',
-        },
-      ]);
+        }).find((entry) => entry.requestId === requestId);
+        expect(admission).toMatchObject({ requestId, status: 'admitted' });
+        expect(executionAttempts(coreDb)).toMatchObject([
+          { phase: 'closed', disposition: 'not_accepted', operation_id: null },
+        ]);
 
-      expect(turnExecutor.calls).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
+        const laterExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+        await expect(
+          runSchedulerDispatchLoop({
+            agentManifests: [manifest],
+            coreDb,
+            createAgentSessionId: () => testEntityId('as', 'as_cancelled_followup'),
+            createAttemptId: () => 'attempt_00000000-0000-72af-8c2e-1e6ef35d16c4',
+
+            gatewayConfig: createTestGatewayConfig(),
+
+            maxDispatches: 1,
+            providerRegistry: localProviderRegistry(),
+
+            store,
+            turnExecutor: laterExecutor,
+          })
+        ).resolves.toEqual({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'no-queued-entry' },
+        });
+        expect(laterExecutor.prepareCalls).toEqual([]);
+        expect(laterExecutor.calls).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
+
+  it.each(
+    [true, false].flatMap((separateHandle) =>
+      (['denied'] as const).map((outcome) => ({ separateHandle, outcome }))
+    )
+  )(
+    'preserves accepted work after its own authority revocation, separate Core handle $separateHandle',
+    async ({ separateHandle }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb, separateHandle);
+      const manifest = agentManifest();
+      const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+      turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
+        const prepared = await prepare(ownerStore, preparation);
+        coreDb.sqlite
+          .prepare(
+            "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
+          )
+          .run(Date.now());
+        return prepared;
+      };
+      try {
+        await seedLocalSchedulerTarget(coreDb);
+        await expect(
+          admitTestProductTurn({
+            coreDb,
+            input: {
+              agentId: manifest.id,
+              input: 'Own optional cancellation',
+              requestId: '00000000-0000-4000-8000-00000000f128',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+            providerCredentialResolver: () => null,
+
+            snapshot: createInMemoryRuntimeConfigSnapshot({
+              agentManifests: [manifest],
+              dataRoot: null,
+              gatewayConfig: createTestGatewayConfig(),
+              providerRegistry: localProviderRegistry(),
+            }),
+            store,
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            turnExecutor,
+          })
+        ).resolves.toMatchObject({
+          turn: { status: 'failed', error: { message: 'Workspace access denied.' } },
+        });
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            statuses: ['admitted'],
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).toMatchObject([
+          {
+            status: 'admitted',
+          },
+        ]);
+
+        expect(turnExecutor.calls).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
 
   it('preserves its own transient failure when admission cancellation races', async () => {
     const coreDb = createMigratedCoreDb(false);
@@ -2847,318 +2872,319 @@ describe('scheduler dispatch loop', () => {
     }
   });
 
-  it.each([
-    'queued',
-    'attempt-acquisition',
-    'preparation',
-  ] as const)('refuses a queued Turn after activated policy changes during %s', async (stage) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspaceId = DEMO_WORKSPACE_ID;
-    const threadId = 'th_00000000-0000-7000-8000-000000000001';
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      workspaceId,
-      ownerUserId: FIXTURE_LOCAL_USER_ID,
-    });
-    const executor = await RecordingTurnExecutor.create(coreDb);
-    await seedLocalSchedulerTarget(coreDb);
-    let activated: ReturnType<typeof managedThreadPolicy> = { schemaVersion: 1, statements: [] };
-    store.setWorkspaceResourcePolicyProjection(() => activated);
-    const entry = createSchedulerAdmissionEntry(coreDb, {
-      backendId: executor.executionBackend.id,
-      queueEntryId: `queue_activated_policy_${stage}`,
-      requestId: fixtureRequestId(`req_activated_policy_${stage}`),
-      requestedAgentId: agentManifest().id,
-      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-      workspaceId,
-      threadId,
-      turnId: testEntityId('tu', `turn_activated_policy_${stage}`),
-      turnInput: 'Do not launch after current activated policy denies this Thread.',
-    });
-    await publishTestAdmission(store, entry);
-    const deny = () => {
-      activated = managedThreadPolicy({ workspaceId, threadId, userId: FIXTURE_LOCAL_USER_ID });
-    };
-    const acquire = attemptCommands.createSchedulerExecutionAttempt;
-    const acquired = vi.spyOn(attemptCommands, 'createSchedulerExecutionAttempt');
-    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
-    const prepared = vi.spyOn(executor, 'prepareAgentSessionForTurn');
-    const submit = vi.spyOn(executor, 'submit');
-    if (stage === 'queued') deny();
-    if (stage === 'attempt-acquisition')
-      acquired.mockImplementation(async (...args) => {
-        const attempt = await acquire(...args);
-        deny();
-        return attempt;
-      });
-    if (stage === 'preparation')
-      prepared.mockImplementation(async (...args) => {
-        const result = await prepare(...args);
-        deny();
-        return result;
-      });
-    try {
-      // Current activated policy must permit dispatch independently of retained Core eligibility.
-      const dispatch = runSchedulerDispatchLoop({
-        gatewayConfig: createTestGatewayConfig(),
-        agentManifests: [agentManifest()],
+  it.each(['queued', 'attempt-acquisition', 'preparation'] as const)(
+    'refuses a queued Turn after activated policy changes during %s',
+    async (stage) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const workspaceId = DEMO_WORKSPACE_ID;
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({
         coreDb,
-        createAgentSessionId: () => testEntityId('as', `session_activated_policy_${stage}`),
-        createAttemptId: () => testEntityId('attempt', `attempt_activated_policy_${stage}`),
-        maxDispatches: 1,
-        providerRegistry: localProviderRegistry(),
-        store,
-        turnExecutor: executor,
-        executionBackend: executor.executionBackend,
+        workspaceId,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
       });
-      if (stage === 'queued') {
-        const result = await dispatch;
+      const executor = await RecordingTurnExecutor.create(coreDb);
+      await seedLocalSchedulerTarget(coreDb);
+      let activated: ReturnType<typeof managedThreadPolicy> = { schemaVersion: 1, statements: [] };
+      store.setWorkspaceResourcePolicyProjection(() => activated);
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: executor.executionBackend.id,
+        queueEntryId: `queue_activated_policy_${stage}`,
+        requestId: fixtureRequestId(`req_activated_policy_${stage}`),
+        requestedAgentId: agentManifest().id,
+        triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        workspaceId,
+        threadId,
+        turnId: testEntityId('tu', `turn_activated_policy_${stage}`),
+        turnInput: 'Do not launch after current activated policy denies this Thread.',
+      });
+      await publishTestAdmission(store, entry);
+      const deny = () => {
+        activated = managedThreadPolicy({ workspaceId, threadId, userId: FIXTURE_LOCAL_USER_ID });
+      };
+      const acquire = attemptCommands.createSchedulerExecutionAttempt;
+      const acquired = vi.spyOn(attemptCommands, 'createSchedulerExecutionAttempt');
+      const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+      const prepared = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+      const submit = vi.spyOn(executor, 'submit');
+      if (stage === 'queued') deny();
+      if (stage === 'attempt-acquisition')
+        acquired.mockImplementation(async (...args) => {
+          const attempt = await acquire(...args);
+          deny();
+          return attempt;
+        });
+      if (stage === 'preparation')
+        prepared.mockImplementation(async (...args) => {
+          const result = await prepare(...args);
+          deny();
+          return result;
+        });
+      try {
+        // Current activated policy must permit dispatch independently of retained Core eligibility.
+        const dispatch = runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', `session_activated_policy_${stage}`),
+          createAttemptId: () => testEntityId('attempt', `attempt_activated_policy_${stage}`),
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+          store,
+          turnExecutor: executor,
+          executionBackend: executor.executionBackend,
+        });
+        if (stage === 'queued') {
+          const result = await dispatch;
+          expect(result.startedTurns).toEqual([]);
+          expect(result.terminalResult).toMatchObject({
+            status: 'denied',
+            entry: { queueEntryId: entry.queueEntryId },
+          });
+          expect(['denied', 'cancelled']).toContain(
+            schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+          );
+          expect(acquired).not.toHaveBeenCalled();
+          expect(executionAttempts(coreDb)).toEqual([]);
+        } else {
+          await expect(dispatch).rejects.toMatchObject({
+            code: 'workspace_access_denied',
+            status: 403,
+          });
+          expect(executionAttempts(coreDb)).toMatchObject([
+            { phase: 'closed', disposition: 'not_accepted', operation_id: null },
+          ]);
+          expect(['failed', 'cancelled']).toContain(store.getTurnById(entry.turnId).status);
+        }
+        if (stage !== 'preparation') expect(prepared).not.toHaveBeenCalled();
+        else expect(prepared).toHaveBeenCalledOnce();
+        expect(executor.calls).toEqual([]);
+        expect(submit).not.toHaveBeenCalled();
+        expect(store.getTurnById(entry.turnId).agentSessionId).toBeUndefined();
+      } finally {
+        acquired.mockRestore();
+        prepared.mockRestore();
+        submit.mockRestore();
+        await drainNativeCompletions(coreDb);
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['membership', 'server-admin-token'] as const)(
+    'denies a queued admission after its %s authority is revoked',
+    async (authorityKind) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb);
+      const timestamp = '2026-07-19T00:00:00.000Z';
+      const now = Date.parse(timestamp);
+
+      try {
+        coreDb.sqlite
+          .prepare(
+            `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind
+          ) VALUES ('usr_00000000-0000-7997-b89e-2b3070b94b62', 'Revoked Dispatch', 'revoked-dispatch@example.com', false, ?, ?, 'human')`
+          )
+          .run(now, now);
+        if (authorityKind === 'membership') {
+          coreDb.sqlite
+            .prepare(
+              `INSERT INTO workspace_members (
+              workspace_id, user_id, status, invitation_id,
+              joined_at, removed_at, revision, created_at, updated_at
+            ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7997-b89e-2b3070b94b62', 'active', NULL, ?, NULL, 1, ?, ?)`
+            )
+            .run(timestamp, timestamp, timestamp);
+        } else {
+          createOpenKitAccessTokenRecord(coreDb, {
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            ownerUserId: 'usr_00000000-0000-7997-b89e-2b3070b94b62',
+            scope: 'server-admin',
+            tokenId: 'token_revoked_dispatch',
+            workspaceIds: [],
+          });
+        }
+        await seedLocalSchedulerTarget(coreDb);
+        await publishTestAdmission(
+          store,
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost',
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7997-b89e-2b3070b94b62' },
+            queueEntryId: 'queue_revoked_dispatch',
+            requestId: fixtureRequestId('req_revoked_dispatch'),
+            serverAdminTokenId:
+              authorityKind === 'server-admin-token' ? 'token_revoked_dispatch' : null,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: testEntityId('tu', 'turn_revoked_dispatch'),
+            turnInput: 'Do not launch this stale admission',
+            requestedAgentId: 'agent_codex_host',
+            profileRef: null,
+          })
+        );
+        if (authorityKind === 'membership') {
+          coreDb.sqlite
+            .prepare(
+              `UPDATE workspace_members
+             SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+             WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001' AND user_id = 'usr_00000000-0000-7997-b89e-2b3070b94b62'`
+            )
+            .run(timestamp, timestamp);
+        } else {
+          coreDb.sqlite
+            .prepare(
+              "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+            )
+            .run(timestamp, 'token_revoked_dispatch');
+        }
+
+        const result = await runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', 'as_revoked_dispatch'),
+          createAttemptId: () => 'attempt_00000000-0000-7123-9ea9-95893b159388',
+
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+
+          store,
+          turnExecutor,
+          executionBackend: turnExecutor.executionBackend,
+        });
+
         expect(result.startedTurns).toEqual([]);
         expect(result.terminalResult).toMatchObject({
           status: 'denied',
-          entry: { queueEntryId: entry.queueEntryId },
+          entry: { denialReason: 'authority-denied', queueEntryId: 'queue_revoked_dispatch' },
         });
-        expect(['denied', 'cancelled']).toContain(
-          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+        expect(turnExecutor.calls).toEqual([]);
+
+        expect(
+          listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            statuses: ['denied'],
+          })
+        ).toEqual([
+          expect.objectContaining({
+            denialReason: 'authority-denied',
+            queueEntryId: 'queue_revoked_dispatch',
+            requestId: fixtureRequestId('req_revoked_dispatch'),
+            status: 'denied',
+          }),
+        ]);
+        expect(store.getTurnById(testEntityId('tu', 'turn_revoked_dispatch')).status).toBe(
+          'pending'
         );
-        expect(acquired).not.toHaveBeenCalled();
         expect(executionAttempts(coreDb)).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['prepare', 'commit'] as const)(
+    'rechecks a recorded admin token after asynchronous %s before Worker launch',
+    async (revocationStage) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb);
+      const now = Date.now();
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind, status
+          ) VALUES ('usr_00000000-0000-7798-ae4d-0c9eeb75ec93', 'Admin Race', 'admin-race@example.com', false, ?, ?, 'human', 'active')`
+        )
+        .run(now, now);
+      createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93',
+        scope: 'server-admin',
+        tokenId: 'token_admin_race',
+        workspaceIds: [],
+      });
+      await seedLocalSchedulerTarget(coreDb);
+      await publishTestAdmission(
+        store,
+        createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: 'queue_admin_race',
+          requestId: fixtureRequestId('req_admin_race'),
+          serverAdminTokenId: 'token_admin_race',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93' },
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_admin_race'),
+          turnInput: 'Do not launch after revocation',
+          requestedAgentId: 'agent_codex_host',
+        })
+      );
+      const revoke = () =>
+        coreDb.sqlite
+          .prepare(
+            "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
+          )
+          .run(new Date().toISOString(), 'token_admin_race');
+      if (revocationStage === 'prepare') {
+        const original = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+        turnExecutor.prepareAgentSessionForTurn = async (...args) => {
+          const prepared = await original(...args);
+          revoke();
+          return prepared;
+        };
       } else {
-        await expect(dispatch).rejects.toMatchObject({
+        const original = turnExecutor.commitPreparedAgentSessionForTurn.bind(turnExecutor);
+        turnExecutor.commitPreparedAgentSessionForTurn = async (...args) => {
+          const committed = await original(...args);
+          revoke();
+          return committed;
+        };
+      }
+      const dispatch = () =>
+        runSchedulerDispatchLoop({
+          gatewayConfig: createTestGatewayConfig(),
+          agentManifests: [agentManifest()],
+          coreDb,
+          createAgentSessionId: () => testEntityId('as', 'as_admin_race'),
+          createAttemptId: () => 'attempt_00000000-0000-7c1c-bfd4-b3a6b6a9345c',
+
+          maxDispatches: 1,
+          providerRegistry: localProviderRegistry(),
+
+          store,
+          turnExecutor,
+          executionBackend: turnExecutor.executionBackend,
+        });
+
+      try {
+        await expect(dispatch()).rejects.toMatchObject({
           code: 'workspace_access_denied',
           status: 403,
         });
         expect(executionAttempts(coreDb)).toMatchObject([
           { phase: 'closed', disposition: 'not_accepted', operation_id: null },
         ]);
-        expect(['failed', 'cancelled']).toContain(store.getTurnById(entry.turnId).status);
+        expect(store.getTurnById(testEntityId('tu', 'turn_admin_race')).status).toBe('failed');
+        expect(turnExecutor.calls).toEqual([]);
+      } finally {
+        coreDb.sqlite.close();
       }
-      if (stage !== 'preparation') expect(prepared).not.toHaveBeenCalled();
-      else expect(prepared).toHaveBeenCalledOnce();
-      expect(executor.calls).toEqual([]);
-      expect(submit).not.toHaveBeenCalled();
-      expect(store.getTurnById(entry.turnId).agentSessionId).toBeUndefined();
-    } finally {
-      acquired.mockRestore();
-      prepared.mockRestore();
-      submit.mockRestore();
-      await drainNativeCompletions(coreDb);
-      coreDb.sqlite.close();
     }
-  });
-
-  it.each([
-    'membership',
-    'server-admin-token',
-  ] as const)('denies a queued admission after its %s authority is revoked', async (authorityKind) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb);
-    const timestamp = '2026-07-19T00:00:00.000Z';
-    const now = Date.parse(timestamp);
-
-    try {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO users (
-            id, display_name, email, email_verified, created_at, updated_at, kind
-          ) VALUES ('usr_00000000-0000-7997-b89e-2b3070b94b62', 'Revoked Dispatch', 'revoked-dispatch@example.com', false, ?, ?, 'human')`
-        )
-        .run(now, now);
-      if (authorityKind === 'membership') {
-        coreDb.sqlite
-          .prepare(
-            `INSERT INTO workspace_members (
-              workspace_id, user_id, status, invitation_id,
-              joined_at, removed_at, revision, created_at, updated_at
-            ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7997-b89e-2b3070b94b62', 'active', NULL, ?, NULL, 1, ?, ?)`
-          )
-          .run(timestamp, timestamp, timestamp);
-      } else {
-        createOpenKitAccessTokenRecord(coreDb, {
-          expiresAt: '2099-01-01T00:00:00.000Z',
-          ownerUserId: 'usr_00000000-0000-7997-b89e-2b3070b94b62',
-          scope: 'server-admin',
-          tokenId: 'token_revoked_dispatch',
-          workspaceIds: [],
-        });
-      }
-      await seedLocalSchedulerTarget(coreDb);
-      await publishTestAdmission(
-        store,
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7997-b89e-2b3070b94b62' },
-          queueEntryId: 'queue_revoked_dispatch',
-          requestId: fixtureRequestId('req_revoked_dispatch'),
-          serverAdminTokenId:
-            authorityKind === 'server-admin-token' ? 'token_revoked_dispatch' : null,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: testEntityId('tu', 'turn_revoked_dispatch'),
-          turnInput: 'Do not launch this stale admission',
-          requestedAgentId: 'agent_codex_host',
-          profileRef: null,
-        })
-      );
-      if (authorityKind === 'membership') {
-        coreDb.sqlite
-          .prepare(
-            `UPDATE workspace_members
-             SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
-             WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001' AND user_id = 'usr_00000000-0000-7997-b89e-2b3070b94b62'`
-          )
-          .run(timestamp, timestamp);
-      } else {
-        coreDb.sqlite
-          .prepare(
-            "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
-          )
-          .run(timestamp, 'token_revoked_dispatch');
-      }
-
-      const result = await runSchedulerDispatchLoop({
-        gatewayConfig: createTestGatewayConfig(),
-        agentManifests: [agentManifest()],
-        coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_revoked_dispatch'),
-        createAttemptId: () => 'attempt_00000000-0000-7123-9ea9-95893b159388',
-
-        maxDispatches: 1,
-        providerRegistry: localProviderRegistry(),
-
-        store,
-        turnExecutor,
-        executionBackend: turnExecutor.executionBackend,
-      });
-
-      expect(result.startedTurns).toEqual([]);
-      expect(result.terminalResult).toMatchObject({
-        status: 'denied',
-        entry: { denialReason: 'authority-denied', queueEntryId: 'queue_revoked_dispatch' },
-      });
-      expect(turnExecutor.calls).toEqual([]);
-
-      expect(
-        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          statuses: ['denied'],
-        })
-      ).toEqual([
-        expect.objectContaining({
-          denialReason: 'authority-denied',
-          queueEntryId: 'queue_revoked_dispatch',
-          requestId: fixtureRequestId('req_revoked_dispatch'),
-          status: 'denied',
-        }),
-      ]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_revoked_dispatch')).status).toBe('pending');
-      expect(executionAttempts(coreDb)).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'prepare',
-    'commit',
-  ] as const)('rechecks a recorded admin token after asynchronous %s before Worker launch', async (revocationStage) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb);
-    const now = Date.now();
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO users (
-            id, display_name, email, email_verified, created_at, updated_at, kind, status
-          ) VALUES ('usr_00000000-0000-7798-ae4d-0c9eeb75ec93', 'Admin Race', 'admin-race@example.com', false, ?, ?, 'human', 'active')`
-      )
-      .run(now, now);
-    createOpenKitAccessTokenRecord(coreDb, {
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93',
-      scope: 'server-admin',
-      tokenId: 'token_admin_race',
-      workspaceIds: [],
-    });
-    await seedLocalSchedulerTarget(coreDb);
-    await publishTestAdmission(
-      store,
-      createSchedulerAdmissionEntry(coreDb, {
-        backendId: 'nanohost',
-        queueEntryId: 'queue_admin_race',
-        requestId: fixtureRequestId('req_admin_race'),
-        serverAdminTokenId: 'token_admin_race',
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7798-ae4d-0c9eeb75ec93' },
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnId: testEntityId('tu', 'turn_admin_race'),
-        turnInput: 'Do not launch after revocation',
-        requestedAgentId: 'agent_codex_host',
-      })
-    );
-    const revoke = () =>
-      coreDb.sqlite
-        .prepare(
-          "UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?"
-        )
-        .run(new Date().toISOString(), 'token_admin_race');
-    if (revocationStage === 'prepare') {
-      const original = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
-      turnExecutor.prepareAgentSessionForTurn = async (...args) => {
-        const prepared = await original(...args);
-        revoke();
-        return prepared;
-      };
-    } else {
-      const original = turnExecutor.commitPreparedAgentSessionForTurn.bind(turnExecutor);
-      turnExecutor.commitPreparedAgentSessionForTurn = async (...args) => {
-        const committed = await original(...args);
-        revoke();
-        return committed;
-      };
-    }
-    const dispatch = () =>
-      runSchedulerDispatchLoop({
-        gatewayConfig: createTestGatewayConfig(),
-        agentManifests: [agentManifest()],
-        coreDb,
-        createAgentSessionId: () => testEntityId('as', 'as_admin_race'),
-        createAttemptId: () => 'attempt_00000000-0000-7c1c-bfd4-b3a6b6a9345c',
-
-        maxDispatches: 1,
-        providerRegistry: localProviderRegistry(),
-
-        store,
-        turnExecutor,
-        executionBackend: turnExecutor.executionBackend,
-      });
-
-    try {
-      await expect(dispatch()).rejects.toMatchObject({
-        code: 'workspace_access_denied',
-        status: 403,
-      });
-      expect(executionAttempts(coreDb)).toMatchObject([
-        { phase: 'closed', disposition: 'not_accepted', operation_id: null },
-      ]);
-      expect(store.getTurnById(testEntityId('tu', 'turn_admin_race')).status).toBe('failed');
-      expect(turnExecutor.calls).toEqual([]);
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
+  );
 
   it.each([
     {
@@ -3196,106 +3222,106 @@ describe('scheduler dispatch loop', () => {
         expect(blocker.phase).toBe('open');
       },
     },
-  ])('keeps an incompatible current predecessor untouched before $name rejects dispatch', async ({
-    expected,
-    setup,
-  }) => {
-    const coreDb = createMigratedCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turnExecutor = await RecordingTurnExecutor.create(coreDb);
-    let replacementCloseEffects = 0;
-    const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
-    turnExecutor.prepareAgentSessionForTurn = async (ownerStore, input) => {
-      const predecessorBefore = ownerStore.getAgentSession(
-        testEntityId('as', 'as_replacement_predecessor')
-      );
-      const prepared = await prepareAgentSessionForTurn(ownerStore, input);
-      const predecessorAfter = ownerStore.getAgentSession(
-        testEntityId('as', 'as_replacement_predecessor')
-      );
-      if (
-        isCurrentAgentSessionStatus(predecessorBefore.status) &&
-        !isCurrentAgentSessionStatus(predecessorAfter.status)
-      ) {
-        replacementCloseEffects += 1;
-      }
-      return prepared;
-    };
-
-    try {
-      await store.createAgentSession({
-        agentId: 'agent_codex_host',
-        createdAt: '2026-07-05T00:00:00.000Z',
-        id: testEntityId('as', 'as_replacement_predecessor'),
-        message: null,
-        sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
-        status: 'idle',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        updatedAt: '2026-07-05T00:00:00.000Z',
+  ])(
+    'keeps an incompatible current predecessor untouched before $name rejects dispatch',
+    async ({ expected, setup }) => {
+      const coreDb = createMigratedCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      await setup(coreDb, store);
-      const candidate = createSchedulerAdmissionEntry(coreDb, {
-        backendId: 'nanohost',
-        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        queueEntryId: 'queue_replacement_candidate',
-        requestId: fixtureRequestId('req_replacement_candidate'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnId: testEntityId('tu', 'turn_replacement_candidate'),
-        turnInput: 'Use incompatible future static inputs',
-        requestedAgentId: 'agent_codex_host',
-        profileRef: null,
-      });
-      expect(() => store.getTurnById(candidate.turnId)).toThrow();
+      const turnExecutor = await RecordingTurnExecutor.create(coreDb);
+      let replacementCloseEffects = 0;
+      const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
+      turnExecutor.prepareAgentSessionForTurn = async (ownerStore, input) => {
+        const predecessorBefore = ownerStore.getAgentSession(
+          testEntityId('as', 'as_replacement_predecessor')
+        );
+        const prepared = await prepareAgentSessionForTurn(ownerStore, input);
+        const predecessorAfter = ownerStore.getAgentSession(
+          testEntityId('as', 'as_replacement_predecessor')
+        );
+        if (
+          isCurrentAgentSessionStatus(predecessorBefore.status) &&
+          !isCurrentAgentSessionStatus(predecessorAfter.status)
+        ) {
+          replacementCloseEffects += 1;
+        }
+        return prepared;
+      };
 
-      let observed: unknown;
       try {
-        observed = await runSchedulerDispatchLoop({
-          gatewayConfig: createTestGatewayConfig(),
-          agentManifests: [agentManifest()],
-          coreDb,
-          createAgentSessionId: () => testEntityId('as', 'as_replacement_successor'),
-          createAttemptId: () => 'attempt_00000000-0000-7ff4-8557-71fde470b861',
-
-          maxDispatches: 1,
-          now: () => '2026-07-05T00:00:02.000Z',
-          providerRegistry: localProviderRegistry(),
-
-          store,
-          turnExecutor,
-          executionBackend: turnExecutor.executionBackend,
+        await store.createAgentSession({
+          agentId: 'agent_codex_host',
+          createdAt: '2026-07-05T00:00:00.000Z',
+          id: testEntityId('as', 'as_replacement_predecessor'),
+          message: null,
+          sessionCompatibilityKey: `sha256:${'a'.repeat(64)}`,
+          status: 'idle',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          updatedAt: '2026-07-05T00:00:00.000Z',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
-      } catch (error) {
-        observed = error;
-      }
+        await setup(coreDb, store);
+        const candidate = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          queueEntryId: 'queue_replacement_candidate',
+          requestId: fixtureRequestId('req_replacement_candidate'),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: testEntityId('tu', 'turn_replacement_candidate'),
+          turnInput: 'Use incompatible future static inputs',
+          requestedAgentId: 'agent_codex_host',
+          profileRef: null,
+        });
+        expect(() => store.getTurnById(candidate.turnId)).toThrow();
 
-      expect(observed).toMatchObject({ startedTurns: [], terminalResult: expected });
-      expect(replacementCloseEffects).toBe(0);
-      expect(store.getAgentSession(testEntityId('as', 'as_replacement_predecessor'))).toMatchObject(
-        {
+        let observed: unknown;
+        try {
+          observed = await runSchedulerDispatchLoop({
+            gatewayConfig: createTestGatewayConfig(),
+            agentManifests: [agentManifest()],
+            coreDb,
+            createAgentSessionId: () => testEntityId('as', 'as_replacement_successor'),
+            createAttemptId: () => 'attempt_00000000-0000-7ff4-8557-71fde470b861',
+
+            maxDispatches: 1,
+            now: () => '2026-07-05T00:00:02.000Z',
+            providerRegistry: localProviderRegistry(),
+
+            store,
+            turnExecutor,
+            executionBackend: turnExecutor.executionBackend,
+          });
+        } catch (error) {
+          observed = error;
+        }
+
+        expect(observed).toMatchObject({ startedTurns: [], terminalResult: expected });
+        expect(replacementCloseEffects).toBe(0);
+        expect(
+          store.getAgentSession(testEntityId('as', 'as_replacement_predecessor'))
+        ).toMatchObject({
           stale: false,
           status: 'idle',
-        }
-      );
-      expect(
-        store
-          .listThreadAgentSessions(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-          .filter((candidate) => isCurrentAgentSessionStatus(candidate.status))
-          .map((candidate) => candidate.id)
-      ).toEqual([testEntityId('as', 'as_replacement_predecessor')]);
-    } finally {
-      coreDb.sqlite.close();
+        });
+        expect(
+          store
+            .listThreadAgentSessions(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+            .filter((candidate) => isCurrentAgentSessionStatus(candidate.status))
+            .map((candidate) => candidate.id)
+        ).toEqual([testEntityId('as', 'as_replacement_predecessor')]);
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('starts one dispatched queued turn with scheduler-owned lineage', async () => {
     const coreDb = createMigratedCoreDb(false);

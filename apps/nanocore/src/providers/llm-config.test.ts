@@ -233,48 +233,46 @@ describe('resolveProviderProfileToLLMConfig', () => {
     });
   });
 
-  it.each([
-    'blocked',
-    'disabled',
-    'unknown',
-  ] as const)('rejects %s providers before credential resolution', async (status) => {
-    const credentialResolver = vi.fn(() => 'must-not-resolve');
+  it.each(['blocked', 'disabled', 'unknown'] as const)(
+    'rejects %s providers before credential resolution',
+    async (status) => {
+      const credentialResolver = vi.fn(() => 'must-not-resolve');
 
-    await expect(
-      resolveProviderProfileToLLMConfig(
+      await expect(
+        resolveProviderProfileToLLMConfig(
+          {
+            displayName: 'Unavailable Provider',
+            id: `provider-${status}`,
+            kind: 'direct',
+            models: ['configured-model'],
+            readiness: { status },
+            secretRef: 'vault://vault_00000000-0000-7965-933d-6b51cc983845',
+          },
+          credentialResolver
+        )
+      ).rejects.toThrow(/not dispatchable/i);
+      expect(credentialResolver).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([undefined, 'ready', 'degraded'] as const)(
+    'keeps readiness %s runnable',
+    async (status) => {
+      const credentialResolver = vi.fn(() => 'resolved-secret');
+      const provider = await resolveProviderProfileToLLMConfig(
         {
-          displayName: 'Unavailable Provider',
-          id: `provider-${status}`,
+          displayName: 'Runnable Provider',
+          id: `provider-${status ?? 'omitted'}`,
           kind: 'direct',
           models: ['configured-model'],
-          readiness: { status },
-          secretRef: 'vault://vault_00000000-0000-7965-933d-6b51cc983845',
+          ...(status ? { readiness: { status } } : {}),
+          secretRef: 'vault://vault_00000000-0000-73e3-b8d4-7b543574a38d',
         },
         credentialResolver
-      )
-    ).rejects.toThrow(/not dispatchable/i);
-    expect(credentialResolver).not.toHaveBeenCalled();
-  });
+      );
 
-  it.each([
-    undefined,
-    'ready',
-    'degraded',
-  ] as const)('keeps readiness %s runnable', async (status) => {
-    const credentialResolver = vi.fn(() => 'resolved-secret');
-    const provider = await resolveProviderProfileToLLMConfig(
-      {
-        displayName: 'Runnable Provider',
-        id: `provider-${status ?? 'omitted'}`,
-        kind: 'direct',
-        models: ['configured-model'],
-        ...(status ? { readiness: { status } } : {}),
-        secretRef: 'vault://vault_00000000-0000-73e3-b8d4-7b543574a38d',
-      },
-      credentialResolver
-    );
-
-    expect(provider.models).toEqual(['configured-model']);
-    expect(credentialResolver).toHaveBeenCalledOnce();
-  });
+      expect(provider.models).toEqual(['configured-model']);
+      expect(credentialResolver).toHaveBeenCalledOnce();
+    }
+  );
 });

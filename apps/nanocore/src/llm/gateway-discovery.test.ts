@@ -80,25 +80,28 @@ it.each([
   { primary: 'ready', backup: false, autoFailover: true, visible: true },
   { primary: 'absent', backup: false, autoFailover: false, visible: false },
   { primary: 'absent', backup: false, autoFailover: true, visible: false },
-] as const)('advertises $primary primary with backup=$backup and failover=$autoFailover: $visible', async (scenario) => {
-  const f = fixture(scenario.primary, scenario.backup, scenario.autoFailover);
-  const response = await f.app.request('/v1/models');
-  expect(response.status).toBe(200);
-  const body = await response.json();
-  expect(body.object).toBe('list');
-  expect(body.data.map((model: { id: string }) => model.id)).toEqual(
-    scenario.visible ? ['logical'] : []
-  );
-  if (scenario.visible)
-    expect(body.data[0]).toMatchObject({
-      id: 'logical',
-      object: 'model',
-      display_name: 'Logical model',
-      owned_by: 'openkit',
-    });
-  expect(f.resolveGatewayProvider).not.toHaveBeenCalled();
-  expect(JSON.stringify(body)).not.toMatch(/native-primary|native-backup|test:primary/);
-});
+] as const)(
+  'advertises $primary primary with backup=$backup and failover=$autoFailover: $visible',
+  async (scenario) => {
+    const f = fixture(scenario.primary, scenario.backup, scenario.autoFailover);
+    const response = await f.app.request('/v1/models');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.object).toBe('list');
+    expect(body.data.map((model: { id: string }) => model.id)).toEqual(
+      scenario.visible ? ['logical'] : []
+    );
+    if (scenario.visible)
+      expect(body.data[0]).toMatchObject({
+        id: 'logical',
+        object: 'model',
+        display_name: 'Logical model',
+        owned_by: 'openkit',
+      });
+    expect(f.resolveGatewayProvider).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toMatch(/native-primary|native-backup|test:primary/);
+  }
+);
 
 it('recomputes discovery from the current routing switch', async () => {
   const f = fixture('absent', true, false);

@@ -1203,77 +1203,76 @@ describe('Artifacts', () => {
       error: privateError(409, 'thread_busy', 'introduce-busy-private failure'),
       message: /couldn't add|busy/i,
     },
-  ])('replays the exact $command after uncertain transport or thread_busy and blocks retry while disconnected', async ({
-    command,
-    error,
-    message,
-  }) => {
-    const user = userEvent.setup();
-    const importWorkspaceArtifact = vi.fn().mockRejectedValue(error);
-    const introduceWorkspaceArtifact = vi.fn().mockRejectedValue(error);
-    const meta = vi.fn().mockResolvedValue({});
-    const { queryClient } = renderApp(
-      '/artifacts',
-      makeClient({
-        core: { meta },
-        app: {},
+  ])(
+    'replays the exact $command after uncertain transport or thread_busy and blocks retry while disconnected',
+    async ({ command, error, message }) => {
+      const user = userEvent.setup();
+      const importWorkspaceArtifact = vi.fn().mockRejectedValue(error);
+      const introduceWorkspaceArtifact = vi.fn().mockRejectedValue(error);
+      const meta = vi.fn().mockResolvedValue({});
+      const { queryClient } = renderApp(
+        '/artifacts',
+        makeClient({
+          core: { meta },
+          app: {},
 
-        operations: {
-          'artifact.import': importWorkspaceArtifact,
-          'artifact.introduce': introduceWorkspaceArtifact,
-        },
-      })
-    );
+          operations: {
+            'artifact.import': importWorkspaceArtifact,
+            'artifact.introduce': introduceWorkspaceArtifact,
+          },
+        })
+      );
 
-    expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
-    if (command === 'import') {
-      await submitImport(user);
-    } else {
-      await chooseIntroduceThread(user);
-      await user.click(screen.getByRole('button', { name: /add to conversation/i }));
+      expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
+      if (command === 'import') {
+        await submitImport(user);
+      } else {
+        await chooseIntroduceThread(user);
+        await user.click(screen.getByRole('button', { name: /add to conversation/i }));
+      }
+
+      const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
+      const first =
+        command === 'import'
+          ? acceptedImport(importWorkspaceArtifact)
+          : acceptedIntroduce(introduceWorkspaceArtifact);
+      if (command === 'import') {
+        expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(IMPORT_TITLE);
+        expect(screen.getByRole('textbox', { name: 'Content' })).toHaveValue(IMPORT_CONTENT);
+      }
+      const alert = await waitFor(() => {
+        const match = screen
+          .getAllByRole('alert')
+          .find((node) => message.test(node.textContent ?? ''));
+        expect(match).toBeTruthy();
+        return match as HTMLElement;
+      });
+      expect(alert).toHaveTextContent(message);
+      expect(alert).not.toHaveTextContent(/private failure/i);
+      expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
+
+      await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
+      const retried =
+        command === 'import'
+          ? acceptedImport(importWorkspaceArtifact, 1)
+          : acceptedIntroduce(introduceWorkspaceArtifact, 1);
+      expect(retried).toEqual(first);
+
+      await disconnectWrites(queryClient, meta);
+      await waitFor(() => {
+        const current = screen
+          .getAllByRole('alert')
+          .find((node) => message.test(node.textContent ?? ''));
+        expect(current).toBeTruthy();
+        expect(
+          within(current as HTMLElement).getByRole('button', { name: 'Try again' })
+        ).toBeDisabled();
+      });
+      expect(mutation).toHaveBeenCalledTimes(2);
     }
-
-    const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
-    const first =
-      command === 'import'
-        ? acceptedImport(importWorkspaceArtifact)
-        : acceptedIntroduce(introduceWorkspaceArtifact);
-    if (command === 'import') {
-      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(IMPORT_TITLE);
-      expect(screen.getByRole('textbox', { name: 'Content' })).toHaveValue(IMPORT_CONTENT);
-    }
-    const alert = await waitFor(() => {
-      const match = screen
-        .getAllByRole('alert')
-        .find((node) => message.test(node.textContent ?? ''));
-      expect(match).toBeTruthy();
-      return match as HTMLElement;
-    });
-    expect(alert).toHaveTextContent(message);
-    expect(alert).not.toHaveTextContent(/private failure/i);
-    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
-    const retried =
-      command === 'import'
-        ? acceptedImport(importWorkspaceArtifact, 1)
-        : acceptedIntroduce(introduceWorkspaceArtifact, 1);
-    expect(retried).toEqual(first);
-
-    await disconnectWrites(queryClient, meta);
-    await waitFor(() => {
-      const current = screen
-        .getAllByRole('alert')
-        .find((node) => message.test(node.textContent ?? ''));
-      expect(current).toBeTruthy();
-      expect(
-        within(current as HTMLElement).getByRole('button', { name: 'Try again' })
-      ).toBeDisabled();
-    });
-    expect(mutation).toHaveBeenCalledTimes(2);
-  });
+  );
 
   it('disables a stale introduction target after refresh until another eligible Artifact is selected', async () => {
     const user = userEvent.setup();
@@ -1410,94 +1409,98 @@ describe('Artifacts', () => {
     expect(next.expectedArtifactVersion).toBe(IMPORTED_ARTIFACT_V2.version);
   });
 
-  it.each([
-    'import',
-    'introduce',
-  ] as const)('restores authority before a denied %s can run again', async (command) => {
-    const user = userEvent.setup();
-    const error = privateError(403, 'workspace_access_denied', `${command}-denied-private failure`);
-    const listWorkspaces = vi
-      .fn()
-      .mockResolvedValueOnce({
-        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          workspace,
-          isOwner: true,
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        })),
-      })
-      .mockResolvedValueOnce({
-        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
-          membershipStatus: 'active' as const,
-          accessCause: 'membership' as const,
-          workspace,
-          isOwner: true,
-          membershipRevision: 1,
-          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-          registryRevision: 1,
-        })),
+  it.each(['import', 'introduce'] as const)(
+    'restores authority before a denied %s can run again',
+    async (command) => {
+      const user = userEvent.setup();
+      const error = privateError(
+        403,
+        'workspace_access_denied',
+        `${command}-denied-private failure`
+      );
+      const listWorkspaces = vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
+            workspace,
+            isOwner: true,
+            membershipRevision: 1,
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            registryRevision: 1,
+          })),
+        })
+        .mockResolvedValueOnce({
+          items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            membershipStatus: 'active' as const,
+            accessCause: 'membership' as const,
+            workspace,
+            isOwner: true,
+            membershipRevision: 1,
+            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+            registryRevision: 1,
+          })),
+        });
+      const importWorkspaceArtifact = vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValue(IMPORT_MUTATION);
+      const introduceWorkspaceArtifact = vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValue(INTRODUCE_MUTATION);
+      renderApp(
+        '/artifacts',
+        makeClient({
+          core: {},
+          app: {},
+
+          operations: {
+            'artifact.import': importWorkspaceArtifact,
+            'artifact.introduce': introduceWorkspaceArtifact,
+            'workspace.list': listWorkspaces,
+          },
+        })
+      );
+
+      expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
+      if (command === 'import') {
+        await submitImport(user);
+      } else {
+        await chooseIntroduceThread(user);
+        await user.click(screen.getByRole('button', { name: /add to conversation/i }));
+      }
+
+      const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
+      const first =
+        command === 'import'
+          ? acceptedImport(importWorkspaceArtifact)
+          : acceptedIntroduce(introduceWorkspaceArtifact);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(/access denied/i);
+      expect(alert).not.toHaveTextContent(/private failure/i);
+      expect(alert).not.toHaveTextContent('workspace_access_denied');
+      const action = screen.getByRole('button', {
+        name: command === 'import' ? /^import$/i : /add to conversation/i,
       });
-    const importWorkspaceArtifact = vi
-      .fn()
-      .mockRejectedValueOnce(error)
-      .mockResolvedValue(IMPORT_MUTATION);
-    const introduceWorkspaceArtifact = vi
-      .fn()
-      .mockRejectedValueOnce(error)
-      .mockResolvedValue(INTRODUCE_MUTATION);
-    renderApp(
-      '/artifacts',
-      makeClient({
-        core: {},
-        app: {},
+      expect(action).toBeDisabled();
 
-        operations: {
-          'artifact.import': importWorkspaceArtifact,
-          'artifact.introduce': introduceWorkspaceArtifact,
-          'workspace.list': listWorkspaces,
-        },
-      })
-    );
+      await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
+      expect(mutation).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(action).toBeEnabled());
 
-    expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
-    if (command === 'import') {
-      await submitImport(user);
-    } else {
-      await chooseIntroduceThread(user);
-      await user.click(screen.getByRole('button', { name: /add to conversation/i }));
+      await user.click(action);
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
+      const next =
+        command === 'import'
+          ? acceptedImport(importWorkspaceArtifact, 1)
+          : acceptedIntroduce(introduceWorkspaceArtifact, 1);
+      expect(next.requestId).not.toBe(first.requestId);
     }
-
-    const mutation = command === 'import' ? importWorkspaceArtifact : introduceWorkspaceArtifact;
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
-    const first =
-      command === 'import'
-        ? acceptedImport(importWorkspaceArtifact)
-        : acceptedIntroduce(introduceWorkspaceArtifact);
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/access denied/i);
-    expect(alert).not.toHaveTextContent(/private failure/i);
-    expect(alert).not.toHaveTextContent('workspace_access_denied');
-    const action = screen.getByRole('button', {
-      name: command === 'import' ? /^import$/i : /add to conversation/i,
-    });
-    expect(action).toBeDisabled();
-
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-    expect(mutation).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(action).toBeEnabled());
-
-    await user.click(action);
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
-    const next =
-      command === 'import'
-        ? acceptedImport(importWorkspaceArtifact, 1)
-        : acceptedIntroduce(introduceWorkspaceArtifact, 1);
-    expect(next.requestId).not.toBe(first.requestId);
-  });
+  );
 
   it('keeps a pending import settlement bound to its source Workspace across a switch', async () => {
     const user = userEvent.setup();
@@ -1771,45 +1774,44 @@ describe('Artifacts', () => {
       message: /digest|mismatch/i,
       status: 400,
     },
-  ])('continues a $code import from corrected input under a new requestId', async ({
-    code,
-    message,
-    status,
-  }) => {
-    const user = userEvent.setup();
-    const { first, 'artifact.import': importWorkspaceArtifact } = await startTypedCommandFailure(
-      user,
-      'import',
-      privateError(status, code, `${code}-private failure`),
-      true
-    );
-    if (!('contentDigest' in first)) throw new Error('expected an Artifact import command');
+  ])(
+    'continues a $code import from corrected input under a new requestId',
+    async ({ code, message, status }) => {
+      const user = userEvent.setup();
+      const { first, 'artifact.import': importWorkspaceArtifact } = await startTypedCommandFailure(
+        user,
+        'import',
+        privateError(status, code, `${code}-private failure`),
+        true
+      );
+      if (!('contentDigest' in first)) throw new Error('expected an Artifact import command');
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(message);
-    expect(alert).not.toHaveTextContent(/private failure/i);
-    expect(alert).not.toHaveTextContent(code);
-    expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(IMPORT_TITLE);
-    expect(screen.getByRole('textbox', { name: 'Content' })).toHaveValue(IMPORT_CONTENT);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(message);
+      expect(alert).not.toHaveTextContent(/private failure/i);
+      expect(alert).not.toHaveTextContent(code);
+      expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(IMPORT_TITLE);
+      expect(screen.getByRole('textbox', { name: 'Content' })).toHaveValue(IMPORT_CONTENT);
 
-    const content = screen.getByRole('textbox', { name: 'Content' });
-    await user.clear(content);
-    await user.click(content);
-    await user.paste(IMPORT_CONTENT_V2);
-    await user.click(screen.getByRole('button', { name: /^import$/i }));
+      const content = screen.getByRole('textbox', { name: 'Content' });
+      await user.clear(content);
+      await user.click(content);
+      await user.paste(IMPORT_CONTENT_V2);
+      await user.click(screen.getByRole('button', { name: /^import$/i }));
 
-    await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2));
-    const next = acceptedImport(importWorkspaceArtifact, 1);
-    expect(next.requestId).not.toBe(first.requestId);
-    expect(next).toMatchObject({
-      title: IMPORT_TITLE,
-      mediaType: 'text/markdown',
-      byteLength: new TextEncoder().encode(IMPORT_CONTENT_V2).byteLength,
-    });
-    expect(next.contentDigest).not.toBe(first.contentDigest);
-    assertNoLeakedInternals();
-  });
+      await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(2));
+      const next = acceptedImport(importWorkspaceArtifact, 1);
+      expect(next.requestId).not.toBe(first.requestId);
+      expect(next).toMatchObject({
+        title: IMPORT_TITLE,
+        mediaType: 'text/markdown',
+        byteLength: new TextEncoder().encode(IMPORT_CONTENT_V2).byteLength,
+      });
+      expect(next.contentDigest).not.toBe(first.contentDigest);
+      assertNoLeakedInternals();
+    }
+  );
 
   it.each([
     {
@@ -1830,82 +1832,80 @@ describe('Artifacts', () => {
       code: 'recovery_required',
       message: /recovery required/i,
     },
-  ])('fail-closes typed $command $code without a mutation retry', async ({
-    command,
-    status,
-    code,
-    message,
-  }) => {
-    const user = userEvent.setup();
-    const { mutation } = await startTypedCommandFailure(
-      user,
-      command,
-      privateError(status, code, `${code}-private failure`),
-      false
-    );
+  ])(
+    'fail-closes typed $command $code without a mutation retry',
+    async ({ command, status, code, message }) => {
+      const user = userEvent.setup();
+      const { mutation } = await startTypedCommandFailure(
+        user,
+        command,
+        privateError(status, code, `${code}-private failure`),
+        false
+      );
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(message);
-    expect(alert).not.toHaveTextContent(/private failure/i);
-    expect(alert).not.toHaveTextContent(code);
-    expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    if (command === 'import') {
-      expect(screen.getByRole('button', { name: /^import$/i })).toBeDisabled();
-    } else {
-      expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
-      expect(
-        screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))
-      ).not.toBeInTheDocument();
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(message);
+      expect(alert).not.toHaveTextContent(/private failure/i);
+      expect(alert).not.toHaveTextContent(code);
+      expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+      if (command === 'import') {
+        expect(screen.getByRole('button', { name: /^import$/i })).toBeDisabled();
+      } else {
+        expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
+        expect(
+          screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))
+        ).not.toBeInTheDocument();
+      }
+      expect(mutation).toHaveBeenCalledTimes(1);
+      assertNoLeakedInternals();
     }
-    expect(mutation).toHaveBeenCalledTimes(1);
-    assertNoLeakedInternals();
-  });
+  );
 
-  it.each([
-    'import',
-    'introduce',
-  ] as const)('retries $command idempotency_key_conflict only after refresh and a new explicit request', async (command) => {
-    const user = userEvent.setup();
-    const {
-      first,
-      'artifact.read': getArtifact,
-      'artifact.import': importWorkspaceArtifact,
-      'artifact.introduce': introduceWorkspaceArtifact,
-      'artifact.list': listArtifacts,
-      mutation,
-    } = await startTypedCommandFailure(
-      user,
-      command,
-      privateError(409, 'idempotency_key_conflict', 'idempotency_key_conflict-private failure'),
-      true
-    );
+  it.each(['import', 'introduce'] as const)(
+    'retries $command idempotency_key_conflict only after refresh and a new explicit request',
+    async (command) => {
+      const user = userEvent.setup();
+      const {
+        first,
+        'artifact.read': getArtifact,
+        'artifact.import': importWorkspaceArtifact,
+        'artifact.introduce': introduceWorkspaceArtifact,
+        'artifact.list': listArtifacts,
+        mutation,
+      } = await startTypedCommandFailure(
+        user,
+        command,
+        privateError(409, 'idempotency_key_conflict', 'idempotency_key_conflict-private failure'),
+        true
+      );
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/conflict/i);
-    expect(alert).not.toHaveTextContent(/private failure/i);
-    expect(alert).not.toHaveTextContent('idempotency_key_conflict');
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(/conflict/i);
+      expect(alert).not.toHaveTextContent(/private failure/i);
+      expect(alert).not.toHaveTextContent('idempotency_key_conflict');
 
-    const readsBeforeRetry = listArtifacts.mock.calls.length + getArtifact.mock.calls.length;
-    await user.click(within(alert).getByRole('button', { name: 'Try again' }));
-    await waitFor(() =>
-      expect(listArtifacts.mock.calls.length + getArtifact.mock.calls.length).toBeGreaterThan(
-        readsBeforeRetry
-      )
-    );
-    expect(mutation).toHaveBeenCalledTimes(1);
+      const readsBeforeRetry = listArtifacts.mock.calls.length + getArtifact.mock.calls.length;
+      await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+      await waitFor(() =>
+        expect(listArtifacts.mock.calls.length + getArtifact.mock.calls.length).toBeGreaterThan(
+          readsBeforeRetry
+        )
+      );
+      expect(mutation).toHaveBeenCalledTimes(1);
 
-    const action = screen.getByRole('button', {
-      name: command === 'import' ? /^import$/i : /add to conversation/i,
-    });
-    await user.click(action);
-    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
-    const next =
-      command === 'import'
-        ? acceptedImport(importWorkspaceArtifact, 1)
-        : acceptedIntroduce(introduceWorkspaceArtifact, 1);
-    expect(next.requestId).not.toBe(first.requestId);
-    assertNoLeakedInternals();
-  });
+      const action = screen.getByRole('button', {
+        name: command === 'import' ? /^import$/i : /add to conversation/i,
+      });
+      await user.click(action);
+      await waitFor(() => expect(mutation).toHaveBeenCalledTimes(2));
+      const next =
+        command === 'import'
+          ? acceptedImport(importWorkspaceArtifact, 1)
+          : acceptedIntroduce(introduceWorkspaceArtifact, 1);
+      expect(next.requestId).not.toBe(first.requestId);
+      assertNoLeakedInternals();
+    }
+  );
 
   it.each([
     { name: 'Markdown', request: MULTILINE_MARKDOWN_IMPORT },

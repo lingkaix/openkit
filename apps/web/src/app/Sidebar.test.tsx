@@ -432,55 +432,60 @@ describe('conversation navigation sidebar', () => {
     ['/goals/ws%2F1/th%3F%23%25/artifacts/a', 'task', true, '/tasks/ws%2F1/th%3F%23%25'],
     ['/goals/ws%2F1/th%3F%23%25-extra', 'task', false, '/tasks/ws%2F1/th%3F%23%25'],
     ['/chat/other/th%3F%23%25', 'goal', false, '/goals/ws%2F1/th%3F%23%25'],
-  ] as const)('matches encoded Thread identity across modes at %s independently of the %s destination', async (path, activity, active, destination) => {
-    const user = userEvent.setup();
-    const client = {
-      core: {},
-      app: {},
+  ] as const)(
+    'matches encoded Thread identity across modes at %s independently of the %s destination',
+    async (path, activity, active, destination) => {
+      const user = userEvent.setup();
+      const client = {
+        core: {},
+        app: {},
 
-      operations: {
-        'conversation.navigation': async () => ({
-          items: [
-            {
-              thread: { id: 'th?#%', workspaceId: 'ws/1', name: 'Encoded conversation' },
-              activity,
-              state: 'idle',
-            },
-          ],
-        }),
+        operations: {
+          'conversation.navigation': async () => ({
+            items: [
+              {
+                thread: { id: 'th?#%', workspaceId: 'ws/1', name: 'Encoded conversation' },
+                activity,
+                state: 'idle',
+              },
+            ],
+          }),
 
-        'workspace.list': async () => ({
-          items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }].map((workspace) => ({
-            membershipStatus: 'active' as const,
-            accessCause: 'membership' as const,
-            workspace,
-            isOwner: true,
-            membershipRevision: 1,
-            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            registryRevision: 1,
-          })),
-        }),
-      },
-    } as unknown as CoreClient;
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <CoreClientProvider client={client}>
-          <MemoryRouter initialEntries={[path]}>
-            <Sidebar />
-            <Location />
-          </MemoryRouter>
-        </CoreClientProvider>
-      </QueryClientProvider>
-    );
-    const conversation = await screen.findByRole('button', { name: 'Encoded conversation' });
-    if (active) expect(conversation).toHaveAttribute('aria-current', 'page');
-    else expect(conversation).not.toHaveAttribute('aria-current');
-    await user.click(conversation);
-    expect(screen.getByLabelText('Location').textContent).toBe(destination);
-    expect(conversation).toHaveAttribute('aria-current', 'page');
-    queryClient.clear();
-  });
+          'workspace.list': async () => ({
+            items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }].map(
+              (workspace) => ({
+                membershipStatus: 'active' as const,
+                accessCause: 'membership' as const,
+                workspace,
+                isOwner: true,
+                membershipRevision: 1,
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+                registryRevision: 1,
+              })
+            ),
+          }),
+        },
+      } as unknown as CoreClient;
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <CoreClientProvider client={client}>
+            <MemoryRouter initialEntries={[path]}>
+              <Sidebar />
+              <Location />
+            </MemoryRouter>
+          </CoreClientProvider>
+        </QueryClientProvider>
+      );
+      const conversation = await screen.findByRole('button', { name: 'Encoded conversation' });
+      if (active) expect(conversation).toHaveAttribute('aria-current', 'page');
+      else expect(conversation).not.toHaveAttribute('aria-current');
+      await user.click(conversation);
+      expect(screen.getByLabelText('Location').textContent).toBe(destination);
+      expect(conversation).toHaveAttribute('aria-current', 'page');
+      queryClient.clear();
+    }
+  );
 
   it('clears Artifacts identity query when switching Workspace and keeps the new selection', async () => {
     const user = userEvent.setup();

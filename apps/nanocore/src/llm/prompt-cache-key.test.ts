@@ -62,53 +62,49 @@ function chatRequest(
 }
 
 describe('PromptCacheKeyResolver', () => {
-  it.each([
-    'workspaceId',
-    'threadId',
-    'agentSessionId',
-    'sessionId',
-  ] as const)('keeps trusted %s when public metadata conflicts', (field) => {
-    const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
-    const scope = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      agentSessionId: 'trusted-agent-session',
-      sessionId: 'trusted-session',
-    };
-    const baseline = resolver.withPromptCacheKey(providerConfig(), responsesRequest(), scope);
-    const conflicted = resolver.withPromptCacheKey(
-      providerConfig(),
-      responsesRequest({ metadata: { openkit: { [field]: `advisory-${field}` } } }),
-      scope
-    );
+  it.each(['workspaceId', 'threadId', 'agentSessionId', 'sessionId'] as const)(
+    'keeps trusted %s when public metadata conflicts',
+    (field) => {
+      const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        agentSessionId: 'trusted-agent-session',
+        sessionId: 'trusted-session',
+      };
+      const baseline = resolver.withPromptCacheKey(providerConfig(), responsesRequest(), scope);
+      const conflicted = resolver.withPromptCacheKey(
+        providerConfig(),
+        responsesRequest({ metadata: { openkit: { [field]: `advisory-${field}` } } }),
+        scope
+      );
 
-    // Cache Scope Input: public metadata cannot override server-owned authority.
-    expect(conflicted.prompt_cache_key).toBe(baseline.prompt_cache_key);
-  });
+      // Cache Scope Input: public metadata cannot override server-owned authority.
+      expect(conflicted.prompt_cache_key).toBe(baseline.prompt_cache_key);
+    }
+  );
 
-  it.each([
-    'workspaceId',
-    'threadId',
-    'agentSessionId',
-    'sessionId',
-  ] as const)('uses advisory %s when the trusted caller omits it', (field) => {
-    const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
-    const scope = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      agentSessionId: 'trusted-agent-session',
-      sessionId: 'trusted-session',
-    };
-    const { [field]: advisoryValue, ...partialScope } = scope;
-    const baseline = resolver.withPromptCacheKey(providerConfig(), responsesRequest(), scope);
-    const supplemented = resolver.withPromptCacheKey(
-      providerConfig(),
-      responsesRequest({ metadata: { openkit: { [field]: advisoryValue } } }),
-      partialScope
-    );
+  it.each(['workspaceId', 'threadId', 'agentSessionId', 'sessionId'] as const)(
+    'uses advisory %s when the trusted caller omits it',
+    (field) => {
+      const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        agentSessionId: 'trusted-agent-session',
+        sessionId: 'trusted-session',
+      };
+      const { [field]: advisoryValue, ...partialScope } = scope;
+      const baseline = resolver.withPromptCacheKey(providerConfig(), responsesRequest(), scope);
+      const supplemented = resolver.withPromptCacheKey(
+        providerConfig(),
+        responsesRequest({ metadata: { openkit: { [field]: advisoryValue } } }),
+        partialScope
+      );
 
-    expect(supplemented.prompt_cache_key).toBe(baseline.prompt_cache_key);
-  });
+      expect(supplemented.prompt_cache_key).toBe(baseline.prompt_cache_key);
+    }
+  );
 
   it('removes private cache metadata before provider use without changing the caller request', () => {
     const resolver = new PromptCacheKeyResolver();
@@ -128,80 +124,80 @@ describe('PromptCacheKeyResolver', () => {
     });
   });
 
-  it.each([
-    'request',
-    'metadata',
-  ] as const)('hashes admitted %s hints within the current provider, model, account and trusted scope', (source) => {
-    const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
-    const hint = 'sample routing label';
-    const provider = providerConfig({
-      id: 'codex-team-a',
-      accountSlotId: 'shared_slot',
-      subscriptionProviderId: 'openai-codex',
-    });
-    const scope = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-    };
-    const openkit = {
-      promptCacheKey: source === 'metadata' ? hint : 'secondary routing label',
-      workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-      threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
-    };
-    const request = responsesRequest({
-      ...(source === 'request' ? { prompt_cache_key: hint } : {}),
-      metadata: { openkit },
-    });
-    const first = resolver.withPromptCacheKey(provider, request, scope).prompt_cache_key;
-    const variants = [
-      [providerConfig({ ...provider, accountSlotId: 'other_slot' }), request],
-      [providerConfig({ ...provider, subscriptionProviderId: 'xai' }), request],
-      [providerConfig({ ...provider, id: 'codex-team-b' }), request],
-      [providerConfig({ ...provider, models: ['gpt-5.2'] }), { ...request, model: 'gpt-5.2' }],
-    ] as const;
-    const otherHint = responsesRequest({
-      ...request,
-      ...(source === 'request'
-        ? { prompt_cache_key: 'alternate routing label' }
-        : { metadata: { openkit: { ...openkit, promptCacheKey: 'alternate routing label' } } }),
-    });
-    const keys = [
-      first,
-      ...variants.map(
-        ([variantProvider, variantRequest]) =>
-          resolver.withPromptCacheKey(variantProvider, variantRequest, scope).prompt_cache_key
-      ),
-      resolver.withPromptCacheKey(provider, otherHint, scope).prompt_cache_key,
-      resolver.withPromptCacheKey(provider, request, {
-        ...scope,
+  it.each(['request', 'metadata'] as const)(
+    'hashes admitted %s hints within the current provider, model, account and trusted scope',
+    (source) => {
+      const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });
+      const hint = 'sample routing label';
+      const provider = providerConfig({
+        id: 'codex-team-a',
+        accountSlotId: 'shared_slot',
+        subscriptionProviderId: 'openai-codex',
+      });
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      };
+      const openkit = {
+        promptCacheKey: source === 'metadata' ? hint : 'secondary routing label',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-      }).prompt_cache_key,
-    ];
+        threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
+      };
+      const request = responsesRequest({
+        ...(source === 'request' ? { prompt_cache_key: hint } : {}),
+        metadata: { openkit },
+      });
+      const first = resolver.withPromptCacheKey(provider, request, scope).prompt_cache_key;
+      const variants = [
+        [providerConfig({ ...provider, accountSlotId: 'other_slot' }), request],
+        [providerConfig({ ...provider, subscriptionProviderId: 'xai' }), request],
+        [providerConfig({ ...provider, id: 'codex-team-b' }), request],
+        [providerConfig({ ...provider, models: ['gpt-5.2'] }), { ...request, model: 'gpt-5.2' }],
+      ] as const;
+      const otherHint = responsesRequest({
+        ...request,
+        ...(source === 'request'
+          ? { prompt_cache_key: 'alternate routing label' }
+          : { metadata: { openkit: { ...openkit, promptCacheKey: 'alternate routing label' } } }),
+      });
+      const keys = [
+        first,
+        ...variants.map(
+          ([variantProvider, variantRequest]) =>
+            resolver.withPromptCacheKey(variantProvider, variantRequest, scope).prompt_cache_key
+        ),
+        resolver.withPromptCacheKey(provider, otherHint, scope).prompt_cache_key,
+        resolver.withPromptCacheKey(provider, request, {
+          ...scope,
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        }).prompt_cache_key,
+      ];
 
-    expect(first).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
-    expect(resolver.withPromptCacheKey(provider, request, scope).prompt_cache_key).toBe(first);
-    expect(new Set(keys)).toHaveProperty('size', keys.length);
-    expect(JSON.stringify(keys)).not.toMatch(
-      /sample routing label|alternate routing label|codex-team|openai-codex|shared_slot|other_slot|ws_|th_/
-    );
-    expect(
-      resolver.withPromptCacheKey(
-        provider,
-        responsesRequest({
-          ...request,
-          metadata: {
-            openkit: {
-              ...openkit,
-              ...(source === 'request' ? { promptCacheKey: 'ignored routing label' } : {}),
-              workspaceId: 'advisory-workspace',
-              threadId: 'advisory-thread',
+      expect(first).toMatch(/^openkit:responses:[a-f0-9]{32}$/);
+      expect(resolver.withPromptCacheKey(provider, request, scope).prompt_cache_key).toBe(first);
+      expect(new Set(keys)).toHaveProperty('size', keys.length);
+      expect(JSON.stringify(keys)).not.toMatch(
+        /sample routing label|alternate routing label|codex-team|openai-codex|shared_slot|other_slot|ws_|th_/
+      );
+      expect(
+        resolver.withPromptCacheKey(
+          provider,
+          responsesRequest({
+            ...request,
+            metadata: {
+              openkit: {
+                ...openkit,
+                ...(source === 'request' ? { promptCacheKey: 'ignored routing label' } : {}),
+                workspaceId: 'advisory-workspace',
+                threadId: 'advisory-thread',
+              },
             },
-          },
-        }),
-        scope
-      ).prompt_cache_key
-    ).toBe(first);
-  });
+          }),
+          scope
+        ).prompt_cache_key
+      ).toBe(first);
+    }
+  );
 
   it('hashes the configured provider, model, and exact subscription pair without raw ids', () => {
     const resolver = new PromptCacheKeyResolver({ randomId: () => 'fallback' });

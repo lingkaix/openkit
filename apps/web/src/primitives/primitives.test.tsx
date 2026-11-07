@@ -461,38 +461,41 @@ describe('primitive tier — behavior', () => {
   it.each([
     ['markdown', '# Release\n', 'Ship  today.'],
     ['text', 'Release\n', 'Ship  today.'],
-  ] as const)('MaterialEditor saves one exact atomic %s draft rather than emitting keystrokes', async (kind, initialValue, addition) => {
-    const user = userEvent.setup();
-    const onSave = vi.fn();
-    const MaterialEditor =
-      requiredPrimitive<
-        ComponentType<{
-          label: string;
-          kind: 'markdown' | 'text';
-          initialValue: string;
-          onSave: (value: string) => void | Promise<void>;
-        }>
-      >('MaterialEditor');
-    render(
-      <MaterialEditor
-        label="Release notes"
-        kind={kind}
-        initialValue={initialValue}
-        onSave={onSave}
-      />
-    );
+  ] as const)(
+    'MaterialEditor saves one exact atomic %s draft rather than emitting keystrokes',
+    async (kind, initialValue, addition) => {
+      const user = userEvent.setup();
+      const onSave = vi.fn();
+      const MaterialEditor =
+        requiredPrimitive<
+          ComponentType<{
+            label: string;
+            kind: 'markdown' | 'text';
+            initialValue: string;
+            onSave: (value: string) => void | Promise<void>;
+          }>
+        >('MaterialEditor');
+      render(
+        <MaterialEditor
+          label="Release notes"
+          kind={kind}
+          initialValue={initialValue}
+          onSave={onSave}
+        />
+      );
 
-    const editor = screen.getByRole('textbox', { name: 'Release notes' });
-    expect(editor.tagName).toBe('TEXTAREA');
-    await user.type(editor, addition);
-    expect(onSave).not.toHaveBeenCalled();
-    expect(screen.getByText('Unsaved')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(onSave).toHaveBeenCalledOnce();
-    expect(onSave).toHaveBeenCalledWith(`${initialValue}${addition}`);
-    await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument());
-    expect(screen.queryByText('Unsaved')).not.toBeInTheDocument();
-  });
+      const editor = screen.getByRole('textbox', { name: 'Release notes' });
+      expect(editor.tagName).toBe('TEXTAREA');
+      await user.type(editor, addition);
+      expect(onSave).not.toHaveBeenCalled();
+      expect(screen.getByText('Unsaved')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      expect(onSave).toHaveBeenCalledOnce();
+      expect(onSave).toHaveBeenCalledWith(`${initialValue}${addition}`);
+      await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument());
+      expect(screen.queryByText('Unsaved')).not.toBeInTheDocument();
+    }
+  );
 
   it('MaterialEditor claims Saved only after the exact draft save settles', async () => {
     const user = userEvent.setup();
@@ -1341,18 +1344,21 @@ describe('primitive tier — behavior', () => {
   it.each([
     [false, 'bg-info-bg', 'text-info-fg'],
     [true, 'bg-notice-bg', 'text-notice-fg'],
-  ] as const)('PhaseStepper preserves current and surrounding tones with gate=%s', (gate, background, foreground) => {
-    render(<PhaseStepper current="execute" gate={gate} />);
-    expect(screen.getByRole('list', { name: 'Goal phase: Execute' })).toBeInTheDocument();
-    expect(screen.getByText('Execute')).toHaveAttribute('aria-current', 'step');
-    expect(screen.getByText('Execute')).toHaveClass(background, foreground);
-    for (const phase of ['Draft', 'Plan']) {
-      expect(screen.getByText(phase)).toHaveClass('text-positive-fg');
-      expect(screen.getByText(phase)).not.toHaveAttribute('aria-current');
+  ] as const)(
+    'PhaseStepper preserves current and surrounding tones with gate=%s',
+    (gate, background, foreground) => {
+      render(<PhaseStepper current="execute" gate={gate} />);
+      expect(screen.getByRole('list', { name: 'Goal phase: Execute' })).toBeInTheDocument();
+      expect(screen.getByText('Execute')).toHaveAttribute('aria-current', 'step');
+      expect(screen.getByText('Execute')).toHaveClass(background, foreground);
+      for (const phase of ['Draft', 'Plan']) {
+        expect(screen.getByText(phase)).toHaveClass('text-positive-fg');
+        expect(screen.getByText(phase)).not.toHaveAttribute('aria-current');
+      }
+      expect(screen.getByText('Review')).toHaveClass('text-fg-muted');
+      expect(screen.getByText('Review')).not.toHaveAttribute('aria-current');
     }
-    expect(screen.getByText('Review')).toHaveClass('text-fg-muted');
-    expect(screen.getByText('Review')).not.toHaveAttribute('aria-current');
-  });
+  );
 
   it('Avatar exposes the worker name to assistive tech', () => {
     render(<Avatar hue="scout" initials="SC" name="Scout" />);

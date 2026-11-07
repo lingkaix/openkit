@@ -105,77 +105,77 @@ describe('resolveAgentSetup', () => {
     expect(manifest).toEqual(original);
   });
 
-  it.each([
-    'api-key',
-    'subscription',
-  ])('rechecks live %s supply on restoration and revocation', (kind) => {
-    const baseProvider = providerRegistry().list()[0]!;
-    const providers =
-      kind === 'api-key'
-        ? providerRegistry()
-        : new ProviderRegistry([
-            {
-              ...baseProvider,
-              kind: 'oauth',
-              vendor: 'openai-codex',
-              baseUrl: undefined,
-              secretRef: undefined,
-              extensions: {
-                openkit: { subscriptionAccount: { accountSlotId: 'private-slot-fixture' } },
+  it.each(['api-key', 'subscription'])(
+    'rechecks live %s supply on restoration and revocation',
+    (kind) => {
+      const baseProvider = providerRegistry().list()[0]!;
+      const providers =
+        kind === 'api-key'
+          ? providerRegistry()
+          : new ProviderRegistry([
+              {
+                ...baseProvider,
+                kind: 'oauth',
+                vendor: 'openai-codex',
+                baseUrl: undefined,
+                secretRef: undefined,
+                extensions: {
+                  openkit: { subscriptionAccount: { accountSlotId: 'private-slot-fixture' } },
+                },
               },
-            },
-          ]);
-    let available = false;
-    const keyCheck = vi.fn(() => available);
-    const accountCheck = vi.fn(() => (available ? null : 'subscription_account_logged_out'));
-    const dependencies = {
-      gatewayConfig: gatewayConfig(),
-      providerRegistry: providers,
-      providerCredentialConfigured: keyCheck,
-      subscriptionAccounts: { gatewayUnavailableReason: accountCheck },
-    };
+            ]);
+      let available = false;
+      const keyCheck = vi.fn(() => available);
+      const accountCheck = vi.fn(() => (available ? null : 'subscription_account_logged_out'));
+      const dependencies = {
+        gatewayConfig: gatewayConfig(),
+        providerRegistry: providers,
+        providerCredentialConfigured: keyCheck,
+        subscriptionAccounts: { gatewayUnavailableReason: accountCheck },
+      };
 
-    const unavailable = resolveAgentSetup(agentConfig(), dependencies);
-    expect(unavailable.setup).toBeNull();
-    expect(unavailable.diagnostics).toContainEqual(
-      expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed' })
-    );
-    expect(JSON.stringify(unavailable.diagnostics)).not.toContain('private-slot-fixture');
-    expect(JSON.stringify(unavailable.diagnostics)).not.toContain(baseProvider.secretRef);
-    expect(keyCheck).toHaveBeenCalledTimes(kind === 'api-key' ? 1 : 0);
-    expect(accountCheck).toHaveBeenCalledTimes(kind === 'subscription' ? 1 : 0);
+      const unavailable = resolveAgentSetup(agentConfig(), dependencies);
+      expect(unavailable.setup).toBeNull();
+      expect(unavailable.diagnostics).toContainEqual(
+        expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed' })
+      );
+      expect(JSON.stringify(unavailable.diagnostics)).not.toContain('private-slot-fixture');
+      expect(JSON.stringify(unavailable.diagnostics)).not.toContain(baseProvider.secretRef);
+      expect(keyCheck).toHaveBeenCalledTimes(kind === 'api-key' ? 1 : 0);
+      expect(accountCheck).toHaveBeenCalledTimes(kind === 'subscription' ? 1 : 0);
 
-    available = true;
-    const restored = resolveAgentSetup(agentConfig(), dependencies);
-    expect(restored.diagnostics).toEqual([]);
-    expect(restored.setup?.logicalModels.preferredLogicalModelId).toBe('reasoning');
-    expect(restored.setup?.logicalModels.allowed[0]?.routes[0]?.available).toBe(true);
+      available = true;
+      const restored = resolveAgentSetup(agentConfig(), dependencies);
+      expect(restored.diagnostics).toEqual([]);
+      expect(restored.setup?.logicalModels.preferredLogicalModelId).toBe('reasoning');
+      expect(restored.setup?.logicalModels.allowed[0]?.routes[0]?.available).toBe(true);
 
-    available = false;
-    const revoked = resolveAgentSetup(agentConfig(), dependencies);
-    expect(revoked.setup).toBeNull();
-    expect(keyCheck).toHaveBeenCalledTimes(kind === 'api-key' ? 3 : 0);
-    expect(accountCheck).toHaveBeenCalledTimes(kind === 'subscription' ? 3 : 0);
-    if (kind === 'api-key') expect(keyCheck).toHaveBeenLastCalledWith(baseProvider.secretRef);
-    else
-      expect(accountCheck).toHaveBeenLastCalledWith({
-        subscriptionProviderId: 'openai-codex',
-        accountSlotId: 'private-slot-fixture',
-      });
-    expect(restored.setup?.logicalModels.allowed[0]?.routes[0]?.available).toBe(true);
+      available = false;
+      const revoked = resolveAgentSetup(agentConfig(), dependencies);
+      expect(revoked.setup).toBeNull();
+      expect(keyCheck).toHaveBeenCalledTimes(kind === 'api-key' ? 3 : 0);
+      expect(accountCheck).toHaveBeenCalledTimes(kind === 'subscription' ? 3 : 0);
+      if (kind === 'api-key') expect(keyCheck).toHaveBeenLastCalledWith(baseProvider.secretRef);
+      else
+        expect(accountCheck).toHaveBeenLastCalledWith({
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'private-slot-fixture',
+        });
+      expect(restored.setup?.logicalModels.allowed[0]?.routes[0]?.available).toBe(true);
 
-    const failInspection = () => {
-      throw new Error('private-owner-failure-fixture');
-    };
-    keyCheck.mockImplementation(failInspection);
-    accountCheck.mockImplementation(failInspection);
-    const failed = resolveAgentSetup(agentConfig(), dependencies);
-    expect(failed.setup).toBeNull();
-    expect(failed.diagnostics).toContainEqual(
-      expect.objectContaining({ code: 'agent_setup.logical_model_not_found' })
-    );
-    expect(JSON.stringify(failed.diagnostics)).not.toContain('private-owner-failure-fixture');
-  });
+      const failInspection = () => {
+        throw new Error('private-owner-failure-fixture');
+      };
+      keyCheck.mockImplementation(failInspection);
+      accountCheck.mockImplementation(failInspection);
+      const failed = resolveAgentSetup(agentConfig(), dependencies);
+      expect(failed.setup).toBeNull();
+      expect(failed.diagnostics).toContainEqual(
+        expect.objectContaining({ code: 'agent_setup.logical_model_not_found' })
+      );
+      expect(JSON.stringify(failed.diagnostics)).not.toContain('private-owner-failure-fixture');
+    }
+  );
 
   it.each([false, true])('applies failover=%s after live credential checks', (autoFailover) => {
     const baseProvider = providerRegistry().list()[0]!;
@@ -217,45 +217,44 @@ describe('resolveAgentSetup', () => {
     } else expect(result.setup).toBeNull();
   });
 
-  it.each([
-    false,
-    true,
-    undefined,
-  ])('uses a backup for setup only when failover is enabled: %s', (autoFailover) => {
-    const gateway = gatewayConfig();
-    const model = gateway.logicalModels[0]!;
-    const configured: GatewayConfig = {
-      ...gateway,
-      logicalModels: [
-        {
-          ...model,
-          ...(autoFailover !== undefined ? { routing: { autoFailover } } : {}),
-          routes: [
-            { ...model.routes[0]!, id: 'primary', providerProfileId: 'missing-provider' },
-            { ...model.routes[0]!, id: 'backup' },
-          ],
-        },
-      ],
-    };
-    const result = resolveAgentSetup(agentConfig(), {
-      gatewayConfig: configured,
-      providerRegistry: providerRegistry(),
-    });
+  it.each([false, true, undefined])(
+    'uses a backup for setup only when failover is enabled: %s',
+    (autoFailover) => {
+      const gateway = gatewayConfig();
+      const model = gateway.logicalModels[0]!;
+      const configured: GatewayConfig = {
+        ...gateway,
+        logicalModels: [
+          {
+            ...model,
+            ...(autoFailover !== undefined ? { routing: { autoFailover } } : {}),
+            routes: [
+              { ...model.routes[0]!, id: 'primary', providerProfileId: 'missing-provider' },
+              { ...model.routes[0]!, id: 'backup' },
+            ],
+          },
+        ],
+      };
+      const result = resolveAgentSetup(agentConfig(), {
+        gatewayConfig: configured,
+        providerRegistry: providerRegistry(),
+      });
 
-    if (autoFailover === false) {
-      expect(result.setup).toBeNull();
-      expect(result.diagnostics).toContainEqual(
-        expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed' })
-      );
-    } else {
-      expect(result.diagnostics).toEqual([]);
-      expect(result.setup?.logicalModels.preferredLogicalModelId).toBe('reasoning');
-      expect(result.setup?.logicalModels.allowed[0]?.routes).toEqual([
-        expect.objectContaining({ id: 'primary', available: false }),
-        expect.objectContaining({ id: 'backup', available: true }),
-      ]);
+      if (autoFailover === false) {
+        expect(result.setup).toBeNull();
+        expect(result.diagnostics).toContainEqual(
+          expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed' })
+        );
+      } else {
+        expect(result.diagnostics).toEqual([]);
+        expect(result.setup?.logicalModels.preferredLogicalModelId).toBe('reasoning');
+        expect(result.setup?.logicalModels.allowed[0]?.routes).toEqual([
+          expect.objectContaining({ id: 'primary', available: false }),
+          expect.objectContaining({ id: 'backup', available: true }),
+        ]);
+      }
     }
-  });
+  );
 
   it('excludes dormant-only supply from all and admits it when its primary returns', () => {
     const gateway = gatewayConfig();
@@ -301,31 +300,31 @@ describe('resolveAgentSetup', () => {
     expect(before.setup?.logicalModels.allowed.map((entry) => entry.id)).toEqual(['reasoning']);
   });
 
-  it.each([
-    '/usr/local/bin/node',
-    '/usr/local/bin/openkit-worker-shim',
-  ])('blocks setup before AEP construction when control binary %s is absent', (path) => {
-    const manifest = agentConfig();
-    const result = resolveAgentSetup(
-      {
-        ...manifest,
-        runtime: {
-          ...manifest.runtime,
-          binaries: manifest.runtime.binaries.filter((binary) => binary.path !== path),
+  it.each(['/usr/local/bin/node', '/usr/local/bin/openkit-worker-shim'])(
+    'blocks setup before AEP construction when control binary %s is absent',
+    (path) => {
+      const manifest = agentConfig();
+      const result = resolveAgentSetup(
+        {
+          ...manifest,
+          runtime: {
+            ...manifest.runtime,
+            binaries: manifest.runtime.binaries.filter((binary) => binary.path !== path),
+          },
         },
-      },
-      { gatewayConfig: gatewayConfig(), providerRegistry: providerRegistry() }
-    );
+        { gatewayConfig: gatewayConfig(), providerRegistry: providerRegistry() }
+      );
 
-    expect(result.setup).toBeNull();
-    expect(result.diagnostics).toEqual([
-      expect.objectContaining({
-        agentId: manifest.id,
-        code: 'agent_setup.missing_control_binary',
-        severity: 'error',
-      }),
-    ]);
-  });
+      expect(result.setup).toBeNull();
+      expect(result.diagnostics).toEqual([
+        expect.objectContaining({
+          agentId: manifest.id,
+          code: 'agent_setup.missing_control_binary',
+          severity: 'error',
+        }),
+      ]);
+    }
+  );
 
   it('does not accept a control binary id at a different path or expose that path', () => {
     const manifest = agentConfig();
@@ -355,25 +354,28 @@ describe('resolveAgentSetup', () => {
     expect(JSON.stringify(result.diagnostics)).not.toContain(untrustedPath);
   });
 
-  it.each([
-    'explicit',
-    'all',
-  ])('refuses an unavailable preferred model with an %s allowlist', (kind) => {
-    const result = resolveAgentSetup(
-      agentConfig({
-        models: {
-          preferredLogicalModelId: 'reasoning',
-          allowedLogicalModelIds: kind === 'all' ? 'all' : ['reasoning'],
-        },
-      }),
-      { gatewayConfig: gatewayConfig(), providerRegistry: new ProviderRegistry([]) }
-    );
+  it.each(['explicit', 'all'])(
+    'refuses an unavailable preferred model with an %s allowlist',
+    (kind) => {
+      const result = resolveAgentSetup(
+        agentConfig({
+          models: {
+            preferredLogicalModelId: 'reasoning',
+            allowedLogicalModelIds: kind === 'all' ? 'all' : ['reasoning'],
+          },
+        }),
+        { gatewayConfig: gatewayConfig(), providerRegistry: new ProviderRegistry([]) }
+      );
 
-    expect(result.setup).toBeNull();
-    expect(result.diagnostics).toContainEqual(
-      expect.objectContaining({ code: 'agent_setup.logical_model_not_allowed', severity: 'error' })
-    );
-  });
+      expect(result.setup).toBeNull();
+      expect(result.diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: 'agent_setup.logical_model_not_allowed',
+          severity: 'error',
+        })
+      );
+    }
+  );
 
   it('fails with a typed diagnostic when a logical model is missing', () => {
     const result = resolveAgentSetup(
@@ -640,27 +642,26 @@ it.each([
   { base: 'high', selected: undefined, expected: 'high' },
   { base: undefined, selected: 'max', expected: 'max' },
   { base: undefined, selected: undefined, expected: undefined },
-] as const)('composes profile effort over the Agent default: %j', ({
-  base,
-  selected,
-  expected,
-}) => {
-  const config = agentConfig();
-  const authored = {
-    ...config,
-    models: { ...config.models, reasoningEffort: base },
-    profiles: [{ id: 'selected', reasoningEffort: selected, skills: [], mcp: [] }],
-  };
-  const result = resolveAgentSetup(authored, {
-    gatewayConfig: gatewayConfig(),
-    providerRegistry: providerRegistry(),
-    selectedProfileId: 'selected',
-  });
-  expect(result.diagnostics).toEqual([]);
-  if (expected === undefined)
-    expect(result.setup?.manifest.models).not.toHaveProperty('reasoningEffort');
-  else expect(result.setup?.manifest.models).toHaveProperty('reasoningEffort', expected);
-});
+] as const)(
+  'composes profile effort over the Agent default: %j',
+  ({ base, selected, expected }) => {
+    const config = agentConfig();
+    const authored = {
+      ...config,
+      models: { ...config.models, reasoningEffort: base },
+      profiles: [{ id: 'selected', reasoningEffort: selected, skills: [], mcp: [] }],
+    };
+    const result = resolveAgentSetup(authored, {
+      gatewayConfig: gatewayConfig(),
+      providerRegistry: providerRegistry(),
+      selectedProfileId: 'selected',
+    });
+    expect(result.diagnostics).toEqual([]);
+    if (expected === undefined)
+      expect(result.setup?.manifest.models).not.toHaveProperty('reasoningEffort');
+    else expect(result.setup?.manifest.models).toHaveProperty('reasoningEffort', expected);
+  }
+);
 
 it('refuses unknown Agent and selected-profile effort through setup diagnostics', () => {
   for (const source of ['base', 'profile']) {

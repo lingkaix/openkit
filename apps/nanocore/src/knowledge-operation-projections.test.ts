@@ -380,141 +380,142 @@ describe('Knowledge operation definition cutover', () => {
     });
   });
 
-  it.each([
-    'Workspace member',
-    'eligible administrator',
-  ])('preserves authorized Knowledge parity across HTTP client and CLI for %s, with exact command replay and normalized observations for retrieval, preparation and answer', async (authority) => {
-    const f = await fixture(authority === 'Workspace member', true);
-    try {
-      const token =
-        authority === 'eligible administrator'
-          ? createOpenKitAccessTokenRecord(f.coreDb, {
-              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-              scope: 'server-admin',
-              workspaceIds: [],
-              expiresAt: '2099-01-01T00:00:00.000Z',
-            }).secret
-          : undefined;
-      const projectors = await projections(f, token);
-      const selector = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
-      const compared = new Set<string>();
-      async function compare<K extends schemas.ProductOperationId>(
-        id: K,
-        input: Record<string, unknown>
-      ): Promise<schemas.OperationOutput<K>> {
-        let expected: unknown;
-        let first: unknown;
-        for (const project of Object.values(projectors)) {
-          const result = await project(id, { ...selector, ...input });
-          first ??= result;
-          const view = observationView(result);
-          if (expected === undefined) expected = view;
-          expect(view, id).toEqual(expected);
+  it.each(['Workspace member', 'eligible administrator'])(
+    'preserves authorized Knowledge parity across HTTP client and CLI for %s, with exact command replay and normalized observations for retrieval, preparation and answer',
+    async (authority) => {
+      const f = await fixture(authority === 'Workspace member', true);
+      try {
+        const token =
+          authority === 'eligible administrator'
+            ? createOpenKitAccessTokenRecord(f.coreDb, {
+                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+                scope: 'server-admin',
+                workspaceIds: [],
+                expiresAt: '2099-01-01T00:00:00.000Z',
+              }).secret
+            : undefined;
+        const projectors = await projections(f, token);
+        const selector = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
+        const compared = new Set<string>();
+        async function compare<K extends schemas.ProductOperationId>(
+          id: K,
+          input: Record<string, unknown>
+        ): Promise<schemas.OperationOutput<K>> {
+          let expected: unknown;
+          let first: unknown;
+          for (const project of Object.values(projectors)) {
+            const result = await project(id, { ...selector, ...input });
+            first ??= result;
+            const view = observationView(result);
+            if (expected === undefined) expected = view;
+            expect(view, id).toEqual(expected);
+          }
+          compared.add(id);
+          return first as schemas.OperationOutput<K>;
         }
-        compared.add(id);
-        return first as schemas.OperationOutput<K>;
-      }
-      const source = await compare('knowledge.source.register', {
-        requestId: randomUUID(),
-        kind: 'document',
-        title: 'Cutover source',
-        content: 'Source traced cutover lesson.',
-      });
-      await compare('knowledge.source.list', {});
-      await compare('knowledge.source.read', { sourceId: source.source.id });
-      const draft = await compare(
-        'knowledge.proposal.draft',
-        proposalInput(source.source, notebook(f).publishedRevision())
-      );
-      const decision = await compare('knowledge.proposal.decide', {
-        requestId: randomUUID(),
-        proposalId: draft.proposal.id,
-        decision: 'accepted',
-        proposalDigest: f.store.knowledgeProposalDigest(
-          'ws_00000000-0000-7000-8000-000000000001',
-          draft.proposal.id
-        ),
-        baseRevision: draft.proposal.baseRevision,
-        candidateRevision: draft.proposal.candidateRevision,
-      });
-      const reviewed = await compare('knowledge.notebook.list', {});
-      expect(reviewed.knowledgeBaseId).toBe(f.knowledgeBaseId);
-      expect(reviewed.pages.find(({ id }) => id === 'cutover-lesson')?.content).toContain(
-        'Source traced'
-      );
-      await compare('knowledge.indexes', {});
-      await compare('knowledge.retrieval', { query: 'cutover lesson' });
-      await compare('knowledge.context.prepare', { query: 'cutover lesson' });
-      await compare('knowledge.answer', { query: 'cutover lesson' });
-      await compare('knowledge.repair.suggest', {});
-      await compare('knowledge.health.check', {});
-      await compare('knowledge.proposal.reverse', {
-        requestId: randomUUID(),
-        proposalId: draft.proposal.id,
-        reviewId: decision.review.reviewId,
-        knowledgePageId: 'cutover-lesson',
-        expectedContentDigest: draft.proposal.contentDigest,
-        baseRevision: notebook(f).publishedRevision(),
-        confirmRemoval: true,
-      });
-      const pageId = 'entry-cutover';
-      const path = `${pageId}.md`;
-      const created = await compare('knowledge.notebook.create', {
-        requestId: randomUUID(),
-        path,
-        baseRevision: notebook(f).publishedRevision(),
-        content: authoredPage('Entry cutover', 'Retained entry lesson'),
-        summary: 'Create cutover page',
-      });
-      await compare('knowledge.notebook.update', {
-        requestId: randomUUID(),
-        baseRevision: notebook(f).publishedRevision(),
-        changes: [
-          {
-            path,
-            content: updateOkfFrontmatter({
+        const source = await compare('knowledge.source.register', {
+          requestId: randomUUID(),
+          kind: 'document',
+          title: 'Cutover source',
+          content: 'Source traced cutover lesson.',
+        });
+        await compare('knowledge.source.list', {});
+        await compare('knowledge.source.read', { sourceId: source.source.id });
+        const draft = await compare(
+          'knowledge.proposal.draft',
+          proposalInput(source.source, notebook(f).publishedRevision())
+        );
+        const decision = await compare('knowledge.proposal.decide', {
+          requestId: randomUUID(),
+          proposalId: draft.proposal.id,
+          decision: 'accepted',
+          proposalDigest: f.store.knowledgeProposalDigest(
+            'ws_00000000-0000-7000-8000-000000000001',
+            draft.proposal.id
+          ),
+          baseRevision: draft.proposal.baseRevision,
+          candidateRevision: draft.proposal.candidateRevision,
+        });
+        const reviewed = await compare('knowledge.notebook.list', {});
+        expect(reviewed.knowledgeBaseId).toBe(f.knowledgeBaseId);
+        expect(reviewed.pages.find(({ id }) => id === 'cutover-lesson')?.content).toContain(
+          'Source traced'
+        );
+        await compare('knowledge.indexes', {});
+        await compare('knowledge.retrieval', { query: 'cutover lesson' });
+        await compare('knowledge.context.prepare', { query: 'cutover lesson' });
+        await compare('knowledge.answer', { query: 'cutover lesson' });
+        await compare('knowledge.repair.suggest', {});
+        await compare('knowledge.health.check', {});
+        await compare('knowledge.proposal.reverse', {
+          requestId: randomUUID(),
+          proposalId: draft.proposal.id,
+          reviewId: decision.review.reviewId,
+          knowledgePageId: 'cutover-lesson',
+          expectedContentDigest: draft.proposal.contentDigest,
+          baseRevision: notebook(f).publishedRevision(),
+          confirmRemoval: true,
+        });
+        const pageId = 'entry-cutover';
+        const path = `${pageId}.md`;
+        const created = await compare('knowledge.notebook.create', {
+          requestId: randomUUID(),
+          path,
+          baseRevision: notebook(f).publishedRevision(),
+          content: authoredPage('Entry cutover', 'Retained entry lesson'),
+          summary: 'Create cutover page',
+        });
+        await compare('knowledge.notebook.update', {
+          requestId: randomUUID(),
+          baseRevision: notebook(f).publishedRevision(),
+          changes: [
+            {
               path,
-              content: notebook(f).readRevision(created.notebookRevision, [path]).files[path]!,
-              updates: { title: 'Updated entry cutover' },
-            }),
-          },
-        ],
-        summary: 'Update cutover title',
-      });
-      const fromRevision = notebook(f).publishedRevision();
-      const bytes = notebook(f).readRevision(fromRevision, [path]).files[path]!;
-      await compare('knowledge.notebook.update', {
-        requestId: randomUUID(),
-        baseRevision: fromRevision,
-        changes: [
-          { path, content: bytes.replace('Retained entry lesson', 'Notebook edit lesson') },
-        ],
-        summary: 'Notebook projection edit',
-      });
-      await compare('knowledge.notebook.history', { limit: 2 });
-      const baseRevision = notebook(f).publishedRevision();
-      await compare('knowledge.notebook.diff', { baseRevision, fromRevision, pageIds: [pageId] });
-      await compare('knowledge.notebook.restore', {
-        requestId: randomUUID(),
-        baseRevision,
-        fromRevision,
-        pageIds: [pageId],
-        summary: 'Restore entry projection',
-      });
-      const beforeRemoval = await compare('knowledge.notebook.list', {});
-      await compare('knowledge.notebook.delete', {
-        requestId: randomUUID(),
-        path,
-        summary: 'Remove cutover page',
-        baseRevision: beforeRemoval.notebookRevision,
-        expectedContentDigest: beforeRemoval.pages.find(({ id }) => id === pageId)!.contentDigest,
-        confirmRemoval: true,
-      });
-      expect([...compared].sort()).toEqual(acceptedIds);
-    } finally {
-      await f.close();
-    }
-  }, 180_000);
+              content: updateOkfFrontmatter({
+                path,
+                content: notebook(f).readRevision(created.notebookRevision, [path]).files[path]!,
+                updates: { title: 'Updated entry cutover' },
+              }),
+            },
+          ],
+          summary: 'Update cutover title',
+        });
+        const fromRevision = notebook(f).publishedRevision();
+        const bytes = notebook(f).readRevision(fromRevision, [path]).files[path]!;
+        await compare('knowledge.notebook.update', {
+          requestId: randomUUID(),
+          baseRevision: fromRevision,
+          changes: [
+            { path, content: bytes.replace('Retained entry lesson', 'Notebook edit lesson') },
+          ],
+          summary: 'Notebook projection edit',
+        });
+        await compare('knowledge.notebook.history', { limit: 2 });
+        const baseRevision = notebook(f).publishedRevision();
+        await compare('knowledge.notebook.diff', { baseRevision, fromRevision, pageIds: [pageId] });
+        await compare('knowledge.notebook.restore', {
+          requestId: randomUUID(),
+          baseRevision,
+          fromRevision,
+          pageIds: [pageId],
+          summary: 'Restore entry projection',
+        });
+        const beforeRemoval = await compare('knowledge.notebook.list', {});
+        await compare('knowledge.notebook.delete', {
+          requestId: randomUUID(),
+          path,
+          summary: 'Remove cutover page',
+          baseRevision: beforeRemoval.notebookRevision,
+          expectedContentDigest: beforeRemoval.pages.find(({ id }) => id === pageId)!.contentDigest,
+          confirmRemoval: true,
+        });
+        expect([...compared].sort()).toEqual(acceptedIds);
+      } finally {
+        await f.close();
+      }
+    },
+    180_000
+  );
 
   it('keeps unauthorized Workspace refusal on every retained definition, scoped source denial and readonly refusal on every retained mutation before effects', async () => {
     const f = await fixture();
@@ -682,173 +683,180 @@ describe('Knowledge operation definition cutover', () => {
     }
   });
 
-  it.each([
-    'a member',
-    'an eligible administrator',
-  ])('preserves foreign Source refusal, pinned restricted-content exclusion and bounded preparation and answer for %s', async (credential) => {
-    const f = await fixture();
-    try {
-      const member = await projections(f);
-      const foreign = await f.store.createWorkspace('Foreign source authority', {
-        requestId: randomUUID(),
-        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        instructionReference: 'test-owned-fresh-workspace',
-      });
-      recordWorkspaceOwnerMembership({
-        coreDb: f.coreDb,
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        workspaceId: foreign.id,
-      });
-      const registered = (await member.http('knowledge.source.register', {
-        workspaceId: foreign.id,
-        requestId: randomUUID(),
-        kind: 'document',
-        title: 'Foreign source title',
-        content: 'Foreign secret bytes',
-      })) as schemas.OperationOutput<'knowledge.source.register'>;
-      const pageId = 'restricted-audience-lesson';
-      const title = 'Restricted audience lesson';
-      const body = 'audience budget baseline is forty two';
-      const created = (await member.http('knowledge.notebook.create', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        requestId: randomUUID(),
-        baseRevision: notebook(f).publishedRevision(),
-        path: `${pageId}.md`,
-        content: authoredPage(title, body),
-        summary: 'Create restricted audience fixture',
-      })) as schemas.OperationOutput<'knowledge.notebook.create'>;
-      const baseRevision = notebook(f).publishedRevision();
-      const path = `${pageId}.md`;
-      expect(created.notebookRevision).toBe(baseRevision);
-      const bytes = notebook(f).readRevision(baseRevision, [path]).files[path]!;
-      await member.http('knowledge.notebook.update', {
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        requestId: randomUUID(),
-        baseRevision,
-        changes: [
-          { path, content: bytes.replace(/sensitivity: .*\n/, 'sensitivity: "confidential"\n') },
-        ],
-        summary: 'Restrict selected fixture page',
-      });
-      const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
-      const projectors = [member, await projections(f, administrator.secret)][
-        credential === 'a member' ? 0 : 1
-      ]!;
-      let sourceFailure: unknown;
-      for (const project of Object.values(projectors)) {
-        try {
-          await project('knowledge.source.read', {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            sourceId: registered.source.id,
-          });
-          throw new Error('Foreign Source unexpectedly exposed.');
-        } catch (error) {
-          expect(error).toMatchObject({
-            code: 'workspace_access_denied',
-            message: 'Knowledge source is unavailable.',
-          });
-          const view = {
-            code: (error as { code: string }).code,
-            message: (error as { message: string }).message,
-          };
-          sourceFailure ??= view;
-          expect(view).toEqual(sourceFailure);
-        }
-        for (const id of ['knowledge.retrieval', 'knowledge.context.prepare', 'knowledge.answer']) {
-          const beforeQuestion = new Set(
-            f.store
-              .listThreads(DEMO_WORKSPACE_ID)
-              .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
-              .map((turn) => turn.id)
-          );
-          const result = await project(id, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            query: 'audience budget baseline',
-            ...(id === 'knowledge.retrieval'
-              ? {
-                  pinnedReferences: [
-                    {
+  it.each(['a member', 'an eligible administrator'])(
+    'preserves foreign Source refusal, pinned restricted-content exclusion and bounded preparation and answer for %s',
+    async (credential) => {
+      const f = await fixture();
+      try {
+        const member = await projections(f);
+        const foreign = await f.store.createWorkspace('Foreign source authority', {
+          requestId: randomUUID(),
+          producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          instructionReference: 'test-owned-fresh-workspace',
+        });
+        recordWorkspaceOwnerMembership({
+          coreDb: f.coreDb,
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          workspaceId: foreign.id,
+        });
+        const registered = (await member.http('knowledge.source.register', {
+          workspaceId: foreign.id,
+          requestId: randomUUID(),
+          kind: 'document',
+          title: 'Foreign source title',
+          content: 'Foreign secret bytes',
+        })) as schemas.OperationOutput<'knowledge.source.register'>;
+        const pageId = 'restricted-audience-lesson';
+        const title = 'Restricted audience lesson';
+        const body = 'audience budget baseline is forty two';
+        const created = (await member.http('knowledge.notebook.create', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          requestId: randomUUID(),
+          baseRevision: notebook(f).publishedRevision(),
+          path: `${pageId}.md`,
+          content: authoredPage(title, body),
+          summary: 'Create restricted audience fixture',
+        })) as schemas.OperationOutput<'knowledge.notebook.create'>;
+        const baseRevision = notebook(f).publishedRevision();
+        const path = `${pageId}.md`;
+        expect(created.notebookRevision).toBe(baseRevision);
+        const bytes = notebook(f).readRevision(baseRevision, [path]).files[path]!;
+        await member.http('knowledge.notebook.update', {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          requestId: randomUUID(),
+          baseRevision,
+          changes: [
+            { path, content: bytes.replace(/sensitivity: .*\n/, 'sensitivity: "confidential"\n') },
+          ],
+          summary: 'Restrict selected fixture page',
+        });
+        const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        const projectors = [member, await projections(f, administrator.secret)][
+          credential === 'a member' ? 0 : 1
+        ]!;
+        let sourceFailure: unknown;
+        for (const project of Object.values(projectors)) {
+          try {
+            await project('knowledge.source.read', {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              sourceId: registered.source.id,
+            });
+            throw new Error('Foreign Source unexpectedly exposed.');
+          } catch (error) {
+            expect(error).toMatchObject({
+              code: 'workspace_access_denied',
+              message: 'Knowledge source is unavailable.',
+            });
+            const view = {
+              code: (error as { code: string }).code,
+              message: (error as { message: string }).message,
+            };
+            sourceFailure ??= view;
+            expect(view).toEqual(sourceFailure);
+          }
+          for (const id of [
+            'knowledge.retrieval',
+            'knowledge.context.prepare',
+            'knowledge.answer',
+          ]) {
+            const beforeQuestion = new Set(
+              f.store
+                .listThreads(DEMO_WORKSPACE_ID)
+                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+                .map((turn) => turn.id)
+            );
+            const result = await project(id, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              query: 'audience budget baseline',
+              ...(id === 'knowledge.retrieval'
+                ? {
+                    pinnedReferences: [
+                      {
+                        scopeId: f.pageScopeId,
+                        objectId: pageId,
+                      },
+                    ],
+                  }
+                : {}),
+            });
+            expect(JSON.stringify(result)).not.toContain(title);
+            expect(JSON.stringify(result)).not.toContain(body);
+            if (id === 'knowledge.answer') {
+              expect(result).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
+              expect(
+                (result as schemas.OperationOutput<'knowledge.answer'>).uncertainty
+              ).toBeTruthy();
+              const runs = f.store
+                .listThreads(DEMO_WORKSPACE_ID)
+                .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
+                .filter(
+                  (turn) => !beforeQuestion.has(turn.id) && turn.agentId === 'knowledge-manager'
+                );
+              expect(runs).toHaveLength(1);
+              const call = runs[0]!.items.find(
+                (item) => item.type === 'tool-call' && item.tool === 'knowledge.retrieval'
+              );
+              if (call?.type !== 'tool-call' || !call.result)
+                throw new Error('The Knowledge retrieval result was not retained.');
+              const search = JSON.parse(JSON.parse(call.result)[0].text);
+              const selection = search.sources.find(
+                (source: { source: string }) => source.source === 'workspace'
+              );
+              expect(selection.excluded).toContainEqual(
+                expect.objectContaining({
+                  reference: { scopeId: f.pageScopeId, objectId: pageId },
+                  contentDigest: null,
+                  sourceReferences: [],
+                  reason: 'sensitive_content',
+                })
+              );
+              // Native continuation can verify its safe selection without granting full raw-trace inspection.
+              expect(() =>
+                retrieval.assertKnowledgeRetrievalTraceReadable({
+                  dataRoot: f.dataRoot,
+                  workspaceId: DEMO_WORKSPACE_ID,
+                  access: {
+                    store: f.store,
+                    coreDb: f.coreDb,
+                    actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+                    requestActor: {
+                      kind: 'local',
+                      userId: 'usr_00000000-0000-7000-8000-000000000001',
+                    },
+                  },
+                  retrievalTraceRef: RetrievalTraceReferenceSchema.parse(
+                    selection.retrievalTraceRef
+                  ),
+                })
+              ).toThrowError('Knowledge trace or source is unavailable.');
+            } else if (id === 'knowledge.retrieval')
+              expect(result).toMatchObject({
+                selected: [],
+                excluded: [
+                  {
+                    reference: {
                       scopeId: f.pageScopeId,
                       objectId: pageId,
                     },
-                  ],
-                }
-              : {}),
-          });
-          expect(JSON.stringify(result)).not.toContain(title);
-          expect(JSON.stringify(result)).not.toContain(body);
-          if (id === 'knowledge.answer') {
-            expect(result).toMatchObject({ outcome: 'insufficient-evidence', citations: [] });
-            expect(
-              (result as schemas.OperationOutput<'knowledge.answer'>).uncertainty
-            ).toBeTruthy();
-            const runs = f.store
-              .listThreads(DEMO_WORKSPACE_ID)
-              .flatMap((thread) => f.store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id))
-              .filter(
-                (turn) => !beforeQuestion.has(turn.id) && turn.agentId === 'knowledge-manager'
-              );
-            expect(runs).toHaveLength(1);
-            const call = runs[0]!.items.find(
-              (item) => item.type === 'tool-call' && item.tool === 'knowledge.retrieval'
-            );
-            if (call?.type !== 'tool-call' || !call.result)
-              throw new Error('The Knowledge retrieval result was not retained.');
-            const search = JSON.parse(JSON.parse(call.result)[0].text);
-            const selection = search.sources.find(
-              (source: { source: string }) => source.source === 'workspace'
-            );
-            expect(selection.excluded).toContainEqual(
-              expect.objectContaining({
-                reference: { scopeId: f.pageScopeId, objectId: pageId },
-                contentDigest: null,
-                sourceReferences: [],
-                reason: 'sensitive_content',
-              })
-            );
-            // Native continuation can verify its safe selection without granting full raw-trace inspection.
-            expect(() =>
-              retrieval.assertKnowledgeRetrievalTraceReadable({
-                dataRoot: f.dataRoot,
-                workspaceId: DEMO_WORKSPACE_ID,
-                access: {
-                  store: f.store,
-                  coreDb: f.coreDb,
-                  actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-                  requestActor: {
-                    kind: 'local',
-                    userId: 'usr_00000000-0000-7000-8000-000000000001',
+                    contentDigest: null,
+                    reason: 'sensitive_content',
                   },
-                },
-                retrievalTraceRef: RetrievalTraceReferenceSchema.parse(selection.retrievalTraceRef),
-              })
-            ).toThrowError('Knowledge trace or source is unavailable.');
-          } else if (id === 'knowledge.retrieval')
-            expect(result).toMatchObject({
-              selected: [],
-              excluded: [
-                {
-                  reference: {
-                    scopeId: f.pageScopeId,
-                    objectId: pageId,
-                  },
-                  contentDigest: null,
-                  reason: 'sensitive_content',
-                },
-              ],
-            });
-          else expect(result).toMatchObject({ selected: [] });
+                ],
+              });
+            else expect(result).toMatchObject({ selected: [] });
+          }
         }
+      } finally {
+        await f.close();
       }
-    } finally {
-      await f.close();
-    }
-  }, 120_000);
+    },
+    120_000
+  );
 
   it('withholds threadless retrieval metadata when its credential is revoked before usage completion delivery', async () => {
     const f = await fixture();
@@ -1033,119 +1041,119 @@ describe('Knowledge operation definition cutover', () => {
     }
   });
 
-  it.each([
-    'knowledge.indexes',
-    'knowledge.retrieval',
-  ] as const)('preserves the owner data_root_required refusal for %s', async (id) => {
-    const f = await fixture();
-    const root = vi.spyOn(f.store, 'getDataRoot').mockReturnValue(undefined);
-    try {
-      await expect(
-        createOperationInvocation(f.dependencies)(
-          id,
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            ...(id === 'knowledge.retrieval' ? { query: 'lesson' } : {}),
-          },
-          {
-            kind: 'public',
-            actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-          }
-        )
-      ).rejects.toMatchObject({ code: 'data_root_required', status: 409 });
-    } finally {
-      root.mockRestore();
-      await f.close();
+  it.each(['knowledge.indexes', 'knowledge.retrieval'] as const)(
+    'preserves the owner data_root_required refusal for %s',
+    async (id) => {
+      const f = await fixture();
+      const root = vi.spyOn(f.store, 'getDataRoot').mockReturnValue(undefined);
+      try {
+        await expect(
+          createOperationInvocation(f.dependencies)(
+            id,
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              ...(id === 'knowledge.retrieval' ? { query: 'lesson' } : {}),
+            },
+            {
+              kind: 'public',
+              actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+            }
+          )
+        ).rejects.toMatchObject({ code: 'data_root_required', status: 409 });
+      } finally {
+        root.mockRestore();
+        await f.close();
+      }
     }
-  });
+  );
 });
 
-it.each([
-  'HTTP',
-  'MCP',
-] as const)('preserves invalid source lineage refusal through %s without changes', async (projection) => {
-  const f = await fixture();
-  try {
-    const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      scope: 'workspace',
-      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const app = createApp({
-      mode: 'server',
-      coreDb: f.coreDb,
-      dataRoot: f.dataRoot,
-      store: f.store,
-    });
-    const headers = {
-      'content-type': 'application/json',
-      authorization: `Bearer ${issued.secret}`,
-    };
-    const input = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      requestId: randomUUID(),
-      kind: 'document',
-      title: 'Invalid lineage',
-      content: 'Example',
-      originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
-    };
-    const owner = vi.spyOn(sourcePublication, 'publishCapturedSource');
-    const before = structuredClone({
-      sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
-      receipts: f.store.listCommandRequests(),
-    });
-    const response = await app.request(
-      projection === 'HTTP' ? '/api/app/operations/knowledge.source.register' : '/mcp',
-      {
-        method: 'POST',
-        headers: {
-          ...headers,
-          ...(projection === 'HTTP'
-            ? { 'x-openkit-request-id': input.requestId }
-            : { accept: 'application/json, text/event-stream' }),
-        },
-        body: JSON.stringify(
-          projection === 'HTTP'
-            ? input
-            : {
-                jsonrpc: '2.0',
-                id: 1,
-                method: 'tools/call',
-                params: {
-                  name: 'openkit_call',
-                  arguments: { operation: 'knowledge.source.register', input },
-                },
-              }
-        ),
+it.each(['HTTP', 'MCP'] as const)(
+  'preserves invalid source lineage refusal through %s without changes',
+  async (projection) => {
+    const f = await fixture();
+    try {
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'workspace',
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createApp({
+        mode: 'server',
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+      });
+      const headers = {
+        'content-type': 'application/json',
+        authorization: `Bearer ${issued.secret}`,
+      };
+      const input = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        requestId: randomUUID(),
+        kind: 'document',
+        title: 'Invalid lineage',
+        content: 'Example',
+        originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
+      };
+      const owner = vi.spyOn(sourcePublication, 'publishCapturedSource');
+      const before = structuredClone({
+        sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
+        receipts: f.store.listCommandRequests(),
+      });
+      const response = await app.request(
+        projection === 'HTTP' ? '/api/app/operations/knowledge.source.register' : '/mcp',
+        {
+          method: 'POST',
+          headers: {
+            ...headers,
+            ...(projection === 'HTTP'
+              ? { 'x-openkit-request-id': input.requestId }
+              : { accept: 'application/json, text/event-stream' }),
+          },
+          body: JSON.stringify(
+            projection === 'HTTP'
+              ? input
+              : {
+                  jsonrpc: '2.0',
+                  id: 1,
+                  method: 'tools/call',
+                  params: {
+                    name: 'openkit_call',
+                    arguments: { operation: 'knowledge.source.register', input },
+                  },
+                }
+          ),
+        }
+      );
+      expect({
+        sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
+        receipts: f.store.listCommandRequests(),
+      }).toEqual(before);
+      expect(owner).toHaveBeenCalledTimes(1);
+      expect(owner.mock.calls[0]![1]).toMatchObject({
+        originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
+        originatingThreadId: null,
+      });
+      const code = 'knowledge_source_register_failed';
+      const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![1].id}`;
+      if (projection === 'HTTP') {
+        expect(response.status).toBe(404);
+        expect(await response.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+      } else {
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.error).toBeUndefined();
+        expect(body.result.isError).toBe(true);
+        expect(JSON.parse(body.result.content[0].text)).toEqual({ code, message, status: 404 });
       }
-    );
-    expect({
-      sources: f.store.listKnowledgeSources('ws_00000000-0000-7000-8000-000000000001'),
-      receipts: f.store.listCommandRequests(),
-    }).toEqual(before);
-    expect(owner).toHaveBeenCalledTimes(1);
-    expect(owner.mock.calls[0]![1]).toMatchObject({
-      originatingTurnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
-      originatingThreadId: null,
-    });
-    const code = 'knowledge_source_register_failed';
-    const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![1].id}`;
-    if (projection === 'HTTP') {
-      expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-    } else {
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      expect(body.error).toBeUndefined();
-      expect(body.result.isError).toBe(true);
-      expect(JSON.parse(body.result.content[0].text)).toEqual({ code, message, status: 404 });
+    } finally {
+      vi.restoreAllMocks();
+      await f.close();
     }
-  } finally {
-    vi.restoreAllMocks();
-    await f.close();
   }
-});
+);
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {

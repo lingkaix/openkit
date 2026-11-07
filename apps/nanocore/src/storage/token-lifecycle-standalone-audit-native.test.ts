@@ -165,124 +165,128 @@ async function fixture(stage: (typeof stages)[number]) {
   };
 }
 
-it.each(
-  stages
-)('%s waits for the real covering ACK after its unchanged canonical mutation', async (stage) => {
-  const f = await fixture(stage);
-  const reached = await Promise.race([f.arrived.then(() => true), f.result.then(() => false)]);
-  expect(reached).toBe(true);
-  expect(f.published()).toBe(false);
-  expect(fault.requests.length).toBe(1);
-  const tokens = listOpenKitAccessTokenRecords(f.coreDb);
-  if (stage === 'auth.token.issue') expect(tokens.length).toBe(f.before.length + 1);
-  if (stage === 'auth.token.revoke')
-    expect(tokens.find((row) => row.tokenId === f.predecessor?.record.tokenId)?.status).toBe(
-      'revoked'
-    );
-  if (stage === 'auth.token.rotate') {
-    expect(tokens.length).toBe(f.before.length + 1);
-    expect(tokens.find((row) => row.tokenId === f.predecessor?.record.tokenId)?.status).toBe(
-      'rotated'
-    );
-    expect(tokens.some((row) => row.predecessorTokenId === f.predecessor?.record.tokenId)).toBe(
-      true
-    );
-  }
-  const input = ControlStandaloneAuditInputSchema.parse(fault.requests[0]?.input);
-  const event = input.event;
-  expect(event.action).toBe(stage);
-  expect(event.category).toBe('system');
-  expect(event.outcome).toBe('succeeded');
-  expect(event.severity).toBe('info');
-  expect(event.actor?.kind === 'user' && event.actor.id === f.context.actor.userId).toBe(true);
-  expect(event.authentication !== undefined).toBe(true);
-  for (const key of [
-    'workspaceId',
-    'threadId',
-    'turnId',
-    'itemId',
-    'capabilityCallId',
-    'permissionDecisionId',
-    'vaultGrantId',
-    'requestId',
-    'resourceRevision',
-    'subject',
-    'agentId',
-    'agentSessionId',
-  ] as const)
-    expect(event[key]).toBe(null);
-  expect(JSON.stringify(input).includes(f.owner.token)).toBe(false);
-  expect('tokenHash' in event || 'token' in event).toBe(false);
-  const misses = [
-    { ...input, workspaceId: allocateEntityId('ws') },
-    { ...input, stage: 'auth.token.other' },
-    { ...input, event: { ...event, actor: null } },
-    { ...input, event: { ...event, actor: { kind: 'system', id: 'server' } } },
-    { ...input, event: { ...event, action: 'auth.bootstrap.consume' } },
-    { ...input, event: { ...event, requestId: randomUUID() } },
-    { ...input, event: { ...event, permissionDecisionId: randomUUID() } },
-    { ...input, event: { ...event, resourceRevision: 1 } },
-    { ...input, event: { ...event, resource: 'auth-token:' } },
-    { ...input, event: { ...event, outcome: 'failed' } },
-    { ...input, event: { ...event, token: 'must-not-cross' } },
-  ];
-  for (const miss of misses)
-    expect(ControlStandaloneAuditInputSchema.safeParse(miss).success).toBe(false);
-  fault.stage = '';
-  fault.held?.();
-  const result = await f.result;
-  expect(result.ok).toBe(true);
-  if (!result.ok) return;
-  expect(event.resource === `auth-token:${result.value.record.tokenId}`).toBe(true);
-  if (stage !== 'auth.token.revoke') {
-    const secret = 'token' in result.value ? result.value.token : undefined;
-    expect(typeof secret).toBe('string');
-    if (typeof secret === 'string') expect(JSON.stringify(input).includes(secret)).toBe(false);
-  }
-  const rows = listServerAuditEvents(f.coreDb).filter((row) => row.action === stage);
-  expect(rows.length).toBe(f.beforeHistory.length + 1);
-  expect(
-    rows.some(
-      (row) =>
-        row.id === event.id &&
-        row.summary === event.summary &&
-        row.resource === event.resource &&
-        row.createdAt === event.createdAt
-    )
-  ).toBe(true);
-  await shutdownControlStoreWorkerClient();
-  f.coreDb.sqlite.close();
-  const cold = openCoreDb(f.dataRoot);
-  try {
-    expect(listServerAuditEvents(cold).some((row) => row.id === event.id)).toBe(true);
-    expect(listOpenKitAccessTokenRecords(cold).length).toBe(tokens.length);
-  } finally {
-    cold.sqlite.close();
-  }
-}, 30_000);
+it.each(stages)(
+  '%s waits for the real covering ACK after its unchanged canonical mutation',
+  async (stage) => {
+    const f = await fixture(stage);
+    const reached = await Promise.race([f.arrived.then(() => true), f.result.then(() => false)]);
+    expect(reached).toBe(true);
+    expect(f.published()).toBe(false);
+    expect(fault.requests.length).toBe(1);
+    const tokens = listOpenKitAccessTokenRecords(f.coreDb);
+    if (stage === 'auth.token.issue') expect(tokens.length).toBe(f.before.length + 1);
+    if (stage === 'auth.token.revoke')
+      expect(tokens.find((row) => row.tokenId === f.predecessor?.record.tokenId)?.status).toBe(
+        'revoked'
+      );
+    if (stage === 'auth.token.rotate') {
+      expect(tokens.length).toBe(f.before.length + 1);
+      expect(tokens.find((row) => row.tokenId === f.predecessor?.record.tokenId)?.status).toBe(
+        'rotated'
+      );
+      expect(tokens.some((row) => row.predecessorTokenId === f.predecessor?.record.tokenId)).toBe(
+        true
+      );
+    }
+    const input = ControlStandaloneAuditInputSchema.parse(fault.requests[0]?.input);
+    const event = input.event;
+    expect(event.action).toBe(stage);
+    expect(event.category).toBe('system');
+    expect(event.outcome).toBe('succeeded');
+    expect(event.severity).toBe('info');
+    expect(event.actor?.kind === 'user' && event.actor.id === f.context.actor.userId).toBe(true);
+    expect(event.authentication !== undefined).toBe(true);
+    for (const key of [
+      'workspaceId',
+      'threadId',
+      'turnId',
+      'itemId',
+      'capabilityCallId',
+      'permissionDecisionId',
+      'vaultGrantId',
+      'requestId',
+      'resourceRevision',
+      'subject',
+      'agentId',
+      'agentSessionId',
+    ] as const)
+      expect(event[key]).toBe(null);
+    expect(JSON.stringify(input).includes(f.owner.token)).toBe(false);
+    expect('tokenHash' in event || 'token' in event).toBe(false);
+    const misses = [
+      { ...input, workspaceId: allocateEntityId('ws') },
+      { ...input, stage: 'auth.token.other' },
+      { ...input, event: { ...event, actor: null } },
+      { ...input, event: { ...event, actor: { kind: 'system', id: 'server' } } },
+      { ...input, event: { ...event, action: 'auth.bootstrap.consume' } },
+      { ...input, event: { ...event, requestId: randomUUID() } },
+      { ...input, event: { ...event, permissionDecisionId: randomUUID() } },
+      { ...input, event: { ...event, resourceRevision: 1 } },
+      { ...input, event: { ...event, resource: 'auth-token:' } },
+      { ...input, event: { ...event, outcome: 'failed' } },
+      { ...input, event: { ...event, token: 'must-not-cross' } },
+    ];
+    for (const miss of misses)
+      expect(ControlStandaloneAuditInputSchema.safeParse(miss).success).toBe(false);
+    fault.stage = '';
+    fault.held?.();
+    const result = await f.result;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(event.resource === `auth-token:${result.value.record.tokenId}`).toBe(true);
+    if (stage !== 'auth.token.revoke') {
+      const secret = 'token' in result.value ? result.value.token : undefined;
+      expect(typeof secret).toBe('string');
+      if (typeof secret === 'string') expect(JSON.stringify(input).includes(secret)).toBe(false);
+    }
+    const rows = listServerAuditEvents(f.coreDb).filter((row) => row.action === stage);
+    expect(rows.length).toBe(f.beforeHistory.length + 1);
+    expect(
+      rows.some(
+        (row) =>
+          row.id === event.id &&
+          row.summary === event.summary &&
+          row.resource === event.resource &&
+          row.createdAt === event.createdAt
+      )
+    ).toBe(true);
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const cold = openCoreDb(f.dataRoot);
+    try {
+      expect(listServerAuditEvents(cold).some((row) => row.id === event.id)).toBe(true);
+      expect(listOpenKitAccessTokenRecords(cold).length).toBe(tokens.length);
+    } finally {
+      cold.sqlite.close();
+    }
+  },
+  30_000
+);
 
-it.each(
-  stages
-)('%s does not report success or repost when its real committed ACK is lost', async (stage) => {
-  const f = await fixture(stage);
-  expect(await Promise.race([f.arrived.then(() => true), f.result.then(() => false)])).toBe(true);
-  expect(f.published()).toBe(false);
-  const count = fault.requests.length;
-  fault.held = undefined;
-  await fault.worker?.terminate();
-  const result = await f.result;
-  expect(result.ok).toBe(false);
-  expect(fault.requests.length).toBe(count);
-  fault.stage = '';
-  await shutdownControlStoreWorkerClient();
-  f.coreDb.sqlite.close();
-  const cold = openCoreDb(f.dataRoot);
-  try {
-    expect(listServerAuditEvents(cold).filter((row) => row.action === stage).length).toBe(
-      f.beforeHistory.length + 1
-    );
+it.each(stages)(
+  '%s does not report success or repost when its real committed ACK is lost',
+  async (stage) => {
+    const f = await fixture(stage);
+    expect(await Promise.race([f.arrived.then(() => true), f.result.then(() => false)])).toBe(true);
+    expect(f.published()).toBe(false);
+    const count = fault.requests.length;
+    fault.held = undefined;
+    await fault.worker?.terminate();
+    const result = await f.result;
+    expect(result.ok).toBe(false);
     expect(fault.requests.length).toBe(count);
-  } finally {
-    cold.sqlite.close();
-  }
-}, 30_000);
+    fault.stage = '';
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const cold = openCoreDb(f.dataRoot);
+    try {
+      expect(listServerAuditEvents(cold).filter((row) => row.action === stage).length).toBe(
+        f.beforeHistory.length + 1
+      );
+      expect(fault.requests.length).toBe(count);
+    } finally {
+      cold.sqlite.close();
+    }
+  },
+  30_000
+);

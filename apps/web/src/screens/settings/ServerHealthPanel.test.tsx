@@ -157,27 +157,28 @@ describe('Server health', () => {
     }
   });
 
-  it.each([
-    401, 403,
-  ])('hides prior observations after current authority returns %s and retries only the read', async (status) => {
-    const user = userEvent.setup();
-    const read = vi
-      .fn()
-      .mockResolvedValueOnce(diagnostics())
-      .mockRejectedValueOnce(
-        new ApiCallError(status, 'private failure', { details: 'private-body' })
-      )
-      .mockResolvedValueOnce(diagnostics());
-    renderPanel(read);
-    expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Refresh health' }));
-    expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(screen.queryByText('v0.1.0-rc.8')).not.toBeInTheDocument();
-    expect(screen.queryByText('private failure')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
-    expect(read).toHaveBeenCalledTimes(3);
-  });
+  it.each([401, 403])(
+    'hides prior observations after current authority returns %s and retries only the read',
+    async (status) => {
+      const user = userEvent.setup();
+      const read = vi
+        .fn()
+        .mockResolvedValueOnce(diagnostics())
+        .mockRejectedValueOnce(
+          new ApiCallError(status, 'private failure', { details: 'private-body' })
+        )
+        .mockResolvedValueOnce(diagnostics());
+      renderPanel(read);
+      expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Refresh health' }));
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      expect(screen.queryByText('v0.1.0-rc.8')).not.toBeInTheDocument();
+      expect(screen.queryByText('private failure')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByText('v0.1.0-rc.8')).toBeInTheDocument();
+      expect(read).toHaveBeenCalledTimes(3);
+    }
+  );
 
   it('hides stale observations on a transport failure and offers a safe read retry', async () => {
     const user = userEvent.setup();

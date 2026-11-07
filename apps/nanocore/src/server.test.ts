@@ -4146,81 +4146,81 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it.each([
-    true,
-    false,
-  ])('exports worker checkpoints as line-oriented records (source session=%s)', async (hasSourceSession) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-checkpoint-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Checkpoint worker turn',
-      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      null,
-      {
-        turnId: 'tu_00000000-0000-7851-a62b-6cb43a950fd2',
+  it.each([true, false])(
+    'exports worker checkpoints as line-oriented records (source session=%s)',
+    async (hasSourceSession) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-checkpoint-route-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Checkpoint worker turn',
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        null,
+        {
+          turnId: 'tu_00000000-0000-7851-a62b-6cb43a950fd2',
+        }
+      );
+      if (hasSourceSession)
+        await store.createAgentSession({
+          id: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
+          agentId: 'agent_codex_host',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          status: 'closed',
+          stale: true,
+          message: null,
+          createdAt: '2026-07-06T00:00:00.000Z',
+          updatedAt: '2026-07-06T00:00:00.000Z',
+        });
+      const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        await upsertWorkerCheckpoint(sourceDb, {
+          contextDigest: 'sha256:checkpoint-context',
+          diagnosticsSummary: 'checkpoint diagnostics',
+          iteration: 3,
+          now: () => '2026-07-06T00:04:00.000Z',
+          requestId: 'req_checkpoint',
+          requestInputHash: 'sha256:checkpoint-request',
+          stage: 'running_worker',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: 'tu_00000000-0000-7851-a62b-6cb43a950fd2',
+          workerSessionId: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+      } finally {
+        sourceDb.sqlite.close();
       }
-    );
-    if (hasSourceSession)
-      await store.createAgentSession({
-        id: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
-        agentId: 'agent_codex_host',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        status: 'closed',
-        stale: true,
-        message: null,
-        createdAt: '2026-07-06T00:00:00.000Z',
-        updatedAt: '2026-07-06T00:00:00.000Z',
-      });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      await upsertWorkerCheckpoint(sourceDb, {
-        contextDigest: 'sha256:checkpoint-context',
-        diagnosticsSummary: 'checkpoint diagnostics',
-        iteration: 3,
-        now: () => '2026-07-06T00:04:00.000Z',
-        requestId: 'req_checkpoint',
-        requestInputHash: 'sha256:checkpoint-request',
-        stage: 'running_worker',
-        threadId: 'th_00000000-0000-7000-8000-000000000001',
-        turnId: 'tu_00000000-0000-7851-a62b-6cb43a950fd2',
-        workerSessionId: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-    } finally {
-      sourceDb.sqlite.close();
-    }
-    const app = await createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request(
-      ...operationRequest(
-        'workspace.export',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        { method: 'POST' }
-      )
-    );
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
+      const app = await createApp({ coreDb, dataRoot, store });
+      const exportRes = await app.request(
+        ...operationRequest(
+          'workspace.export',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+          { method: 'POST' }
+        )
+      );
+      const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    expect(exported.checkedFiles).toContain('records/worker-turn-checkpoints.jsonl');
-    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
-    const checkpointText = readFileSync(
-      join(exportRoot, 'records/worker-turn-checkpoints.jsonl'),
-      'utf8'
-    );
-    expect(checkpointText).toContain('sha256:checkpoint-context');
-    expect(checkpointText).toContain('sha256:checkpoint-request');
-    expect(checkpointText).toContain('running_worker');
-    expect(checkpointText).toContain('req_checkpoint');
-    expect(checkpointText).toContain('th_00000000-0000-7000-8000-000000000001');
-    expect(checkpointText).toContain('tu_00000000-0000-7851-a62b-6cb43a950fd2');
-    expect(checkpointText).toContain('as_00000000-0000-7652-8f43-7ca66c6bda3b');
-    expect(checkpointText).toContain('ws_00000000-0000-7000-8000-000000000001');
-    expect(checkpointText).toContain('"iteration":3');
-    coreDb.sqlite.close();
-  });
+      expect(exported.checkedFiles).toContain('records/worker-turn-checkpoints.jsonl');
+      const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+      const checkpointText = readFileSync(
+        join(exportRoot, 'records/worker-turn-checkpoints.jsonl'),
+        'utf8'
+      );
+      expect(checkpointText).toContain('sha256:checkpoint-context');
+      expect(checkpointText).toContain('sha256:checkpoint-request');
+      expect(checkpointText).toContain('running_worker');
+      expect(checkpointText).toContain('req_checkpoint');
+      expect(checkpointText).toContain('th_00000000-0000-7000-8000-000000000001');
+      expect(checkpointText).toContain('tu_00000000-0000-7851-a62b-6cb43a950fd2');
+      expect(checkpointText).toContain('as_00000000-0000-7652-8f43-7ca66c6bda3b');
+      expect(checkpointText).toContain('ws_00000000-0000-7000-8000-000000000001');
+      expect(checkpointText).toContain('"iteration":3');
+      coreDb.sqlite.close();
+    }
+  );
 
   it('exports MCP tool schema snapshots as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-mcp-schema-route-'));
@@ -5074,165 +5074,166 @@ describe('nanocore server', () => {
       entry: 'direct Task',
       requestId: '0190f4c8-0000-7000-8000-000000000321',
     },
-  ])('starts $entry from one remote Git source without a WorkspaceRepository', async ({
-    requestId,
-  }) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const executor = new FakeTurnExecutor();
-    const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
-    const remoteUrl = 'https://git.example.test/openkit/task-mode.git';
-    const agentManifest = {
-      ...createTestAgentSetup().manifest,
-      workspace: {
-        inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
-      },
-    };
-    const catalog = parseWorkspaceDataSourceCatalog({
-      schemaVersion: 1,
-      sources: [
-        {
-          access: 'read-write',
-          allowedSlotKinds: ['worktree'],
-          displayName: 'Task Mode remote repository',
-          id: 'main-repo',
-          kind: 'git',
-          locator: { commit: remoteCommit, url: remoteUrl },
-          sensitivity: 'internal',
-          status: 'active',
+  ])(
+    'starts $entry from one remote Git source without a WorkspaceRepository',
+    async ({ requestId }) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const executor = new FakeTurnExecutor();
+      const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
+      const remoteUrl = 'https://git.example.test/openkit/task-mode.git';
+      const agentManifest = {
+        ...createTestAgentSetup().manifest,
+        workspace: {
+          inputs: [{ access: 'read-write' as const, id: 'repo_remote', sourceRef: 'main-repo' }],
         },
-      ],
-    });
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: coreDb.dataRoot,
-      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-        agentManifests: [agentManifest],
-        dataRoot: coreDb.dataRoot,
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: testProviderRegistry(),
-        workspaceDataSourceCatalogs: [
-          {
-            catalog,
-            path: join(
-              coreDb.dataRoot,
-              'workspaces',
-              'ws_00000000-0000-7000-8000-000000000001',
-              'config',
-              'data-sources.jsonc'
-            ),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          },
-        ],
-      }),
-    });
-    let checkpointDiagnostics: string | null = null;
-    const startTurn = executor.startTurn.bind(executor);
-    vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        checkpointDiagnostics =
-          getWorkerCheckpoint(
-            workspaceDb,
-            'ws_00000000-0000-7000-8000-000000000001',
-            store.getTurnById(args[1]).threadId,
-            args[1]
-          )?.diagnosticsSummary ?? null;
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      return startTurn(...args);
-    });
-    const app = await createApp({
-      coreDb,
-      runtimeConfigManager,
-      store,
-      turnExecutor: executor,
-    });
-    const input = 'Implement the focused Task Mode fix.';
-
-    try {
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        expect(
-          workspaceDb.sqlite
-            .prepare(
-              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_repository_resources'"
-            )
-            .all()
-        ).toEqual([]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-
-      const response = await app.request(
-        ...operationRequest(
-          'task.start',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            method: 'POST',
-            body: JSON.stringify({ input, requestId }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const responseBody = await response.json();
-
-      expect(response.status, JSON.stringify(responseBody)).toBe(202);
-      await executor.waitForFinished(store);
-      expect(StartTaskModeResponseSchema.parse(responseBody).turn.id).toBe(
-        store.listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )[0]!.id
-      );
-      expect(
-        store.listThreadTurns(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001'
-        )[0]!.status
-      ).toBe('completed');
-      await executor.waitForFinished(store, 1);
-      expect(executor.startContexts).toHaveLength(1);
-      expect(executor.startContexts[0]).toMatchObject({
-        workspaceCwd: '/workspace/openkit',
-        workspaceRoots: [
+      };
+      const catalog = parseWorkspaceDataSourceCatalog({
+        schemaVersion: 1,
+        sources: [
           {
             access: 'read-write',
-            id: 'repo_remote',
-            sourceCommit: remoteCommit,
-            sourceKind: 'remote-git',
-            workerPath: '/workspace/openkit',
+            allowedSlotKinds: ['worktree'],
+            displayName: 'Task Mode remote repository',
+            id: 'main-repo',
+            kind: 'git',
+            locator: { commit: remoteCommit, url: remoteUrl },
+            sensitivity: 'internal',
+            status: 'active',
           },
         ],
-        workspaceSourceRefs: { repo_remote: 'main-repo' },
       });
-      expect(executor.startContexts[0]?.workerStorageChoice).toBeUndefined();
-      const checkpointPayload = JSON.parse(checkpointDiagnostics ?? 'null') as {
-        contextAssembly?: Record<string, unknown>;
-      };
-      expect(checkpointPayload.contextAssembly).toMatchObject({
-        contextDigest: expect.any(String),
-        contextRefs: expect.arrayContaining([
-          { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
-        ]),
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: coreDb.dataRoot,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          agentManifests: [agentManifest],
+          dataRoot: coreDb.dataRoot,
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: testProviderRegistry(),
+          workspaceDataSourceCatalogs: [
+            {
+              catalog,
+              path: join(
+                coreDb.dataRoot,
+                'workspaces',
+                'ws_00000000-0000-7000-8000-000000000001',
+                'config',
+                'data-sources.jsonc'
+              ),
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            },
+          ],
+        }),
       });
-      expect(checkpointPayload.contextAssembly).not.toHaveProperty('repositoryResourceId');
-      expect(
-        JSON.stringify({ checkpoint: checkpointPayload, runtime: executor.startContexts[0] })
-      ).not.toContain(coreDb.dataRoot);
-    } finally {
-      vi.restoreAllMocks();
-      coreDb.sqlite.close();
+      let checkpointDiagnostics: string | null = null;
+      const startTurn = executor.startTurn.bind(executor);
+      vi.spyOn(executor, 'startTurn').mockImplementation(async (...args) => {
+        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          checkpointDiagnostics =
+            getWorkerCheckpoint(
+              workspaceDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              store.getTurnById(args[1]).threadId,
+              args[1]
+            )?.diagnosticsSummary ?? null;
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        return startTurn(...args);
+      });
+      const app = await createApp({
+        coreDb,
+        runtimeConfigManager,
+        store,
+        turnExecutor: executor,
+      });
+      const input = 'Implement the focused Task Mode fix.';
+
+      try {
+        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          expect(
+            workspaceDb.sqlite
+              .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_repository_resources'"
+              )
+              .all()
+          ).toEqual([]);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+
+        const response = await app.request(
+          ...operationRequest(
+            'task.start',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            {
+              method: 'POST',
+              body: JSON.stringify({ input, requestId }),
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        );
+        const responseBody = await response.json();
+
+        expect(response.status, JSON.stringify(responseBody)).toBe(202);
+        await executor.waitForFinished(store);
+        expect(StartTaskModeResponseSchema.parse(responseBody).turn.id).toBe(
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )[0]!.id
+        );
+        expect(
+          store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )[0]!.status
+        ).toBe('completed');
+        await executor.waitForFinished(store, 1);
+        expect(executor.startContexts).toHaveLength(1);
+        expect(executor.startContexts[0]).toMatchObject({
+          workspaceCwd: '/workspace/openkit',
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'repo_remote',
+              sourceCommit: remoteCommit,
+              sourceKind: 'remote-git',
+              workerPath: '/workspace/openkit',
+            },
+          ],
+          workspaceSourceRefs: { repo_remote: 'main-repo' },
+        });
+        expect(executor.startContexts[0]?.workerStorageChoice).toBeUndefined();
+        const checkpointPayload = JSON.parse(checkpointDiagnostics ?? 'null') as {
+          contextAssembly?: Record<string, unknown>;
+        };
+        expect(checkpointPayload.contextAssembly).toMatchObject({
+          contextDigest: expect.any(String),
+          contextRefs: expect.arrayContaining([
+            { kind: 'workspace', id: 'ws_00000000-0000-7000-8000-000000000001' },
+          ]),
+        });
+        expect(checkpointPayload.contextAssembly).not.toHaveProperty('repositoryResourceId');
+        expect(
+          JSON.stringify({ checkpoint: checkpointPayload, runtime: executor.startContexts[0] })
+        ).not.toContain(coreDb.dataRoot);
+      } finally {
+        vi.restoreAllMocks();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each([
     {
@@ -5455,172 +5456,168 @@ describe('nanocore server', () => {
       explanation: 'The selected Worker interrupted the conversation Turn.',
       requestId: '0190f4c8-0000-7000-8000-000000000328',
     },
-  ])('states a $status selected Worker result Item and exact replay truthfully', async ({
-    error,
-    explanation,
-    requestId,
-    status,
-    stopReason,
-    title,
-  }) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const executor = new FakeTurnExecutor();
-    vi.spyOn(executor, 'startTurn').mockImplementation(
-      async (runtimeStore, turnId, input, context) => {
-        if (!context) throw new Error('Worker fixture requires its admitted runtime context.');
-        await executor.beginTurn(runtimeStore, turnId, context, input);
-        executor.startContexts.push(context);
-        const turn = runtimeStore.getTurnById(turnId);
-        const completedAt = new Date().toISOString();
-        if (!turn.agentId) {
-          throw new Error('Fake worker turn requires a selected agent id.');
-        }
-        const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
-        const agentSession = runtimeStore.getAgentSession(agentSessionId);
-        await runtimeStore.createItem({
-          id: deriveEntityId('it', ['task-user', turnId]),
-          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-          threadId: turn.threadId,
-          turnId,
-          type: 'user-message',
-          status: 'completed',
-          actor: turn.triggerActor,
-          text: input,
-          createdAt: turn.startedAt ?? completedAt,
-          completedAt,
-        });
-        const terminalTurn = await executor.completeTurn(
-          runtimeStore,
-          turnId,
-          context,
-          {
-            agentSessionId: agentSession.id,
-            completedAt,
-            error,
-            status,
-          },
-          stopReason
-        );
-        runtimeStore.emitTurnEvent(
-          turnId,
-          await runtimeStore.persistTurnEvent(
+  ])(
+    'states a $status selected Worker result Item and exact replay truthfully',
+    async ({ error, explanation, requestId, status, stopReason, title }) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const executor = new FakeTurnExecutor();
+      vi.spyOn(executor, 'startTurn').mockImplementation(
+        async (runtimeStore, turnId, input, context) => {
+          if (!context) throw new Error('Worker fixture requires its admitted runtime context.');
+          await executor.beginTurn(runtimeStore, turnId, context, input);
+          executor.startContexts.push(context);
+          const turn = runtimeStore.getTurnById(turnId);
+          const completedAt = new Date().toISOString();
+          if (!turn.agentId) {
+            throw new Error('Fake worker turn requires a selected agent id.');
+          }
+          const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
+          const agentSession = runtimeStore.getAgentSession(agentSessionId);
+          await runtimeStore.createItem({
+            id: deriveEntityId('it', ['task-user', turnId]),
+            owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+            threadId: turn.threadId,
             turnId,
+            type: 'user-message',
+            status: 'completed',
+            actor: turn.triggerActor,
+            text: input,
+            createdAt: turn.startedAt ?? completedAt,
+            completedAt,
+          });
+          const terminalTurn = await executor.completeTurn(
+            runtimeStore,
+            turnId,
+            context,
             {
-              event: 'turn.completed',
-              requestId: context.requestId ?? null,
-              workspaceId: workspaceIdForOwner(turn.owner),
-              threadId: turn.threadId,
-              turnId,
-              data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+              agentSessionId: agentSession.id,
+              completedAt,
+              error,
+              status,
             },
-            ALREADY_DECIDED_PUBLICATION_ADMISSION
+            stopReason
+          );
+          runtimeStore.emitTurnEvent(
+            turnId,
+            await runtimeStore.persistTurnEvent(
+              turnId,
+              {
+                event: 'turn.completed',
+                requestId: context.requestId ?? null,
+                workspaceId: workspaceIdForOwner(turn.owner),
+                threadId: turn.threadId,
+                turnId,
+                data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+              },
+              ALREADY_DECIDED_PUBLICATION_ADMISSION
+            )
+          );
+          await executor.releaseTurn(
+            runtimeStore,
+            context,
+            status === 'failed' ? 'turn-failed' : 'turn-cancelled'
+          );
+        }
+      );
+      const app = await createApp({ coreDb, store, turnExecutor: executor });
+      const requestBody = JSON.stringify({
+        artifactRefs: [],
+        input: 'Implement the focused Task Mode fix.',
+        requestId,
+        targetRef: 'new-task-worker',
+      });
+
+      try {
+        const response = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            {
+              body: requestBody,
+              headers: { 'content-type': 'application/json' },
+              method: 'POST',
+            }
           )
         );
-        await executor.releaseTurn(
-          runtimeStore,
-          context,
-          status === 'failed' ? 'turn-failed' : 'turn-cancelled'
+        expect(response.status, await response.clone().text()).toBe(202);
+        const accepted = SubmitConversationResponseSchema.parse(await response.json());
+        expect(accepted.turn.status).toBe('pending');
+        await executor.waitForFinished(store);
+        const resultResponse = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            { body: requestBody, headers: jsonHeaders(), method: 'POST' }
+          )
         );
+        expect(
+          requireSchedulerExecutionAttempt(coreDb, executor.startContexts[0]!.attemptId!)
+        ).toMatchObject({
+          phase: 'closed',
+          disposition: 'accepted',
+          operationId: expect.any(String),
+          fenceRef: expect.any(String),
+        });
+        expect(store.getTurnById(accepted.turn.id).status).toBe(status);
+        expect(
+          store.getTurnEvents(accepted.turn.id).filter((event) => event.event === 'turn.completed')
+        ).toHaveLength(1);
+        expect(resultResponse.status, await resultResponse.clone().text()).toBe(202);
+        const result = SubmitConversationResponseSchema.parse(await resultResponse.json());
+        expect(result).toMatchObject({
+          explanation,
+          item: {
+            id: deriveEntityId('it', ['worker-result', result.turn.id]),
+            level: 'warning',
+            summary: 'Worker turn ended without success.',
+            title,
+            type: 'status',
+          },
+          outcome: 'accepted',
+          targetRef: 'new-task-worker',
+          turn: { error, status },
+        });
+        expect(JSON.stringify(result.item)).not.toContain(error.message);
+        expect(result.explanation).not.toContain(error.message);
+        const replay = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            },
+            {
+              body: requestBody,
+              headers: { 'content-type': 'application/json' },
+              method: 'POST',
+            }
+          )
+        );
+        expect(replay.status, await replay.clone().text()).toBe(202);
+        expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
+        await executor.waitForFinished(store, 1);
+        expect(executor.startContexts).toHaveLength(1);
+        await expect(
+          store.updateItem(result.item.id, { title: 'Worker Turn accepted' })
+        ).rejects.toThrow(/is terminal and does not admit this write/);
+      } finally {
+        vi.restoreAllMocks();
+        coreDb.sqlite.close();
       }
-    );
-    const app = await createApp({ coreDb, store, turnExecutor: executor });
-    const requestBody = JSON.stringify({
-      artifactRefs: [],
-      input: 'Implement the focused Task Mode fix.',
-      requestId,
-      targetRef: 'new-task-worker',
-    });
-
-    try {
-      const response = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            body: requestBody,
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        )
-      );
-      expect(response.status, await response.clone().text()).toBe(202);
-      const accepted = SubmitConversationResponseSchema.parse(await response.json());
-      expect(accepted.turn.status).toBe('pending');
-      await executor.waitForFinished(store);
-      const resultResponse = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          { body: requestBody, headers: jsonHeaders(), method: 'POST' }
-        )
-      );
-      expect(
-        requireSchedulerExecutionAttempt(coreDb, executor.startContexts[0]!.attemptId!)
-      ).toMatchObject({
-        phase: 'closed',
-        disposition: 'accepted',
-        operationId: expect.any(String),
-        fenceRef: expect.any(String),
-      });
-      expect(store.getTurnById(accepted.turn.id).status).toBe(status);
-      expect(
-        store.getTurnEvents(accepted.turn.id).filter((event) => event.event === 'turn.completed')
-      ).toHaveLength(1);
-      expect(resultResponse.status, await resultResponse.clone().text()).toBe(202);
-      const result = SubmitConversationResponseSchema.parse(await resultResponse.json());
-      expect(result).toMatchObject({
-        explanation,
-        item: {
-          id: deriveEntityId('it', ['worker-result', result.turn.id]),
-          level: 'warning',
-          summary: 'Worker turn ended without success.',
-          title,
-          type: 'status',
-        },
-        outcome: 'accepted',
-        targetRef: 'new-task-worker',
-        turn: { error, status },
-      });
-      expect(JSON.stringify(result.item)).not.toContain(error.message);
-      expect(result.explanation).not.toContain(error.message);
-      const replay = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          },
-          {
-            body: requestBody,
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        )
-      );
-      expect(replay.status, await replay.clone().text()).toBe(202);
-      expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
-      await executor.waitForFinished(store, 1);
-      expect(executor.startContexts).toHaveLength(1);
-      await expect(
-        store.updateItem(result.item.id, { title: 'Worker Turn accepted' })
-      ).rejects.toThrow(/is terminal and does not admit this write/);
-    } finally {
-      vi.restoreAllMocks();
-      coreDb.sqlite.close();
     }
-  });
+  );
 
   it('recovers a direct Task receipt from its terminal checkpoint without another worker turn', async () => {
     const coreDb = createCoreDb(false);
@@ -5830,180 +5827,195 @@ describe('nanocore server', () => {
       receipt: 'chat-thread' as const,
       stopReason: 'completed' as const,
     },
-  ])('classifies a conversation-owned $stopReason checkpoint from its $receipt owner receipt', async ({
-    expected,
-    receipt,
-    stopReason,
-  }) => {
-    const coreDb = createCoreDb();
-    const retained = new FsStore();
-    await seedDemoWorkspace(retained);
-    const chatThreadId = 'th_00000000-0000-7000-8000-000000000001';
-    const taskThreadId = 'th_00000000-0000-7347-94e1-85120ad74455';
-    const turnId = 'tu_00000000-0000-79f9-80b1-8d99a98b413d';
-    const requestId = '0190f4c8-0000-7000-8000-000000000410';
-    const requestInputHash = 'sha256:conversation-worker-boot';
-    const agentSessionId = 'as_00000000-0000-7dd5-985e-c3d36d7f78a9';
-    const failed = stopReason === 'error';
-    const completedAt = '2026-09-10T09:11:15.000Z';
-    await retained.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Conversation worker Task thread',
-      taskThreadId
-    );
-    const turn = await retained.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      taskThreadId,
-      'Conversation-owned worker Turn',
-      { kind: 'user', id: LOCAL_USER_ID },
-      null,
-      { turnId }
-    );
-    await retained.createAgentSession({
-      agentId: 'agent_codex_host',
-      createdAt: turn.startedAt ?? completedAt,
-      id: agentSessionId,
-      message: null,
-      status: failed ? 'failed' : 'idle',
-      threadId: taskThreadId,
-      updatedAt: completedAt,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const closedTurn = await retained.updateTurn(turn.id, {
-      agentId: 'agent_codex_host',
-      agentSessionId,
-      completedAt,
-      status: failed ? 'failed' : 'completed',
-    });
-    retained.emitTurnEvent(
-      turn.id,
-      await retained.persistTurnEvent(turn.id, {
-        data: { stopReason, turn: closedTurn, type: 'turn-completed' },
-        event: 'turn.completed',
-        requestId,
+  ])(
+    'classifies a conversation-owned $stopReason checkpoint from its $receipt owner receipt',
+    async ({ expected, receipt, stopReason }) => {
+      const coreDb = createCoreDb();
+      const retained = new FsStore();
+      await seedDemoWorkspace(retained);
+      const chatThreadId = 'th_00000000-0000-7000-8000-000000000001';
+      const taskThreadId = 'th_00000000-0000-7347-94e1-85120ad74455';
+      const turnId = 'tu_00000000-0000-79f9-80b1-8d99a98b413d';
+      const requestId = '0190f4c8-0000-7000-8000-000000000410';
+      const requestInputHash = 'sha256:conversation-worker-boot';
+      const agentSessionId = 'as_00000000-0000-7dd5-985e-c3d36d7f78a9';
+      const failed = stopReason === 'error';
+      const completedAt = '2026-09-10T09:11:15.000Z';
+      await retained.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Conversation worker Task thread',
+        taskThreadId
+      );
+      const turn = await retained.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        taskThreadId,
+        'Conversation-owned worker Turn',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        { turnId }
+      );
+      await retained.createAgentSession({
+        agentId: 'agent_codex_host',
+        createdAt: turn.startedAt ?? completedAt,
+        id: agentSessionId,
+        message: null,
+        status: failed ? 'failed' : 'idle',
         threadId: taskThreadId,
-        turnId: turn.id,
+        updatedAt: completedAt,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    );
-    if (receipt !== 'missing') {
-      retained.recordCommandRequest({
-        command: 'conversation.submit',
-        requestId,
-        scope: {
-          actorId: LOCAL_USER_ID,
-          threadId: chatThreadId,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        inputHash: requestInputHash,
-        response: {
-          kind: 'turn',
-          id: turn.id,
-          conversationMetadata: {
-            downstream: { kind: 'task', turnId: turn.id },
-            targetRef: 'internal-role:assistant',
-            logicalModelId: 'orcarouter',
-            receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            receivingThreadId: receipt === 'exact' ? taskThreadId : chatThreadId,
-            resultKind: 'worker-turn',
-            status: 202,
-          },
-        },
       });
-    }
-    const demo = createDemoWorkspaceForUser(LOCAL_USER_ID);
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    // Boot recovery consumes a stopped retained snapshot, never an unjournaled live Worker closure.
-    await store.importWorkspaceSnapshot({
-      ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
-      workspace: demo.workspace,
-      threads: retained.listThreads(demo.workspace.id),
-      turns: [retained.getTurnById(turn.id)],
-      knowledge: demo.knowledge,
-      itemRevisions: [],
-      artifacts: [],
-      agentSessions: [retained.getAgentSession(agentSessionId)],
-      turnEvents: [[turn.id, retained.getTurnEvents(turn.id)]],
-      finalizeNativeWorkspace: ({ workspaceId, workspaceRoot }) => {
-        const staged = openWorkspaceDbAtRoot({
-          dataRoot: coreDb.dataRoot,
-          workspaceId,
-          workspaceRoot,
+      const closedTurn = await retained.updateTurn(turn.id, {
+        agentId: 'agent_codex_host',
+        agentSessionId,
+        completedAt,
+        status: failed ? 'failed' : 'completed',
+      });
+      retained.emitTurnEvent(
+        turn.id,
+        await retained.persistTurnEvent(turn.id, {
+          data: { stopReason, turn: closedTurn, type: 'turn-completed' },
+          event: 'turn.completed',
+          requestId,
+          threadId: taskThreadId,
+          turnId: turn.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      );
+      if (receipt !== 'missing') {
+        retained.recordCommandRequest({
+          command: 'conversation.submit',
+          requestId,
+          scope: {
+            actorId: LOCAL_USER_ID,
+            threadId: chatThreadId,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          },
+          inputHash: requestInputHash,
+          response: {
+            kind: 'turn',
+            id: turn.id,
+            conversationMetadata: {
+              downstream: { kind: 'task', turnId: turn.id },
+              targetRef: 'internal-role:assistant',
+              logicalModelId: 'orcarouter',
+              receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              receivingThreadId: receipt === 'exact' ? taskThreadId : chatThreadId,
+              resultKind: 'worker-turn',
+              status: 202,
+            },
+          },
         });
-        try {
-          // Source-local boot receipts belong to this stopped private snapshot, before its root is published.
-          for (const record of retained.listCommandRequests()) {
-            staged.sqlite
-              .prepare(`INSERT INTO idempotency_requests
+      }
+      const demo = createDemoWorkspaceForUser(LOCAL_USER_ID);
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      // Boot recovery consumes a stopped retained snapshot, never an unjournaled live Worker closure.
+      await store.importWorkspaceSnapshot({
+        ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
+        workspace: demo.workspace,
+        threads: retained.listThreads(demo.workspace.id),
+        turns: [retained.getTurnById(turn.id)],
+        knowledge: demo.knowledge,
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [retained.getAgentSession(agentSessionId)],
+        turnEvents: [[turn.id, retained.getTurnEvents(turn.id)]],
+        finalizeNativeWorkspace: ({ workspaceId, workspaceRoot }) => {
+          const staged = openWorkspaceDbAtRoot({
+            dataRoot: coreDb.dataRoot,
+            workspaceId,
+            workspaceRoot,
+          });
+          try {
+            // Source-local boot receipts belong to this stopped private snapshot, before its root is published.
+            for (const record of retained.listCommandRequests()) {
+              staged.sqlite
+                .prepare(`INSERT INTO idempotency_requests
               (schema_version, request_key, command_name, request_id, scope_json, input_hash,
                response_kind, response_id, response_json, created_at, expires_at)
               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-              .run(
-                record.key,
-                record.command,
-                record.requestId,
-                JSON.stringify(record.scope),
-                record.inputHash,
-                record.response.kind,
-                record.response.id,
-                JSON.stringify(record.response.conversationMetadata),
-                record.createdAt,
-                record.expiresAt
-              );
+                .run(
+                  record.key,
+                  record.command,
+                  record.requestId,
+                  JSON.stringify(record.scope),
+                  record.inputHash,
+                  record.response.kind,
+                  record.response.id,
+                  JSON.stringify(record.response.conversationMetadata),
+                  record.createdAt,
+                  record.expiresAt
+                );
+            }
+          } finally {
+            staged.sqlite.close();
           }
-        } finally {
-          staged.sqlite.close();
-        }
-      },
-    });
-    const entry = createSchedulerAdmissionEntry(coreDb, {
-      backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
-      profileRef: 'agent_codex_host',
-      queueEntryId: `queue_${turn.id}`,
-      requestId,
-      requestedAgentId: 'agent_codex_host',
-      threadId: taskThreadId,
-      turnId: turn.id,
-      turnInput: 'Conversation-owned worker Turn',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    createSchedulerExecutionAttempt(coreDb, {
-      entry,
-      attemptId: testEntityId('attempt', `lease_${turn.id}`),
-      preparationInput: { admission: entry },
-    });
-    bindSchedulerExecutionAttemptSession(coreDb, {
-      attemptId: testEntityId('attempt', `lease_${turn.id}`),
-      agentSessionId,
-    });
-    // This boot model owns no submitted operation or package, so its complete no-effect proof is explicit.
-    closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
-      attemptId: testEntityId('attempt', `lease_${turn.id}`),
-      cause: failed ? 'turn-failed' : 'turn-completed',
-      noOutstandingEffects: true,
-    });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
-        iteration: 0,
+        },
+      });
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+        profileRef: 'agent_codex_host',
+        queueEntryId: `queue_${turn.id}`,
         requestId,
-        requestInputHash,
-        stage: failed ? 'failed' : 'completed',
-        stopReason,
+        requestedAgentId: 'agent_codex_host',
         threadId: taskThreadId,
         turnId: turn.id,
-        workerSessionId: agentSessionId,
+        turnInput: 'Conversation-owned worker Turn',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const classification = classifyDirectTaskCheckpointAfterSchedulerRecovery({
-        checkpoint,
-        coreDb,
-        store,
-        workspaceDb,
+      createSchedulerExecutionAttempt(coreDb, {
+        entry,
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        preparationInput: { admission: entry },
       });
-      if (expected === 'complete') {
-        await expect(classification).resolves.toBe('complete');
+      bindSchedulerExecutionAttemptSession(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        agentSessionId,
+      });
+      // This boot model owns no submitted operation or package, so its complete no-effect proof is explicit.
+      closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        cause: failed ? 'turn-failed' : 'turn-completed',
+        noOutstandingEffects: true,
+      });
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
+          iteration: 0,
+          requestId,
+          requestInputHash,
+          stage: failed ? 'failed' : 'completed',
+          stopReason,
+          threadId: taskThreadId,
+          turnId: turn.id,
+          workerSessionId: agentSessionId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const classification = classifyDirectTaskCheckpointAfterSchedulerRecovery({
+          checkpoint,
+          coreDb,
+          store,
+          workspaceDb,
+        });
+        if (expected === 'complete') {
+          await expect(classification).resolves.toBe('complete');
+          expect(
+            getWorkerCheckpoint(
+              workspaceDb,
+              'ws_00000000-0000-7000-8000-000000000001',
+              taskThreadId,
+              turn.id
+            )
+          ).toBeNull();
+          expect(
+            store.listCommandRequests().filter((record) => record.command === 'task.start')
+          ).toEqual([]);
+          expect(
+            store.listCommandRequests().filter((record) => record.command === 'conversation.submit')
+          ).toHaveLength(1);
+          return;
+        }
+        await expect(classification).rejects.toMatchObject({ code: 'recovery_required' });
         expect(
           getWorkerCheckpoint(
             workspaceDb,
@@ -6011,106 +6023,90 @@ describe('nanocore server', () => {
             taskThreadId,
             turn.id
           )
-        ).toBeNull();
-        expect(
-          store.listCommandRequests().filter((record) => record.command === 'task.start')
-        ).toEqual([]);
-        expect(
-          store.listCommandRequests().filter((record) => record.command === 'conversation.submit')
-        ).toHaveLength(1);
-        return;
+        ).toEqual(checkpoint);
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
       }
-      await expect(classification).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(
-        getWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
-          taskThreadId,
-          turn.id
-        )
-      ).toEqual(checkpoint);
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
     }
-  });
+  );
 
-  it.each([
-    'failed',
-    'completed',
-    'cancelled',
-  ] as const)('clears a terminal Task checkpoint with no scheduler lease when the product Turn is %s', async (status) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const threadId = testEntityId('th', `th_task_stale_boot_${status}`);
-    const turnId = testEntityId('tu', `turn_stale_boot_no_lease_${status}`);
-    const requestId = `0190f4c8-0000-7000-8000-00000000048${status === 'failed' ? '9' : status === 'completed' ? 'a' : 'b'}`;
-    const completedAt = '2026-09-15T13:38:10.000Z';
-    await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Stale boot Task thread',
-      threadId
-    );
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      threadId,
-      'Stale boot Task Turn',
-      { kind: 'user', id: LOCAL_USER_ID },
-      null,
-      { turnId }
-    );
-    await store.updateTurn(turn.id, {
-      completedAt,
-      ...(status === 'failed'
-        ? {
-            error: {
-              code: 'turn_start_failed',
-              message: 'Turn was queued but not dispatched.',
-            },
-          }
-        : {}),
-      status,
-    });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
-        iteration: 0,
-        requestId,
-        requestInputHash: `sha256:stale-boot-no-lease-${status}`,
-        stage: status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'failed',
-        stopReason:
-          status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
-        threadId,
-        turnId: turn.id,
+  it.each(['failed', 'completed', 'cancelled'] as const)(
+    'clears a terminal Task checkpoint with no scheduler lease when the product Turn is %s',
+    async (status) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(checkpoint.workerSessionId).toBeNull();
-      await expect(
-        classifyDirectTaskCheckpointAfterSchedulerRecovery({
-          checkpoint,
-          coreDb,
-          store,
-          workspaceDb,
-        })
-      ).resolves.toBe('complete');
-      expect(
-        getWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
+      const threadId = testEntityId('th', `th_task_stale_boot_${status}`);
+      const turnId = testEntityId('tu', `turn_stale_boot_no_lease_${status}`);
+      const requestId = `0190f4c8-0000-7000-8000-00000000048${status === 'failed' ? '9' : status === 'completed' ? 'a' : 'b'}`;
+      const completedAt = '2026-09-15T13:38:10.000Z';
+      await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Stale boot Task thread',
+        threadId
+      );
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        threadId,
+        'Stale boot Task Turn',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        { turnId }
+      );
+      await store.updateTurn(turn.id, {
+        completedAt,
+        ...(status === 'failed'
+          ? {
+              error: {
+                code: 'turn_start_failed',
+                message: 'Turn was queued but not dispatched.',
+              },
+            }
+          : {}),
+        status,
+      });
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
+          iteration: 0,
+          requestId,
+          requestInputHash: `sha256:stale-boot-no-lease-${status}`,
+          stage:
+            status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'failed',
+          stopReason:
+            status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
           threadId,
-          turn.id
-        )
-      ).toBeNull();
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+          turnId: turn.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        expect(checkpoint.workerSessionId).toBeNull();
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            checkpoint,
+            coreDb,
+            store,
+            workspaceDb,
+          })
+        ).resolves.toBe('complete');
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+            turn.id
+          )
+        ).toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('clears a terminal Task checkpoint whose failed lease session does not match a null worker session', async () => {
     const coreDb = createCoreDb(false);
@@ -6185,92 +6181,92 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    'failed',
-    'completed',
-    'cancelled',
-  ] as const)('clears a null-session turn-start-failed needs-evidence checkpoint without retained provenance when the Turn is %s', async (status) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const threadId = testEntityId('th', `th_task_provenance_skip_${status}`);
-    const turnId = testEntityId('tu', `turn_provenance_skip_${status}`);
-    const requestId = `0190f4c8-0000-7000-8000-0000000004c${status === 'failed' ? '1' : status === 'completed' ? '2' : '3'}`;
-    const agentSessionId = testEntityId('as', `as_provenance_skip_${status}`);
-    const completedAt = '2026-09-15T13:38:10.000Z';
-    await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Provenance skip Task thread',
-      threadId
-    );
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      threadId,
-      'Provenance skip Task Turn',
-      { kind: 'user', id: LOCAL_USER_ID },
-      null,
-      { turnId }
-    );
-    await store.updateTurn(turn.id, {
-      completedAt,
-      ...(status === 'failed'
-        ? {
-            error: {
-              code: 'turn_start_failed',
-              message: 'Worker start failed.',
-            },
-          }
-        : {}),
-      status,
-    });
-    await recordWorkerRetryLease(coreDb, {
-      agentSessionId,
-      recoveryState: 'needs-evidence',
-      releaseReason: 'turn-start-failed',
-      status: 'failed',
-      threadId,
-      turnId: turn.id,
-    });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      await recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
-      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
-        iteration: 0,
-        requestId,
-        requestInputHash: `sha256:provenance-skip-${status}`,
-        stage: status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'failed',
-        stopReason:
-          status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
-        threadId,
-        turnId: turn.id,
+  it.each(['failed', 'completed', 'cancelled'] as const)(
+    'clears a null-session turn-start-failed needs-evidence checkpoint without retained provenance when the Turn is %s',
+    async (status) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      expect(checkpoint.workerSessionId).toBeNull();
-      await expect(
-        classifyDirectTaskCheckpointAfterSchedulerRecovery({
-          checkpoint,
-          coreDb,
-          store,
-          workspaceDb,
-        })
-      ).resolves.toBe('complete');
-      expect(
-        getWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
+      const threadId = testEntityId('th', `th_task_provenance_skip_${status}`);
+      const turnId = testEntityId('tu', `turn_provenance_skip_${status}`);
+      const requestId = `0190f4c8-0000-7000-8000-0000000004c${status === 'failed' ? '1' : status === 'completed' ? '2' : '3'}`;
+      const agentSessionId = testEntityId('as', `as_provenance_skip_${status}`);
+      const completedAt = '2026-09-15T13:38:10.000Z';
+      await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Provenance skip Task thread',
+        threadId
+      );
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        threadId,
+        'Provenance skip Task Turn',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        { turnId }
+      );
+      await store.updateTurn(turn.id, {
+        completedAt,
+        ...(status === 'failed'
+          ? {
+              error: {
+                code: 'turn_start_failed',
+                message: 'Worker start failed.',
+              },
+            }
+          : {}),
+        status,
+      });
+      await recordWorkerRetryLease(coreDb, {
+        agentSessionId,
+        recoveryState: 'needs-evidence',
+        releaseReason: 'turn-start-failed',
+        status: 'failed',
+        threadId,
+        turnId: turn.id,
+      });
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        await recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
+        const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
+          iteration: 0,
+          requestId,
+          requestInputHash: `sha256:provenance-skip-${status}`,
+          stage:
+            status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'failed',
+          stopReason:
+            status === 'cancelled' ? 'aborted' : status === 'completed' ? 'completed' : 'error',
           threadId,
-          turn.id
-        )
-      ).toBeNull();
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+          turnId: turn.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        expect(checkpoint.workerSessionId).toBeNull();
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            checkpoint,
+            coreDb,
+            store,
+            workspaceDb,
+          })
+        ).resolves.toBe('complete');
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+            turn.id
+          )
+        ).toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each([
     {
@@ -6285,84 +6281,83 @@ describe('nanocore server', () => {
       releaseReason: 'turn-start-failed',
       suffix: 'recovery',
     },
-  ])('keeps required provenance for a null-session leftover with $label', async ({
-    recoveryState,
-    releaseReason,
-    suffix,
-  }) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const threadId = testEntityId('th', `th_task_provenance_keep_${suffix}`);
-    const turnId = testEntityId('tu', `turn_provenance_keep_${suffix}`);
-    const requestId = `0190f4c8-0000-7000-8000-0000000004c${suffix === 'release' ? '4' : '5'}`;
-    const agentSessionId = testEntityId('as', `as_provenance_keep_${suffix}`);
-    const completedAt = '2026-09-15T13:38:10.000Z';
-    await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Provenance keep Task thread',
-      threadId
-    );
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      threadId,
-      'Provenance keep Task Turn',
-      { kind: 'user', id: LOCAL_USER_ID },
-      null,
-      { turnId }
-    );
-    await store.updateTurn(turn.id, {
-      completedAt,
-      error: { code: 'turn_start_failed', message: 'Worker start failed.' },
-      status: 'failed',
-    });
-    await recordWorkerRetryLease(coreDb, {
-      effectsUnknown: true,
-      agentSessionId,
-      recoveryState,
-      releaseReason,
-      status: 'failed',
-      threadId,
-      turnId: turn.id,
-    });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      await recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
-      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
-        iteration: 0,
-        requestId,
-        requestInputHash: `sha256:provenance-keep-${suffix}`,
-        stage: 'failed',
-        stopReason: 'error',
-        threadId,
-        turnId: turn.id,
+  ])(
+    'keeps required provenance for a null-session leftover with $label',
+    async ({ recoveryState, releaseReason, suffix }) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      await expect(
-        classifyDirectTaskCheckpointAfterSchedulerRecovery({
-          checkpoint,
-          coreDb,
-          store,
-          workspaceDb,
-        })
-      ).rejects.toThrow('Required retained runtime provenance is missing.');
-      expect(
-        getWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
+      const threadId = testEntityId('th', `th_task_provenance_keep_${suffix}`);
+      const turnId = testEntityId('tu', `turn_provenance_keep_${suffix}`);
+      const requestId = `0190f4c8-0000-7000-8000-0000000004c${suffix === 'release' ? '4' : '5'}`;
+      const agentSessionId = testEntityId('as', `as_provenance_keep_${suffix}`);
+      const completedAt = '2026-09-15T13:38:10.000Z';
+      await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Provenance keep Task thread',
+        threadId
+      );
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        threadId,
+        'Provenance keep Task Turn',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        { turnId }
+      );
+      await store.updateTurn(turn.id, {
+        completedAt,
+        error: { code: 'turn_start_failed', message: 'Worker start failed.' },
+        status: 'failed',
+      });
+      await recordWorkerRetryLease(coreDb, {
+        effectsUnknown: true,
+        agentSessionId,
+        recoveryState,
+        releaseReason,
+        status: 'failed',
+        threadId,
+        turnId: turn.id,
+      });
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        await recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
+        const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
+          iteration: 0,
+          requestId,
+          requestInputHash: `sha256:provenance-keep-${suffix}`,
+          stage: 'failed',
+          stopReason: 'error',
           threadId,
-          turn.id
-        )
-      ).toEqual(checkpoint);
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+          turnId: turn.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            checkpoint,
+            coreDb,
+            store,
+            workspaceDb,
+          })
+        ).rejects.toThrow('Required retained runtime provenance is missing.');
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+            turn.id
+          )
+        ).toEqual(checkpoint);
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('keeps a preparing Task checkpoint without a scheduler lease fail-closed', async () => {
     const coreDb = createCoreDb(false);
@@ -6424,76 +6419,76 @@ describe('nanocore server', () => {
     }
   });
 
-  it.each([
-    'interrupted',
-    'running',
-  ] as const)('keeps a failed Task checkpoint fail-closed with distinct %s product Turn diagnostics', async (status) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const threadId = 'th_00000000-0000-7065-b733-8240c3f973b0';
-    const turnId = 'tu_00000000-0000-77b0-97df-a1e64305ddde';
-    const requestId = '0190f4c8-0000-7000-8000-000000000492';
-    await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Interrupted boot Task thread',
-      threadId
-    );
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      threadId,
-      'Interrupted boot Task Turn',
-      { kind: 'user', id: LOCAL_USER_ID },
-      null,
-      { turnId }
-    );
-    await store.updateTurn(turn.id, {
-      status,
-      ...(status === 'interrupted' ? { completedAt: new Date().toISOString() } : {}),
-    });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    try {
-      const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
-        iteration: 0,
-        requestId,
-        requestInputHash: 'sha256:interrupted-boot-no-lease',
-        stage: 'failed',
-        stopReason: 'error',
-        threadId,
-        turnId: turn.id,
+  it.each(['interrupted', 'running'] as const)(
+    'keeps a failed Task checkpoint fail-closed with distinct %s product Turn diagnostics',
+    async (status) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      await expect(
-        classifyDirectTaskCheckpointAfterSchedulerRecovery({
-          checkpoint,
-          coreDb,
-          store,
-          workspaceDb,
-        })
-      ).rejects.toMatchObject({
-        code: 'recovery_required',
-        message:
-          status === 'interrupted'
-            ? 'The boot Task checkpoint has a terminal interrupted Turn with unresolved checkpoint recovery.'
-            : 'The boot Task checkpoint still has a live product Turn.',
+      const threadId = 'th_00000000-0000-7065-b733-8240c3f973b0';
+      const turnId = 'tu_00000000-0000-77b0-97df-a1e64305ddde';
+      const requestId = '0190f4c8-0000-7000-8000-000000000492';
+      await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Interrupted boot Task thread',
+        threadId
+      );
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        threadId,
+        'Interrupted boot Task Turn',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        { turnId }
+      );
+      await store.updateTurn(turn.id, {
+        status,
+        ...(status === 'interrupted' ? { completedAt: new Date().toISOString() } : {}),
       });
-      expect(
-        getWorkerCheckpoint(
-          workspaceDb,
-          'ws_00000000-0000-7000-8000-000000000001',
+      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+      try {
+        const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
+          iteration: 0,
+          requestId,
+          requestInputHash: 'sha256:interrupted-boot-no-lease',
+          stage: 'failed',
+          stopReason: 'error',
           threadId,
-          turn.id
-        )
-      ).toEqual(checkpoint);
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+          turnId: turn.id,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            checkpoint,
+            coreDb,
+            store,
+            workspaceDb,
+          })
+        ).rejects.toMatchObject({
+          code: 'recovery_required',
+          message:
+            status === 'interrupted'
+              ? 'The boot Task checkpoint has a terminal interrupted Turn with unresolved checkpoint recovery.'
+              : 'The boot Task checkpoint still has a live product Turn.',
+        });
+        expect(
+          getWorkerCheckpoint(
+            workspaceDb,
+            'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+            turn.id
+          )
+        ).toEqual(checkpoint);
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('keeps a failed Task checkpoint fail-closed when a live scheduler lease remains', async () => {
     const coreDb = createCoreDb(false);
@@ -9848,249 +9843,255 @@ describe('nanocore server', () => {
 
     expect(response.status).toBe(404);
   });
-  it.each([
-    'accepted',
-    'rejected',
-    'deferred',
-    'interrupted',
-  ] as const)('checks %s Knowledge proposal decisions and published evidence', async (scenario) => {
-    const coreDb = createCoreDb(false);
-    // Review admission uses Demo only, not an unrelated Quick Chat publication.
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    await seedDemoWorkspace(store);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const app = await createApp({ coreDb, store });
+  it.each(['accepted', 'rejected', 'deferred', 'interrupted'] as const)(
+    'checks %s Knowledge proposal decisions and published evidence',
+    async (scenario) => {
+      const coreDb = createCoreDb(false);
+      // Review admission uses Demo only, not an unrelated Quick Chat publication.
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      await seedDemoWorkspace(store);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const app = await createApp({ coreDb, store });
 
-    try {
-      if (scenario === 'accepted') {
-        const accepted = await draftKnowledgeProposalFixture(app, store, 'accepted');
-        const acceptedRequestId = knowledgeProposalRequestId('decision-accepted');
-        const firstRes = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          accepted.proposalId,
-          acceptedRequestId,
-          'accepted'
-        );
-        expect(firstRes.status, await firstRes.clone().text()).toBe(200);
-        const first = await firstRes.json();
-        expect(first).toMatchObject({
-          review: {
-            reviewId: deriveEntityId('kr', {
-              ownerScope: {
-                kind: 'workspace',
-                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              },
+      try {
+        if (scenario === 'accepted') {
+          const accepted = await draftKnowledgeProposalFixture(app, store, 'accepted');
+          const acceptedRequestId = knowledgeProposalRequestId('decision-accepted');
+          const firstRes = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            accepted.proposalId,
+            acceptedRequestId,
+            'accepted'
+          );
+          expect(firstRes.status, await firstRes.clone().text()).toBe(200);
+          const first = await firstRes.json();
+          expect(first).toMatchObject({
+            review: {
+              reviewId: deriveEntityId('kr', {
+                ownerScope: {
+                  kind: 'workspace',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                },
+                proposalId: accepted.proposalId,
+                requestId: acceptedRequestId,
+              }),
               proposalId: accepted.proposalId,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
               requestId: acceptedRequestId,
-            }),
-            proposalId: accepted.proposalId,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            requestId: acceptedRequestId,
-            decision: 'accepted',
-            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-            proposalDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-            knowledgePageId: accepted.knowledgePageId,
-            contentDigest: accepted.contentDigest,
-            targetAbsentAtDecision: true,
-            decidedAt: expect.any(String),
-          },
-          application: {
-            knowledgePageId: accepted.knowledgePageId,
-            contentDigest: accepted.contentDigest,
-            present: true,
-          },
-        });
-        expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBe(
-          accepted.canonicalPageBytes
-        );
+              decision: 'accepted',
+              actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+              proposalDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+              knowledgePageId: accepted.knowledgePageId,
+              contentDigest: accepted.contentDigest,
+              targetAbsentAtDecision: true,
+              decidedAt: expect.any(String),
+            },
+            application: {
+              knowledgePageId: accepted.knowledgePageId,
+              contentDigest: accepted.contentDigest,
+              present: true,
+            },
+          });
+          expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBe(
+            accepted.canonicalPageBytes
+          );
 
-        const replayRes = await submitKnowledgeProposalDecision(
+          const replayRes = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            accepted.proposalId,
+            acceptedRequestId,
+            'accepted'
+          );
+          expect(replayRes.status).toBe(200);
+          expect(await replayRes.json()).toEqual(first);
+
+          const conflictRes = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            accepted.proposalId,
+            acceptedRequestId,
+            'rejected'
+          );
+          expect(conflictRes.status).toBe(409);
+          await expect(conflictRes.json()).resolves.toMatchObject({
+            code: 'idempotency_key_conflict',
+          });
+        } else if (scenario === 'rejected' || scenario === 'deferred') {
+          const decision = scenario;
+          const fixture = await draftKnowledgeProposalFixture(app, store, decision);
+          const response = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            fixture.proposalId,
+            knowledgeProposalRequestId(`decision-${decision}`),
+            decision
+          );
+          expect(response.status, await response.clone().text()).toBe(200);
+          await expect(response.json()).resolves.toMatchObject({
+            review: {
+              proposalId: fixture.proposalId,
+              decision,
+              targetAbsentAtDecision: null,
+            },
+            application: null,
+          });
+          expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBeUndefined();
+        } else {
+          const interrupted = await draftKnowledgeProposalFixture(app, store, 'interrupted');
+          const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
+          const interruptedProposal = store.getKnowledgeProposal(interrupted.proposalId);
+          if (!interruptedProposal) throw new Error('Proposal fixture is unavailable.');
+          const interruptedWorkspaceId = interruptedProposal.workspaceId;
+          const reviewedRequest = captureKnowledgeProposalDecisionRequest(
+            store,
+            interrupted.proposalId,
+            interruptedRequestId,
+            'accepted'
+          );
+          const completed = await app.request(...reviewedRequest);
+          expect(completed.status, await completed.clone().text()).toBe(200);
+          const publishedRevision = readTestWorkspaceNotebookSelection(
+            store.getDataRoot()!,
+            interruptedWorkspaceId
+          ).head.notebookCommit;
+          const missingBlobPath = removeKnowledgeFixtureBlob(
+            store,
+            publishedRevision,
+            interrupted.knowledgePageId
+          );
+          const workspaceDb = openTestWorkspaceDb(coreDb, interruptedWorkspaceId);
+          workspaceDb.sqlite
+            .prepare(
+              `DELETE FROM idempotency_requests
+           WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+            )
+            .run(interruptedRequestId);
+          workspaceDb.sqlite
+            .prepare('DELETE FROM audit_events WHERE request_id = ?')
+            .run(interruptedRequestId);
+          workspaceDb.sqlite.close();
+
+          const resumed = await app.request(...reviewedRequest);
+          expect(resumed.status, await resumed.clone().text()).toBe(409);
+          await expect(resumed.json()).resolves.toMatchObject({ code: 'recovery_required' });
+          expect(existsSync(missingBlobPath)).toBe(false);
+          expect(
+            readTestWorkspaceNotebookSelection(store.getDataRoot()!, interruptedWorkspaceId).head
+              .notebookCommit
+          ).toBe(publishedRevision);
+          expect(store.getKnowledgeProposalReviewDecision(interrupted.proposalId)?.decision).toBe(
+            'accepted'
+          );
+          const recoveryDb = openTestWorkspaceDb(coreDb, interruptedWorkspaceId);
+          try {
+            expect(
+              recoveryDb.sqlite
+                .prepare(
+                  `SELECT COUNT(*) AS count FROM idempotency_requests
+                 WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+                )
+                .pluck()
+                .get(interruptedRequestId)
+            ).toBe(0);
+            expect(
+              recoveryDb.sqlite
+                .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
+                .pluck()
+                .get(interruptedRequestId)
+            ).toBe(0);
+          } finally {
+            recoveryDb.sqlite.close();
+          }
+        }
+      } finally {
+        coreDb.sqlite.close();
+      }
+    },
+    60_000
+  );
+
+  it.each(['receipt', 'audit'] as const)(
+    'fails closed when an applied proposal lacks its %s evidence',
+    async (missingEvidence) => {
+      const coreDb = createCoreDb(false);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const app = await createApp({ coreDb, store });
+
+      try {
+        const fixture = await draftKnowledgeProposalFixture(
           app,
           store,
-          accepted.proposalId,
-          acceptedRequestId,
-          'accepted'
+          `missing-${missingEvidence}`
         );
-        expect(replayRes.status).toBe(200);
-        expect(await replayRes.json()).toEqual(first);
-
-        const conflictRes = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          accepted.proposalId,
-          acceptedRequestId,
-          'rejected'
-        );
-        expect(conflictRes.status).toBe(409);
-        await expect(conflictRes.json()).resolves.toMatchObject({
-          code: 'idempotency_key_conflict',
-        });
-      } else if (scenario === 'rejected' || scenario === 'deferred') {
-        const decision = scenario;
-        const fixture = await draftKnowledgeProposalFixture(app, store, decision);
-        const response = await submitKnowledgeProposalDecision(
+        const requestId = knowledgeProposalRequestId(`decision-missing-${missingEvidence}`);
+        const completed = await submitKnowledgeProposalDecision(
           app,
           store,
           fixture.proposalId,
-          knowledgeProposalRequestId(`decision-${decision}`),
-          decision
-        );
-        expect(response.status, await response.clone().text()).toBe(200);
-        await expect(response.json()).resolves.toMatchObject({
-          review: {
-            proposalId: fixture.proposalId,
-            decision,
-            targetAbsentAtDecision: null,
-          },
-          application: null,
-        });
-        expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBeUndefined();
-      } else {
-        const interrupted = await draftKnowledgeProposalFixture(app, store, 'interrupted');
-        const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
-        const interruptedProposal = store.getKnowledgeProposal(interrupted.proposalId);
-        if (!interruptedProposal) throw new Error('Proposal fixture is unavailable.');
-        const interruptedWorkspaceId = interruptedProposal.workspaceId;
-        const reviewedRequest = captureKnowledgeProposalDecisionRequest(
-          store,
-          interrupted.proposalId,
-          interruptedRequestId,
+          requestId,
           'accepted'
         );
-        const completed = await app.request(...reviewedRequest);
         expect(completed.status, await completed.clone().text()).toBe(200);
-        const publishedRevision = readTestWorkspaceNotebookSelection(
-          store.getDataRoot()!,
-          interruptedWorkspaceId
-        ).head.notebookCommit;
-        const missingBlobPath = removeKnowledgeFixtureBlob(
-          store,
-          publishedRevision,
-          interrupted.knowledgePageId
-        );
-        const workspaceDb = openTestWorkspaceDb(coreDb, interruptedWorkspaceId);
-        workspaceDb.sqlite
-          .prepare(
-            `DELETE FROM idempotency_requests
-           WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-          )
-          .run(interruptedRequestId);
-        workspaceDb.sqlite
-          .prepare('DELETE FROM audit_events WHERE request_id = ?')
-          .run(interruptedRequestId);
+
+        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+        if (missingEvidence === 'receipt') {
+          workspaceDb.sqlite
+            .prepare(
+              `DELETE FROM idempotency_requests
+             WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+            )
+            .run(requestId);
+        } else {
+          workspaceDb.sqlite
+            .prepare('DELETE FROM audit_events WHERE request_id = ?')
+            .run(requestId);
+        }
         workspaceDb.sqlite.close();
 
-        const resumed = await app.request(...reviewedRequest);
-        expect(resumed.status, await resumed.clone().text()).toBe(409);
-        await expect(resumed.json()).resolves.toMatchObject({ code: 'recovery_required' });
-        expect(existsSync(missingBlobPath)).toBe(false);
-        expect(
-          readTestWorkspaceNotebookSelection(store.getDataRoot()!, interruptedWorkspaceId).head
-            .notebookCommit
-        ).toBe(publishedRevision);
-        expect(store.getKnowledgeProposalReviewDecision(interrupted.proposalId)?.decision).toBe(
+        const replay = await submitKnowledgeProposalDecision(
+          app,
+          store,
+          fixture.proposalId,
+          requestId,
           'accepted'
         );
-        const recoveryDb = openTestWorkspaceDb(coreDb, interruptedWorkspaceId);
-        try {
-          expect(
-            recoveryDb.sqlite
-              .prepare(
-                `SELECT COUNT(*) AS count FROM idempotency_requests
+        expect(replay.status).toBe(409);
+        await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBe(
+          fixture.canonicalPageBytes
+        );
+
+        const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+        const remaining =
+          missingEvidence === 'receipt'
+            ? evidenceDb.sqlite
+                .prepare(
+                  `SELECT COUNT(*) AS count FROM idempotency_requests
                  WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-              )
-              .pluck()
-              .get(interruptedRequestId)
-          ).toBe(0);
-          expect(
-            recoveryDb.sqlite
-              .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
-              .pluck()
-              .get(interruptedRequestId)
-          ).toBe(0);
-        } finally {
-          recoveryDb.sqlite.close();
-        }
+                )
+                .get(requestId)
+            : evidenceDb.sqlite
+                .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
+                .get(requestId);
+        evidenceDb.sqlite.close();
+        expect(remaining).toEqual({ count: 0 });
+      } finally {
+        coreDb.sqlite.close();
       }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  }, 60_000);
-
-  it.each([
-    'receipt',
-    'audit',
-  ] as const)('fails closed when an applied proposal lacks its %s evidence', async (missingEvidence) => {
-    const coreDb = createCoreDb(false);
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const app = await createApp({ coreDb, store });
-
-    try {
-      const fixture = await draftKnowledgeProposalFixture(app, store, `missing-${missingEvidence}`);
-      const requestId = knowledgeProposalRequestId(`decision-missing-${missingEvidence}`);
-      const completed = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        fixture.proposalId,
-        requestId,
-        'accepted'
-      );
-      expect(completed.status, await completed.clone().text()).toBe(200);
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      if (missingEvidence === 'receipt') {
-        workspaceDb.sqlite
-          .prepare(
-            `DELETE FROM idempotency_requests
-             WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-          )
-          .run(requestId);
-      } else {
-        workspaceDb.sqlite.prepare('DELETE FROM audit_events WHERE request_id = ?').run(requestId);
-      }
-      workspaceDb.sqlite.close();
-
-      const replay = await submitKnowledgeProposalDecision(
-        app,
-        store,
-        fixture.proposalId,
-        requestId,
-        'accepted'
-      );
-      expect(replay.status).toBe(409);
-      await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      expect(fixtureKnowledgeBytes(store, fixture.knowledgePageId)).toBe(
-        fixture.canonicalPageBytes
-      );
-
-      const evidenceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-      const remaining =
-        missingEvidence === 'receipt'
-          ? evidenceDb.sqlite
-              .prepare(
-                `SELECT COUNT(*) AS count FROM idempotency_requests
-                 WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
-              )
-              .get(requestId)
-          : evidenceDb.sqlite
-              .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
-              .get(requestId);
-      evidenceDb.sqlite.close();
-      expect(remaining).toEqual({ count: 0 });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  }, 60_000);
+    },
+    60_000
+  );
 
   it('rejects host-path-bearing proposal text without durable mutation', async () => {
     const coreDb = createCoreDb(false);
@@ -10188,153 +10189,153 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it.each([
-    'unchanged',
-    'edited',
-    'missing',
-  ] as const)('checks %s page evidence for Knowledge proposal reversal', async (scenario) => {
-    const coreDb = createCoreDb(false);
-    // Reversal uses the real Demo Notebook; Quick Chat is outside this contract.
-    const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    await seedDemoWorkspace(store);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const app = await createApp({ coreDb, store });
+  it.each(['unchanged', 'edited', 'missing'] as const)(
+    'checks %s page evidence for Knowledge proposal reversal',
+    async (scenario) => {
+      const coreDb = createCoreDb(false);
+      // Reversal uses the real Demo Notebook; Quick Chat is outside this contract.
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      await seedDemoWorkspace(store);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const app = await createApp({ coreDb, store });
 
-    try {
-      if (scenario === 'unchanged') {
-        const accepted = await draftKnowledgeProposalFixture(app, store, 'reverse');
-        const decisionResponse = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          accepted.proposalId,
-          knowledgeProposalRequestId('decision-reverse'),
-          'accepted'
-        );
-        expect(decisionResponse.status, await decisionResponse.clone().text()).toBe(200);
-        const decision = (await decisionResponse.json()) as { review: { reviewId: string } };
-        const reversalRequest = {
-          requestId: knowledgeProposalRequestId('reversal-1'),
-          reviewId: decision.review.reviewId,
-          knowledgePageId: accepted.knowledgePageId,
-          expectedContentDigest: accepted.contentDigest,
-          baseRevision: fixtureNotebook(store).publishedRevision(),
-          confirmRemoval: true as const,
-        };
-        const firstRes = await submitKnowledgeProposalReversal(
-          app,
-          accepted.proposalId,
-          reversalRequest
-        );
-        expect(firstRes.status, await firstRes.clone().text()).toBe(200);
-        const first = await firstRes.json();
-        expect(first).toEqual({
-          proposalId: accepted.proposalId,
-          reviewId: decision.review.reviewId,
-          application: {
+      try {
+        if (scenario === 'unchanged') {
+          const accepted = await draftKnowledgeProposalFixture(app, store, 'reverse');
+          const decisionResponse = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            accepted.proposalId,
+            knowledgeProposalRequestId('decision-reverse'),
+            'accepted'
+          );
+          expect(decisionResponse.status, await decisionResponse.clone().text()).toBe(200);
+          const decision = (await decisionResponse.json()) as { review: { reviewId: string } };
+          const reversalRequest = {
+            requestId: knowledgeProposalRequestId('reversal-1'),
+            reviewId: decision.review.reviewId,
             knowledgePageId: accepted.knowledgePageId,
-            contentDigest: accepted.contentDigest,
-            present: false,
-            notebookRevision: fixtureNotebook(store).publishedRevision(),
-          },
-        });
-        expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBeUndefined();
+            expectedContentDigest: accepted.contentDigest,
+            baseRevision: fixtureNotebook(store).publishedRevision(),
+            confirmRemoval: true as const,
+          };
+          const firstRes = await submitKnowledgeProposalReversal(
+            app,
+            accepted.proposalId,
+            reversalRequest
+          );
+          expect(firstRes.status, await firstRes.clone().text()).toBe(200);
+          const first = await firstRes.json();
+          expect(first).toEqual({
+            proposalId: accepted.proposalId,
+            reviewId: decision.review.reviewId,
+            application: {
+              knowledgePageId: accepted.knowledgePageId,
+              contentDigest: accepted.contentDigest,
+              present: false,
+              notebookRevision: fixtureNotebook(store).publishedRevision(),
+            },
+          });
+          expect(fixtureKnowledgeBytes(store, accepted.knowledgePageId)).toBeUndefined();
 
-        const replayRes = await submitKnowledgeProposalReversal(
-          app,
-          accepted.proposalId,
-          reversalRequest
-        );
-        expect(replayRes.status).toBe(200);
-        expect(await replayRes.json()).toEqual(first);
+          const replayRes = await submitKnowledgeProposalReversal(
+            app,
+            accepted.proposalId,
+            reversalRequest
+          );
+          expect(replayRes.status).toBe(200);
+          expect(await replayRes.json()).toEqual(first);
 
-        const conflictRes = await submitKnowledgeProposalReversal(app, accepted.proposalId, {
-          ...reversalRequest,
-          expectedContentDigest: artifactDigest('different bytes'),
-        });
-        expect(conflictRes.status).toBe(409);
-        await expect(conflictRes.json()).resolves.toMatchObject({
-          code: 'idempotency_key_conflict',
-        });
-      } else if (scenario === 'edited') {
-        const changed = await draftKnowledgeProposalFixture(app, store, 'reverse-changed');
-        const changedDecision = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          changed.proposalId,
-          knowledgeProposalRequestId('decision-reverse-changed'),
-          'accepted'
-        );
-        expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
-        const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
-        const changedBytes = `${changed.canonicalPageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
-        const editResponse = await app.request(
-          ...knowledgeOperationRequest(
-            'knowledge.notebook.update',
-            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-            {
-              body: JSON.stringify({
-                requestId: knowledgeProposalRequestId('human-intervening-edit'),
-                baseRevision: fixtureNotebook(store).publishedRevision(),
-                changes: [{ path: `${changed.knowledgePageId}.md`, content: changedBytes }],
-                summary: 'Explicit human edit after Review',
-              }),
-            }
-          )
-        );
-        expect(editResponse.status, await editResponse.clone().text()).toBe(200);
-        const publishedChangedBytes = fixtureKnowledgeBytes(store, changed.knowledgePageId);
-        expect(publishedChangedBytes).toBe(changedBytes);
-        const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
-          requestId: knowledgeProposalRequestId('reversal-changed'),
-          reviewId: changedReview.review.reviewId,
-          knowledgePageId: changed.knowledgePageId,
-          expectedContentDigest: changed.contentDigest,
-          baseRevision: fixtureNotebook(store).publishedRevision(),
-          confirmRemoval: true,
-        });
-        expect(changedReversal.status).toBe(409);
-        await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
-        expect(fixtureKnowledgeBytes(store, changed.knowledgePageId)).toBe(publishedChangedBytes);
-      } else {
-        const missing = await draftKnowledgeProposalFixture(app, store, 'reverse-missing');
-        const missingDecision = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          missing.proposalId,
-          knowledgeProposalRequestId('decision-reverse-missing'),
-          'accepted'
-        );
-        expect(missingDecision.status, await missingDecision.clone().text()).toBe(200);
-        const missingReview = (await missingDecision.json()) as { review: { reviewId: string } };
-        const missingBase = fixtureNotebook(store).publishedRevision();
-        const missingBlobPath = removeKnowledgeFixtureBlob(
-          store,
-          missingBase,
-          missing.knowledgePageId
-        );
-        const missingReversal = await submitKnowledgeProposalReversal(app, missing.proposalId, {
-          requestId: knowledgeProposalRequestId('reversal-missing'),
-          reviewId: missingReview.review.reviewId,
-          knowledgePageId: missing.knowledgePageId,
-          expectedContentDigest: missing.contentDigest,
-          baseRevision: missingBase,
-          confirmRemoval: true,
-        });
-        expect(missingReversal.status).toBe(409);
-        expect(existsSync(missingBlobPath)).toBe(false);
-        expect(fixtureNotebook(store).publishedRevision()).toBe(missingBase);
-        await expect(missingReversal.json()).resolves.toMatchObject({
-          code: 'recovery_required',
-        });
+          const conflictRes = await submitKnowledgeProposalReversal(app, accepted.proposalId, {
+            ...reversalRequest,
+            expectedContentDigest: artifactDigest('different bytes'),
+          });
+          expect(conflictRes.status).toBe(409);
+          await expect(conflictRes.json()).resolves.toMatchObject({
+            code: 'idempotency_key_conflict',
+          });
+        } else if (scenario === 'edited') {
+          const changed = await draftKnowledgeProposalFixture(app, store, 'reverse-changed');
+          const changedDecision = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            changed.proposalId,
+            knowledgeProposalRequestId('decision-reverse-changed'),
+            'accepted'
+          );
+          expect(changedDecision.status, await changedDecision.clone().text()).toBe(200);
+          const changedReview = (await changedDecision.json()) as { review: { reviewId: string } };
+          const changedBytes = `${changed.canonicalPageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
+          const editResponse = await app.request(
+            ...knowledgeOperationRequest(
+              'knowledge.notebook.update',
+              { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+              {
+                body: JSON.stringify({
+                  requestId: knowledgeProposalRequestId('human-intervening-edit'),
+                  baseRevision: fixtureNotebook(store).publishedRevision(),
+                  changes: [{ path: `${changed.knowledgePageId}.md`, content: changedBytes }],
+                  summary: 'Explicit human edit after Review',
+                }),
+              }
+            )
+          );
+          expect(editResponse.status, await editResponse.clone().text()).toBe(200);
+          const publishedChangedBytes = fixtureKnowledgeBytes(store, changed.knowledgePageId);
+          expect(publishedChangedBytes).toBe(changedBytes);
+          const changedReversal = await submitKnowledgeProposalReversal(app, changed.proposalId, {
+            requestId: knowledgeProposalRequestId('reversal-changed'),
+            reviewId: changedReview.review.reviewId,
+            knowledgePageId: changed.knowledgePageId,
+            expectedContentDigest: changed.contentDigest,
+            baseRevision: fixtureNotebook(store).publishedRevision(),
+            confirmRemoval: true,
+          });
+          expect(changedReversal.status).toBe(409);
+          await expect(changedReversal.json()).resolves.toMatchObject({ code: 'conflict' });
+          expect(fixtureKnowledgeBytes(store, changed.knowledgePageId)).toBe(publishedChangedBytes);
+        } else {
+          const missing = await draftKnowledgeProposalFixture(app, store, 'reverse-missing');
+          const missingDecision = await submitKnowledgeProposalDecision(
+            app,
+            store,
+            missing.proposalId,
+            knowledgeProposalRequestId('decision-reverse-missing'),
+            'accepted'
+          );
+          expect(missingDecision.status, await missingDecision.clone().text()).toBe(200);
+          const missingReview = (await missingDecision.json()) as { review: { reviewId: string } };
+          const missingBase = fixtureNotebook(store).publishedRevision();
+          const missingBlobPath = removeKnowledgeFixtureBlob(
+            store,
+            missingBase,
+            missing.knowledgePageId
+          );
+          const missingReversal = await submitKnowledgeProposalReversal(app, missing.proposalId, {
+            requestId: knowledgeProposalRequestId('reversal-missing'),
+            reviewId: missingReview.review.reviewId,
+            knowledgePageId: missing.knowledgePageId,
+            expectedContentDigest: missing.contentDigest,
+            baseRevision: missingBase,
+            confirmRemoval: true,
+          });
+          expect(missingReversal.status).toBe(409);
+          expect(existsSync(missingBlobPath)).toBe(false);
+          expect(fixtureNotebook(store).publishedRevision()).toBe(missingBase);
+          await expect(missingReversal.json()).resolves.toMatchObject({
+            code: 'recovery_required',
+          });
+        }
+      } finally {
+        coreDb.sqlite.close();
       }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  }, 60_000);
+    },
+    60_000
+  );
 
   it('rejects edited knowledge proposal decisions without mutation', async () => {
     const store = await createDemoStore();

@@ -185,229 +185,232 @@ const commands = [
   'material.range-correct',
 ] as const;
 
-it.each(
-  commands
-)('%s commits its full tuple and original receipt with Main restricted to reads', async (command) => {
-  const f = await fixture();
-  const { materialId } = await f.call('material.create', {
-    requestId: 'seed-material',
-    title: 'Original source',
-    kind: 'text',
-    sensitivity: 'internal',
-  });
-  const content = 'Original source\n';
-  const { revisionId } = await f.call('material.revision-save', {
-    materialId,
-    requestId: 'seed-revision',
-    expectedRevisionId: null,
-    content,
-    contentDigest: digest(content),
-  });
-  const threadId = f.thread.id;
-  await f.call('material.bind', {
-    materialId,
-    threadId,
-    requestId: 'seed-binding',
-    expectedBindingState: 'not_bound',
-  });
-  if (command === 'material.bind') {
-    await f.call('material.unbind', {
-      materialId,
-      threadId,
-      requestId: 'seed-unbinding',
-      expectedBindingState: 'bound',
+it.each(commands)(
+  '%s commits its full tuple and original receipt with Main restricted to reads',
+  async (command) => {
+    const f = await fixture();
+    const { materialId } = await f.call('material.create', {
+      requestId: 'seed-material',
+      title: 'Original source',
+      kind: 'text',
+      sensitivity: 'internal',
     });
-  }
-  if (command === 'material.restore') {
-    await f.call('material.exclude', {
+    const content = 'Original source\n';
+    const { revisionId } = await f.call('material.revision-save', {
       materialId,
-      threadId,
-      requestId: 'seed-exclusion',
-      expectedBindingState: 'bound',
-      expectedInclusionState: 'included',
-      expectedQueuedRevisionId: revisionId,
+      requestId: 'seed-revision',
+      expectedRevisionId: null,
+      content,
+      contentDigest: digest(content),
     });
-  }
-  const target = {
-    kind: 'material-range',
-    materialId,
-    revisionId,
-    contentDigest: digest(content),
-    start: 0,
-    end: 8,
-    originalText: 'Original',
-  };
-  const input = {
-    'material.create': { title: 'New source', kind: 'text', sensitivity: 'internal' },
-    'material.revision-save': {
-      materialId,
-      expectedRevisionId: revisionId,
-      content: 'Revised source\n',
-      contentDigest: digest('Revised source\n'),
-    },
-    'material.bind': { materialId, threadId, expectedBindingState: 'not_bound' },
-    'material.unbind': { materialId, threadId, expectedBindingState: 'bound' },
-    'material.exclude': {
+    const threadId = f.thread.id;
+    await f.call('material.bind', {
       materialId,
       threadId,
-      expectedBindingState: 'bound',
-      expectedInclusionState: 'included',
-      expectedQueuedRevisionId: revisionId,
-    },
-    'material.restore': {
+      requestId: 'seed-binding',
+      expectedBindingState: 'not_bound',
+    });
+    if (command === 'material.bind') {
+      await f.call('material.unbind', {
+        materialId,
+        threadId,
+        requestId: 'seed-unbinding',
+        expectedBindingState: 'bound',
+      });
+    }
+    if (command === 'material.restore') {
+      await f.call('material.exclude', {
+        materialId,
+        threadId,
+        requestId: 'seed-exclusion',
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'included',
+        expectedQueuedRevisionId: revisionId,
+      });
+    }
+    const target = {
+      kind: 'material-range',
       materialId,
-      threadId,
-      expectedBindingState: 'bound',
-      expectedInclusionState: 'excluded',
-    },
-    'evaluation.judgement-add': {
-      judgement: {
-        kind: 'rate',
-        target,
-        choice: { value: 2, lowerBound: 1, upperBound: 3 },
-        note: 'Human assessment',
+      revisionId,
+      contentDigest: digest(content),
+      start: 0,
+      end: 8,
+      originalText: 'Original',
+    };
+    const input = {
+      'material.create': { title: 'New source', kind: 'text', sensitivity: 'internal' },
+      'material.revision-save': {
+        materialId,
+        expectedRevisionId: revisionId,
+        content: 'Revised source\n',
+        contentDigest: digest('Revised source\n'),
       },
-    },
-    'material.range-correct': { target, replacementText: 'Corrected', decision: 'apply' },
-  }[command];
-  const request = { ...input, requestId: 'tested-command' };
-  const before = f.snapshot();
-  f.abortReceipt();
-  await expect(f.call(command, request)).rejects.toThrow();
-  expect(f.snapshot(), 'receipt abort rolls back every owned row').toEqual(before);
-  await f.reopen();
-  expect(f.snapshot(), 'no partial tuple survives cold reopen').toEqual(before);
-  f.allowReceipt();
-  f.readersOnly();
-  const result = await Promise.allSettled([f.call(command, request)]);
-  expect(result, 'the native writer must acknowledge without a Main write').toEqual([
-    { status: 'fulfilled', value: expect.any(Object) },
-  ]);
-  if (result[0]!.status !== 'fulfilled') throw new Error('Missing acknowledged Material outcome');
-  const response = result[0]!.value;
-  const receipts = f.db.sqlite
-    .prepare(
-      'SELECT command_name, response_kind, response_id FROM idempotency_requests WHERE request_id = ?'
-    )
-    .all(request.requestId);
-  const durableCommand = command === 'material.revision-save' ? 'material.save' : command;
-  const expectedResponseKind =
-    command === 'material.create'
-      ? 'material'
-      : command === 'material.revision-save'
-        ? 'material_revision'
-        : command === 'evaluation.judgement-add' || command === 'material.range-correct'
-          ? 'evaluation_judgement'
-          : 'thread_material_binding';
-  const expectedResponseId =
-    'revisionId' in response
-      ? response.revisionId
-      : 'materialId' in response
-        ? response.materialId
-        : request.requestId;
-  expect(receipts).toEqual([
-    {
-      command_name: durableCommand,
-      response_kind: expectedResponseKind,
-      response_id: expectedResponseId,
-    },
-  ]);
-  if (command === 'material.create') {
-    expect(f.snapshot().materials).toHaveLength(before.materials.length + 1);
-    expect(await f.call('material.read', { materialId: expectedResponseId })).toMatchObject({
-      material: { title: 'New source', currentRevisionId: null },
-    });
-  } else if (command === 'material.revision-save' || command === 'material.range-correct') {
-    const { material } = await f.call('material.read', { materialId });
-    expect(material.currentRevisionId).not.toBe(revisionId);
-    const { revision } = await f.call('material.revision-read', {
-      materialId,
-      revisionId: material.currentRevisionId,
-    });
-    expect(revision).toMatchObject({
-      parentRevisionId: revisionId,
-      content: command === 'material.range-correct' ? 'Corrected source\n' : 'Revised source\n',
-    });
-    expect(revision.contentDigest).toBe(digest(revision.content));
-    if (command === 'material.range-correct') {
-      expect(response).toMatchObject({
+      'material.bind': { materialId, threadId, expectedBindingState: 'not_bound' },
+      'material.unbind': { materialId, threadId, expectedBindingState: 'bound' },
+      'material.exclude': {
+        materialId,
+        threadId,
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'included',
+        expectedQueuedRevisionId: revisionId,
+      },
+      'material.restore': {
+        materialId,
+        threadId,
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'excluded',
+      },
+      'evaluation.judgement-add': {
         judgement: {
-          kind: 'correct',
-          choice: {
-            outcome: 'apply',
-            resultingRevision: {
-              materialId,
-              revisionId: revision.revisionId,
-              contentDigest: revision.contentDigest,
+          kind: 'rate',
+          target,
+          choice: { value: 2, lowerBound: 1, upperBound: 3 },
+          note: 'Human assessment',
+        },
+      },
+      'material.range-correct': { target, replacementText: 'Corrected', decision: 'apply' },
+    }[command];
+    const request = { ...input, requestId: 'tested-command' };
+    const before = f.snapshot();
+    f.abortReceipt();
+    await expect(f.call(command, request)).rejects.toThrow();
+    expect(f.snapshot(), 'receipt abort rolls back every owned row').toEqual(before);
+    await f.reopen();
+    expect(f.snapshot(), 'no partial tuple survives cold reopen').toEqual(before);
+    f.allowReceipt();
+    f.readersOnly();
+    const result = await Promise.allSettled([f.call(command, request)]);
+    expect(result, 'the native writer must acknowledge without a Main write').toEqual([
+      { status: 'fulfilled', value: expect.any(Object) },
+    ]);
+    if (result[0]!.status !== 'fulfilled') throw new Error('Missing acknowledged Material outcome');
+    const response = result[0]!.value;
+    const receipts = f.db.sqlite
+      .prepare(
+        'SELECT command_name, response_kind, response_id FROM idempotency_requests WHERE request_id = ?'
+      )
+      .all(request.requestId);
+    const durableCommand = command === 'material.revision-save' ? 'material.save' : command;
+    const expectedResponseKind =
+      command === 'material.create'
+        ? 'material'
+        : command === 'material.revision-save'
+          ? 'material_revision'
+          : command === 'evaluation.judgement-add' || command === 'material.range-correct'
+            ? 'evaluation_judgement'
+            : 'thread_material_binding';
+    const expectedResponseId =
+      'revisionId' in response
+        ? response.revisionId
+        : 'materialId' in response
+          ? response.materialId
+          : request.requestId;
+    expect(receipts).toEqual([
+      {
+        command_name: durableCommand,
+        response_kind: expectedResponseKind,
+        response_id: expectedResponseId,
+      },
+    ]);
+    if (command === 'material.create') {
+      expect(f.snapshot().materials).toHaveLength(before.materials.length + 1);
+      expect(await f.call('material.read', { materialId: expectedResponseId })).toMatchObject({
+        material: { title: 'New source', currentRevisionId: null },
+      });
+    } else if (command === 'material.revision-save' || command === 'material.range-correct') {
+      const { material } = await f.call('material.read', { materialId });
+      expect(material.currentRevisionId).not.toBe(revisionId);
+      const { revision } = await f.call('material.revision-read', {
+        materialId,
+        revisionId: material.currentRevisionId,
+      });
+      expect(revision).toMatchObject({
+        parentRevisionId: revisionId,
+        content: command === 'material.range-correct' ? 'Corrected source\n' : 'Revised source\n',
+      });
+      expect(revision.contentDigest).toBe(digest(revision.content));
+      if (command === 'material.range-correct') {
+        expect(response).toMatchObject({
+          judgement: {
+            kind: 'correct',
+            choice: {
+              outcome: 'apply',
+              resultingRevision: {
+                materialId,
+                revisionId: revision.revisionId,
+                contentDigest: revision.contentDigest,
+              },
             },
           },
+        });
+      }
+
+      expect(f.snapshot().revisions).toHaveLength(before.revisions.length + 1);
+      expect(
+        f.db.sqlite
+          .prepare(
+            'SELECT latest_queued_revision_id FROM thread_material_bindings WHERE thread_id = ?'
+          )
+          .get(threadId)
+      ).toEqual({ latest_queued_revision_id: revision.revisionId });
+    } else if (command !== 'evaluation.judgement-add') {
+      expect(
+        f.db.sqlite
+          .prepare(
+            'SELECT binding_state, inclusion_state, latest_queued_revision_id FROM thread_material_bindings WHERE thread_id = ?'
+          )
+          .get(threadId)
+      ).toEqual({
+        binding_state: command === 'material.unbind' ? 'unbound' : 'bound',
+        inclusion_state: command === 'material.exclude' ? 'excluded' : 'included',
+        latest_queued_revision_id: command === 'material.unbind' ? null : revisionId,
+      });
+    }
+    if (command === 'evaluation.judgement-add' || command === 'material.range-correct') {
+      expect(await f.call('material.revision-read', { materialId, revisionId })).toMatchObject({
+        revision: {
+          content,
+          judgements: [expect.objectContaining({ requestId: request.requestId, target })],
         },
       });
     }
-
-    expect(f.snapshot().revisions).toHaveLength(before.revisions.length + 1);
-    expect(
-      f.db.sqlite
-        .prepare(
-          'SELECT latest_queued_revision_id FROM thread_material_bindings WHERE thread_id = ?'
-        )
-        .get(threadId)
-    ).toEqual({ latest_queued_revision_id: revision.revisionId });
-  } else if (command !== 'evaluation.judgement-add') {
-    expect(
-      f.db.sqlite
-        .prepare(
-          'SELECT binding_state, inclusion_state, latest_queued_revision_id FROM thread_material_bindings WHERE thread_id = ?'
-        )
-        .get(threadId)
-    ).toEqual({
-      binding_state: command === 'material.unbind' ? 'unbound' : 'bound',
-      inclusion_state: command === 'material.exclude' ? 'excluded' : 'included',
-      latest_queued_revision_id: command === 'material.unbind' ? null : revisionId,
-    });
+    const acknowledged = f.snapshot();
+    await f.reopen();
+    expect(await f.call(command, request)).toEqual(response);
+    expect(await f.call(command, request)).toEqual(response);
+    expect(f.snapshot(), 'cold replay must not add a tuple or second receipt').toEqual(
+      acknowledged
+    );
+    if (command === 'material.bind') {
+      const other = await f.store.createThread(f.workspace.id, 'First binding');
+      const freshRequest = {
+        materialId,
+        threadId: other.id,
+        requestId: 'new-binding',
+        expectedBindingState: 'not_bound',
+      };
+      expect(await f.call('material.bind', freshRequest)).toMatchObject({
+        materialId,
+        threadId: other.id,
+        outcome: 'bound',
+      });
+      expect(
+        f.db.sqlite
+          .prepare(
+            'SELECT latest_queued_revision_id FROM thread_material_bindings WHERE thread_id = ?'
+          )
+          .get(other.id)
+      ).toEqual({ latest_queued_revision_id: revisionId });
+      expect(
+        f.db.sqlite
+          .prepare(
+            'SELECT response_id FROM idempotency_requests WHERE command_name = ? AND request_id = ?'
+          )
+          .all('material.bind', freshRequest.requestId)
+      ).toEqual([{ response_id: materialId }]);
+    }
   }
-  if (command === 'evaluation.judgement-add' || command === 'material.range-correct') {
-    expect(await f.call('material.revision-read', { materialId, revisionId })).toMatchObject({
-      revision: {
-        content,
-        judgements: [expect.objectContaining({ requestId: request.requestId, target })],
-      },
-    });
-  }
-  const acknowledged = f.snapshot();
-  await f.reopen();
-  expect(await f.call(command, request)).toEqual(response);
-  expect(await f.call(command, request)).toEqual(response);
-  expect(f.snapshot(), 'cold replay must not add a tuple or second receipt').toEqual(acknowledged);
-  if (command === 'material.bind') {
-    const other = await f.store.createThread(f.workspace.id, 'First binding');
-    const freshRequest = {
-      materialId,
-      threadId: other.id,
-      requestId: 'new-binding',
-      expectedBindingState: 'not_bound',
-    };
-    expect(await f.call('material.bind', freshRequest)).toMatchObject({
-      materialId,
-      threadId: other.id,
-      outcome: 'bound',
-    });
-    expect(
-      f.db.sqlite
-        .prepare(
-          'SELECT latest_queued_revision_id FROM thread_material_bindings WHERE thread_id = ?'
-        )
-        .get(other.id)
-    ).toEqual({ latest_queued_revision_id: revisionId });
-    expect(
-      f.db.sqlite
-        .prepare(
-          'SELECT response_id FROM idempotency_requests WHERE command_name = ? AND request_id = ?'
-        )
-        .all('material.bind', freshRequest.requestId)
-    ).toEqual([{ response_id: materialId }]);
-  }
-});
+);
 
 /** Prepares real package bytes and owner records; backend materialization evidence is fixture input. */
 async function preparedMaterial(

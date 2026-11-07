@@ -56,36 +56,36 @@ function retainedRows(db: WorkspaceDb) {
 }
 
 describe('native selected capture recovery', () => {
-  it.each([
-    'finished',
-    'abandoned',
-  ] as const)('durably retains the first %s decision for only the selected capture', async (state) => {
-    const f = await fixture();
-    const input = { workspaceId: f.workspaceId, captureId: f.captureId, state };
-    await expect(f.client.recoveryCapture(f.database, input)).resolves.toBeUndefined();
-    const terminal = inspectCapture(f.db, f.workspaceId, f.captureId);
-    expect(terminal).toEqual({ ...f.selected, state, endedAt: expect.any(String) });
-    expect(inspectCapture(f.db, f.workspaceId, f.siblingId)).toEqual(f.sibling);
-    const committed = retainedRows(f.db);
-    expect(committed).toHaveLength(2);
-    // Operator Contract selects one capture; the first terminal decision cannot be replaced.
-    await expect(f.client.recoveryCapture(f.database, input)).resolves.toBeUndefined();
-    await expect(
-      f.client.recoveryCapture(f.database, {
-        ...input,
-        state: state === 'finished' ? 'abandoned' : 'finished',
-      })
-    ).rejects.toThrow();
-    expect(retainedRows(f.db)).toEqual(committed);
-    await f.client.close(f.database);
-    f.db.sqlite.close();
-    const reopened = openWorkspaceDb(f.root, f.workspaceId);
-    handles.push(reopened);
-    expect(retainedRows(reopened)).toEqual(committed);
-    expect(inspectCapture(reopened, f.workspaceId, f.captureId)).toEqual(terminal);
-    // Snapshot Cut And Capture Protection keeps unrelated active protection through reopen.
-    expect(inspectCapture(reopened, f.workspaceId, f.siblingId)).toEqual(f.sibling);
-  });
+  it.each(['finished', 'abandoned'] as const)(
+    'durably retains the first %s decision for only the selected capture',
+    async (state) => {
+      const f = await fixture();
+      const input = { workspaceId: f.workspaceId, captureId: f.captureId, state };
+      await expect(f.client.recoveryCapture(f.database, input)).resolves.toBeUndefined();
+      const terminal = inspectCapture(f.db, f.workspaceId, f.captureId);
+      expect(terminal).toEqual({ ...f.selected, state, endedAt: expect.any(String) });
+      expect(inspectCapture(f.db, f.workspaceId, f.siblingId)).toEqual(f.sibling);
+      const committed = retainedRows(f.db);
+      expect(committed).toHaveLength(2);
+      // Operator Contract selects one capture; the first terminal decision cannot be replaced.
+      await expect(f.client.recoveryCapture(f.database, input)).resolves.toBeUndefined();
+      await expect(
+        f.client.recoveryCapture(f.database, {
+          ...input,
+          state: state === 'finished' ? 'abandoned' : 'finished',
+        })
+      ).rejects.toThrow();
+      expect(retainedRows(f.db)).toEqual(committed);
+      await f.client.close(f.database);
+      f.db.sqlite.close();
+      const reopened = openWorkspaceDb(f.root, f.workspaceId);
+      handles.push(reopened);
+      expect(retainedRows(reopened)).toEqual(committed);
+      expect(inspectCapture(reopened, f.workspaceId, f.captureId)).toEqual(terminal);
+      // Snapshot Cut And Capture Protection keeps unrelated active protection through reopen.
+      expect(inspectCapture(reopened, f.workspaceId, f.siblingId)).toEqual(f.sibling);
+    }
+  );
 
   it('refuses a foreign Workspace selector and absent capture without changing protection', async () => {
     const f = await fixture();

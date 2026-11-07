@@ -653,35 +653,35 @@ describe('NanoCore boot RuntimeTarget fencing', () => {
     expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toBeNull();
   });
 
-  it.each([
-    true,
-    false,
-  ])('awaits the native fence for a retained target with ready=%s', async (ready) => {
-    const fixture = createTargetBootFixture();
-    await retainBootTarget(fixture, ready);
-    const before = getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target');
-    const boot = evaluateRuntimeTargetBootFence(fixture.coreDb);
-    // The existing native posting hold delays the real acknowledgement, not a fabricated success.
-    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
-    const running = boot.run();
-    try {
-      await vi.waitFor(() => expect(boot.nativeFence).toHaveBeenCalledTimes(1));
-      await setImmediate();
-      // Bootstrap Readiness: phase 8 finishes before product/listener admission.
-      expect(boot.continuation).not.toHaveBeenCalled();
-      expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toEqual(before);
-    } finally {
-      resume();
-      await running;
+  it.each([true, false])(
+    'awaits the native fence for a retained target with ready=%s',
+    async (ready) => {
+      const fixture = createTargetBootFixture();
+      await retainBootTarget(fixture, ready);
+      const before = getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target');
+      const boot = evaluateRuntimeTargetBootFence(fixture.coreDb);
+      // The existing native posting hold delays the real acknowledgement, not a fabricated success.
+      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
+      const running = boot.run();
+      try {
+        await vi.waitFor(() => expect(boot.nativeFence).toHaveBeenCalledTimes(1));
+        await setImmediate();
+        // Bootstrap Readiness: phase 8 finishes before product/listener admission.
+        expect(boot.continuation).not.toHaveBeenCalled();
+        expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toEqual(before);
+      } finally {
+        resume();
+        await running;
+      }
+      expect(boot.continuation).toHaveBeenCalledTimes(1);
+      expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toMatchObject({
+        connectionGeneration: before?.connectionGeneration,
+        ready: false,
+        freshEmpty: false,
+        physicalEpoch: null,
+      });
     }
-    expect(boot.continuation).toHaveBeenCalledTimes(1);
-    expect(getNanoHostRuntimeTarget(fixture.coreDb, 'boot-target')).toMatchObject({
-      connectionGeneration: before?.connectionGeneration,
-      ready: false,
-      freshEmpty: false,
-      physicalEpoch: null,
-    });
-  });
+  );
 
   it('refuses continuation when target discovery cannot read Core authority', async () => {
     const fixture = createTargetBootFixture();

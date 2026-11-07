@@ -396,105 +396,105 @@ describe('Artifact definition projections', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('persists exact original UTF-16 feedback or refuses changed base (%s)', async (changedBase) => {
-    const f = await fixture();
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const artifactId = 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f';
-    const db = openWorkspaceDb(f.dataRoot, workspaceId);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
-    try {
-      const content = 'A\r\n😀e\u0301 tail';
-      const material = createWorkspaceMaterial(db, {
-        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        acceptedAt: '2026-10-17T00:00:00.000Z',
-        requestId: 'range-base',
-        title: 'Base',
-        kind: 'text',
-        sensitivity: 'internal',
-      });
-      const revision = saveWorkspaceMaterialRevision(db, {
-        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        acceptedAt: '2026-10-17T00:00:00.000Z',
-        requestId: 'range-root',
-        materialId: material.materialId,
-        expectedRevisionId: null,
-        content,
-        contentDigest: digest(content),
-      });
-      db.sqlite
-        .prepare(
-          'UPDATE artifact_reviews SET proposal_material_id = ?, proposal_base_revision_id = ?, proposal_base_content_digest = ?'
-        )
-        .run(material.materialId, revision.revisionId, digest(content));
-      const rangeFeedback = {
-        materialId: material.materialId,
-        revisionId: revision.revisionId,
-        contentDigest: digest(content),
-        start: 3,
-        end: 7,
-        originalText: '😀e\u0301',
-      };
-      const send = (range: unknown, requestId = 'range-decision') =>
-        f.app.request('/api/app/operations/artifact.review.decide', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-          body: JSON.stringify({
-            workspaceId,
-            artifactId,
-            artifactVersion: 1,
-            decision: 'rejected',
-            feedback: 'Change this range.',
-            requestId,
-            rangeFeedback: range,
-          }),
-        });
-      for (const invalid of [
-        { ...rangeFeedback, start: 4 },
-        { ...rangeFeedback, originalText: '😀é' },
-        { ...rangeFeedback, contentDigest: digest('other') },
-      ]) {
-        const refused = await send(invalid);
-        expect(refused.status).toBe(400);
-        expect(await refused.json()).toMatchObject({ code: 'invalid_request' });
-        expect(getArtifactReview(db, artifactId, 1).decision).toBeNull();
-      }
-      if (changedBase) {
-        saveWorkspaceMaterialRevision(db, {
+  it.each([false, true])(
+    'persists exact original UTF-16 feedback or refuses changed base (%s)',
+    async (changedBase) => {
+      const f = await fixture();
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const artifactId = 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f';
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      try {
+        const content = 'A\r\n😀e\u0301 tail';
+        const material = createWorkspaceMaterial(db, {
           actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          acceptedAt: '2026-10-17T00:01:00.000Z',
-          requestId: 'range-base-changed',
-          materialId: material.materialId,
-          expectedRevisionId: revision.revisionId,
-          content: 'New base.',
-          contentDigest: digest('New base.'),
+          acceptedAt: '2026-10-17T00:00:00.000Z',
+          requestId: 'range-base',
+          title: 'Base',
+          kind: 'text',
+          sensitivity: 'internal',
         });
-        const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').all();
-        const receipts = db.sqlite.prepare('SELECT * FROM idempotency_requests').all();
-        const conflict = await send(rangeFeedback);
-        expect(conflict.status).toBe(409);
-        expect(await conflict.json()).toMatchObject({ code: 'conflict' });
-        expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').all()).toEqual(before);
-        expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(receipts);
-        return;
+        const revision = saveWorkspaceMaterialRevision(db, {
+          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          acceptedAt: '2026-10-17T00:00:00.000Z',
+          requestId: 'range-root',
+          materialId: material.materialId,
+          expectedRevisionId: null,
+          content,
+          contentDigest: digest(content),
+        });
+        db.sqlite
+          .prepare(
+            'UPDATE artifact_reviews SET proposal_material_id = ?, proposal_base_revision_id = ?, proposal_base_content_digest = ?'
+          )
+          .run(material.materialId, revision.revisionId, digest(content));
+        const rangeFeedback = {
+          materialId: material.materialId,
+          revisionId: revision.revisionId,
+          contentDigest: digest(content),
+          start: 3,
+          end: 7,
+          originalText: '😀e\u0301',
+        };
+        const send = (range: unknown, requestId = 'range-decision') =>
+          f.app.request('/api/app/operations/artifact.review.decide', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+            body: JSON.stringify({
+              workspaceId,
+              artifactId,
+              artifactVersion: 1,
+              decision: 'rejected',
+              feedback: 'Change this range.',
+              requestId,
+              rangeFeedback: range,
+            }),
+          });
+        for (const invalid of [
+          { ...rangeFeedback, start: 4 },
+          { ...rangeFeedback, originalText: '😀é' },
+          { ...rangeFeedback, contentDigest: digest('other') },
+        ]) {
+          const refused = await send(invalid);
+          expect(refused.status).toBe(400);
+          expect(await refused.json()).toMatchObject({ code: 'invalid_request' });
+          expect(getArtifactReview(db, artifactId, 1).decision).toBeNull();
+        }
+        if (changedBase) {
+          saveWorkspaceMaterialRevision(db, {
+            actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            acceptedAt: '2026-10-17T00:01:00.000Z',
+            requestId: 'range-base-changed',
+            materialId: material.materialId,
+            expectedRevisionId: revision.revisionId,
+            content: 'New base.',
+            contentDigest: digest('New base.'),
+          });
+          const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').all();
+          const receipts = db.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+          const conflict = await send(rangeFeedback);
+          expect(conflict.status).toBe(409);
+          expect(await conflict.json()).toMatchObject({ code: 'conflict' });
+          expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').all()).toEqual(before);
+          expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(receipts);
+          return;
+        }
+        const response = await send(rangeFeedback);
+        expect(response.status).toBe(200);
+        expect(getArtifactReview(db, artifactId, 1)).toMatchObject({
+          rangeFeedback,
+          decision: 'rejected',
+        });
+        expect((await send(rangeFeedback)).status).toBe(200);
+        const changed = await send({ ...rangeFeedback, end: 5, originalText: '😀' });
+        expect(changed.status).toBe(409);
+        expect(await changed.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+      } finally {
+        db.sqlite.close();
+        await f.close();
       }
-      const response = await send(rangeFeedback);
-      expect(response.status).toBe(200);
-      expect(getArtifactReview(db, artifactId, 1)).toMatchObject({
-        rangeFeedback,
-        decision: 'rejected',
-      });
-      expect((await send(rangeFeedback)).status).toBe(200);
-      const changed = await send({ ...rangeFeedback, end: 5, originalText: '😀' });
-      expect(changed.status).toBe(409);
-      expect(await changed.json()).toMatchObject({ code: 'idempotency_key_conflict' });
-    } finally {
-      db.sqlite.close();
-      await f.close();
     }
-  });
+  );
 
   it('declares the fourteen Artifact operations without handwritten JSON projection catalogs', () => {
     const table = (schemas as unknown as Record<string, Record<string, unknown>>)
@@ -569,132 +569,137 @@ describe('Artifact definition projections', () => {
     }
   });
 
-  it.each([
-    'Workspace member',
-    'eligible administrator',
-  ])('preserves exact authorized results and command replay across HTTP client and CLI for %s', async (authority) => {
-    const f = await fixture(
-      authority === 'Workspace member',
-      true,
-      authority === 'eligible administrator'
-    );
-    try {
-      const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: authority === 'eligible administrator' ? 'server-admin' : 'workspace',
-        workspaceIds:
-          authority === 'eligible administrator' ? [] : ['ws_00000000-0000-7000-8000-000000000001'],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      }).secret;
-      async function compare(id: string, input: Record<string, unknown>) {
-        let expected: unknown;
-        for (const [projection, project] of Object.entries(await projections(f, token, id))) {
-          let result: unknown;
-          try {
-            result = await project(id, {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              ...input,
-            });
-          } catch (error) {
-            throw new Error(`${authority}: ${projection}: ${id}`, { cause: error });
-          }
-          if (expected === undefined) expected = result;
-          expect(result, id).toEqual(expected);
-        }
-        return expected as {
-          artifactId: string;
-          artifactVersion: number;
-          turnId: string;
-          itemId: string;
-        };
-      }
-      await compare('artifact.review.select', inputs['artifact.review.select']);
-      const imported = await compare('artifact.import', inputs['artifact.import']);
-      const read = await compare('artifact.read', { artifactId: imported.artifactId });
-      expect(read).toEqual(
-        f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId)
+  it.each(['Workspace member', 'eligible administrator'])(
+    'preserves exact authorized results and command replay across HTTP client and CLI for %s',
+    async (authority) => {
+      const f = await fixture(
+        authority === 'Workspace member',
+        true,
+        authority === 'eligible administrator'
       );
-      expect((read as unknown as { content: unknown }).content).toEqual({
-        format: 'file',
-        mediaType: 'application/octet-stream',
-        byteLength: original.size,
-      });
-      expect(
-        await compare('artifact.download', { artifactId: imported.artifactId, artifactVersion: 1 })
-      ).toEqual({
-        bytes: originalBytes,
-        byteLength: original.size,
-        mediaType: 'application/octet-stream',
-        contentDigest: original.sha256,
-      });
-      const list = await compare('artifact.list', {});
-      expect(list).toEqual({
-        items: f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001'),
-      });
-      const introduced = await compare('artifact.introduce', {
-        ...inputs['artifact.introduce'],
-        artifactId: imported.artifactId,
-      });
-      expect(
-        f.store.getTurn(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001',
-          introduced.turnId
-        ).items[0]?.id
-      ).toBe(introduced.itemId);
-      expect(
-        f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId).origin
-          .kind
-      ).toBe('imported');
-      await compare('artifact.version-list', { artifactId: imported.artifactId });
-      await compare('artifact.version-read', {
-        artifactId: imported.artifactId,
-        artifactVersion: 1,
-      });
-      await compare('artifact.version-commit', {
-        ...inputs['artifact.version-commit'],
-        artifactId: imported.artifactId,
-      });
-      await compare('artifact.version-file-commit', {
-        ...inputs['artifact.version-file-commit'],
-        artifactId: imported.artifactId,
-      });
-      expect(
+      try {
+        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: authority === 'eligible administrator' ? 'server-admin' : 'workspace',
+          workspaceIds:
+            authority === 'eligible administrator'
+              ? []
+              : ['ws_00000000-0000-7000-8000-000000000001'],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        }).secret;
+        async function compare(id: string, input: Record<string, unknown>) {
+          let expected: unknown;
+          for (const [projection, project] of Object.entries(await projections(f, token, id))) {
+            let result: unknown;
+            try {
+              result = await project(id, {
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                ...input,
+              });
+            } catch (error) {
+              throw new Error(`${authority}: ${projection}: ${id}`, { cause: error });
+            }
+            if (expected === undefined) expected = result;
+            expect(result, id).toEqual(expected);
+          }
+          return expected as {
+            artifactId: string;
+            artifactVersion: number;
+            turnId: string;
+            itemId: string;
+          };
+        }
+        await compare('artifact.review.select', inputs['artifact.review.select']);
+        const imported = await compare('artifact.import', inputs['artifact.import']);
+        const read = await compare('artifact.read', { artifactId: imported.artifactId });
+        expect(read).toEqual(
+          f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId)
+        );
+        expect((read as unknown as { content: unknown }).content).toEqual({
+          format: 'file',
+          mediaType: 'application/octet-stream',
+          byteLength: original.size,
+        });
+        expect(
+          await compare('artifact.download', {
+            artifactId: imported.artifactId,
+            artifactVersion: 1,
+          })
+        ).toEqual({
+          bytes: originalBytes,
+          byteLength: original.size,
+          mediaType: 'application/octet-stream',
+          contentDigest: original.sha256,
+        });
+        const list = await compare('artifact.list', {});
+        expect(list).toEqual({
+          items: f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001'),
+        });
+        const introduced = await compare('artifact.introduce', {
+          ...inputs['artifact.introduce'],
+          artifactId: imported.artifactId,
+        });
+        expect(
+          f.store.getTurn(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            introduced.turnId
+          ).items[0]?.id
+        ).toBe(introduced.itemId);
+        expect(
+          f.store.getArtifact('ws_00000000-0000-7000-8000-000000000001', imported.artifactId).origin
+            .kind
+        ).toBe('imported');
+        await compare('artifact.version-list', { artifactId: imported.artifactId });
         await compare('artifact.version-read', {
           artifactId: imported.artifactId,
           artifactVersion: 1,
-        })
-      ).toMatchObject({
-        artifact: { version: 1, contentDigest: original.sha256 },
-        version: { parentVersion: null },
-      });
-      expect(
-        await compare('artifact.version-list', { artifactId: imported.artifactId })
-      ).toMatchObject({
-        items: [{ artifactVersion: 1 }, { artifactVersion: 2 }, { artifactVersion: 3 }],
-      });
-      await compare('artifact.review.decide', inputs['artifact.review.decide']);
-      const reviews = await compare('artifact.review-list', inputs['artifact.review-list']);
-      const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      try {
-        expect(reviews).toEqual({
-          reviews: [getArtifactReview(db, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)],
         });
-      } finally {
-        db.sqlite.close();
-      }
-      for (const project of Object.values(await projections(f, token, 'artifact.import')))
-        await expect(
-          project('artifact.import', {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            ...inputs['artifact.import'],
-            title: 'Changed input',
+        await compare('artifact.version-commit', {
+          ...inputs['artifact.version-commit'],
+          artifactId: imported.artifactId,
+        });
+        await compare('artifact.version-file-commit', {
+          ...inputs['artifact.version-file-commit'],
+          artifactId: imported.artifactId,
+        });
+        expect(
+          await compare('artifact.version-read', {
+            artifactId: imported.artifactId,
+            artifactVersion: 1,
           })
-        ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
-    } finally {
-      await f.close();
+        ).toMatchObject({
+          artifact: { version: 1, contentDigest: original.sha256 },
+          version: { parentVersion: null },
+        });
+        expect(
+          await compare('artifact.version-list', { artifactId: imported.artifactId })
+        ).toMatchObject({
+          items: [{ artifactVersion: 1 }, { artifactVersion: 2 }, { artifactVersion: 3 }],
+        });
+        await compare('artifact.review.decide', inputs['artifact.review.decide']);
+        const reviews = await compare('artifact.review-list', inputs['artifact.review-list']);
+        const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        try {
+          expect(reviews).toEqual({
+            reviews: [getArtifactReview(db, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)],
+          });
+        } finally {
+          db.sqlite.close();
+        }
+        for (const project of Object.values(await projections(f, token, 'artifact.import')))
+          await expect(
+            project('artifact.import', {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              ...inputs['artifact.import'],
+              title: 'Changed input',
+            })
+          ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 
   it('rechecks the current source audience and exact version for binary downloads', async () => {
     const f = await fixture(true, true, true);
@@ -840,77 +845,77 @@ describe('Artifact definition projections', () => {
     }
   });
 
-  it.each([
-    'artifact.import',
-    'artifact.introduce',
-    'artifact.review.decide',
-  ] as const)('retains HTTP 500 when %s cannot open its receipt database', async (id) => {
-    const f = await fixture();
-    try {
-      const app = new Hono<{ Variables: AuthVariables }>();
-      app.use('*', async (c, next) => {
-        c.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
-        await next();
-      });
-      const dependencies = {
-        app,
-        coreDb: f.coreDb,
-        store: f.store,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-        requestStore: () => f.store,
-        inflightCommands: new WeakMap(),
-        repositoryWorkspaceDb: () => {
-          throw new Error('Fixture database unavailable.');
-        },
-      };
-      registerOperationJsonRoutes(dependencies);
-      registerArtifactFileRoutes({
-        ...dependencies,
-        dataRoot: f.dataRoot,
-        fileAdmission: new FileStorageAdmission(f.dataRoot, () => 0n),
-      });
-      const { requestId, ...body } = inputs[id];
-      const metadata = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...body };
-      const query =
-        id === 'artifact.import'
-          ? `?${new URLSearchParams(Object.entries(metadata).map(([key, value]) => [key, String(value)]))}`
-          : '';
-      const response = await app.request(`/api/app/operations/${id}${query}`, {
-        method: 'POST',
-        headers: {
-          'content-type':
-            id === 'artifact.import' ? 'application/octet-stream' : 'application/json',
-          'x-openkit-request-id': requestId,
-        },
-        body: id === 'artifact.import' ? originalBytes : JSON.stringify(metadata),
-      });
-      expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({
-        protocolVersion: PROTOCOL_VERSION,
-        code: 'internal_error',
-        message: 'Internal Server Error',
-      });
-    } finally {
-      await f.close();
-    }
-  });
-
-  it.each(
-    Object.entries(inputs)
-  )('preserves unauthorized Workspace refusal for %s across HTTP client and CLI', async (id, input) => {
-    const f = await fixture();
-    try {
-      for (const project of Object.values(await projections(f, undefined, id)))
-        await expect(
-          project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
-        ).rejects.toMatchObject({
-          code: 'workspace_access_denied',
-          status: 403,
+  it.each(['artifact.import', 'artifact.introduce', 'artifact.review.decide'] as const)(
+    'retains HTTP 500 when %s cannot open its receipt database',
+    async (id) => {
+      const f = await fixture();
+      try {
+        const app = new Hono<{ Variables: AuthVariables }>();
+        app.use('*', async (c, next) => {
+          c.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
+          await next();
         });
-    } finally {
-      await f.close();
+        const dependencies = {
+          app,
+          coreDb: f.coreDb,
+          store: f.store,
+          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          requestStore: () => f.store,
+          inflightCommands: new WeakMap(),
+          repositoryWorkspaceDb: () => {
+            throw new Error('Fixture database unavailable.');
+          },
+        };
+        registerOperationJsonRoutes(dependencies);
+        registerArtifactFileRoutes({
+          ...dependencies,
+          dataRoot: f.dataRoot,
+          fileAdmission: new FileStorageAdmission(f.dataRoot, () => 0n),
+        });
+        const { requestId, ...body } = inputs[id];
+        const metadata = { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...body };
+        const query =
+          id === 'artifact.import'
+            ? `?${new URLSearchParams(Object.entries(metadata).map(([key, value]) => [key, String(value)]))}`
+            : '';
+        const response = await app.request(`/api/app/operations/${id}${query}`, {
+          method: 'POST',
+          headers: {
+            'content-type':
+              id === 'artifact.import' ? 'application/octet-stream' : 'application/json',
+            'x-openkit-request-id': requestId,
+          },
+          body: id === 'artifact.import' ? originalBytes : JSON.stringify(metadata),
+        });
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({
+          protocolVersion: PROTOCOL_VERSION,
+          code: 'internal_error',
+          message: 'Internal Server Error',
+        });
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
+
+  it.each(Object.entries(inputs))(
+    'preserves unauthorized Workspace refusal for %s across HTTP client and CLI',
+    async (id, input) => {
+      const f = await fixture();
+      try {
+        for (const project of Object.values(await projections(f, undefined, id)))
+          await expect(
+            project(id, { ...input, workspaceId: 'ws_00000000-0000-7744-93d6-d2f551c62efa' })
+          ).rejects.toMatchObject({
+            code: 'workspace_access_denied',
+            status: 403,
+          });
+      } finally {
+        await f.close();
+      }
+    }
+  );
 
   it('preserves Artifact owner not-found for another member reading private-origin content and an unknown Artifact id in another authorized Workspace', async () => {
     const f = await fixture(true, true, true);
@@ -963,49 +968,52 @@ describe('Artifact definition projections', () => {
         'artifact.review.select',
       ].includes(id)
     )
-  )('refuses read-only Token mutation for %s across HTTP client and CLI before effects', async (id, input) => {
-    const f = await fixture();
-    let reviewDb: ReturnType<typeof openWorkspaceDb> | undefined;
-    try {
-      const token = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        scope: 'workspace-readonly',
-        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      }).secret;
-      const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-      const turns = f.store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      );
-      if (id === 'artifact.review.decide' || id === 'artifact.review.select')
-        reviewDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const review = reviewDb
-        ? getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)
-        : undefined;
-      for (const project of Object.values(await projections(f, token, id)))
-        await expect(
-          project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
-        ).rejects.toMatchObject({
-          code: 'workspace_access_denied',
-          status: 403,
-        });
-      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
-      expect(
-        f.store.listThreadTurns(
+  )(
+    'refuses read-only Token mutation for %s across HTTP client and CLI before effects',
+    async (id, input) => {
+      const f = await fixture();
+      let reviewDb: ReturnType<typeof openWorkspaceDb> | undefined;
+      try {
+        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          scope: 'workspace-readonly',
+          workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        }).secret;
+        const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
+        const turns = f.store.listThreadTurns(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
-        )
-      ).toEqual(turns);
-      if (reviewDb)
-        expect(getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)).toEqual(
-          review
         );
-    } finally {
-      reviewDb?.sqlite.close();
-      await f.close();
+        if (id === 'artifact.review.decide' || id === 'artifact.review.select')
+          reviewDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        const review = reviewDb
+          ? getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)
+          : undefined;
+        for (const project of Object.values(await projections(f, token, id)))
+          await expect(
+            project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
+          ).rejects.toMatchObject({
+            code: 'workspace_access_denied',
+            status: 403,
+          });
+        expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
+        expect(
+          f.store.listThreadTurns(
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001'
+          )
+        ).toEqual(turns);
+        if (reviewDb)
+          expect(getArtifactReview(reviewDb, 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f', 1)).toEqual(
+            review
+          );
+      } finally {
+        reviewDb?.sqlite.close();
+        await f.close();
+      }
     }
-  });
+  );
 
   it.each(
     Object.entries(inputs).filter(([id]) =>
@@ -1018,20 +1026,23 @@ describe('Artifact definition projections', () => {
         'artifact.review.select',
       ].includes(id)
     )
-  )('returns product_work_unavailable for %s while product admission is closed', async (id, input) => {
-    const f = await fixture(true, false);
-    try {
-      const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-      for (const project of Object.values(await projections(f, undefined, id)))
-        await expect(
-          project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
-        ).rejects.toMatchObject({
-          code: 'product_work_unavailable',
-          status: 503,
-        });
-      expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
-    } finally {
-      await f.close();
+  )(
+    'returns product_work_unavailable for %s while product admission is closed',
+    async (id, input) => {
+      const f = await fixture(true, false);
+      try {
+        const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
+        for (const project of Object.values(await projections(f, undefined, id)))
+          await expect(
+            project(id, { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', ...input })
+          ).rejects.toMatchObject({
+            code: 'product_work_unavailable',
+            status: 503,
+          });
+        expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
+      } finally {
+        await f.close();
+      }
     }
-  });
+  );
 });

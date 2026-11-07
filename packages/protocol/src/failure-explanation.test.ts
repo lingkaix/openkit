@@ -49,21 +49,19 @@ describe('durable failure explanation', () => {
   ])('rejects unsupported or contradictory evidence case %#', (value) => {
     expect(GitFailureExplanationSchema.safeParse(value).success).toBe(false);
   });
-  it.each([
-    'exit',
-    'signal',
-    'spawn',
-    'timeout',
-  ])('preserves transport outcome %s', (subprocess) => {
-    expect(
-      GitFailureExplanationSchema.parse({
-        ...explanation,
-        code: 'git_fetch_transport_failed',
-        httpStatus: null,
-        subprocess,
-      })
-    ).toMatchObject({ subprocess });
-  });
+  it.each(['exit', 'signal', 'spawn', 'timeout'])(
+    'preserves transport outcome %s',
+    (subprocess) => {
+      expect(
+        GitFailureExplanationSchema.parse({
+          ...explanation,
+          code: 'git_fetch_transport_failed',
+          httpStatus: null,
+          subprocess,
+        })
+      ).toMatchObject({ subprocess });
+    }
+  );
 
   it('preserves an unattributed HTTP refusal as structured product data', () => {
     expect(

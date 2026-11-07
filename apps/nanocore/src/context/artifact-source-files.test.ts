@@ -198,40 +198,38 @@ it.each([
     availability: 'unavailable',
     reason: 'invalid_utf8',
   },
-])('keeps empty and unsupported originals truthful ($mediaType, $reason)', async ({
-  body,
-  mediaType,
-  availability,
-  reason,
-}) => {
-  const f = await fixture(body, 'file', mediaType);
-  const [source] = await prepareArtifactSourceInputs(f.input);
-  expect(source!.projection.availability).toBe(availability);
-  expect(source!.originalDigest).toBe(sha256(body));
-  if (reason) {
-    expect(source!.projection).toMatchObject({ kind: 'descriptor', ranges: [], truncated: true });
-    expect(source!.deliveredBytes.byteLength).toBeLessThanOrEqual(2048);
-    expect(JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8'))).toMatchObject({
-      status: 'unavailable',
-      reason,
-    });
-    expect(Buffer.from(source!.deliveredBytes).toString('utf8')).not.toContain('\ufffd');
-  } else
-    expect(source!.projection).toMatchObject({
-      kind: 'body',
-      ranges: [{ start: 0, end: 0 }],
-      byteLength: 0,
-      truncated: false,
-    });
-  const files = packageFor(f, [source!]);
-  await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const snapshot = join(
-    f.workspaceRoot,
-    'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
-  );
-  expect(readdirSync(snapshot)).not.toContain('originals');
-  expect(readFileSync(join(snapshot, source!.packagePath))).toEqual(source!.deliveredBytes);
-});
+])(
+  'keeps empty and unsupported originals truthful ($mediaType, $reason)',
+  async ({ body, mediaType, availability, reason }) => {
+    const f = await fixture(body, 'file', mediaType);
+    const [source] = await prepareArtifactSourceInputs(f.input);
+    expect(source!.projection.availability).toBe(availability);
+    expect(source!.originalDigest).toBe(sha256(body));
+    if (reason) {
+      expect(source!.projection).toMatchObject({ kind: 'descriptor', ranges: [], truncated: true });
+      expect(source!.deliveredBytes.byteLength).toBeLessThanOrEqual(2048);
+      expect(JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8'))).toMatchObject({
+        status: 'unavailable',
+        reason,
+      });
+      expect(Buffer.from(source!.deliveredBytes).toString('utf8')).not.toContain('\ufffd');
+    } else
+      expect(source!.projection).toMatchObject({
+        kind: 'body',
+        ranges: [{ start: 0, end: 0 }],
+        byteLength: 0,
+        truncated: false,
+      });
+    const files = packageFor(f, [source!]);
+    await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
+    const snapshot = join(
+      f.workspaceRoot,
+      'threads/th_00000000-0000-7000-8000-0000000003fa/turns/tu_00000000-0000-7000-8000-0000000003ff/context-package'
+    );
+    expect(readdirSync(snapshot)).not.toContain('originals');
+    expect(readFileSync(join(snapshot, source!.packagePath))).toEqual(source!.deliveredBytes);
+  }
+);
 
 /** Exercises the actual S39 producer/consumer rather than duplicating its digest checks. */
 function packageFor(
@@ -251,70 +249,64 @@ function packageFor(
   });
 }
 
-it.each([
-  'version',
-  'text-digest',
-  'inline-digest',
-  'binary-digest',
-] as const)('refuses incorrect selected %s identity at its proving boundary', async (change) => {
-  const f = await fixture(
-    Buffer.from('exact canonical original'),
-    change === 'inline-digest' ? 'text' : 'file',
-    change === 'binary-digest' ? 'application/octet-stream' : 'text/plain'
-  );
-  const changed = structuredClone(f.artifact);
-  if (change === 'version') changed.version = 2;
-  else {
-    changed.contentDigest = `sha256:${'0'.repeat(64)}`;
-    if (changed.origin.kind === 'imported') changed.origin.sourceDigest = changed.contentDigest;
+it.each(['version', 'text-digest', 'inline-digest', 'binary-digest'] as const)(
+  'refuses incorrect selected %s identity at its proving boundary',
+  async (change) => {
+    const f = await fixture(
+      Buffer.from('exact canonical original'),
+      change === 'inline-digest' ? 'text' : 'file',
+      change === 'binary-digest' ? 'application/octet-stream' : 'text/plain'
+    );
+    const changed = structuredClone(f.artifact);
+    if (change === 'version') changed.version = 2;
+    else {
+      changed.contentDigest = `sha256:${'0'.repeat(64)}`;
+      if (changed.origin.kind === 'imported') changed.origin.sourceDigest = changed.contentDigest;
+    }
+    // Omit current-owner checks only to isolate the independent payload SHA proof; runtime must supply them.
+    const pending = prepareArtifactSourceInputs({
+      ...f.input,
+      artifacts: [changed],
+      assertCurrent: () => {},
+    });
+    if (change === 'binary-digest') {
+      const sources = await pending;
+      await expect(
+        writeWorkerContextPackageFiles(f.workspaceRoot, packageFor(f, sources), {
+          admission: f.admission,
+        })
+      ).rejects.toThrow(/digest mismatch/);
+    } else await expect(pending).rejects.toThrow();
   }
-  // Omit current-owner checks only to isolate the independent payload SHA proof; runtime must supply them.
-  const pending = prepareArtifactSourceInputs({
-    ...f.input,
-    artifacts: [changed],
-    assertCurrent: () => {},
-  });
-  if (change === 'binary-digest') {
-    const sources = await pending;
-    await expect(
-      writeWorkerContextPackageFiles(f.workspaceRoot, packageFor(f, sources), {
-        admission: f.admission,
-      })
-    ).rejects.toThrow(/digest mismatch/);
-  } else await expect(pending).rejects.toThrow();
-});
+);
 
-it.each([
-  'edited',
-  'replaced',
-  'symlink',
-  'hardlink',
-  'metadata',
-  'parent-symlink',
-] as const)('rejects an original %s after preview', async (change) => {
-  const f = await fixture(Buffer.from('exact canonical original'));
-  const [source] = await prepareArtifactSourceInputs(f.input);
-  const sibling = join(f.root, 'replacement');
-  if (change === 'edited') writeFileSync(f.path, Buffer.alloc(f.body.length, 120));
-  if (change === 'replaced') {
-    renameSync(f.path, sibling);
-    writeFileSync(f.path, f.body);
+it.each(['edited', 'replaced', 'symlink', 'hardlink', 'metadata', 'parent-symlink'] as const)(
+  'rejects an original %s after preview',
+  async (change) => {
+    const f = await fixture(Buffer.from('exact canonical original'));
+    const [source] = await prepareArtifactSourceInputs(f.input);
+    const sibling = join(f.root, 'replacement');
+    if (change === 'edited') writeFileSync(f.path, Buffer.alloc(f.body.length, 120));
+    if (change === 'replaced') {
+      renameSync(f.path, sibling);
+      writeFileSync(f.path, f.body);
+    }
+    if (change === 'symlink') {
+      renameSync(f.path, sibling);
+      symlinkSync(sibling, f.path);
+    }
+    if (change === 'hardlink') linkSync(f.path, sibling);
+    if (change === 'metadata') chmodSync(f.path, 0o640);
+    if (change === 'parent-symlink') {
+      const parent = dirname(f.path);
+      renameSync(parent, sibling);
+      symlinkSync(sibling, parent);
+    }
+    await expect(source!.assertUnchanged()).rejects.toThrow();
+    const iterator = source!.open(new AbortController().signal)[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toThrow();
   }
-  if (change === 'symlink') {
-    renameSync(f.path, sibling);
-    symlinkSync(sibling, f.path);
-  }
-  if (change === 'hardlink') linkSync(f.path, sibling);
-  if (change === 'metadata') chmodSync(f.path, 0o640);
-  if (change === 'parent-symlink') {
-    const parent = dirname(f.path);
-    renameSync(parent, sibling);
-    symlinkSync(sibling, parent);
-  }
-  await expect(source!.assertUnchanged()).rejects.toThrow();
-  const iterator = source!.open(new AbortController().signal)[Symbol.asyncIterator]();
-  await expect(iterator.next()).rejects.toThrow();
-});
+);
 
 it('rechecks current exact metadata and authority before acquisition and after awaited operations', async () => {
   const f = await fixture(Buffer.from('exact canonical original'));
@@ -386,54 +378,54 @@ it('refuses cancellation during preparation and before returning a subsequent or
   await expect(iterator.next()).rejects.toThrow();
 });
 
-it.each([
-  16_777_216, 16_777_217,
-])('bounds the inline processor independently while streaming %i exact original bytes', async (byteLength) => {
-  const f = await fixture(Buffer.alloc(byteLength), 'text');
-  const [source] = await prepareArtifactSourceInputs(f.input);
-  if (byteLength > 16_777_216) {
-    expect(source!.projection).toMatchObject({
-      kind: 'descriptor',
-      availability: 'unavailable',
-      ranges: [],
-    });
-    expect(JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8')).reason).toBe(
-      'resource_limited'
+it.each([16_777_216, 16_777_217])(
+  'bounds the inline processor independently while streaming %i exact original bytes',
+  async (byteLength) => {
+    const f = await fixture(Buffer.alloc(byteLength), 'text');
+    const [source] = await prepareArtifactSourceInputs(f.input);
+    if (byteLength > 16_777_216) {
+      expect(source!.projection).toMatchObject({
+        kind: 'descriptor',
+        availability: 'unavailable',
+        ranges: [],
+      });
+      expect(JSON.parse(Buffer.from(source!.deliveredBytes).toString('utf8')).reason).toBe(
+        'resource_limited'
+      );
+    } else {
+      expect(source!.projection).toMatchObject({
+        kind: 'excerpt',
+        availability: 'incomplete',
+        ranges: [{ start: 0, end: 2048 }],
+      });
+      expect(source!.deliveredBytes).toEqual(f.body.subarray(0, 2048));
+    }
+    let length = 0;
+    const hash = createHash('sha256');
+    for await (const chunk of source!.open(new AbortController().signal)) {
+      expect(chunk.byteLength).toBeLessThanOrEqual(65_536);
+      length += chunk.byteLength;
+      hash.update(chunk);
+    }
+    expect(length).toBe(byteLength);
+    expect(`sha256:${hash.digest('hex')}`).toBe(
+      byteLength === 16_777_217
+        ? 'sha256:1003b1b5dc078189799a1216ce0f9fbcebb94e8b6b83c58c4b03345f07f94ced'
+        : sha256(f.body)
     );
-  } else {
-    expect(source!.projection).toMatchObject({
-      kind: 'excerpt',
-      availability: 'incomplete',
-      ranges: [{ start: 0, end: 2048 }],
-    });
-    expect(source!.deliveredBytes).toEqual(f.body.subarray(0, 2048));
   }
-  let length = 0;
-  const hash = createHash('sha256');
-  for await (const chunk of source!.open(new AbortController().signal)) {
-    expect(chunk.byteLength).toBeLessThanOrEqual(65_536);
-    length += chunk.byteLength;
-    hash.update(chunk);
-  }
-  expect(length).toBe(byteLength);
-  expect(`sha256:${hash.digest('hex')}`).toBe(
-    byteLength === 16_777_217
-      ? 'sha256:1003b1b5dc078189799a1216ce0f9fbcebb94e8b6b83c58c4b03345f07f94ced'
-      : sha256(f.body)
-  );
-});
+);
 
-it.each([
-  'text',
-  'markdown',
-  'json',
-] as const)('streams retained %s bytes across surrogate-pair boundaries without replacement drift', async (format) => {
-  const f = await fixture(Buffer.from(`${'a'.repeat(16_383)}🙂${'é'.repeat(500)}`), format);
-  const [source] = await prepareArtifactSourceInputs(f.input);
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of source!.open(new AbortController().signal)) chunks.push(chunk);
-  expect(Buffer.concat(chunks)).toEqual(f.body);
-});
+it.each(['text', 'markdown', 'json'] as const)(
+  'streams retained %s bytes across surrogate-pair boundaries without replacement drift',
+  async (format) => {
+    const f = await fixture(Buffer.from(`${'a'.repeat(16_383)}🙂${'é'.repeat(500)}`), format);
+    const [source] = await prepareArtifactSourceInputs(f.input);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of source!.open(new AbortController().signal)) chunks.push(chunk);
+    expect(Buffer.concat(chunks)).toEqual(f.body);
+  }
+);
 
 it('refuses duplicate selections and malformed current source identity before touching originals', async () => {
   const f = await fixture(Buffer.from('exact canonical original'));

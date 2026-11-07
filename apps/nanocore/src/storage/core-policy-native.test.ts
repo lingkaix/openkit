@@ -116,75 +116,78 @@ describe('Core Policy native publication', () => {
     expect(listServerAuditEvents(db)).toEqual(audits);
   });
 
-  it.each([
-    1, 2,
-  ] as const)('keeps the boot pair pending at real COMMIT point %i and replays its cold retained identities', async (point) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-core-policy-boot-native-'));
-    let db = openCoreDb(root);
-    let pending: Promise<unknown> | undefined;
-    onTestFinished(async () => {
+  it.each([1, 2] as const)(
+    'keeps the boot pair pending at real COMMIT point %i and replays its cold retained identities',
+    async (point) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-core-policy-boot-native-'));
+      let db = openCoreDb(root);
+      let pending: Promise<unknown> | undefined;
+      onTestFinished(async () => {
+        releaseCommit();
+        if (pending) await Promise.allSettled([pending]);
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      });
+      applyMigrations(db);
+      db.sqlite.pragma('query_only = ON');
+      const kernel = loadBootPolicyKernel();
+      // Same direct READONLY discriminator, with a different boot correlation from the hold.
+      await recordBootPolicySelfCheckDecisions({ coreDb: db, kernel, bootId: 'boot_open', now });
+      const before = listServerPermissionDecisions(db);
+      const beforeAudit = listServerAuditEvents(db);
+      expect(before).toHaveLength(2);
+      expect(beforeAudit).toHaveLength(2);
+      const input = { coreDb: db, kernel, bootId: 'boot_held', now };
+      const held = await heldCommit(point, () => {
+        pending = Promise.resolve().then(() => recordBootPolicySelfCheckDecisions(input));
+        return pending;
+      });
+      const visible = listServerPermissionDecisions(db);
+      const visibleAudit = listServerAuditEvents(db);
+      // Before COMMIT no member is visible; after COMMIT the whole tuple is visible,
+      // while the public result is still pending. heldCommit also checks synchronous=FULL.
+      expect(visible).toHaveLength(point === 1 ? 2 : 4);
+      expect(visibleAudit).toHaveLength(point === 1 ? 2 : 4);
+      if (point === 1) {
+        expect(visible).toEqual(before);
+        expect(visibleAudit).toEqual(beforeAudit);
+      }
       releaseCommit();
-      if (pending) await Promise.allSettled([pending]);
+      await held.result;
+      const rows = listServerPermissionDecisions(db);
+      const audits = listServerAuditEvents(db);
+      const pair = rows.filter(
+        (row) => (row.contextSummary as { bootId?: string }).bootId === 'boot_held'
+      );
+      expect(rows).toHaveLength(4);
+      expect(audits).toHaveLength(4);
+      expect(
+        pair.map(({ action, result, reasonCode }) => ({ action, result, reasonCode }))
+      ).toEqual(
+        expect.arrayContaining([
+          { action: 'api.call', result: 'allow', reasonCode: 'association-grant' },
+          { action: 'vault.use', result: 'deny', reasonCode: 'restriction' },
+        ])
+      );
+      expect(pair).toHaveLength(2);
+      for (const row of pair)
+        expect(audits.filter((audit) => audit.permissionDecisionId === row.decisionId)).toEqual([
+          expect.objectContaining({ id: row.auditEventId }),
+        ]);
       await shutdownControlStoreWorkerClient();
       db.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
-    });
-    applyMigrations(db);
-    db.sqlite.pragma('query_only = ON');
-    const kernel = loadBootPolicyKernel();
-    // Same direct READONLY discriminator, with a different boot correlation from the hold.
-    await recordBootPolicySelfCheckDecisions({ coreDb: db, kernel, bootId: 'boot_open', now });
-    const before = listServerPermissionDecisions(db);
-    const beforeAudit = listServerAuditEvents(db);
-    expect(before).toHaveLength(2);
-    expect(beforeAudit).toHaveLength(2);
-    const input = { coreDb: db, kernel, bootId: 'boot_held', now };
-    const held = await heldCommit(point, () => {
-      pending = Promise.resolve().then(() => recordBootPolicySelfCheckDecisions(input));
-      return pending;
-    });
-    const visible = listServerPermissionDecisions(db);
-    const visibleAudit = listServerAuditEvents(db);
-    // Before COMMIT no member is visible; after COMMIT the whole tuple is visible,
-    // while the public result is still pending. heldCommit also checks synchronous=FULL.
-    expect(visible).toHaveLength(point === 1 ? 2 : 4);
-    expect(visibleAudit).toHaveLength(point === 1 ? 2 : 4);
-    if (point === 1) {
-      expect(visible).toEqual(before);
-      expect(visibleAudit).toEqual(beforeAudit);
+      db = openCoreDb(root);
+      db.sqlite.pragma('query_only = ON');
+      await recordBootPolicySelfCheckDecisions({
+        ...input,
+        coreDb: db,
+        now: new Date('2026-07-05T00:01:00.000Z'),
+      });
+      expect(listServerPermissionDecisions(db)).toEqual(rows);
+      expect(listServerAuditEvents(db)).toEqual(audits);
     }
-    releaseCommit();
-    await held.result;
-    const rows = listServerPermissionDecisions(db);
-    const audits = listServerAuditEvents(db);
-    const pair = rows.filter(
-      (row) => (row.contextSummary as { bootId?: string }).bootId === 'boot_held'
-    );
-    expect(rows).toHaveLength(4);
-    expect(audits).toHaveLength(4);
-    expect(pair.map(({ action, result, reasonCode }) => ({ action, result, reasonCode }))).toEqual(
-      expect.arrayContaining([
-        { action: 'api.call', result: 'allow', reasonCode: 'association-grant' },
-        { action: 'vault.use', result: 'deny', reasonCode: 'restriction' },
-      ])
-    );
-    expect(pair).toHaveLength(2);
-    for (const row of pair)
-      expect(audits.filter((audit) => audit.permissionDecisionId === row.decisionId)).toEqual([
-        expect.objectContaining({ id: row.auditEventId }),
-      ]);
-    await shutdownControlStoreWorkerClient();
-    db.sqlite.close();
-    db = openCoreDb(root);
-    db.sqlite.pragma('query_only = ON');
-    await recordBootPolicySelfCheckDecisions({
-      ...input,
-      coreDb: db,
-      now: new Date('2026-07-05T00:01:00.000Z'),
-    });
-    expect(listServerPermissionDecisions(db)).toEqual(rows);
-    expect(listServerAuditEvents(db)).toEqual(audits);
-  });
+  );
 
   it('reports unknown when the exact boot Worker dies after FULL COMMIT and retains the pair on cold explicit replay', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-core-policy-boot-loss-'));
@@ -281,103 +284,105 @@ describe('Core Policy native publication', () => {
     expect(listServerAuditEvents(db)).toEqual(audits);
   });
 
-  it.each([
-    'record',
-    'boot',
-  ] as const)('rejects malformed %s and refuses its valid Server form on the physical Workspace owner', async (stage) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-core-policy-closed-boundary-'));
-    const db = openCoreDb(root);
-    const workspace = openWorkspaceDb(root, allocateEntityId('ws'));
-    const client = getControlStoreWorkerClient();
-    const capture = vi.spyOn(client, 'coreCapability');
-    onTestFinished(async () => {
-      releaseCommit();
-      capture.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      workspace.sqlite.close();
-      db.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
-    });
-    applyMigrations(db);
-    applyScopedMigrations(workspace, undefined, 'pre-knowledge');
-    db.sqlite.pragma('query_only = ON');
-    workspace.sqlite.pragma('query_only = ON');
-    // Capture the closed value from the unchanged public owner, including real boot Kernel facts.
-    if (stage === 'record')
-      await recordProductPermissionDecision({ ...evidence, coreDb: db, decisionId: firstId });
-    else
-      await recordBootPolicySelfCheckDecisions({
-        coreDb: db,
-        kernel: loadBootPolicyKernel(),
-        bootId: 'boot_closed_boundary',
-        now,
+  it.each(['record', 'boot'] as const)(
+    'rejects malformed %s and refuses its valid Server form on the physical Workspace owner',
+    async (stage) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-core-policy-closed-boundary-'));
+      const db = openCoreDb(root);
+      const workspace = openWorkspaceDb(root, allocateEntityId('ws'));
+      const client = getControlStoreWorkerClient();
+      const capture = vi.spyOn(client, 'coreCapability');
+      onTestFinished(async () => {
+        releaseCommit();
+        capture.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        workspace.sqlite.close();
+        db.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
       });
-    expect(capture).toHaveBeenCalledTimes(1);
-    const input = capture.mock.calls[0]![1];
-    if (input.kind !== 'server-permission')
-      throw new Error('Public Policy owner did not submit the Server permission family.');
-    expect(input.stage.kind).toBe(stage);
-    capture.mockRestore();
-    const rows = listServerPermissionDecisions(db);
-    const audits = listServerAuditEvents(db);
-    expect(rows).toHaveLength(stage === 'record' ? 1 : 2);
-    expect(audits).toHaveLength(stage === 'record' ? 1 : 2);
-    const workspaceDatabase = `workspace:${workspace.sqlite.name}`;
-    await client.open({
-      database: workspaceDatabase,
-      path: workspace.sqlite.name,
-      dataRoot: root,
-      productOwner: { kind: 'workspace', workspaceId: workspace.workspaceId },
-      create: false,
-      initialize: 'workspace',
-    });
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    onTestFinished(() => posted.mockRestore());
-    const request = {
-      version: CONTROL_WORKER_VERSION,
-      id: 0,
-      operation: 'capability',
-      database: `core:${db.sqlite.name}`,
-      input,
-    };
-    expect(isControlWorkerRequest(request)).toBe(true);
-    const malformed = {
-      ...input,
-      stage:
-        input.stage.kind === 'record'
-          ? { ...input.stage, sql: 'SELECT 1' }
-          : { ...input.stage, decisions: input.stage.decisions.slice(0, 1) },
-    };
-    expect(isControlWorkerRequest({ ...request, input: malformed })).toBe(false);
-    // Deliberately bypass TypeScript only here: the actual client must refuse malformed input.
-    await expect(
-      client.coreCapability(db, malformed as unknown as typeof input)
-    ).rejects.toBeInstanceOf(ZodError);
-    expect(posted).not.toHaveBeenCalled();
-    expect(listServerPermissionDecisions(db)).toEqual(rows);
-    expect(listServerAuditEvents(db)).toEqual(audits);
-    // The original closed form is schema-valid, so this refusal must come from physical dispatch.
-    expect(isControlWorkerRequest({ ...request, database: workspaceDatabase })).toBe(true);
-    await expect(client.capability(workspaceDatabase, input)).rejects.toMatchObject({
-      name: 'ControlStoreWorkerError',
-      code: 'precondition',
-      commit: 'not-committed',
-    });
-    const requests = posted.mock.calls
-      .map(([value]) => value as ControlWorkerRequest)
-      .filter((value) => value.operation === 'capability' && value.database === workspaceDatabase);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
-      input: {
-        kind: 'server-permission',
-        stage: { kind: stage },
-      },
-    });
-    expect(workspace.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual([]);
-    expect(workspace.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
-    expect(listServerPermissionDecisions(db)).toEqual(rows);
-    expect(listServerAuditEvents(db)).toEqual(audits);
-  });
+      applyMigrations(db);
+      applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+      db.sqlite.pragma('query_only = ON');
+      workspace.sqlite.pragma('query_only = ON');
+      // Capture the closed value from the unchanged public owner, including real boot Kernel facts.
+      if (stage === 'record')
+        await recordProductPermissionDecision({ ...evidence, coreDb: db, decisionId: firstId });
+      else
+        await recordBootPolicySelfCheckDecisions({
+          coreDb: db,
+          kernel: loadBootPolicyKernel(),
+          bootId: 'boot_closed_boundary',
+          now,
+        });
+      expect(capture).toHaveBeenCalledTimes(1);
+      const input = capture.mock.calls[0]![1];
+      if (input.kind !== 'server-permission')
+        throw new Error('Public Policy owner did not submit the Server permission family.');
+      expect(input.stage.kind).toBe(stage);
+      capture.mockRestore();
+      const rows = listServerPermissionDecisions(db);
+      const audits = listServerAuditEvents(db);
+      expect(rows).toHaveLength(stage === 'record' ? 1 : 2);
+      expect(audits).toHaveLength(stage === 'record' ? 1 : 2);
+      const workspaceDatabase = `workspace:${workspace.sqlite.name}`;
+      await client.open({
+        database: workspaceDatabase,
+        path: workspace.sqlite.name,
+        dataRoot: root,
+        productOwner: { kind: 'workspace', workspaceId: workspace.workspaceId },
+        create: false,
+        initialize: 'workspace',
+      });
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      onTestFinished(() => posted.mockRestore());
+      const request = {
+        version: CONTROL_WORKER_VERSION,
+        id: 0,
+        operation: 'capability',
+        database: `core:${db.sqlite.name}`,
+        input,
+      };
+      expect(isControlWorkerRequest(request)).toBe(true);
+      const malformed = {
+        ...input,
+        stage:
+          input.stage.kind === 'record'
+            ? { ...input.stage, sql: 'SELECT 1' }
+            : { ...input.stage, decisions: input.stage.decisions.slice(0, 1) },
+      };
+      expect(isControlWorkerRequest({ ...request, input: malformed })).toBe(false);
+      // Deliberately bypass TypeScript only here: the actual client must refuse malformed input.
+      await expect(
+        client.coreCapability(db, malformed as unknown as typeof input)
+      ).rejects.toBeInstanceOf(ZodError);
+      expect(posted).not.toHaveBeenCalled();
+      expect(listServerPermissionDecisions(db)).toEqual(rows);
+      expect(listServerAuditEvents(db)).toEqual(audits);
+      // The original closed form is schema-valid, so this refusal must come from physical dispatch.
+      expect(isControlWorkerRequest({ ...request, database: workspaceDatabase })).toBe(true);
+      await expect(client.capability(workspaceDatabase, input)).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        code: 'precondition',
+        commit: 'not-committed',
+      });
+      const requests = posted.mock.calls
+        .map(([value]) => value as ControlWorkerRequest)
+        .filter(
+          (value) => value.operation === 'capability' && value.database === workspaceDatabase
+        );
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        input: {
+          kind: 'server-permission',
+          stage: { kind: stage },
+        },
+      });
+      expect(workspace.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual([]);
+      expect(workspace.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
+      expect(listServerPermissionDecisions(db)).toEqual(rows);
+      expect(listServerAuditEvents(db)).toEqual(audits);
+    }
+  );
 
   it('rolls back both boot decisions and both Audits when the second linked Audit refuses', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-core-policy-boot-rollback-'));

@@ -146,27 +146,26 @@ describe('workspace Git materialization', () => {
     expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Exact remote source\n');
   });
 
-  it.each([
-    'unknown.txt',
-    '.hidden',
-    '.git',
-  ])('preserves a populated uninitialized slot containing %s', async (entry) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-populated-slot-'));
-    const workspaceRoot = join(root, 'workspace');
-    const sessionDir = join(root, 'session');
-    const target = join(workspaceRoot, 'worktrees', 'main');
-    const remote = createBareGitRemote({ 'README.md': '# Exact remote source\n' });
-    mkdirSync(sessionDir);
-    mkdirSync(target, { recursive: true });
-    writeFileSync(join(target, entry), 'preserve these bytes');
-    const input = createWorkspaceGitInput(target, remote.commit, remote.path);
+  it.each(['unknown.txt', '.hidden', '.git'])(
+    'preserves a populated uninitialized slot containing %s',
+    async (entry) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-populated-slot-'));
+      const workspaceRoot = join(root, 'workspace');
+      const sessionDir = join(root, 'session');
+      const target = join(workspaceRoot, 'worktrees', 'main');
+      const remote = createBareGitRemote({ 'README.md': '# Exact remote source\n' });
+      mkdirSync(sessionDir);
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, entry), 'preserve these bytes');
+      const input = createWorkspaceGitInput(target, remote.commit, remote.path);
 
-    await expect(materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)).rejects.toThrow(
-      'Retained Git workspace baseline is unavailable.'
-    );
-    expect(readdirSync(target)).toEqual([entry]);
-    expect(readFileSync(join(target, entry), 'utf8')).toBe('preserve these bytes');
-  });
+      await expect(
+        materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
+      ).rejects.toThrow('Retained Git workspace baseline is unavailable.');
+      expect(readdirSync(target)).toEqual([entry]);
+      expect(readFileSync(join(target, entry), 'utf8')).toBe('preserve these bytes');
+    }
+  );
 
   it.skipIf(process.platform === 'win32')(
     'preserves only the OpenShell Git transport environment for Git subprocesses',
@@ -568,42 +567,43 @@ describe('workspace Git materialization', () => {
     expect(existsSync(join(target, 'README.md'))).toBe(false);
   });
 
-  it.each([
-    401, 403,
-  ])('retains HTTP %s without attributing it to sandbox policy', async (status) => {
-    const remote = createBareGitRemote({ 'README.md': '# refused\n' });
-    const root = mkdtempSync(join(tmpdir(), 'openkit-http-refusal-'));
-    const sessionDir = join(root, 'session');
-    const workspaceRoot = join(root, 'workspace');
-    const target = join(workspaceRoot, 'worktrees', 'main');
-    mkdirSync(sessionDir);
-    const failure = await withScriptedGit(
-      root,
-      join(root, 'git.log'),
-      {
-        shaFetch: 'tls',
-        advertisedStderr: `fatal: unable to access 'https://canary-secret@example.invalid/private?canary-secret': The requested URL returned error: ${status}\n`,
-      },
-      () =>
-        materializeWorkspaceGitInputs(
-          [createWorkspaceGitInput(target, remote.commit, remote.path)],
-          workspaceRoot,
-          sessionDir
-        )
-    ).catch((error: unknown) => error);
-    expect(failure).toMatchObject({
-      message: 'Remote Git commit fetch HTTP refused.',
-      explanation: {
-        code: 'git_fetch_http_refused',
-        httpStatus: status,
-        subprocess: 'exit',
-        enforcement: 'unavailable',
-        evidence: { availability: 'partial', outputTruncated: false },
-      },
-    });
-    expect(JSON.stringify(failure)).not.toContain('canary-secret');
-    expect(existsSync(join(target, '.git'))).toBe(true);
-  });
+  it.each([401, 403])(
+    'retains HTTP %s without attributing it to sandbox policy',
+    async (status) => {
+      const remote = createBareGitRemote({ 'README.md': '# refused\n' });
+      const root = mkdtempSync(join(tmpdir(), 'openkit-http-refusal-'));
+      const sessionDir = join(root, 'session');
+      const workspaceRoot = join(root, 'workspace');
+      const target = join(workspaceRoot, 'worktrees', 'main');
+      mkdirSync(sessionDir);
+      const failure = await withScriptedGit(
+        root,
+        join(root, 'git.log'),
+        {
+          shaFetch: 'tls',
+          advertisedStderr: `fatal: unable to access 'https://canary-secret@example.invalid/private?canary-secret': The requested URL returned error: ${status}\n`,
+        },
+        () =>
+          materializeWorkspaceGitInputs(
+            [createWorkspaceGitInput(target, remote.commit, remote.path)],
+            workspaceRoot,
+            sessionDir
+          )
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        message: 'Remote Git commit fetch HTTP refused.',
+        explanation: {
+          code: 'git_fetch_http_refused',
+          httpStatus: status,
+          subprocess: 'exit',
+          enforcement: 'unavailable',
+          evidence: { availability: 'partial', outputTruncated: false },
+        },
+      });
+      expect(JSON.stringify(failure)).not.toContain('canary-secret');
+      expect(existsSync(join(target, '.git'))).toBe(true);
+    }
+  );
 
   it.each([
     {
@@ -637,46 +637,45 @@ describe('workspace Git materialization', () => {
       code: 'git_fetch_failed',
       truncated: false,
     },
-  ])('retains safe terminal facts for $code (truncated=$truncated)', async ({
-    stderr,
-    code,
-    truncated,
-  }) => {
-    const remote = createBareGitRemote({ 'README.md': '# failed\n' });
-    const root = mkdtempSync(join(tmpdir(), 'openkit-fetch-observation-'));
-    const sessionDir = join(root, 'session');
-    const workspaceRoot = join(root, 'workspace');
-    mkdirSync(sessionDir);
-    const failure = await withScriptedGit(
-      root,
-      join(root, 'git.log'),
-      {
-        shaFetch: 'unrecognized',
-        advertisedStderr: stderr,
-      },
-      () =>
-        materializeWorkspaceGitInputs(
-          [
-            createWorkspaceGitInput(
-              join(workspaceRoot, 'worktrees', 'main'),
-              remote.commit,
-              remote.path
-            ),
-          ],
-          workspaceRoot,
-          sessionDir
-        )
-    ).catch((error: unknown) => error);
-    expect(failure).toMatchObject({
-      explanation: {
-        code,
-        subprocess: 'exit',
-        httpStatus: code === 'git_fetch_http_refused' ? 403 : null,
-        evidence: { availability: 'partial', outputTruncated: truncated },
-      },
-    });
-    expect(JSON.stringify(failure)).not.toContain('canary-secret');
-  });
+  ])(
+    'retains safe terminal facts for $code (truncated=$truncated)',
+    async ({ stderr, code, truncated }) => {
+      const remote = createBareGitRemote({ 'README.md': '# failed\n' });
+      const root = mkdtempSync(join(tmpdir(), 'openkit-fetch-observation-'));
+      const sessionDir = join(root, 'session');
+      const workspaceRoot = join(root, 'workspace');
+      mkdirSync(sessionDir);
+      const failure = await withScriptedGit(
+        root,
+        join(root, 'git.log'),
+        {
+          shaFetch: 'unrecognized',
+          advertisedStderr: stderr,
+        },
+        () =>
+          materializeWorkspaceGitInputs(
+            [
+              createWorkspaceGitInput(
+                join(workspaceRoot, 'worktrees', 'main'),
+                remote.commit,
+                remote.path
+              ),
+            ],
+            workspaceRoot,
+            sessionDir
+          )
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        explanation: {
+          code,
+          subprocess: 'exit',
+          httpStatus: code === 'git_fetch_http_refused' ? 403 : null,
+          evidence: { availability: 'partial', outputTruncated: truncated },
+        },
+      });
+      expect(JSON.stringify(failure)).not.toContain('canary-secret');
+    }
+  );
 
   it('retains a real fetch spawn failure without stderr or fallback', async () => {
     const remote = createBareGitRemote({ 'README.md': '# spawn failure\n' });
@@ -810,34 +809,34 @@ describe('workspace Git materialization', () => {
       advertisedFetch: 'proxy-resolve' as const,
       message: 'Remote Git commit fetch transport failed.',
     },
-  ])('classifies a terminal $advertisedFetch fallback without collapsing it', async ({
-    advertisedFetch,
-    message,
-  }) => {
-    const remote = createBareGitRemote({ 'README.md': '# Classified fallback\n' });
-    const root = mkdtempSync(join(tmpdir(), `openkit-workspace-${advertisedFetch}-`));
-    const workspaceRoot = join(root, 'workspace');
-    const sessionDir = join(root, 'session');
-    const target = join(workspaceRoot, 'worktrees', 'main');
-    mkdirSync(sessionDir);
+  ])(
+    'classifies a terminal $advertisedFetch fallback without collapsing it',
+    async ({ advertisedFetch, message }) => {
+      const remote = createBareGitRemote({ 'README.md': '# Classified fallback\n' });
+      const root = mkdtempSync(join(tmpdir(), `openkit-workspace-${advertisedFetch}-`));
+      const workspaceRoot = join(root, 'workspace');
+      const sessionDir = join(root, 'session');
+      const target = join(workspaceRoot, 'worktrees', 'main');
+      mkdirSync(sessionDir);
 
-    await expect(
-      withScriptedGit(
-        root,
-        join(root, 'git-invocations.log'),
-        { advertisedFetch, shaFetch: 'unrecognized' },
-        () =>
-          materializeWorkspaceGitInputs(
-            [createWorkspaceGitInput(target, remote.commit, remote.path)],
-            workspaceRoot,
-            sessionDir
-          )
-      )
-    ).rejects.toThrow(message);
+      await expect(
+        withScriptedGit(
+          root,
+          join(root, 'git-invocations.log'),
+          { advertisedFetch, shaFetch: 'unrecognized' },
+          () =>
+            materializeWorkspaceGitInputs(
+              [createWorkspaceGitInput(target, remote.commit, remote.path)],
+              workspaceRoot,
+              sessionDir
+            )
+        )
+      ).rejects.toThrow(message);
 
-    expect(existsSync(join(target, '.git'))).toBe(true);
-    expect(existsSync(join(target, 'README.md'))).toBe(false);
-  });
+      expect(existsSync(join(target, '.git'))).toBe(true);
+      expect(existsSync(join(target, 'README.md'))).toBe(false);
+    }
+  );
 
   it('refuses a commit the configured remote does not serve and keeps the partial slot', async () => {
     const remote = createBareGitRemote({ 'README.md': '# Other commit\n' });

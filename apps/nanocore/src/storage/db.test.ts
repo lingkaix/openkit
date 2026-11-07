@@ -536,44 +536,44 @@ describe('scoped storage databases', () => {
     }
   });
 
-  it.each([
-    'workspaces',
-    'workspace-root',
-  ] as const)('refuses a linked %s boundary on Workspace open', (boundary) => {
-    const dataRoot = createDataRoot();
-    const outside = createDataRoot();
-    const workspaces = join(dataRoot, 'workspaces');
-    if (boundary === 'workspace-root') mkdirSync(workspaces);
-    symlinkSync(
-      outside,
-      boundary === 'workspaces'
-        ? workspaces
-        : join(workspaces, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
-      'dir'
-    );
-    expect(() => openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201')).toThrow(
-      /symbolic link/
-    );
-    expect(readdirSync(outside)).toEqual([]);
-  });
+  it.each(['workspaces', 'workspace-root'] as const)(
+    'refuses a linked %s boundary on Workspace open',
+    (boundary) => {
+      const dataRoot = createDataRoot();
+      const outside = createDataRoot();
+      const workspaces = join(dataRoot, 'workspaces');
+      if (boundary === 'workspace-root') mkdirSync(workspaces);
+      symlinkSync(
+        outside,
+        boundary === 'workspaces'
+          ? workspaces
+          : join(workspaces, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
+        'dir'
+      );
+      expect(() => openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201')).toThrow(
+        /symbolic link/
+      );
+      expect(readdirSync(outside)).toEqual([]);
+    }
+  );
 
-  it.each([
-    'workspaces',
-    'workspace-root',
-  ] as const)('refuses a non-directory %s boundary on Workspace open', (boundary) => {
-    const dataRoot = createDataRoot();
-    const workspaces = join(dataRoot, 'workspaces');
-    if (boundary === 'workspace-root') mkdirSync(workspaces);
-    writeFileSync(
-      boundary === 'workspaces'
-        ? workspaces
-        : join(workspaces, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
-      'retained bytes'
-    );
-    expect(() => openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201')).toThrow(
-      /must be a directory/
-    );
-  });
+  it.each(['workspaces', 'workspace-root'] as const)(
+    'refuses a non-directory %s boundary on Workspace open',
+    (boundary) => {
+      const dataRoot = createDataRoot();
+      const workspaces = join(dataRoot, 'workspaces');
+      if (boundary === 'workspace-root') mkdirSync(workspaces);
+      writeFileSync(
+        boundary === 'workspaces'
+          ? workspaces
+          : join(workspaces, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
+        'retained bytes'
+      );
+      expect(() => openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201')).toThrow(
+        /must be a directory/
+      );
+    }
+  );
 
   it('opens a Workspace without repeating boot verification of unrelated records', () => {
     const dataRoot = createDataRoot();
@@ -651,68 +651,68 @@ describe('scoped storage databases', () => {
     expect(readdirSync(workspaceRoot)).toEqual([]);
   });
 
-  it.each([
-    'missing',
-    'corrupt',
-  ] as const)('contains a %s registered Workspace database without replacing authority or blocking its sibling', async (fault) => {
-    const dataRoot = createDataRoot();
-    const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
-    const siblingId = 'ws_00000000-0000-7a13-853c-5d52c0c5884f';
-    const coreDb = openCoreDb(dataRoot);
-    try {
-      applyMigrations(coreDb);
-      const ownerUserId = ensureLocalUser(coreDb);
-      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      workspaceDb.sqlite.close();
-      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
-      const sibling = openWorkspaceDb(dataRoot, siblingId);
-      initializeUnmigratedScopedDb(sibling);
-      sibling.sqlite.close();
-      initializeWorkspaceKnowledgePredecessor(dataRoot, siblingId);
-      recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
-      const registrations = coreDb.sqlite
-        .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
-        .all();
-      const databasePath = workspaceDbPath(dataRoot, workspaceId);
-      const retainedPath = join(dataRoot, 'workspaces', workspaceId, 'retained-evidence.txt');
-      const retained = Buffer.from('Keep the existing Workspace evidence.');
-      writeFileSync(retainedPath, retained);
-      const corruptBytes = Buffer.from('Not a SQLite database; preserve the damaged authority.');
-      if (fault === 'missing') rmSync(databasePath);
-      else writeFileSync(databasePath, corruptBytes);
-
-      // A local integrity failure must not abort verification of a healthy sibling.
-      await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
-      if (fault === 'missing') {
-        expect(existsSync(databasePath)).toBe(false);
-        expect(readdirSync(dirname(databasePath))).toEqual([]);
-      } else {
-        expect(readFileSync(databasePath)).toEqual(corruptBytes);
-        expect(readdirSync(dirname(databasePath))).toEqual([basename(databasePath)]);
-      }
-      const reopened = openBootVerifiedWorkspaceDb(dataRoot, siblingId);
+  it.each(['missing', 'corrupt'] as const)(
+    'contains a %s registered Workspace database without replacing authority or blocking its sibling',
+    async (fault) => {
+      const dataRoot = createDataRoot();
+      const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
+      const siblingId = 'ws_00000000-0000-7a13-853c-5d52c0c5884f';
+      const coreDb = openCoreDb(dataRoot);
       try {
-        expect(listTables(reopened.sqlite)).toContain('idempotency_requests');
-        expect(reopened.sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
+        applyMigrations(coreDb);
+        const ownerUserId = ensureLocalUser(coreDb);
+        const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        workspaceDb.sqlite.close();
+        recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+        const sibling = openWorkspaceDb(dataRoot, siblingId);
+        initializeUnmigratedScopedDb(sibling);
+        sibling.sqlite.close();
+        initializeWorkspaceKnowledgePredecessor(dataRoot, siblingId);
+        recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
+        const registrations = coreDb.sqlite
+          .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+          .all();
+        const databasePath = workspaceDbPath(dataRoot, workspaceId);
+        const retainedPath = join(dataRoot, 'workspaces', workspaceId, 'retained-evidence.txt');
+        const retained = Buffer.from('Keep the existing Workspace evidence.');
+        writeFileSync(retainedPath, retained);
+        const corruptBytes = Buffer.from('Not a SQLite database; preserve the damaged authority.');
+        if (fault === 'missing') rmSync(databasePath);
+        else writeFileSync(databasePath, corruptBytes);
+
+        // A local integrity failure must not abort verification of a healthy sibling.
+        await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
+        if (fault === 'missing') {
+          expect(existsSync(databasePath)).toBe(false);
+          expect(readdirSync(dirname(databasePath))).toEqual([]);
+        } else {
+          expect(readFileSync(databasePath)).toEqual(corruptBytes);
+          expect(readdirSync(dirname(databasePath))).toEqual([basename(databasePath)]);
+        }
+        const reopened = openBootVerifiedWorkspaceDb(dataRoot, siblingId);
+        try {
+          expect(listTables(reopened.sqlite)).toContain('idempotency_requests');
+          expect(reopened.sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
+        } finally {
+          reopened.sqlite.close();
+        }
+        expect(
+          coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
+        ).toEqual(registrations);
+        expect(readFileSync(retainedPath)).toEqual(retained);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
+            .pluck()
+            .get(workspaceId)
+        ).toBe('active');
       } finally {
-        reopened.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-      expect(
-        coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
-      ).toEqual(registrations);
-      expect(readFileSync(retainedPath)).toEqual(retained);
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
-          .pluck()
-          .get(workspaceId)
-      ).toBe('active');
-    } finally {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it('migrates real scoped databases without treating Workspace staging as a scope', async () => {
     const dataRoot = createDataRoot();
@@ -999,48 +999,46 @@ describe('scoped storage databases', () => {
         join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'),
       verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
     },
-  ])('keeps corrupt $scope authority closed at its owning scope', async ({
-    scope,
-    path,
-    quarantine,
-    verify,
-  }) => {
-    const dataRoot = createDataRoot();
-    const dbPath = path(dataRoot);
-    const originalBytes = Buffer.from(`not sqlite: ${dbPath}`);
-    mkdirSync(dirname(dbPath), { recursive: true });
-    writeFileSync(dbPath, originalBytes);
+  ])(
+    'keeps corrupt $scope authority closed at its owning scope',
+    async ({ scope, path, quarantine, verify }) => {
+      const dataRoot = createDataRoot();
+      const dbPath = path(dataRoot);
+      const originalBytes = Buffer.from(`not sqlite: ${dbPath}`);
+      mkdirSync(dirname(dbPath), { recursive: true });
+      writeFileSync(dbPath, originalBytes);
 
-    if (scope === 'Core') {
-      expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
-    } else {
-      const siblingId = 'usr_00000000-0000-7000-8000-000000000002';
-      const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
-      const sibling = openUserDb(dataRoot, siblingId);
-      initializeUnmigratedScopedDb(sibling);
-      sibling.sqlite.close();
-      const workspace = openWorkspaceDb(dataRoot, workspaceId);
-      initializeUnmigratedScopedDb(workspace);
-      workspace.sqlite.close();
-      initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
-      await expect(verify(dataRoot)).resolves.toBeUndefined();
-      expect(() =>
-        openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b').sqlite.close()
-      ).toThrow();
-      const healthyUser = openUserDb(dataRoot, siblingId);
-      const healthyWorkspace = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
-      try {
-        expect(listTables(healthyUser.sqlite)).toContain('idempotency_requests');
-        expect(listTables(healthyWorkspace.sqlite)).toContain('idempotency_requests');
-      } finally {
-        healthyUser.sqlite.close();
-        healthyWorkspace.sqlite.close();
+      if (scope === 'Core') {
+        expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
+      } else {
+        const siblingId = 'usr_00000000-0000-7000-8000-000000000002';
+        const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+        const sibling = openUserDb(dataRoot, siblingId);
+        initializeUnmigratedScopedDb(sibling);
+        sibling.sqlite.close();
+        const workspace = openWorkspaceDb(dataRoot, workspaceId);
+        initializeUnmigratedScopedDb(workspace);
+        workspace.sqlite.close();
+        initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
+        await expect(verify(dataRoot)).resolves.toBeUndefined();
+        expect(() =>
+          openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b').sqlite.close()
+        ).toThrow();
+        const healthyUser = openUserDb(dataRoot, siblingId);
+        const healthyWorkspace = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+        try {
+          expect(listTables(healthyUser.sqlite)).toContain('idempotency_requests');
+          expect(listTables(healthyWorkspace.sqlite)).toContain('idempotency_requests');
+        } finally {
+          healthyUser.sqlite.close();
+          healthyWorkspace.sqlite.close();
+        }
       }
+      expect(readFileSync(dbPath)).toEqual(originalBytes);
+      expect(readdirSync(dirname(dbPath))).toEqual([basename(dbPath)]);
+      expect(existsSync(quarantine(dataRoot))).toBe(false);
     }
-    expect(readFileSync(dbPath)).toEqual(originalBytes);
-    expect(readdirSync(dirname(dbPath))).toEqual([basename(dbPath)]);
-    expect(existsSync(quarantine(dataRoot))).toBe(false);
-  });
+  );
 
   it('recovers a valid hot rollback journal before checking Core database integrity', () => {
     const dataRoot = createDataRoot();

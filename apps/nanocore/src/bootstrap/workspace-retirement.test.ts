@@ -367,128 +367,133 @@ describe('retired registry consumers and retained Core migration', () => {
     { status: 'retired', fault: 'records' },
     { status: 'retired', fault: 'corrupt' },
     { status: 'retired', fault: 'missing' },
-  ] as const)('real index.ts process: $status registry with $fault fault decides exclusion before scoped work', async ({
-    status,
-    fault,
-  }) => {
-    const f = await fixture(fault);
-    if (status === 'retired') {
-      const response = await f.call('workspace.retire-quarantined', f.request);
-      expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toEqual({
-        retirement: {
-          workspaceId: f.workspaceId,
-          ownerUserId: FIXTURE_LOCAL_USER_ID,
-          registryRevision: 2,
-          status: 'retired',
-          dataRetained: true,
-          storageReclaimed: false,
-        },
-      });
-    }
-    await f.gateway.close();
-    f.coreDb.sqlite.close();
-    // Reverse only the injected fixture fault while stopped. This is not a product repair path.
-    // Readable retained bytes must not revive a retired identity. They make a late boot fence observable.
-    const targetRoot = join(f.dataRoot, 'workspaces', f.workspaceId);
-    if (fault === 'records') {
-      const stopped = new Database(workspaceDbPath(f.dataRoot, f.workspaceId), {
-        fileMustExist: true,
-      });
-      try {
-        expect(
-          stopped
-            .prepare('UPDATE control_workspaces SET record_json = ? WHERE id = ?')
-            .run(f.originalWorkspaceRecord, f.workspaceId).changes
-        ).toBe(1);
-      } finally {
-        stopped.close();
+  ] as const)(
+    'real index.ts process: $status registry with $fault fault decides exclusion before scoped work',
+    async ({ status, fault }) => {
+      const f = await fixture(fault);
+      if (status === 'retired') {
+        const response = await f.call('workspace.retire-quarantined', f.request);
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(await response.json()).toEqual({
+          retirement: {
+            workspaceId: f.workspaceId,
+            ownerUserId: FIXTURE_LOCAL_USER_ID,
+            registryRevision: 2,
+            status: 'retired',
+            dataRetained: true,
+            storageReclaimed: false,
+          },
+        });
       }
-    }
-    const before = bytes(targetRoot);
-    /** Reads only a detached copy while the fixture or child is stopped; WAL readers can create sidecars. */
-    const readCallStatus = () => {
-      const beforeObservation = bytes(targetRoot);
-      const observerRoot = mkdtempSync(join(tmpdir(), 'retirement-status-observer-'));
-      try {
-        const databasePath = workspaceDbPath(f.dataRoot, f.workspaceId);
-        // Copy the entire database directory, including retained WAL, SHM and rollback journals.
-        cpSync(dirname(databasePath), observerRoot, { recursive: true });
-        const db = new Database(join(observerRoot, basename(databasePath)), {
-          readonly: true,
+      await f.gateway.close();
+      f.coreDb.sqlite.close();
+      // Reverse only the injected fixture fault while stopped. This is not a product repair path.
+      // Readable retained bytes must not revive a retired identity. They make a late boot fence observable.
+      const targetRoot = join(f.dataRoot, 'workspaces', f.workspaceId);
+      if (fault === 'records') {
+        const stopped = new Database(workspaceDbPath(f.dataRoot, f.workspaceId), {
           fileMustExist: true,
         });
         try {
-          return db
-            .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
-            .pluck()
-            .get(testEntityId('cap', 'retirement-running-call'));
+          expect(
+            stopped
+              .prepare('UPDATE control_workspaces SET record_json = ? WHERE id = ?')
+              .run(f.originalWorkspaceRecord, f.workspaceId).changes
+          ).toBe(1);
         } finally {
-          db.close();
+          stopped.close();
         }
-      } finally {
-        rmSync(observerRoot, { recursive: true, force: true });
-        expect(
-          bytes(targetRoot),
-          'status observation must preserve every source path and byte'
-        ).toEqual(beforeObservation);
       }
-    };
-    if (fault === 'records') expect(readCallStatus()).toBe('running');
-    const process = await startRetirementProcess(f.dataRoot);
-    const sibling = await process.call(
-      'thread.create',
-      { workspaceId: f.siblingId, name: 'Progress after real boot', requestId: randomUUID() },
-      f.member.secret
-    );
-    expect(sibling.status, await sibling.clone().text()).toBe(200);
-    const thread = (await sibling.json()) as { id: string };
-    const readBack = await process.call(
-      'thread.dashboard',
-      { workspaceId: f.siblingId, threadId: thread.id },
-      f.member.secret
-    );
-    expect(readBack.status).toBe(200);
-    expect(await readBack.json()).toMatchObject({ thread: { id: thread.id } });
-    const ordinary = await process.call(
-      'workspace.member-list',
-      { workspaceId: f.workspaceId },
-      f.member.secret
-    );
-    if (status === 'retired') {
-      expect([403, 409]).toContain(ordinary.status);
-      const replay = await process.call('workspace.retire-quarantined', f.request, f.admin.secret);
-      expect(replay.status, await replay.clone().text()).toBe(200);
-      expect(await replay.json()).toMatchObject({
-        retirement: {
-          registryRevision: 2,
-          status: 'retired',
-          dataRetained: true,
-          storageReclaimed: false,
-        },
-      });
-      const recovery = await process.call(
-        'workspace.deleted-recover',
-        {
-          workspaceId: f.workspaceId,
-          requestId: randomUUID(),
-          deletionRequestId: f.request.requestId,
-        },
-        f.admin.secret
+      const before = bytes(targetRoot);
+      /** Reads only a detached copy while the fixture or child is stopped; WAL readers can create sidecars. */
+      const readCallStatus = () => {
+        const beforeObservation = bytes(targetRoot);
+        const observerRoot = mkdtempSync(join(tmpdir(), 'retirement-status-observer-'));
+        try {
+          const databasePath = workspaceDbPath(f.dataRoot, f.workspaceId);
+          // Copy the entire database directory, including retained WAL, SHM and rollback journals.
+          cpSync(dirname(databasePath), observerRoot, { recursive: true });
+          const db = new Database(join(observerRoot, basename(databasePath)), {
+            readonly: true,
+            fileMustExist: true,
+          });
+          try {
+            return db
+              .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
+              .pluck()
+              .get(testEntityId('cap', 'retirement-running-call'));
+          } finally {
+            db.close();
+          }
+        } finally {
+          rmSync(observerRoot, { recursive: true, force: true });
+          expect(
+            bytes(targetRoot),
+            'status observation must preserve every source path and byte'
+          ).toEqual(beforeObservation);
+        }
+      };
+      if (fault === 'records') expect(readCallStatus()).toBe('running');
+      const process = await startRetirementProcess(f.dataRoot);
+      const sibling = await process.call(
+        'thread.create',
+        { workspaceId: f.siblingId, name: 'Progress after real boot', requestId: randomUUID() },
+        f.member.secret
       );
-      expect([403, 409]).toContain(recovery.status);
-    } else {
-      expect(ordinary.status).toBe(200);
-    }
-    await process.stop();
-    // The active control proves the same real startup changes the canary; a no-op child cannot pass both cases.
-    if (fault === 'records')
-      expect(readCallStatus()).toBe(status === 'retired' ? 'running' : 'unknown');
-    if (fault === 'missing')
-      expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
-    if (status === 'retired') expect(bytes(targetRoot)).toEqual(before);
-    else expect(bytes(targetRoot)).not.toEqual(before);
-  }, 40000);
+      expect(sibling.status, await sibling.clone().text()).toBe(200);
+      const thread = (await sibling.json()) as { id: string };
+      const readBack = await process.call(
+        'thread.dashboard',
+        { workspaceId: f.siblingId, threadId: thread.id },
+        f.member.secret
+      );
+      expect(readBack.status).toBe(200);
+      expect(await readBack.json()).toMatchObject({ thread: { id: thread.id } });
+      const ordinary = await process.call(
+        'workspace.member-list',
+        { workspaceId: f.workspaceId },
+        f.member.secret
+      );
+      if (status === 'retired') {
+        expect([403, 409]).toContain(ordinary.status);
+        const replay = await process.call(
+          'workspace.retire-quarantined',
+          f.request,
+          f.admin.secret
+        );
+        expect(replay.status, await replay.clone().text()).toBe(200);
+        expect(await replay.json()).toMatchObject({
+          retirement: {
+            registryRevision: 2,
+            status: 'retired',
+            dataRetained: true,
+            storageReclaimed: false,
+          },
+        });
+        const recovery = await process.call(
+          'workspace.deleted-recover',
+          {
+            workspaceId: f.workspaceId,
+            requestId: randomUUID(),
+            deletionRequestId: f.request.requestId,
+          },
+          f.admin.secret
+        );
+        expect([403, 409]).toContain(recovery.status);
+      } else {
+        expect(ordinary.status).toBe(200);
+      }
+      await process.stop();
+      // The active control proves the same real startup changes the canary; a no-op child cannot pass both cases.
+      if (fault === 'records')
+        expect(readCallStatus()).toBe(status === 'retired' ? 'running' : 'unknown');
+      if (fault === 'missing')
+        expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
+      if (status === 'retired') expect(bytes(targetRoot)).toEqual(before);
+      else expect(bytes(targetRoot)).not.toEqual(before);
+    },
+    40000
+  );
 
   it('CONTROL: upgrades populated Core 0011 through the ordinary migrator without losing lineage, foreign keys or owner guards', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retirement-core0011-'));
@@ -597,111 +602,114 @@ describe('retired registry consumers and retained Core migration', () => {
     expect(retained()).toEqual(before);
   });
 
-  it.each([
-    'corrupt',
-    'missing',
-    'records',
-  ] as const)('reconstructs retirement exclusion before scoped work after a lost reply with %s authority', async (fault) => {
-    const f = await fixture(fault);
-    // Working baseline authority is reached before the new feature is required.
-    expect(
-      (await f.call('workspace.member-list', { workspaceId: f.siblingId }, f.member.secret)).status
-    ).toBe(200);
-    const response = await f.call('workspace.retire-quarantined', f.request);
-    expect(response.status, await response.clone().text()).toBe(200);
-    // Discard the successful reply body: retry must use durable Core facts, not that reply or Store cache.
-    const audit = f.coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all();
-    const receipts = f.coreDb.sqlite
-      .prepare('SELECT * FROM idempotency_requests ORDER BY rowid')
-      .all();
-    const tree = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
-    await f.gateway.close();
-    f.coreDb.sqlite.close();
-    // Reset modules rather than clearing an admission map or manufacturing a retired registry row.
-    // This is an in-process cold-open seam test, not proof of the index.ts process phase ordering.
-    await shutdownControlStoreWorkerClient();
-    await (
-      await import('../storage/control-store-worker-client.js')
-    ).shutdownControlStoreWorkerClient();
-    vi.resetModules();
-    const dbOwner = await import('../storage/db.js');
-    const readiness = await import('./readiness.js');
-    const appOwner = await import('../app.js');
-    const storeOwner = await import('../lib/store.js');
-    const gateOwner = await import('../workspace-mutation-admission.js');
-    expect(readiness.scopeAdmissionFailures(f.dataRoot)).toEqual([]);
-    const coreDb = dbOwner.openCoreDbWithIntegrityCheck(f.dataRoot);
-    disposals.push(() => {
-      if (coreDb.sqlite.open) coreDb.sqlite.close();
-    });
-    const admission = new gateOwner.WorkspaceMutationAdmission();
-    appOwner.restoreWorkspaceDeletionMutationAdmission({
-      coreDb,
-      dataRoot: f.dataRoot,
-      workspaceMutationAdmission: admission,
-    });
-    expect(admission.isClosed(f.workspaceId)).toBe(true);
-    expect(readiness.isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
-    await verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
-      storeOwner.FsStore.validateFileAuthority(f.dataRoot)
-    );
-    expect(
-      dbOwner.listExistingWorkspaceDatabaseScopes(f.dataRoot).map((scope) => scope.workspaceId)
-    ).not.toContain(f.workspaceId);
-    const store = new storeOwner.FsStore({ dataRoot: f.dataRoot });
-    expect(store.listWorkspaces().map((workspace) => workspace.id)).not.toContain(f.workspaceId);
-    expect(store.getWorkspace(f.siblingId).id).toBe(f.siblingId);
-    expect(() => dbOwner.openWorkspaceDb(f.dataRoot, f.workspaceId)).toThrow();
-    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(tree);
-    if (fault === 'missing')
-      expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
-    const restarted = appOwner.createApp({
-      coreDb,
-      dataRoot: f.dataRoot,
-      store,
-      mode: 'server',
-      workspaceMutationAdmission: admission,
-      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-    });
-    const retry = (operation: string, input: Record<string, unknown>) =>
-      restarted.request(`/api/app/operations/${operation}`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${f.admin.secret}`,
-          'content-type': 'application/json',
-          ...(typeof input.requestId === 'string'
-            ? { 'x-openkit-request-id': input.requestId }
-            : {}),
-        },
-        body: JSON.stringify(input),
+  it.each(['corrupt', 'missing', 'records'] as const)(
+    'reconstructs retirement exclusion before scoped work after a lost reply with %s authority',
+    async (fault) => {
+      const f = await fixture(fault);
+      // Working baseline authority is reached before the new feature is required.
+      expect(
+        (await f.call('workspace.member-list', { workspaceId: f.siblingId }, f.member.secret))
+          .status
+      ).toBe(200);
+      const response = await f.call('workspace.retire-quarantined', f.request);
+      expect(response.status, await response.clone().text()).toBe(200);
+      // Discard the successful reply body: retry must use durable Core facts, not that reply or Store cache.
+      const audit = f.coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all();
+      const receipts = f.coreDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests ORDER BY rowid')
+        .all();
+      const tree = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
+      await f.gateway.close();
+      f.coreDb.sqlite.close();
+      // Reset modules rather than clearing an admission map or manufacturing a retired registry row.
+      // This is an in-process cold-open seam test, not proof of the index.ts process phase ordering.
+      await shutdownControlStoreWorkerClient();
+      await (
+        await import('../storage/control-store-worker-client.js')
+      ).shutdownControlStoreWorkerClient();
+      vi.resetModules();
+      const dbOwner = await import('../storage/db.js');
+      const readiness = await import('./readiness.js');
+      const appOwner = await import('../app.js');
+      const storeOwner = await import('../lib/store.js');
+      const gateOwner = await import('../workspace-mutation-admission.js');
+      expect(readiness.scopeAdmissionFailures(f.dataRoot)).toEqual([]);
+      const coreDb = dbOwner.openCoreDbWithIntegrityCheck(f.dataRoot);
+      disposals.push(() => {
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
       });
-    const replay = await retry('workspace.retire-quarantined', f.request);
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual({
-      retirement: {
+      const admission = new gateOwner.WorkspaceMutationAdmission();
+      appOwner.restoreWorkspaceDeletionMutationAdmission({
+        coreDb,
+        dataRoot: f.dataRoot,
+        workspaceMutationAdmission: admission,
+      });
+      expect(admission.isClosed(f.workspaceId)).toBe(true);
+      expect(readiness.isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
+      await verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
+        storeOwner.FsStore.validateFileAuthority(f.dataRoot)
+      );
+      expect(
+        dbOwner.listExistingWorkspaceDatabaseScopes(f.dataRoot).map((scope) => scope.workspaceId)
+      ).not.toContain(f.workspaceId);
+      const store = new storeOwner.FsStore({ dataRoot: f.dataRoot });
+      expect(store.listWorkspaces().map((workspace) => workspace.id)).not.toContain(f.workspaceId);
+      expect(store.getWorkspace(f.siblingId).id).toBe(f.siblingId);
+      expect(() => dbOwner.openWorkspaceDb(f.dataRoot, f.workspaceId)).toThrow();
+      expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(tree);
+      if (fault === 'missing')
+        expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
+      const restarted = appOwner.createApp({
+        coreDb,
+        dataRoot: f.dataRoot,
+        store,
+        mode: 'server',
+        workspaceMutationAdmission: admission,
+        turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+      });
+      const retry = (operation: string, input: Record<string, unknown>) =>
+        restarted.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${f.admin.secret}`,
+            'content-type': 'application/json',
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        });
+      const replay = await retry('workspace.retire-quarantined', f.request);
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual({
+        retirement: {
+          workspaceId: f.workspaceId,
+          ownerUserId: FIXTURE_LOCAL_USER_ID,
+          registryRevision: 2,
+          status: 'retired',
+          dataRetained: true,
+          storageReclaimed: false,
+        },
+      });
+      expect(coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all()).toEqual(
+        audit
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY rowid').all()
+      ).toEqual(receipts);
+      const ordinary = await retry('workspace.member-list', { workspaceId: f.workspaceId });
+      expect([403, 409]).toContain(ordinary.status);
+      const recovery = await retry('workspace.deleted-recover', {
         workspaceId: f.workspaceId,
-        ownerUserId: FIXTURE_LOCAL_USER_ID,
-        registryRevision: 2,
-        status: 'retired',
-        dataRetained: true,
-        storageReclaimed: false,
-      },
-    });
-    expect(coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all()).toEqual(audit);
-    expect(
-      coreDb.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY rowid').all()
-    ).toEqual(receipts);
-    const ordinary = await retry('workspace.member-list', { workspaceId: f.workspaceId });
-    expect([403, 409]).toContain(ordinary.status);
-    const recovery = await retry('workspace.deleted-recover', {
-      workspaceId: f.workspaceId,
-      requestId: randomUUID(),
-      deletionRequestId: f.request.requestId,
-    });
-    expect([403, 409]).toContain(recovery.status);
-    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(tree);
-    expect((await retry('workspace.member-list', { workspaceId: f.siblingId })).status).toBe(200);
-  }, 20000);
+        requestId: randomUUID(),
+        deletionRequestId: f.request.requestId,
+      });
+      expect([403, 409]).toContain(recovery.status);
+      expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(tree);
+      expect((await retry('workspace.member-list', { workspaceId: f.siblingId })).status).toBe(200);
+    },
+    20000
+  );
 
   it('keeps a quarantined home without initializing User Memory or running a model', async () => {
     const f = await fixture('missing', true);

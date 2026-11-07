@@ -63,92 +63,94 @@ function seedRetainedReceipt(db: WorkspaceDb, record: CommandRequestRecord): voi
 }
 
 describe('retained conversation receipt metadata', () => {
-  it.each([
-    'task',
-    'goal',
-  ] as const)('reads, protects and reopens extended %s facts without changing identity', async (kind) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-extension-'));
-    const store = createTestStore({ dataRoot });
-    const workspace = await store.createWorkspace('Receipt');
-    const input = {
-      command: 'conversation.submit' as const,
-      requestId: '0190f4c8-0000-7000-8000-000000000501',
-      scope: { workspaceId: workspace.id },
-      inputHash: 'sha256:owned-input',
-      response: {
-        kind: 'turn' as const,
-        id: 'tu_00000000-0000-775f-8a76-b1204634948f',
-        conversationMetadata: {
-          downstream:
-            kind === 'task'
-              ? { kind, turnId: 'tu_00000000-0000-7c1e-94d2-e114d4a15de4' }
-              : {
-                  kind,
-                  goalId: 'goal_downstream',
-                  turnId: 'tu_00000000-0000-7c1e-94d2-e114d4a15de4',
-                },
-          logicalModelId: 'reasoning',
-          receivingThreadId: 'th_00000000-0000-7406-b2a7-192f628666f1',
-          receivingWorkspaceId: workspace.id,
-          resultKind: kind === 'task' ? ('task-handoff' as const) : ('goal-handoff' as const),
-          status: 202 as const,
-          targetRef: 'internal-role:assistant',
+  it.each(['task', 'goal'] as const)(
+    'reads, protects and reopens extended %s facts without changing identity',
+    async (kind) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-extension-'));
+      const store = createTestStore({ dataRoot });
+      const workspace = await store.createWorkspace('Receipt');
+      const input = {
+        command: 'conversation.submit' as const,
+        requestId: '0190f4c8-0000-7000-8000-000000000501',
+        scope: { workspaceId: workspace.id },
+        inputHash: 'sha256:owned-input',
+        response: {
+          kind: 'turn' as const,
+          id: 'tu_00000000-0000-775f-8a76-b1204634948f',
+          conversationMetadata: {
+            downstream:
+              kind === 'task'
+                ? { kind, turnId: 'tu_00000000-0000-7c1e-94d2-e114d4a15de4' }
+                : {
+                    kind,
+                    goalId: 'goal_downstream',
+                    turnId: 'tu_00000000-0000-7c1e-94d2-e114d4a15de4',
+                  },
+            logicalModelId: 'reasoning',
+            receivingThreadId: 'th_00000000-0000-7406-b2a7-192f628666f1',
+            receivingWorkspaceId: workspace.id,
+            resultKind: kind === 'task' ? ('task-handoff' as const) : ('goal-handoff' as const),
+            status: 202 as const,
+            targetRef: 'internal-role:assistant',
+          },
         },
-      },
-      createdAt: '2026-10-06T00:00:00.000Z',
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    };
-    await shutdownControlStoreWorkerClient();
-    const original = {
-      ...input,
-      key: commandRequestKey(input.command, input.requestId, input.scope),
-    };
-    const db = openWorkspaceDb(dataRoot, workspace.id);
-    onTestFinished(async () => {
-      if (db.sqlite.open) db.sqlite.close();
+        createdAt: '2026-10-06T00:00:00.000Z',
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      };
       await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    applyScopedMigrations(db);
-    seedRetainedReceipt(db, original);
-    expect(store.getCommandRequest(input.command, input.requestId, input.scope)).toEqual(original);
-    const metadata = {
-      ...input.response.conversationMetadata,
-      futureNote: 'retained',
-      downstream: { ...input.response.conversationMetadata.downstream, futureNote: 'retained' },
-    };
-    db.sqlite
-      .prepare('UPDATE idempotency_requests SET response_json = ? WHERE request_key = ?')
-      .run(JSON.stringify(metadata), original.key);
-    const loaded = getCommandRequestRecordFromDb(db, original.key, input.createdAt)!;
-    expect(loaded).toEqual(original);
-    // The retained codec accepts these bytes; Main cannot rewrite this native family.
-    expect(() => recordCommandRequestRecordInDb(db, loaded)).toThrow(
-      'Native admission receipts belong to the database worker.'
-    );
-    expect(
-      JSON.parse(
-        (
-          db.sqlite
-            .prepare('SELECT response_json FROM idempotency_requests WHERE request_key = ?')
-            .get(original.key) as { response_json: string }
-        ).response_json
-      )
-    ).toEqual(metadata);
-    db.sqlite.close();
-    const reopened = new FsStore({ dataRoot });
-    expect(reopened.getCommandRequest(input.command, input.requestId, input.scope)).toEqual(
-      original
-    );
-    const wrong = openWorkspaceDb(dataRoot, workspace.id);
-    wrong.sqlite
-      .prepare('UPDATE idempotency_requests SET response_json = ? WHERE request_key = ?')
-      .run(JSON.stringify({ ...metadata, status: 204 }), original.key);
-    expect(() => getCommandRequestRecordFromDb(wrong, original.key, input.createdAt)).toThrow(
-      'metadata is invalid'
-    );
-    wrong.sqlite.close();
-  });
+      const original = {
+        ...input,
+        key: commandRequestKey(input.command, input.requestId, input.scope),
+      };
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      onTestFinished(async () => {
+        if (db.sqlite.open) db.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { recursive: true, force: true });
+      });
+      applyScopedMigrations(db);
+      seedRetainedReceipt(db, original);
+      expect(store.getCommandRequest(input.command, input.requestId, input.scope)).toEqual(
+        original
+      );
+      const metadata = {
+        ...input.response.conversationMetadata,
+        futureNote: 'retained',
+        downstream: { ...input.response.conversationMetadata.downstream, futureNote: 'retained' },
+      };
+      db.sqlite
+        .prepare('UPDATE idempotency_requests SET response_json = ? WHERE request_key = ?')
+        .run(JSON.stringify(metadata), original.key);
+      const loaded = getCommandRequestRecordFromDb(db, original.key, input.createdAt)!;
+      expect(loaded).toEqual(original);
+      // The retained codec accepts these bytes; Main cannot rewrite this native family.
+      expect(() => recordCommandRequestRecordInDb(db, loaded)).toThrow(
+        'Native admission receipts belong to the database worker.'
+      );
+      expect(
+        JSON.parse(
+          (
+            db.sqlite
+              .prepare('SELECT response_json FROM idempotency_requests WHERE request_key = ?')
+              .get(original.key) as { response_json: string }
+          ).response_json
+        )
+      ).toEqual(metadata);
+      db.sqlite.close();
+      const reopened = new FsStore({ dataRoot });
+      expect(reopened.getCommandRequest(input.command, input.requestId, input.scope)).toEqual(
+        original
+      );
+      const wrong = openWorkspaceDb(dataRoot, workspace.id);
+      wrong.sqlite
+        .prepare('UPDATE idempotency_requests SET response_json = ? WHERE request_key = ?')
+        .run(JSON.stringify({ ...metadata, status: 204 }), original.key);
+      expect(() => getCommandRequestRecordFromDb(wrong, original.key, input.createdAt)).toThrow(
+        'metadata is invalid'
+      );
+      wrong.sqlite.close();
+    }
+  );
 });
 
 const RESPONSE_ID_CASES = [
@@ -172,147 +174,146 @@ const RESPONSE_ID_CASES = [
 ] as const satisfies readonly (readonly [CommandRequestResponseKind, EntityKind])[];
 
 describe('kind-named command response pointers', () => {
-  it.each(
-    RESPONSE_ID_CASES
-  )('validates %s as its owned %s kind in the codec and retained reader', async (kind, entityKind) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-kinds-'));
-    const store = createTestStore({ dataRoot });
-    const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
-    onTestFinished(async () => {
+  it.each(RESPONSE_ID_CASES)(
+    'validates %s as its owned %s kind in the codec and retained reader',
+    async (kind, entityKind) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-kinds-'));
+      const store = createTestStore({ dataRoot });
+      const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(sourceRoot);
+        rmSync(sourceRoot, { recursive: true, force: true });
+      });
+      const sourceStore = createTestStore({ dataRoot: sourceRoot });
+      const workspace = await store.createWorkspace('Receipt kind boundary');
       await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(sourceRoot);
-      rmSync(sourceRoot, { recursive: true, force: true });
-    });
-    const sourceStore = createTestStore({ dataRoot: sourceRoot });
-    const workspace = await store.createWorkspace('Receipt kind boundary');
-    await shutdownControlStoreWorkerClient();
-    const db = openWorkspaceDb(dataRoot, workspace.id);
-    try {
-      applyScopedMigrations(db);
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        applyScopedMigrations(db);
+        const input = {
+          command: 'task.start' as const,
+          requestId: `receipt-${kind}`,
+          scope: { workspaceId: workspace.id },
+          inputHash: 'owned-input',
+          response: { kind, id: testEntityId(entityKind, `receipt-${kind}`) },
+          createdAt: '2026-10-06T00:00:00.000Z',
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        };
+        expect(normalizeCommandRequestResponse(input.command, input.response)).toEqual(
+          input.response
+        );
+        const original = {
+          ...input,
+          key: commandRequestKey(input.command, input.requestId, input.scope),
+        };
+        seedRetainedReceipt(db, original);
+        const rows = () =>
+          db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
+        const retained = rows();
+        expect(getCommandRequestRecordFromDb(db, original.key, input.createdAt)?.response).toEqual(
+          input.response
+        );
+        for (const id of [
+          'legacy',
+          testEntityId(entityKind === 'ws' ? 'usr' : 'ws', 'wrong-receipt-kind'),
+        ]) {
+          const response = { kind, id };
+          expect(() => normalizeCommandRequestResponse(input.command, response)).toThrow();
+          expect(() => sourceStore.recordCommandRequest({ ...input, response })).toThrow();
+          expect(sourceStore.listCommandRequests()).toEqual([]);
+          expect(() =>
+            store.recordCommandRequest({ ...input, requestId: `bad-${kind}`, response })
+          ).toThrow();
+          expect(rows()).toEqual(retained);
+          expect(() => recordCommandRequestRecordInDb(db, { ...original, response })).toThrow();
+          expect(rows()).toEqual(retained);
+          expect(
+            db.sqlite
+              .prepare('UPDATE idempotency_requests SET response_id = ? WHERE request_key = ?')
+              .run(id, original.key).changes
+          ).toBe(1);
+          const corrupted = rows();
+          expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow();
+          expect(rows()).toEqual(corrupted);
+          db.sqlite
+            .prepare('UPDATE idempotency_requests SET response_id = ? WHERE request_key = ?')
+            .run(original.response.id, original.key);
+        }
+        expect(rows()).toEqual(retained);
+      } finally {
+        db.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(['future-core-kind', 'knowledge_observation', 'knowledge_claim', 'knowledge_conflict'])(
+    'refuses unsupported Core response kind %s instead of treating it as an opaque owner',
+    async (kind) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-unknown-kind-'));
+      const store = createTestStore({ dataRoot: root });
+      const workspace = await store.createWorkspace('Closed receipt kind');
+      const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(sourceRoot);
+        rmSync(sourceRoot, { recursive: true, force: true });
+      });
+      const sourceStore = createTestStore({ dataRoot: sourceRoot });
       const input = {
         command: 'task.start' as const,
-        requestId: `receipt-${kind}`,
+        requestId: 'closed-kind',
         scope: { workspaceId: workspace.id },
         inputHash: 'owned-input',
-        response: { kind, id: testEntityId(entityKind, `receipt-${kind}`) },
+        response: { kind: 'turn' as const, id: testEntityId('tu', 'closed-receipt-kind') },
         createdAt: '2026-10-06T00:00:00.000Z',
         expiresAt: '2999-01-01T00:00:00.000Z',
       };
-      expect(normalizeCommandRequestResponse(input.command, input.response)).toEqual(
-        input.response
-      );
+      await shutdownControlStoreWorkerClient();
       const original = {
         ...input,
         key: commandRequestKey(input.command, input.requestId, input.scope),
       };
+      const db = openWorkspaceDb(root, workspace.id);
       seedRetainedReceipt(db, original);
-      const rows = () =>
-        db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
-      const retained = rows();
-      expect(getCommandRequestRecordFromDb(db, original.key, input.createdAt)?.response).toEqual(
-        input.response
-      );
-      for (const id of [
-        'legacy',
-        testEntityId(entityKind === 'ws' ? 'usr' : 'ws', 'wrong-receipt-kind'),
-      ]) {
-        const response = { kind, id };
-        expect(() => normalizeCommandRequestResponse(input.command, response)).toThrow();
-        expect(() => sourceStore.recordCommandRequest({ ...input, response })).toThrow();
+      try {
+        const untrusted = {
+          ...input.response,
+          kind,
+        } as unknown as CommandRequestResponse;
+        expect(() => normalizeCommandRequestResponse(input.command, untrusted)).toThrow(
+          'kind is unsupported'
+        );
+        expect(() => sourceStore.recordCommandRequest({ ...input, response: untrusted })).toThrow(
+          'kind is unsupported'
+        );
         expect(sourceStore.listCommandRequests()).toEqual([]);
+        const rows = () =>
+          db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
+        const before = rows();
         expect(() =>
-          store.recordCommandRequest({ ...input, requestId: `bad-${kind}`, response })
-        ).toThrow();
-        expect(rows()).toEqual(retained);
-        expect(() => recordCommandRequestRecordInDb(db, { ...original, response })).toThrow();
-        expect(rows()).toEqual(retained);
+          recordCommandRequestRecordInDb(db, { ...original, response: untrusted })
+        ).toThrow('Native admission receipts belong to the database worker.');
+        expect(rows()).toEqual(before);
         expect(
           db.sqlite
-            .prepare('UPDATE idempotency_requests SET response_id = ? WHERE request_key = ?')
-            .run(id, original.key).changes
+            .prepare('UPDATE idempotency_requests SET response_kind = ? WHERE request_key = ?')
+            .run(kind, original.key).changes
         ).toBe(1);
         const corrupted = rows();
-        expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow();
+        expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow(
+          'kind is unsupported'
+        );
         expect(rows()).toEqual(corrupted);
-        db.sqlite
-          .prepare('UPDATE idempotency_requests SET response_id = ? WHERE request_key = ?')
-          .run(original.response.id, original.key);
+      } finally {
+        db.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(root, { recursive: true, force: true });
       }
-      expect(rows()).toEqual(retained);
-    } finally {
-      db.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
-
-  it.each([
-    'future-core-kind',
-    'knowledge_observation',
-    'knowledge_claim',
-    'knowledge_conflict',
-  ])('refuses unsupported Core response kind %s instead of treating it as an opaque owner', async (kind) => {
-    const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-unknown-kind-'));
-    const store = createTestStore({ dataRoot: root });
-    const workspace = await store.createWorkspace('Closed receipt kind');
-    const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(sourceRoot);
-      rmSync(sourceRoot, { recursive: true, force: true });
-    });
-    const sourceStore = createTestStore({ dataRoot: sourceRoot });
-    const input = {
-      command: 'task.start' as const,
-      requestId: 'closed-kind',
-      scope: { workspaceId: workspace.id },
-      inputHash: 'owned-input',
-      response: { kind: 'turn' as const, id: testEntityId('tu', 'closed-receipt-kind') },
-      createdAt: '2026-10-06T00:00:00.000Z',
-      expiresAt: '2999-01-01T00:00:00.000Z',
-    };
-    await shutdownControlStoreWorkerClient();
-    const original = {
-      ...input,
-      key: commandRequestKey(input.command, input.requestId, input.scope),
-    };
-    const db = openWorkspaceDb(root, workspace.id);
-    seedRetainedReceipt(db, original);
-    try {
-      const untrusted = {
-        ...input.response,
-        kind,
-      } as unknown as CommandRequestResponse;
-      expect(() => normalizeCommandRequestResponse(input.command, untrusted)).toThrow(
-        'kind is unsupported'
-      );
-      expect(() => sourceStore.recordCommandRequest({ ...input, response: untrusted })).toThrow(
-        'kind is unsupported'
-      );
-      expect(sourceStore.listCommandRequests()).toEqual([]);
-      const rows = () =>
-        db.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all();
-      const before = rows();
-      expect(() =>
-        recordCommandRequestRecordInDb(db, { ...original, response: untrusted })
-      ).toThrow('Native admission receipts belong to the database worker.');
-      expect(rows()).toEqual(before);
-      expect(
-        db.sqlite
-          .prepare('UPDATE idempotency_requests SET response_kind = ? WHERE request_key = ?')
-          .run(kind, original.key).changes
-      ).toBe(1);
-      const corrupted = rows();
-      expect(() => getCommandRequestRecordFromDb(db, original.key, input.createdAt)).toThrow(
-        'kind is unsupported'
-      );
-      expect(rows()).toEqual(corrupted);
-    } finally {
-      db.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+  );
 
   it('validates a Core response pointer before creating its database or directories', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-before-owner-'));
@@ -362,15 +363,13 @@ describe('kind-named command response pointers', () => {
     }
   });
 
-  it.each([
-    'goal',
-    'workspace_member',
-    'pending_request',
-    'light_app_record',
-  ] as const)('preserves the excluded opaque %s owner pointer', (kind) => {
-    const response = { kind, id: 'owner:opaque-key' };
-    expect(normalizeCommandRequestResponse('task.start', response)).toEqual(response);
-  });
+  it.each(['goal', 'workspace_member', 'pending_request', 'light_app_record'] as const)(
+    'preserves the excluded opaque %s owner pointer',
+    (kind) => {
+      const response = { kind, id: 'owner:opaque-key' };
+      expect(normalizeCommandRequestResponse('task.start', response)).toEqual(response);
+    }
+  );
 });
 
 describe('native receipt ownership and replay', () => {
@@ -582,46 +581,46 @@ describe('released receipt census pages and ordinary caller selection', () => {
     return { add, dataRoot, db, records, userId };
   }
 
-  it.each([
-    'standalone',
-    'nested',
-  ] as const)('preserves the original supplied-connection selection through a real later WAL owner insert (%s)', (mode) => {
-    const { db, records, add } = fixture();
-    const prepare = db.sqlite.prepare.bind(db.sqlite);
-    let crossed = false;
-    let late: CommandRequestRecord | undefined;
-    const spy = vi.spyOn(db.sqlite, 'prepare').mockImplementation((sql) => {
-      const statement = prepare(sql);
-      if (sql.includes('FROM idempotency_requests') && sql.endsWith('LIMIT 128')) {
-        const all = statement.all.bind(statement);
-        Object.defineProperty(statement, 'all', {
-          value: (...values: unknown[]) => {
-            const rows = all(...values);
-            if (!crossed) {
-              crossed = true;
-              late = add(129);
-            }
-            return rows;
-          },
-        });
+  it.each(['standalone', 'nested'] as const)(
+    'preserves the original supplied-connection selection through a real later WAL owner insert (%s)',
+    (mode) => {
+      const { db, records, add } = fixture();
+      const prepare = db.sqlite.prepare.bind(db.sqlite);
+      let crossed = false;
+      let late: CommandRequestRecord | undefined;
+      const spy = vi.spyOn(db.sqlite, 'prepare').mockImplementation((sql) => {
+        const statement = prepare(sql);
+        if (sql.includes('FROM idempotency_requests') && sql.endsWith('LIMIT 128')) {
+          const all = statement.all.bind(statement);
+          Object.defineProperty(statement, 'all', {
+            value: (...values: unknown[]) => {
+              const rows = all(...values);
+              if (!crossed) {
+                crossed = true;
+                late = add(129);
+              }
+              return rows;
+            },
+          });
+        }
+        return statement;
+      });
+      let observed: CommandRequestRecord[];
+      try {
+        const read = () => readCommandRequestRecordsFromSqlite(db.sqlite);
+        observed = mode === 'nested' ? db.sqlite.transaction(read).deferred() : read();
+      } finally {
+        spy.mockRestore();
       }
-      return statement;
-    });
-    let observed: CommandRequestRecord[];
-    try {
-      const read = () => readCommandRequestRecordsFromSqlite(db.sqlite);
-      observed = mode === 'nested' ? db.sqlite.transaction(read).deferred() : read();
-    } finally {
-      spy.mockRestore();
+      // Writer postconditions precede the complete-original-selection comparison.
+      expect(crossed).toBe(true);
+      expect(db.sqlite.inTransaction).toBe(false);
+      const after = readCommandRequestRecordsFromSqlite(db.sqlite);
+      expect(after).toHaveLength(130);
+      expect(after.at(-1)).toEqual(late);
+      expect(observed).toEqual(records);
     }
-    // Writer postconditions precede the complete-original-selection comparison.
-    expect(crossed).toBe(true);
-    expect(db.sqlite.inTransaction).toBe(false);
-    const after = readCommandRequestRecordsFromSqlite(db.sqlite);
-    expect(after).toHaveLength(130);
-    expect(after.at(-1)).toEqual(late);
-    expect(observed).toEqual(records);
-  });
+  );
 
   it('releases before each cooperative page and does not promise a cross-page snapshot', () => {
     const { db, records, add } = fixture();

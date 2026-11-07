@@ -70,81 +70,85 @@ describe('authored configuration tolerance', () => {
     'credentialDeclarations',
     'token',
     'process',
-  ])('reports stripped Agent runtime keys through loader, snapshot and file diagnostics for %s without warning about variable names', (key) => {
-    const authored = {
-      schemaVersion: 1,
-      id: 'agent_future',
-      displayName: 'Future',
-      models: { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: ['reasoning'] },
-      runtime: {
-        kind: 'pi',
-        adapter: 'pi',
-        image: { kind: 'reference', ref: 'test:image', pullPolicy: 'never' },
-        binaries: [{ id: 'shim', path: '/usr/local/bin/shim' }],
-        environment: { PUBLIC: '', environmnt: 'legitimate variable name' },
-        [key]: { SETTING: 'canary-ignored-value' },
-        'future.note': 'canary-ignored-value',
-      },
-    };
-    const content = JSON.stringify(authored);
-    const { dataRoot, path } = authoredFile('config/agents/future.agent.jsonc', content);
-    const loaded = loadAgentManifests(dataRoot);
-    expect(loaded.manifests[0]?.runtime.environment).toEqual(authored.runtime.environment);
-    expect(loaded.manifests[0]?.runtime).not.toHaveProperty(key);
-    expect(loaded.diagnostics).toEqual([
-      expect.objectContaining({
-        severity: 'warning',
-        path,
-        agentId: 'agent_future',
-        message: `Unknown configuration key "${key}" at $.runtime.${key} was ignored.`,
-      }),
-      expect.objectContaining({
-        severity: 'warning',
-        path,
-        message: 'Unknown configuration key "future.note" at $.runtime["future.note"] was ignored.',
-      }),
-    ]);
-    const manager = createRuntimeConfigManager({ dataRoot });
-    const warnings = manager
-      .current()
-      .diagnostics.filter((diagnostic) => diagnostic.severity === 'warning');
-    expect(warnings).toHaveLength(2);
-    expect(warnings).toEqual(
-      loaded.diagnostics.map(({ code, message, severity }) => ({
-        code,
-        message,
-        severity,
-        source: 'config/agents/future.agent.jsonc',
-      }))
-    );
-    const files = new RuntimeConfigFileService({
-      dataRoot,
-      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
-      workspaceIds: [],
-      runtimeConfigManager: manager,
-      readRuntimeConfigStatus: () => manager.status(),
-    });
-    const validation = files.validate({
-      files: [{ id: 'agents/future.agent.jsonc', content }],
-      mode: 'safe',
-    });
-    expect(validation.valid).toBe(true);
-    expect(validation.diagnostics).toEqual([
-      expect.objectContaining({
-        severity: 'warning',
-        source: 'agents/future.agent.jsonc',
-        jsonPath: `$.runtime.${key}`,
-      }),
-      expect.objectContaining({
-        severity: 'warning',
-        source: 'agents/future.agent.jsonc',
-        jsonPath: '$.runtime["future.note"]',
-      }),
-    ]);
-    expect(JSON.stringify([...loaded.diagnostics, ...validation.diagnostics])).not.toContain(
-      'canary-ignored-value'
-    );
-  });
+  ])(
+    'reports stripped Agent runtime keys through loader, snapshot and file diagnostics for %s without warning about variable names',
+    (key) => {
+      const authored = {
+        schemaVersion: 1,
+        id: 'agent_future',
+        displayName: 'Future',
+        models: { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: ['reasoning'] },
+        runtime: {
+          kind: 'pi',
+          adapter: 'pi',
+          image: { kind: 'reference', ref: 'test:image', pullPolicy: 'never' },
+          binaries: [{ id: 'shim', path: '/usr/local/bin/shim' }],
+          environment: { PUBLIC: '', environmnt: 'legitimate variable name' },
+          [key]: { SETTING: 'canary-ignored-value' },
+          'future.note': 'canary-ignored-value',
+        },
+      };
+      const content = JSON.stringify(authored);
+      const { dataRoot, path } = authoredFile('config/agents/future.agent.jsonc', content);
+      const loaded = loadAgentManifests(dataRoot);
+      expect(loaded.manifests[0]?.runtime.environment).toEqual(authored.runtime.environment);
+      expect(loaded.manifests[0]?.runtime).not.toHaveProperty(key);
+      expect(loaded.diagnostics).toEqual([
+        expect.objectContaining({
+          severity: 'warning',
+          path,
+          agentId: 'agent_future',
+          message: `Unknown configuration key "${key}" at $.runtime.${key} was ignored.`,
+        }),
+        expect.objectContaining({
+          severity: 'warning',
+          path,
+          message:
+            'Unknown configuration key "future.note" at $.runtime["future.note"] was ignored.',
+        }),
+      ]);
+      const manager = createRuntimeConfigManager({ dataRoot });
+      const warnings = manager
+        .current()
+        .diagnostics.filter((diagnostic) => diagnostic.severity === 'warning');
+      expect(warnings).toHaveLength(2);
+      expect(warnings).toEqual(
+        loaded.diagnostics.map(({ code, message, severity }) => ({
+          code,
+          message,
+          severity,
+          source: 'config/agents/future.agent.jsonc',
+        }))
+      );
+      const files = new RuntimeConfigFileService({
+        dataRoot,
+        userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+        workspaceIds: [],
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      const validation = files.validate({
+        files: [{ id: 'agents/future.agent.jsonc', content }],
+        mode: 'safe',
+      });
+      expect(validation.valid).toBe(true);
+      expect(validation.diagnostics).toEqual([
+        expect.objectContaining({
+          severity: 'warning',
+          source: 'agents/future.agent.jsonc',
+          jsonPath: `$.runtime.${key}`,
+        }),
+        expect.objectContaining({
+          severity: 'warning',
+          source: 'agents/future.agent.jsonc',
+          jsonPath: '$.runtime["future.note"]',
+        }),
+      ]);
+      expect(JSON.stringify([...loaded.diagnostics, ...validation.diagnostics])).not.toContain(
+        'canary-ignored-value'
+      );
+    }
+  );
 
   it('loads an unknown optional Server key, reports its location, and preserves authored bytes on edit', async () => {
     const content =
@@ -665,77 +669,73 @@ function jsonLocation(path: readonly (string | number)[]): string {
 }
 
 describe('descriptive configuration extension loading', () => {
-  it.each(
-    descriptiveCases
-  )('strips and warns through snapshot, reload and editing for $kind at $location', async ({
-    kind,
-    file,
-    value,
-    location,
-  }) => {
-    const { dataRoot, path } = authoredFile(`config/${file}`, JSON.stringify(value));
-    const manager = createRuntimeConfigManager({ dataRoot });
-    const before = manager.current();
-    const draft = structuredClone(value);
-    atPath(draft, location)['future.note'] = { secret: 'ignored-private-canary' };
-    const content = JSON.stringify(draft);
-    writeFileSync(path, content);
-    const candidate = loadRuntimeConfig(dataRoot);
-    expect(effectiveConfig(candidate, kind)).toEqual(effectiveConfig(before, kind));
-    expect(candidate.contentHash).toBe(before.contentHash);
-    const expectedPath = `${jsonLocation(location)}["future.note"]`;
-    expect(
-      candidate.diagnostics.filter(
-        (diagnostic) => diagnostic.code === 'authored_config.unknown_key'
-      )
-    ).toEqual([
-      expect.objectContaining({
-        severity: 'warning',
-        source: expect.stringContaining(file),
-        message: `Unknown configuration key "future.note" at ${expectedPath} was ignored.`,
-      }),
-    ]);
-    const reloaded = await manager.reload({ mode: 'safe', dryRun: false });
-    expect(reloaded.status).toBe('applied');
-    expect(reloaded.plan.warnings).toContainEqual(
-      expect.objectContaining({ message: expect.stringContaining(expectedPath) })
-    );
-    expect(effectiveConfig(manager.current(), kind)).toEqual(effectiveConfig(before, kind));
-    const files = new RuntimeConfigFileService({
-      dataRoot,
-      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
-      workspaceIds: [],
-      runtimeConfigManager: manager,
-      readRuntimeConfigStatus: () => manager.status(),
-    });
-    const validation = files.validate({ files: [{ id: file, content }], mode: 'safe' });
-    expect(validation.valid).toBe(true);
-    expect(
-      validation.diagnostics.filter(
-        (diagnostic) => diagnostic.code === 'authored_config.unknown_key'
-      )
-    ).toEqual([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'authored_config.unknown_key',
-        jsonPath: expectedPath,
-      }),
-    ]);
-    await files.updateFile({
-      id: file,
-      kind: kind as Parameters<typeof files.updateFile>[0]['kind'],
-      content,
-      expectedRevision: files.readFile(file).file.revision,
-    });
-    expect(readFileSync(path, 'utf8')).toBe(content);
-    expect(
-      JSON.stringify([
-        ...candidate.diagnostics,
-        ...validation.diagnostics,
-        ...reloaded.plan.warnings,
-      ])
-    ).not.toContain('ignored-private-canary');
-  });
+  it.each(descriptiveCases)(
+    'strips and warns through snapshot, reload and editing for $kind at $location',
+    async ({ kind, file, value, location }) => {
+      const { dataRoot, path } = authoredFile(`config/${file}`, JSON.stringify(value));
+      const manager = createRuntimeConfigManager({ dataRoot });
+      const before = manager.current();
+      const draft = structuredClone(value);
+      atPath(draft, location)['future.note'] = { secret: 'ignored-private-canary' };
+      const content = JSON.stringify(draft);
+      writeFileSync(path, content);
+      const candidate = loadRuntimeConfig(dataRoot);
+      expect(effectiveConfig(candidate, kind)).toEqual(effectiveConfig(before, kind));
+      expect(candidate.contentHash).toBe(before.contentHash);
+      const expectedPath = `${jsonLocation(location)}["future.note"]`;
+      expect(
+        candidate.diagnostics.filter(
+          (diagnostic) => diagnostic.code === 'authored_config.unknown_key'
+        )
+      ).toEqual([
+        expect.objectContaining({
+          severity: 'warning',
+          source: expect.stringContaining(file),
+          message: `Unknown configuration key "future.note" at ${expectedPath} was ignored.`,
+        }),
+      ]);
+      const reloaded = await manager.reload({ mode: 'safe', dryRun: false });
+      expect(reloaded.status).toBe('applied');
+      expect(reloaded.plan.warnings).toContainEqual(
+        expect.objectContaining({ message: expect.stringContaining(expectedPath) })
+      );
+      expect(effectiveConfig(manager.current(), kind)).toEqual(effectiveConfig(before, kind));
+      const files = new RuntimeConfigFileService({
+        dataRoot,
+        userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+        workspaceIds: [],
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      const validation = files.validate({ files: [{ id: file, content }], mode: 'safe' });
+      expect(validation.valid).toBe(true);
+      expect(
+        validation.diagnostics.filter(
+          (diagnostic) => diagnostic.code === 'authored_config.unknown_key'
+        )
+      ).toEqual([
+        expect.objectContaining({
+          severity: 'warning',
+          code: 'authored_config.unknown_key',
+          jsonPath: expectedPath,
+        }),
+      ]);
+      await files.updateFile({
+        id: file,
+        kind: kind as Parameters<typeof files.updateFile>[0]['kind'],
+        content,
+        expectedRevision: files.readFile(file).file.revision,
+      });
+      expect(readFileSync(path, 'utf8')).toBe(content);
+      expect(
+        JSON.stringify([
+          ...candidate.diagnostics,
+          ...validation.diagnostics,
+          ...reloaded.plan.warnings,
+        ])
+      ).not.toContain('ignored-private-canary');
+    }
+  );
 
   it('strips a descriptive build-image key while retaining exact build inputs', () => {
     const draft = structuredClone(descriptiveFixtures.agent.value);
@@ -838,39 +838,37 @@ describe('descriptive configuration extension loading', () => {
     { kind: 'agent', location: ['runtime', 'image'], field: 'pullPolicy', value: 'future' },
     { kind: 'agent', location: ['readiness'], field: 'status', value: 'future' },
     { kind: 'internal-role', location: ['profiles', 0, 'limits'], field: 'deadlineMs', value: -1 },
-  ])('refuses authority additions or invalid core values on reload for $kind at $location for $field', async ({
-    kind,
-    location,
-    field,
-    value,
-  }) => {
-    const fixture = descriptiveFixtures[kind as keyof typeof descriptiveFixtures];
-    const { dataRoot, path } = authoredFile(
-      `config/${fixture.file}`,
-      JSON.stringify(fixture.value)
-    );
-    const manager = createRuntimeConfigManager({ dataRoot });
-    const before = manager.current();
-    const draft = structuredClone(fixture.value);
-    if (kind === 'provider' && field === 'futureRule')
-      atPath(draft, []).extensions = { openkit: {} };
-    atPath(draft, location)[field] = value;
-    writeFileSync(path, JSON.stringify(draft));
-    const result = await manager.reload({ mode: 'safe', dryRun: false });
-    expect(result.status).toBe('failed');
-    expect(manager.current()).toBe(before);
-    const files = new RuntimeConfigFileService({
-      dataRoot,
-      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
-      workspaceIds: [],
-      runtimeConfigManager: manager,
-      readRuntimeConfigStatus: () => manager.status(),
-    });
-    expect(
-      files.validate({
-        files: [{ id: fixture.file, content: JSON.stringify(draft) }],
-        mode: 'safe',
-      }).valid
-    ).toBe(false);
-  });
+  ])(
+    'refuses authority additions or invalid core values on reload for $kind at $location for $field',
+    async ({ kind, location, field, value }) => {
+      const fixture = descriptiveFixtures[kind as keyof typeof descriptiveFixtures];
+      const { dataRoot, path } = authoredFile(
+        `config/${fixture.file}`,
+        JSON.stringify(fixture.value)
+      );
+      const manager = createRuntimeConfigManager({ dataRoot });
+      const before = manager.current();
+      const draft = structuredClone(fixture.value);
+      if (kind === 'provider' && field === 'futureRule')
+        atPath(draft, []).extensions = { openkit: {} };
+      atPath(draft, location)[field] = value;
+      writeFileSync(path, JSON.stringify(draft));
+      const result = await manager.reload({ mode: 'safe', dryRun: false });
+      expect(result.status).toBe('failed');
+      expect(manager.current()).toBe(before);
+      const files = new RuntimeConfigFileService({
+        dataRoot,
+        userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+        workspaceIds: [],
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      expect(
+        files.validate({
+          files: [{ id: fixture.file, content: JSON.stringify(draft) }],
+          mode: 'safe',
+        }).valid
+      ).toBe(false);
+    }
+  );
 });

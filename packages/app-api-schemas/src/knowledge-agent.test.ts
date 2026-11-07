@@ -22,13 +22,16 @@ describe('canonical Knowledge Agent page citations', () => {
     pageUri,
     `openkit:page/server/${knowledgeBaseId}/notes/release`,
     `openkit:page/user/usr_00000000-0000-7000-8000-000000000001/${knowledgeBaseId}/notes/release`,
-  ])('preserves a canonical URI, independent revision and existing proof dialects: %s', (reference) => {
-    const scoped = { ...citation, reference };
-    expect(KnowledgeAgentCitationSchema.parse(scoped)).toEqual(scoped);
-    expect(
-      KnowledgeAgentCitationSchema.parse({ ...scoped, reference: `${reference}@${digest}` })
-    ).toEqual({ ...scoped, reference: `${reference}@${digest}` });
-  });
+  ])(
+    'preserves a canonical URI, independent revision and existing proof dialects: %s',
+    (reference) => {
+      const scoped = { ...citation, reference };
+      expect(KnowledgeAgentCitationSchema.parse(scoped)).toEqual(scoped);
+      expect(
+        KnowledgeAgentCitationSchema.parse({ ...scoped, reference: `${reference}@${digest}` })
+      ).toEqual({ ...scoped, reference: `${reference}@${digest}` });
+    }
+  );
 
   it('rejects a pin that contradicts the observed content digest at the reference boundary', () => {
     const parsed = KnowledgeAgentCitationSchema.safeParse({

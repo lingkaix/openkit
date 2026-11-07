@@ -391,104 +391,103 @@ function expectOriginal(
 it.each([
   { label: 'positive', correctFile: true },
   { label: 'negative', correctFile: false },
-])('$label existing native admission calibrates the exact second selector and armed slot', async ({
-  correctFile,
-}) => {
-  const f = await fixture();
-  const submitted = submitWorkspaceSkillCandidate({
-    dataRoot: f.dataRoot,
-    workspaceId: f.workspaceId,
-    entryId: 'audit-control',
-    baseDigest: null,
-    expectedRevision: 0,
-    createdAt: '2026-10-19T00:00:00.000Z',
-    producer: { kind: 'user', id: f.userId },
-    summary: 'Synthetic positive native admission control.',
-    tree: [
-      {
-        kind: 'file',
-        path: 'SKILL.md',
-        contentBase64: Buffer.from(
-          '---\nname: audit-control\ndescription: Native control.\n---\nSynthetic instructions.\n'
-        ).toString('base64'),
-      },
-    ],
-  });
-  const candidateId = submitted.candidate.id;
-  arm(
-    [
-      { action: ACTION, resource: 'data-source-catalog:unused-control' },
-      {
-        action: 'catalog.skill-candidate-decide.admit',
-        resource: `skill-candidate:${candidateId}`,
-        publication: {
-          path: f.path,
-          sha256: createHash('sha256')
-            .update(correctFile ? f.original : `${f.original}not-published`)
-            .digest('hex'),
+])(
+  '$label existing native admission calibrates the exact second selector and armed slot',
+  async ({ correctFile }) => {
+    const f = await fixture();
+    const submitted = submitWorkspaceSkillCandidate({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspaceId,
+      entryId: 'audit-control',
+      baseDigest: null,
+      expectedRevision: 0,
+      createdAt: '2026-10-19T00:00:00.000Z',
+      producer: { kind: 'user', id: f.userId },
+      summary: 'Synthetic positive native admission control.',
+      tree: [
+        {
+          kind: 'file',
+          path: 'SKILL.md',
+          contentBase64: Buffer.from(
+            '---\nname: audit-control\ndescription: Native control.\n---\nSynthetic instructions.\n'
+          ).toString('base64'),
         },
-      },
-    ],
-    [1]
-  );
-  const result = f.request('catalog.skill-candidate-decide', {
-    workspaceId: f.workspaceId,
-    candidateId,
-    expectedRevision: submitted.catalog.revision,
-    expectedCurrentDigest: null,
-    decision: 'rejected',
-    requestId: randomUUID(),
-  });
-  if (correctFile) {
-    const worker = await held(1, result);
-    expect(worker.threadId).toBeGreaterThan(0);
-  } else {
-    await expect(held(1, result)).rejects.toThrow(
-      'Exact canonical file bytes must exist before native SAVEPOINT/INSERT'
+      ],
+    });
+    const candidateId = submitted.candidate.id;
+    arm(
+      [
+        { action: ACTION, resource: 'data-source-catalog:unused-control' },
+        {
+          action: 'catalog.skill-candidate-decide.admit',
+          resource: `skill-candidate:${candidateId}`,
+          publication: {
+            path: f.path,
+            sha256: createHash('sha256')
+              .update(correctFile ? f.original : `${f.original}not-published`)
+              .digest('hex'),
+          },
+        },
+      ],
+      [1]
     );
-    const gate = new Int32Array(fault.gate);
-    expect(Atomics.load(gate, 5)).toBe(-2);
-    expect(Atomics.load(gate, 8)).toBe(2);
-    expect(fault.workers[Atomics.load(gate, 9)]?.threadId).toBeGreaterThan(0);
+    const result = f.request('catalog.skill-candidate-decide', {
+      workspaceId: f.workspaceId,
+      candidateId,
+      expectedRevision: submitted.catalog.revision,
+      expectedCurrentDigest: null,
+      decision: 'rejected',
+      requestId: randomUUID(),
+    });
+    if (correctFile) {
+      const worker = await held(1, result);
+      expect(worker.threadId).toBeGreaterThan(0);
+    } else {
+      await expect(held(1, result)).rejects.toThrow(
+        'Exact canonical file bytes must exist before native SAVEPOINT/INSERT'
+      );
+      const gate = new Int32Array(fault.gate);
+      expect(Atomics.load(gate, 5)).toBe(-2);
+      expect(Atomics.load(gate, 8)).toBe(2);
+      expect(fault.workers[Atomics.load(gate, 9)]?.threadId).toBeGreaterThan(0);
+    }
+    expect(new Int32Array(fault.gate)[0]).toBe(0);
+    expect(f.rows()).toEqual([]);
+    const admission = listWorkspaceAuditEvents(f.workspaceDb, f.workspaceId).filter(
+      (event) => event.action === 'catalog.skill-candidate-decide.admit'
+    );
+    expect(admission).toHaveLength(1);
+    expect(admission[0]?.resource).toBe(`skill-candidate:${candidateId}`);
+    release(1);
+    expect((await result).status).toBe(200);
   }
-  expect(new Int32Array(fault.gate)[0]).toBe(0);
-  expect(f.rows()).toEqual([]);
-  const admission = listWorkspaceAuditEvents(f.workspaceDb, f.workspaceId).filter(
-    (event) => event.action === 'catalog.skill-candidate-decide.admit'
-  );
-  expect(admission).toHaveLength(1);
-  expect(admission[0]?.resource).toBe(`skill-candidate:${candidateId}`);
-  release(1);
-  expect((await result).status).toBe(200);
-});
+);
 
-it.each([
-  'kind',
-  'access',
-  'sensitivity',
-  'vaultGrantRef',
-] as const)('publishes authority field %s before native FULL and waits for covering ACK before success', async (field) => {
-  const f = await fixture();
-  const content = `${JSON.stringify({ schemaVersion: 1, sources: [{ ...source('alpha'), [field]: source('alpha', true)[field] }] }, null, 2)}\n`;
-  f.arm([0], content);
-  let settled = false;
-  const result = f.update(content);
-  void result.then(() => {
-    settled = true;
-  });
-  const worker = await held(0, result, { ...f, content });
-  expect(worker.threadId).toBeGreaterThan(0);
-  expect(settled).toBe(false);
-  expect(readFileSync(f.path, 'utf8')).toBe(content);
-  expect((await f.read()).file.revision).not.toBe(f.initial.file.revision);
-  expect(f.events()).toHaveLength(1);
-  expectOriginal(f.events()[0], f, 'alpha', field);
-  const prefix = f.rows();
-  release(0);
-  expect((await result).status).toBe(200);
-  expect(f.rows()).toEqual(prefix);
-  expect(await f.coldRows()).toEqual(prefix);
-});
+it.each(['kind', 'access', 'sensitivity', 'vaultGrantRef'] as const)(
+  'publishes authority field %s before native FULL and waits for covering ACK before success',
+  async (field) => {
+    const f = await fixture();
+    const content = `${JSON.stringify({ schemaVersion: 1, sources: [{ ...source('alpha'), [field]: source('alpha', true)[field] }] }, null, 2)}\n`;
+    f.arm([0], content);
+    let settled = false;
+    const result = f.update(content);
+    void result.then(() => {
+      settled = true;
+    });
+    const worker = await held(0, result, { ...f, content });
+    expect(worker.threadId).toBeGreaterThan(0);
+    expect(settled).toBe(false);
+    expect(readFileSync(f.path, 'utf8')).toBe(content);
+    expect((await f.read()).file.revision).not.toBe(f.initial.file.revision);
+    expect(f.events()).toHaveLength(1);
+    expectOriginal(f.events()[0], f, 'alpha', field);
+    const prefix = f.rows();
+    release(0);
+    expect((await result).status).toBe(200);
+    expect(f.rows()).toEqual(prefix);
+    expect(await f.coldRows()).toEqual(prefix);
+  }
+);
 
 it('keeps sorted serial changed-entry ACK order despite unsorted authored sources', async () => {
   const f = await fixture(['gamma', 'alpha', 'beta']);

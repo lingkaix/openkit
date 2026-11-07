@@ -137,21 +137,19 @@ describe('public native environment resolution', () => {
     manifest.runtime.environment = {};
     expect(() => resolvePublicNativeEnvironment(f.db, manifest)).toThrow('credential collision');
   });
-  it.each([
-    'DSH_HOME',
-    'DSH_PERMISSION_MODE',
-    'DSH_TELEMETRY_MODE',
-    'DSH_TELEMETRY_OTLP_URL',
-  ])('refuses DeepSeek public override or removal of %s at resolution', async (name) => {
-    const f = await fixture();
-    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
-    const manifest = nativeEnvironmentManifest();
-    manifest.runtime.adapter = 'deepseek';
-    for (const value of ['literal-canary', null]) {
-      manifest.runtime.environment = { [name]: value };
-      expect(() => resolvePublicNativeEnvironment(f.db, manifest)).toThrow('authority conflict');
+  it.each(['DSH_HOME', 'DSH_PERMISSION_MODE', 'DSH_TELEMETRY_MODE', 'DSH_TELEMETRY_OTLP_URL'])(
+    'refuses DeepSeek public override or removal of %s at resolution',
+    async (name) => {
+      const f = await fixture();
+      await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+      const manifest = nativeEnvironmentManifest();
+      manifest.runtime.adapter = 'deepseek';
+      for (const value of ['literal-canary', null]) {
+        manifest.runtime.environment = { [name]: value };
+        expect(() => resolvePublicNativeEnvironment(f.db, manifest)).toThrow('authority conflict');
+      }
     }
-  });
+  );
   it('filters DeepSeek managed image defaults while resolving ordinary public settings', async () => {
     const f = await fixture({
       DSH_HOME: 'image-home',

@@ -674,23 +674,23 @@ it('reads only typed resources from exact retained Task lineage after database r
   });
 });
 
-it.each([
-  false,
-  true,
-])('retains original Task bounds for a later outcome Turn (administrator=%s)', async (administrator) => {
-  const f = await fixture();
-  const original = f.read()!;
-  const captured = await f.capture();
-  await f.closeSource();
-  const lineage = await f.outcome(captured.requestId, administrator);
-  await f.reopen();
-  expect(
-    readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage })
-  ).toEqual({
-    ...original,
-    turnId: lineage.turnId,
-  });
-});
+it.each([false, true])(
+  'retains original Task bounds for a later outcome Turn (administrator=%s)',
+  async (administrator) => {
+    const f = await fixture();
+    const original = f.read()!;
+    const captured = await f.capture();
+    await f.closeSource();
+    const lineage = await f.outcome(captured.requestId, administrator);
+    await f.reopen();
+    expect(
+      readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage })
+    ).toEqual({
+      ...original,
+      turnId: lineage.turnId,
+    });
+  }
+);
 
 it('retains original Task bounds for an ordinary checkpoint-free user follow-up', async () => {
   const f = await fixture();
@@ -878,47 +878,46 @@ it('keeps identical retained context for a real captured request after source cl
   ).toEqual(original);
 });
 
-it.each([
-  'wrong-package',
-  'missing-attempt',
-  'missing-close-proof',
-] as const)('refuses a retained captured source with %s', async (corruption) => {
-  const f = await fixture();
-  const captured = await f.capture();
-  if (corruption === 'missing-close-proof') {
-    await retainCompletedTaskFixture(f.store, f.db, f.lineage.turnId, false);
-  } else await f.closeSource();
-  if (corruption === 'missing-close-proof') {
-    await shutdownControlStoreWorkerClient();
-    // Deliberate loss tests refusal without cleanup authority; it does not prove cleanup.
-    expect(
-      f.db.sqlite
-        .prepare(
-          'DELETE FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
-        )
-        .run(f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId).changes
-    ).toBe(1);
+it.each(['wrong-package', 'missing-attempt', 'missing-close-proof'] as const)(
+  'refuses a retained captured source with %s',
+  async (corruption) => {
+    const f = await fixture();
+    const captured = await f.capture();
+    if (corruption === 'missing-close-proof') {
+      await retainCompletedTaskFixture(f.store, f.db, f.lineage.turnId, false);
+    } else await f.closeSource();
+    if (corruption === 'missing-close-proof') {
+      await shutdownControlStoreWorkerClient();
+      // Deliberate loss tests refusal without cleanup authority; it does not prove cleanup.
+      expect(
+        f.db.sqlite
+          .prepare(
+            'DELETE FROM worker_turn_checkpoints WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
+          )
+          .run(f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId).changes
+      ).toBe(1);
+    }
+    if (corruption === 'missing-attempt')
+      f.coreDb.sqlite
+        .prepare('DELETE FROM scheduler_execution_attempts WHERE turn_id=?')
+        .run(captured.raisingTurnId);
+    expect(() =>
+      readGoalTaskPolicyContext({
+        coreDb: f.coreDb,
+        store: f.store,
+        db: f.db,
+        lineage: {
+          workspaceId: captured.workspaceId,
+          threadId: captured.threadId,
+          turnId: captured.raisingTurnId,
+          agentSessionId: captured.agentSessionId!,
+          packageSnapshotId:
+            corruption === 'wrong-package' ? 'wrong-package' : captured.packageDigest!,
+        },
+      })
+    ).toThrow();
   }
-  if (corruption === 'missing-attempt')
-    f.coreDb.sqlite
-      .prepare('DELETE FROM scheduler_execution_attempts WHERE turn_id=?')
-      .run(captured.raisingTurnId);
-  expect(() =>
-    readGoalTaskPolicyContext({
-      coreDb: f.coreDb,
-      store: f.store,
-      db: f.db,
-      lineage: {
-        workspaceId: captured.workspaceId,
-        threadId: captured.threadId,
-        turnId: captured.raisingTurnId,
-        agentSessionId: captured.agentSessionId!,
-        packageSnapshotId:
-          corruption === 'wrong-package' ? 'wrong-package' : captured.packageDigest!,
-      },
-    })
-  ).toThrow();
-});
+);
 
 it('gives descriptive references and context selection no Policy authority', async () => {
   const f = await fixture(false);
@@ -949,32 +948,30 @@ it('keeps a running Task eligible after ordinary card edits', async () => {
   expect(f.read()?.resources).toEqual([f.resource]);
 });
 
-it.each([
-  'agentSessionId',
-  'packageSnapshotId',
-  'turnId',
-  'threadId',
-] as const)('refuses a linked Task with wrong %s', async (key) => {
-  const f = await fixture();
-  expect(() =>
-    readGoalTaskPolicyContext({
-      coreDb: f.coreDb,
-      store: f.store,
-      db: f.db,
-      lineage: {
-        ...f.lineage,
-        [key]:
-          key === 'turnId'
-            ? testEntityId('tu', 'wrong')
-            : key === 'threadId'
-              ? testEntityId('th', 'wrong')
-              : key === 'agentSessionId'
-                ? testEntityId('as', 'wrong')
-                : 'wrong-package',
-      },
-    })
-  ).toThrow();
-});
+it.each(['agentSessionId', 'packageSnapshotId', 'turnId', 'threadId'] as const)(
+  'refuses a linked Task with wrong %s',
+  async (key) => {
+    const f = await fixture();
+    expect(() =>
+      readGoalTaskPolicyContext({
+        coreDb: f.coreDb,
+        store: f.store,
+        db: f.db,
+        lineage: {
+          ...f.lineage,
+          [key]:
+            key === 'turnId'
+              ? testEntityId('tu', 'wrong')
+              : key === 'threadId'
+                ? testEntityId('th', 'wrong')
+                : key === 'agentSessionId'
+                  ? testEntityId('as', 'wrong')
+                  : 'wrong-package',
+        },
+      })
+    ).toThrow();
+  }
+);
 
 it.each([
   'missing-attempt',

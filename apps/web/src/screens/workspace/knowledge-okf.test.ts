@@ -75,24 +75,25 @@ describe('Knowledge OKF page editing', () => {
     });
   });
 
-  it.each(
-    KNOWLEDGE_PAGE_STATES
-  )('composes selectable state %s with its standard status projection', (state) => {
-    const content = composeUserAuthoredKnowledgePage({
-      workspaceId: WORKSPACE_ID,
-      path: PATH,
-      title: 'Lifecycle page',
-      body: 'Body.',
-      state,
-      timestamp: '2026-10-16T00:00:00.000Z',
-    });
+  it.each(KNOWLEDGE_PAGE_STATES)(
+    'composes selectable state %s with its standard status projection',
+    (state) => {
+      const content = composeUserAuthoredKnowledgePage({
+        workspaceId: WORKSPACE_ID,
+        path: PATH,
+        title: 'Lifecycle page',
+        body: 'Body.',
+        state,
+        timestamp: '2026-10-16T00:00:00.000Z',
+      });
 
-    expect(readKnowledgePageDisplay(PATH, content).state).toBe(state);
-    expect(frontmatterLine(content, 'openkit_status')).toBe(state);
-    expect(frontmatterLine(content, 'status')).toBe(
-      state === 'draft' ? 'draft' : state === 'active' ? 'stable' : 'deprecated'
-    );
-  });
+      expect(readKnowledgePageDisplay(PATH, content).state).toBe(state);
+      expect(frontmatterLine(content, 'openkit_status')).toBe(state);
+      expect(frontmatterLine(content, 'status')).toBe(
+        state === 'draft' ? 'draft' : state === 'active' ? 'stable' : 'deprecated'
+      );
+    }
+  );
 
   it('changes only the state fields when an edit selects a new state', () => {
     const original = composeUserAuthoredKnowledgePage({

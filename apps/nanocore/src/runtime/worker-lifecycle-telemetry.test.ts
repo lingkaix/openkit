@@ -219,24 +219,24 @@ describe('current Worker lifecycle telemetry', () => {
     await assertSafeLocalBytes();
   });
 
-  it.each([
-    'disabled',
-    'unavailable',
-  ] as const)('preserves backend failure and claim cleanup when telemetry is %s', async (mode) => {
-    const exporter = beginTelemetry(mode);
-    const exported = vi.spyOn(exporter, 'export');
-    const fixture = await createFixture();
-    const failure = new Error(ERROR_CANARY);
-    fixture.capabilities.mockRejectedValueOnce(failure);
-    const run = await fixture.run();
-    expect(await run.outcome).toBe(failure);
-    expect(fixture.validation).toHaveBeenCalledOnce();
-    expect(fixture.plan).not.toHaveBeenCalled();
-    assertProductSettlement(fixture, run);
-    await shutdownTelemetry();
-    if (mode === 'disabled') expect(exported).not.toHaveBeenCalled();
-    expect((await signalFiles()).length).toBe(0);
-  });
+  it.each(['disabled', 'unavailable'] as const)(
+    'preserves backend failure and claim cleanup when telemetry is %s',
+    async (mode) => {
+      const exporter = beginTelemetry(mode);
+      const exported = vi.spyOn(exporter, 'export');
+      const fixture = await createFixture();
+      const failure = new Error(ERROR_CANARY);
+      fixture.capabilities.mockRejectedValueOnce(failure);
+      const run = await fixture.run();
+      expect(await run.outcome).toBe(failure);
+      expect(fixture.validation).toHaveBeenCalledOnce();
+      expect(fixture.plan).not.toHaveBeenCalled();
+      assertProductSettlement(fixture, run);
+      await shutdownTelemetry();
+      if (mode === 'disabled') expect(exported).not.toHaveBeenCalled();
+      expect((await signalFiles()).length).toBe(0);
+    }
+  );
 });
 
 /** Keeps the real validator and executor; controls capability discovery and the next no-effect boundary. */

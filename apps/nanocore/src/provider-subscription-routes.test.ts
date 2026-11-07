@@ -860,26 +860,29 @@ describe('provider-subscription app API', () => {
       code: 'invalid_request',
       message: 'Invalid operation input.',
     },
-  ])('classifies authorized native account-create $name at its owning boundary', async (testCase) => {
-    const fixture = createFixture();
-    // The admission/manager seam must use the real owner instead of the route fixture's stub.
-    fixture.spies.createAccount.mockRestore();
-    try {
-      const response = await fixture.app.request(
-        ...operationRequest('provider-subscription.account-create', {
-          subscriptionProviderId: 'xai',
-          ...testCase.input,
-        })
-      );
-      expect(response.status).toBe(400);
-      const body = await response.json();
-      expect.soft(body.code).toBe(testCase.code);
-      expect.soft(body.message).toBe(testCase.message);
-      expectNoProviderStateIo(fixture);
-    } finally {
-      fixture.close();
+  ])(
+    'classifies authorized native account-create $name at its owning boundary',
+    async (testCase) => {
+      const fixture = createFixture();
+      // The admission/manager seam must use the real owner instead of the route fixture's stub.
+      fixture.spies.createAccount.mockRestore();
+      try {
+        const response = await fixture.app.request(
+          ...operationRequest('provider-subscription.account-create', {
+            subscriptionProviderId: 'xai',
+            ...testCase.input,
+          })
+        );
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect.soft(body.code).toBe(testCase.code);
+        expect.soft(body.message).toBe(testCase.message);
+        expectNoProviderStateIo(fixture);
+      } finally {
+        fixture.close();
+      }
     }
-  });
+  );
 
   it('rejects invalid providers, slots, and strict bodies before account, Vault, or provider I/O', async () => {
     const fixture = createFixture();
@@ -1614,85 +1617,85 @@ describe('provider-subscription app API', () => {
     }
   });
 
-  it.each([
-    [900],
-    [18_000],
-    [604_800],
-    [0],
-    [-1],
-  ] as const)('projects only a positive reported Codex window duration (%s)', async (seconds) => {
-    const fixture = createFixture();
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          ...CODEX_USAGE,
-          rate_limit: {
-            ...CODEX_USAGE.rate_limit,
-            primary_window: {
-              ...CODEX_USAGE.rate_limit.primary_window,
-              limit_window_seconds: seconds,
+  it.each([[900], [18_000], [604_800], [0], [-1]] as const)(
+    'projects only a positive reported Codex window duration (%s)',
+    async (seconds) => {
+      const fixture = createFixture();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...CODEX_USAGE,
+            rate_limit: {
+              ...CODEX_USAGE.rate_limit,
+              primary_window: {
+                ...CODEX_USAGE.rate_limit.primary_window,
+                limit_window_seconds: seconds,
+              },
             },
+          })
+        )
+      );
+      try {
+        const response = await fixture.app.request(
+          ...operationRequest('provider-subscription.account-quota', {
+            subscriptionProviderId: 'openai-codex',
+            accountSlotId: 'default',
+          })
+        );
+        const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
+        expect(response.status).toBe(200);
+        expect(quota).toMatchObject({ availability: 'available' });
+        if (quota.availability !== 'available') throw new Error('Expected available quota.');
+        const { limitWindowSeconds: _defaultDuration, ...primary } = PRIMARY_QUOTA_WINDOW;
+        expect(quota.windows).toEqual([
+          {
+            ...primary,
+            ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}),
           },
-        })
-      )
-    );
-    try {
-      const response = await fixture.app.request(
-        ...operationRequest('provider-subscription.account-quota', {
-          subscriptionProviderId: 'openai-codex',
-          accountSlotId: 'default',
-        })
-      );
-      const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
-      expect(response.status).toBe(200);
-      expect(quota).toMatchObject({ availability: 'available' });
-      if (quota.availability !== 'available') throw new Error('Expected available quota.');
-      const { limitWindowSeconds: _defaultDuration, ...primary } = PRIMARY_QUOTA_WINDOW;
-      expect(quota.windows).toEqual([
-        {
-          ...primary,
-          ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}),
-        },
-        SECONDARY_QUOTA_WINDOW,
-      ]);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      fetchSpy.mockRestore();
-      fixture.close();
+          SECONDARY_QUOTA_WINDOW,
+        ]);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        fetchSpy.mockRestore();
+        fixture.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    401, 403, 429, 503,
-  ])('distinguishes Codex quota HTTP %s without credential mutation', async (status) => {
-    const fixture = createFixture();
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('token_expired Bearer upstream-private-canary', { status }));
-    try {
-      const response = await fixture.app.request(
-        ...operationRequest('provider-subscription.account-quota', {
-          subscriptionProviderId: 'openai-codex',
+  it.each([401, 403, 429, 503])(
+    'distinguishes Codex quota HTTP %s without credential mutation',
+    async (status) => {
+      const fixture = createFixture();
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(
+          new Response('token_expired Bearer upstream-private-canary', { status })
+        );
+      try {
+        const response = await fixture.app.request(
+          ...operationRequest('provider-subscription.account-quota', {
+            subscriptionProviderId: 'openai-codex',
+            accountSlotId: 'default',
+          })
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
           accountSlotId: 'default',
-        })
-      );
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({
-        accountSlotId: 'default',
-        availability: status === 401 ? 'authentication_required' : 'temporarily_unavailable',
-        observedAt: OBSERVED_AT,
-        subscriptionProviderId: 'openai-codex',
-      });
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
-      expect(fixture.spies.credentialModify).not.toHaveBeenCalled();
-      expect(fixture.spies.credentialDelete).not.toHaveBeenCalled();
-      expect(fixture.spies.modelsGetAuth).not.toHaveBeenCalled();
-      expect(fixture.spies.startLogin).not.toHaveBeenCalled();
-    } finally {
-      fetchSpy.mockRestore();
-      fixture.close();
+          availability: status === 401 ? 'authentication_required' : 'temporarily_unavailable',
+          observedAt: OBSERVED_AT,
+          subscriptionProviderId: 'openai-codex',
+        });
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(fixture.spies.credentialModify).not.toHaveBeenCalled();
+        expect(fixture.spies.credentialDelete).not.toHaveBeenCalled();
+        expect(fixture.spies.modelsGetAuth).not.toHaveBeenCalled();
+        expect(fixture.spies.startLogin).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+        fixture.close();
+      }
     }
-  });
+  );
 
   it('does not reject a replacement Codex credential after an older quota read returns 401', async () => {
     const fixture = createFixture();
@@ -2944,39 +2947,39 @@ describe('provider-subscription app API', () => {
 });
 
 describe('quota observation clearing wiring', () => {
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('reports live %s quota and forwards its material version and success', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    const upstream =
-      subscriptionProviderId === 'xai'
-        ? mockXaiQuotaUpstream()
-        : vi
-            .spyOn(globalThis, 'fetch')
-            .mockResolvedValue(new Response(JSON.stringify(CODEX_USAGE)));
-    try {
-      const response = await fixture.app.request(
-        ...operationRequest('provider-subscription.account-quota', {
-          subscriptionProviderId: subscriptionProviderId,
-          accountSlotId: 'default',
-        })
-      );
-      expect(response.status).toBe(200);
-      const quota = await response.json();
-      expect(quota.availability).toBe('available');
-      expect(quota).not.toHaveProperty('inferenceObservation');
-      expect(fixture.spies.observeQuota).toHaveBeenCalledWith(
-        'fixture_r1:1',
-        'available',
-        true,
-        expect.any(AbortSignal)
-      );
-    } finally {
-      upstream.mockRestore();
-      fixture.close();
+  it.each(['openai-codex', 'xai'] as const)(
+    'reports live %s quota and forwards its material version and success',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      const upstream =
+        subscriptionProviderId === 'xai'
+          ? mockXaiQuotaUpstream()
+          : vi
+              .spyOn(globalThis, 'fetch')
+              .mockResolvedValue(new Response(JSON.stringify(CODEX_USAGE)));
+      try {
+        const response = await fixture.app.request(
+          ...operationRequest('provider-subscription.account-quota', {
+            subscriptionProviderId: subscriptionProviderId,
+            accountSlotId: 'default',
+          })
+        );
+        expect(response.status).toBe(200);
+        const quota = await response.json();
+        expect(quota.availability).toBe('available');
+        expect(quota).not.toHaveProperty('inferenceObservation');
+        expect(fixture.spies.observeQuota).toHaveBeenCalledWith(
+          'fixture_r1:1',
+          'available',
+          true,
+          expect.any(AbortSignal)
+        );
+      } finally {
+        upstream.mockRestore();
+        fixture.close();
+      }
     }
-  });
+  );
 
   it('forwards accepted xAI discovery when billing is unavailable', async () => {
     const fixture = createFixture();
@@ -3004,31 +3007,31 @@ describe('quota observation clearing wiring', () => {
     }
   });
 
-  it.each([
-    'openai-codex',
-    'xai',
-  ] as const)('suppresses same-bearer %s rejection when the material version changed', async (subscriptionProviderId) => {
-    const fixture = createFixture();
-    fixture.spies.getCredentialVersion
-      .mockResolvedValueOnce('fixture_r1:1')
-      .mockResolvedValue('fixture_r1:2');
-    const upstream = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('', { status: 401 }));
-    try {
-      const response = await fixture.app.request(
-        ...operationRequest('provider-subscription.account-quota', {
-          subscriptionProviderId: subscriptionProviderId,
-          accountSlotId: 'default',
-        })
-      );
-      expect((await response.json()).availability).toBe('temporarily_unavailable');
-      expect(fixture.spies.observeQuota).not.toHaveBeenCalled();
-    } finally {
-      upstream.mockRestore();
-      fixture.close();
+  it.each(['openai-codex', 'xai'] as const)(
+    'suppresses same-bearer %s rejection when the material version changed',
+    async (subscriptionProviderId) => {
+      const fixture = createFixture();
+      fixture.spies.getCredentialVersion
+        .mockResolvedValueOnce('fixture_r1:1')
+        .mockResolvedValue('fixture_r1:2');
+      const upstream = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response('', { status: 401 }));
+      try {
+        const response = await fixture.app.request(
+          ...operationRequest('provider-subscription.account-quota', {
+            subscriptionProviderId: subscriptionProviderId,
+            accountSlotId: 'default',
+          })
+        );
+        expect((await response.json()).availability).toBe('temporarily_unavailable');
+        expect(fixture.spies.observeQuota).not.toHaveBeenCalled();
+      } finally {
+        upstream.mockRestore();
+        fixture.close();
+      }
     }
-  });
+  );
 
   it('admits only a proven current xAI quota rejection', async () => {
     const fixture = createFixture();

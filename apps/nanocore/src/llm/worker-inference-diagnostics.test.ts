@@ -1051,203 +1051,204 @@ it('keeps a pending sibling alive when a non-admission failure has no raw source
 it.each([
   { failure: 'incomplete settlement', stage: 'settlement', causeCode: 'raw_source_incomplete' },
   { failure: 'explicit raw failure', stage: 'source', causeCode: 'raw_authority_unavailable' },
-] as const)('retains B as the first raw-stop origin after $failure', async ({
-  failure,
-  stage,
-  causeCode,
-}) => {
-  const f = await fixture(true, undefined, true, 'controlled');
-  const enteredA = Promise.withResolvers<void>();
-  const releaseA = Promise.withResolvers<void>();
-  const loggedA = Promise.withResolvers<void>();
-  let callAId: string | undefined;
-  let originAtAbort: unknown;
-  const warn = vi.spyOn(console, 'warn').mockImplementation((message) => {
-    const diagnostic = JSON.parse(message);
-    if (diagnostic.code === 'worker_inference_failed' && diagnostic.capabilityCallId === callAId)
-      loggedA.resolve();
-  });
-  f.dispatch
-    .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-      const raw = context.transport!.rawOutput!;
-      const settle = raw.sourceStarted();
-      const aborted = Promise.withResolvers<never>();
-      const signal = context.transport!.signal!;
-      signal.addEventListener(
-        'abort',
-        () => {
-          originAtAbort = warn.mock.calls
-            .map(([message]) => JSON.parse(message))
-            .find((entry) => entry.code === 'worker_raw_output_stopped');
-          aborted.reject(signal.reason);
-        },
-        { once: true }
-      );
-      enteredA.resolve();
-      try {
-        await Promise.race([releaseA.promise, aborted.promise]);
-      } finally {
-        settle();
-      }
-      throw new Error('unexpected-release-canary');
-    })
-    .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-      // A reached source with zero hooks is unknown even after it settles.
-      const raw = context.transport!.rawOutput!;
-      const settle = raw.sourceStarted();
-      settle();
-      if (failure === 'explicit raw failure') {
-        let rawFailure: unknown;
+] as const)(
+  'retains B as the first raw-stop origin after $failure',
+  async ({ failure, stage, causeCode }) => {
+    const f = await fixture(true, undefined, true, 'controlled');
+    const enteredA = Promise.withResolvers<void>();
+    const releaseA = Promise.withResolvers<void>();
+    const loggedA = Promise.withResolvers<void>();
+    let callAId: string | undefined;
+    let originAtAbort: unknown;
+    const warn = vi.spyOn(console, 'warn').mockImplementation((message) => {
+      const diagnostic = JSON.parse(message);
+      if (diagnostic.code === 'worker_inference_failed' && diagnostic.capabilityCallId === callAId)
+        loggedA.resolve();
+    });
+    f.dispatch
+      .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+        const raw = context.transport!.rawOutput!;
+        const settle = raw.sourceStarted();
+        const aborted = Promise.withResolvers<never>();
+        const signal = context.transport!.signal!;
+        signal.addEventListener(
+          'abort',
+          () => {
+            originAtAbort = warn.mock.calls
+              .map(([message]) => JSON.parse(message))
+              .find((entry) => entry.code === 'worker_raw_output_stopped');
+            aborted.reject(signal.reason);
+          },
+          { once: true }
+        );
+        enteredA.resolve();
         try {
-          await raw.fail(new WorkerRawOutputAuthorityError());
-        } catch (error) {
-          rawFailure = error;
+          await Promise.race([releaseA.promise, aborted.promise]);
+        } finally {
+          settle();
         }
-        // Force the sibling to report first, independently of the origin record.
-        await loggedA.promise;
-        throw rawFailure;
-      }
-      throw new TypeError('exception-message-canary');
-    });
-  const pendingA = f.post(false);
-  await enteredA.promise;
-  callAId = f.ledgerCalls()[0]!.id;
-  try {
-    const responseB = await f.post(false);
-    await responseB.text();
-    await (await pendingA).text();
-    const callB = f.ledgerCalls().find((call) => call.id !== callAId)!;
-    const origin = {
-      code: 'worker_raw_output_stopped',
-      capabilityCallId: callB.id,
-      phase: 'dispatch',
-      stage,
-      causeCode,
-    };
-
-    // Item 3d requires the first origin before abort can create sibling failures.
-    expect.soft(originAtAbort).toMatchObject(origin);
-    const diagnostics = warn.mock.calls.map(([message]) => JSON.parse(message));
-    const stops = diagnostics.filter((entry) => entry.code === 'worker_raw_output_stopped');
-    expect.soft(stops).toHaveLength(1);
-    expect.soft(stops[0]).toMatchObject(origin);
-    if (failure === 'explicit raw failure') {
-      // W-LEASE-2 diagnostics keep the trusted coarse refusal class.
-      expect.soft(stops[0]).toMatchObject({
-        errorClass: 'raw-authority',
+        throw new Error('unexpected-release-canary');
+      })
+      .mockImplementationOnce(async (_provider, _request, context: LLMGatewayDispatchContext) => {
+        // A reached source with zero hooks is unknown even after it settles.
+        const raw = context.transport!.rawOutput!;
+        const settle = raw.sourceStarted();
+        settle();
+        if (failure === 'explicit raw failure') {
+          let rawFailure: unknown;
+          try {
+            await raw.fail(new WorkerRawOutputAuthorityError());
+          } catch (error) {
+            rawFailure = error;
+          }
+          // Force the sibling to report first, independently of the origin record.
+          await loggedA.promise;
+          throw rawFailure;
+        }
+        throw new TypeError('exception-message-canary');
       });
-      const failures = diagnostics.filter((entry) => entry.code === 'worker_inference_failed');
-      expect.soft(failures[0]?.capabilityCallId).toBe(callAId);
+    const pendingA = f.post(false);
+    await enteredA.promise;
+    callAId = f.ledgerCalls()[0]!.id;
+    try {
+      const responseB = await f.post(false);
+      await responseB.text();
+      await (await pendingA).text();
+      const callB = f.ledgerCalls().find((call) => call.id !== callAId)!;
+      const origin = {
+        code: 'worker_raw_output_stopped',
+        capabilityCallId: callB.id,
+        phase: 'dispatch',
+        stage,
+        causeCode,
+      };
+
+      // Item 3d requires the first origin before abort can create sibling failures.
+      expect.soft(originAtAbort).toMatchObject(origin);
+      const diagnostics = warn.mock.calls.map(([message]) => JSON.parse(message));
+      const stops = diagnostics.filter((entry) => entry.code === 'worker_raw_output_stopped');
+      expect.soft(stops).toHaveLength(1);
+      expect.soft(stops[0]).toMatchObject(origin);
+      if (failure === 'explicit raw failure') {
+        // W-LEASE-2 diagnostics keep the trusted coarse refusal class.
+        expect.soft(stops[0]).toMatchObject({
+          errorClass: 'raw-authority',
+        });
+        const failures = diagnostics.filter((entry) => entry.code === 'worker_inference_failed');
+        expect.soft(failures[0]?.capabilityCallId).toBe(callAId);
+      }
+      expect.soft(f.onRawOutputStop).toHaveBeenCalledTimes(1);
+      expect.soft(f.onRawOutputStop).toHaveBeenCalledWith(f.environmentPackage.scope, 'error');
+      expect.soft(f.ledgerCalls()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: callAId, errorCode: 'worker_raw_output_unavailable' }),
+          expect.objectContaining({
+            id: callB.id,
+            status: 'failed',
+            errorCode: 'worker_raw_output_unavailable',
+          }),
+        ])
+      );
+      expect.soft(() => f.rawOutput()).toThrow(WorkerRawOutputAuthorityError);
+      expect.soft(JSON.stringify(diagnostics)).not.toContain('canary');
+    } finally {
+      releaseA.resolve();
+      await pendingA;
     }
-    expect.soft(f.onRawOutputStop).toHaveBeenCalledTimes(1);
-    expect.soft(f.onRawOutputStop).toHaveBeenCalledWith(f.environmentPackage.scope, 'error');
-    expect.soft(f.ledgerCalls()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: callAId, errorCode: 'worker_raw_output_unavailable' }),
-        expect.objectContaining({
-          id: callB.id,
-          status: 'failed',
-          errorCode: 'worker_raw_output_unavailable',
-        }),
-      ])
-    );
-    expect.soft(() => f.rawOutput()).toThrow(WorkerRawOutputAuthorityError);
-    expect.soft(JSON.stringify(diagnostics)).not.toContain('canary');
-  } finally {
-    releaseA.resolve();
-    await pendingA;
   }
-});
+);
 
-it.each([
-  'responses',
-  'chat/completions',
-])('logs one safe committed %s failure and preserves closeout', async (endpoint) => {
-  const f = await fixture();
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  f.dispatch.mockResolvedValue(
-    failedStream(
-      Object.assign(new Error('exception-canary'), {
-        failure: {
-          kind: 'provider_unavailable',
-          settled: false,
-          status: 502,
-          providerCode: 'credential-canary',
-        },
-        body: 'body-canary',
-      }),
-      endpoint
-    )
-  );
-  const response = await f.post(true, endpoint);
-  expect(response.status).toBe(200);
-  const body = await response.text();
-  expect(body).toContain('output-canary');
-  expect(body).toContain('gateway_provider_unavailable');
-  expect(body).toContain('[DONE]');
-  expect(f.dispatch).toHaveBeenCalledTimes(1);
-  const [call] = f.calls() as { call_id: string; request_id: string }[];
-  expect(f.calls()).toMatchObject([
-    { status: 'failed', error_code: 'gateway_provider_unavailable' },
-  ]);
-  expect(warn).toHaveBeenCalledTimes(1);
-  const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
-  expect(diagnostic).toEqual({
-    code: 'worker_inference_failed',
-    message: 'Worker inference call failed.',
-    phase: 'stream-read',
-    failureKind: 'provider_unavailable',
-    httpStatus: 502,
-    elapsedMs: expect.any(Number),
-    outputBegan: true,
-    requestId: call!.request_id,
-    capabilityCallId: call!.call_id,
-    workspaceId: workspaceIdForOwner(f.turn.owner),
-    threadId: f.turn.threadId,
-    turnId: f.turn.id,
-    corr: expect.any(String),
-    attempt: 0,
-  });
-  expect(diagnostic.elapsedMs).toBeGreaterThanOrEqual(0);
-  expect(JSON.stringify(diagnostic)).not.toMatch(
-    /(?:exception|body|prompt|output|credential)-canary/
-  );
-});
-
-it.each([
-  'dispatch',
-  'stream-prepare',
-] as const)('logs a pre-output %s failure without inventing status', async (phase) => {
-  const f = await fixture();
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const error = Object.assign(new Error('exception-canary'), {
-    failure: { kind: 'unknown', settled: false },
-  });
-  f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
-    context.transport?.onProviderHandoff?.();
-    if (phase === 'dispatch') throw error;
-    return new ReadableStream({
-      start(controller) {
-        controller.error(error);
-      },
+it.each(['responses', 'chat/completions'])(
+  'logs one safe committed %s failure and preserves closeout',
+  async (endpoint) => {
+    const f = await fixture();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    f.dispatch.mockResolvedValue(
+      failedStream(
+        Object.assign(new Error('exception-canary'), {
+          failure: {
+            kind: 'provider_unavailable',
+            settled: false,
+            status: 502,
+            providerCode: 'credential-canary',
+          },
+          body: 'body-canary',
+        }),
+        endpoint
+      )
+    );
+    const response = await f.post(true, endpoint);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('output-canary');
+    expect(body).toContain('gateway_provider_unavailable');
+    expect(body).toContain('[DONE]');
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    const [call] = f.calls() as { call_id: string; request_id: string }[];
+    expect(f.calls()).toMatchObject([
+      { status: 'failed', error_code: 'gateway_provider_unavailable' },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+    expect(diagnostic).toEqual({
+      code: 'worker_inference_failed',
+      message: 'Worker inference call failed.',
+      phase: 'stream-read',
+      failureKind: 'provider_unavailable',
+      httpStatus: 502,
+      elapsedMs: expect.any(Number),
+      outputBegan: true,
+      requestId: call!.request_id,
+      capabilityCallId: call!.call_id,
+      workspaceId: workspaceIdForOwner(f.turn.owner),
+      threadId: f.turn.threadId,
+      turnId: f.turn.id,
+      corr: expect.any(String),
+      attempt: 0,
     });
-  });
-  const response = await f.post(phase === 'stream-prepare');
-  expect(response.status, await response.clone().text()).toBe(400);
-  expect(await response.text()).not.toContain('exception-canary');
-  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'worker_inference_failed' }]);
-  expect(f.dispatch).toHaveBeenCalledTimes(1);
-  expect(warn).toHaveBeenCalledTimes(1);
-  expect(JSON.parse(warn.mock.calls[0]![0])).toMatchObject({
-    code: 'worker_inference_failed',
-    phase,
-    failureKind: 'unknown',
-    outputBegan: false,
-    elapsedMs: expect.any(Number),
-    attempt: 0,
-  });
-  expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
-});
+    expect(diagnostic.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(diagnostic)).not.toMatch(
+      /(?:exception|body|prompt|output|credential)-canary/
+    );
+  }
+);
+
+it.each(['dispatch', 'stream-prepare'] as const)(
+  'logs a pre-output %s failure without inventing status',
+  async (phase) => {
+    const f = await fixture();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = Object.assign(new Error('exception-canary'), {
+      failure: { kind: 'unknown', settled: false },
+    });
+    f.dispatch.mockImplementation(
+      async (_provider, _request, context: LLMGatewayDispatchContext) => {
+        context.transport?.onProviderHandoff?.();
+        if (phase === 'dispatch') throw error;
+        return new ReadableStream({
+          start(controller) {
+            controller.error(error);
+          },
+        });
+      }
+    );
+    const response = await f.post(phase === 'stream-prepare');
+    expect(response.status, await response.clone().text()).toBe(400);
+    expect(await response.text()).not.toContain('exception-canary');
+    expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'worker_inference_failed' }]);
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0]![0])).toMatchObject({
+      code: 'worker_inference_failed',
+      phase,
+      failureKind: 'unknown',
+      outputBegan: false,
+      elapsedMs: expect.any(Number),
+      attempt: 0,
+    });
+    expect(JSON.parse(warn.mock.calls[0]![0])).not.toHaveProperty('httpStatus');
+  }
+);
 
 it('retains bounded provider rejection details without changing the public failure', async () => {
   const f = await fixture();
@@ -1422,40 +1423,40 @@ it('omits local envelope status and unclassified error details', async () => {
   expect(JSON.stringify(diagnostic)).not.toMatch(/canary/);
 });
 
-it.each([
-  'failed-frame',
-  'iterator-end',
-])('logs pre-output %s without inferring a cause', async (ending) => {
-  const f = await fixture();
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  f.dispatch.mockResolvedValue(
-    new ReadableStream({
-      start(controller) {
-        if (ending === 'failed-frame')
-          controller.enqueue(
-            new TextEncoder().encode(
-              'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"body-canary"}}}\n\n'
-            )
-          );
-        controller.close();
-      },
-    })
-  );
-  const response = await f.post(true);
-  expect(response.status).toBe(400);
-  expect(await response.text()).not.toMatch(/body-canary|response.failed/);
-  expect(f.dispatch).toHaveBeenCalledTimes(1);
-  expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'worker_inference_failed' }]);
-  expect(warn).toHaveBeenCalledTimes(1);
-  const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
-  expect(diagnostic).toMatchObject({
-    phase: 'stream-prepare',
-    failureKind: 'unknown',
-    outputBegan: false,
-  });
-  expect(diagnostic).not.toHaveProperty('httpStatus');
-  expect(JSON.stringify(diagnostic)).not.toContain('canary');
-});
+it.each(['failed-frame', 'iterator-end'])(
+  'logs pre-output %s without inferring a cause',
+  async (ending) => {
+    const f = await fixture();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    f.dispatch.mockResolvedValue(
+      new ReadableStream({
+        start(controller) {
+          if (ending === 'failed-frame')
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"body-canary"}}}\n\n'
+              )
+            );
+          controller.close();
+        },
+      })
+    );
+    const response = await f.post(true);
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toMatch(/body-canary|response.failed/);
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
+    expect(f.calls()).toMatchObject([{ status: 'failed', error_code: 'worker_inference_failed' }]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+    expect(diagnostic).toMatchObject({
+      phase: 'stream-prepare',
+      failureKind: 'unknown',
+      outputBegan: false,
+    });
+    expect(diagnostic).not.toHaveProperty('httpStatus');
+    expect(JSON.stringify(diagnostic)).not.toContain('canary');
+  }
+);
 
 it('retains a final local authentication failure kind without an upstream status', async () => {
   const f = await fixture();
@@ -1487,105 +1488,108 @@ it('retains a final local authentication failure kind without an upstream status
   expect(JSON.stringify(diagnostic)).not.toContain('canary');
 });
 
-it.each([
-  'responses',
-  'chat/completions',
-])('logs one safe committed %s failure frame', async (endpoint) => {
-  for (const ending of ['close', 'read-error', 'cancel'] as const) {
-    for (const code of ['gateway_provider_unavailable', 'private-code-canary']) {
-      const f = await fixture();
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const encoder = new TextEncoder();
-      const output = `data: ${JSON.stringify(
-        endpoint === 'responses'
-          ? { type: 'response.output_text.delta', delta: 'output-canary' }
-          : { choices: [{ delta: { content: 'output-canary' } }] }
-      )}\n\n`;
-      const failure = `data: ${JSON.stringify(
-        endpoint === 'responses'
-          ? {
-              type: 'response.failed',
-              response: { status: 'failed', error: { code, message: 'body-canary', status: 503 } },
-            }
-          : { error: { code, message: 'body-canary', status: 503 } }
-      )}\n\n`;
-      // Split the terminal frame across chunks to exercise the existing SSE observer.
-      const chunks = [output, failure.slice(0, 19), failure.slice(19), failure];
-      f.dispatch.mockResolvedValue(
-        new ReadableStream<Uint8Array>({
-          pull(controller) {
-            const chunk = chunks.shift();
-            if (chunk !== undefined) controller.enqueue(encoder.encode(chunk));
-            else if (ending === 'read-error') controller.error(new Error('exception-canary'));
-            else if (ending === 'close') controller.close();
-            // Keep the source open for consumer cancellation after the failure frame.
+it.each(['responses', 'chat/completions'])(
+  'logs one safe committed %s failure frame',
+  async (endpoint) => {
+    for (const ending of ['close', 'read-error', 'cancel'] as const) {
+      for (const code of ['gateway_provider_unavailable', 'private-code-canary']) {
+        const f = await fixture();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const encoder = new TextEncoder();
+        const output = `data: ${JSON.stringify(
+          endpoint === 'responses'
+            ? { type: 'response.output_text.delta', delta: 'output-canary' }
+            : { choices: [{ delta: { content: 'output-canary' } }] }
+        )}\n\n`;
+        const failure = `data: ${JSON.stringify(
+          endpoint === 'responses'
+            ? {
+                type: 'response.failed',
+                response: {
+                  status: 'failed',
+                  error: { code, message: 'body-canary', status: 503 },
+                },
+              }
+            : { error: { code, message: 'body-canary', status: 503 } }
+        )}\n\n`;
+        // Split the terminal frame across chunks to exercise the existing SSE observer.
+        const chunks = [output, failure.slice(0, 19), failure.slice(19), failure];
+        f.dispatch.mockResolvedValue(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              const chunk = chunks.shift();
+              if (chunk !== undefined) controller.enqueue(encoder.encode(chunk));
+              else if (ending === 'read-error') controller.error(new Error('exception-canary'));
+              else if (ending === 'close') controller.close();
+              // Keep the source open for consumer cancellation after the failure frame.
+            },
+          })
+        );
+        const response = await f.post(true, endpoint);
+        expect(response.status).toBe(200);
+        let body = '';
+        if (ending === 'cancel') {
+          const reader = response.body!.getReader();
+          while (!body.includes(failure)) {
+            const next = await reader.read();
+            expect(next.done).toBe(false);
+            body += new TextDecoder().decode(next.value);
+          }
+          await reader.cancel();
+        } else body = await response.text();
+        expect(body.startsWith(output + failure)).toBe(true);
+        if (ending === 'close') expect(body).toBe(output + failure + failure);
+        expect(f.dispatch).toHaveBeenCalledTimes(1);
+        expect(f.calls()).toMatchObject([
+          {
+            status: 'failed',
+            error_code: code === 'private-code-canary' ? 'worker_inference_stream_failed' : code,
           },
-        })
-      );
-      const response = await f.post(true, endpoint);
-      expect(response.status).toBe(200);
-      let body = '';
-      if (ending === 'cancel') {
-        const reader = response.body!.getReader();
-        while (!body.includes(failure)) {
-          const next = await reader.read();
-          expect(next.done).toBe(false);
-          body += new TextDecoder().decode(next.value);
-        }
-        await reader.cancel();
-      } else body = await response.text();
-      expect(body.startsWith(output + failure)).toBe(true);
-      if (ending === 'close') expect(body).toBe(output + failure + failure);
-      expect(f.dispatch).toHaveBeenCalledTimes(1);
-      expect(f.calls()).toMatchObject([
-        {
-          status: 'failed',
-          error_code: code === 'private-code-canary' ? 'worker_inference_stream_failed' : code,
-        },
-      ]);
-      expect(warn, `${endpoint}/${ending}/${code}`).toHaveBeenCalledTimes(1);
-      const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
-      expect(diagnostic).toMatchObject({
-        code: 'worker_inference_failed',
-        message: 'Worker inference call failed.',
-        phase: 'stream-read',
-        failureKind: code === 'private-code-canary' ? 'unknown' : 'provider_unavailable',
-        outputBegan: true,
-        attempt: 0,
-        capabilityCallId: expect.any(String),
-      });
-      expect(diagnostic).not.toHaveProperty('httpStatus');
-      expect(JSON.stringify(diagnostic)).not.toContain('canary');
-      warn.mockRestore();
+        ]);
+        expect(warn, `${endpoint}/${ending}/${code}`).toHaveBeenCalledTimes(1);
+        const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+        expect(diagnostic).toMatchObject({
+          code: 'worker_inference_failed',
+          message: 'Worker inference call failed.',
+          phase: 'stream-read',
+          failureKind: code === 'private-code-canary' ? 'unknown' : 'provider_unavailable',
+          outputBegan: true,
+          attempt: 0,
+          capabilityCallId: expect.any(String),
+        });
+        expect(diagnostic).not.toHaveProperty('httpStatus');
+        expect(JSON.stringify(diagnostic)).not.toContain('canary');
+        warn.mockRestore();
+      }
     }
   }
-});
+);
 
-it.each([
-  'responses',
-  'chat/completions',
-])('does not log successful %s streams', async (endpoint) => {
-  const f = await fixture();
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  f.dispatch.mockResolvedValue(
-    new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(
-          new TextEncoder().encode(
-            endpoint === 'responses'
-              ? 'data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
-              : 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
-          )
-        );
-        controller.close();
-      },
-    })
-  );
-  const response = await f.post(true, endpoint);
-  await response.text();
-  expect(warn).not.toHaveBeenCalled();
-  expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
-});
+it.each(['responses', 'chat/completions'])(
+  'does not log successful %s streams',
+  async (endpoint) => {
+    const f = await fixture();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    f.dispatch.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              endpoint === 'responses'
+                ? 'data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+                : 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            )
+          );
+          controller.close();
+        },
+      })
+    );
+    const response = await f.post(true, endpoint);
+    await response.text();
+    expect(warn).not.toHaveBeenCalled();
+    expect(f.calls()).toMatchObject([{ status: 'succeeded' }]);
+  }
+);
 
 it('blocks Provider access before execution when native stop coverage is absent', async () => {
   const f = await fixture(true, undefined, false);

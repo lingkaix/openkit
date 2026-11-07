@@ -442,27 +442,26 @@ describe('durable failure diagnostics', () => {
     }
   });
 
-  it.each([
-    null,
-    { failureCause: 7 },
-    ['native failure'],
-  ])('refuses malformed durable diagnostics: %j', (diagnostics) => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-invalid-failure-cause-')));
-    applyMigrations(coreDb);
-    recordWorkerControlAcceptedRecord(coreDb, {
-      acceptedAt: '2026-07-15T00:01:01.000Z',
-      lineage,
-      operation: 'final_status',
-      record: { sequence: 9, status: 'failed', stopReason: 'error', diagnostics },
-      recordKey: '9',
-      sequence: 9,
-    });
-    try {
-      expect(() => getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toThrow();
-    } finally {
-      coreDb.sqlite.close();
+  it.each([null, { failureCause: 7 }, ['native failure']])(
+    'refuses malformed durable diagnostics: %j',
+    (diagnostics) => {
+      const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-invalid-failure-cause-')));
+      applyMigrations(coreDb);
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-15T00:01:01.000Z',
+        lineage,
+        operation: 'final_status',
+        record: { sequence: 9, status: 'failed', stopReason: 'error', diagnostics },
+        recordKey: '9',
+        sequence: 9,
+      });
+      try {
+        expect(() => getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toThrow();
+      } finally {
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 });
 
 describe('durable worker final-status wait', () => {
@@ -985,102 +984,100 @@ it('RET-2 accepts a trusted image match and unknown identity but refuses a fresh
 });
 
 // WCP native provenance: an unbound Worker-reported digest stays descriptive, never capture authority.
-it.each([
-  'missing',
-  'foreign-package',
-  'foreign-session',
-  'non-digest',
-] as const)('RET-2 a %s trusted image binding cannot verify or authorize a Worker image claim', async (binding) => {
-  const f = await nativeReceiver();
-  if (binding !== 'missing') {
-    await nativeImageBinding(
-      f,
-      binding === 'non-digest'
-        ? 'registry.test/worker:authored-label'
-        : `registry.test/worker@sha256:${'a'.repeat(64)}`,
-      {
-        ...f.lineage,
-        ...(binding === 'foreign-package' ? { packageSnapshotId: 'aep_foreign_image' } : {}),
-        ...(binding === 'foreign-session'
-          ? { agentSessionId: testEntityId('as', 'foreign-image') }
-          : {}),
-      }
-    );
+it.each(['missing', 'foreign-package', 'foreign-session', 'non-digest'] as const)(
+  'RET-2 a %s trusted image binding cannot verify or authorize a Worker image claim',
+  async (binding) => {
+    const f = await nativeReceiver();
+    if (binding !== 'missing') {
+      await nativeImageBinding(
+        f,
+        binding === 'non-digest'
+          ? 'registry.test/worker:authored-label'
+          : `registry.test/worker@sha256:${'a'.repeat(64)}`,
+        {
+          ...f.lineage,
+          ...(binding === 'foreign-package' ? { packageSnapshotId: 'aep_foreign_image' } : {}),
+          ...(binding === 'foreign-session'
+            ? { agentSessionId: testEntityId('as', 'foreign-image') }
+            : {}),
+        }
+      );
+    }
+    const first = nativeMetadata(f, 'unverified-image', Buffer.from('x'));
+    const claimed = {
+      ...first,
+      fact: {
+        ...first.fact,
+        native: { ...first.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
+      },
+    };
+    expect((await f.send(1, 'observation.recorded', claimed)).accepted).toBe(true);
+    expect(f.rows()[0]!.payload).toEqual(claimed);
+    expect(f.rows()[0]!.obs).toBe('worker-shim');
+    // An earlier unverified claim cannot become authority for the next native source range.
+    const next = nativeMetadata(f, 'another-unverified-image', Buffer.from('y'), {
+      sourceRef: first.sourceRef,
+      sourceSequence: 1,
+      start: 33,
+    });
+    const changedClaim = {
+      ...next,
+      fact: {
+        ...next.fact,
+        native: { ...next.fact.native, imageDigest: `sha256:${'c'.repeat(64)}` },
+      },
+    };
+    expect((await f.send(2, 'observation.recorded', changedClaim)).accepted).toBe(true);
+    expect(f.rows()[1]!.payload).toEqual(changedClaim);
+    const before = f.receipts();
+    const overCap = nativeMetadata(f, 'image-cannot-grant-budget', Buffer.alloc(9));
+    expect(
+      (
+        await f.send(3, 'observation.recorded', {
+          ...overCap,
+          fact: {
+            ...overCap.fact,
+            native: { ...overCap.fact.native, imageDigest: claimed.fact.native.imageDigest },
+          },
+        })
+      ).accepted
+    ).toBe(false);
+    expect(f.receipts()).toEqual(before);
+    expect(f.rows()).toHaveLength(2);
   }
-  const first = nativeMetadata(f, 'unverified-image', Buffer.from('x'));
-  const claimed = {
-    ...first,
-    fact: {
-      ...first.fact,
-      native: { ...first.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
-    },
-  };
-  expect((await f.send(1, 'observation.recorded', claimed)).accepted).toBe(true);
-  expect(f.rows()[0]!.payload).toEqual(claimed);
-  expect(f.rows()[0]!.obs).toBe('worker-shim');
-  // An earlier unverified claim cannot become authority for the next native source range.
-  const next = nativeMetadata(f, 'another-unverified-image', Buffer.from('y'), {
-    sourceRef: first.sourceRef,
-    sourceSequence: 1,
-    start: 33,
-  });
-  const changedClaim = {
-    ...next,
-    fact: {
-      ...next.fact,
-      native: { ...next.fact.native, imageDigest: `sha256:${'c'.repeat(64)}` },
-    },
-  };
-  expect((await f.send(2, 'observation.recorded', changedClaim)).accepted).toBe(true);
-  expect(f.rows()[1]!.payload).toEqual(changedClaim);
-  const before = f.receipts();
-  const overCap = nativeMetadata(f, 'image-cannot-grant-budget', Buffer.alloc(9));
-  expect(
-    (
-      await f.send(3, 'observation.recorded', {
-        ...overCap,
-        fact: {
-          ...overCap.fact,
-          native: { ...overCap.fact.native, imageDigest: claimed.fact.native.imageDigest },
-        },
-      })
-    ).accepted
-  ).toBe(false);
-  expect(f.receipts()).toEqual(before);
-  expect(f.rows()).toHaveLength(2);
-});
+);
 
 // Web §Runtime Activity In The Thread Timeline: unsupported/unavailable collectors map to unavailable.
-it.each([
-  'off',
-  'unavailable',
-] as const)('RET-2 a sole native %s observation cannot project collecting, partial or progress', async (state) => {
-  const f = await nativeReceiver(state === 'off' ? 'off' : 'on');
-  const value = nativeMetadata(f, 'sole-source', Buffer.alloc(0));
-  const observation = {
-    ...value,
-    fact: {
-      ...value.fact,
-      coverage: state,
-      ...(state === 'unavailable' ? { reason: 'source-missing' } : {}),
-      native: { ...value.fact.native, range: null, observedBytes: null },
-    },
-    content: state === 'off' ? { state: 'off' } : { state: 'unavailable', reason: 'unsupported' },
-  };
-  expect((await f.send(1, 'observation.recorded', observation)).accepted).toBe(true);
-  expect(f.rows()).toHaveLength(1);
-  expect(f.rows()[0]!.payload).toEqual(observation);
-  const activity = readThreadRuntimeActivity(f.db, {
-    threadId: f.owner.threadId,
-    turnIds: [f.owner.turnId],
-  });
-  expect(activity).toHaveLength(1);
-  expect(activity[0]!.coverage).toBe('unavailable');
-  expect(activity[0]!.contentCapture).toBe(state === 'off' ? 'off' : 'on');
-  expect(activity[0]!.entries).toEqual([]);
-  expect(nativeBodies(f)).toEqual([]);
-  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
-});
+it.each(['off', 'unavailable'] as const)(
+  'RET-2 a sole native %s observation cannot project collecting, partial or progress',
+  async (state) => {
+    const f = await nativeReceiver(state === 'off' ? 'off' : 'on');
+    const value = nativeMetadata(f, 'sole-source', Buffer.alloc(0));
+    const observation = {
+      ...value,
+      fact: {
+        ...value.fact,
+        coverage: state,
+        ...(state === 'unavailable' ? { reason: 'source-missing' } : {}),
+        native: { ...value.fact.native, range: null, observedBytes: null },
+      },
+      content: state === 'off' ? { state: 'off' } : { state: 'unavailable', reason: 'unsupported' },
+    };
+    expect((await f.send(1, 'observation.recorded', observation)).accepted).toBe(true);
+    expect(f.rows()).toHaveLength(1);
+    expect(f.rows()[0]!.payload).toEqual(observation);
+    const activity = readThreadRuntimeActivity(f.db, {
+      threadId: f.owner.threadId,
+      turnIds: [f.owner.turnId],
+    });
+    expect(activity).toHaveLength(1);
+    expect(activity[0]!.coverage).toBe('unavailable');
+    expect(activity[0]!.contentCapture).toBe(state === 'off' ? 'off' : 'on');
+    expect(activity[0]!.entries).toEqual([]);
+    expect(nativeBodies(f)).toEqual([]);
+    expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+  }
+);
 
 // RET §Native Transcripts And Runtime Logs: a truncated prefix is incomplete; Web §Runtime Activity In The Thread Timeline: partial capture stays partial.
 it('RET-2 projects an unavailable native source with a published truncated prefix as partial without progress', async () => {
@@ -1125,84 +1122,84 @@ it('RET-2 projects an unavailable native source with a published truncated prefi
 });
 
 // RET §§Native Transcripts And Runtime Logs, Capture Safety And Restricted Access; WCP incremental observations.
-it.each([
-  'semantic-control',
-  'native',
-] as const)('RET-2 %s publishes exact binary and split UTF-8 only after verified chunks, with safe receipts and no ordinary body', async (mode) => {
-  const f = await nativeReceiver();
-  const bytes = Buffer.concat([Buffer.from([255, 0]), Buffer.from('雪\r\n')]);
-  const native = nativeMetadata(f, 'binary', bytes, { chunkCount: 2 });
-  const metadata =
-    mode === 'native'
-      ? native
-      : {
-          ...native,
-          fact: {
-            kind: 'assistant',
-            runtimeOriginRef: null,
-            phase: 'updated',
-            messageRef: 'control',
-            representation: 'delta',
-          },
-          content: { ...native.content, mediaType: 'text/plain', boundary: 'assistant.text' },
-        };
-  expect((await f.send(1, 'observation.recorded', metadata)).accepted).toBe(true);
-  expect(
-    (await f.send(2, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(0, 3))))
-      .accepted
-  ).toBe(true);
-  expect(nativeBodies(f)).toEqual([]);
-  f.restart();
-  // Fault at the existing body adoption boundary: staged bytes exist, but publication cannot write.
-  const bundle = f.db.sqlite
-    .prepare('SELECT evidence_bundle_id AS id FROM evidence_bundles')
-    .get() as { id: string };
-  const publicationPath = join(
-    f.root,
-    'workspaces',
-    f.lineage.workspaceId,
-    'evidence',
-    'backend',
-    bundle.id,
-    'raw',
-    'content'
-  );
-  mkdirSync(publicationPath);
-  const priorReceipts = f.receipts();
-  expect(
-    (await f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)))
-      .accepted
-  ).toBe(false);
-  expect(f.receipts()).toEqual(priorReceipts);
-  expect(nativeBodies(f)).toEqual([]);
-  rmSync(publicationPath, { recursive: true });
-  expect(
-    (await f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)))
-      .accepted
-  ).toBe(true);
-  const [body] = nativeBodies(f);
-  expect(body!.bytes).toEqual(bytes);
-  expect(body!.ref.digest).toBe(createHash('sha256').update(bytes).digest('hex'));
-  expect(body!.ref.scope).toEqual({ workspaceId: f.lineage.workspaceId, pathClass: 'backend' });
-  const retained = f.rows().find((row) => row.type === 'runtime.observed')!;
-  expect(retained.payload).toEqual(metadata);
-  expect(retained.refs).toContainEqual({
-    kind: 'aep-snapshot',
-    scope: { workspaceId: f.lineage.workspaceId },
-    locator: f.pkg.snapshotId,
-    edge: 'association',
-  });
-  expect(JSON.stringify(f.receipts())).not.toContain(bytes.subarray(3).toString('base64'));
-  expect(
-    f.db.sqlite.prepare('SELECT retention_class, sensitivity_class FROM evidence_bundles').all()
-  ).toEqual([{ retention_class: 'restricted-raw', sensitivity_class: 'restricted' }]);
-  const activity = readThreadRuntimeActivity(f.db, {
-    threadId: f.owner.threadId,
-    turnIds: [f.owner.turnId],
-  });
-  expect(activity[0]!.entries.every((entry) => !('text' in entry))).toBe(true);
-  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
-});
+it.each(['semantic-control', 'native'] as const)(
+  'RET-2 %s publishes exact binary and split UTF-8 only after verified chunks, with safe receipts and no ordinary body',
+  async (mode) => {
+    const f = await nativeReceiver();
+    const bytes = Buffer.concat([Buffer.from([255, 0]), Buffer.from('雪\r\n')]);
+    const native = nativeMetadata(f, 'binary', bytes, { chunkCount: 2 });
+    const metadata =
+      mode === 'native'
+        ? native
+        : {
+            ...native,
+            fact: {
+              kind: 'assistant',
+              runtimeOriginRef: null,
+              phase: 'updated',
+              messageRef: 'control',
+              representation: 'delta',
+            },
+            content: { ...native.content, mediaType: 'text/plain', boundary: 'assistant.text' },
+          };
+    expect((await f.send(1, 'observation.recorded', metadata)).accepted).toBe(true);
+    expect(
+      (await f.send(2, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(0, 3))))
+        .accepted
+    ).toBe(true);
+    expect(nativeBodies(f)).toEqual([]);
+    f.restart();
+    // Fault at the existing body adoption boundary: staged bytes exist, but publication cannot write.
+    const bundle = f.db.sqlite
+      .prepare('SELECT evidence_bundle_id AS id FROM evidence_bundles')
+      .get() as { id: string };
+    const publicationPath = join(
+      f.root,
+      'workspaces',
+      f.lineage.workspaceId,
+      'evidence',
+      'backend',
+      bundle.id,
+      'raw',
+      'content'
+    );
+    mkdirSync(publicationPath);
+    const priorReceipts = f.receipts();
+    expect(
+      (await f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)))
+        .accepted
+    ).toBe(false);
+    expect(f.receipts()).toEqual(priorReceipts);
+    expect(nativeBodies(f)).toEqual([]);
+    rmSync(publicationPath, { recursive: true });
+    expect(
+      (await f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)))
+        .accepted
+    ).toBe(true);
+    const [body] = nativeBodies(f);
+    expect(body!.bytes).toEqual(bytes);
+    expect(body!.ref.digest).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(body!.ref.scope).toEqual({ workspaceId: f.lineage.workspaceId, pathClass: 'backend' });
+    const retained = f.rows().find((row) => row.type === 'runtime.observed')!;
+    expect(retained.payload).toEqual(metadata);
+    expect(retained.refs).toContainEqual({
+      kind: 'aep-snapshot',
+      scope: { workspaceId: f.lineage.workspaceId },
+      locator: f.pkg.snapshotId,
+      edge: 'association',
+    });
+    expect(JSON.stringify(f.receipts())).not.toContain(bytes.subarray(3).toString('base64'));
+    expect(
+      f.db.sqlite.prepare('SELECT retention_class, sensitivity_class FROM evidence_bundles').all()
+    ).toEqual([{ retention_class: 'restricted-raw', sensitivity_class: 'restricted' }]);
+    const activity = readThreadRuntimeActivity(f.db, {
+      threadId: f.owner.threadId,
+      turnIds: [f.owner.turnId],
+    });
+    expect(activity[0]!.entries.every((entry) => !('text' in entry))).toBe(true);
+    expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+  }
+);
 
 // RET §Native Transcripts And Runtime Logs: combined per-Turn budget, immutable admission, transcripts independent.
 it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; reopen and replay cannot recharge it', async () => {
@@ -1677,79 +1674,82 @@ it.each([
   'noncontiguous-chunk',
   'wrong-full-digest',
   'same-sequence-conflict',
-] as const)('refuses retained observation source %s without publication or control repair', async (fault) => {
-  const f = await nativeReceiver();
-  const bytes = Buffer.from('abcd');
-  const data = nativeMetadata(f, 'invalid-source', bytes, { chunkCount: 2 });
-  const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);
-  const chunks = [
-    retainedObservationRecord(
-      f,
-      2,
-      'observation.content.chunk',
-      nativeChunk(data.observationId, bytes.subarray(0, 2))
-    ),
-    retainedObservationRecord(
-      f,
-      3,
-      'observation.content.chunk',
-      nativeChunk(data.observationId, bytes.subarray(2), 1, 2)
-    ),
-  ];
-  if (fault === 'missing-live-receipt') {
-    // Fault between real native preparation and the separate synchronous Core receipt.
-    await createWorkerControlAcceptedRecordRecorder(f.coreDb).prepareObservation!(metadata);
-    expect(f.rows()).toHaveLength(1);
-  } else if (fault !== 'missing-live-metadata') {
-    expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);
+] as const)(
+  'refuses retained observation source %s without publication or control repair',
+  async (fault) => {
+    const f = await nativeReceiver();
+    const bytes = Buffer.from('abcd');
+    const data = nativeMetadata(f, 'invalid-source', bytes, { chunkCount: 2 });
+    const metadata = retainedObservationRecord(f, 1, 'observation.recorded', data);
+    const chunks = [
+      retainedObservationRecord(
+        f,
+        2,
+        'observation.content.chunk',
+        nativeChunk(data.observationId, bytes.subarray(0, 2))
+      ),
+      retainedObservationRecord(
+        f,
+        3,
+        'observation.content.chunk',
+        nativeChunk(data.observationId, bytes.subarray(2), 1, 2)
+      ),
+    ];
+    if (fault === 'missing-live-receipt') {
+      // Fault between real native preparation and the separate synchronous Core receipt.
+      await createWorkerControlAcceptedRecordRecorder(f.coreDb).prepareObservation!(metadata);
+      expect(f.rows()).toHaveLength(1);
+    } else if (fault !== 'missing-live-metadata') {
+      expect((await f.send(1, 'observation.recorded', data)).accepted).toBe(true);
+    }
+    const source = structuredClone([metadata, ...chunks]);
+    if (fault === 'changed-metadata') {
+      const event = source[0]!.event;
+      if (event.type !== 'observation.recorded') throw new Error('metadata fixture');
+      event.data.observedAt = '2026-01-01T00:00:00.000Z';
+    }
+    if (fault === 'wrong-package') source[0]!.lineage.packageSnapshotId += '_other';
+    if (fault === 'noncanonical-base64') {
+      const event = source[1]!.event;
+      if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
+      event.data.data = 'YWI';
+    }
+    if (fault === 'noncontiguous-chunk') {
+      const event = source[2]!.event;
+      if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
+      event.data.byteOffset = 1;
+    }
+    if (fault === 'wrong-full-digest') {
+      const event = source[2]!.event;
+      if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
+      event.data.data = Buffer.from('XY').toString('base64');
+    }
+    if (fault === 'same-sequence-conflict') source[2]!.sequence = source[1]!.sequence;
+    const sourcePath = retainedObservationSource(f, source);
+    if (fault === 'torn-jsonl') writeFileSync(sourcePath, `${JSON.stringify(metadata)}\n{`);
+    if (fault === 'source-is-directory') {
+      rmSync(sourcePath);
+      mkdirSync(sourcePath);
+    }
+    const rows = f.rows();
+    const receipts = f.receipts();
+    f.restart();
+    await expect(
+      recoverWorkerObservationSource(f.coreDb, {
+        environmentPackage: f.pkg,
+        metadata,
+        sourcePath,
+        assertPublicationAuthority: () => undefined,
+      })
+    ).rejects.toThrow();
+    expect(f.rows()).toEqual(rows);
+    expect(nativeBodies(f)).toEqual([]);
+    expect(f.receipts()).toEqual(receipts);
+    // Failed evidence validation must leave unreceived metadata sequence 1 available too.
+    if (fault === 'missing-live-metadata' || fault === 'missing-live-receipt')
+      expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
   }
-  const source = structuredClone([metadata, ...chunks]);
-  if (fault === 'changed-metadata') {
-    const event = source[0]!.event;
-    if (event.type !== 'observation.recorded') throw new Error('metadata fixture');
-    event.data.observedAt = '2026-01-01T00:00:00.000Z';
-  }
-  if (fault === 'wrong-package') source[0]!.lineage.packageSnapshotId += '_other';
-  if (fault === 'noncanonical-base64') {
-    const event = source[1]!.event;
-    if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
-    event.data.data = 'YWI';
-  }
-  if (fault === 'noncontiguous-chunk') {
-    const event = source[2]!.event;
-    if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
-    event.data.byteOffset = 1;
-  }
-  if (fault === 'wrong-full-digest') {
-    const event = source[2]!.event;
-    if (event.type !== 'observation.content.chunk') throw new Error('chunk fixture');
-    event.data.data = Buffer.from('XY').toString('base64');
-  }
-  if (fault === 'same-sequence-conflict') source[2]!.sequence = source[1]!.sequence;
-  const sourcePath = retainedObservationSource(f, source);
-  if (fault === 'torn-jsonl') writeFileSync(sourcePath, `${JSON.stringify(metadata)}\n{`);
-  if (fault === 'source-is-directory') {
-    rmSync(sourcePath);
-    mkdirSync(sourcePath);
-  }
-  const rows = f.rows();
-  const receipts = f.receipts();
-  f.restart();
-  await expect(
-    recoverWorkerObservationSource(f.coreDb, {
-      environmentPackage: f.pkg,
-      metadata,
-      sourcePath,
-      assertPublicationAuthority: () => undefined,
-    })
-  ).rejects.toThrow();
-  expect(f.rows()).toEqual(rows);
-  expect(nativeBodies(f)).toEqual([]);
-  expect(f.receipts()).toEqual(receipts);
-  // Failed evidence validation must leave unreceived metadata sequence 1 available too.
-  if (fault === 'missing-live-metadata' || fault === 'missing-live-receipt')
-    expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
-});
+);
 
 it('keeps accepted capture-off metadata bodyless during source recovery', async () => {
   const f = await nativeReceiver('off');

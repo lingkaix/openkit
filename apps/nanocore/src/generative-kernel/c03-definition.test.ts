@@ -85,13 +85,12 @@ describe('C03 definition admission', () => {
     expect(next.purpose).toBe(first.purpose);
   });
 
-  it.each([
-    'not-a-reference',
-    skill.replace(`@${digest}`, ''),
-    formatReferenceUri(page),
-  ])('refuses an invalid exact target at writer admission (case %#)', (reference) => {
-    expect(() => admitLightAppDefinition({ ...definition, references: [reference] })).toThrow(
-      KernelCommandError
-    );
-  });
+  it.each(['not-a-reference', skill.replace(`@${digest}`, ''), formatReferenceUri(page)])(
+    'refuses an invalid exact target at writer admission (case %#)',
+    (reference) => {
+      expect(() => admitLightAppDefinition({ ...definition, references: [reference] })).toThrow(
+        KernelCommandError
+      );
+    }
+  );
 });

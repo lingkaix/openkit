@@ -504,17 +504,19 @@ describe('synchronous Worker file submission', () => {
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
 
-  it.each([
-    'literal',
-    'original-route-hash',
-  ])('rejects an injected %s value in persisted submission identity', async (kind) => {
-    const fixture = await submissionFixture();
-    const requestId =
-      kind === 'literal' ? 'synthetic-injected-secret' : Buffer.alloc(32, 51).toString('base64url');
-    await expect(fixture.submit(requestId)).rejects.toMatchObject({ code: 'invalid_request' });
-    expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
-    acknowledgedArtifactId(await fixture.submit('req_safe_identity'));
-  });
+  it.each(['literal', 'original-route-hash'])(
+    'rejects an injected %s value in persisted submission identity',
+    async (kind) => {
+      const fixture = await submissionFixture();
+      const requestId =
+        kind === 'literal'
+          ? 'synthetic-injected-secret'
+          : Buffer.alloc(32, 51).toString('base64url');
+      await expect(fixture.submit(requestId)).rejects.toMatchObject({ code: 'invalid_request' });
+      expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
+      acknowledgedArtifactId(await fixture.submit('req_safe_identity'));
+    }
+  );
 
   it('admits program-produced files independently of the sixteen MiB raw-output allowance', async () => {
     const fixture = await submissionFixture();
@@ -633,68 +635,66 @@ describe('submission authority and byte evidence', () => {
     expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
   });
 
-  it.each([
-    'registration',
-    'retention',
-    'overlap',
-    'nested-root-equality',
-  ])('rejects %s eligibility before export', async (kind) => {
-    const fixture = await submissionFixture();
-    if (kind === 'registration')
-      fixture.environmentPackage.workspace.outputs[0]!.registerAsArtifacts = false;
-    if (kind === 'retention') fixture.environmentPackage.workspace.outputs[0]!.retention = 'manual';
-    if (kind === 'overlap')
-      fixture.environmentPackage.workspace.outputs.push({
-        ...fixture.environmentPackage.workspace.outputs[0]!,
-        id: 'overlap',
-      });
-    if (kind === 'nested-root-equality')
-      fixture.environmentPackage.workspace.outputs.push({
-        ...fixture.environmentPackage.workspace.outputs[0]!,
-        id: 'nested',
-        path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
-      });
-    await expect(fixture.submit()).rejects.toMatchObject({ code: 'invalid_request' });
-    expect(fixture.captureArtifact).not.toHaveBeenCalled();
-    expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
-  });
+  it.each(['registration', 'retention', 'overlap', 'nested-root-equality'])(
+    'rejects %s eligibility before export',
+    async (kind) => {
+      const fixture = await submissionFixture();
+      if (kind === 'registration')
+        fixture.environmentPackage.workspace.outputs[0]!.registerAsArtifacts = false;
+      if (kind === 'retention')
+        fixture.environmentPackage.workspace.outputs[0]!.retention = 'manual';
+      if (kind === 'overlap')
+        fixture.environmentPackage.workspace.outputs.push({
+          ...fixture.environmentPackage.workspace.outputs[0]!,
+          id: 'overlap',
+        });
+      if (kind === 'nested-root-equality')
+        fixture.environmentPackage.workspace.outputs.push({
+          ...fixture.environmentPackage.workspace.outputs[0]!,
+          id: 'nested',
+          path: '/openkit/sessions/as_00000000-0000-75c5-83d7-1a74418e3a38/outputs/report.md',
+        });
+      await expect(fixture.submit()).rejects.toMatchObject({ code: 'invalid_request' });
+      expect(fixture.captureArtifact).not.toHaveBeenCalled();
+      expect(fixture.counts()).toEqual({ artifacts: 0, references: 0, reviews: 0, receipts: 0 });
+    }
+  );
 
-  it.each([
-    'empty',
-    'invalid-utf8',
-    'invalid-json',
-  ])('preserves exact arbitrary %s bytes', async (kind) => {
-    const fixture = await submissionFixture();
-    const captured = await fixture.captureArtifact({
-      packageSnapshotId: '',
-      requestId: '',
-      path: '',
-      maxByteLength: 0,
-    });
-    fixture.captureArtifact.mockClear();
-    fixture.captureArtifact.mockResolvedValue({
-      ...captured,
-      bytes:
+  it.each(['empty', 'invalid-utf8', 'invalid-json'])(
+    'preserves exact arbitrary %s bytes',
+    async (kind) => {
+      const fixture = await submissionFixture();
+      const captured = await fixture.captureArtifact({
+        packageSnapshotId: '',
+        requestId: '',
+        path: '',
+        maxByteLength: 0,
+      });
+      fixture.captureArtifact.mockClear();
+      fixture.captureArtifact.mockResolvedValue({
+        ...captured,
+        bytes:
+          kind === 'empty'
+            ? Buffer.alloc(0)
+            : kind === 'invalid-utf8'
+              ? Buffer.from([0xff])
+              : Buffer.from('{invalid'),
+      });
+      const id = acknowledgedArtifactId(
+        await fixture.submit('format', {
+          mediaType: kind === 'invalid-json' ? 'application/json' : 'application/octet-stream',
+        })
+      );
+      const expected =
         kind === 'empty'
           ? Buffer.alloc(0)
           : kind === 'invalid-utf8'
             ? Buffer.from([0xff])
-            : Buffer.from('{invalid'),
-    });
-    const id = acknowledgedArtifactId(
-      await fixture.submit('format', {
-        mediaType: kind === 'invalid-json' ? 'application/json' : 'application/octet-stream',
-      })
-    );
-    const expected =
-      kind === 'empty'
-        ? Buffer.alloc(0)
-        : kind === 'invalid-utf8'
-          ? Buffer.from([0xff])
-          : Buffer.from('{invalid');
-    expect(fixture.readBytes(id)).toEqual(expected);
-    expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
-  });
+            : Buffer.from('{invalid');
+      expect(fixture.readBytes(id)).toEqual(expected);
+      expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
+    }
+  );
 
   it('refuses an authority tuple whose receipt is missing without recapture', async () => {
     const fixture = await submissionFixture();
@@ -704,36 +704,36 @@ describe('submission authority and byte evidence', () => {
     expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    'agentId',
-    'agentSessionId',
-  ] as const)('refuses replay when canonical source %s contradicts the original AEP', async (field) => {
-    const fixture = await submissionFixture();
-    await fixture.submit();
-    if (field === 'agentSessionId') {
-      const contradictoryId = testEntityId('as', 'contradictory-source');
-      await fixture.store.createAgentSession({
-        ...fixture.store.getAgentSession(fixture.environmentPackage.scope.agentSessionId),
-        id: contradictoryId,
-        status: 'closed',
-      });
-      await shutdownControlStoreWorkerClient();
-      // Inject coherent at-rest corruption, not a supported live reassignment of immutable lineage.
-      expect(
-        fixture.workspaceDb.sqlite
-          .prepare(
-            "UPDATE control_turns SET agent_session_id=?, record_json=json_set(record_json,'$.agentSessionId',?) WHERE id=?"
-          )
-          .run(contradictoryId, contradictoryId, fixture.turn.id).changes
-      ).toBe(1);
-      expect(fixture.store.getTurnById(fixture.turn.id).agentSessionId).toBe(contradictoryId);
-    } else {
-      await fixture.store.updateTurn(fixture.turn.id, { [field]: 'contradictory-source' });
+  it.each(['agentId', 'agentSessionId'] as const)(
+    'refuses replay when canonical source %s contradicts the original AEP',
+    async (field) => {
+      const fixture = await submissionFixture();
+      await fixture.submit();
+      if (field === 'agentSessionId') {
+        const contradictoryId = testEntityId('as', 'contradictory-source');
+        await fixture.store.createAgentSession({
+          ...fixture.store.getAgentSession(fixture.environmentPackage.scope.agentSessionId),
+          id: contradictoryId,
+          status: 'closed',
+        });
+        await shutdownControlStoreWorkerClient();
+        // Inject coherent at-rest corruption, not a supported live reassignment of immutable lineage.
+        expect(
+          fixture.workspaceDb.sqlite
+            .prepare(
+              "UPDATE control_turns SET agent_session_id=?, record_json=json_set(record_json,'$.agentSessionId',?) WHERE id=?"
+            )
+            .run(contradictoryId, contradictoryId, fixture.turn.id).changes
+        ).toBe(1);
+        expect(fixture.store.getTurnById(fixture.turn.id).agentSessionId).toBe(contradictoryId);
+      } else {
+        await fixture.store.updateTurn(fixture.turn.id, { [field]: 'contradictory-source' });
+      }
+      await expect(fixture.submit()).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
+      expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
     }
-    await expect(fixture.submit()).rejects.toMatchObject({ code: 'recovery_required' });
-    expect(fixture.captureArtifact).toHaveBeenCalledTimes(1);
-    expect(fixture.counts()).toEqual({ artifacts: 1, references: 1, reviews: 1, receipts: 1 });
-  });
+  );
 
   it('refuses a receipt with a missing Review without recapture', async () => {
     const fixture = await submissionFixture();
@@ -1250,30 +1250,30 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(afterDenied.some((name) => name.startsWith('vision-view-'))).toBe(false);
 }, 45_000);
 
-it.each([
-  'source visibility',
-  'destination audience',
-] as const)('refuses %s before reading the retained Artifact original', async (guard) => {
-  const f = await sourceToolFixture(Buffer.from('Private original bytes.\n'), 'text/plain');
-  const denied = vi
-    .spyOn(
-      threadVisibility,
-      guard === 'source visibility' ? 'isArtifactVisible' : 'canDiscloseThreadToAudience'
-    )
-    .mockReturnValue(false);
-  const readVersion = vi.spyOn(f.store, 'getArtifactVersion');
-  onTestFinished(() => {
-    denied.mockRestore();
-    readVersion.mockRestore();
-  });
-  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
-    path: f.packagePath,
-    mode: 'read',
-  });
-  expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
-  expect(denied).toHaveBeenCalled();
-  expect(readVersion).not.toHaveBeenCalled();
-});
+it.each(['source visibility', 'destination audience'] as const)(
+  'refuses %s before reading the retained Artifact original',
+  async (guard) => {
+    const f = await sourceToolFixture(Buffer.from('Private original bytes.\n'), 'text/plain');
+    const denied = vi
+      .spyOn(
+        threadVisibility,
+        guard === 'source visibility' ? 'isArtifactVisible' : 'canDiscloseThreadToAudience'
+      )
+      .mockReturnValue(false);
+    const readVersion = vi.spyOn(f.store, 'getArtifactVersion');
+    onTestFinished(() => {
+      denied.mockRestore();
+      readVersion.mockRestore();
+    });
+    const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+      path: f.packagePath,
+      mode: 'read',
+    });
+    expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+    expect(denied).toHaveBeenCalled();
+    expect(readVersion).not.toHaveBeenCalled();
+  }
+);
 
 it('reads current exact original bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
   const fixture = await sourceToolFixture(Buffer.from('Finished report\n'), 'text/plain');

@@ -1057,173 +1057,172 @@ describe('generic turn routes', () => {
     }
   });
 
-  it.each([
-    'manifest',
-    'shim',
-    'environment',
-    'configuration',
-    'transient',
-  ] as const)('preserves pre-acceptance validation and fails an accepted Turn in place after preparation refusal: %s', async (failure) => {
-    const executor = new RecordingTurnExecutor();
-    const manifest = createTestAgentSetup().manifest;
-    if (failure === 'manifest' || failure === 'shim') {
-      const missingPath =
-        failure === 'manifest' ? '/usr/local/bin/node' : '/usr/local/bin/openkit-worker-shim';
-      manifest.runtime.binaries = manifest.runtime.binaries.filter(
-        (binary) => binary.path !== missingPath
+  it.each(['manifest', 'shim', 'environment', 'configuration', 'transient'] as const)(
+    'preserves pre-acceptance validation and fails an accepted Turn in place after preparation refusal: %s',
+    async (failure) => {
+      const executor = new RecordingTurnExecutor();
+      const manifest = createTestAgentSetup().manifest;
+      if (failure === 'manifest' || failure === 'shim') {
+        const missingPath =
+          failure === 'manifest' ? '/usr/local/bin/node' : '/usr/local/bin/openkit-worker-shim';
+        manifest.runtime.binaries = manifest.runtime.binaries.filter(
+          (binary) => binary.path !== missingPath
+        );
+      } else if (failure === 'environment') {
+        manifest.runtime.environment = { OPENKIT_AGENT_PACKAGE: 'authored-conflict' };
+      } else if (failure === 'configuration') {
+        manifest.requiredFeatures = ['unsupported.preparation.feature'];
+        // A recoverable catalog gap cannot make an independent input-bound refusal retryable.
+        manifest.models.preferredLogicalModelId = 'unavailable-model';
+      }
+      const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+      if (failure === 'transient') {
+        // Identical text is not evidence of deterministic manifest resolution failure.
+        prepare.mockRejectedValue(
+          new Error('Agent manifest does not declare required control binary: /usr/local/bin/node')
+        );
+      }
+      const fixture = await createSchedulerFixture(
+        executor,
+        `preparation-${failure}`,
+        'local',
+        manifest
       );
-    } else if (failure === 'environment') {
-      manifest.runtime.environment = { OPENKIT_AGENT_PACKAGE: 'authored-conflict' };
-    } else if (failure === 'configuration') {
-      manifest.requiredFeatures = ['unsupported.preparation.feature'];
-      // A recoverable catalog gap cannot make an independent input-bound refusal retryable.
-      manifest.models.preferredLogicalModelId = 'unavailable-model';
-    }
-    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
-    if (failure === 'transient') {
-      // Identical text is not evidence of deterministic manifest resolution failure.
-      prepare.mockRejectedValue(
-        new Error('Agent manifest does not declare required control binary: /usr/local/bin/node')
+      const requestId = '00000000-0000-4000-8000-000000000399';
+      const itemsBefore = fixture.store.listThreadItems(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
       );
-    }
-    const fixture = await createSchedulerFixture(
-      executor,
-      `preparation-${failure}`,
-      'local',
-      manifest
-    );
-    const requestId = '00000000-0000-4000-8000-000000000399';
-    const itemsBefore = fixture.store.listThreadItems(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001'
-    );
-    try {
-      const response = await fixture.app.request(
-        ...operationRequest(
-          'turn.start',
-          {},
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              agentId: manifest.id,
-              input: 'Prepare this admitted Agent',
-              requestId,
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const preAcceptance =
-        failure === 'configuration' || failure === 'manifest' || failure === 'shim';
-      if (preAcceptance) {
-        expect(response.status).toBe(409);
-        expect(ApiErrorSchema.parse(await response.json()).code).toBe('agent_not_ready');
-      } else {
-        expect(response.status).toBe(202);
-        const accepted = TurnSchema.parse(await response.json());
-        expect(accepted.id).toBe(
-          schedulerTurnId(
-            JSON.stringify(LOCAL_ACTOR),
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001',
-            requestId
+      try {
+        const response = await fixture.app.request(
+          ...operationRequest(
+            'turn.start',
+            {},
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                agentId: manifest.id,
+                input: 'Prepare this admitted Agent',
+                requestId,
+                threadId: 'th_00000000-0000-7000-8000-000000000001',
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              }),
+              headers: { 'content-type': 'application/json' },
+            }
           )
         );
-        await vi.waitFor(() => {
-          expect(readTurnAttempt(fixture.coreDb, accepted.id)?.phase).toBe('closed');
-          expect(fixture.store.getTurnById(accepted.id).status).toBe('failed');
-        });
-        expect(fixture.store.getTurnById(accepted.id)).toMatchObject({
-          status: 'failed',
-          error: { code: 'worker_preparation_failed', message: expect.any(String) },
-        });
-        expect(
+        const preAcceptance =
+          failure === 'configuration' || failure === 'manifest' || failure === 'shim';
+        if (preAcceptance) {
+          expect(response.status).toBe(409);
+          expect(ApiErrorSchema.parse(await response.json()).code).toBe('agent_not_ready');
+        } else {
+          expect(response.status).toBe(202);
+          const accepted = TurnSchema.parse(await response.json());
+          expect(accepted.id).toBe(
+            schedulerTurnId(
+              JSON.stringify(LOCAL_ACTOR),
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              requestId
+            )
+          );
+          await vi.waitFor(() => {
+            expect(readTurnAttempt(fixture.coreDb, accepted.id)?.phase).toBe('closed');
+            expect(fixture.store.getTurnById(accepted.id).status).toBe('failed');
+          });
+          expect(fixture.store.getTurnById(accepted.id)).toMatchObject({
+            status: 'failed',
+            error: { code: 'worker_preparation_failed', message: expect.any(String) },
+          });
+          expect(
+            fixture.coreDb.sqlite
+              .prepare(
+                'SELECT disposition, operation_id FROM scheduler_execution_attempts WHERE turn_id = ?'
+              )
+              .get(accepted.id)
+          ).toEqual({ disposition: 'not_accepted', operation_id: null });
+          expect(
+            fixture.store.getCommandRequest('turn.start', requestId, {
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+            })
+          ).toMatchObject({ response: { kind: 'turn', id: accepted.id } });
+        }
+        const readAdmission = () =>
           fixture.coreDb.sqlite
             .prepare(
-              'SELECT disposition, operation_id FROM scheduler_execution_attempts WHERE turn_id = ?'
+              'SELECT queue_entry_id AS queueEntryId, status FROM scheduler_admission_entries WHERE request_id = ?'
             )
-            .get(accepted.id)
-        ).toEqual({ disposition: 'not_accepted', operation_id: null });
-        expect(
-          fixture.store.getCommandRequest('turn.start', requestId, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: 'th_00000000-0000-7000-8000-000000000001',
-          })
-        ).toMatchObject({ response: { kind: 'turn', id: accepted.id } });
-      }
-      const readAdmission = () =>
-        fixture.coreDb.sqlite
-          .prepare(
-            'SELECT queue_entry_id AS queueEntryId, status FROM scheduler_admission_entries WHERE request_id = ?'
-          )
-          .all(requestId);
-      const admissions = readAdmission();
-      expect(admissions).toEqual(
-        preAcceptance
-          ? []
-          : [
-              {
-                queueEntryId: `queue_${requestId}_${createHash('sha256')
-                  .update(
-                    `${JSON.stringify(LOCAL_ACTOR)}:ws_00000000-0000-7000-8000-000000000001:th_00000000-0000-7000-8000-000000000001:${requestId}`
-                  )
-                  .digest('hex')
-                  .slice(0, 16)}`,
-                status: 'admitted',
-              },
-            ]
-      );
-      if (preAcceptance) {
-        expect(
-          fixture.coreDb.sqlite.prepare('SELECT attempt_id FROM scheduler_execution_attempts').all()
-        ).toEqual([]);
-        expect(
-          fixture.store.listThreadTurns(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-        ).toEqual([]);
-        expect(fixture.store.listCommandRequests()).toEqual([]);
-        expect(
-          fixture.store.listThreadItems(
-            'ws_00000000-0000-7000-8000-000000000001',
-            'th_00000000-0000-7000-8000-000000000001'
-          )
-        ).toEqual(itemsBefore);
-      }
-      expect(prepare).toHaveBeenCalledTimes(preAcceptance ? 0 : 1);
-      expect(executor.startCalls).toBe(0);
-      const snapshot = createInMemoryRuntimeConfigSnapshot({
-        agentManifests: [manifest],
-        dataRoot: fixture.coreDb.dataRoot,
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: testProviderRegistry(),
-      });
-      const service = startSchedulerDispatchRetryService({
-        coreDb: fixture.coreDb,
-        store: fixture.store,
-        turnExecutor: executor,
-        executionBackend: executor.executionBackend!,
-        runtimeConfigSnapshot: () => snapshot,
-        intervalMs: 30_000,
-        setInterval: () => null,
-        clearInterval: () => {},
-      });
-      try {
-        const result = await service.runOnce();
-        expect(result?.terminalResult).toEqual({ status: 'queued', reason: 'no-queued-entry' });
+            .all(requestId);
+        const admissions = readAdmission();
+        expect(admissions).toEqual(
+          preAcceptance
+            ? []
+            : [
+                {
+                  queueEntryId: `queue_${requestId}_${createHash('sha256')
+                    .update(
+                      `${JSON.stringify(LOCAL_ACTOR)}:ws_00000000-0000-7000-8000-000000000001:th_00000000-0000-7000-8000-000000000001:${requestId}`
+                    )
+                    .digest('hex')
+                    .slice(0, 16)}`,
+                  status: 'admitted',
+                },
+              ]
+        );
+        if (preAcceptance) {
+          expect(
+            fixture.coreDb.sqlite
+              .prepare('SELECT attempt_id FROM scheduler_execution_attempts')
+              .all()
+          ).toEqual([]);
+          expect(
+            fixture.store.listThreadTurns(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual([]);
+          expect(fixture.store.listCommandRequests()).toEqual([]);
+          expect(
+            fixture.store.listThreadItems(
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001'
+            )
+          ).toEqual(itemsBefore);
+        }
         expect(prepare).toHaveBeenCalledTimes(preAcceptance ? 0 : 1);
-        expect(readAdmission()).toEqual(admissions);
         expect(executor.startCalls).toBe(0);
+        const snapshot = createInMemoryRuntimeConfigSnapshot({
+          agentManifests: [manifest],
+          dataRoot: fixture.coreDb.dataRoot,
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: testProviderRegistry(),
+        });
+        const service = startSchedulerDispatchRetryService({
+          coreDb: fixture.coreDb,
+          store: fixture.store,
+          turnExecutor: executor,
+          executionBackend: executor.executionBackend!,
+          runtimeConfigSnapshot: () => snapshot,
+          intervalMs: 30_000,
+          setInterval: () => null,
+          clearInterval: () => {},
+        });
+        try {
+          const result = await service.runOnce();
+          expect(result?.terminalResult).toEqual({ status: 'queued', reason: 'no-queued-entry' });
+          expect(prepare).toHaveBeenCalledTimes(preAcceptance ? 0 : 1);
+          expect(readAdmission()).toEqual(admissions);
+          expect(executor.startCalls).toBe(0);
+        } finally {
+          service.stop();
+        }
       } finally {
-        service.stop();
+        fixture.coreDb.sqlite.close();
       }
-    } finally {
-      fixture.coreDb.sqlite.close();
     }
-  });
+  );
 
   it('closes the execution attempt when a new Turn completes synchronously', async () => {
     const executor = new RecordingTurnExecutor();
@@ -1665,281 +1664,285 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
 });
 
 describe('Core Turn durable admission response', () => {
-  it.each([
-    'http',
-    'remote-mcp',
-    'failure',
-  ] as const)('returns %s admission and receipt before worker completion', async (entry) => {
-    const executor = new HoldingTurnExecutor(entry === 'failure');
-    const { app, coreDb, dataRoot, store } = await createSchedulerFixture(
-      executor,
-      entry,
-      'local',
-      createTestAgentSetup().manifest,
-      true
-    );
-    const requestId = '00000000-0000-4000-8000-000000000991';
-    const scope = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-    };
-    const input = {
-      ...scope,
-      agentId: 'agent_codex_host',
-      input: 'Run a bounded worker.',
-      requestId,
-    };
-    const token =
-      entry === 'remote-mcp'
-        ? createOpenKitAccessTokenRecord(coreDb, {
-            ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            scope: 'workspace',
-            workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-            expiresAt: '2099-01-01T00:00:00.000Z',
-          })
-        : null;
-    /** Invokes the actual HTTP or MCP call binding. */
-    const submit = (text = input.input) =>
-      token
-        ? app.request('http://127.0.0.1/mcp', {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              accept: 'application/json, text/event-stream',
-              authorization: `Bearer ${token.secret}`,
-            },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'tools/call',
-              params: {
-                name: 'openkit_call',
-                arguments: { operation: 'turn.start', input: { ...input, input: text } },
-              },
-            }),
-          })
-        : app.request('/api/app/operations/turn.start', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-            body: JSON.stringify({ ...input, input: text }),
-          });
-    let responseObserved = false;
-    let receiptAtResponse: undefined | ReturnType<FsStore['getCommandRequest']>;
-    const pending = Promise.resolve(submit()).then((response) => {
-      receiptAtResponse = store.getCommandRequest('turn.start', requestId, scope);
-      responseObserved = true;
-      return response;
-    });
-    try {
-      await pending;
-      expect(responseObserved).toBe(true);
-      expect(executor.completionObserved).toBe(false);
-      const response = await pending;
-      expect(response.status).toBe(token ? 200 : 202);
-      const wire = await response.json();
-      if (token) expect(wire.result.isError).not.toBe(true);
-      const turn = ProductTurnSchema.parse(token ? JSON.parse(wire.result.content[0].text) : wire);
-      expect(['pending', 'running']).toContain(turn.status);
-      expect(turn.completedAt).toBeNull();
-      const receipt = receiptAtResponse!;
-      expect(receipt).toMatchObject({
-        command: 'turn.start',
-        requestId,
-        response: { kind: 'turn', id: turn.id },
-      });
-      // A second store reads the already-published receipt from Workspace SQLite.
-      expect(
-        (await createDemoStore({ dataRoot, coreDb })).getCommandRequest(
-          'turn.start',
-          requestId,
-          scope
-        )
-      ).toEqual(receipt);
-
-      const replay = await submit();
-      expect(replay.status).toBe(token ? 200 : 202);
-      const replayWire = await replay.json();
-      expect(
-        ProductTurnSchema.parse(token ? JSON.parse(replayWire.result.content[0].text) : replayWire)
-          .id
-      ).toBe(turn.id);
-      expect(executor.completionObserved).toBe(false);
-      const conflict = await submit('Different semantic input.');
-      expect(conflict.status).toBe(token ? 200 : 409);
-      const refused = await conflict.json();
-      if (token) expect(refused.result.isError).toBe(true);
-      expect(token ? JSON.parse(refused.result.content[0].text) : refused).toMatchObject({
-        code: 'idempotency_key_conflict',
-      });
-      // Launch is a separate eventual predicate; a receipt may precede this tick.
-      await vi.waitFor(() => expect(executor.startCalls).toBe(1));
-      expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe('open');
-      expect(store.listThreadTurns(scope.workspaceId, scope.threadId)).toHaveLength(1);
-      executor.completion.resolve();
-      if (entry !== 'failure') {
-        await executor.terminalPublished.promise;
-        expect(store.getTurnById(turn.id).status).toBe('completed');
-        expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe('closing');
-
-        let replayObserved = false;
-        const closingReplay = Promise.resolve(submit()).then((r) => {
-          replayObserved = true;
-          return r;
-        });
-        await closingReplay;
-        expect(replayObserved).toBe(true);
-        // D119: this terminal owner tuple still lacks release proof. Replay refuses without waiting or resubmitting.
-        const closingResponse = await closingReplay;
-        expect(closingResponse.status).toBe(token ? 200 : 409);
-        const closingWire = await closingResponse.json();
-        if (token) expect(closingWire.result.isError).toBe(true);
-        expect(token ? JSON.parse(closingWire.result.content[0].text) : closingWire).toMatchObject({
-          code: 'recovery_required',
-        });
-        expect(executor.completionObserved).toBe(false);
-        expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe('closing');
-        executor.cleanup.resolve();
-      }
-      await executor.finished.promise;
-      await vi.waitFor(() =>
-        expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe(
-          entry === 'failure' ? 'closing' : 'closed'
-        )
+  it.each(['http', 'remote-mcp', 'failure'] as const)(
+    'returns %s admission and receipt before worker completion',
+    async (entry) => {
+      const executor = new HoldingTurnExecutor(entry === 'failure');
+      const { app, coreDb, dataRoot, store } = await createSchedulerFixture(
+        executor,
+        entry,
+        'local',
+        createTestAgentSetup().manifest,
+        true
       );
-      await setImmediate();
-      if (entry === 'failure') {
-        // Executor entry makes execution possible; this Error supplies no fence or handoff.
-        const retained = readTurnAttempt(coreDb, turn.id);
-        expect(retained?.phase).toBe('closing');
-        expect(store.getTurnById(turn.id).status).toBe('failed');
-        const reload = openCoreDb(dataRoot);
-        try {
-          expect(readTurnAttempt(reload, turn.id)).toEqual(retained);
-        } finally {
-          reload.sqlite.close();
+      const requestId = '00000000-0000-4000-8000-000000000991';
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+      };
+      const input = {
+        ...scope,
+        agentId: 'agent_codex_host',
+        input: 'Run a bounded worker.',
+        requestId,
+      };
+      const token =
+        entry === 'remote-mcp'
+          ? createOpenKitAccessTokenRecord(coreDb, {
+              ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              scope: 'workspace',
+              workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+              expiresAt: '2099-01-01T00:00:00.000Z',
+            })
+          : null;
+      /** Invokes the actual HTTP or MCP call binding. */
+      const submit = (text = input.input) =>
+        token
+          ? app.request('http://127.0.0.1/mcp', {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                accept: 'application/json, text/event-stream',
+                authorization: `Bearer ${token.secret}`,
+              },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'tools/call',
+                params: {
+                  name: 'openkit_call',
+                  arguments: { operation: 'turn.start', input: { ...input, input: text } },
+                },
+              }),
+            })
+          : app.request('/api/app/operations/turn.start', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+              body: JSON.stringify({ ...input, input: text }),
+            });
+      let responseObserved = false;
+      let receiptAtResponse: undefined | ReturnType<FsStore['getCommandRequest']>;
+      const pending = Promise.resolve(submit()).then((response) => {
+        receiptAtResponse = store.getCommandRequest('turn.start', requestId, scope);
+        responseObserved = true;
+        return response;
+      });
+      try {
+        await pending;
+        expect(responseObserved).toBe(true);
+        expect(executor.completionObserved).toBe(false);
+        const response = await pending;
+        expect(response.status).toBe(token ? 200 : 202);
+        const wire = await response.json();
+        if (token) expect(wire.result.isError).not.toBe(true);
+        const turn = ProductTurnSchema.parse(
+          token ? JSON.parse(wire.result.content[0].text) : wire
+        );
+        expect(['pending', 'running']).toContain(turn.status);
+        expect(turn.completedAt).toBeNull();
+        const receipt = receiptAtResponse!;
+        expect(receipt).toMatchObject({
+          command: 'turn.start',
+          requestId,
+          response: { kind: 'turn', id: turn.id },
+        });
+        // A second store reads the already-published receipt from Workspace SQLite.
+        expect(
+          (await createDemoStore({ dataRoot, coreDb })).getCommandRequest(
+            'turn.start',
+            requestId,
+            scope
+          )
+        ).toEqual(receipt);
+
+        const replay = await submit();
+        expect(replay.status).toBe(token ? 200 : 202);
+        const replayWire = await replay.json();
+        expect(
+          ProductTurnSchema.parse(
+            token ? JSON.parse(replayWire.result.content[0].text) : replayWire
+          ).id
+        ).toBe(turn.id);
+        expect(executor.completionObserved).toBe(false);
+        const conflict = await submit('Different semantic input.');
+        expect(conflict.status).toBe(token ? 200 : 409);
+        const refused = await conflict.json();
+        if (token) expect(refused.result.isError).toBe(true);
+        expect(token ? JSON.parse(refused.result.content[0].text) : refused).toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+        // Launch is a separate eventual predicate; a receipt may precede this tick.
+        await vi.waitFor(() => expect(executor.startCalls).toBe(1));
+        expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe('open');
+        expect(store.listThreadTurns(scope.workspaceId, scope.threadId)).toHaveLength(1);
+        executor.completion.resolve();
+        if (entry !== 'failure') {
+          await executor.terminalPublished.promise;
+          expect(store.getTurnById(turn.id).status).toBe('completed');
+          expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe('closing');
+
+          let replayObserved = false;
+          const closingReplay = Promise.resolve(submit()).then((r) => {
+            replayObserved = true;
+            return r;
+          });
+          await closingReplay;
+          expect(replayObserved).toBe(true);
+          // D119: this terminal owner tuple still lacks release proof. Replay refuses without waiting or resubmitting.
+          const closingResponse = await closingReplay;
+          expect(closingResponse.status).toBe(token ? 200 : 409);
+          const closingWire = await closingResponse.json();
+          if (token) expect(closingWire.result.isError).toBe(true);
+          expect(
+            token ? JSON.parse(closingWire.result.content[0].text) : closingWire
+          ).toMatchObject({
+            code: 'recovery_required',
+          });
+          expect(executor.completionObserved).toBe(false);
+          expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe('closing');
+          executor.cleanup.resolve();
         }
+        await executor.finished.promise;
+        await vi.waitFor(() =>
+          expect(readTurnAttempt(coreDb, turn.id)?.phase).toBe(
+            entry === 'failure' ? 'closing' : 'closed'
+          )
+        );
+        await setImmediate();
+        if (entry === 'failure') {
+          // Executor entry makes execution possible; this Error supplies no fence or handoff.
+          const retained = readTurnAttempt(coreDb, turn.id);
+          expect(retained?.phase).toBe('closing');
+          expect(store.getTurnById(turn.id).status).toBe('failed');
+          const reload = openCoreDb(dataRoot);
+          try {
+            expect(readTurnAttempt(reload, turn.id)).toEqual(retained);
+          } finally {
+            reload.sqlite.close();
+          }
+          expect(executor.startCalls).toBe(1);
+
+          return;
+        }
+        const terminal = await submit();
+        expect(terminal.status).toBe(token ? 200 : 202);
+        const terminalWire = await terminal.json();
+        expect(
+          ProductTurnSchema.parse(
+            token ? JSON.parse(terminalWire.result.content[0].text) : terminalWire
+          )
+        ).toMatchObject({ id: turn.id, status: 'completed' });
+        const lease = readTurnAttempt(coreDb, turn.id);
+        expect((await submit()).status).toBe(token ? 200 : 202);
+        expect(readTurnAttempt(coreDb, turn.id)).toEqual(lease);
+
+        expect(store.getCommandRequest('turn.start', requestId, scope)).toEqual(receipt);
         expect(executor.startCalls).toBe(1);
-
-        return;
+        expect(
+          schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: scope.workspaceId,
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          })
+        ).toHaveLength(1);
+      } finally {
+        executor.completion.resolve();
+        executor.cleanup.resolve();
+        await pending.catch(() => undefined);
+        if (executor.startCalls) await executor.finished.promise;
+        await setImmediate();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-      const terminal = await submit();
-      expect(terminal.status).toBe(token ? 200 : 202);
-      const terminalWire = await terminal.json();
-      expect(
-        ProductTurnSchema.parse(
-          token ? JSON.parse(terminalWire.result.content[0].text) : terminalWire
-        )
-      ).toMatchObject({ id: turn.id, status: 'completed' });
-      const lease = readTurnAttempt(coreDb, turn.id);
-      expect((await submit()).status).toBe(token ? 200 : 202);
-      expect(readTurnAttempt(coreDb, turn.id)).toEqual(lease);
-
-      expect(store.getCommandRequest('turn.start', requestId, scope)).toEqual(receipt);
-      expect(executor.startCalls).toBe(1);
-      expect(
-        schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-          workspaceId: scope.workspaceId,
-          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
-        })
-      ).toHaveLength(1);
-    } finally {
-      executor.completion.resolve();
-      executor.cleanup.resolve();
-      await pending.catch(() => undefined);
-      if (executor.startCalls) await executor.finished.promise;
-      await setImmediate();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 });
 
 describe('Core Turn receipt recovery boundary', () => {
-  it.each([
-    'wrong-kind',
-    'missing-turn',
-  ] as const)('refuses %s replay authority without changing the receipt or launching another Turn', async (fault) => {
-    const fixture = await createNativeTurnFixture(fault);
-    const { app, coreDb, dataRoot, store, native } = fixture;
-    const scope = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-    };
-    const input = {
-      ...scope,
-      agentId: 'agent_codex_host',
-      input: 'Keep the original worker held during receipt replay.',
-      requestId: '00000000-0000-4000-8000-000000000993',
-    };
-    /** Invokes the canonical operation with unchanged request identity and semantic input. */
-    const submit = () =>
-      app.request(...operationRequest('turn.start', {}, { body: JSON.stringify(input) }));
-    try {
-      const response = await submit();
-      expect(response.status).toBe(202);
-      const turn = ProductTurnSchema.parse(await response.json());
-      await fixture.waitForLaunch(turn.id);
-      const receipt = store.getCommandRequest('turn.start', input.requestId, scope)!;
-      expect(receipt.response).toEqual({ kind: 'turn', id: turn.id });
-      const validReplay = await submit();
-      expect(validReplay.status).toBe(202);
-      expect(ProductTurnSchema.parse(await validReplay.json()).id).toBe(turn.id);
-      // Change only the result pointer; request identity and hash still select replay.
-      const corrupted = {
-        ...receipt,
-        response:
-          fault === 'wrong-kind'
-            ? {
-                ...receipt.response,
-                kind: 'workspace' as const,
-                id: testEntityId('ws', 'wrong-kind'),
-              }
-            : { ...receipt.response, id: testEntityId('tu', 'missing-turn') },
+  it.each(['wrong-kind', 'missing-turn'] as const)(
+    'refuses %s replay authority without changing the receipt or launching another Turn',
+    async (fault) => {
+      const fixture = await createNativeTurnFixture(fault);
+      const { app, coreDb, dataRoot, store, native } = fixture;
+      const scope = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
       };
-      // Deliberate scoped fault after native publication; never manufacture the original receipt.
-      const db = openWorkspaceDb(dataRoot, scope.workspaceId);
+      const input = {
+        ...scope,
+        agentId: 'agent_codex_host',
+        input: 'Keep the original worker held during receipt replay.',
+        requestId: '00000000-0000-4000-8000-000000000993',
+      };
+      /** Invokes the canonical operation with unchanged request identity and semantic input. */
+      const submit = () =>
+        app.request(...operationRequest('turn.start', {}, { body: JSON.stringify(input) }));
       try {
-        expect(
-          db.sqlite
-            .prepare(`UPDATE idempotency_requests SET response_kind = ?, response_id = ?
+        const response = await submit();
+        expect(response.status).toBe(202);
+        const turn = ProductTurnSchema.parse(await response.json());
+        await fixture.waitForLaunch(turn.id);
+        const receipt = store.getCommandRequest('turn.start', input.requestId, scope)!;
+        expect(receipt.response).toEqual({ kind: 'turn', id: turn.id });
+        const validReplay = await submit();
+        expect(validReplay.status).toBe(202);
+        expect(ProductTurnSchema.parse(await validReplay.json()).id).toBe(turn.id);
+        // Change only the result pointer; request identity and hash still select replay.
+        const corrupted = {
+          ...receipt,
+          response:
+            fault === 'wrong-kind'
+              ? {
+                  ...receipt.response,
+                  kind: 'workspace' as const,
+                  id: testEntityId('ws', 'wrong-kind'),
+                }
+              : { ...receipt.response, id: testEntityId('tu', 'missing-turn') },
+        };
+        // Deliberate scoped fault after native publication; never manufacture the original receipt.
+        const db = openWorkspaceDb(dataRoot, scope.workspaceId);
+        try {
+          expect(
+            db.sqlite
+              .prepare(`UPDATE idempotency_requests SET response_kind = ?, response_id = ?
             WHERE request_key = ? AND response_kind = 'turn' AND response_id = ?`)
-            .run(corrupted.response.kind, corrupted.response.id, receipt.key, turn.id).changes
-        ).toBe(1);
-      } finally {
-        db.sqlite.close();
-      }
-      const turns = store.listThreadTurns(scope.workspaceId, scope.threadId);
-      const admissions = schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId: scope.workspaceId,
-        statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
-      });
-      const replay = await submit();
-      expect(native.executor.launches).toBe(1);
-      expect(['pending', 'running']).toContain(store.getTurnById(turn.id).status);
-      expect(store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turns);
-      expect(
-        schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+              .run(corrupted.response.kind, corrupted.response.id, receipt.key, turn.id).changes
+          ).toBe(1);
+        } finally {
+          db.sqlite.close();
+        }
+        const turns = store.listThreadTurns(scope.workspaceId, scope.threadId);
+        const admissions = schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           workspaceId: scope.workspaceId,
           statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
-        })
-      ).toEqual(admissions);
-      expect(store.getCommandRequest('turn.start', input.requestId, scope)).toEqual(corrupted);
-      expect(
-        (await createDemoStore({ dataRoot, coreDb })).getCommandRequest(
-          'turn.start',
-          input.requestId,
-          scope
-        )
-      ).toEqual(corrupted);
-      expect(replay.status).toBe(409);
-      expect(ApiErrorSchema.parse(await replay.json())).toMatchObject({
-        code: 'recovery_required',
-      });
-    } finally {
-      await fixture.cleanup();
+        });
+        const replay = await submit();
+        expect(native.executor.launches).toBe(1);
+        expect(['pending', 'running']).toContain(store.getTurnById(turn.id).status);
+        expect(store.listThreadTurns(scope.workspaceId, scope.threadId)).toEqual(turns);
+        expect(
+          schedulerOwners.listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId: scope.workspaceId,
+            statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+          })
+        ).toEqual(admissions);
+        expect(store.getCommandRequest('turn.start', input.requestId, scope)).toEqual(corrupted);
+        expect(
+          (await createDemoStore({ dataRoot, coreDb })).getCommandRequest(
+            'turn.start',
+            input.requestId,
+            scope
+          )
+        ).toEqual(corrupted);
+        expect(replay.status).toBe(409);
+        expect(ApiErrorSchema.parse(await replay.json())).toMatchObject({
+          code: 'recovery_required',
+        });
+      } finally {
+        await fixture.cleanup();
+      }
     }
-  });
+  );
 });
 
 describe('Core Turn fast terminal admission', () => {

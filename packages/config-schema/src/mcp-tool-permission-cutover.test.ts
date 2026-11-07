@@ -28,16 +28,16 @@ const shapes = [
 ];
 
 describe('MCP permission cutover formats', () => {
-  it.each(shapes)('serializes $name supply without retired permission defaults', ({
-    schema,
-    input,
-  }) => {
-    const parsed = schema.parse(input);
-    expect(parsed.allowedTools).toEqual(['echo']);
-    const serialized = JSON.parse(JSON.stringify(parsed));
-    expect(serialized).not.toHaveProperty('approvalRequiredTools');
-    expect(serialized).not.toHaveProperty('deniedTools');
-  });
+  it.each(shapes)(
+    'serializes $name supply without retired permission defaults',
+    ({ schema, input }) => {
+      const parsed = schema.parse(input);
+      expect(parsed.allowedTools).toEqual(['echo']);
+      const serialized = JSON.parse(JSON.stringify(parsed));
+      expect(serialized).not.toHaveProperty('approvalRequiredTools');
+      expect(serialized).not.toHaveProperty('deniedTools');
+    }
+  );
 
   it.each(shapes)('refuses retired permission fields in $name', ({ schema, input }) => {
     for (const field of ['approvalRequiredTools', 'deniedTools']) {

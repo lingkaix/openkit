@@ -384,61 +384,93 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['responses', true],
     ['chat/completions', false],
     ['chat/completions', true],
-  ] as const)('keeps handed effort on a Provider-side failure %s stream=%s', async (endpoint, stream) => {
-    const f = await fixture({ levels: ['low', 'high'] });
-    f.primary.setResponses([
-      () =>
-        fauxAssistantMessage([], {
-          stopReason: 'error',
-          errorMessage: 'usage_limit_reached',
+  ] as const)(
+    'keeps handed effort on a Provider-side failure %s stream=%s',
+    async (endpoint, stream) => {
+      const f = await fixture({ levels: ['low', 'high'] });
+      f.primary.setResponses([
+        () =>
+          fauxAssistantMessage([], {
+            stopReason: 'error',
+            errorMessage: 'usage_limit_reached',
+          }),
+      ]);
+      const response = await f.post(endpoint, 'medium', stream);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toHaveProperty('error.cause', 'quota_exhausted');
+      expect(f.primary.state.callCount).toBe(1);
+      expect(f.backup.state.callCount).toBe(0);
+      expect(f.entries()).toEqual([
+        expect.objectContaining({
+          requestedEffort: 'medium',
+          effectiveEffort: 'high',
+          failureKind: 'quota_exhausted',
+          terminalResult: 'failed',
+          outputBegan: false,
         }),
-    ]);
-    const response = await f.post(endpoint, 'medium', stream);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toHaveProperty('error.cause', 'quota_exhausted');
-    expect(f.primary.state.callCount).toBe(1);
-    expect(f.backup.state.callCount).toBe(0);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({
-        requestedEffort: 'medium',
-        effectiveEffort: 'high',
-        failureKind: 'quota_exhausted',
-        terminalResult: 'failed',
-        outputBegan: false,
-      }),
-    ]);
-    expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-  });
+      ]);
+      expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
+    }
+  );
 
   it.each([
     ['responses', false],
     ['responses', true],
     ['chat/completions', false],
     ['chat/completions', true],
-  ] as const)('keeps handed effort on stock-internal auth failure %s stream=%s', async (endpoint, stream) => {
-    const f = await fixture({ levels: ['low', 'high'] });
-    vi.spyOn(f.models, 'getAuth').mockRejectedValue(new Error('synthetic stock auth failure'));
-    const response = await f.post(endpoint, 'medium', stream);
-    // Keep stock setup-error projection; the deciding oracle is the retained handed effort.
-    expect(response.status).toBe(400);
-    await response.text();
-    expect(f.primary.state.callCount).toBe(0);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({
-        requestedEffort: 'medium',
-        effectiveEffort: 'high',
-        terminalResult: 'failed',
-        outputBegan: false,
-      }),
-    ]);
-    expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-  });
-  it.each([
-    false,
-    true,
-  ])('does not invent a dropped/default reason before Provider handoff stream=%s', async (stream) => {
-    for (const reasoning of [false, true]) {
-      const f = await fixture({ levels: [], reasoning, nativeResponses: true });
+  ] as const)(
+    'keeps handed effort on stock-internal auth failure %s stream=%s',
+    async (endpoint, stream) => {
+      const f = await fixture({ levels: ['low', 'high'] });
+      vi.spyOn(f.models, 'getAuth').mockRejectedValue(new Error('synthetic stock auth failure'));
+      const response = await f.post(endpoint, 'medium', stream);
+      // Keep stock setup-error projection; the deciding oracle is the retained handed effort.
+      expect(response.status).toBe(400);
+      await response.text();
+      expect(f.primary.state.callCount).toBe(0);
+      expect(f.entries()).toEqual([
+        expect.objectContaining({
+          requestedEffort: 'medium',
+          effectiveEffort: 'high',
+          terminalResult: 'failed',
+          outputBegan: false,
+        }),
+      ]);
+      expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
+    }
+  );
+  it.each([false, true])(
+    'does not invent a dropped/default reason before Provider handoff stream=%s',
+    async (stream) => {
+      for (const reasoning of [false, true]) {
+        const f = await fixture({ levels: [], reasoning, nativeResponses: true });
+        const response = await f.app.request('/v1/responses', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'tier',
+            input: 'Hello',
+            stream,
+            reasoning: { effort: 'medium', summary: 'unsupported-summary' },
+            metadata: { openkit: { workspaceId: workspaceIdForOwner(f.turn.owner) } },
+          }),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toHaveProperty('error.code', 'unsupported_gateway_feature');
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.entries()[0]).toMatchObject({
+          requestedEffort: 'medium',
+          terminalResult: 'failed',
+        });
+        expect(f.entries()[0]).not.toHaveProperty('effectiveEffort');
+        expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
+      }
+    }
+  );
+  it.each([false, true])(
+    'records requested effort only when native admission rejects before Provider stream=%s',
+    async (stream) => {
+      const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
       const response = await f.app.request('/v1/responses', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -453,107 +485,87 @@ describe('Gateway reasoning effort admission and fitting', () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toHaveProperty('error.code', 'unsupported_gateway_feature');
       expect(f.primary.state.callCount).toBe(0);
-      expect(f.entries()[0]).toMatchObject({ requestedEffort: 'medium', terminalResult: 'failed' });
+      expect(f.fauxOptionProjections).toEqual([]);
+      expect(f.entries()).toEqual([
+        expect.objectContaining({
+          requestedEffort: 'medium',
+          failureKind: 'unsupported',
+          terminalResult: 'failed',
+          outputBegan: false,
+        }),
+      ]);
       expect(f.entries()[0]).not.toHaveProperty('effectiveEffort');
       expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
     }
-  });
-  it.each([
-    false,
-    true,
-  ])('records requested effort only when native admission rejects before Provider stream=%s', async (stream) => {
-    const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
-    const response = await f.app.request('/v1/responses', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: 'tier',
-        input: 'Hello',
-        stream,
-        reasoning: { effort: 'medium', summary: 'unsupported-summary' },
-        metadata: { openkit: { workspaceId: workspaceIdForOwner(f.turn.owner) } },
-      }),
-    });
-    expect(response.status).toBe(400);
-    expect(await response.json()).toHaveProperty('error.code', 'unsupported_gateway_feature');
-    expect(f.primary.state.callCount).toBe(0);
-    expect(f.fauxOptionProjections).toEqual([]);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({
-        requestedEffort: 'medium',
-        failureKind: 'unsupported',
-        terminalResult: 'failed',
-        outputBegan: false,
-      }),
-    ]);
-    expect(f.entries()[0]).not.toHaveProperty('effectiveEffort');
-    expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-  });
+  );
   it.each([
     ['high', 'low', 'low'],
     ['high', undefined, 'high'],
     [undefined, 'low', 'low'],
     [undefined, undefined, undefined],
-  ] as const)('persists native request %s / %s separately from bound Turn on tool-aware Responses', async (turnEffort, requested, expected) => {
-    const f = await fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
-    const before = structuredClone(
-      f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
-    );
-    const response = await f.post('responses', requested, false, true, true, true);
-    expect(response.status, await response.text()).toBe(200);
-    expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
-    const entry = f.entries()[0];
-    if (requested === undefined) expect(entry).not.toHaveProperty('requestedEffort');
-    else expect(entry).toHaveProperty('requestedEffort', requested);
-    if (expected === undefined) {
-      expect(entry).not.toHaveProperty('effectiveEffort');
-      expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
-    } else {
-      expect(entry).toHaveProperty('effectiveEffort', expected);
-      expect(entry).not.toHaveProperty('effectiveEffortReason');
+  ] as const)(
+    'persists native request %s / %s separately from bound Turn on tool-aware Responses',
+    async (turnEffort, requested, expected) => {
+      const f = await fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
+      const before = structuredClone(
+        f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
+      );
+      const response = await f.post('responses', requested, false, true, true, true);
+      expect(response.status, await response.text()).toBe(200);
+      expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
+      const entry = f.entries()[0];
+      if (requested === undefined) expect(entry).not.toHaveProperty('requestedEffort');
+      else expect(entry).toHaveProperty('requestedEffort', requested);
+      if (expected === undefined) {
+        expect(entry).not.toHaveProperty('effectiveEffort');
+        expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
+      } else {
+        expect(entry).toHaveProperty('effectiveEffort', expected);
+        expect(entry).not.toHaveProperty('effectiveEffortReason');
+      }
+      expect(
+        f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
+      ).toEqual(before);
     }
-    expect(f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)).toEqual(
-      before
-    );
-  });
+  );
 
-  it.each([
-    false,
-    true,
-  ])('persists fitted effort through the tool-aware Responses bridge; stream=%s', async (stream) => {
-    const f = await fixture({ levels: ['low', 'high'] });
-    const response = await f.post('responses', 'medium', stream, false, true, true);
-    expect(response.status, await response.text()).toBe(200);
-    expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({ requestedEffort: 'medium', effectiveEffort: 'high' }),
-    ]);
-    expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-  });
-
-  it.each([
-    false,
-    true,
-  ])('fits native Responses and bridged Chat before the Provider; stream=%s', async (stream) => {
-    for (const endpoint of ['responses', 'chat/completions'] as const) {
-      const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
-      const response = await f.post(endpoint, 'medium', stream, true);
+  it.each([false, true])(
+    'persists fitted effort through the tool-aware Responses bridge; stream=%s',
+    async (stream) => {
+      const f = await fixture({ levels: ['low', 'high'] });
+      const response = await f.post('responses', 'medium', stream, false, true, true);
       expect(response.status, await response.text()).toBe(200);
       expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
       expect(f.entries()).toEqual([
-        expect.objectContaining({
-          requestedEffort: 'medium',
-          effectiveEffort: 'high',
-          terminalResult: 'succeeded',
-        }),
+        expect.objectContaining({ requestedEffort: 'medium', effectiveEffort: 'high' }),
       ]);
-      expect(f.fauxOptionProjections).toHaveLength(1);
-      expect(f.fauxOptionProjections[0]).not.toContain('metadata');
-      expect(f.fauxOptionProjections[0]).not.toContain(workspaceIdForOwner(f.turn.owner));
-      expect(f.fauxOptionProjections[0]).not.toContain(f.turn.threadId);
-      expect(f.fauxOptionProjections[0]).not.toContain(f.turn.id);
+      expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
     }
-  });
+  );
+
+  it.each([false, true])(
+    'fits native Responses and bridged Chat before the Provider; stream=%s',
+    async (stream) => {
+      for (const endpoint of ['responses', 'chat/completions'] as const) {
+        const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
+        const response = await f.post(endpoint, 'medium', stream, true);
+        expect(response.status, await response.text()).toBe(200);
+        expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
+        expect(f.entries()).toEqual([
+          expect.objectContaining({
+            requestedEffort: 'medium',
+            effectiveEffort: 'high',
+            terminalResult: 'succeeded',
+          }),
+        ]);
+        expect(f.fauxOptionProjections).toHaveLength(1);
+        expect(f.fauxOptionProjections[0]).not.toContain('metadata');
+        expect(f.fauxOptionProjections[0]).not.toContain(workspaceIdForOwner(f.turn.owner));
+        expect(f.fauxOptionProjections[0]).not.toContain(f.turn.threadId);
+        expect(f.fauxOptionProjections[0]).not.toContain(f.turn.id);
+      }
+    }
+  );
 
   it.each([false, true])('keeps native unattributed inference blind; stream=%s', async (stream) => {
     const f = await fixture({ levels: ['low', 'high'], nativeResponses: true });
@@ -564,52 +576,51 @@ describe('Gateway reasoning effort admission and fitting', () => {
     expect(f.fauxOptionProjections[0]).not.toContain('metadata');
   });
 
-  it.each(
-    [null, [], false, 'not-an-object', 9].map((metadata) => ({ metadata }))
-  )('refuses malformed public metadata identically on native and bridged admission before Provider effects; metadata=$metadata', async ({
-    metadata,
-  }) => {
-    const envelopes: unknown[] = [];
-    for (const nativeResponses of [false, true]) {
-      const f = await fixture({ levels: ['low', 'high'], nativeResponses });
-      const response = await f.app.request('/v1/responses', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: 'tier',
-          input: 'Hello',
-          metadata,
-          ...(nativeResponses
-            ? {}
-            : {
-                tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }],
-              }),
-        }),
-      });
-      // Public authority rejects malformed unscoped metadata before adapter admission.
-      expect(response.status, await response.clone().text()).toBe(403);
-      envelopes.push(await response.json());
+  it.each([null, [], false, 'not-an-object', 9].map((metadata) => ({ metadata })))(
+    'refuses malformed public metadata identically on native and bridged admission before Provider effects; metadata=$metadata',
+    async ({ metadata }) => {
+      const envelopes: unknown[] = [];
+      for (const nativeResponses of [false, true]) {
+        const f = await fixture({ levels: ['low', 'high'], nativeResponses });
+        const response = await f.app.request('/v1/responses', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'tier',
+            input: 'Hello',
+            metadata,
+            ...(nativeResponses
+              ? {}
+              : {
+                  tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }],
+                }),
+          }),
+        });
+        // Public authority rejects malformed unscoped metadata before adapter admission.
+        expect(response.status, await response.clone().text()).toBe(403);
+        envelopes.push(await response.json());
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.fauxOptionProjections).toEqual([]);
+        expect(f.entries()).toEqual([]);
+      }
+      expect(envelopes[0]).toEqual(envelopes[1]);
+      expect(envelopes[0]).toMatchObject({ code: 'workspace_access_denied' });
+    }
+  );
+
+  it.each(['responses', 'chat/completions'] as const)(
+    'refuses unknown %s effort before Provider effects',
+    async (endpoint) => {
+      const f = await fixture({ levels: ['low', 'high'] });
+      for (const effort of ['turbo', null, 7, {}]) {
+        const response = await f.post(endpoint, effort);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ error: { type: 'invalid_request_error' } });
+      }
       expect(f.primary.state.callCount).toBe(0);
-      expect(f.fauxOptionProjections).toEqual([]);
       expect(f.entries()).toEqual([]);
     }
-    expect(envelopes[0]).toEqual(envelopes[1]);
-    expect(envelopes[0]).toMatchObject({ code: 'workspace_access_denied' });
-  });
-
-  it.each([
-    'responses',
-    'chat/completions',
-  ] as const)('refuses unknown %s effort before Provider effects', async (endpoint) => {
-    const f = await fixture({ levels: ['low', 'high'] });
-    for (const effort of ['turbo', null, 7, {}]) {
-      const response = await f.post(endpoint, effort);
-      expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({ error: { type: 'invalid_request_error' } });
-    }
-    expect(f.primary.state.callCount).toBe(0);
-    expect(f.entries()).toEqual([]);
-  });
+  );
 
   // Give each surface and stream variant one durable fixture per unchanged runner deadline.
   it.each(
@@ -633,61 +644,61 @@ describe('Gateway reasoning effort admission and fitting', () => {
         ] as const
       ).map(([endpoint, stream]) => ({ requested, levels, effective, endpoint, stream }))
     )
-  )('fits $requested against $levels to $effective on $endpoint stream=$stream', async ({
-    requested,
-    levels,
-    effective,
-    endpoint,
-    stream,
-  }) => {
-    const f = await fixture({ levels: [...levels] });
-    const dispatch = vi.spyOn(
-      f.dispatcher,
-      endpoint === 'responses'
-        ? stream
-          ? 'createResponsesStream'
-          : 'createResponses'
-        : stream
-          ? 'createChatCompletionStream'
-          : 'createChatCompletion'
-    );
-    const response = await f.post(endpoint, requested, stream);
-    expect(response.status, await response.text()).toBe(200);
-    expect(dispatch.mock.calls[0]?.[1]).toMatchObject(
-      endpoint === 'responses'
-        ? { reasoning: { effort: effective } }
-        : { reasoning_effort: effective }
-    );
-    expect(f.received).toEqual([{ member: 'primary', effort: effective }]);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({ requestedEffort: requested, effectiveEffort: effective }),
-    ]);
-    expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
-  });
+  )(
+    'fits $requested against $levels to $effective on $endpoint stream=$stream',
+    async ({ requested, levels, effective, endpoint, stream }) => {
+      const f = await fixture({ levels: [...levels] });
+      const dispatch = vi.spyOn(
+        f.dispatcher,
+        endpoint === 'responses'
+          ? stream
+            ? 'createResponsesStream'
+            : 'createResponses'
+          : stream
+            ? 'createChatCompletionStream'
+            : 'createChatCompletion'
+      );
+      const response = await f.post(endpoint, requested, stream);
+      expect(response.status, await response.text()).toBe(200);
+      expect(dispatch.mock.calls[0]?.[1]).toMatchObject(
+        endpoint === 'responses'
+          ? { reasoning: { effort: effective } }
+          : { reasoning_effort: effective }
+      );
+      expect(f.received).toEqual([{ member: 'primary', effort: effective }]);
+      expect(f.entries()).toEqual([
+        expect.objectContaining({ requestedEffort: requested, effectiveEffort: effective }),
+      ]);
+      expect(f.entries()[0]).not.toHaveProperty('effectiveEffortReason');
+    }
+  );
 
   it.each([
     [false, ['low', 'high'], 'model_without_reasoning'],
     [true, undefined, 'provider_default_no_options'],
     [true, [], 'provider_default_no_options'],
-  ] as const)('drops control with reasoning=%s and levels=%j', async (reasoning, levels, reason) => {
-    for (const endpoint of ['responses', 'chat/completions'] as const) {
-      const f = await fixture({ reasoning, ...(levels ? { levels: [...levels] } : {}) });
-      const dispatch = vi.spyOn(
-        f.dispatcher,
-        endpoint === 'responses' ? 'createResponses' : 'createChatCompletion'
-      );
-      const response = await f.post(endpoint, 'medium');
-      expect(response.status, await response.text()).toBe(200);
-      expect(dispatch.mock.calls[0]?.[1]).not.toHaveProperty(
-        endpoint === 'responses' ? 'reasoning' : 'reasoning_effort'
-      );
-      expect(f.received).toEqual([{ member: 'primary', effort: undefined }]);
-      expect(f.entries()).toEqual([
-        expect.objectContaining({ requestedEffort: 'medium', effectiveEffortReason: reason }),
-      ]);
-      expect(f.entries()[0]).not.toHaveProperty('effectiveEffort');
+  ] as const)(
+    'drops control with reasoning=%s and levels=%j',
+    async (reasoning, levels, reason) => {
+      for (const endpoint of ['responses', 'chat/completions'] as const) {
+        const f = await fixture({ reasoning, ...(levels ? { levels: [...levels] } : {}) });
+        const dispatch = vi.spyOn(
+          f.dispatcher,
+          endpoint === 'responses' ? 'createResponses' : 'createChatCompletion'
+        );
+        const response = await f.post(endpoint, 'medium');
+        expect(response.status, await response.text()).toBe(200);
+        expect(dispatch.mock.calls[0]?.[1]).not.toHaveProperty(
+          endpoint === 'responses' ? 'reasoning' : 'reasoning_effort'
+        );
+        expect(f.received).toEqual([{ member: 'primary', effort: undefined }]);
+        expect(f.entries()).toEqual([
+          expect.objectContaining({ requestedEffort: 'medium', effectiveEffortReason: reason }),
+        ]);
+        expect(f.entries()[0]).not.toHaveProperty('effectiveEffort');
+      }
     }
-  });
+  );
 
   // Give each durable fixture its own unchanged runner deadline.
   it.each([
@@ -699,134 +710,137 @@ describe('Gateway reasoning effort admission and fitting', () => {
     ['chat/completions', 'high', undefined, 'high'],
     ['chat/completions', undefined, 'low', 'low'],
     ['chat/completions', undefined, undefined, undefined],
-  ] as const)('uses native %s effort before recorded Turn, then default: turn=%s request=%s effective=%s', async (endpoint, turnEffort, requested, expected) => {
-    const f = await fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
-    const before = structuredClone(
-      f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
-    );
-    const response = await f.post(endpoint, requested, false, true);
-    expect(response.status, await response.text()).toBe(200);
-    expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
-    const entry = f.entries()[0];
-    if (requested === undefined) expect(entry).not.toHaveProperty('requestedEffort');
-    else expect(entry).toHaveProperty('requestedEffort', requested);
-    if (expected === undefined) {
-      expect(entry).not.toHaveProperty('effectiveEffort');
-      expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
-    } else expect(entry).toHaveProperty('effectiveEffort', expected);
-    expect(f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)).toEqual(
-      before
-    );
-  });
+  ] as const)(
+    'uses native %s effort before recorded Turn, then default: turn=%s request=%s effective=%s',
+    async (endpoint, turnEffort, requested, expected) => {
+      const f = await fixture({ levels: ['low', 'high'], ...(turnEffort ? { turnEffort } : {}) });
+      const before = structuredClone(
+        f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
+      );
+      const response = await f.post(endpoint, requested, false, true);
+      expect(response.status, await response.text()).toBe(200);
+      expect(f.received).toEqual([{ member: 'primary', effort: expected }]);
+      const entry = f.entries()[0];
+      if (requested === undefined) expect(entry).not.toHaveProperty('requestedEffort');
+      else expect(entry).toHaveProperty('requestedEffort', requested);
+      if (expected === undefined) {
+        expect(entry).not.toHaveProperty('effectiveEffort');
+        expect(entry).toHaveProperty('effectiveEffortReason', 'provider_default_no_effort');
+      } else expect(entry).toHaveProperty('effectiveEffort', expected);
+      expect(
+        f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)
+      ).toEqual(before);
+    }
+  );
 
-  it.each([
-    false,
-    true,
-  ])('recomputes fitting on failover and retains both attempt facts; toolAware=%s', async (toolAware) => {
-    const f = await fixture({ levels: ['low', 'high'], backupLevels: ['minimal', 'medium'] });
-    f.primary.setResponses([
-      (_context, options) => {
-        f.received.push({
-          member: 'primary',
-          effort: forwardedEffort(options as Record<string, unknown>),
-        });
-        return fauxAssistantMessage([], {
-          stopReason: 'error',
-          errorMessage: 'usage_limit_reached',
-        });
-      },
-    ]);
-    const response = await f.post('responses', 'medium', false, false, true, toolAware);
-    expect(response.status, await response.text()).toBe(200);
-    expect(f.received).toEqual([
-      { member: 'primary', effort: 'high' },
-      { member: 'backup', effort: 'medium' },
-    ]);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({
+  it.each([false, true])(
+    'recomputes fitting on failover and retains both attempt facts; toolAware=%s',
+    async (toolAware) => {
+      const f = await fixture({ levels: ['low', 'high'], backupLevels: ['minimal', 'medium'] });
+      f.primary.setResponses([
+        (_context, options) => {
+          f.received.push({
+            member: 'primary',
+            effort: forwardedEffort(options as Record<string, unknown>),
+          });
+          return fauxAssistantMessage([], {
+            stopReason: 'error',
+            errorMessage: 'usage_limit_reached',
+          });
+        },
+      ]);
+      const response = await f.post('responses', 'medium', false, false, true, toolAware);
+      expect(response.status, await response.text()).toBe(200);
+      expect(f.received).toEqual([
+        { member: 'primary', effort: 'high' },
+        { member: 'backup', effort: 'medium' },
+      ]);
+      expect(f.entries()).toEqual([
+        expect.objectContaining({
+          requestedEffort: 'medium',
+          effectiveEffort: 'high',
+          failureKind: 'quota_exhausted',
+        }),
+        expect.objectContaining({
+          requestedEffort: 'medium',
+          effectiveEffort: 'medium',
+          terminalResult: 'succeeded',
+        }),
+      ]);
+      expect(f.primary.state.callCount).toBe(1);
+      expect(f.backup.state.callCount).toBe(1);
+    }
+  );
+
+  it.each([false, true])(
+    'fits each same-member retry without changing the classified retry policy; toolAware=%s',
+    async (toolAware) => {
+      const f = await fixture({ levels: ['low', 'high'] });
+      f.primary.setResponses([
+        (_context, options) => {
+          f.received.push({
+            member: 'primary',
+            effort: forwardedEffort(options as Record<string, unknown>),
+          });
+          return fauxAssistantMessage([], {
+            stopReason: 'error',
+            errorMessage: 'rate_limit_exceeded',
+          });
+        },
+        (_context, options) => {
+          f.received.push({
+            member: 'primary',
+            effort: forwardedEffort(options as Record<string, unknown>),
+          });
+          return fauxAssistantMessage('retry served');
+        },
+      ]);
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const response = await settleFakedBackoff(
+        f.post('responses', 'medium', false, false, true, toolAware)
+      );
+      expect(response.status, await response.text()).toBe(200);
+      expect(f.received).toEqual([
+        { member: 'primary', effort: 'high' },
+        { member: 'primary', effort: 'high' },
+      ]);
+      expect(f.entries()).toEqual([
+        expect.objectContaining({
+          retryIndex: 0,
+          requestedEffort: 'medium',
+          effectiveEffort: 'high',
+          failureKind: 'rate_limited',
+        }),
+        expect.objectContaining({
+          retryIndex: 1,
+          requestedEffort: 'medium',
+          effectiveEffort: 'high',
+          terminalResult: 'succeeded',
+        }),
+      ]);
+      expect(f.primary.state.callCount).toBe(2);
+    }
+  );
+
+  it.each([false, true])(
+    'records effort only for a reached member, never an unavailable entry; toolAware=%s',
+    async (toolAware) => {
+      const f = await fixture({ levels: ['low', 'high'], unavailablePrimary: true });
+      const response = await f.post('responses', 'medium', false, false, true, toolAware);
+      expect(response.status, await response.text()).toBe(200);
+      const [unavailable, reached] = f.entries();
+      expect(unavailable).toMatchObject({ kind: 'unavailable', routeMemberId: 'missing' });
+      for (const field of ['requestedEffort', 'effectiveEffort', 'effectiveEffortReason'])
+        expect(unavailable).not.toHaveProperty(field);
+      expect(reached).toMatchObject({
+        kind: 'attempt',
         requestedEffort: 'medium',
         effectiveEffort: 'high',
-        failureKind: 'quota_exhausted',
-      }),
-      expect.objectContaining({
-        requestedEffort: 'medium',
-        effectiveEffort: 'medium',
-        terminalResult: 'succeeded',
-      }),
-    ]);
-    expect(f.primary.state.callCount).toBe(1);
-    expect(f.backup.state.callCount).toBe(1);
-  });
-
-  it.each([
-    false,
-    true,
-  ])('fits each same-member retry without changing the classified retry policy; toolAware=%s', async (toolAware) => {
-    const f = await fixture({ levels: ['low', 'high'] });
-    f.primary.setResponses([
-      (_context, options) => {
-        f.received.push({
-          member: 'primary',
-          effort: forwardedEffort(options as Record<string, unknown>),
-        });
-        return fauxAssistantMessage([], {
-          stopReason: 'error',
-          errorMessage: 'rate_limit_exceeded',
-        });
-      },
-      (_context, options) => {
-        f.received.push({
-          member: 'primary',
-          effort: forwardedEffort(options as Record<string, unknown>),
-        });
-        return fauxAssistantMessage('retry served');
-      },
-    ]);
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-    const response = await settleFakedBackoff(
-      f.post('responses', 'medium', false, false, true, toolAware)
-    );
-    expect(response.status, await response.text()).toBe(200);
-    expect(f.received).toEqual([
-      { member: 'primary', effort: 'high' },
-      { member: 'primary', effort: 'high' },
-    ]);
-    expect(f.entries()).toEqual([
-      expect.objectContaining({
-        retryIndex: 0,
-        requestedEffort: 'medium',
-        effectiveEffort: 'high',
-        failureKind: 'rate_limited',
-      }),
-      expect.objectContaining({
-        retryIndex: 1,
-        requestedEffort: 'medium',
-        effectiveEffort: 'high',
-        terminalResult: 'succeeded',
-      }),
-    ]);
-    expect(f.primary.state.callCount).toBe(2);
-  });
-
-  it.each([
-    false,
-    true,
-  ])('records effort only for a reached member, never an unavailable entry; toolAware=%s', async (toolAware) => {
-    const f = await fixture({ levels: ['low', 'high'], unavailablePrimary: true });
-    const response = await f.post('responses', 'medium', false, false, true, toolAware);
-    expect(response.status, await response.text()).toBe(200);
-    const [unavailable, reached] = f.entries();
-    expect(unavailable).toMatchObject({ kind: 'unavailable', routeMemberId: 'missing' });
-    for (const field of ['requestedEffort', 'effectiveEffort', 'effectiveEffortReason'])
-      expect(unavailable).not.toHaveProperty(field);
-    expect(reached).toMatchObject({
-      kind: 'attempt',
-      requestedEffort: 'medium',
-      effectiveEffort: 'high',
-    });
-    expect(f.primary.state.callCount).toBe(1);
-    expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
-  });
+      });
+      expect(f.primary.state.callCount).toBe(1);
+      expect(f.received).toEqual([{ member: 'primary', effort: 'high' }]);
+    }
+  );
 
   it('advertises current levels, empty options and absent control after reload and restart', async () => {
     const f = await fixture({

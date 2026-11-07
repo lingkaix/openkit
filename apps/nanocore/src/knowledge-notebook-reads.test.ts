@@ -570,84 +570,85 @@ describe('published Workspace notebook reads', () => {
     ).toEqual(['public']);
   });
 
-  it.each([
-    'membership',
-    'credential',
-    'disabled-user',
-  ] as const)('rechecks current %s after a page was selected', async (condition) => {
-    const f = await fixture();
-    const memberId = addMember(f);
-    const issued = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: memberId,
-      scope: 'workspace',
-      workspaceIds: [f.workspaceId],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const access: KnowledgeRetrievalAccess = {
-      ...f.access,
-      actor: { kind: 'user', id: memberId },
-      requestActor: {
-        kind: 'token',
-        userId: memberId,
-        tokenId: issued.record.tokenId,
-        tokenScope: 'workspace',
-        tokenWorkspaceIds: issued.record.workspaceIds,
-      },
-    };
-    publish(f, { 'selected.md': page('Selected') });
-    const selected = readAuthorizedWorkspaceNotebookPages({ ...f, access });
-    if (condition === 'membership') removeMember(f, memberId);
-    else if (condition === 'credential')
-      revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
-    else f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(memberId);
-    expect(() =>
-      readAuthorizedWorkspaceNotebookPages({
-        ...f,
-        access,
-        notebookRevision: selected.notebookRevision,
-        pageIds: ['selected'],
-      })
-    ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied' }));
-  });
-
-  it.each([
-    'pin',
-    'turn-chain',
-    'nested-digest',
-  ] as const)('excludes an exact %s contradiction without a source identity leak', async (condition) => {
-    const f = await fixture();
-    const thread = await f.store.createThread(f.workspaceId, 'Source Thread');
-    const source = await registerSource(f, thread.id);
-    const origin = page('Origin');
-    const refs =
-      condition === 'nested-digest'
-        ? [
-            formatReferenceUri(
-              { scopeId: workspacePageScope(f), objectId: 'origin' },
-              `sha256:${'f'.repeat(64)}`
-            ),
-          ]
-        : [
-            `source:${source.id}@${condition === 'pin' ? `sha256:${'f'.repeat(64)}` : source.contentDigest}`,
-          ];
-    const other =
-      condition === 'turn-chain' ? await f.store.createThread(f.workspaceId, 'Other Thread') : null;
-    const contradictoryTurn = other
-      ? await f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor)
-      : null;
-    publish(f, { 'selected.md': page('Denied source page', refs), 'origin.md': origin });
-    if (condition === 'turn-chain') {
-      const list = f.store.listKnowledgeSources.bind(f.store);
-      vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) =>
-        list(workspaceId).map((entry) =>
-          entry.id === source.id ? { ...entry, originatingTurnId: contradictoryTurn!.id } : entry
-        )
-      );
+  it.each(['membership', 'credential', 'disabled-user'] as const)(
+    'rechecks current %s after a page was selected',
+    async (condition) => {
+      const f = await fixture();
+      const memberId = addMember(f);
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: memberId,
+        scope: 'workspace',
+        workspaceIds: [f.workspaceId],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const access: KnowledgeRetrievalAccess = {
+        ...f.access,
+        actor: { kind: 'user', id: memberId },
+        requestActor: {
+          kind: 'token',
+          userId: memberId,
+          tokenId: issued.record.tokenId,
+          tokenScope: 'workspace',
+          tokenWorkspaceIds: issued.record.workspaceIds,
+        },
+      };
+      publish(f, { 'selected.md': page('Selected') });
+      const selected = readAuthorizedWorkspaceNotebookPages({ ...f, access });
+      if (condition === 'membership') removeMember(f, memberId);
+      else if (condition === 'credential')
+        revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+      else
+        f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(memberId);
+      expect(() =>
+        readAuthorizedWorkspaceNotebookPages({
+          ...f,
+          access,
+          notebookRevision: selected.notebookRevision,
+          pageIds: ['selected'],
+        })
+      ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied' }));
     }
-    expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
-      'origin',
-    ]);
-  });
+  );
+
+  it.each(['pin', 'turn-chain', 'nested-digest'] as const)(
+    'excludes an exact %s contradiction without a source identity leak',
+    async (condition) => {
+      const f = await fixture();
+      const thread = await f.store.createThread(f.workspaceId, 'Source Thread');
+      const source = await registerSource(f, thread.id);
+      const origin = page('Origin');
+      const refs =
+        condition === 'nested-digest'
+          ? [
+              formatReferenceUri(
+                { scopeId: workspacePageScope(f), objectId: 'origin' },
+                `sha256:${'f'.repeat(64)}`
+              ),
+            ]
+          : [
+              `source:${source.id}@${condition === 'pin' ? `sha256:${'f'.repeat(64)}` : source.contentDigest}`,
+            ];
+      const other =
+        condition === 'turn-chain'
+          ? await f.store.createThread(f.workspaceId, 'Other Thread')
+          : null;
+      const contradictoryTurn = other
+        ? await f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor)
+        : null;
+      publish(f, { 'selected.md': page('Denied source page', refs), 'origin.md': origin });
+      if (condition === 'turn-chain') {
+        const list = f.store.listKnowledgeSources.bind(f.store);
+        vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) =>
+          list(workspaceId).map((entry) =>
+            entry.id === source.id ? { ...entry, originatingTurnId: contradictoryTurn!.id } : entry
+          )
+        );
+      }
+      expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
+        'origin',
+      ]);
+    }
+  );
 
   it('keeps exact saved page bytes when its independent captured original changes', async () => {
     const f = await fixture();

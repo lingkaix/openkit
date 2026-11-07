@@ -66,32 +66,33 @@ describe('loaded Worker Git-read maintenance assignments', () => {
     { change: 'disable', entries: [{ ...assignment, state: 'inactive' }] },
     { change: 'remove the entry', entries: [] },
     { change: 'omit the field', entries: undefined },
-  ])('loads assignment changes only after a successful hot reload: $change', async ({
-    entries,
-  }) => {
-    const { path, save, manager } = fixture();
-    const loaded = manager.current();
-    expect(loaded.openKitConfig.policy?.mediation).toEqual(document([assignment]));
+  ])(
+    'loads assignment changes only after a successful hot reload: $change',
+    async ({ entries }) => {
+      const { path, save, manager } = fixture();
+      const loaded = manager.current();
+      expect(loaded.openKitConfig.policy?.mediation).toEqual(document([assignment]));
 
-    const saved = save(entries);
-    expect(readFileSync(path, 'utf8')).toBe(saved);
-    expect(manager.current()).toBe(loaded);
-    expect(manager.current().openKitConfig.policy?.mediation).toEqual(document([assignment]));
+      const saved = save(entries);
+      expect(readFileSync(path, 'utf8')).toBe(saved);
+      expect(manager.current()).toBe(loaded);
+      expect(manager.current().openKitConfig.policy?.mediation).toEqual(document([assignment]));
 
-    const result = await manager.reload({ mode: 'safe', dryRun: false });
-    expect(result.status).toBe('applied');
-    expect(result.plan.requiresRestart).toEqual([]);
-    expect(result.plan.applied).toContainEqual(
-      expect.objectContaining({
-        path: 'policy.mediation',
-        category: 'hot-swappable',
-        action: 'applied',
-      })
-    );
-    expect(manager.current().version).toBe(loaded.version + 1);
-    expect(manager.current().openKitConfig.policy?.mediation).toEqual(document(entries));
-    expect(readFileSync(path, 'utf8')).toBe(saved);
-  });
+      const result = await manager.reload({ mode: 'safe', dryRun: false });
+      expect(result.status).toBe('applied');
+      expect(result.plan.requiresRestart).toEqual([]);
+      expect(result.plan.applied).toContainEqual(
+        expect.objectContaining({
+          path: 'policy.mediation',
+          category: 'hot-swappable',
+          action: 'applied',
+        })
+      );
+      expect(manager.current().version).toBe(loaded.version + 1);
+      expect(manager.current().openKitConfig.policy?.mediation).toEqual(document(entries));
+      expect(readFileSync(path, 'utf8')).toBe(saved);
+    }
+  );
 
   it('retains the last loaded assignment and its original validity after an invalid reload', async () => {
     const { path, save, manager } = fixture();

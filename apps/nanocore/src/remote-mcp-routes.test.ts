@@ -504,98 +504,103 @@ describe('remote MCP App endpoint', () => {
     ['omitted query', {}],
     ['empty query', { query: '' }],
     ['whitespace query', { query: ' \t\n ' }],
-  ] as const)('returns the exact empty search result for %s through authorized HTTP and remote MCP', async (_label, input) => {
-    const f = await fixture();
-    const bearer = f.token('workspace-readonly');
-    try {
-      const http = await f.app.request('/api/app/operations/app.search', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer.secret}` },
-        body: JSON.stringify(input),
-      });
-      expect(http.status).toBe(200);
-      expect(await http.json()).toEqual({ items: [] });
-
-      const mcp = await f.call('openkit_call', { operation: 'app.search', input }, bearer.secret);
-      expect(mcp.isError).not.toBe(true);
-      expect(JSON.parse(mcp.content[0].text)).toEqual({ items: [] });
-    } finally {
-      f.coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'missing',
-    'private',
-    'foreign',
-  ] as const)('preserves the known %s scheduler refusal through HTTP and MCP without changing queue rows', async (target) => {
-    const f = await fixture();
-    const bearer = f.token();
-    const thread = await f.store.createThread(
-      DEMO_WORKSPACE_ID,
-      'Private queue',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: testEntityId('usr', 'user_other'),
-      }
-    );
-    for (const [queueEntryId, workspaceId] of [
-      ['queue_private', DEMO_WORKSPACE_ID],
-      ['queue_foreign', testEntityId('ws', 'ws_foreign')],
-    ] as const) {
-      createSchedulerAdmissionEntry(f.coreDb, {
-        backendId: 'nanohost',
-        queueEntryId,
-        workspaceId,
-        threadId: thread.id,
-        turnId: `turn_${queueEntryId}`,
-        triggerActor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
-        turnInput: 'Protected work',
-        requestedAgentId: 'agent_codex_host',
-      });
-      denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'authority-denied' });
-    }
-    const before = ['queue_private', 'queue_foreign'].map((id) =>
-      requireSchedulerAdmissionEntry(f.coreDb, id)
-    );
-    try {
-      for (const operation of ['scheduler.retry', 'scheduler.cancel'] as const) {
-        const input = { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: `queue_${target}` };
-        const http = await f.app.request(`/api/app/operations/${operation}`, {
+  ] as const)(
+    'returns the exact empty search result for %s through authorized HTTP and remote MCP',
+    async (_label, input) => {
+      const f = await fixture();
+      const bearer = f.token('workspace-readonly');
+      try {
+        const http = await f.app.request('/api/app/operations/app.search', {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer.secret}` },
           body: JSON.stringify(input),
         });
-        expect(http.status).toBe(404);
-        expect(await http.json()).toEqual({
-          protocolVersion: PROTOCOL_VERSION,
-          code: 'not_found',
-          message: 'Thread not found.',
-        });
-        expect(
-          ['queue_private', 'queue_foreign'].map((id) =>
-            requireSchedulerAdmissionEntry(f.coreDb, id)
-          )
-        ).toEqual(before);
-        const mcp = await f.call('openkit_call', { operation, input }, bearer.secret);
-        expect(mcp.isError).toBe(true);
-        expect(JSON.parse(mcp.content[0].text)).toEqual({
-          code: 'not_found',
-          message: 'Thread not found.',
-          status: 404,
-        });
-        expect(
-          ['queue_private', 'queue_foreign'].map((id) =>
-            requireSchedulerAdmissionEntry(f.coreDb, id)
-          )
-        ).toEqual(before);
+        expect(http.status).toBe(200);
+        expect(await http.json()).toEqual({ items: [] });
+
+        const mcp = await f.call('openkit_call', { operation: 'app.search', input }, bearer.secret);
+        expect(mcp.isError).not.toBe(true);
+        expect(JSON.parse(mcp.content[0].text)).toEqual({ items: [] });
+      } finally {
+        f.coreDb.sqlite.close();
       }
-    } finally {
-      f.coreDb.sqlite.close();
     }
-  });
+  );
+
+  it.each(['missing', 'private', 'foreign'] as const)(
+    'preserves the known %s scheduler refusal through HTTP and MCP without changing queue rows',
+    async (target) => {
+      const f = await fixture();
+      const bearer = f.token();
+      const thread = await f.store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Private queue',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: testEntityId('usr', 'user_other'),
+        }
+      );
+      for (const [queueEntryId, workspaceId] of [
+        ['queue_private', DEMO_WORKSPACE_ID],
+        ['queue_foreign', testEntityId('ws', 'ws_foreign')],
+      ] as const) {
+        createSchedulerAdmissionEntry(f.coreDb, {
+          backendId: 'nanohost',
+          queueEntryId,
+          workspaceId,
+          threadId: thread.id,
+          turnId: `turn_${queueEntryId}`,
+          triggerActor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
+          turnInput: 'Protected work',
+          requestedAgentId: 'agent_codex_host',
+        });
+        denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'authority-denied' });
+      }
+      const before = ['queue_private', 'queue_foreign'].map((id) =>
+        requireSchedulerAdmissionEntry(f.coreDb, id)
+      );
+      try {
+        for (const operation of ['scheduler.retry', 'scheduler.cancel'] as const) {
+          const input = { workspaceId: DEMO_WORKSPACE_ID, queueEntryId: `queue_${target}` };
+          const http = await f.app.request(`/api/app/operations/${operation}`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${bearer.secret}`,
+            },
+            body: JSON.stringify(input),
+          });
+          expect(http.status).toBe(404);
+          expect(await http.json()).toEqual({
+            protocolVersion: PROTOCOL_VERSION,
+            code: 'not_found',
+            message: 'Thread not found.',
+          });
+          expect(
+            ['queue_private', 'queue_foreign'].map((id) =>
+              requireSchedulerAdmissionEntry(f.coreDb, id)
+            )
+          ).toEqual(before);
+          const mcp = await f.call('openkit_call', { operation, input }, bearer.secret);
+          expect(mcp.isError).toBe(true);
+          expect(JSON.parse(mcp.content[0].text)).toEqual({
+            code: 'not_found',
+            message: 'Thread not found.',
+            status: 404,
+          });
+          expect(
+            ['queue_private', 'queue_foreign'].map((id) =>
+              requireSchedulerAdmissionEntry(f.coreDb, id)
+            )
+          ).toEqual(before);
+        }
+      } finally {
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
 
   it('creates a Goal through remote MCP and wakes its existing coordinator owner', async () => {
     const createCoordinator = goalCoordinator.createGoalCoordinator;
@@ -1234,78 +1239,79 @@ describe('remote MCP App endpoint', () => {
     }
   });
 
-  it.each([
-    0, 1,
-  ])('reaches every eligible definition through search, describe and native call with the exact Token actor (cohort %i)', async (cohort) => {
-    const f = await fixture();
-    const token = f.token();
-    const native = vi.fn(async () => ({ reached: true }));
-    vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(native);
-    // Keep real bearer and native Audit publication; Main must not hold SQL across the request await.
-    try {
-      const excluded = Object.entries(OPERATION_DEFINITIONS)
-        .filter(([, definition]) => !operationMcpEligible(definition))
-        .map(([id]) => id)
-        .sort();
-      expect(excluded).toEqual([
-        'artifact.download',
-        'artifact.import',
-        'artifact.version-file-commit',
-        'bootstrap.consume',
-        'channel.discord.pair',
-        'knowledge.package.export',
-        'knowledge.package.import',
-        'token.create',
-        'token.rotate',
-        'workspace.archive-download',
-        'workspace.backup-download',
-      ]);
-      // Disjoint cohorts retain exhaustive coverage and the original per-case bound with real FULL Audit ACKs.
-      for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
-        (_, index) => index % 2 === cohort
-      )) {
-        const search = JSON.parse(
-          (await f.call('openkit_search', { query: operation }, token.secret)).content[0].text
-        );
-        const described = await f.call('openkit_describe', { operation }, token.secret);
-        const input = { requestId: randomUUID(), reachProbe: operation };
-        const before = native.mock.calls.length;
-        const called = await f.call('openkit_call', { operation, input }, token.secret);
-        if (operationMcpEligible(definition)) {
-          expect(search.items.map((item: { id: string }) => item.id)).toContain(operation);
-          expect(JSON.parse(described.content[0].text).id).toBe(operation);
-          expect(called.isError).not.toBe(true);
-          expect(native).toHaveBeenLastCalledWith(
-            operation,
-            input,
-            expect.objectContaining({
-              kind: 'public',
-              delivery: 'model',
-              actor: expect.objectContaining({
-                userId: testEntityId('usr', 'user_remote_mcp'),
-                tokenId: token.record.tokenId,
-              }),
-            })
+  it.each([0, 1])(
+    'reaches every eligible definition through search, describe and native call with the exact Token actor (cohort %i)',
+    async (cohort) => {
+      const f = await fixture();
+      const token = f.token();
+      const native = vi.fn(async () => ({ reached: true }));
+      vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(native);
+      // Keep real bearer and native Audit publication; Main must not hold SQL across the request await.
+      try {
+        const excluded = Object.entries(OPERATION_DEFINITIONS)
+          .filter(([, definition]) => !operationMcpEligible(definition))
+          .map(([id]) => id)
+          .sort();
+        expect(excluded).toEqual([
+          'artifact.download',
+          'artifact.import',
+          'artifact.version-file-commit',
+          'bootstrap.consume',
+          'channel.discord.pair',
+          'knowledge.package.export',
+          'knowledge.package.import',
+          'token.create',
+          'token.rotate',
+          'workspace.archive-download',
+          'workspace.backup-download',
+        ]);
+        // Disjoint cohorts retain exhaustive coverage and the original per-case bound with real FULL Audit ACKs.
+        for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
+          (_, index) => index % 2 === cohort
+        )) {
+          const search = JSON.parse(
+            (await f.call('openkit_search', { query: operation }, token.secret)).content[0].text
           );
-          expect(native.mock.calls.length).toBe(before + 1);
-        } else {
-          expect(search.items.map((item: { id: string }) => item.id)).not.toContain(operation);
-          for (const result of [described, called]) {
-            expect(result.isError).toBe(true);
-            expect(JSON.parse(result.content[0].text).code).toBe(
-              definition.returnsOneTimeSecret
-                ? 'mcp_secret_returning_operation'
-                : 'mcp_streaming_operation'
+          const described = await f.call('openkit_describe', { operation }, token.secret);
+          const input = { requestId: randomUUID(), reachProbe: operation };
+          const before = native.mock.calls.length;
+          const called = await f.call('openkit_call', { operation, input }, token.secret);
+          if (operationMcpEligible(definition)) {
+            expect(search.items.map((item: { id: string }) => item.id)).toContain(operation);
+            expect(JSON.parse(described.content[0].text).id).toBe(operation);
+            expect(called.isError).not.toBe(true);
+            expect(native).toHaveBeenLastCalledWith(
+              operation,
+              input,
+              expect.objectContaining({
+                kind: 'public',
+                delivery: 'model',
+                actor: expect.objectContaining({
+                  userId: testEntityId('usr', 'user_remote_mcp'),
+                  tokenId: token.record.tokenId,
+                }),
+              })
             );
+            expect(native.mock.calls.length).toBe(before + 1);
+          } else {
+            expect(search.items.map((item: { id: string }) => item.id)).not.toContain(operation);
+            for (const result of [described, called]) {
+              expect(result.isError).toBe(true);
+              expect(JSON.parse(result.content[0].text).code).toBe(
+                definition.returnsOneTimeSecret
+                  ? 'mcp_secret_returning_operation'
+                  : 'mcp_streaming_operation'
+              );
+            }
+            expect(native.mock.calls.length).toBe(before);
           }
-          expect(native.mock.calls.length).toBe(before);
         }
+      } finally {
+        f.coreDb.sqlite.close();
+        rmSync(f.dataRoot, { recursive: true, force: true });
       }
-    } finally {
-      f.coreDb.sqlite.close();
-      rmSync(f.dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it('serves progressive product guidance and never issues OAuth metadata or a refresh token', async () => {
     const f = await fixture();
@@ -1497,69 +1503,70 @@ describe('remote MCP App endpoint', () => {
     expect(JSON.parse(result.content[0].text)).toEqual(expected);
   });
 
-  it.each([
-    'token.create',
-    'token.rotate',
-    'bootstrap.consume',
-  ] as const)('omits and refuses %s over remote MCP before token writes', async (id) => {
-    const f = await fixture();
-    const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: testEntityId('usr', 'user_remote_mcp'),
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const input =
-      id === 'token.create'
-        ? { scope: 'server-admin', expiresAt: '2099-01-01T00:00:00.000Z' }
-        : id === 'token.rotate'
-          ? { tokenId: token.record.tokenId }
-          : {
-              token: 'okt_bootstrap_fixture',
-              ownerUserId: testEntityId('usr', 'user_bootstrap'),
-              displayName: 'Owner',
-              email: 'owner@example.test',
-              password: 'fixture-password',
-              tokenExpiresAt: '2099-01-01T00:00:00.000Z',
-            };
-    const before = f.coreDb.sqlite
-      .prepare(
-        'SELECT token_id, token_hash, status, revoked_at, predecessor_token_id, rotated_grace_expires_at FROM openkit_access_tokens ORDER BY token_id'
-      )
-      .all();
-    // Collect every projection and row boundary so one missing declaration cannot mask later evidence.
-    for (const name of ['openkit_search', 'openkit_describe', 'openkit_call']) {
-      const result = await f.call(
-        name,
-        name === 'openkit_search'
-          ? { query: id }
-          : name === 'openkit_describe'
-            ? { operation: id }
-            : { operation: id, input },
-        token.secret
-      );
-      if (name === 'openkit_search') {
-        expect.soft(result.isError).not.toBe(true);
-        expect
-          .soft(JSON.parse(result.content[0].text).items)
-          .not.toContainEqual(expect.objectContaining({ id }));
-      } else {
-        expect.soft(result.isError).toBe(true);
-        expect.soft(JSON.parse(result.content[0].text).code).toBe('mcp_secret_returning_operation');
-      }
-      expect.soft(JSON.stringify(result)).not.toContain(token.secret);
-      expect.soft(JSON.stringify(result)).not.toMatch(/okt_|token_hash/);
-      expect
-        .soft(
-          f.coreDb.sqlite
-            .prepare(
-              'SELECT token_id, token_hash, status, revoked_at, predecessor_token_id, rotated_grace_expires_at FROM openkit_access_tokens ORDER BY token_id'
-            )
-            .all()
+  it.each(['token.create', 'token.rotate', 'bootstrap.consume'] as const)(
+    'omits and refuses %s over remote MCP before token writes',
+    async (id) => {
+      const f = await fixture();
+      const token = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: testEntityId('usr', 'user_remote_mcp'),
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const input =
+        id === 'token.create'
+          ? { scope: 'server-admin', expiresAt: '2099-01-01T00:00:00.000Z' }
+          : id === 'token.rotate'
+            ? { tokenId: token.record.tokenId }
+            : {
+                token: 'okt_bootstrap_fixture',
+                ownerUserId: testEntityId('usr', 'user_bootstrap'),
+                displayName: 'Owner',
+                email: 'owner@example.test',
+                password: 'fixture-password',
+                tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+              };
+      const before = f.coreDb.sqlite
+        .prepare(
+          'SELECT token_id, token_hash, status, revoked_at, predecessor_token_id, rotated_grace_expires_at FROM openkit_access_tokens ORDER BY token_id'
         )
-        .toEqual(before);
+        .all();
+      // Collect every projection and row boundary so one missing declaration cannot mask later evidence.
+      for (const name of ['openkit_search', 'openkit_describe', 'openkit_call']) {
+        const result = await f.call(
+          name,
+          name === 'openkit_search'
+            ? { query: id }
+            : name === 'openkit_describe'
+              ? { operation: id }
+              : { operation: id, input },
+          token.secret
+        );
+        if (name === 'openkit_search') {
+          expect.soft(result.isError).not.toBe(true);
+          expect
+            .soft(JSON.parse(result.content[0].text).items)
+            .not.toContainEqual(expect.objectContaining({ id }));
+        } else {
+          expect.soft(result.isError).toBe(true);
+          expect
+            .soft(JSON.parse(result.content[0].text).code)
+            .toBe('mcp_secret_returning_operation');
+        }
+        expect.soft(JSON.stringify(result)).not.toContain(token.secret);
+        expect.soft(JSON.stringify(result)).not.toMatch(/okt_|token_hash/);
+        expect
+          .soft(
+            f.coreDb.sqlite
+              .prepare(
+                'SELECT token_id, token_hash, status, revoked_at, predecessor_token_id, rotated_grace_expires_at FROM openkit_access_tokens ORDER BY token_id'
+              )
+              .all()
+          )
+          .toEqual(before);
+      }
     }
-  });
+  );
 
   it('refuses declared one-time-secret results before dispatch when a credential definition is added', async () => {
     const f = await fixture();

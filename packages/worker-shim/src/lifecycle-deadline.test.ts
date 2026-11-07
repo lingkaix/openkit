@@ -32,9 +32,12 @@ it.each([
   [8, 'max 100000\n', 2],
   [1, 'max 100000\n', 1],
   [1, '400000 100000\n', 1],
-] as const)('bounds native startup for affinity %i and cpu.max %s at %i', async (affinity, quota, bound) => {
-  expect(await startupDefault(affinity, quota)).toBe(bound);
-});
+] as const)(
+  'bounds native startup for affinity %i and cpu.max %s at %i',
+  async (affinity, quota, bound) => {
+    expect(await startupDefault(affinity, quota)).toBe(bound);
+  }
+);
 
 it('uses affinity when the cgroup v2 quota file is absent', async () => {
   const missing = Object.assign(new Error('No cgroup v2 CPU controller.'), { code: 'ENOENT' });
@@ -47,15 +50,12 @@ it('serializes native startup when the quota cannot be read', async () => {
   expect(await startupDefault(8, denied)).toBe(1);
 });
 
-it.each([
-  '',
-  '100000 0',
-  '0 100000',
-  'invalid',
-  '100000 100000 extra',
-])('serializes native startup for malformed cpu.max %j', async (quota) => {
-  expect(await startupDefault(8, quota)).toBe(1);
-});
+it.each(['', '100000 0', '0 100000', 'invalid', '100000 100000 extra'])(
+  'serializes native startup for malformed cpu.max %j',
+  async (quota) => {
+    expect(await startupDefault(8, quota)).toBe(1);
+  }
+);
 
 it('reserves the cleanup tail from workRemainingMs and clamps an oversized tail to the budget', () => {
   let now = 1_000;

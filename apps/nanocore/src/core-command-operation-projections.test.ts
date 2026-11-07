@@ -438,128 +438,132 @@ it('admits member Workspace updates once and refuses readonly or removed authori
   }
 });
 
-it.each([
-  0, 2,
-])('preserves command %s fallback after its receipt commits but count projection fails', async (index) => {
-  const { app, rows, store } = await fixture();
-  const [id, , , body] = rows[index]!;
-  let committed = false;
-  const recordCommandRequest = store.recordCommandRequest.bind(store);
-  vi.spyOn(store, 'recordCommandRequest').mockImplementation((...args) => {
-    const receipt = recordCommandRequest(...args);
-    committed = true;
-    return receipt;
-  });
-  const listThreads = store.listThreads.bind(store);
-  vi.spyOn(store, 'listThreads').mockImplementation((workspaceId) => {
-    if (committed) throw new Error('Count projection unavailable.');
-    return listThreads(workspaceId);
-  });
-  const response = await app.request(
-    ...operationRequest(
-      id,
-      id === 'workspace.create' ? {} : { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      {
-        body: JSON.stringify(body),
-      }
-    )
-  );
-  expect(response.status).toBe(404);
-  expect(await response.json()).toMatchObject({
-    code: id === 'workspace.create' ? 'workspace_create_failed' : 'workspace_update_failed',
-    message: 'Count projection unavailable.',
-  });
-  const receipt = store.listCommandRequests().filter((row) => row.command === id);
-  expect(receipt).toHaveLength(1);
-  expect(new FsStore({ dataRoot: store.getDataRoot()! }).listCommandRequests()).toEqual(receipt);
-  expect(store.getWorkspace(receipt[0]!.response.id).name).toBe(
-    id === 'workspace.create' ? 'Created' : 'Renamed'
-  );
-});
-
-it.each([
-  'HTTP',
-  'MCP',
-] as const)('preserves missing interrupt outcome through %s without changes', async (projection) => {
-  const root = mkdtempSync(join(tmpdir(), 'openkit-missing-interrupt-'));
-  roots.push(root);
-  const coreDb = openCoreDb(root);
-  try {
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot: root });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+it.each([0, 2])(
+  'preserves command %s fallback after its receipt commits but count projection fails',
+  async (index) => {
+    const { app, rows, store } = await fixture();
+    const [id, , , body] = rows[index]!;
+    let committed = false;
+    const recordCommandRequest = store.recordCommandRequest.bind(store);
+    vi.spyOn(store, 'recordCommandRequest').mockImplementation((...args) => {
+      const receipt = recordCommandRequest(...args);
+      committed = true;
+      return receipt;
     });
-    const issued = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      scope: 'workspace',
-      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-      expiresAt: '2099-01-01T00:00:00.000Z',
+    const listThreads = store.listThreads.bind(store);
+    vi.spyOn(store, 'listThreads').mockImplementation((workspaceId) => {
+      if (committed) throw new Error('Count projection unavailable.');
+      return listThreads(workspaceId);
     });
-    const app = createAppWithWorkspaceAuthority({ store, coreDb, mode: 'server' });
-    const input = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      turnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
-      requestId: randomUUID(),
-    };
-    const observed = () => ({
-      workspace: store.getWorkspace('ws_00000000-0000-7000-8000-000000000001'),
-      thread: store.getThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      ),
-      turns: store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      ),
-      items: store.listThreadItems(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      ),
-      receipts: store.listCommandRequests(),
-    });
-    const before = structuredClone(observed());
     const response = await app.request(
-      projection === 'HTTP' ? '/api/app/operations/turn.interrupt' : '/mcp',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${issued.secret}`,
-          ...(projection === 'HTTP'
-            ? { 'x-openkit-request-id': input.requestId }
-            : { accept: 'application/json, text/event-stream' }),
-        },
-        body: JSON.stringify(
-          projection === 'HTTP'
-            ? input
-            : {
-                jsonrpc: '2.0',
-                id: 1,
-                method: 'tools/call',
-                params: { name: 'openkit_call', arguments: { operation: 'turn.interrupt', input } },
-              }
-        ),
-      }
+      ...operationRequest(
+        id,
+        id === 'workspace.create' ? {} : { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {
+          body: JSON.stringify(body),
+        }
+      )
     );
-    expect(observed()).toEqual(before);
-    const code = 'turn_interrupt_failed';
-    const message = 'Turn not found: tu_00000000-0000-7577-9378-7e96d0d15fd2';
-    if (projection === 'HTTP') {
-      expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
-    } else {
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      expect(body.error).toBeUndefined();
-      expect(body.result.isError).toBe(true);
-      expect(JSON.parse(body.result.content[0].text)).toEqual({ code, message, status: 404 });
-    }
-  } finally {
-    coreDb.sqlite.close();
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      code: id === 'workspace.create' ? 'workspace_create_failed' : 'workspace_update_failed',
+      message: 'Count projection unavailable.',
+    });
+    const receipt = store.listCommandRequests().filter((row) => row.command === id);
+    expect(receipt).toHaveLength(1);
+    expect(new FsStore({ dataRoot: store.getDataRoot()! }).listCommandRequests()).toEqual(receipt);
+    expect(store.getWorkspace(receipt[0]!.response.id).name).toBe(
+      id === 'workspace.create' ? 'Created' : 'Renamed'
+    );
   }
-});
+);
+
+it.each(['HTTP', 'MCP'] as const)(
+  'preserves missing interrupt outcome through %s without changes',
+  async (projection) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-missing-interrupt-'));
+    roots.push(root);
+    const coreDb = openCoreDb(root);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot: root });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const issued = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'workspace',
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const app = createAppWithWorkspaceAuthority({ store, coreDb, mode: 'server' });
+      const input = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        turnId: 'tu_00000000-0000-7577-9378-7e96d0d15fd2',
+        requestId: randomUUID(),
+      };
+      const observed = () => ({
+        workspace: store.getWorkspace('ws_00000000-0000-7000-8000-000000000001'),
+        thread: store.getThread(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
+        turns: store.listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
+        items: store.listThreadItems(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        ),
+        receipts: store.listCommandRequests(),
+      });
+      const before = structuredClone(observed());
+      const response = await app.request(
+        projection === 'HTTP' ? '/api/app/operations/turn.interrupt' : '/mcp',
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${issued.secret}`,
+            ...(projection === 'HTTP'
+              ? { 'x-openkit-request-id': input.requestId }
+              : { accept: 'application/json, text/event-stream' }),
+          },
+          body: JSON.stringify(
+            projection === 'HTTP'
+              ? input
+              : {
+                  jsonrpc: '2.0',
+                  id: 1,
+                  method: 'tools/call',
+                  params: {
+                    name: 'openkit_call',
+                    arguments: { operation: 'turn.interrupt', input },
+                  },
+                }
+          ),
+        }
+      );
+      expect(observed()).toEqual(before);
+      const code = 'turn_interrupt_failed';
+      const message = 'Turn not found: tu_00000000-0000-7577-9378-7e96d0d15fd2';
+      if (projection === 'HTTP') {
+        expect(response.status).toBe(404);
+        expect(await response.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+      } else {
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.error).toBeUndefined();
+        expect(body.result.isError).toBe(true);
+        expect(JSON.parse(body.result.content[0].text)).toEqual({ code, message, status: 404 });
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  }
+);

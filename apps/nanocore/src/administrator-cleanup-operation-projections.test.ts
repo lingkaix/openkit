@@ -511,30 +511,30 @@ describe('administrator cleanup public operation composition', () => {
     );
   });
 
-  it.each([
-    'workspace',
-    'workspace-readonly',
-  ] as const)('denies the %s credential despite current Workspace ownership', async (scope) => {
-    const f = await fixture();
-    await populate(f);
-    const token = createOpenKitAccessTokenRecord(f.coreDb, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      scope,
-      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    await expect(
-      f.native(
-        {},
-        {
-          kind: 'token',
-          userId: 'usr_00000000-0000-7000-8000-000000000001',
-          tokenId: token.tokenId,
-          tokenScope: scope,
-        }
-      )
-    ).rejects.toMatchObject({ status: 403 });
-  });
+  it.each(['workspace', 'workspace-readonly'] as const)(
+    'denies the %s credential despite current Workspace ownership',
+    async (scope) => {
+      const f = await fixture();
+      await populate(f);
+      const token = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope,
+        workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      await expect(
+        f.native(
+          {},
+          {
+            kind: 'token',
+            userId: 'usr_00000000-0000-7000-8000-000000000001',
+            tokenId: token.tokenId,
+            tokenScope: scope,
+          }
+        )
+      ).rejects.toMatchObject({ status: 403 });
+    }
+  );
 
   it('rechecks the original credential on every invocation after revocation', async () => {
     const f = await fixture();
@@ -560,50 +560,49 @@ describe('administrator cleanup public operation composition', () => {
     );
   });
 
-  it.each([
-    'worker',
-    'coordinator',
-    'bootstrap',
-  ] as const)('refuses %s invocation before any source access', async (kind) => {
-    const f = await fixture();
-    const { execution } = await populate(f);
-    const contexts = {
-      worker: {
-        kind: 'worker' as const,
-        actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
-        lineage: {
-          workspaceId: execution.workspaceId,
+  it.each(['worker', 'coordinator', 'bootstrap'] as const)(
+    'refuses %s invocation before any source access',
+    async (kind) => {
+      const f = await fixture();
+      const { execution } = await populate(f);
+      const contexts = {
+        worker: {
+          kind: 'worker' as const,
+          actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+          lineage: {
+            workspaceId: execution.workspaceId,
+            threadId: execution.threadId,
+            turnId: execution.turnId,
+            agentSessionId: execution.agentSessionId!,
+            packageSnapshotId: execution.inputRef!,
+          },
+          requestId: REQUEST,
+          bindings: {},
+        },
+        coordinator: {
+          kind: 'coordinator' as const,
+          actor: f.actor,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: execution.threadId,
           turnId: execution.turnId,
-          agentSessionId: execution.agentSessionId!,
-          packageSnapshotId: execution.inputRef!,
+          goalId: 'goal_cleanup',
+          requestId: REQUEST,
         },
-        requestId: REQUEST,
-        bindings: {},
-      },
-      coordinator: {
-        kind: 'coordinator' as const,
-        actor: f.actor,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        threadId: execution.threadId,
-        turnId: execution.turnId,
-        goalId: 'goal_cleanup',
-        requestId: REQUEST,
-      },
-      bootstrap: { kind: 'bootstrap' as const },
-    };
-    const sqlRead = vi.spyOn(f.coreDb.sqlite, 'prepare');
-    const fileRead = vi.spyOn(fs, 'readFileSync');
-    syncBuiltinESMExports();
-    const error = await f
-      .invoke(OPERATION, {}, contexts[kind])
-      .catch((failure: unknown) => failure);
-    expect(error).toBeInstanceOf(OperationError);
-    // These trusted entry families have different existing refusal classes; all must refuse before reads.
-    expect([400, 401, 403]).toContain(error instanceof OperationError ? error.status : null);
-    expect(sqlRead).not.toHaveBeenCalled();
-    expect(fileRead).not.toHaveBeenCalled();
-  });
+        bootstrap: { kind: 'bootstrap' as const },
+      };
+      const sqlRead = vi.spyOn(f.coreDb.sqlite, 'prepare');
+      const fileRead = vi.spyOn(fs, 'readFileSync');
+      syncBuiltinESMExports();
+      const error = await f
+        .invoke(OPERATION, {}, contexts[kind])
+        .catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(OperationError);
+      // These trusted entry families have different existing refusal classes; all must refuse before reads.
+      expect([400, 401, 403]).toContain(error instanceof OperationError ? error.status : null);
+      expect(sqlRead).not.toHaveBeenCalled();
+      expect(fileRead).not.toHaveBeenCalled();
+    }
+  );
 
   it('denies publication when the administrator is revoked during a real source read', async () => {
     const f = await fixture();
@@ -695,44 +694,44 @@ describe('administrator cleanup public operation composition', () => {
     expect(files(f.dataRoot)).toEqual(beforeFiles);
   });
 
-  it.each([
-    'workspace-deletion',
-    'backend-session',
-  ])('preserves other sources when %s becomes unavailable', async (source) => {
-    const f = await fixture();
-    await populate(f);
-    if (source === 'workspace-deletion') {
-      const path = join(
-        f.dataRoot,
-        'server',
-        'exports',
-        'workspace-deletions',
-        'ws_00000000-0000-7000-8000-000000000001',
-        REQUEST,
-        'request.json'
-      );
-      writeFileSync(path, PRIVATE);
-    } else {
-      const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
-      vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
-        if (sql.includes('worker_backend_sessions')) {
-          throw new Database.SqliteError('unavailable_backend_sessions', 'SQLITE_ERROR');
-        }
-        return prepare(sql);
+  it.each(['workspace-deletion', 'backend-session'])(
+    'preserves other sources when %s becomes unavailable',
+    async (source) => {
+      const f = await fixture();
+      await populate(f);
+      if (source === 'workspace-deletion') {
+        const path = join(
+          f.dataRoot,
+          'server',
+          'exports',
+          'workspace-deletions',
+          'ws_00000000-0000-7000-8000-000000000001',
+          REQUEST,
+          'request.json'
+        );
+        writeFileSync(path, PRIVATE);
+      } else {
+        const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+        vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
+          if (sql.includes('worker_backend_sessions')) {
+            throw new Database.SqliteError('unavailable_backend_sessions', 'SQLITE_ERROR');
+          }
+          return prepare(sql);
+        });
+      }
+      const result = bounded(await f.native());
+      expect(result.sources.find((entry) => entry.source === source)).toMatchObject({
+        availability: 'unavailable',
+        incomplete: true,
+        reasons: ['source_unavailable'],
       });
+      expect(result.items.some((entry) => entry.source === source)).toBe(false);
+      expect(result.items.filter((entry) => entry.source !== source)).toHaveLength(6);
+      expect(result.incomplete).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(PRIVATE);
+      expect(JSON.stringify(result)).not.toContain('unavailable_backend_sessions');
     }
-    const result = bounded(await f.native());
-    expect(result.sources.find((entry) => entry.source === source)).toMatchObject({
-      availability: 'unavailable',
-      incomplete: true,
-      reasons: ['source_unavailable'],
-    });
-    expect(result.items.some((entry) => entry.source === source)).toBe(false);
-    expect(result.items.filter((entry) => entry.source !== source)).toHaveLength(6);
-    expect(result.incomplete).toBe(true);
-    expect(JSON.stringify(result)).not.toContain(PRIVATE);
-    expect(JSON.stringify(result)).not.toContain('unavailable_backend_sessions');
-  });
+  );
 
   it('preserves contradictory and stale proof as unknown across the public boundary', async () => {
     const f = await fixture();
@@ -840,40 +839,40 @@ describe('administrator cleanup public operation composition', () => {
     expect(first.incomplete).toBe(true);
   });
 
-  it.each([
-    'missing',
-    'invalid',
-  ] as const)('withholds deletion identifiers when the current Workspace registry is %s', async (state) => {
-    const f = await fixture();
-    deletion(f);
-    if (state === 'missing')
-      f.coreDb.sqlite
-        .prepare(
-          "DELETE FROM workspace_registry WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'"
-        )
-        .run();
-    else {
-      // Model a corrupted retained registry row; restore constraint enforcement before the public read.
-      f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
-      f.coreDb.sqlite
-        .prepare(
-          "UPDATE workspace_registry SET status = ? WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'"
-        )
-        .run(PRIVATE);
-      f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
+  it.each(['missing', 'invalid'] as const)(
+    'withholds deletion identifiers when the current Workspace registry is %s',
+    async (state) => {
+      const f = await fixture();
+      deletion(f);
+      if (state === 'missing')
+        f.coreDb.sqlite
+          .prepare(
+            "DELETE FROM workspace_registry WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'"
+          )
+          .run();
+      else {
+        // Model a corrupted retained registry row; restore constraint enforcement before the public read.
+        f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE workspace_registry SET status = ? WHERE workspace_id = 'ws_00000000-0000-7000-8000-000000000001'"
+          )
+          .run(PRIVATE);
+        f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
+      }
+      const result = bounded(await f.native());
+      expect(result.items).toEqual([]);
+      expect(result.sources[0]).toMatchObject({
+        availability: 'unavailable',
+        incomplete: true,
+        reasons: expect.arrayContaining(['source_unavailable']),
+      });
+      expect(result.incomplete).toBe(true);
+      expect(JSON.stringify(result)).not.toMatch(
+        /ws_00000000-0000-7000-8000-000000000001|00000000-0000-4000-8000-000000000226|private-cleanup-operation-canary/
+      );
     }
-    const result = bounded(await f.native());
-    expect(result.items).toEqual([]);
-    expect(result.sources[0]).toMatchObject({
-      availability: 'unavailable',
-      incomplete: true,
-      reasons: expect.arrayContaining(['source_unavailable']),
-    });
-    expect(result.incomplete).toBe(true);
-    expect(JSON.stringify(result)).not.toMatch(
-      /ws_00000000-0000-7000-8000-000000000001|00000000-0000-4000-8000-000000000226|private-cleanup-operation-canary/
-    );
-  });
+  );
 
   it('counts UTF-8 bytes on the complete seven-source response and preserves bounded native identities intact', async () => {
     const f = await fixture();

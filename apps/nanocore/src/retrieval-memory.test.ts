@@ -558,38 +558,36 @@ describe('governed current-self Memory search', () => {
     expect(readMemoryPage(f.alice.writer, 'preferences')).toBeNull();
   });
 
-  it.each([
-    'shared',
-    'missing Timeline',
-    'Worker',
-    'disabled',
-  ] as const)('refuses %s context before private generation or trace publication', async (kind) => {
-    const f = await fixture();
-    await f.alice.save(f.alice.baseRevision, 'preferences', marker);
-    const access = { ...f.alice.access };
-    if (kind === 'shared')
-      access.outputThreadId = (
-        await f.store.createThread(f.workspaceId, 'Shared', undefined, 'conversation', {
-          visibility: 'workspace',
-        })
-      ).id;
-    if (kind === 'missing Timeline') access.outputThreadId = undefined as unknown as string;
-    if (kind === 'Worker')
-      access.actor = {
-        kind: 'agent',
-        id: 'worker',
-        responsibleUserId: aliceId,
-      } as unknown as typeof access.actor;
-    if (kind === 'disabled')
-      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, aliceId))();
-    await expect(retrieveUserMemory({ ...f.alice.query(), access })).rejects.toMatchObject({
-      status: 403,
-    });
-    expect(existsSync(join(f.dataRoot, 'users', aliceId, 'indexes', 'retrieval'))).toBe(false);
-    expect(
-      existsSync(join(f.workspaceRoot, 'threads', f.alice.timeline.id, 'retrieval-traces'))
-    ).toBe(false);
-  });
+  it.each(['shared', 'missing Timeline', 'Worker', 'disabled'] as const)(
+    'refuses %s context before private generation or trace publication',
+    async (kind) => {
+      const f = await fixture();
+      await f.alice.save(f.alice.baseRevision, 'preferences', marker);
+      const access = { ...f.alice.access };
+      if (kind === 'shared')
+        access.outputThreadId = (
+          await f.store.createThread(f.workspaceId, 'Shared', undefined, 'conversation', {
+            visibility: 'workspace',
+          })
+        ).id;
+      if (kind === 'missing Timeline') access.outputThreadId = undefined as unknown as string;
+      if (kind === 'Worker')
+        access.actor = {
+          kind: 'agent',
+          id: 'worker',
+          responsibleUserId: aliceId,
+        } as unknown as typeof access.actor;
+      if (kind === 'disabled')
+        f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, aliceId))();
+      await expect(retrieveUserMemory({ ...f.alice.query(), access })).rejects.toMatchObject({
+        status: 403,
+      });
+      expect(existsSync(join(f.dataRoot, 'users', aliceId, 'indexes', 'retrieval'))).toBe(false);
+      expect(
+        existsSync(join(f.workspaceRoot, 'threads', f.alice.timeline.id, 'retrieval-traces'))
+      ).toBe(false);
+    }
+  );
 });
 
 /** Reads a fixture User's established base without changing its configuration. */

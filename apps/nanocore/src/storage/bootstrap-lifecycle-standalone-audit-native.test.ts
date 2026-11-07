@@ -491,112 +491,111 @@ it('calibrates the real Core INSERT/FULL/ACK observer through published Server M
   expect(fault.acks.includes(started.id)).toBe(true);
 });
 
-it.each([
-  'success',
-  'audit-insert-failure',
-  'lost-ack',
-] as const)('preserves the original bootstrap SQL prefix across later lifecycle Audit %s', async (scenario) => {
-  const f = await fixture();
-  arm(f.coreDb, STAGE, null, 'succeeded', scenario === 'audit-insert-failure');
-  let finished = false;
-  let ackBeforeReturn = false;
-  const result = f.track(
-    observed(f.consume()).then((outcome) => {
-      finished = true;
-      const original = fault.sent.find((entry) => entry.event.action === STAGE);
-      ackBeforeReturn = original !== undefined && fault.acks.includes(original.id);
-      return outcome;
-    })
-  );
-  if (scenario === 'audit-insert-failure') {
-    const outcome = await result;
-    if (outcome.ok) {
-      consumedFacts(f);
-      expect(f.audits().length).toBe(1);
-      throw new Error(
-        'PUBLIC_OLD_EARLY_SECRET_SUCCESS: native Audit failure injection was not reached.'
-      );
-    }
-    expect(Atomics.load(new Int32Array(fault.gate), 8)).toBe(1);
-    consumedFacts(f);
-    expect(f.audits().length).toBe(0);
-    expect(fault.sent.filter((entry) => entry.event.action === STAGE).length).toBe(1);
-    expect(ackBeforeReturn).toBe(false);
-    await unavailableRepeat(f, 0);
-    expect((await f.cold()).length).toBe(0);
-    return;
-  }
-  await held(f, result, true);
-  expect(finished).toBe(false);
-  const token = consumedFacts(f);
-  const events = f.audits();
-  expect(events.length).toBe(1);
-  const original = historical(events[0], f, token.tokenId);
-  expect(fault.acks.includes(original.id)).toBe(false);
-  if (scenario === 'lost-ack') {
-    const index = Atomics.load(new Int32Array(fault.gate), 4);
-    const worker = fault.workers[index];
-    if (!worker) throw new Error('Actual committed native Worker was not captured.');
-    await worker.terminate();
-    expect((await result).ok).toBe(false);
-    expect(ackBeforeReturn).toBe(false);
-    expect(fault.acks.includes(original.id)).toBe(false);
-    consumedFacts(f);
-    expect(isDeepStrictEqual(f.audits(), events)).toBe(true);
-    // Failed-host replacement is allowed only after its explicit shutdown joins.
-    await shutdownControlStoreWorkerClient();
-  } else {
-    release();
-    const outcome = await result;
-    expect(outcome.ok).toBe(true);
-    if (!outcome.ok) throw new Error('Bootstrap refused after covering Audit acknowledgement.');
-    expect(ackBeforeReturn).toBe(true);
-    expect(outcome.value.record.tokenId === token.tokenId).toBe(true);
-    expect(typeof outcome.value.token === 'string' && outcome.value.token.startsWith('okt_')).toBe(
-      true
+it.each(['success', 'audit-insert-failure', 'lost-ack'] as const)(
+  'preserves the original bootstrap SQL prefix across later lifecycle Audit %s',
+  async (scenario) => {
+    const f = await fixture();
+    arm(f.coreDb, STAGE, null, 'succeeded', scenario === 'audit-insert-failure');
+    let finished = false;
+    let ackBeforeReturn = false;
+    const result = f.track(
+      observed(f.consume()).then((outcome) => {
+        finished = true;
+        const original = fault.sent.find((entry) => entry.event.action === STAGE);
+        ackBeforeReturn = original !== undefined && fault.acks.includes(original.id);
+        return outcome;
+      })
     );
-    expect(outcome.value.token === f.input.token).toBe(false);
+    if (scenario === 'audit-insert-failure') {
+      const outcome = await result;
+      if (outcome.ok) {
+        consumedFacts(f);
+        expect(f.audits().length).toBe(1);
+        throw new Error(
+          'PUBLIC_OLD_EARLY_SECRET_SUCCESS: native Audit failure injection was not reached.'
+        );
+      }
+      expect(Atomics.load(new Int32Array(fault.gate), 8)).toBe(1);
+      consumedFacts(f);
+      expect(f.audits().length).toBe(0);
+      expect(fault.sent.filter((entry) => entry.event.action === STAGE).length).toBe(1);
+      expect(ackBeforeReturn).toBe(false);
+      await unavailableRepeat(f, 0);
+      expect((await f.cold()).length).toBe(0);
+      return;
+    }
+    await held(f, result, true);
+    expect(finished).toBe(false);
+    const token = consumedFacts(f);
+    const events = f.audits();
+    expect(events.length).toBe(1);
+    const original = historical(events[0], f, token.tokenId);
+    expect(fault.acks.includes(original.id)).toBe(false);
+    if (scenario === 'lost-ack') {
+      const index = Atomics.load(new Int32Array(fault.gate), 4);
+      const worker = fault.workers[index];
+      if (!worker) throw new Error('Actual committed native Worker was not captured.');
+      await worker.terminate();
+      expect((await result).ok).toBe(false);
+      expect(ackBeforeReturn).toBe(false);
+      expect(fault.acks.includes(original.id)).toBe(false);
+      consumedFacts(f);
+      expect(isDeepStrictEqual(f.audits(), events)).toBe(true);
+      // Failed-host replacement is allowed only after its explicit shutdown joins.
+      await shutdownControlStoreWorkerClient();
+    } else {
+      release();
+      const outcome = await result;
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) throw new Error('Bootstrap refused after covering Audit acknowledgement.');
+      expect(ackBeforeReturn).toBe(true);
+      expect(outcome.value.record.tokenId === token.tokenId).toBe(true);
+      expect(
+        typeof outcome.value.token === 'string' && outcome.value.token.startsWith('okt_')
+      ).toBe(true);
+      expect(outcome.value.token === f.input.token).toBe(false);
+    }
+    await unavailableRepeat(f, 1);
+    expect(isDeepStrictEqual(await f.cold(), events)).toBe(true);
   }
-  await unavailableRepeat(f, 1);
-  expect(isDeepStrictEqual(await f.cold(), events)).toBe(true);
-});
+);
 
-it.each([
-  'invalid',
-  'delivery-unavailable',
-  'sql-failure',
-] as const)('does not invent a lifecycle Audit for original bootstrap %s', async (scenario) => {
-  const f = await fixture();
-  if (scenario === 'invalid') f.input.token += '-invalid';
-  if (scenario === 'delivery-unavailable') {
-    rmSync(f.emission.path);
-    mkdirSync(f.emission.path);
+it.each(['invalid', 'delivery-unavailable', 'sql-failure'] as const)(
+  'does not invent a lifecycle Audit for original bootstrap %s',
+  async (scenario) => {
+    const f = await fixture();
+    if (scenario === 'invalid') f.input.token += '-invalid';
+    if (scenario === 'delivery-unavailable') {
+      rmSync(f.emission.path);
+      mkdirSync(f.emission.path);
+    }
+    if (scenario === 'sql-failure') f.coreDb.sqlite.pragma('query_only = ON');
+    const result = await observed(f.consume());
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      if (scenario === 'sql-failure')
+        expect(result.error).toMatchObject({ code: 'SQLITE_READONLY' });
+      else
+        expect(result.error).toMatchObject({
+          status: scenario === 'invalid' ? 401 : 409,
+          code: scenario === 'invalid' ? 'bootstrap_invalid' : 'bootstrap_unavailable',
+        });
+    }
+    expect([
+      count(f.coreDb, 'users'),
+      count(f.coreDb, 'account'),
+      count(f.coreDb, 'openkit_access_tokens'),
+    ]).toEqual([0, 0, 0]);
+    expect(isServerBootstrapComplete(f.coreDb)).toBe(false);
+    expect(count(f.coreDb, 'idempotency_requests')).toBe(0);
+    expect(f.audits().length).toBe(0);
+    expect(fault.sent.length).toBe(0);
+    if (scenario === 'sql-failure') {
+      expect(readFileSync(f.emission.path, 'utf8').length).toBe(0);
+      f.coreDb.sqlite.pragma('query_only = OFF');
+    }
   }
-  if (scenario === 'sql-failure') f.coreDb.sqlite.pragma('query_only = ON');
-  const result = await observed(f.consume());
-  expect(result.ok).toBe(false);
-  if (!result.ok) {
-    if (scenario === 'sql-failure') expect(result.error).toMatchObject({ code: 'SQLITE_READONLY' });
-    else
-      expect(result.error).toMatchObject({
-        status: scenario === 'invalid' ? 401 : 409,
-        code: scenario === 'invalid' ? 'bootstrap_invalid' : 'bootstrap_unavailable',
-      });
-  }
-  expect([
-    count(f.coreDb, 'users'),
-    count(f.coreDb, 'account'),
-    count(f.coreDb, 'openkit_access_tokens'),
-  ]).toEqual([0, 0, 0]);
-  expect(isServerBootstrapComplete(f.coreDb)).toBe(false);
-  expect(count(f.coreDb, 'idempotency_requests')).toBe(0);
-  expect(f.audits().length).toBe(0);
-  expect(fault.sent.length).toBe(0);
-  if (scenario === 'sql-failure') {
-    expect(readFileSync(f.emission.path, 'utf8').length).toBe(0);
-    f.coreDb.sqlite.pragma('query_only = OFF');
-  }
-});
+);
 
 it('admits only the exact historical bootstrap null-actor standalone exception', async () => {
   const f = await fixture();

@@ -114,48 +114,51 @@ describe('boot vault backend check', () => {
   it.each([
     ['direct path', false],
     ['parent-directory symlink', true],
-  ] as const)('keeps the backend locked when a %s resolves beneath the Data Root', (_, useAlias) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-vault-internal-key-'));
-    const aliasRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-vault-key-alias-'));
-    const keyFilePath = join(dataRoot, 'vault.key');
-    const aliasPath = join(aliasRoot, 'data-root');
-    const configuredKeyFilePath = useAlias ? join(aliasPath, 'vault.key') : keyFilePath;
-    const masterKey = Buffer.alloc(32, 0x44);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'vault'),
-    });
-    writeFileSync(keyFilePath, masterKey, { mode: 0o600 });
-    if (useAlias) {
-      symlinkSync(dataRoot, aliasPath, 'dir');
-    }
-
-    try {
-      expect
-        .soft(
-          checkBootVaultBackend({
-            dataRoot,
-            keyFilePath: configuredKeyFilePath,
-            vaultUnlockState,
-          } as never)
-        )
-        .toMatchObject({
-          status: 'degraded',
-          reason: {
-            code: 'vault.locked',
-            blocks: ['vault.read', 'vault.use', 'secret.inject'],
-          },
-        });
-      expect.soft(vaultUnlockState.backend().health()).toMatchObject({
-        kind: 'encrypted-file',
-        state: 'locked',
+  ] as const)(
+    'keeps the backend locked when a %s resolves beneath the Data Root',
+    (_, useAlias) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-vault-internal-key-'));
+      const aliasRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-vault-key-alias-'));
+      const keyFilePath = join(dataRoot, 'vault.key');
+      const aliasPath = join(aliasRoot, 'data-root');
+      const configuredKeyFilePath = useAlias ? join(aliasPath, 'vault.key') : keyFilePath;
+      const masterKey = Buffer.alloc(32, 0x44);
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'vault'),
       });
-      expect(existsSync(join(dataRoot, 'vault', 'header.json'))).toBe(false);
-    } finally {
-      vaultUnlockState.lock();
-      masterKey.fill(0);
-      rmSync(dataRoot, { force: true, recursive: true });
-      rmSync(aliasRoot, { force: true, recursive: true });
+      writeFileSync(keyFilePath, masterKey, { mode: 0o600 });
+      if (useAlias) {
+        symlinkSync(dataRoot, aliasPath, 'dir');
+      }
+
+      try {
+        expect
+          .soft(
+            checkBootVaultBackend({
+              dataRoot,
+              keyFilePath: configuredKeyFilePath,
+              vaultUnlockState,
+            } as never)
+          )
+          .toMatchObject({
+            status: 'degraded',
+            reason: {
+              code: 'vault.locked',
+              blocks: ['vault.read', 'vault.use', 'secret.inject'],
+            },
+          });
+        expect.soft(vaultUnlockState.backend().health()).toMatchObject({
+          kind: 'encrypted-file',
+          state: 'locked',
+        });
+        expect(existsSync(join(dataRoot, 'vault', 'header.json'))).toBe(false);
+      } finally {
+        vaultUnlockState.lock();
+        masterKey.fill(0);
+        rmSync(dataRoot, { force: true, recursive: true });
+        rmSync(aliasRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 });

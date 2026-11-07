@@ -90,15 +90,15 @@ function expectClosed() {
 }
 
 describe('canonical exact byte acquisition', () => {
-  it.each([
-    Buffer.alloc(0),
-    Buffer.from([0, 255, 10, 65]),
-  ])('keeps one-argument reads and exact-length reads byte-identical for %j', (bytes) => {
-    const f = fixture(bytes);
-    expect(readCanonicalFile(f.path)).toEqual(bytes);
-    expect(readCanonicalFile(f.path, bytes.length)).toEqual(bytes);
-    expectClosed();
-  });
+  it.each([Buffer.alloc(0), Buffer.from([0, 255, 10, 65])])(
+    'keeps one-argument reads and exact-length reads byte-identical for %j',
+    (bytes) => {
+      const f = fixture(bytes);
+      expect(readCanonicalFile(f.path)).toEqual(bytes);
+      expect(readCanonicalFile(f.path, bytes.length)).toEqual(bytes);
+      expectClosed();
+    }
+  );
 
   it.each([4, 6])('refuses an original length different from declared %i bytes', (expected) => {
     const f = fixture();
@@ -107,17 +107,14 @@ describe('canonical exact byte acquisition', () => {
     expectClosed();
   });
 
-  it.each([
-    -1,
-    0.5,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-    Number.MAX_SAFE_INTEGER + 1,
-  ])('refuses an invalid exact byte length %s', (expected) => {
-    const f = fixture();
-    expect(() => readCanonicalFile(f.path, expected)).toThrow();
-    expect(readFileSync(f.path)).toEqual(f.bytes);
-  });
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses an invalid exact byte length %s',
+    (expected) => {
+      const f = fixture();
+      expect(() => readCanonicalFile(f.path, expected)).toThrow();
+      expect(readFileSync(f.path)).toEqual(f.bytes);
+    }
+  );
 
   it.each(['link', 'directory'] as const)('refuses a %s without changing its bytes', (kind) => {
     const f = fixture();
@@ -144,25 +141,23 @@ describe('canonical exact byte acquisition', () => {
     expect(readFileSync(outside)).toEqual(protectedBytes);
   });
 
-  it.each([
-    'grow',
-    'shrink',
-    'same-size-write',
-    'path-replacement',
-  ] as const)('refuses concurrent %s after the actual read and closes the descriptor', (kind) => {
-    const f = fixture();
-    let crossed = false;
-    fault.afterRead = () => {
-      crossed = true;
-      if (kind === 'grow') appendFileSync(f.path, Buffer.from([99]));
-      else if (kind === 'shrink') truncateSync(f.path, 2);
-      else {
-        if (kind === 'path-replacement') renameSync(f.path, join(f.root, 'retained'));
-        writeFileSync(f.path, Buffer.alloc(f.bytes.length, 9));
-      }
-    };
-    expect(() => readCanonicalFile(f.path, f.bytes.length)).toThrow();
-    expect(crossed).toBe(true);
-    expectClosed();
-  });
+  it.each(['grow', 'shrink', 'same-size-write', 'path-replacement'] as const)(
+    'refuses concurrent %s after the actual read and closes the descriptor',
+    (kind) => {
+      const f = fixture();
+      let crossed = false;
+      fault.afterRead = () => {
+        crossed = true;
+        if (kind === 'grow') appendFileSync(f.path, Buffer.from([99]));
+        else if (kind === 'shrink') truncateSync(f.path, 2);
+        else {
+          if (kind === 'path-replacement') renameSync(f.path, join(f.root, 'retained'));
+          writeFileSync(f.path, Buffer.alloc(f.bytes.length, 9));
+        }
+      };
+      expect(() => readCanonicalFile(f.path, f.bytes.length)).toThrow();
+      expect(crossed).toBe(true);
+      expectClosed();
+    }
+  );
 });

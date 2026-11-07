@@ -74,36 +74,37 @@ describe('native environment envelope readers', () => {
     (envelope as Record<string, unknown>).note = { future: 'inert' };
     expect(schema.parse(input)).toEqual(schema.parse(value));
   });
-  it.each(
-    cases
-  )('strips optional metadata names at their envelope in %s', (_name, schema, value, path) => {
-    for (const key of [
-      'requiredFeatures',
-      'minCoreVersion',
-      'command',
-      'env',
-      'runtimeEnvironment',
-      'nativeEnvironment',
-      'credentials',
-      'credentialRef',
-      'credentialDeclarations',
-      'token',
-      'process',
-    ]) {
-      const input = structuredClone(value);
-      let envelope: unknown = input;
-      for (const part of path) envelope = (envelope as Record<string, unknown>)[part];
-      (envelope as Record<string, unknown>)[key] = { description: 'inert metadata' };
-      if (
-        (path[0] === 'desired' || path[2] === 'environment') &&
-        ['requiredFeatures', 'minCoreVersion', 'env', 'runtimeEnvironment'].includes(key)
-      ) {
-        expect(schema.safeParse(input).success, key).toBe(false);
-      } else {
-        expect(schema.parse(input), key).toEqual(schema.parse(value));
+  it.each(cases)(
+    'strips optional metadata names at their envelope in %s',
+    (_name, schema, value, path) => {
+      for (const key of [
+        'requiredFeatures',
+        'minCoreVersion',
+        'command',
+        'env',
+        'runtimeEnvironment',
+        'nativeEnvironment',
+        'credentials',
+        'credentialRef',
+        'credentialDeclarations',
+        'token',
+        'process',
+      ]) {
+        const input = structuredClone(value);
+        let envelope: unknown = input;
+        for (const part of path) envelope = (envelope as Record<string, unknown>)[part];
+        (envelope as Record<string, unknown>)[key] = { description: 'inert metadata' };
+        if (
+          (path[0] === 'desired' || path[2] === 'environment') &&
+          ['requiredFeatures', 'minCoreVersion', 'env', 'runtimeEnvironment'].includes(key)
+        ) {
+          expect(schema.safeParse(input).success, key).toBe(false);
+        } else {
+          expect(schema.parse(input), key).toEqual(schema.parse(value));
+        }
       }
     }
-  });
+  );
   it('keeps literal map names, values, counts, bytes and digest validation', () => {
     for (const environment of [
       { 'BAD-NAME': 'x' },

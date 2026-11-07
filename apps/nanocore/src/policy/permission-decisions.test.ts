@@ -323,68 +323,68 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it.each([
-    'workspace',
-    'server',
-  ] as const)('preserves ordinary fixture context in %s canonical writes, retained reads and public lists', async (ownerScope) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-public-fixture-'));
-    let coreDb = openCoreDb(dataRoot);
-    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    const contextSummary = { fixture: 'ghp_publicFixture sk-Latn', nested: ['hf_publicFixture'] };
-    try {
-      applyMigrations(coreDb);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      if (ownerScope === 'workspace') await openTestNativeWorkspace(workspaceDb);
-      const recorded = await recordProductPermissionDecision({
-        coreDb,
-        workspaceDb,
-        ownerScope,
-        ...(ownerScope === 'workspace'
-          ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
-          : {}),
-        decisionId: 'pd_00000000-0000-7765-a6ea-e9fc6f79d306',
-        policyEngineVersion: 'test:v1',
-        policySnapshotId: 'test_snapshot',
-        subjectSummary: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        action: 'read',
-        resourceSummary: { fixture: 'okt_publicFixture' },
-        contextSummary,
-        result: 'allow',
-        reasonCode: 'allowed',
-        enforcementPoint: 'test',
-      });
-      if (ownerScope === 'workspace') await recorded;
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      coreDb = openCoreDb(dataRoot);
-      workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const rows =
-        ownerScope === 'workspace'
-          ? listExportableWorkspacePermissionDecisions(
-              workspaceDb,
-              'ws_00000000-0000-7000-8000-000000000001'
-            )
-          : listServerPermissionDecisions(coreDb);
-      const response =
-        ownerScope === 'workspace'
-          ? ListWorkspacePermissionDecisionsResponseSchema.parse({
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              permissionDecisions: rows,
-            })
-          : ListServerPermissionDecisionsResponseSchema.parse({ permissionDecisions: rows });
-      expect(response.permissionDecisions[0]?.contextSummary).toEqual(contextSummary);
-      expect(response.permissionDecisions[0]?.resourceSummary).toEqual({
-        fixture: 'okt_publicFixture',
-      });
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+  it.each(['workspace', 'server'] as const)(
+    'preserves ordinary fixture context in %s canonical writes, retained reads and public lists',
+    async (ownerScope) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-public-fixture-'));
+      let coreDb = openCoreDb(dataRoot);
+      let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      const contextSummary = { fixture: 'ghp_publicFixture sk-Latn', nested: ['hf_publicFixture'] };
+      try {
+        applyMigrations(coreDb);
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        if (ownerScope === 'workspace') await openTestNativeWorkspace(workspaceDb);
+        const recorded = await recordProductPermissionDecision({
+          coreDb,
+          workspaceDb,
+          ownerScope,
+          ...(ownerScope === 'workspace'
+            ? { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+            : {}),
+          decisionId: 'pd_00000000-0000-7765-a6ea-e9fc6f79d306',
+          policyEngineVersion: 'test:v1',
+          policySnapshotId: 'test_snapshot',
+          subjectSummary: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          action: 'read',
+          resourceSummary: { fixture: 'okt_publicFixture' },
+          contextSummary,
+          result: 'allow',
+          reasonCode: 'allowed',
+          enforcementPoint: 'test',
+        });
+        if (ownerScope === 'workspace') await recorded;
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        coreDb = openCoreDb(dataRoot);
+        workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+        const rows =
+          ownerScope === 'workspace'
+            ? listExportableWorkspacePermissionDecisions(
+                workspaceDb,
+                'ws_00000000-0000-7000-8000-000000000001'
+              )
+            : listServerPermissionDecisions(coreDb);
+        const response =
+          ownerScope === 'workspace'
+            ? ListWorkspacePermissionDecisionsResponseSchema.parse({
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                permissionDecisions: rows,
+              })
+            : ListServerPermissionDecisionsResponseSchema.parse({ permissionDecisions: rows });
+        expect(response.permissionDecisions[0]?.contextSummary).toEqual(contextSummary);
+        expect(response.permissionDecisions[0]?.resourceSummary).toEqual({
+          fixture: 'okt_publicFixture',
+        });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it('retains all matched Kernel rule IDs through server list and Core reopen', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
@@ -678,46 +678,49 @@ describe('permission decision recorder', () => {
     ['severity', 'warning'],
     ['error_code', 'contradictory'],
     ['occurred_at', '2026-07-05T00:01:00.000Z'],
-  ])('refuses boot retry with contradictory linked Audit %s without changing retained rows', async (field, value) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-audit-'));
-    const coreDb = openCoreDb(dataRoot);
-    const input = {
-      bootId: 'boot_audit_contradiction',
-      coreDb,
-      kernel: loadBootPolicyKernel(),
-      now: new Date('2026-07-05T00:00:00.000Z'),
-    };
-    try {
-      applyMigrations(coreDb);
-      await recordBootPolicySelfCheckDecisions(input);
-      const decision = listServerPermissionDecisions(coreDb).find(
-        (row) => row.action === 'api.call'
-      )!;
-      // The column comes only from the closed fixture table above.
-      coreDb.sqlite
-        .prepare(`UPDATE audit_events SET ${field} = ? WHERE audit_event_id = ?`)
-        .run(value, decision.auditEventId);
-      const decisions = coreDb.sqlite
-        .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
-        .all();
-      const audits = coreDb.sqlite
-        .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
-        .all();
-      await expect(recordBootPolicySelfCheckDecisions(input)).rejects.toThrow(
-        'Boot policy self-check record is contradictory.'
-      );
-      expect(
-        coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
-      ).toEqual(decisions);
-      expect(
-        coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
-      ).toEqual(audits);
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+  ])(
+    'refuses boot retry with contradictory linked Audit %s without changing retained rows',
+    async (field, value) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-audit-'));
+      const coreDb = openCoreDb(dataRoot);
+      const input = {
+        bootId: 'boot_audit_contradiction',
+        coreDb,
+        kernel: loadBootPolicyKernel(),
+        now: new Date('2026-07-05T00:00:00.000Z'),
+      };
+      try {
+        applyMigrations(coreDb);
+        await recordBootPolicySelfCheckDecisions(input);
+        const decision = listServerPermissionDecisions(coreDb).find(
+          (row) => row.action === 'api.call'
+        )!;
+        // The column comes only from the closed fixture table above.
+        coreDb.sqlite
+          .prepare(`UPDATE audit_events SET ${field} = ? WHERE audit_event_id = ?`)
+          .run(value, decision.auditEventId);
+        const decisions = coreDb.sqlite
+          .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+          .all();
+        const audits = coreDb.sqlite
+          .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+          .all();
+        await expect(recordBootPolicySelfCheckDecisions(input)).rejects.toThrow(
+          'Boot policy self-check record is contradictory.'
+        );
+        expect(
+          coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
+        ).toEqual(decisions);
+        expect(
+          coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
+        ).toEqual(audits);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('publishes neither boot decision nor Audit when the second decision lacks entropy', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-entropy-'));

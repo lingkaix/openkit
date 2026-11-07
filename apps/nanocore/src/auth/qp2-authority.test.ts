@@ -108,25 +108,25 @@ function exportedRecords(root: string, workspaceId: string, exportId: string, na
 }
 
 describe('QP-2a current authority', () => {
-  it.each([
-    'owner',
-    'member',
-  ] as const)('refuses an ordinary %s export even when all history is shared', async (role) => {
-    const f = await fixture();
-    const app = role === 'owner' ? f.session(FIXTURE_LOCAL_USER_ID) : f.member;
-    const admitted = await app.request(
-      ...operationRequest('workspace.dashboard', { workspaceId: f.workspace.id })
-    );
-    expect(admitted.status).toBe(200);
-    expect(
-      f.store.listThreads(f.workspace.id).every((thread) => thread.visibility === 'workspace')
-    ).toBe(true);
-    // Accepted QP-2 addendum: Workspace ownership and membership supply no export grant.
-    const exported = await app.request(
-      ...operationRequest('workspace.export', { workspaceId: f.workspace.id })
-    );
-    expect(exported.status).toBe(403);
-  });
+  it.each(['owner', 'member'] as const)(
+    'refuses an ordinary %s export even when all history is shared',
+    async (role) => {
+      const f = await fixture();
+      const app = role === 'owner' ? f.session(FIXTURE_LOCAL_USER_ID) : f.member;
+      const admitted = await app.request(
+        ...operationRequest('workspace.dashboard', { workspaceId: f.workspace.id })
+      );
+      expect(admitted.status).toBe(200);
+      expect(
+        f.store.listThreads(f.workspace.id).every((thread) => thread.visibility === 'workspace')
+      ).toBe(true);
+      // Accepted QP-2 addendum: Workspace ownership and membership supply no export grant.
+      const exported = await app.request(
+        ...operationRequest('workspace.export', { workspaceId: f.workspace.id })
+      );
+      expect(exported.status).toBe(403);
+    }
+  );
 
   it('requires the shared-only handle creator to remain an administrator at download', async () => {
     const f = await fixture();

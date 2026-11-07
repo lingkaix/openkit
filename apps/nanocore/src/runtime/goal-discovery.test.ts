@@ -98,56 +98,55 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
   };
 }
 
-it.each([
-  'session',
-  'local',
-] as const)('discovers through agent.list with exact Workspace scope, no work effect, and fixed Tool membership (%s)', async (actorKind) => {
-  const f = await fixture(actorKind);
-  try {
-    const result = await f.tool.execute({});
-    expect(result.isError).not.toBe(true);
-    expect(JSON.parse(result.content[0]!.text!)).toEqual({
-      items: [
-        {
-          agentId: 'selected-worker',
-          displayName: 'Codex Agent',
-          runtime: 'codex',
-          readiness: 'ready',
-          reasons: [],
-        },
-      ],
-    });
-    expect(f.store.listThreads(f.workspace.id)).toHaveLength(1);
-    expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
-    expect(readGoalView(f.store, f.db, f.goal.goalId).tasks).toEqual([]);
-    const names = f.tools.map((tool) => tool.name);
-    assertOperationNames(names);
-    expect(names).toEqual(
-      expect.arrayContaining(['agent.list', 'goal.read', 'evidence.runtime-list'])
-    );
-    expect(names).not.toContain('agent_list');
-    f.setCandidates([]);
-    expect(JSON.parse((await f.tool.execute({})).content[0]!.text!)).toEqual({ items: [] });
-    expect(f.tools.map((tool) => tool.name)).toEqual(names);
-  } finally {
-    await f.close();
+it.each(['session', 'local'] as const)(
+  'discovers through agent.list with exact Workspace scope, no work effect, and fixed Tool membership (%s)',
+  async (actorKind) => {
+    const f = await fixture(actorKind);
+    try {
+      const result = await f.tool.execute({});
+      expect(result.isError).not.toBe(true);
+      expect(JSON.parse(result.content[0]!.text!)).toEqual({
+        items: [
+          {
+            agentId: 'selected-worker',
+            displayName: 'Codex Agent',
+            runtime: 'codex',
+            readiness: 'ready',
+            reasons: [],
+          },
+        ],
+      });
+      expect(f.store.listThreads(f.workspace.id)).toHaveLength(1);
+      expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
+      expect(readGoalView(f.store, f.db, f.goal.goalId).tasks).toEqual([]);
+      const names = f.tools.map((tool) => tool.name);
+      assertOperationNames(names);
+      expect(names).toEqual(
+        expect.arrayContaining(['agent.list', 'goal.read', 'evidence.runtime-list'])
+      );
+      expect(names).not.toContain('agent_list');
+      f.setCandidates([]);
+      expect(JSON.parse((await f.tool.execute({})).content[0]!.text!)).toEqual({ items: [] });
+      expect(f.tools.map((tool) => tool.name)).toEqual(names);
+    } finally {
+      await f.close();
+    }
   }
-});
+);
 
-it.each([
-  { workspaceId: 'other' },
-  { agentId: 'replacement' },
-  { goalId: 'other' },
-])('refuses model-selected discovery context %j', async (value) => {
-  const f = await fixture();
-  try {
-    const result = await f.tool.execute(value);
-    expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ code: 'invalid_request' });
-  } finally {
-    await f.close();
+it.each([{ workspaceId: 'other' }, { agentId: 'replacement' }, { goalId: 'other' }])(
+  'refuses model-selected discovery context %j',
+  async (value) => {
+    const f = await fixture();
+    try {
+      const result = await f.tool.execute(value);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ code: 'invalid_request' });
+    } finally {
+      await f.close();
+    }
   }
-});
+);
 
 it('preserves blocked supply and refuses a failed catalog read instead of returning an empty set', async () => {
   const f = await fixture();

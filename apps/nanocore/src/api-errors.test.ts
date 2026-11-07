@@ -15,16 +15,16 @@ import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
 
-it.each([
-  'string',
-  'error',
-] as const)('preserves %s validation messages in a JSON 400', async (kind) => {
-  const message = 'Invalid MCP binding request.';
-  const response = asInvalidRequestError(kind === 'string' ? message : new Error(message));
-  expect(response.status).toBe(400);
-  expect(response.headers.get('content-type')).toContain('application/json');
-  expect(await response.json()).toMatchObject({ code: 'invalid_request', message });
-});
+it.each(['string', 'error'] as const)(
+  'preserves %s validation messages in a JSON 400',
+  async (kind) => {
+    const message = 'Invalid MCP binding request.';
+    const response = asInvalidRequestError(kind === 'string' ? message : new Error(message));
+    expect(response.status).toBe(400);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toMatchObject({ code: 'invalid_request', message });
+  }
+);
 
 it('walks cyclic causes and aggregate entries before reading the baked message', () => {
   const parser = new SyntaxError('ROW_SECRET_X9');
@@ -75,42 +75,39 @@ it('preserves authored errors and route-specific code and status', async () => {
   expect(await response.json()).toMatchObject({ code: 'not_found', message: error.message });
 });
 
-it.each([
-  'syntax',
-  'schema',
-  'cause',
-  'aggregate',
-  'nested',
-] as const)('bounds the %s quoting error tree at command publication', async (variant) => {
-  const marker = 'ROW_SECRET_X9';
-  const parsed = z
-    .object({ id: z.string() })
-    .strict()
-    .safeParse({ id: 'demo', [marker]: true });
-  if (parsed.success) throw new Error('Expected invalid retained record.');
-  const syntax = new SyntaxError(marker);
-  const error =
-    variant === 'syntax'
-      ? syntax
-      : variant === 'schema'
-        ? parsed.error
-        : variant === 'cause'
-          ? new Error('Already authored', { cause: syntax })
-          : variant === 'aggregate'
-            ? new AggregateError([parsed.error], `Baked ${marker}`)
-            : new AggregateError(
-                [new Error('wrapped', { cause: new AggregateError([syntax], marker) })],
-                marker
-              );
-  const response = asCommandError(error, 'reader_failed', 500);
-  expect(response.status).toBe(500);
-  const body = await response.json();
-  expect(body).toMatchObject({
-    code: 'reader_failed',
-    message: 'The record could not be processed.',
-  });
-  expect(JSON.stringify(body)).not.toContain(marker);
-});
+it.each(['syntax', 'schema', 'cause', 'aggregate', 'nested'] as const)(
+  'bounds the %s quoting error tree at command publication',
+  async (variant) => {
+    const marker = 'ROW_SECRET_X9';
+    const parsed = z
+      .object({ id: z.string() })
+      .strict()
+      .safeParse({ id: 'demo', [marker]: true });
+    if (parsed.success) throw new Error('Expected invalid retained record.');
+    const syntax = new SyntaxError(marker);
+    const error =
+      variant === 'syntax'
+        ? syntax
+        : variant === 'schema'
+          ? parsed.error
+          : variant === 'cause'
+            ? new Error('Already authored', { cause: syntax })
+            : variant === 'aggregate'
+              ? new AggregateError([parsed.error], `Baked ${marker}`)
+              : new AggregateError(
+                  [new Error('wrapped', { cause: new AggregateError([syntax], marker) })],
+                  marker
+                );
+    const response = asCommandError(error, 'reader_failed', 500);
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      code: 'reader_failed',
+      message: 'The record could not be processed.',
+    });
+    expect(JSON.stringify(body)).not.toContain(marker);
+  }
+);
 
 it('preserves safe declared-field validation detail before entering the real operation', async () => {
   const app = new Hono<{ Variables: AuthVariables }>();

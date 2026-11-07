@@ -474,89 +474,90 @@ function expectOriginal(
   expect(Number.isFinite(Date.parse(occurredAt))).toBe(true);
 }
 
-it.each(
-  ACTIONS
-)('%s keeps started Audit FULL-acknowledged before the catalog effect and completion before the original receipt', async (action) => {
-  const f = await fixture();
-  const { input, before, assertEffect } = await prepare(action, f);
-  const requestId = randomUUID();
-  const marker = markerFor(action, f.userId, requestId);
-  arm(
-    requestId,
-    [
-      { action, outcome: 'unknown', resource: marker },
-      { action, outcome: 'succeeded', resource: 'catalog_mcp:shared' },
-    ],
-    [0, 1]
-  );
-  let settled = false;
-  const result = f.send(action, input, requestId);
-  void result.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    }
-  );
-  await hold(0, result, async (response) => {
+it.each(ACTIONS)(
+  '%s keeps started Audit FULL-acknowledged before the catalog effect and completion before the original receipt',
+  async (action) => {
+    const f = await fixture();
+    const { input, before, assertEffect } = await prepare(action, f);
+    const requestId = randomUUID();
+    const marker = markerFor(action, f.userId, requestId);
+    arm(
+      requestId,
+      [
+        { action, outcome: 'unknown', resource: marker },
+        { action, outcome: 'succeeded', resource: 'catalog_mcp:shared' },
+      ],
+      [0, 1]
+    );
+    let settled = false;
+    const result = f.send(action, input, requestId);
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await hold(0, result, async (response) => {
+      expect(response.status).toBe(200);
+      const body = (await response.clone().json()) as Record<string, unknown>;
+      expect(body).toMatchObject({ revision: before.revision + 1 });
+      assertEffect();
+    });
+    expect(settled).toBe(false);
+    expect(f.snapshot()).toEqual(before);
+    expect(f.receipts(requestId)).toEqual([]);
+    const started = f.audits(requestId);
+    expect(started).toHaveLength(1);
+    expectOriginal(started[0]!, requestId, f.userId, action, 'unknown', marker);
+
+    release(0);
+    await hold(1, result, async (response) => {
+      expect(response.status).toBe(200);
+      assertEffect();
+    });
+    expect(settled).toBe(false);
+    assertEffect();
+    expect(f.receipts(requestId)).toEqual([]);
+    const completed = f.audits(requestId);
+    expect(completed).toHaveLength(2);
+    expectOriginal(
+      completed.find((event) => event.outcome === 'unknown')!,
+      requestId,
+      f.userId,
+      action,
+      'unknown',
+      marker
+    );
+    expectOriginal(
+      completed.find((event) => event.outcome === 'succeeded')!,
+      requestId,
+      f.userId,
+      action,
+      'succeeded',
+      'catalog_mcp:shared'
+    );
+
+    release(1);
+    const response = await result;
     expect(response.status).toBe(200);
-    const body = (await response.clone().json()) as Record<string, unknown>;
+    const body = (await response.json()) as Record<string, unknown>;
     expect(body).toMatchObject({ revision: before.revision + 1 });
     assertEffect();
-  });
-  expect(settled).toBe(false);
-  expect(f.snapshot()).toEqual(before);
-  expect(f.receipts(requestId)).toEqual([]);
-  const started = f.audits(requestId);
-  expect(started).toHaveLength(1);
-  expectOriginal(started[0]!, requestId, f.userId, action, 'unknown', marker);
-
-  release(0);
-  await hold(1, result, async (response) => {
-    expect(response.status).toBe(200);
-    assertEffect();
-  });
-  expect(settled).toBe(false);
-  assertEffect();
-  expect(f.receipts(requestId)).toEqual([]);
-  const completed = f.audits(requestId);
-  expect(completed).toHaveLength(2);
-  expectOriginal(
-    completed.find((event) => event.outcome === 'unknown')!,
-    requestId,
-    f.userId,
-    action,
-    'unknown',
-    marker
-  );
-  expectOriginal(
-    completed.find((event) => event.outcome === 'succeeded')!,
-    requestId,
-    f.userId,
-    action,
-    'succeeded',
-    'catalog_mcp:shared'
-  );
-
-  release(1);
-  const response = await result;
-  expect(response.status).toBe(200);
-  const body = (await response.json()) as Record<string, unknown>;
-  expect(body).toMatchObject({ revision: before.revision + 1 });
-  assertEffect();
-  const receipts = f.receipts(requestId);
-  expect(receipts).toHaveLength(1);
-  expect(receipts[0]).toMatchObject({
-    command: action,
-    requestId,
-    scope: { actorId: f.userId, coreId: 'server' },
-    response: { kind: 'catalog_mcp', id: 'shared' },
-  });
-  expect(receipts[0]!.inputHash).toMatch(/^sha256:[a-f0-9]{64}$/);
-  const cold = await f.cold(requestId);
-  expect({ audits: cold.audits, receipts: cold.receipts }).toEqual(cold.originals);
-});
+    const receipts = f.receipts(requestId);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      command: action,
+      requestId,
+      scope: { actorId: f.userId, coreId: 'server' },
+      response: { kind: 'catalog_mcp', id: 'shared' },
+    });
+    expect(receipts[0]!.inputHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const cold = await f.cold(requestId);
+    expect({ audits: cold.audits, receipts: cold.receipts }).toEqual(cold.originals);
+  }
+);
 
 it('keeps a truthful started prefix and no effect, receipt or repost when the first native ACK is lost', async () => {
   const f = await fixture();

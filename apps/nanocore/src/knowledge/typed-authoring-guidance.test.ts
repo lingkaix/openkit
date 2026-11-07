@@ -310,44 +310,46 @@ async function fixture(scope: Scope, enabled = false) {
 }
 
 describe('bounded typed Knowledge authoring guidance', () => {
-  it.each([
-    false,
-    true,
-  ])('validates native attributed bytes with delegated publication=%s', async (enabled) => {
-    const f = await fixture('workspace', enabled);
-    const schema = f.activeSchema.replace(
-      /allowed_review_states: .*/,
-      'allowed_review_states: [user-authored, delegated, accepted]'
-    );
-    expect(parseScopeKnowledgeSchema(schema).ok).toBe(true);
-    writeFileSync(f.schemaPath, schema);
-    f.run.mockImplementationOnce(async (run) => {
-      const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
-      const references = payload.sources.map((source: { reference: string }) => source.reference);
-      const content = updateOkfFrontmatter({
-        path: 'rule.md',
-        content: page(f.ownerScope, 'Rule', references),
-        updates: { review_state: 'unreviewed' },
+  it.each([false, true])(
+    'validates native attributed bytes with delegated publication=%s',
+    async (enabled) => {
+      const f = await fixture('workspace', enabled);
+      const schema = f.activeSchema.replace(
+        /allowed_review_states: .*/,
+        'allowed_review_states: [user-authored, delegated, accepted]'
+      );
+      expect(parseScopeKnowledgeSchema(schema).ok).toBe(true);
+      writeFileSync(f.schemaPath, schema);
+      f.run.mockImplementationOnce(async (run) => {
+        const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
+        const references = payload.sources.map((source: { reference: string }) => source.reference);
+        const content = updateOkfFrontmatter({
+          path: 'rule.md',
+          content: page(f.ownerScope, 'Rule', references),
+          updates: { review_state: 'unreviewed' },
+        });
+        expect(
+          await tool(run, 'knowledge.notebook-workspace.update', {
+            script: `cat > rule.md <<'PAGE'\n${content}PAGE\n`,
+          })
+        ).toMatchObject({ exitCode: 0, stderr: '' });
+        await tool(run, 'knowledge.notebook.update', {
+          summary: 'Submit a natively attributed Rule.',
+        });
+        return f.finish(run);
       });
-      expect(
-        await tool(run, 'knowledge.notebook-workspace.update', {
-          script: `cat > rule.md <<'PAGE'\n${content}PAGE\n`,
-        })
-      ).toMatchObject({ exitCode: 0, stderr: '' });
-      await tool(run, 'knowledge.notebook.update', {
-        summary: 'Submit a natively attributed Rule.',
-      });
-      return f.finish(run);
-    });
-    const result = await f.maintain();
-    expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
-    const candidate = f.notebook.readRevision(result.candidateRevision ?? result.notebookRevision);
-    const parsed = parseOkfDocument({ path: 'rule.md', content: candidate.files['rule.md']! });
-    expect(parsed.ok).toBe(true);
-    expect(parsed.document!.frontmatter.review_state).toBe('delegated');
-    expect(candidate.parentRevision).toBe(f.run.mock.calls[0]![0].inputs!.baseRevision);
-    if (!enabled) expect(f.notebook.publishedRevision()).toBe(candidate.parentRevision);
-  });
+      const result = await f.maintain();
+      expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
+      const candidate = f.notebook.readRevision(
+        result.candidateRevision ?? result.notebookRevision
+      );
+      const parsed = parseOkfDocument({ path: 'rule.md', content: candidate.files['rule.md']! });
+      expect(parsed.ok).toBe(true);
+      expect(parsed.document!.frontmatter.review_state).toBe('delegated');
+      expect(candidate.parentRevision).toBe(f.run.mock.calls[0]![0].inputs!.baseRevision);
+      if (!enabled) expect(f.notebook.publishedRevision()).toBe(candidate.parentRevision);
+    }
+  );
 
   it('returns the existing shared-limit refusal from the real Workspace editor without publication', async () => {
     const f = await fixture('workspace');
@@ -367,129 +369,134 @@ describe('bounded typed Knowledge authoring guidance', () => {
     expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
   });
 
-  it.each([
-    'workspace',
-    'user',
-    'server',
-  ] as const)('submits five valid %s pages atomically within the shared editor limit', async (scope) => {
-    const f = await fixture(scope);
-    f.run.mockImplementationOnce(async (run) => {
-      const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
-      const references = payload.sources.map((source: { reference: string }) => source.reference);
-      const script = Array.from(
-        { length: 5 },
-        (_, i) => `cat > rule-${i}.md <<'PAGE'\n${page(f.ownerScope, 'Rule', references)}PAGE`
-      ).join('\n');
-      expect(await tool(run, 'knowledge.notebook-workspace.update', { script })).toMatchObject({
-        exitCode: 0,
-        stderr: '',
-      });
-      await tool(run, 'knowledge.notebook.update', { summary: 'Submit five related Rule pages.' });
-      return f.finish(run);
-    });
-    const result = await f.maintain();
-    expect(['published', 'review-required']).toContain(result.outcome);
-    const baseRevision = f.run.mock.calls[0]![0].inputs!.baseRevision;
-    const candidate = f.notebook.readRevision(result.candidateRevision ?? result.notebookRevision);
-    expect(candidate.parentRevision).toBe(baseRevision);
-    const baseFiles = f.notebook.readRevision(baseRevision).files;
-    expect(
-      Object.keys(candidate.files).filter((path) => candidate.files[path] !== baseFiles[path])
-    ).toHaveLength(5);
-    for (let i = 0; i < 5; i++) expect(candidate.files[`rule-${i}.md`]).toBeDefined();
-    if (result.outcome === 'review-required')
-      expect(f.notebook.publishedRevision()).toBe(baseRevision);
-    expect(f.run).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    'workspace',
-    'user',
-    'server',
-  ] as const)('delivers the admitted active %s contract and required fields without editable schema authority', async (scope) => {
-    const f = await fixture(scope);
-    let refused = false;
-    f.run.mockImplementationOnce(async (run) => {
-      try {
-        const attempted = await tool(run, 'knowledge.notebook-workspace.update', {
-          script: "printf 'status: inactive\\n' > /schema/scope-schema.yaml",
+  it.each(['workspace', 'user', 'server'] as const)(
+    'submits five valid %s pages atomically within the shared editor limit',
+    async (scope) => {
+      const f = await fixture(scope);
+      f.run.mockImplementationOnce(async (run) => {
+        const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
+        const references = payload.sources.map((source: { reference: string }) => source.reference);
+        const script = Array.from(
+          { length: 5 },
+          (_, i) => `cat > rule-${i}.md <<'PAGE'\n${page(f.ownerScope, 'Rule', references)}PAGE`
+        ).join('\n');
+        expect(await tool(run, 'knowledge.notebook-workspace.update', { script })).toMatchObject({
+          exitCode: 0,
+          stderr: '',
         });
-        refused = attempted.exitCode !== 0;
-      } catch (error) {
-        expect(error).toMatchObject({ code: 'invalid_request' });
-        refused = true;
-      }
-      await tool(run, 'knowledge.notebook.update', { summary: 'Inspect without changing pages.' });
-      return f.finish(run);
-    });
-    if (scope === 'workspace') await f.publishAdmittedSchema(f.activeSchema);
-    const result = await f.maintain();
-    expect(result.outcome).toBe('no-change');
-    expect(f.run).toHaveBeenCalledTimes(1);
-    expect(refused).toBe(true);
-    expect(readFileSync(f.schemaPath, 'utf8')).toBe(f.activeSchema);
-    const delivered = deliveredText(f.run.mock.calls[0]![0]);
-    if (scope === 'user')
+        await tool(run, 'knowledge.notebook.update', {
+          summary: 'Submit five related Rule pages.',
+        });
+        return f.finish(run);
+      });
+      const result = await f.maintain();
+      expect(['published', 'review-required']).toContain(result.outcome);
+      const baseRevision = f.run.mock.calls[0]![0].inputs!.baseRevision;
+      const candidate = f.notebook.readRevision(
+        result.candidateRevision ?? result.notebookRevision
+      );
+      expect(candidate.parentRevision).toBe(baseRevision);
+      const baseFiles = f.notebook.readRevision(baseRevision).files;
       expect(
-        f.run.mock.calls[0]![0].tools.find((tool) => tool.name === 'knowledge.notebook.update')
-          ?.description
-      ).toContain(`${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files`);
-    expect(delivered).toContain('Claim requires confidence');
-    expect(delivered).toContain('finite number from zero through one');
-    expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
-    expect(delivered).toContain(f.activeSchema);
-    expect(delivered).toContain('short syntheses');
-    expect(delivered).toContain('Keep originals in Sources');
-    expect(delivered).toContain('cite exact Source references');
-    for (const field of [
-      'type',
-      'title',
-      'schema_version',
-      'openkit_status',
-      'status',
-      'scope',
-      'requiredFeatures',
-      'source_refs',
-      'review_state',
-      'sensitivity',
-      'freshness',
-      'created_at',
-      'updated_at',
-      'applies_to',
-      'basis',
-      'last_checked_at',
-    ])
-      expect(delivered).toContain(field);
-    expect(delivered).toMatch(/required/i);
-    expect(delivered).toMatch(/(read.only|not.*authority|cannot.*authori)/i);
-  }, 120_000);
+        Object.keys(candidate.files).filter((path) => candidate.files[path] !== baseFiles[path])
+      ).toHaveLength(5);
+      for (let i = 0; i < 5; i++) expect(candidate.files[`rule-${i}.md`]).toBeDefined();
+      if (result.outcome === 'review-required')
+        expect(f.notebook.publishedRevision()).toBe(baseRevision);
+      expect(f.run).toHaveBeenCalledTimes(1);
+    }
+  );
 
-  it.each([
-    'workspace',
-    'user',
-    'server',
-  ] as const)('omits the whole oversized %s contract and exposes a truthful size-bound notice', async (scope) => {
-    const f = await fixture(scope);
-    const oversized =
-      f.activeSchema +
-      `description: "SCHEMA-BEGIN-${scope}-${'雪'.repeat(6000)}-SCHEMA-END-${scope}"\n`;
-    expect(oversized.length).toBeLessThan(16 * 1024);
-    expect(Buffer.byteLength(oversized)).toBeGreaterThan(16 * 1024);
-    expect(parseScopeKnowledgeSchema(oversized).ok).toBe(true);
-    writeFileSync(f.schemaPath, oversized);
-    if (scope === 'workspace') await f.publishAdmittedSchema(oversized);
-    const result = await f.maintain();
-    expect(result.outcome).toBe('no-change');
-    expect(f.run).toHaveBeenCalledTimes(1);
-    const delivered = deliveredText(f.run.mock.calls[0]![0]);
-    expect(delivered).not.toContain(`ACTIVE-${scope}-CONTRACT`);
-    expect(delivered).not.toContain(`SCHEMA-BEGIN-${scope}`);
-    expect(delivered).not.toContain(`SCHEMA-END-${scope}`);
-    expect(delivered).not.toContain(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
-    expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
-    expect(delivered).toMatch(/(authoring|schema)[\s\S]*(unavailable|size|limit|bound)/i);
-    expect(readFileSync(f.schemaPath, 'utf8')).toBe(oversized);
-  }, 120_000);
+  it.each(['workspace', 'user', 'server'] as const)(
+    'delivers the admitted active %s contract and required fields without editable schema authority',
+    async (scope) => {
+      const f = await fixture(scope);
+      let refused = false;
+      f.run.mockImplementationOnce(async (run) => {
+        try {
+          const attempted = await tool(run, 'knowledge.notebook-workspace.update', {
+            script: "printf 'status: inactive\\n' > /schema/scope-schema.yaml",
+          });
+          refused = attempted.exitCode !== 0;
+        } catch (error) {
+          expect(error).toMatchObject({ code: 'invalid_request' });
+          refused = true;
+        }
+        await tool(run, 'knowledge.notebook.update', {
+          summary: 'Inspect without changing pages.',
+        });
+        return f.finish(run);
+      });
+      if (scope === 'workspace') await f.publishAdmittedSchema(f.activeSchema);
+      const result = await f.maintain();
+      expect(result.outcome).toBe('no-change');
+      expect(f.run).toHaveBeenCalledTimes(1);
+      expect(refused).toBe(true);
+      expect(readFileSync(f.schemaPath, 'utf8')).toBe(f.activeSchema);
+      const delivered = deliveredText(f.run.mock.calls[0]![0]);
+      if (scope === 'user')
+        expect(
+          f.run.mock.calls[0]![0].tools.find((tool) => tool.name === 'knowledge.notebook.update')
+            ?.description
+        ).toContain(`${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files`);
+      expect(delivered).toContain('Claim requires confidence');
+      expect(delivered).toContain('finite number from zero through one');
+      expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
+      expect(delivered).toContain(f.activeSchema);
+      expect(delivered).toContain('short syntheses');
+      expect(delivered).toContain('Keep originals in Sources');
+      expect(delivered).toContain('cite exact Source references');
+      for (const field of [
+        'type',
+        'title',
+        'schema_version',
+        'openkit_status',
+        'status',
+        'scope',
+        'requiredFeatures',
+        'source_refs',
+        'review_state',
+        'sensitivity',
+        'freshness',
+        'created_at',
+        'updated_at',
+        'applies_to',
+        'basis',
+        'last_checked_at',
+      ])
+        expect(delivered).toContain(field);
+      expect(delivered).toMatch(/required/i);
+      expect(delivered).toMatch(/(read.only|not.*authority|cannot.*authori)/i);
+    },
+    120_000
+  );
+
+  it.each(['workspace', 'user', 'server'] as const)(
+    'omits the whole oversized %s contract and exposes a truthful size-bound notice',
+    async (scope) => {
+      const f = await fixture(scope);
+      const oversized =
+        f.activeSchema +
+        `description: "SCHEMA-BEGIN-${scope}-${'雪'.repeat(6000)}-SCHEMA-END-${scope}"\n`;
+      expect(oversized.length).toBeLessThan(16 * 1024);
+      expect(Buffer.byteLength(oversized)).toBeGreaterThan(16 * 1024);
+      expect(parseScopeKnowledgeSchema(oversized).ok).toBe(true);
+      writeFileSync(f.schemaPath, oversized);
+      if (scope === 'workspace') await f.publishAdmittedSchema(oversized);
+      const result = await f.maintain();
+      expect(result.outcome).toBe('no-change');
+      expect(f.run).toHaveBeenCalledTimes(1);
+      const delivered = deliveredText(f.run.mock.calls[0]![0]);
+      expect(delivered).not.toContain(`ACTIVE-${scope}-CONTRACT`);
+      expect(delivered).not.toContain(`SCHEMA-BEGIN-${scope}`);
+      expect(delivered).not.toContain(`SCHEMA-END-${scope}`);
+      expect(delivered).not.toContain(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
+      expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
+      expect(delivered).toMatch(/(authoring|schema)[\s\S]*(unavailable|size|limit|bound)/i);
+      expect(readFileSync(f.schemaPath, 'utf8')).toBe(oversized);
+    },
+    120_000
+  );
 
   it('keeps typed source-pinned edits in an exact candidate until the actual human Review', async () => {
     const f = await fixture('workspace');

@@ -21,161 +21,161 @@ import {
 } from './integration-client.js';
 
 describe('Sandbox Integration', () => {
-  it.each([
-    'complete',
-    'incomplete',
-  ] as const)('rejects a post-header abort with a %s Harness body', async (bodyState) => {
-    const bridge = createHttp2Server();
-    let bridgeSession: ServerHttp2Session | undefined;
-    bridge.on('session', (session) => {
-      bridgeSession = session;
-    });
-    const commandBody = '{"schemaVersion":2,"operation":"harness.drain"}';
-    bridge.on('stream', (stream) => {
-      stream.on('error', () => undefined);
-      stream.resume();
-      stream.once('end', () => {
-        stream.respond({ ':status': 200, 'content-length': Buffer.byteLength(commandBody) });
-        if (bodyState === 'complete') stream.end(commandBody);
-        else stream.write(commandBody.slice(0, 10));
+  it.each(['complete', 'incomplete'] as const)(
+    'rejects a post-header abort with a %s Harness body',
+    async (bodyState) => {
+      const bridge = createHttp2Server();
+      let bridgeSession: ServerHttp2Session | undefined;
+      bridge.on('session', (session) => {
+        bridgeSession = session;
       });
-    });
-    const integration = await openSandboxIntegration();
-    const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
-    const socket = connectSocket(Number(target.port), target.hostname);
-    socket.on('error', () => undefined);
-    bridge.emit('connection', socket);
-    const abort = new AbortController();
-    const request = integration.request.bind(integration);
-    const injected = vi.spyOn(integration, 'request').mockImplementation(async (...args) => {
-      const response = await request(...args);
-      // Headers have arrived; inject at actual complete-body EOF or before collecting the incomplete body.
-      if (bodyState === 'complete')
-        response.body.once('end', () => abort.abort(new Error('abandoned exchange')));
-      else abort.abort(new Error('abandoned exchange'));
-      return response;
-    });
-    try {
-      await integration.ready;
-      await expect(
-        integration.harnessControlFetch('/worker-control/harness/poll', {
-          body: '{"schemaVersion":2}',
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-          signal: abort.signal,
-        })
-      ).rejects.toThrow();
-      expect(abort.signal.aborted).toBe(true);
-    } finally {
-      injected.mockRestore();
-      await integration.close();
-      bridgeSession?.destroy();
-      await new Promise<void>((resolve) => bridge.close(() => resolve()));
-    }
-  });
-
-  it.each([
-    'poll',
-    'result',
-  ] as const)('keeps the real Harness %s stream alive beyond one second after timely headers', async (phase) => {
-    const bridge = createHttp2Server();
-    const stop = new AbortController();
-    let bridgeSession: ServerHttp2Session | undefined;
-    let slowStream: ServerHttp2Stream | undefined;
-    let pollCount = 0;
-    let resultCount = 0;
-    let markEntry!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      markEntry = resolve;
-    });
-    let markHeaders!: () => void;
-    const headersSeen = new Promise<void>((resolve) => {
-      markHeaders = resolve;
-    });
-    const commandBody = JSON.stringify({
-      schemaVersion: 2,
-      harnessInstanceId: 'slow-harness',
-      operationId: 'a'.repeat(64),
-      sequence: 0,
-      operation: phase === 'poll' ? 'turn.start' : 'harness.drain',
-      body: {},
-      // The envelope extension is inert; the real collector must retain and bound its bytes.
-      note: 'x'.repeat(128 * 1024),
-    });
-    bridge.on('session', (session) => {
-      bridgeSession = session;
-    });
-    bridge.on('stream', (stream, headers) => {
-      stream.on('error', () => undefined);
-      stream.resume();
-      stream.once('end', () => {
-        const poll = headers[':path'] === '/worker-control/harness/poll';
-        if (poll && ++pollCount > 1) {
-          stream.respond({ ':status': 404 });
-          stream.end();
-          return;
-        }
-        if (!poll) resultCount += 1;
-        const slow =
-          (phase === 'poll' && poll) || (phase === 'result' && !poll && resultCount === 1);
-        stream.respond({ ':status': poll ? 200 : slow ? 503 : 204 });
-        if (slow) {
-          slowStream = stream;
-          stream.write(poll ? commandBody.slice(0, 64) : 'retry');
-        } else stream.end(poll ? commandBody : undefined);
+      const commandBody = '{"schemaVersion":2,"operation":"harness.drain"}';
+      bridge.on('stream', (stream) => {
+        stream.on('error', () => undefined);
+        stream.resume();
+        stream.once('end', () => {
+          stream.respond({ ':status': 200, 'content-length': Buffer.byteLength(commandBody) });
+          if (bodyState === 'complete') stream.end(commandBody);
+          else stream.write(commandBody.slice(0, 10));
+        });
       });
-    });
-    const nativeRequest = SandboxIntegrationClient.prototype.request;
-    const request = vi
-      .spyOn(SandboxIntegrationClient.prototype, 'request')
-      .mockImplementation(async function (this: SandboxIntegrationClient, ...args) {
-        const response = await nativeRequest.apply(this, args);
-        if (args[0].endsWith(phase === 'poll' ? '/poll' : '/result')) markHeaders();
-        return response;
-      });
-    const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
-    const write = process.stdout.write.bind(process.stdout);
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
-      chunk: string | Uint8Array
-    ) => {
-      if (Buffer.from(chunk).toString() === 'OPENKIT_WORKER_SHIM_ENTRY_V1\n') {
-        markEntry();
-        return true;
-      }
-      return write(chunk);
-    }) as typeof process.stdout.write);
-    const run = runWorkerHarness({ signal: stop.signal }).catch((error: unknown) => error);
-    let socket: ReturnType<typeof connectSocket> | undefined;
-    try {
-      await entered;
-      socket = connectSocket(17891, '127.0.0.1');
+      const integration = await openSandboxIntegration();
+      const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+      const socket = connectSocket(Number(target.port), target.hostname);
       socket.on('error', () => undefined);
       bridge.emit('connection', socket);
-      await headersSeen;
-      await delay(1_250);
-      expect(slowStream).toBeDefined();
-      expect(
-        slowStream!.rstCode,
-        'real Integration must not cancel body collection at the header deadline'
-      ).toBe(0);
-      expect(pollCount).toBe(1);
-      expect(resultCount).toBe(phase === 'poll' ? 0 : 1);
-      slowStream!.end(phase === 'poll' ? commandBody.slice(64) : ' later');
-      expect(await run).toBeInstanceOf(Error);
-      expect(handle).toHaveBeenCalledTimes(1);
-      expect(resultCount).toBe(phase === 'poll' ? 1 : 2);
-    } finally {
-      stop.abort(new Error('fixture-complete'));
-      slowStream?.close();
-      await run;
-      request.mockRestore();
-      handle.mockRestore();
-      stdout.mockRestore();
-      socket?.destroy();
-      bridgeSession?.destroy();
-      await new Promise<void>((resolve) => bridge.close(() => resolve()));
+      const abort = new AbortController();
+      const request = integration.request.bind(integration);
+      const injected = vi.spyOn(integration, 'request').mockImplementation(async (...args) => {
+        const response = await request(...args);
+        // Headers have arrived; inject at actual complete-body EOF or before collecting the incomplete body.
+        if (bodyState === 'complete')
+          response.body.once('end', () => abort.abort(new Error('abandoned exchange')));
+        else abort.abort(new Error('abandoned exchange'));
+        return response;
+      });
+      try {
+        await integration.ready;
+        await expect(
+          integration.harnessControlFetch('/worker-control/harness/poll', {
+            body: '{"schemaVersion":2}',
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+            signal: abort.signal,
+          })
+        ).rejects.toThrow();
+        expect(abort.signal.aborted).toBe(true);
+      } finally {
+        injected.mockRestore();
+        await integration.close();
+        bridgeSession?.destroy();
+        await new Promise<void>((resolve) => bridge.close(() => resolve()));
+      }
     }
-  });
+  );
+
+  it.each(['poll', 'result'] as const)(
+    'keeps the real Harness %s stream alive beyond one second after timely headers',
+    async (phase) => {
+      const bridge = createHttp2Server();
+      const stop = new AbortController();
+      let bridgeSession: ServerHttp2Session | undefined;
+      let slowStream: ServerHttp2Stream | undefined;
+      let pollCount = 0;
+      let resultCount = 0;
+      let markEntry!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        markEntry = resolve;
+      });
+      let markHeaders!: () => void;
+      const headersSeen = new Promise<void>((resolve) => {
+        markHeaders = resolve;
+      });
+      const commandBody = JSON.stringify({
+        schemaVersion: 2,
+        harnessInstanceId: 'slow-harness',
+        operationId: 'a'.repeat(64),
+        sequence: 0,
+        operation: phase === 'poll' ? 'turn.start' : 'harness.drain',
+        body: {},
+        // The envelope extension is inert; the real collector must retain and bound its bytes.
+        note: 'x'.repeat(128 * 1024),
+      });
+      bridge.on('session', (session) => {
+        bridgeSession = session;
+      });
+      bridge.on('stream', (stream, headers) => {
+        stream.on('error', () => undefined);
+        stream.resume();
+        stream.once('end', () => {
+          const poll = headers[':path'] === '/worker-control/harness/poll';
+          if (poll && ++pollCount > 1) {
+            stream.respond({ ':status': 404 });
+            stream.end();
+            return;
+          }
+          if (!poll) resultCount += 1;
+          const slow =
+            (phase === 'poll' && poll) || (phase === 'result' && !poll && resultCount === 1);
+          stream.respond({ ':status': poll ? 200 : slow ? 503 : 204 });
+          if (slow) {
+            slowStream = stream;
+            stream.write(poll ? commandBody.slice(0, 64) : 'retry');
+          } else stream.end(poll ? commandBody : undefined);
+        });
+      });
+      const nativeRequest = SandboxIntegrationClient.prototype.request;
+      const request = vi
+        .spyOn(SandboxIntegrationClient.prototype, 'request')
+        .mockImplementation(async function (this: SandboxIntegrationClient, ...args) {
+          const response = await nativeRequest.apply(this, args);
+          if (args[0].endsWith(phase === 'poll' ? '/poll' : '/result')) markHeaders();
+          return response;
+        });
+      const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
+      const write = process.stdout.write.bind(process.stdout);
+      const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((
+        chunk: string | Uint8Array
+      ) => {
+        if (Buffer.from(chunk).toString() === 'OPENKIT_WORKER_SHIM_ENTRY_V1\n') {
+          markEntry();
+          return true;
+        }
+        return write(chunk);
+      }) as typeof process.stdout.write);
+      const run = runWorkerHarness({ signal: stop.signal }).catch((error: unknown) => error);
+      let socket: ReturnType<typeof connectSocket> | undefined;
+      try {
+        await entered;
+        socket = connectSocket(17891, '127.0.0.1');
+        socket.on('error', () => undefined);
+        bridge.emit('connection', socket);
+        await headersSeen;
+        await delay(1_250);
+        expect(slowStream).toBeDefined();
+        expect(
+          slowStream!.rstCode,
+          'real Integration must not cancel body collection at the header deadline'
+        ).toBe(0);
+        expect(pollCount).toBe(1);
+        expect(resultCount).toBe(phase === 'poll' ? 0 : 1);
+        slowStream!.end(phase === 'poll' ? commandBody.slice(64) : ' later');
+        expect(await run).toBeInstanceOf(Error);
+        expect(handle).toHaveBeenCalledTimes(1);
+        expect(resultCount).toBe(phase === 'poll' ? 1 : 2);
+      } finally {
+        stop.abort(new Error('fixture-complete'));
+        slowStream?.close();
+        await run;
+        request.mockRestore();
+        handle.mockRestore();
+        stdout.mockRestore();
+        socket?.destroy();
+        bridgeSession?.destroy();
+        await new Promise<void>((resolve) => bridge.close(() => resolve()));
+      }
+    }
+  );
 
   it.each([
     { mapped: true, compressed: false },

@@ -25,14 +25,10 @@ describe('file byte admission', () => {
     }
   });
 
-  it.each([
-    -1,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-    0.5,
-    Number.MAX_SAFE_INTEGER + 1,
-  ])('refuses an invalid actual byte length: %s', (size) =>
-    expect(() => new FileByteAdmission().consume(size)).toThrow('invalid'));
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    'refuses an invalid actual byte length: %s',
+    (size) => expect(() => new FileByteAdmission().consume(size)).toThrow('invalid')
+  );
 });
 
 describe('shared filesystem admission', () => {

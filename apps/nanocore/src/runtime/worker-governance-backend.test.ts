@@ -172,154 +172,153 @@ describe('NanoHost worker governance helpers', () => {
     }
   });
 
-  it.each([
-    'available',
-    'pinned-audit',
-    'removed-during-context-read',
-  ] as const)('imports only currently eligible verified Skill files after the canonical AEP: %s', async (selection) => {
-    const skillBody =
-      '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n';
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    try {
-      const userId = ensureLocalUser(coreDb);
-      const store = await createDemoStore({ dataRoot }, userId);
-      const { workspace, thread } = createDemoWorkspaceForUser(userId);
-      const agentSessionId = allocateEntityId('as');
-      const turn = await store.createTurn(workspace.id, thread.id, 'Use catalog skill', {
-        kind: 'user',
-        id: userId,
-      });
-      const created = importWorkspaceSkill({
-        activate: true,
-        createdAt: '2026-09-08T00:00:00.000Z',
-        dataRoot,
-        displayName: 'Repo guidelines',
-        expectedRevision: 0,
-        producer: { id: userId, kind: 'user' },
-        tree: [
-          {
-            contentBase64: Buffer.from(skillBody, 'utf8').toString('base64'),
-            kind: 'file',
-            path: 'SKILL.md',
-          },
-        ],
-        workspaceId: workspaceIdForOwner(turn.owner),
-      });
-      const pinAuditRef = allocateEntityId('aud');
-      if (selection === 'pinned-audit') {
-        setWorkspaceSkillPin({
+  it.each(['available', 'pinned-audit', 'removed-during-context-read'] as const)(
+    'imports only currently eligible verified Skill files after the canonical AEP: %s',
+    async (selection) => {
+      const skillBody =
+        '---\nname: repo-guidelines\ndescription: Repository guidance.\n---\n# Hello\n';
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-supply-import-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      try {
+        const userId = ensureLocalUser(coreDb);
+        const store = await createDemoStore({ dataRoot }, userId);
+        const { workspace, thread } = createDemoWorkspaceForUser(userId);
+        const agentSessionId = allocateEntityId('as');
+        const turn = await store.createTurn(workspace.id, thread.id, 'Use catalog skill', {
+          kind: 'user',
+          id: userId,
+        });
+        const created = importWorkspaceSkill({
+          activate: true,
+          createdAt: '2026-09-08T00:00:00.000Z',
           dataRoot,
-          digest: created.version.digest,
-          entryId: 'repo-guidelines',
-          expectedRevision: created.catalog.revision,
-          pinAuditRef,
+          displayName: 'Repo guidelines',
+          expectedRevision: 0,
+          producer: { id: userId, kind: 'user' },
+          tree: [
+            {
+              contentBase64: Buffer.from(skillBody, 'utf8').toString('base64'),
+              kind: 'file',
+              path: 'SKILL.md',
+            },
+          ],
           workspaceId: workspaceIdForOwner(turn.owner),
         });
-      }
-      const environmentPackage = AgentEnvironmentPackageSchema.parse(
-        await resolveAgentEnvironmentPackage({
-          captureCoverage: { scope: 'server', value: 'off' },
-          agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
-          agentSessionId,
-          backend: { kind: 'openshell' },
-          coreDb,
-          createdAt: '2026-06-16T00:00:00.000Z',
-          requestId: 'req_nanohost_skill_1',
-          turn,
-          triggerActor: turn.triggerActor,
-          userId,
-          workspaceCwd: process.cwd(),
-          workspaceRoots: [],
-        })
-      );
-      const workspaceRoots: Parameters<
-        typeof prepareNanoHostContextPackageImports
-      >[1]['workspaceRoots'] = [];
-      if (selection === 'removed-during-context-read') {
-        const inputId = `context_${turn.id}`;
-        const pathRef = `threads/${turn.threadId}/turns/${turn.id}/context-package`;
-        const sourcePath = join(
-          dataRoot,
-          'workspaces',
-          workspaceIdForOwner(turn.owner),
-          ...pathRef.split('/')
+        const pinAuditRef = allocateEntityId('aud');
+        if (selection === 'pinned-audit') {
+          setWorkspaceSkillPin({
+            dataRoot,
+            digest: created.version.digest,
+            entryId: 'repo-guidelines',
+            expectedRevision: created.catalog.revision,
+            pinAuditRef,
+            workspaceId: workspaceIdForOwner(turn.owner),
+          });
+        }
+        const environmentPackage = AgentEnvironmentPackageSchema.parse(
+          await resolveAgentEnvironmentPackage({
+            captureCoverage: { scope: 'server', value: 'off' },
+            agentSetup: createTestAgentSetup({ skillIds: ['repo-guidelines'] }),
+            agentSessionId,
+            backend: { kind: 'openshell' },
+            coreDb,
+            createdAt: '2026-06-16T00:00:00.000Z',
+            requestId: 'req_nanohost_skill_1',
+            turn,
+            triggerActor: turn.triggerActor,
+            userId,
+            workspaceCwd: process.cwd(),
+            workspaceRoots: [],
+          })
         );
-        mkdirSync(sourcePath, { recursive: true });
-        environmentPackage.workspace.inputs.push({
-          access: 'read-only',
-          id: inputId,
-          kind: 'generated',
-          materialization: {
-            slotId: 'context',
-            strategy: 'filesystem',
-            contentDigest: `sha256:${createHash('sha256').update('[]').digest('hex')}`,
-          },
-          source: { kind: 'generated', pathRef },
-          target: `/openkit/sessions/${agentSessionId}/context`,
+        const workspaceRoots: Parameters<
+          typeof prepareNanoHostContextPackageImports
+        >[1]['workspaceRoots'] = [];
+        if (selection === 'removed-during-context-read') {
+          const inputId = `context_${turn.id}`;
+          const pathRef = `threads/${turn.threadId}/turns/${turn.id}/context-package`;
+          const sourcePath = join(
+            dataRoot,
+            'workspaces',
+            workspaceIdForOwner(turn.owner),
+            ...pathRef.split('/')
+          );
+          mkdirSync(sourcePath, { recursive: true });
+          environmentPackage.workspace.inputs.push({
+            access: 'read-only',
+            id: inputId,
+            kind: 'generated',
+            materialization: {
+              slotId: 'context',
+              strategy: 'filesystem',
+              contentDigest: `sha256:${createHash('sha256').update('[]').digest('hex')}`,
+            },
+            source: { kind: 'generated', pathRef },
+            target: `/openkit/sessions/${agentSessionId}/context`,
+          });
+          (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+            planSessionWorkspaceMaterialization({ environmentPackage });
+          workspaceRoots.push({
+            id: inputId,
+            access: 'read-only',
+            sourceKind: 'materialized-dir',
+            sourcePath,
+            workerPath: `/openkit/sessions/${agentSessionId}/context`,
+          });
+          const readDirectory = fsPromises.readdir;
+          let removed = false;
+          vi.spyOn(fsPromises, 'readdir').mockImplementation(async (...args) => {
+            const result = await readDirectory(...args);
+            if (String(args[0]) === sourcePath && !removed) {
+              removed = true;
+              removeWorkspaceSkill({
+                dataRoot,
+                workspaceId: workspaceIdForOwner(turn.owner),
+                entryId: 'repo-guidelines',
+                expectedRevision: created.catalog.revision,
+              });
+            }
+            return result;
+          });
+          syncBuiltinESMExports();
+          await expect(
+            prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
+          ).rejects.toThrow(/catalog entry not found/i);
+          expect(removed).toBe(true);
+          return;
+        }
+        const imports = await prepareNanoHostContextPackageImports(environmentPackage, {
+          dataRoot,
+          workspaceRoots,
         });
-        (environmentPackage.extensions.openkit as Record<string, unknown>).sessionWorkspace =
-          planSessionWorkspaceMaterialization({ environmentPackage });
-        workspaceRoots.push({
-          id: inputId,
-          access: 'read-only',
-          sourceKind: 'materialized-dir',
-          sourcePath,
-          workerPath: `/openkit/sessions/${agentSessionId}/context`,
+        expect(imports.map((item) => item.slot)).toEqual(['package-config', 'worker-supply']);
+        expect(imports[1]).toMatchObject({
+          body: Buffer.from(skillBody, 'utf8'),
+          byteLength: Buffer.byteLength(skillBody),
+          relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/SKILL.md`,
+          slot: 'worker-supply',
         });
-        const readDirectory = fsPromises.readdir;
-        let removed = false;
-        vi.spyOn(fsPromises, 'readdir').mockImplementation(async (...args) => {
-          const result = await readDirectory(...args);
-          if (String(args[0]) === sourcePath && !removed) {
-            removed = true;
-            removeWorkspaceSkill({
-              dataRoot,
-              workspaceId: workspaceIdForOwner(turn.owner),
-              entryId: 'repo-guidelines',
-              expectedRevision: created.catalog.revision,
-            });
-          }
-          return result;
-        });
+        expect(imports[1]?.contentDigest).toBe(
+          created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
+        );
+        if (selection === 'pinned-audit') {
+          const skill = environmentPackage.supply.skills[0];
+          expect(skill?.lineage?.pinAuditRef).toBe(pinAuditRef);
+          if (!skill?.lineage) throw new Error('Expected the pinned Skill lineage.');
+          skill.lineage.baseDigest = `sha256:${'f'.repeat(64)}`;
+          await expect(
+            prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
+          ).rejects.toThrow('Worker Skill supply does not match its retained catalog version');
+        }
+      } finally {
+        vi.restoreAllMocks();
         syncBuiltinESMExports();
-        await expect(
-          prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
-        ).rejects.toThrow(/catalog entry not found/i);
-        expect(removed).toBe(true);
-        return;
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { force: true, recursive: true });
       }
-      const imports = await prepareNanoHostContextPackageImports(environmentPackage, {
-        dataRoot,
-        workspaceRoots,
-      });
-      expect(imports.map((item) => item.slot)).toEqual(['package-config', 'worker-supply']);
-      expect(imports[1]).toMatchObject({
-        body: Buffer.from(skillBody, 'utf8'),
-        byteLength: Buffer.byteLength(skillBody),
-        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/SKILL.md`,
-        slot: 'worker-supply',
-      });
-      expect(imports[1]?.contentDigest).toBe(
-        created.version.inventory.find((entry) => entry.path === 'SKILL.md')?.sha256
-      );
-      if (selection === 'pinned-audit') {
-        const skill = environmentPackage.supply.skills[0];
-        expect(skill?.lineage?.pinAuditRef).toBe(pinAuditRef);
-        if (!skill?.lineage) throw new Error('Expected the pinned Skill lineage.');
-        skill.lineage.baseDigest = `sha256:${'f'.repeat(64)}`;
-        await expect(
-          prepareNanoHostContextPackageImports(environmentPackage, { dataRoot, workspaceRoots })
-        ).rejects.toThrow('Worker Skill supply does not match its retained catalog version');
-      }
-    } finally {
-      vi.restoreAllMocks();
-      syncBuiltinESMExports();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { force: true, recursive: true });
     }
-  });
+  );
 });
 
 /** Creates one canonical NanoHost AEP from the shared authored-manifest fixture. */
@@ -438,45 +437,47 @@ it('exports only the exact admitted Turn capture, even with a changed transcript
   }
 });
 
-it.each([
-  true,
-  false,
-])('includes recorded effort controls in canonical immutable package bytes: %s', async (recorded) => {
-  const retained = await createNanoHostPackage();
-  const candidate = AgentEnvironmentPackageSchema.parse({
-    ...retained,
-    llm: {
-      ...retained.llm,
-      ...(recorded ? { reasoningEffort: 'none' } : {}),
-      routes: retained.llm.routes.map((route) => ({
-        ...route,
-        ...(recorded ? { reasoningEffortLevels: [] } : {}),
-      })),
-    },
-  });
-  const [imported] = await prepareNanoHostContextPackageImports(candidate, { workspaceRoots: [] });
-  const expectedBytes = Buffer.from(JSON.stringify(sortJsonObjectKeys(candidate)));
-  expect(imported?.body).toEqual(expectedBytes);
-  expect(imported?.contentDigest).toBe(
-    `sha256:${createHash('sha256').update(expectedBytes).digest('hex')}`
-  );
-  if (imported?.entryKind !== 'file' || !imported.body)
-    throw new Error('Expected bounded canonical package-config file bytes.');
-  const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported.body.toString('utf8')));
-  if (recorded) {
-    expect(parsed.llm).toHaveProperty('reasoningEffort', 'none');
-    expect(parsed.llm.routes[0]).toHaveProperty('reasoningEffortLevels', []);
-    const [oldImport] = await prepareNanoHostContextPackageImports(retained, {
+it.each([true, false])(
+  'includes recorded effort controls in canonical immutable package bytes: %s',
+  async (recorded) => {
+    const retained = await createNanoHostPackage();
+    const candidate = AgentEnvironmentPackageSchema.parse({
+      ...retained,
+      llm: {
+        ...retained.llm,
+        ...(recorded ? { reasoningEffort: 'none' } : {}),
+        routes: retained.llm.routes.map((route) => ({
+          ...route,
+          ...(recorded ? { reasoningEffortLevels: [] } : {}),
+        })),
+      },
+    });
+    const [imported] = await prepareNanoHostContextPackageImports(candidate, {
       workspaceRoots: [],
     });
-    expect(imported?.contentDigest).not.toBe(oldImport?.contentDigest);
-  } else {
-    expect(parsed.llm).not.toHaveProperty('reasoningEffort');
-    expect(parsed.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
+    const expectedBytes = Buffer.from(JSON.stringify(sortJsonObjectKeys(candidate)));
+    expect(imported?.body).toEqual(expectedBytes);
+    expect(imported?.contentDigest).toBe(
+      `sha256:${createHash('sha256').update(expectedBytes).digest('hex')}`
+    );
+    if (imported?.entryKind !== 'file' || !imported.body)
+      throw new Error('Expected bounded canonical package-config file bytes.');
+    const parsed = AgentEnvironmentPackageSchema.parse(JSON.parse(imported.body.toString('utf8')));
+    if (recorded) {
+      expect(parsed.llm).toHaveProperty('reasoningEffort', 'none');
+      expect(parsed.llm.routes[0]).toHaveProperty('reasoningEffortLevels', []);
+      const [oldImport] = await prepareNanoHostContextPackageImports(retained, {
+        workspaceRoots: [],
+      });
+      expect(imported?.contentDigest).not.toBe(oldImport?.contentDigest);
+    } else {
+      expect(parsed.llm).not.toHaveProperty('reasoningEffort');
+      expect(parsed.llm.routes[0]).not.toHaveProperty('reasoningEffortLevels');
+    }
+    candidate.llm.reasoningEffort = 'max';
+    expect(imported?.body).toEqual(expectedBytes);
   }
-  candidate.llm.reasoningEffort = 'max';
-  expect(imported?.body).toEqual(expectedBytes);
-});
+);
 
 describe('exact AEP network projection', () => {
   const grant = {
@@ -514,19 +515,16 @@ describe('exact AEP network projection', () => {
     expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
   });
 
-  it.each([
-    'id',
-    'host',
-    'port',
-    'protocol',
-    'binaries',
-  ] as const)('refuses an allow rule without %s instead of omitting or completing it', async (field) => {
-    const pkg = await createNanoHostPackage();
-    const { [field]: _omitted, ...incomplete } = grant;
-    pkg.policy.network!.rules = [incomplete];
+  it.each(['id', 'host', 'port', 'protocol', 'binaries'] as const)(
+    'refuses an allow rule without %s instead of omitting or completing it',
+    async (field) => {
+      const pkg = await createNanoHostPackage();
+      const { [field]: _omitted, ...incomplete } = grant;
+      pkg.policy.network!.rules = [incomplete];
 
-    expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
-  });
+      expect(() => openShellNetworkEndpointsFromPackagePolicy(pkg)).toThrow();
+    }
+  );
 
   it('refuses unsupported declared access instead of applying a native default', async () => {
     const pkg = await createNanoHostPackage();
@@ -591,26 +589,25 @@ describe('encoded-slash Core policy intent', () => {
       additionalFilesystemGrants: [],
       additionalNetworkEndpoints,
     });
-  it.each([
-    undefined,
-    false,
-    true,
-  ])('preserves package authority %s at the intent boundary', async (allowEncodedSlash) => {
-    const pkg = await createNanoHostPackage();
-    pkg.policy.network!.rules = [
-      {
-        action: 'allow',
-        id: 'package-read',
-        ...endpoint,
-        ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
-      },
-    ];
-    const endpoints = openShellNetworkEndpointsFromPackagePolicy(pkg);
-    expect(endpoints).toEqual([
-      { ...endpoint, ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }) },
-    ]);
-    expect(parse(endpoints).success).toBe(true);
-  });
+  it.each([undefined, false, true])(
+    'preserves package authority %s at the intent boundary',
+    async (allowEncodedSlash) => {
+      const pkg = await createNanoHostPackage();
+      pkg.policy.network!.rules = [
+        {
+          action: 'allow',
+          id: 'package-read',
+          ...endpoint,
+          ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }),
+        },
+      ];
+      const endpoints = openShellNetworkEndpointsFromPackagePolicy(pkg);
+      expect(endpoints).toEqual([
+        { ...endpoint, ...(allowEncodedSlash === undefined ? {} : { allowEncodedSlash }) },
+      ]);
+      expect(parse(endpoints).success).toBe(true);
+    }
+  );
   it('rejects malformed, forbidden and unsupported authority rather than dropping it', async () => {
     for (const change of [
       { allowEncodedSlash: 'true' },

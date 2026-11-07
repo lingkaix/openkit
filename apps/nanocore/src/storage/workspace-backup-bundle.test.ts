@@ -203,33 +203,33 @@ afterEach(async () => {
 });
 
 describe('Workspace backup bundle: specification-derived structural verification', () => {
-  it.each([
-    'backup',
-    'move',
-  ] as const)('Bundle: "format version 1 ... purpose backup or move" — accepts %s and preserves exact bytes', async (purpose) => {
-    const fixture = await bundleFixture(purpose);
-    expect(WORKSPACE_BACKUP_MANIFEST_FILE).toBe('manifest.json');
-    expect(WORKSPACE_BACKUP_SEAL_FILE).toBe('seal.json');
-    expect(parseWorkspaceBackupManifest(fixture.manifest)).toEqual(fixture.manifest);
-    expect(parseWorkspaceBackupSeal(fixture.seal)).toEqual(fixture.seal);
-    const result = await withVerifiedWorkspaceBackupBundle(fixture.input, async (bundle) => {
-      expect(bundle.verification).toBe('structural-only');
-      expect(bundle.manifest).toEqual(fixture.manifest);
-      expect(bundle.seal).toEqual(fixture.seal);
-      expect(bundle.manifestDigest).toBe(digest(fixture.manifestBytes));
-      expect(bundle.fileCount).toBe(PAYLOADS.length);
-      expect(bundle.totalBytes).toBe(PAYLOADS.reduce((sum, file) => sum + file.bytes.length, 0));
+  it.each(['backup', 'move'] as const)(
+    'Bundle: "format version 1 ... purpose backup or move" — accepts %s and preserves exact bytes',
+    async (purpose) => {
+      const fixture = await bundleFixture(purpose);
+      expect(WORKSPACE_BACKUP_MANIFEST_FILE).toBe('manifest.json');
+      expect(WORKSPACE_BACKUP_SEAL_FILE).toBe('seal.json');
+      expect(parseWorkspaceBackupManifest(fixture.manifest)).toEqual(fixture.manifest);
+      expect(parseWorkspaceBackupSeal(fixture.seal)).toEqual(fixture.seal);
+      const result = await withVerifiedWorkspaceBackupBundle(fixture.input, async (bundle) => {
+        expect(bundle.verification).toBe('structural-only');
+        expect(bundle.manifest).toEqual(fixture.manifest);
+        expect(bundle.seal).toEqual(fixture.seal);
+        expect(bundle.manifestDigest).toBe(digest(fixture.manifestBytes));
+        expect(bundle.fileCount).toBe(PAYLOADS.length);
+        expect(bundle.totalBytes).toBe(PAYLOADS.reduce((sum, file) => sum + file.bytes.length, 0));
+        for (const file of PAYLOADS) {
+          expect(await consumeBytes(bundle, file.path)).toEqual(file.bytes);
+        }
+        return 'consumed';
+      });
+      expect(result).toBe('consumed');
+      expect(await readdir(fixture.stagingParent)).toEqual([]);
       for (const file of PAYLOADS) {
-        expect(await consumeBytes(bundle, file.path)).toEqual(file.bytes);
+        expect(await readFile(path.join(fixture.bundleRoot, file.path))).toEqual(file.bytes);
       }
-      return 'consumed';
-    });
-    expect(result).toBe('consumed');
-    expect(await readdir(fixture.stagingParent)).toEqual([]);
-    for (const file of PAYLOADS) {
-      expect(await readFile(path.join(fixture.bundleRoot, file.path))).toEqual(file.bytes);
     }
-  });
+  );
 
   it.each([
     ['analytical format', { format: 'openkit-workspace-export' }],
@@ -245,9 +245,12 @@ describe('Workspace backup bundle: specification-derived structural verification
     ['missing database markers', { databaseFormats: undefined }],
     ['missing feature list', { requiredFeatures: undefined }],
     ['missing release', { release: undefined }],
-  ] as const)('Bundle: "unknown core values ... refuse admission" and required manifest facts — rejects %s', (_name, change) => {
-    expect(() => parseWorkspaceBackupManifest({ ...manifestFor(), ...change })).toThrow();
-  });
+  ] as const)(
+    'Bundle: "unknown core values ... refuse admission" and required manifest facts — rejects %s',
+    (_name, change) => {
+      expect(() => parseWorkspaceBackupManifest({ ...manifestFor(), ...change })).toThrow();
+    }
+  );
 
   it('Bundle: "quiescent for a move" — refuses a move with a hot-capture class', () => {
     const manifest = manifestFor('move');
@@ -326,25 +329,25 @@ describe('Workspace backup bundle: specification-derived structural verification
     await expectRefusal(fixture.input);
   });
 
-  it.each([
-    'description',
-    'sourcePath',
-  ])('Bundle closed inventory; Core "authority ... MUST refuse unknown fields" — rejects inventory key %s', async (field) => {
-    const fixture = await bundleFixture();
-    const inventory = fixture.manifest.inventory.map((entry, index) =>
-      index === 0 ? { ...entry, [field]: 'unused-addition' } : entry
-    );
-    const inventoryJson = JSON.stringify(inventory);
-    const manifest = {
-      ...fixture.manifest,
-      inventory,
-      inventoryDigest: digest(inventoryJson),
-    };
-    expect(() => workspaceBackupInventoryDigest(Buffer.from(inventoryJson))).toThrow();
-    expect(() => parseWorkspaceBackupManifest(manifest)).toThrow();
-    await writeMetadata(fixture, manifest, inventoryJson);
-    await expectRefusal(fixture.input);
-  });
+  it.each(['description', 'sourcePath'])(
+    'Bundle closed inventory; Core "authority ... MUST refuse unknown fields" — rejects inventory key %s',
+    async (field) => {
+      const fixture = await bundleFixture();
+      const inventory = fixture.manifest.inventory.map((entry, index) =>
+        index === 0 ? { ...entry, [field]: 'unused-addition' } : entry
+      );
+      const inventoryJson = JSON.stringify(inventory);
+      const manifest = {
+        ...fixture.manifest,
+        inventory,
+        inventoryDigest: digest(inventoryJson),
+      };
+      expect(() => workspaceBackupInventoryDigest(Buffer.from(inventoryJson))).toThrow();
+      expect(() => parseWorkspaceBackupManifest(manifest)).toThrow();
+      await writeMetadata(fixture, manifest, inventoryJson);
+      await expectRefusal(fixture.input);
+    }
+  );
 
   it.each([
     ['negative length', { bytes: -1 }],
@@ -353,10 +356,15 @@ describe('Workspace backup bundle: specification-derived structural verification
     ['NUL in path', { path: 'bad\u0000name' }],
     ['missing mode', { mode: undefined }],
     ['negative mode', { mode: -1 }],
-  ] as const)('Bundle inventory: "byte length, raw SHA-256, and file modes" — rejects %s', (_name, change) => {
-    const inventory = [{ ...manifestFor().inventory[0], ...change }];
-    expect(() => workspaceBackupInventoryDigest(Buffer.from(JSON.stringify(inventory)))).toThrow();
-  });
+  ] as const)(
+    'Bundle inventory: "byte length, raw SHA-256, and file modes" — rejects %s',
+    (_name, change) => {
+      const inventory = [{ ...manifestFor().inventory[0], ...change }];
+      expect(() =>
+        workspaceBackupInventoryDigest(Buffer.from(JSON.stringify(inventory)))
+      ).toThrow();
+    }
+  );
 
   it('Bundle: "verify this digest independently of individual file digests" — rejects a wrong inventory digest', async () => {
     const fixture = await bundleFixture();
@@ -384,32 +392,41 @@ describe('Workspace backup bundle: specification-derived structural verification
   it.each([
     ['version', { ...RELEASE, version: '0.1.0-rc.12' }],
     ['build', { ...RELEASE, buildId: 'abcdef1234567890abcdef1234567890abcdef12' }],
-  ] as const)('Bundle: "same exact release" — rejects a target %s mismatch', async (_name, expectedRelease) => {
-    const fixture = await bundleFixture();
-    await expectRefusal({ ...fixture.input, expectedRelease });
-  });
+  ] as const)(
+    'Bundle: "same exact release" — rejects a target %s mismatch',
+    async (_name, expectedRelease) => {
+      const fixture = await bundleFixture();
+      await expectRefusal({ ...fixture.input, expectedRelease });
+    }
+  );
 
   it.each([
     ['unknown marker', {}],
     ['unsupported marker version', { workspace: 2 }],
-  ] as const)('Bundle: "database format markers ... unsupported required semantics refuse" — rejects %s', async (_name, supportedDatabaseFormats) => {
-    const fixture = await bundleFixture();
-    await expectRefusal({ ...fixture.input, supportedDatabaseFormats });
-  });
+  ] as const)(
+    'Bundle: "database format markers ... unsupported required semantics refuse" — rejects %s',
+    async (_name, supportedDatabaseFormats) => {
+      const fixture = await bundleFixture();
+      await expectRefusal({ ...fixture.input, supportedDatabaseFormats });
+    }
+  );
 
   it.each([
     ['version', { version: 2 }],
     ['backup identity', { backupId: OTHER_BACKUP_ID }],
     ['purpose', { purpose: 'move' }],
     ['manifest digest', { manifestDigest: digest('different manifest') }],
-  ] as const)('Bundle: "A versioned seal binds the backup identity, purpose, and exact manifest digest" — rejects %s mismatch', async (_name, change) => {
-    const fixture = await bundleFixture();
-    await writeFile(
-      path.join(fixture.bundleRoot, 'seal.json'),
-      JSON.stringify({ ...fixture.seal, ...change })
-    );
-    await expectRefusal(fixture.input);
-  });
+  ] as const)(
+    'Bundle: "A versioned seal binds the backup identity, purpose, and exact manifest digest" — rejects %s mismatch',
+    async (_name, change) => {
+      const fixture = await bundleFixture();
+      await writeFile(
+        path.join(fixture.bundleRoot, 'seal.json'),
+        JSON.stringify({ ...fixture.seal, ...change })
+      );
+      await expectRefusal(fixture.input);
+    }
+  );
 
   it('Bundle: "without a valid seal is incomplete" — refuses a missing seal', async () => {
     const fixture = await bundleFixture();
@@ -426,25 +443,25 @@ describe('Workspace backup bundle: specification-derived structural verification
     await expectRefusal(fixture.input);
   });
 
-  it.each([
-    'manifest',
-    'seal',
-  ] as const)('Bundle closed core and exact binding — refuses ambiguous duplicate JSON keys in %s', async (metadata) => {
-    const fixture = await bundleFixture();
-    if (metadata === 'manifest') {
-      const bytes = Buffer.from(
-        fixture.manifestBytes.toString().replace('"version":1', '"version":2,"version":1')
-      );
-      await writeFile(path.join(fixture.bundleRoot, 'manifest.json'), bytes);
-      await writeFile(path.join(fixture.bundleRoot, 'seal.json'), JSON.stringify(sealFor(bytes)));
-    } else {
-      await writeFile(
-        path.join(fixture.bundleRoot, 'seal.json'),
-        JSON.stringify(fixture.seal).replace('"version":1', '"version":2,"version":1')
-      );
+  it.each(['manifest', 'seal'] as const)(
+    'Bundle closed core and exact binding — refuses ambiguous duplicate JSON keys in %s',
+    async (metadata) => {
+      const fixture = await bundleFixture();
+      if (metadata === 'manifest') {
+        const bytes = Buffer.from(
+          fixture.manifestBytes.toString().replace('"version":1', '"version":2,"version":1')
+        );
+        await writeFile(path.join(fixture.bundleRoot, 'manifest.json'), bytes);
+        await writeFile(path.join(fixture.bundleRoot, 'seal.json'), JSON.stringify(sealFor(bytes)));
+      } else {
+        await writeFile(
+          path.join(fixture.bundleRoot, 'seal.json'),
+          JSON.stringify(fixture.seal).replace('"version":1', '"version":2,"version":1')
+        );
+      }
+      await expectRefusal(fixture.input);
     }
-    await expectRefusal(fixture.input);
-  });
+  );
 
   it('Bundle: "Every admitted snapshot/content file exactly once" — rejects a duplicate with valid digests', async () => {
     const fixture = await bundleFixture();
@@ -457,93 +474,90 @@ describe('Workspace backup bundle: specification-derived structural verification
     await expectRefusal(fixture.input);
   });
 
-  it.each([
-    'missing',
-    'unlisted',
-    'corrupt',
-    'length',
-    'mode',
-  ] as const)('Restore-1: "Reject ... missing, unlisted" and Bundle exact bytes/modes — rejects %s file', async (fault) => {
-    const fixture = await bundleFixture();
-    const file = PAYLOADS[0]!;
-    const target = path.join(fixture.bundleRoot, file.path);
-    if (fault === 'missing') await rm(target);
-    if (fault === 'unlisted') {
-      await writeFile(path.join(fixture.bundleRoot, 'unexpected.bin'), Buffer.from([42]));
+  it.each(['missing', 'unlisted', 'corrupt', 'length', 'mode'] as const)(
+    'Restore-1: "Reject ... missing, unlisted" and Bundle exact bytes/modes — rejects %s file',
+    async (fault) => {
+      const fixture = await bundleFixture();
+      const file = PAYLOADS[0]!;
+      const target = path.join(fixture.bundleRoot, file.path);
+      if (fault === 'missing') await rm(target);
+      if (fault === 'unlisted') {
+        await writeFile(path.join(fixture.bundleRoot, 'unexpected.bin'), Buffer.from([42]));
+      }
+      if (fault === 'corrupt') {
+        const bytes = Buffer.from(file.bytes);
+        bytes[0] = 123;
+        await writeFile(target, bytes);
+      }
+      if (fault === 'length') {
+        // Keep the actual bytes and their hash valid so only the length oracle can refuse.
+        const inventory = fixture.manifest.inventory.map((entry, index) =>
+          index === 0 ? { ...entry, bytes: entry.bytes + 1 } : entry
+        );
+        await writeMetadata(fixture, {
+          ...fixture.manifest,
+          inventory,
+          inventoryDigest: digest(JSON.stringify(inventory)),
+        });
+      }
+      if (fault === 'mode') await chmod(target, 0o700);
+      await expectRefusal(fixture.input);
     }
-    if (fault === 'corrupt') {
-      const bytes = Buffer.from(file.bytes);
-      bytes[0] = 123;
-      await writeFile(target, bytes);
+  );
+
+  it.each(['manifest.json', 'seal.json'])(
+    'Bundle: "exclude the root manifest and completion seal to avoid a digest cycle" — rejects listed %s',
+    async (relativePath) => {
+      const fixture = await bundleFixture();
+      const bytes = await readFile(path.join(fixture.bundleRoot, relativePath));
+      const inventory = [
+        ...fixture.manifest.inventory,
+        { path: relativePath, bytes: bytes.length, sha256: digest(bytes), mode: 0o600 },
+      ];
+      expect(() =>
+        parseWorkspaceBackupManifest({
+          ...fixture.manifest,
+          inventory,
+          inventoryDigest: digest(JSON.stringify(inventory)),
+        })
+      ).toThrow();
     }
-    if (fault === 'length') {
-      // Keep the actual bytes and their hash valid so only the length oracle can refuse.
-      const inventory = fixture.manifest.inventory.map((entry, index) =>
-        index === 0 ? { ...entry, bytes: entry.bytes + 1 } : entry
-      );
+  );
+
+  it.each(['absolute', 'parent', 'nested-parent', 'backslash'] as const)(
+    'Bundle: "confined relative path"; Restore-1: "unsafe entries" — rejects %s',
+    async (form) => {
+      const fixture = await bundleFixture();
+      const outside = path.join(fixture.root, 'outside.bin');
+      const paths = {
+        absolute: outside,
+        parent: '../outside.bin',
+        'nested-parent': 'content/../../outside.bin',
+        backslash: 'content\\escape.bin',
+      };
+      const unsafePath = paths[form];
+      // A permissive reader can find matching bytes, with no unrelated extra-file failure.
+      const target = form === 'backslash' ? path.join(fixture.bundleRoot, unsafePath) : outside;
+      await rm(path.join(fixture.bundleRoot, PAYLOADS[0]!.path));
+      await writeFile(target, PAYLOADS[0]!.bytes, { mode: PAYLOADS[0]!.mode });
+      await chmod(target, PAYLOADS[0]!.mode);
+      const inventory = [
+        { ...fixture.manifest.inventory[0]!, path: unsafePath },
+        fixture.manifest.inventory[1]!,
+      ];
+      expect(() =>
+        workspaceBackupInventoryDigest(Buffer.from(JSON.stringify(inventory)))
+      ).toThrow();
       await writeMetadata(fixture, {
         ...fixture.manifest,
         inventory,
         inventoryDigest: digest(JSON.stringify(inventory)),
+        databaseFormats: [{ path: unsafePath, markers: { ...DATABASE_FORMATS } }],
       });
+      await expectRefusal(fixture.input);
+      expect(await readFile(target)).toEqual(PAYLOADS[0]!.bytes);
     }
-    if (fault === 'mode') await chmod(target, 0o700);
-    await expectRefusal(fixture.input);
-  });
-
-  it.each([
-    'manifest.json',
-    'seal.json',
-  ])('Bundle: "exclude the root manifest and completion seal to avoid a digest cycle" — rejects listed %s', async (relativePath) => {
-    const fixture = await bundleFixture();
-    const bytes = await readFile(path.join(fixture.bundleRoot, relativePath));
-    const inventory = [
-      ...fixture.manifest.inventory,
-      { path: relativePath, bytes: bytes.length, sha256: digest(bytes), mode: 0o600 },
-    ];
-    expect(() =>
-      parseWorkspaceBackupManifest({
-        ...fixture.manifest,
-        inventory,
-        inventoryDigest: digest(JSON.stringify(inventory)),
-      })
-    ).toThrow();
-  });
-
-  it.each([
-    'absolute',
-    'parent',
-    'nested-parent',
-    'backslash',
-  ] as const)('Bundle: "confined relative path"; Restore-1: "unsafe entries" — rejects %s', async (form) => {
-    const fixture = await bundleFixture();
-    const outside = path.join(fixture.root, 'outside.bin');
-    const paths = {
-      absolute: outside,
-      parent: '../outside.bin',
-      'nested-parent': 'content/../../outside.bin',
-      backslash: 'content\\escape.bin',
-    };
-    const unsafePath = paths[form];
-    // A permissive reader can find matching bytes, with no unrelated extra-file failure.
-    const target = form === 'backslash' ? path.join(fixture.bundleRoot, unsafePath) : outside;
-    await rm(path.join(fixture.bundleRoot, PAYLOADS[0]!.path));
-    await writeFile(target, PAYLOADS[0]!.bytes, { mode: PAYLOADS[0]!.mode });
-    await chmod(target, PAYLOADS[0]!.mode);
-    const inventory = [
-      { ...fixture.manifest.inventory[0]!, path: unsafePath },
-      fixture.manifest.inventory[1]!,
-    ];
-    expect(() => workspaceBackupInventoryDigest(Buffer.from(JSON.stringify(inventory)))).toThrow();
-    await writeMetadata(fixture, {
-      ...fixture.manifest,
-      inventory,
-      inventoryDigest: digest(JSON.stringify(inventory)),
-      databaseFormats: [{ path: unsafePath, markers: { ...DATABASE_FORMATS } }],
-    });
-    await expectRefusal(fixture.input);
-    expect(await readFile(target)).toEqual(PAYLOADS[0]!.bytes);
-  });
+  );
 
   it.each([
     ['payload symlink', 'symlink', 'snapshots/workspace.sqlite'],
@@ -552,32 +566,35 @@ describe('Workspace backup bundle: specification-derived structural verification
     ['payload hard link', 'hardlink', 'snapshots/workspace.sqlite'],
     ['manifest hard link', 'hardlink', 'manifest.json'],
     ['seal hard link', 'hardlink', 'seal.json'],
-  ] as const)('Restore-1: "Reject ... linked ... entries" — rejects %s even when bytes match', async (_name, kind, relativePath) => {
-    const fixture = await bundleFixture();
-    const target = path.join(fixture.bundleRoot, relativePath);
-    const outside = path.join(fixture.root, 'outside-but-test-owned');
-    const before = await readFile(target);
-    await rename(target, outside);
-    if (kind === 'symlink') await symlink(outside, target);
-    else await link(outside, target);
-    await expectRefusal(fixture.input);
-    expect(await readFile(outside)).toEqual(before);
-  });
+  ] as const)(
+    'Restore-1: "Reject ... linked ... entries" — rejects %s even when bytes match',
+    async (_name, kind, relativePath) => {
+      const fixture = await bundleFixture();
+      const target = path.join(fixture.bundleRoot, relativePath);
+      const outside = path.join(fixture.root, 'outside-but-test-owned');
+      const before = await readFile(target);
+      await rename(target, outside);
+      if (kind === 'symlink') await symlink(outside, target);
+      else await link(outside, target);
+      await expectRefusal(fixture.input);
+      expect(await readFile(outside)).toEqual(before);
+    }
+  );
 
-  it.each([
-    'bundle',
-    'content',
-  ] as const)('Bundle: "confined regular-file paths"; Restore-1: "linked" — rejects a symlinked %s directory', async (directory) => {
-    const fixture = await bundleFixture();
-    const target =
-      directory === 'bundle' ? fixture.bundleRoot : path.join(fixture.bundleRoot, 'content');
-    const outside = path.join(fixture.root, 'outside-directory');
-    await rename(target, outside);
-    await symlink(outside, target, 'dir');
-    await expectRefusal(fixture.input);
-    const preserved = path.join(outside, directory === 'bundle' ? PAYLOADS[1]!.path : 'tool.sh');
-    expect(await readFile(preserved)).toEqual(PAYLOADS[1]!.bytes);
-  });
+  it.each(['bundle', 'content'] as const)(
+    'Bundle: "confined regular-file paths"; Restore-1: "linked" — rejects a symlinked %s directory',
+    async (directory) => {
+      const fixture = await bundleFixture();
+      const target =
+        directory === 'bundle' ? fixture.bundleRoot : path.join(fixture.bundleRoot, 'content');
+      const outside = path.join(fixture.root, 'outside-directory');
+      await rename(target, outside);
+      await symlink(outside, target, 'dir');
+      await expectRefusal(fixture.input);
+      const preserved = path.join(outside, directory === 'bundle' ? PAYLOADS[1]!.path : 'tool.sh');
+      expect(await readFile(preserved)).toEqual(PAYLOADS[1]!.bytes);
+    }
+  );
 
   it('Bundle: "regular-file paths" — rejects a directory in place of a listed file', async () => {
     const fixture = await bundleFixture();
@@ -606,123 +623,123 @@ describe('Workspace backup bundle: specification-derived structural verification
     });
   });
 
-  it.each([
-    'success',
-    'failure',
-  ] as const)('Bundle: "Use private staging"; Restore-1: "only verified bytes" — closes consumption after callback %s', async (outcome) => {
-    const fixture = await bundleFixture();
-    let retained: VerifiedWorkspaceBackupBundle | undefined;
-    const callbackError = new Error('fixture consumer failed');
-    const operation = withVerifiedWorkspaceBackupBundle(fixture.input, async (bundle) => {
-      retained = bundle;
-      expect(await consumeBytes(bundle, PAYLOADS[0]!.path)).toEqual(PAYLOADS[0]!.bytes);
-      if (outcome === 'failure') throw callbackError;
-      return 'ok';
-    });
-    if (outcome === 'failure') await expect(operation).rejects.toBe(callbackError);
-    else await expect(operation).resolves.toBe('ok');
-    expect(retained).toBeDefined();
-    await expect(consumeBytes(retained!, PAYLOADS[0]!.path)).rejects.toThrow();
-    expect(await readdir(fixture.stagingParent)).toEqual([]);
-    expect(await readFile(path.join(fixture.bundleRoot, PAYLOADS[0]!.path))).toEqual(
-      PAYLOADS[0]!.bytes
-    );
-  });
-
-  it.each([
-    'success',
-    'failure',
-  ] as const)('Bundle: "existing capacity limits" — retains capacity and callback failure when staging cleanup fails after consumer %s', async (outcome) => {
-    const fixture = await bundleFixture();
-    const capacity = BigInt(
-      PAYLOADS.reduce((sum, file) => sum + file.bytes.length, 0) +
-        fixture.manifestBytes.length +
-        (await readFile(path.join(fixture.bundleRoot, WORKSPACE_BACKUP_SEAL_FILE))).length
-    );
-    const admission = new FileStorageAdmission(
-      fixture.root,
-      () => 0n,
-      () => capacity
-    );
-    const competingWrites = {
-      stagingBytes: capacity,
-      extractionBytes: 0n,
-      derivativeBytes: 0n,
-      publicationBytes: 0n,
-    };
-    admission.reserve(competingWrites).release();
-    const reserve = admission.reserve.bind(admission);
-    let heldReservation: ReturnType<typeof admission.reserve> | undefined;
-    const reservationProbe = vi.spyOn(admission, 'reserve').mockImplementation((request) => {
-      const reservation = reserve(request);
-      heldReservation = reservation;
-      return reservation;
-    });
-    const consumerError = new Error('fixture consumer failed before cleanup');
-    const removalError = new Error('fixture owned staging removal failed');
-    let cleanupPath: string | undefined;
-    let cleanupFaultHits = 0;
-    let retained: VerifiedWorkspaceBackupBundle | undefined;
-    const remove = fsPromises.rm;
-    // Synchronize the native binding so both Main and external Storage imports see this fault.
-    const cleanupFault = vi.spyOn(fsPromises, 'rm').mockImplementation(async (...args) => {
-      if (typeof args[0] === 'string' && args[0] === cleanupPath) {
-        cleanupFaultHits += 1;
-        throw removalError;
-      }
-      return remove(...args);
-    });
-    try {
-      syncBuiltinESMExports();
-      const failure = await withVerifiedWorkspaceBackupBundle(
-        { ...fixture.input, admission },
-        async (bundle) => {
-          retained = bundle;
-          const staging = await readdir(fixture.stagingParent);
-          expect(staging).toHaveLength(1);
-          cleanupPath = path.join(fixture.stagingParent, staging[0]!);
-          expect(await consumeBytes(bundle, PAYLOADS[0]!.path)).toEqual(PAYLOADS[0]!.bytes);
-          if (outcome === 'failure') throw consumerError;
-          return 'consumed';
-        }
-      ).catch((error: unknown) => error);
-      expect(cleanupFaultHits).toBe(1);
-      let cleanupError = failure;
-      if (outcome === 'failure') {
-        expect(failure).toBeInstanceOf(AggregateError);
-        const errors = (failure as AggregateError).errors;
-        expect(errors).toHaveLength(2);
-        expect(errors[0]).toBe(consumerError);
-        cleanupError = errors[1];
-      } else {
-        expect(failure).not.toBeInstanceOf(AggregateError);
-      }
-      expect(cleanupError).toBeInstanceOf(Error);
-      expect(cleanupError).toHaveProperty('message', expect.not.stringContaining(fixture.root));
-      expect(cleanupError).toHaveProperty(
-        'message',
-        expect.not.stringContaining(removalError.message)
-      );
-      expect(cleanupError).not.toBe(removalError);
+  it.each(['success', 'failure'] as const)(
+    'Bundle: "Use private staging"; Restore-1: "only verified bytes" — closes consumption after callback %s',
+    async (outcome) => {
+      const fixture = await bundleFixture();
+      let retained: VerifiedWorkspaceBackupBundle | undefined;
+      const callbackError = new Error('fixture consumer failed');
+      const operation = withVerifiedWorkspaceBackupBundle(fixture.input, async (bundle) => {
+        retained = bundle;
+        expect(await consumeBytes(bundle, PAYLOADS[0]!.path)).toEqual(PAYLOADS[0]!.bytes);
+        if (outcome === 'failure') throw callbackError;
+        return 'ok';
+      });
+      if (outcome === 'failure') await expect(operation).rejects.toBe(callbackError);
+      else await expect(operation).resolves.toBe('ok');
       expect(retained).toBeDefined();
       await expect(consumeBytes(retained!, PAYLOADS[0]!.path)).rejects.toThrow();
-      expect(await readFile(path.join(cleanupPath!, PAYLOADS[0]!.path))).toEqual(
+      expect(await readdir(fixture.stagingParent)).toEqual([]);
+      expect(await readFile(path.join(fixture.bundleRoot, PAYLOADS[0]!.path))).toEqual(
         PAYLOADS[0]!.bytes
       );
-      // Real admission must retain the unused forecast until staging removal is proved.
-      expect(() => admission.reserve(competingWrites).release()).toThrow(FileAdmissionError);
-      for (const file of PAYLOADS) {
-        expect(await readFile(path.join(fixture.bundleRoot, file.path))).toEqual(file.bytes);
-      }
-    } finally {
-      cleanupFault.mockRestore();
-      syncBuiltinESMExports();
-      // Release the fixture forecast only after its retained private bytes are removed.
-      await rm(fixture.stagingParent, { recursive: true, force: true });
-      heldReservation?.release();
-      reservationProbe.mockRestore();
     }
-  });
+  );
+
+  it.each(['success', 'failure'] as const)(
+    'Bundle: "existing capacity limits" — retains capacity and callback failure when staging cleanup fails after consumer %s',
+    async (outcome) => {
+      const fixture = await bundleFixture();
+      const capacity = BigInt(
+        PAYLOADS.reduce((sum, file) => sum + file.bytes.length, 0) +
+          fixture.manifestBytes.length +
+          (await readFile(path.join(fixture.bundleRoot, WORKSPACE_BACKUP_SEAL_FILE))).length
+      );
+      const admission = new FileStorageAdmission(
+        fixture.root,
+        () => 0n,
+        () => capacity
+      );
+      const competingWrites = {
+        stagingBytes: capacity,
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: 0n,
+      };
+      admission.reserve(competingWrites).release();
+      const reserve = admission.reserve.bind(admission);
+      let heldReservation: ReturnType<typeof admission.reserve> | undefined;
+      const reservationProbe = vi.spyOn(admission, 'reserve').mockImplementation((request) => {
+        const reservation = reserve(request);
+        heldReservation = reservation;
+        return reservation;
+      });
+      const consumerError = new Error('fixture consumer failed before cleanup');
+      const removalError = new Error('fixture owned staging removal failed');
+      let cleanupPath: string | undefined;
+      let cleanupFaultHits = 0;
+      let retained: VerifiedWorkspaceBackupBundle | undefined;
+      const remove = fsPromises.rm;
+      // Synchronize the native binding so both Main and external Storage imports see this fault.
+      const cleanupFault = vi.spyOn(fsPromises, 'rm').mockImplementation(async (...args) => {
+        if (typeof args[0] === 'string' && args[0] === cleanupPath) {
+          cleanupFaultHits += 1;
+          throw removalError;
+        }
+        return remove(...args);
+      });
+      try {
+        syncBuiltinESMExports();
+        const failure = await withVerifiedWorkspaceBackupBundle(
+          { ...fixture.input, admission },
+          async (bundle) => {
+            retained = bundle;
+            const staging = await readdir(fixture.stagingParent);
+            expect(staging).toHaveLength(1);
+            cleanupPath = path.join(fixture.stagingParent, staging[0]!);
+            expect(await consumeBytes(bundle, PAYLOADS[0]!.path)).toEqual(PAYLOADS[0]!.bytes);
+            if (outcome === 'failure') throw consumerError;
+            return 'consumed';
+          }
+        ).catch((error: unknown) => error);
+        expect(cleanupFaultHits).toBe(1);
+        let cleanupError = failure;
+        if (outcome === 'failure') {
+          expect(failure).toBeInstanceOf(AggregateError);
+          const errors = (failure as AggregateError).errors;
+          expect(errors).toHaveLength(2);
+          expect(errors[0]).toBe(consumerError);
+          cleanupError = errors[1];
+        } else {
+          expect(failure).not.toBeInstanceOf(AggregateError);
+        }
+        expect(cleanupError).toBeInstanceOf(Error);
+        expect(cleanupError).toHaveProperty('message', expect.not.stringContaining(fixture.root));
+        expect(cleanupError).toHaveProperty(
+          'message',
+          expect.not.stringContaining(removalError.message)
+        );
+        expect(cleanupError).not.toBe(removalError);
+        expect(retained).toBeDefined();
+        await expect(consumeBytes(retained!, PAYLOADS[0]!.path)).rejects.toThrow();
+        expect(await readFile(path.join(cleanupPath!, PAYLOADS[0]!.path))).toEqual(
+          PAYLOADS[0]!.bytes
+        );
+        // Real admission must retain the unused forecast until staging removal is proved.
+        expect(() => admission.reserve(competingWrites).release()).toThrow(FileAdmissionError);
+        for (const file of PAYLOADS) {
+          expect(await readFile(path.join(fixture.bundleRoot, file.path))).toEqual(file.bytes);
+        }
+      } finally {
+        cleanupFault.mockRestore();
+        syncBuiltinESMExports();
+        // Release the fixture forecast only after its retained private bytes are removed.
+        await rm(fixture.stagingParent, { recursive: true, force: true });
+        heldReservation?.release();
+        reservationProbe.mockRestore();
+      }
+    }
+  );
 
   it('Bundle: "existing capacity limits" — refuses unavailable staging capacity before consumption', async () => {
     const fixture = await bundleFixture();

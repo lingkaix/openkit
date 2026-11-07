@@ -466,46 +466,121 @@ describe('cancellation final after ordinary append refusal', () => {
     }
   });
 
-  it.each([
-    'worker_control_lease_not_live',
-    'worker_control_revoked',
-  ])('joins an entered periodic heartbeat with %s after cancellation without replay', async (code) => {
-    schedulingClock.controlled = true;
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
-    const f = fixture('periodic-heartbeat', code);
-    const outcome = f.run().then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    try {
-      await f.readyAppend.promise;
-      await vi.advanceTimersByTimeAsync(1_000);
-      await f.pendingAppend.promise;
-      const entered = f.requests.at(-1)!;
-      expect(entered.url).toBe('/worker-control/heartbeat');
-      expect(JSON.parse(entered.body)).toMatchObject({
-        operation: 'heartbeat',
-        sequence: 1,
-        lineage,
-      });
-      const requestsAtCancellation = f.requests.length;
-      f.cancellation.abort();
-      await f.nativeInterrupted.promise;
-      f.native.resolve(interrupted);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(entered.signal?.aborted).toBe(false);
-      expect(f.finals).toEqual([]);
-      f.releaseAppend.resolve();
-      if (code === 'worker_control_lease_not_live') {
+  it.each(['worker_control_lease_not_live', 'worker_control_revoked'])(
+    'joins an entered periodic heartbeat with %s after cancellation without replay',
+    async (code) => {
+      schedulingClock.controlled = true;
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+      const f = fixture('periodic-heartbeat', code);
+      const outcome = f.run().then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+      try {
+        await f.readyAppend.promise;
+        await vi.advanceTimersByTimeAsync(1_000);
+        await f.pendingAppend.promise;
+        const entered = f.requests.at(-1)!;
+        expect(entered.url).toBe('/worker-control/heartbeat');
+        expect(JSON.parse(entered.body)).toMatchObject({
+          operation: 'heartbeat',
+          sequence: 1,
+          lineage,
+        });
+        const requestsAtCancellation = f.requests.length;
+        f.cancellation.abort();
+        await f.nativeInterrupted.promise;
+        f.native.resolve(interrupted);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(entered.signal?.aborted).toBe(false);
+        expect(f.finals).toEqual([]);
+        f.releaseAppend.resolve();
+        if (code === 'worker_control_lease_not_live') {
+          expect(await outcome).toEqual({
+            result: { status: 'interrupted', nativeEvidence: interrupted.nativeEvidence },
+          });
+          expect(f.requests.slice(requestsAtCancellation).map((request) => request.url)).toEqual([
+            '/worker-control/final-status',
+          ]);
+          expect(f.finals).toHaveLength(1);
+          const terminal = events(f.eventPath).at(-1)!;
+          expect(terminal.event.data).toMatchObject({
+            status: 'interrupted',
+            stopReason: 'aborted',
+          });
+          expect(f.finals[0]).toEqual({
+            operation: 'final_status',
+            schemaVersion: 2,
+            lineage,
+            sequence: terminal.sequence,
+            body: terminal.event.data,
+          });
+          expect(f.sealedAtFinal).toEqual([readFileSync(f.eventPath, 'utf8')]);
+        } else {
+          expect(await outcome).toMatchObject({ error: { code, status: 403 } });
+          expect(f.finals).toEqual([]);
+          expect(f.requests.slice(requestsAtCancellation)).toEqual([]);
+        }
+        expect(f.requests.filter((request) => request.url.endsWith('/heartbeat'))).toHaveLength(2);
+        expect(events(f.eventPath).map((record) => record.event.type)).toEqual([
+          'worker.heartbeat',
+          'worker.ready',
+          'turn.failed',
+        ]);
+        // No time advance beyond the entered request is needed: a definitive refusal starts no retry budget.
+        expect(performance.now()).toBe(1_000);
+        expect(
+          f.accepted.filter(
+            (record) =>
+              record.event.type === 'worker.heartbeat' && record.event.data.status !== 'starting'
+          )
+        ).toEqual([]);
+      } finally {
+        f.native.resolve(interrupted);
+        f.releaseAppend.resolve();
+        await outcome;
+        schedulingClock.controlled = false;
+        vi.useRealTimers();
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each(['worker.ready', 'observation.content.chunk'])(
+    'publishes one sealed interrupted final after a pending %s is refused',
+    async (refusedType) => {
+      const f = fixture(refusedType);
+      const run = f.run();
+      const outcome = run.then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+      let emission: Promise<unknown> | undefined;
+      try {
+        const input = await f.started.promise;
+        if (refusedType === 'observation.content.chunk') {
+          await f.readyAppend.promise;
+          emission = emitContent(input).catch((error: unknown) => error);
+        }
+        await f.pendingAppend.promise;
+        const prefix = structuredClone(f.accepted);
+        const requestsAtCancellation = f.requests.length;
+        f.cancellation.abort(new Error('Owned exact Turn interrupt.'));
+        await f.nativeInterrupted.promise;
+        f.native.resolve(interrupted);
+        f.releaseAppend.resolve();
         expect(await outcome).toEqual({
           result: { status: 'interrupted', nativeEvidence: interrupted.nativeEvidence },
         });
-        expect(f.requests.slice(requestsAtCancellation).map((request) => request.url)).toEqual([
-          '/worker-control/final-status',
-        ]);
+        await emission;
+        expect(f.interrupt).toHaveBeenCalledTimes(1);
+        expect(f.drainTurn).toHaveBeenCalledTimes(1);
         expect(f.finals).toHaveLength(1);
         const terminal = events(f.eventPath).at(-1)!;
-        expect(terminal.event.data).toMatchObject({ status: 'interrupted', stopReason: 'aborted' });
+        expect(terminal.event).toMatchObject({
+          type: 'turn.failed',
+          data: { status: 'interrupted', stopReason: 'aborted' },
+        });
         expect(f.finals[0]).toEqual({
           operation: 'final_status',
           schemaVersion: 2,
@@ -513,118 +588,47 @@ describe('cancellation final after ordinary append refusal', () => {
           sequence: terminal.sequence,
           body: terminal.event.data,
         });
+        await expect(emitContent(input)).rejects.toThrow();
         expect(f.sealedAtFinal).toEqual([readFileSync(f.eventPath, 'utf8')]);
-      } else {
-        expect(await outcome).toMatchObject({ error: { code, status: 403 } });
-        expect(f.finals).toEqual([]);
-        expect(f.requests.slice(requestsAtCancellation)).toEqual([]);
+        expect(f.requests.slice(requestsAtCancellation).map((request) => request.url)).toEqual([
+          '/worker-control/final-status',
+        ]);
+        expect(
+          f.requests.every((request) => request.authorization === `Bearer ${tokens.controlToken}`)
+        ).toBe(true);
+        expect(f.accepted).toEqual(prefix);
+        expect(readFileSync(join(f.sessionDir, 'items.jsonl'), 'utf8')).toBe('');
+        expect(
+          events(f.eventPath).filter(
+            (record) =>
+              record.event.type === 'worker.heartbeat' &&
+              record.event.data.status === 'turn.settled'
+          )
+        ).toEqual([]);
+        if (refusedType === 'observation.content.chunk') {
+          const descriptor = f.accepted.find(
+            (record) => record.event.type === 'observation.recorded'
+          )!;
+          expect(descriptor.event.data).toMatchObject({
+            content: { state: 'expected', chunkCount: 1 },
+            fact: { phase: 'updated' },
+          });
+          expect(
+            f.accepted.some((record) => record.event.type === 'observation.content.chunk')
+          ).toBe(false);
+          expect(readFileSync(f.eventPath, 'utf8')).not.toContain(
+            'Accepted prefix must stay incomplete.'
+          );
+        }
+      } finally {
+        f.native.resolve(interrupted);
+        f.releaseAppend.resolve();
+        await outcome;
+        await emission;
+        rmSync(f.root, { recursive: true, force: true });
       }
-      expect(f.requests.filter((request) => request.url.endsWith('/heartbeat'))).toHaveLength(2);
-      expect(events(f.eventPath).map((record) => record.event.type)).toEqual([
-        'worker.heartbeat',
-        'worker.ready',
-        'turn.failed',
-      ]);
-      // No time advance beyond the entered request is needed: a definitive refusal starts no retry budget.
-      expect(performance.now()).toBe(1_000);
-      expect(
-        f.accepted.filter(
-          (record) =>
-            record.event.type === 'worker.heartbeat' && record.event.data.status !== 'starting'
-        )
-      ).toEqual([]);
-    } finally {
-      f.native.resolve(interrupted);
-      f.releaseAppend.resolve();
-      await outcome;
-      schedulingClock.controlled = false;
-      vi.useRealTimers();
-      rmSync(f.root, { recursive: true, force: true });
     }
-  });
-
-  it.each([
-    'worker.ready',
-    'observation.content.chunk',
-  ])('publishes one sealed interrupted final after a pending %s is refused', async (refusedType) => {
-    const f = fixture(refusedType);
-    const run = f.run();
-    const outcome = run.then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    let emission: Promise<unknown> | undefined;
-    try {
-      const input = await f.started.promise;
-      if (refusedType === 'observation.content.chunk') {
-        await f.readyAppend.promise;
-        emission = emitContent(input).catch((error: unknown) => error);
-      }
-      await f.pendingAppend.promise;
-      const prefix = structuredClone(f.accepted);
-      const requestsAtCancellation = f.requests.length;
-      f.cancellation.abort(new Error('Owned exact Turn interrupt.'));
-      await f.nativeInterrupted.promise;
-      f.native.resolve(interrupted);
-      f.releaseAppend.resolve();
-      expect(await outcome).toEqual({
-        result: { status: 'interrupted', nativeEvidence: interrupted.nativeEvidence },
-      });
-      await emission;
-      expect(f.interrupt).toHaveBeenCalledTimes(1);
-      expect(f.drainTurn).toHaveBeenCalledTimes(1);
-      expect(f.finals).toHaveLength(1);
-      const terminal = events(f.eventPath).at(-1)!;
-      expect(terminal.event).toMatchObject({
-        type: 'turn.failed',
-        data: { status: 'interrupted', stopReason: 'aborted' },
-      });
-      expect(f.finals[0]).toEqual({
-        operation: 'final_status',
-        schemaVersion: 2,
-        lineage,
-        sequence: terminal.sequence,
-        body: terminal.event.data,
-      });
-      await expect(emitContent(input)).rejects.toThrow();
-      expect(f.sealedAtFinal).toEqual([readFileSync(f.eventPath, 'utf8')]);
-      expect(f.requests.slice(requestsAtCancellation).map((request) => request.url)).toEqual([
-        '/worker-control/final-status',
-      ]);
-      expect(
-        f.requests.every((request) => request.authorization === `Bearer ${tokens.controlToken}`)
-      ).toBe(true);
-      expect(f.accepted).toEqual(prefix);
-      expect(readFileSync(join(f.sessionDir, 'items.jsonl'), 'utf8')).toBe('');
-      expect(
-        events(f.eventPath).filter(
-          (record) =>
-            record.event.type === 'worker.heartbeat' && record.event.data.status === 'turn.settled'
-        )
-      ).toEqual([]);
-      if (refusedType === 'observation.content.chunk') {
-        const descriptor = f.accepted.find(
-          (record) => record.event.type === 'observation.recorded'
-        )!;
-        expect(descriptor.event.data).toMatchObject({
-          content: { state: 'expected', chunkCount: 1 },
-          fact: { phase: 'updated' },
-        });
-        expect(f.accepted.some((record) => record.event.type === 'observation.content.chunk')).toBe(
-          false
-        );
-        expect(readFileSync(f.eventPath, 'utf8')).not.toContain(
-          'Accepted prefix must stay incomplete.'
-        );
-      }
-    } finally {
-      f.native.resolve(interrupted);
-      f.releaseAppend.resolve();
-      await outcome;
-      await emission;
-      rmSync(f.root, { recursive: true, force: true });
-    }
-  });
+  );
 
   it.each([
     { code: 'worker_control_lease_not_live', status: 403, cancel: false },
@@ -635,72 +639,74 @@ describe('cancellation final after ordinary append refusal', () => {
     { code: 'worker_control_fenced', status: 409, cancel: true },
     { code: 'worker_control_deadline_expired', status: 403, cancel: true },
     { code: 'worker_control_unknown_authority', status: 403, cancel: true },
-  ])('does not grant cancellation publication for $code (cancel=$cancel)', async ({
-    code,
-    status,
-    cancel,
-  }) => {
-    const f = fixture('worker.ready', code, status);
-    const outcome = f.run().then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    try {
-      await f.pendingAppend.promise;
-      if (cancel) {
-        f.cancellation.abort();
-        await f.nativeInterrupted.promise;
-      }
-      f.native.resolve(interrupted);
-      f.releaseAppend.resolve();
-      expect(await outcome).toMatchObject({ error: { code, status } });
-      expect(f.finals).toEqual([]);
-      expect(f.requests.filter((request) => request.url.endsWith('/events/append'))).toHaveLength(
-        2
+  ])(
+    'does not grant cancellation publication for $code (cancel=$cancel)',
+    async ({ code, status, cancel }) => {
+      const f = fixture('worker.ready', code, status);
+      const outcome = f.run().then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
       );
-      expect(events(f.eventPath).at(-1)?.event.data).toMatchObject({
-        status: 'failed',
-        stopReason: 'error',
-      });
-    } finally {
-      f.native.resolve(interrupted);
-      f.releaseAppend.resolve();
-      await outcome;
-      rmSync(f.root, { recursive: true, force: true });
+      try {
+        await f.pendingAppend.promise;
+        if (cancel) {
+          f.cancellation.abort();
+          await f.nativeInterrupted.promise;
+        }
+        f.native.resolve(interrupted);
+        f.releaseAppend.resolve();
+        expect(await outcome).toMatchObject({ error: { code, status } });
+        expect(f.finals).toEqual([]);
+        expect(f.requests.filter((request) => request.url.endsWith('/events/append'))).toHaveLength(
+          2
+        );
+        expect(events(f.eventPath).at(-1)?.event.data).toMatchObject({
+          status: 'failed',
+          stopReason: 'error',
+        });
+      } finally {
+        f.native.resolve(interrupted);
+        f.releaseAppend.resolve();
+        await outcome;
+        rmSync(f.root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it.each([
     { status: 'completed' as const, interruptRequested: false },
     { status: 'interrupted' as const, interruptRequested: false },
     { status: 'failed' as const, interruptRequested: true },
-  ])('does not replace native $status with cancellation after the lease refusal (interruptRequested=$interruptRequested)', async (testCase) => {
-    const f = fixture('worker.ready');
-    const outcome = f.run().then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error })
-    );
-    try {
-      await f.pendingAppend.promise;
-      f.cancellation.abort();
-      await f.nativeInterrupted.promise;
-      f.native.resolve({ assistantText: null, ...testCase, stopReason: 'native-terminal' });
-      f.releaseAppend.resolve();
-      expect(await outcome).toMatchObject({
-        error: { code: 'worker_control_lease_not_live', status: 403 },
-      });
-      expect(f.finals).toEqual([]);
-      expect(events(f.eventPath).at(-1)?.event.data).toMatchObject({
-        status: 'failed',
-        stopReason: 'error',
-      });
-    } finally {
-      f.native.resolve(interrupted);
-      f.releaseAppend.resolve();
-      await outcome;
-      rmSync(f.root, { recursive: true, force: true });
+  ])(
+    'does not replace native $status with cancellation after the lease refusal (interruptRequested=$interruptRequested)',
+    async (testCase) => {
+      const f = fixture('worker.ready');
+      const outcome = f.run().then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+      try {
+        await f.pendingAppend.promise;
+        f.cancellation.abort();
+        await f.nativeInterrupted.promise;
+        f.native.resolve({ assistantText: null, ...testCase, stopReason: 'native-terminal' });
+        f.releaseAppend.resolve();
+        expect(await outcome).toMatchObject({
+          error: { code: 'worker_control_lease_not_live', status: 403 },
+        });
+        expect(f.finals).toEqual([]);
+        expect(events(f.eventPath).at(-1)?.event.data).toMatchObject({
+          status: 'failed',
+          stopReason: 'error',
+        });
+      } finally {
+        f.native.resolve(interrupted);
+        f.releaseAppend.resolve();
+        await outcome;
+        rmSync(f.root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it.each([
     {
@@ -721,29 +727,32 @@ describe('cancellation final after ordinary append refusal', () => {
       expected: 'failed',
       stopReason: 'error',
     },
-  ])('preserves settled native $status classification with interruptRequested=$interruptRequested', async (testCase) => {
-    const f = fixture();
-    const outcome = f.run();
-    try {
-      await f.readyAppend.promise;
-      // Late cancellation cannot rewrite the immutable native result supplied by the adapter.
-      f.cancellation.abort();
-      await f.nativeInterrupted.promise;
-      f.native.resolve({
-        assistantText: null,
-        status: testCase.status,
-        interruptRequested: testCase.interruptRequested,
-        stopReason: 'native-terminal',
-      });
-      await expect(outcome).resolves.toEqual({ status: testCase.expected });
-      expect(f.finals).toHaveLength(1);
-      expect(f.finals[0]?.body).toMatchObject({
-        status: testCase.expected,
-        stopReason: testCase.stopReason,
-      });
-    } finally {
-      await outcome.catch(() => undefined);
-      rmSync(f.root, { recursive: true, force: true });
+  ])(
+    'preserves settled native $status classification with interruptRequested=$interruptRequested',
+    async (testCase) => {
+      const f = fixture();
+      const outcome = f.run();
+      try {
+        await f.readyAppend.promise;
+        // Late cancellation cannot rewrite the immutable native result supplied by the adapter.
+        f.cancellation.abort();
+        await f.nativeInterrupted.promise;
+        f.native.resolve({
+          assistantText: null,
+          status: testCase.status,
+          interruptRequested: testCase.interruptRequested,
+          stopReason: 'native-terminal',
+        });
+        await expect(outcome).resolves.toEqual({ status: testCase.expected });
+        expect(f.finals).toHaveLength(1);
+        expect(f.finals[0]?.body).toMatchObject({
+          status: testCase.expected,
+          stopReason: testCase.stopReason,
+        });
+      } finally {
+        await outcome.catch(() => undefined);
+        rmSync(f.root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 });

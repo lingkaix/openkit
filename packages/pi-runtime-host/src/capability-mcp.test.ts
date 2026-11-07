@@ -75,30 +75,30 @@ describe('OpenKit MCP binary resource redaction', () => {
 
 /** Catalog ambiguity must refuse setup rather than select a target by registration order. */
 describe('OpenKit MCP namespace admission', () => {
-  it.each([
-    false,
-    true,
-  ])('refuses normalized catalog collisions in reversed order=%s', (reverse) => {
-    const servers = ['work-files', 'work_files'].map((name) => ({
-      name,
-      config: { url: `http://127.0.0.1/mcp/${name}` },
-      scope: 'extension' as const,
-      source: 'OpenKit',
-    }));
-    if (reverse) servers.reverse();
-    const gate = new OpenKitMcpGate({
-      managed: servers,
-      agentDir: '/tmp/agent',
-      createDefaultTransport: (() => {
-        throw new Error('transport must not start');
-      }) as never,
-      cwd: '/tmp/work',
-      loadMcpConfig: (() => ({ servers: [], errors: [] })) as never,
-      secrets: [],
-    });
-    expect(() => gate.loadConfig()).toThrow(PiMcpNamespaceCollisionError);
-    expect(() =>
-      gate.createTransport({ name: 'work-files' } as never, '/tmp/work', undefined as never)
-    ).toThrow(PiMcpNamespaceCollisionError);
-  });
+  it.each([false, true])(
+    'refuses normalized catalog collisions in reversed order=%s',
+    (reverse) => {
+      const servers = ['work-files', 'work_files'].map((name) => ({
+        name,
+        config: { url: `http://127.0.0.1/mcp/${name}` },
+        scope: 'extension' as const,
+        source: 'OpenKit',
+      }));
+      if (reverse) servers.reverse();
+      const gate = new OpenKitMcpGate({
+        managed: servers,
+        agentDir: '/tmp/agent',
+        createDefaultTransport: (() => {
+          throw new Error('transport must not start');
+        }) as never,
+        cwd: '/tmp/work',
+        loadMcpConfig: (() => ({ servers: [], errors: [] })) as never,
+        secrets: [],
+      });
+      expect(() => gate.loadConfig()).toThrow(PiMcpNamespaceCollisionError);
+      expect(() =>
+        gate.createTransport({ name: 'work-files' } as never, '/tmp/work', undefined as never)
+      ).toThrow(PiMcpNamespaceCollisionError);
+    }
+  );
 });

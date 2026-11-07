@@ -86,37 +86,35 @@ describe('Discord REST private attention transport', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    'exception',
-    'server-error',
-    'gateway-timeout',
-    'malformed-ack',
-  ] as const)('preserves %s after message contact as unknown, with no retry or raw error', async (failure) => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(dm());
-    if (failure === 'exception')
-      fetch.mockRejectedValueOnce(new Error('secret raw transport error'));
-    if (failure === 'server-error')
-      fetch.mockResolvedValueOnce(new Response('private upstream error', { status: 503 }));
-    if (failure === 'gateway-timeout')
-      fetch.mockResolvedValueOnce(new Response('', { status: 408 }));
-    if (failure === 'malformed-ack')
-      fetch.mockResolvedValueOnce(
-        Response.json({ id: '423456789012345678', channel_id: 'wrong-channel' })
-      );
-    const transport = createDiscordRestTransport({
-      publicBaseUrl: 'https://openkit.example',
-      resolveBotToken: async () => 'fake-token',
-      fetch,
-    });
-    const result = await transport.sendAttention({
-      discordUserId,
-      appPath: '/app',
-      beforeSend: () => true,
-    });
-    expect(result.status).toBe('delivery-unknown');
-    expect(JSON.stringify(result)).not.toMatch(/secret|private upstream|fake-token/);
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
+  it.each(['exception', 'server-error', 'gateway-timeout', 'malformed-ack'] as const)(
+    'preserves %s after message contact as unknown, with no retry or raw error',
+    async (failure) => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(dm());
+      if (failure === 'exception')
+        fetch.mockRejectedValueOnce(new Error('secret raw transport error'));
+      if (failure === 'server-error')
+        fetch.mockResolvedValueOnce(new Response('private upstream error', { status: 503 }));
+      if (failure === 'gateway-timeout')
+        fetch.mockResolvedValueOnce(new Response('', { status: 408 }));
+      if (failure === 'malformed-ack')
+        fetch.mockResolvedValueOnce(
+          Response.json({ id: '423456789012345678', channel_id: 'wrong-channel' })
+        );
+      const transport = createDiscordRestTransport({
+        publicBaseUrl: 'https://openkit.example',
+        resolveBotToken: async () => 'fake-token',
+        fetch,
+      });
+      const result = await transport.sendAttention({
+        discordUserId,
+        appPath: '/app',
+        beforeSend: () => true,
+      });
+      expect(result.status).toBe('delivery-unknown');
+      expect(JSON.stringify(result)).not.toMatch(/secret|private upstream|fake-token/);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it('distinguishes an explicit rejected message from an uncertain send', async () => {
     const fetch = vi

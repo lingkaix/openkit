@@ -1384,66 +1384,65 @@ describe('FsStore canonical reload', () => {
     );
   });
 
-  it.each([
-    'failed',
-    'interrupted',
-    'completed',
-  ] as const)('durably denies a pending approval on a %s turn at boot', async (terminalStatus) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-terminal-approval-request-'));
-    const store = createTestStore({ dataRoot });
-    const workspace = await store.createWorkspace('Terminal approval request workspace');
-    const thread = await store.createThread(workspace.id, 'Terminal approval request thread');
-    const turn = await store.createTurn(
-      workspace.id,
-      thread.id,
-      'Close terminal approval recovery',
-      localActor
-    );
-    const approvalId = `ap_${turn.id}`;
-
-    await store.createItem({
-      id: testEntityId('it', `it_approval_request_${turn.id}`),
-      owner: { kind: 'workspace', workspaceId: workspace.id },
-      threadId: thread.id,
-      turnId: turn.id,
-      type: 'approval-request',
-      status: 'in_progress',
-      approvalRequestId: approvalId,
-      title: 'Unresolved terminal approval',
-      description: 'A terminal turn must not be reopened.',
-      kind: 'permission',
-      createdAt: turn.startedAt ?? timestamp,
-      completedAt: null,
-    });
-    await store.updateTurn(turn.id, {
-      status: terminalStatus,
-      completedAt: turn.startedAt ?? timestamp,
-      error:
-        terminalStatus === 'failed'
-          ? { code: 'interrupted', message: 'The turn failed before recovery.' }
-          : null,
-    });
-
-    const restarted = new FsStore({ dataRoot });
-    const recovered = restarted.getTurn(workspace.id, thread.id, turn.id);
-    const decision = recovered.items.find((item) => item.type === 'approval-decision');
-    expect(recovered.status).toBe(terminalStatus);
-    expect(decision).toBeUndefined();
-    expect(() => restarted.getApproval(approvalId)).toThrow(
-      `Approval request not found: ${approvalId}`
-    );
-    const canonicalDenials = () =>
-      (
-        nativeEntries(dataRoot, workspace.id, turn.id, 'item') as Array<Record<string, unknown>>
-      ).filter(
-        (item) => item.type === 'approval-decision' && item.approvalRequestId === approvalId
+  it.each(['failed', 'interrupted', 'completed'] as const)(
+    'durably denies a pending approval on a %s turn at boot',
+    async (terminalStatus) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-terminal-approval-request-'));
+      const store = createTestStore({ dataRoot });
+      const workspace = await store.createWorkspace('Terminal approval request workspace');
+      const thread = await store.createThread(workspace.id, 'Terminal approval request thread');
+      const turn = await store.createTurn(
+        workspace.id,
+        thread.id,
+        'Close terminal approval recovery',
+        localActor
       );
-    expect(canonicalDenials()).toEqual([]);
-    expect(new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, turn.id).items).toEqual(
-      recovered.items
-    );
-    expect(canonicalDenials()).toEqual([]);
-  });
+      const approvalId = `ap_${turn.id}`;
+
+      await store.createItem({
+        id: testEntityId('it', `it_approval_request_${turn.id}`),
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'approval-request',
+        status: 'in_progress',
+        approvalRequestId: approvalId,
+        title: 'Unresolved terminal approval',
+        description: 'A terminal turn must not be reopened.',
+        kind: 'permission',
+        createdAt: turn.startedAt ?? timestamp,
+        completedAt: null,
+      });
+      await store.updateTurn(turn.id, {
+        status: terminalStatus,
+        completedAt: turn.startedAt ?? timestamp,
+        error:
+          terminalStatus === 'failed'
+            ? { code: 'interrupted', message: 'The turn failed before recovery.' }
+            : null,
+      });
+
+      const restarted = new FsStore({ dataRoot });
+      const recovered = restarted.getTurn(workspace.id, thread.id, turn.id);
+      const decision = recovered.items.find((item) => item.type === 'approval-decision');
+      expect(recovered.status).toBe(terminalStatus);
+      expect(decision).toBeUndefined();
+      expect(() => restarted.getApproval(approvalId)).toThrow(
+        `Approval request not found: ${approvalId}`
+      );
+      const canonicalDenials = () =>
+        (
+          nativeEntries(dataRoot, workspace.id, turn.id, 'item') as Array<Record<string, unknown>>
+        ).filter(
+          (item) => item.type === 'approval-decision' && item.approvalRequestId === approvalId
+        );
+      expect(canonicalDenials()).toEqual([]);
+      expect(new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, turn.id).items).toEqual(
+        recovered.items
+      );
+      expect(canonicalDenials()).toEqual([]);
+    }
+  );
 
   it('ignores partial disposable item logs but refuses malformed native canonical records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-truncated-item-log-'));
@@ -1871,97 +1870,93 @@ describe('FsStore canonical reload', () => {
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
-  it.each([
-    'Workspace',
-    'Thread',
-    'Turn',
-    'Items',
-    'Artifact',
-    'AgentSession',
-  ] as const)('rejects canonical stores missing required records (%s)', async (missingRecord) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-missing-identity-'));
-    const store = createTestStore({ dataRoot });
-    const workspace = await store.createWorkspace('Missing identity workspace');
-    const thread = await store.createThread(workspace.id, 'Missing identity thread');
-    const turn = await store.createTurn(
-      workspace.id,
-      thread.id,
-      'Missing identity turn',
-      localActor
-    );
-    const artifactBody = 'Artifact body.';
-    const artifact = await store.createArtifact({
-      id: testEntityId('ar', `ar_${turn.id}`),
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'summary',
-      title: 'Missing identity artifact',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body: artifactBody },
-      ...turnOutputArtifactProof(
+  it.each(['Workspace', 'Thread', 'Turn', 'Items', 'Artifact', 'AgentSession'] as const)(
+    'rejects canonical stores missing required records (%s)',
+    async (missingRecord) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-missing-identity-'));
+      const store = createTestStore({ dataRoot });
+      const workspace = await store.createWorkspace('Missing identity workspace');
+      const thread = await store.createThread(workspace.id, 'Missing identity thread');
+      const turn = await store.createTurn(
+        workspace.id,
         thread.id,
-        turn.id,
-        'artifact-create-before-missing-record-corruption',
-        artifactBody
-      ),
-      createdAt: turn.startedAt ?? timestamp,
-      updatedAt: turn.startedAt ?? timestamp,
-    });
-    const session = await store.createAgentSession({
-      id: testEntityId('as', `as_${turn.id}`),
-      agentId: 'agent_codex_host',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      status: 'busy',
-      message: null,
-      createdAt: turn.startedAt ?? timestamp,
-      updatedAt: turn.startedAt ?? timestamp,
-    });
-    await store.updateTurn(turn.id, { agentSessionId: session.id });
-    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    await shutdownControlStoreWorkerClient();
-    if (missingRecord === 'Artifact') {
-      const path = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
-      rmSync(path);
-      await expectScopedReloadRefusal(dataRoot, [workspace.id]);
-      expect(existsSync(path)).toBe(false);
-    } else {
-      const table = {
-        Workspace: 'control_workspaces',
-        Thread: 'control_threads',
-        Turn: 'control_turns',
-        Items: 'control_product_entries',
-        AgentSession: 'control_agent_sessions',
-      }[missingRecord];
-      const id = {
-        Workspace: workspace.id,
-        Thread: thread.id,
-        Turn: turn.id,
-        Items: turn.id,
-        AgentSession: session.id,
-      }[missingRecord];
-      const key = missingRecord === 'Items' ? 'turn_id' : 'id';
-      workspaceSql(dataRoot, workspace.id, (db) => {
-        // Only this stopped corruption fixture bypasses FKs to model missing retained authority.
-        const referencedRecord = missingRecord !== 'Items';
-        try {
-          if (referencedRecord) db.pragma('foreign_keys = OFF');
-          db.prepare(`DELETE FROM ${table} WHERE ${key}=?`).run(id);
-        } finally {
-          if (referencedRecord) db.pragma('foreign_keys = ON');
-        }
+        'Missing identity turn',
+        localActor
+      );
+      const artifactBody = 'Artifact body.';
+      const artifact = await store.createArtifact({
+        id: testEntityId('ar', `ar_${turn.id}`),
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        kind: 'summary',
+        title: 'Missing identity artifact',
+        status: 'ready',
+        summary: null,
+        version: 1,
+        content: { format: 'text', body: artifactBody },
+        ...turnOutputArtifactProof(
+          thread.id,
+          turn.id,
+          'artifact-create-before-missing-record-corruption',
+          artifactBody
+        ),
+        createdAt: turn.startedAt ?? timestamp,
+        updatedAt: turn.startedAt ?? timestamp,
       });
-      await expectScopedReloadRefusal(dataRoot, [workspace.id]);
-      expect(
-        workspaceSql(dataRoot, workspace.id, (db) =>
-          db.prepare(`SELECT count(*) AS count FROM ${table} WHERE ${key}=?`).get(id)
-        )
-      ).toEqual({ count: 0 });
+      const session = await store.createAgentSession({
+        id: testEntityId('as', `as_${turn.id}`),
+        agentId: 'agent_codex_host',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: turn.startedAt ?? timestamp,
+        updatedAt: turn.startedAt ?? timestamp,
+      });
+      await store.updateTurn(turn.id, { agentSessionId: session.id });
+      const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+      await shutdownControlStoreWorkerClient();
+      if (missingRecord === 'Artifact') {
+        const path = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
+        rmSync(path);
+        await expectScopedReloadRefusal(dataRoot, [workspace.id]);
+        expect(existsSync(path)).toBe(false);
+      } else {
+        const table = {
+          Workspace: 'control_workspaces',
+          Thread: 'control_threads',
+          Turn: 'control_turns',
+          Items: 'control_product_entries',
+          AgentSession: 'control_agent_sessions',
+        }[missingRecord];
+        const id = {
+          Workspace: workspace.id,
+          Thread: thread.id,
+          Turn: turn.id,
+          Items: turn.id,
+          AgentSession: session.id,
+        }[missingRecord];
+        const key = missingRecord === 'Items' ? 'turn_id' : 'id';
+        workspaceSql(dataRoot, workspace.id, (db) => {
+          // Only this stopped corruption fixture bypasses FKs to model missing retained authority.
+          const referencedRecord = missingRecord !== 'Items';
+          try {
+            if (referencedRecord) db.pragma('foreign_keys = OFF');
+            db.prepare(`DELETE FROM ${table} WHERE ${key}=?`).run(id);
+          } finally {
+            if (referencedRecord) db.pragma('foreign_keys = ON');
+          }
+        });
+        await expectScopedReloadRefusal(dataRoot, [workspace.id]);
+        expect(
+          workspaceSql(dataRoot, workspace.id, (db) =>
+            db.prepare(`SELECT count(*) AS count FROM ${table} WHERE ${key}=?`).get(id)
+          )
+        ).toEqual({ count: 0 });
+      }
     }
-  });
+  );
 
   it.each([
     ['missing Turn.triggerActor', 'turn', null, 'triggerActor', undefined],
@@ -2018,68 +2013,71 @@ describe('FsStore canonical reload', () => {
         responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       },
     ],
-  ] as const)('rejects a canonical Workspace with %s', async (_name, recordKind, itemType, field, invalidValue) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-attribution-'));
-    const store = createTestStore({ dataRoot });
-    const workspaceId = testEntityId('ws', `ws_attribution_${itemType ?? 'turn'}`);
-    const input = workspaceImportPayload(
-      workspaceId,
-      'th_00000000-0000-7b11-b339-beca8166a3ac',
-      'it_00000000-0000-7f81-af06-68845b8e697b'
-    );
-    await store.importWorkspaceSnapshot(input);
-    const turn = input.turns[0]!;
+  ] as const)(
+    'rejects a canonical Workspace with %s',
+    async (_name, recordKind, itemType, field, invalidValue) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-attribution-'));
+      const store = createTestStore({ dataRoot });
+      const workspaceId = testEntityId('ws', `ws_attribution_${itemType ?? 'turn'}`);
+      const input = workspaceImportPayload(
+        workspaceId,
+        'th_00000000-0000-7b11-b339-beca8166a3ac',
+        'it_00000000-0000-7f81-af06-68845b8e697b'
+      );
+      await store.importWorkspaceSnapshot(input);
+      const turn = input.turns[0]!;
 
-    const record =
-      recordKind === 'turn'
-        ? metadata(dataRoot, workspaceId, 'control_turns', turn.id)
-        : (nativeEntries(dataRoot, workspaceId, turn.id, 'item')[0] as Record<string, unknown>);
-    if (recordKind === 'item') {
-      record.type = itemType;
-      if (itemType === 'approval-decision') {
-        Object.assign(record, {
-          actor: localActor,
-          causationId: 'it_00000000-0000-7f99-9fbd-01c9b2a9c1bf',
-          approvalRequestId: 'apr_attribution',
-          decision: 'granted',
-        });
-      } else if (itemType === 'user-input-request') {
-        Object.assign(record, {
-          responsibleUserId: localActor.id,
-          userInputRequestId: 'uir_attribution',
-          prompt: 'Provide attributable input.',
-          questions: [
-            {
-              id: 'question_attribution',
-              header: 'Attribution',
-              question: 'Continue?',
-              options: null,
-              isOther: true,
-              isSecret: false,
-            },
-          ],
-        });
-      } else if (itemType === 'user-input-response') {
-        Object.assign(record, {
-          actor: localActor,
-          causationId: 'it_00000000-0000-792e-85bf-b1de19e1a97f',
-          userInputRequestId: 'uir_attribution',
-          answers: { question_attribution: ['Yes'] },
-        });
-      }
-      if (invalidValue === undefined) {
-        delete record[field];
-      } else {
-        record[field] = invalidValue;
-      }
-    } else if (invalidValue === undefined) delete record[field];
-    else record[field] = invalidValue;
-    if (recordKind === 'turn')
-      await replaceMetadata(dataRoot, workspaceId, 'control_turns', turn.id, record);
-    else await replaceEntry(dataRoot, workspaceId, turn.id, 'item', 1, record);
+      const record =
+        recordKind === 'turn'
+          ? metadata(dataRoot, workspaceId, 'control_turns', turn.id)
+          : (nativeEntries(dataRoot, workspaceId, turn.id, 'item')[0] as Record<string, unknown>);
+      if (recordKind === 'item') {
+        record.type = itemType;
+        if (itemType === 'approval-decision') {
+          Object.assign(record, {
+            actor: localActor,
+            causationId: 'it_00000000-0000-7f99-9fbd-01c9b2a9c1bf',
+            approvalRequestId: 'apr_attribution',
+            decision: 'granted',
+          });
+        } else if (itemType === 'user-input-request') {
+          Object.assign(record, {
+            responsibleUserId: localActor.id,
+            userInputRequestId: 'uir_attribution',
+            prompt: 'Provide attributable input.',
+            questions: [
+              {
+                id: 'question_attribution',
+                header: 'Attribution',
+                question: 'Continue?',
+                options: null,
+                isOther: true,
+                isSecret: false,
+              },
+            ],
+          });
+        } else if (itemType === 'user-input-response') {
+          Object.assign(record, {
+            actor: localActor,
+            causationId: 'it_00000000-0000-792e-85bf-b1de19e1a97f',
+            userInputRequestId: 'uir_attribution',
+            answers: { question_attribution: ['Yes'] },
+          });
+        }
+        if (invalidValue === undefined) {
+          delete record[field];
+        } else {
+          record[field] = invalidValue;
+        }
+      } else if (invalidValue === undefined) delete record[field];
+      else record[field] = invalidValue;
+      if (recordKind === 'turn')
+        await replaceMetadata(dataRoot, workspaceId, 'control_turns', turn.id, record);
+      else await replaceEntry(dataRoot, workspaceId, turn.id, 'item', 1, record);
 
-    await expectScopedReloadRefusal(dataRoot, [workspaceId]);
-  });
+      await expectScopedReloadRefusal(dataRoot, [workspaceId]);
+    }
+  );
 
   it.each([
     ['stale turn items', /Turn items/],

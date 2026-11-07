@@ -616,131 +616,131 @@ describe('filesystem workspace synchronization', () => {
     }
   });
 
-  it.each([
-    'content',
-    'empty',
-  ] as const)('cleans only the rollback-proven atomic replacement %s orphan on retry', async (orphanState) => {
-    const fixture = await createChangedFileFixture(`replacement_${orphanState}`, 'worker\n');
-    const reviewId = `swr_fs_replacement_${orphanState}`;
-    const relativePath = 'notes.txt';
-    const ownedRoot = replacementRootFor(fixture.targetRoot, reviewId, relativePath);
-    const rollbackRoot = rollbackRootFor(fixture.stagingRoot, reviewId);
-    const otherReviewRoot = replacementRootFor(
-      fixture.targetRoot,
-      `${reviewId}_other`,
-      relativePath
-    );
-    const otherPathRoot = replacementRootFor(fixture.targetRoot, reviewId, 'other.txt');
-    const userRoot = join(fixture.targetRoot, '.openkit-write-user-data');
+  it.each(['content', 'empty'] as const)(
+    'cleans only the rollback-proven atomic replacement %s orphan on retry',
+    async (orphanState) => {
+      const fixture = await createChangedFileFixture(`replacement_${orphanState}`, 'worker\n');
+      const reviewId = `swr_fs_replacement_${orphanState}`;
+      const relativePath = 'notes.txt';
+      const ownedRoot = replacementRootFor(fixture.targetRoot, reviewId, relativePath);
+      const rollbackRoot = rollbackRootFor(fixture.stagingRoot, reviewId);
+      const otherReviewRoot = replacementRootFor(
+        fixture.targetRoot,
+        `${reviewId}_other`,
+        relativePath
+      );
+      const otherPathRoot = replacementRootFor(fixture.targetRoot, reviewId, 'other.txt');
+      const userRoot = join(fixture.targetRoot, '.openkit-write-user-data');
 
-    try {
-      const { stagingRootIdentity, targetRootIdentity } = await createRollbackReadyFixture({
-        changeSetId: fixture.changeSet.id,
-        replacementPaths: fixture.changeSet.changedPaths.map((entry) => entry.path),
-        reviewId,
-        rollbackRoot,
-        stagingRoot: fixture.stagingRoot,
-        targetRoot: fixture.targetRoot,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      await mkdir(ownedRoot);
-      if (orphanState === 'content') {
-        await writeFile(join(ownedRoot, 'content'), 'partial worker content\n');
-      }
-      await mkdir(join(rollbackRoot, 'files'), { recursive: true });
-      await writeFile(join(rollbackRoot, 'files', relativePath), 'base\n');
-      for (const [root, sentinel] of [
-        [otherReviewRoot, 'other review\n'],
-        [otherPathRoot, 'other path\n'],
-        [userRoot, 'user data\n'],
-      ] as const) {
-        await mkdir(root);
-        await writeFile(join(root, 'sentinel'), sentinel);
-      }
+      try {
+        const { stagingRootIdentity, targetRootIdentity } = await createRollbackReadyFixture({
+          changeSetId: fixture.changeSet.id,
+          replacementPaths: fixture.changeSet.changedPaths.map((entry) => entry.path),
+          reviewId,
+          rollbackRoot,
+          stagingRoot: fixture.stagingRoot,
+          targetRoot: fixture.targetRoot,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        await mkdir(ownedRoot);
+        if (orphanState === 'content') {
+          await writeFile(join(ownedRoot, 'content'), 'partial worker content\n');
+        }
+        await mkdir(join(rollbackRoot, 'files'), { recursive: true });
+        await writeFile(join(rollbackRoot, 'files', relativePath), 'base\n');
+        for (const [root, sentinel] of [
+          [otherReviewRoot, 'other review\n'],
+          [otherPathRoot, 'other path\n'],
+          [userRoot, 'user data\n'],
+        ] as const) {
+          await mkdir(root);
+          await writeFile(join(root, 'sentinel'), sentinel);
+        }
 
-      const result = await applyStagedFilesystemChanges({
-        appliedAt: fixture.timestamp,
-        before: fixture.before,
-        changeSet: fixture.changeSet,
-        persistResult: ignoreApplyResult,
-        reviewId,
-        stagingRoot: fixture.stagingRoot,
-        stagingRootIdentity,
-        targetRoot: fixture.targetRoot,
-        targetRootIdentity,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-
-      expect({
-        otherPath: readFileSync(join(otherPathRoot, 'sentinel'), 'utf8'),
-        otherReview: readFileSync(join(otherReviewRoot, 'sentinel'), 'utf8'),
-        ownedExists: existsSync(ownedRoot),
-        userData: readFileSync(join(userRoot, 'sentinel'), 'utf8'),
-      }).toEqual({
-        otherPath: 'other path\n',
-        otherReview: 'other review\n',
-        ownedExists: false,
-        userData: 'user data\n',
-      });
-      expect(result.status).toBe('applied');
-    } finally {
-      await rm(fixture.targetRoot, { force: true, recursive: true });
-      await rm(fixture.workerRoot, { force: true, recursive: true });
-      await rm(fixture.stagingRoot, { force: true, recursive: true });
-    }
-  });
-
-  it.each([
-    'missing',
-    'corrupt',
-  ] as const)('fails closed for an exact atomic replacement path with %s rollback proof', async (markerState) => {
-    const fixture = await createChangedFileFixture(
-      `replacement_collision_${markerState}`,
-      'worker\n'
-    );
-    const reviewId = `swr_fs_replacement_collision_${markerState}`;
-    const relativePath = 'notes.txt';
-    const replacementRoot = replacementRootFor(fixture.targetRoot, reviewId, relativePath);
-    const rollbackRoot = rollbackRootFor(fixture.stagingRoot, reviewId);
-    const sentinelPath = join(replacementRoot, 'user-sentinel.txt');
-
-    try {
-      await mkdir(replacementRoot);
-      await writeFile(sentinelPath, 'user data\n');
-      if (markerState === 'corrupt') {
-        await mkdir(rollbackRoot);
-        await writeFile(join(rollbackRoot, 'ready.json'), '{not-json\n');
-      }
-      await expect(
-        applyStagedFilesystemChanges({
+        const result = await applyStagedFilesystemChanges({
           appliedAt: fixture.timestamp,
           before: fixture.before,
           changeSet: fixture.changeSet,
           persistResult: ignoreApplyResult,
           reviewId,
           stagingRoot: fixture.stagingRoot,
-          stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
+          stagingRootIdentity,
           targetRoot: fixture.targetRoot,
-          targetRootIdentity: await rootIdentity(fixture.targetRoot),
+          targetRootIdentity,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toThrow();
+        });
 
-      expect({
-        replacementRootExists: existsSync(replacementRoot),
-        sentinel: existsSync(sentinelPath) ? readFileSync(sentinelPath, 'utf8') : null,
-        targetContent: readFileSync(join(fixture.targetRoot, relativePath), 'utf8'),
-      }).toEqual({
-        replacementRootExists: true,
-        sentinel: 'user data\n',
-        targetContent: 'base\n',
-      });
-    } finally {
-      await rm(fixture.targetRoot, { force: true, recursive: true });
-      await rm(fixture.workerRoot, { force: true, recursive: true });
-      await rm(fixture.stagingRoot, { force: true, recursive: true });
+        expect({
+          otherPath: readFileSync(join(otherPathRoot, 'sentinel'), 'utf8'),
+          otherReview: readFileSync(join(otherReviewRoot, 'sentinel'), 'utf8'),
+          ownedExists: existsSync(ownedRoot),
+          userData: readFileSync(join(userRoot, 'sentinel'), 'utf8'),
+        }).toEqual({
+          otherPath: 'other path\n',
+          otherReview: 'other review\n',
+          ownedExists: false,
+          userData: 'user data\n',
+        });
+        expect(result.status).toBe('applied');
+      } finally {
+        await rm(fixture.targetRoot, { force: true, recursive: true });
+        await rm(fixture.workerRoot, { force: true, recursive: true });
+        await rm(fixture.stagingRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
+
+  it.each(['missing', 'corrupt'] as const)(
+    'fails closed for an exact atomic replacement path with %s rollback proof',
+    async (markerState) => {
+      const fixture = await createChangedFileFixture(
+        `replacement_collision_${markerState}`,
+        'worker\n'
+      );
+      const reviewId = `swr_fs_replacement_collision_${markerState}`;
+      const relativePath = 'notes.txt';
+      const replacementRoot = replacementRootFor(fixture.targetRoot, reviewId, relativePath);
+      const rollbackRoot = rollbackRootFor(fixture.stagingRoot, reviewId);
+      const sentinelPath = join(replacementRoot, 'user-sentinel.txt');
+
+      try {
+        await mkdir(replacementRoot);
+        await writeFile(sentinelPath, 'user data\n');
+        if (markerState === 'corrupt') {
+          await mkdir(rollbackRoot);
+          await writeFile(join(rollbackRoot, 'ready.json'), '{not-json\n');
+        }
+        await expect(
+          applyStagedFilesystemChanges({
+            appliedAt: fixture.timestamp,
+            before: fixture.before,
+            changeSet: fixture.changeSet,
+            persistResult: ignoreApplyResult,
+            reviewId,
+            stagingRoot: fixture.stagingRoot,
+            stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
+            targetRoot: fixture.targetRoot,
+            targetRootIdentity: await rootIdentity(fixture.targetRoot),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).rejects.toThrow();
+
+        expect({
+          replacementRootExists: existsSync(replacementRoot),
+          sentinel: existsSync(sentinelPath) ? readFileSync(sentinelPath, 'utf8') : null,
+          targetContent: readFileSync(join(fixture.targetRoot, relativePath), 'utf8'),
+        }).toEqual({
+          replacementRootExists: true,
+          sentinel: 'user data\n',
+          targetContent: 'base\n',
+        });
+      } finally {
+        await rm(fixture.targetRoot, { force: true, recursive: true });
+        await rm(fixture.workerRoot, { force: true, recursive: true });
+        await rm(fixture.stagingRoot, { force: true, recursive: true });
+      }
+    }
+  );
 
   it('fails closed when valid rollback proof omits the exact atomic replacement path', async () => {
     const fixture = await createChangedFileFixture('replacement_unproven_path', 'worker\n');
@@ -885,182 +885,186 @@ describe('filesystem workspace synchronization', () => {
     }
   });
 
-  it.each([
-    'outer-first',
-    'inner-first',
-  ] as const)('serializes filesystem applies whose canonical target roots overlap when %s', async (order) => {
-    const orderName = order === 'outer-first' ? 'outer_first' : 'inner_first';
-    const targetRoot = createRoot(`openkit-fs-target-concurrent-overlap-${orderName}-`);
-    const innerTargetRoot = join(targetRoot, 'nested');
-    const outerWorkerRoot = createRoot(`openkit-fs-worker-concurrent-overlap-${orderName}-outer-`);
-    const outerStagingRoot = createRoot(
-      `openkit-fs-staging-concurrent-overlap-${orderName}-outer-`
-    );
-    const innerWorkerRoot = createRoot(`openkit-fs-worker-concurrent-overlap-${orderName}-inner-`);
-    const innerStagingRoot = createRoot(
-      `openkit-fs-staging-concurrent-overlap-${orderName}-inner-`
-    );
-    const probe = await createChangedFileFixture(
-      `concurrent_overlap_${orderName}_probe`,
-      'probe review\n'
-    );
-    const timestamp = '2026-06-27T12:09:12.000Z';
-    const firstPersistEntered = createPromiseGate();
-    const releaseFirstPersist = createPromiseGate();
-    let firstReleased = false;
-    let secondPersistedBeforeRelease = false;
-
-    try {
-      await mkdir(innerTargetRoot, { recursive: true });
-      await mkdir(join(outerWorkerRoot, 'nested'), { recursive: true });
-      await writeFile(join(innerTargetRoot, 'notes.txt'), 'base\n');
-      await writeFile(join(outerWorkerRoot, 'nested', 'notes.txt'), 'outer review\n');
-      await writeFile(join(innerWorkerRoot, 'notes.txt'), 'inner review\n');
-      for (const path of [
-        join(innerTargetRoot, 'notes.txt'),
-        join(outerWorkerRoot, 'nested', 'notes.txt'),
-        join(innerWorkerRoot, 'notes.txt'),
-      ]) {
-        await chmod(path, 0o644);
-      }
-      const outerBefore = await createFilesystemSnapshotManifest({
-        createdAt: timestamp,
-        resourceId: 'fs_outer',
-        rootPath: targetRoot,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      const innerBefore = await createFilesystemSnapshotManifest({
-        createdAt: timestamp,
-        resourceId: 'fs_inner',
-        rootPath: innerTargetRoot,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      const outerAfter = await createFilesystemSnapshotManifest({
-        createdAt: timestamp,
-        resourceId: 'fs_outer',
-        rootPath: outerWorkerRoot,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      const innerAfter = await createFilesystemSnapshotManifest({
-        createdAt: timestamp,
-        resourceId: 'fs_inner',
-        rootPath: innerWorkerRoot,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      const outerChangeSet = buildFilesystemWorkspaceChangeSet({
-        after: outerAfter,
-        before: outerBefore,
-        changeSetId: `wcs_fs_concurrent_overlap_${orderName}_outer`,
-        createdAt: timestamp,
-        inputSnapshotId: `wis_fs_concurrent_overlap_${orderName}_outer`,
-        materializationRecordId: `wmr_fs_concurrent_overlap_${orderName}_outer`,
-      });
-      const innerChangeSet = buildFilesystemWorkspaceChangeSet({
-        after: innerAfter,
-        before: innerBefore,
-        changeSetId: `wcs_fs_concurrent_overlap_${orderName}_inner`,
-        createdAt: timestamp,
-        inputSnapshotId: `wis_fs_concurrent_overlap_${orderName}_inner`,
-        materializationRecordId: `wmr_fs_concurrent_overlap_${orderName}_inner`,
-      });
-      await stageFilesystemWorkspaceChanges({
-        changeSet: outerChangeSet,
-        sourceRoot: outerWorkerRoot,
-        stagingRoot: outerStagingRoot,
-      });
-      await stageFilesystemWorkspaceChanges({
-        changeSet: innerChangeSet,
-        sourceRoot: innerWorkerRoot,
-        stagingRoot: innerStagingRoot,
-      });
-      const outerInput = {
-        before: outerBefore,
-        changeSet: outerChangeSet,
-        expectedContent: 'outer review\n',
-        reviewId: `swr_fs_concurrent_overlap_${orderName}_outer`,
-        stagingRoot: outerStagingRoot,
-        targetRoot,
-      };
-      const innerInput = {
-        before: innerBefore,
-        changeSet: innerChangeSet,
-        expectedContent: 'inner review\n',
-        reviewId: `swr_fs_concurrent_overlap_${orderName}_inner`,
-        stagingRoot: innerStagingRoot,
-        targetRoot: innerTargetRoot,
-      };
-      const [firstInput, secondInput] =
-        order === 'outer-first' ? [outerInput, innerInput] : [innerInput, outerInput];
-      const firstApply = applyStagedFilesystemChanges({
-        appliedAt: timestamp,
-        before: firstInput.before,
-        changeSet: firstInput.changeSet,
-        persistResult: async () => {
-          firstPersistEntered.open();
-          await releaseFirstPersist.promise;
-        },
-        reviewId: firstInput.reviewId,
-        stagingRoot: firstInput.stagingRoot,
-        stagingRootIdentity: await rootIdentity(firstInput.stagingRoot),
-        targetRoot: firstInput.targetRoot,
-        targetRootIdentity: await rootIdentity(firstInput.targetRoot),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      await firstPersistEntered.promise;
-      const secondApply = applyStagedFilesystemChanges({
-        appliedAt: timestamp,
-        before: secondInput.before,
-        changeSet: secondInput.changeSet,
-        persistResult: () => {
-          secondPersistedBeforeRelease ||= !firstReleased;
-        },
-        reviewId: secondInput.reviewId,
-        stagingRoot: secondInput.stagingRoot,
-        stagingRootIdentity: await rootIdentity(secondInput.stagingRoot),
-        targetRoot: secondInput.targetRoot,
-        targetRootIdentity: await rootIdentity(secondInput.targetRoot),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      const probeResult = await applyStagedFilesystemChanges({
-        appliedAt: probe.timestamp,
-        before: probe.before,
-        changeSet: probe.changeSet,
-        persistResult: ignoreApplyResult,
-        reviewId: `swr_fs_concurrent_overlap_${orderName}_probe`,
-        stagingRoot: probe.stagingRoot,
-        stagingRootIdentity: await rootIdentity(probe.stagingRoot),
-        targetRoot: probe.targetRoot,
-        targetRootIdentity: await rootIdentity(probe.targetRoot),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
-      const secondPersistedBeforeFirstRelease = secondPersistedBeforeRelease;
-
-      firstReleased = true;
-      releaseFirstPersist.open();
-      const [firstResult, secondResult] = await Promise.all([firstApply, secondApply]);
-
-      expect(secondPersistedBeforeFirstRelease).toBe(false);
-      expect([firstResult.status, secondResult.status, probeResult.status]).toEqual([
-        'applied',
-        'conflicted',
-        'applied',
-      ]);
-      expect(readFileSync(join(innerTargetRoot, 'notes.txt'), 'utf8')).toBe(
-        firstInput.expectedContent
+  it.each(['outer-first', 'inner-first'] as const)(
+    'serializes filesystem applies whose canonical target roots overlap when %s',
+    async (order) => {
+      const orderName = order === 'outer-first' ? 'outer_first' : 'inner_first';
+      const targetRoot = createRoot(`openkit-fs-target-concurrent-overlap-${orderName}-`);
+      const innerTargetRoot = join(targetRoot, 'nested');
+      const outerWorkerRoot = createRoot(
+        `openkit-fs-worker-concurrent-overlap-${orderName}-outer-`
       );
-    } finally {
-      firstReleased = true;
-      releaseFirstPersist.open();
-      await rm(targetRoot, { force: true, recursive: true });
-      await rm(outerWorkerRoot, { force: true, recursive: true });
-      await rm(outerStagingRoot, { force: true, recursive: true });
-      await rm(innerWorkerRoot, { force: true, recursive: true });
-      await rm(innerStagingRoot, { force: true, recursive: true });
-      await rm(probe.targetRoot, { force: true, recursive: true });
-      await rm(probe.workerRoot, { force: true, recursive: true });
-      await rm(probe.stagingRoot, { force: true, recursive: true });
+      const outerStagingRoot = createRoot(
+        `openkit-fs-staging-concurrent-overlap-${orderName}-outer-`
+      );
+      const innerWorkerRoot = createRoot(
+        `openkit-fs-worker-concurrent-overlap-${orderName}-inner-`
+      );
+      const innerStagingRoot = createRoot(
+        `openkit-fs-staging-concurrent-overlap-${orderName}-inner-`
+      );
+      const probe = await createChangedFileFixture(
+        `concurrent_overlap_${orderName}_probe`,
+        'probe review\n'
+      );
+      const timestamp = '2026-06-27T12:09:12.000Z';
+      const firstPersistEntered = createPromiseGate();
+      const releaseFirstPersist = createPromiseGate();
+      let firstReleased = false;
+      let secondPersistedBeforeRelease = false;
+
+      try {
+        await mkdir(innerTargetRoot, { recursive: true });
+        await mkdir(join(outerWorkerRoot, 'nested'), { recursive: true });
+        await writeFile(join(innerTargetRoot, 'notes.txt'), 'base\n');
+        await writeFile(join(outerWorkerRoot, 'nested', 'notes.txt'), 'outer review\n');
+        await writeFile(join(innerWorkerRoot, 'notes.txt'), 'inner review\n');
+        for (const path of [
+          join(innerTargetRoot, 'notes.txt'),
+          join(outerWorkerRoot, 'nested', 'notes.txt'),
+          join(innerWorkerRoot, 'notes.txt'),
+        ]) {
+          await chmod(path, 0o644);
+        }
+        const outerBefore = await createFilesystemSnapshotManifest({
+          createdAt: timestamp,
+          resourceId: 'fs_outer',
+          rootPath: targetRoot,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const innerBefore = await createFilesystemSnapshotManifest({
+          createdAt: timestamp,
+          resourceId: 'fs_inner',
+          rootPath: innerTargetRoot,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const outerAfter = await createFilesystemSnapshotManifest({
+          createdAt: timestamp,
+          resourceId: 'fs_outer',
+          rootPath: outerWorkerRoot,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const innerAfter = await createFilesystemSnapshotManifest({
+          createdAt: timestamp,
+          resourceId: 'fs_inner',
+          rootPath: innerWorkerRoot,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const outerChangeSet = buildFilesystemWorkspaceChangeSet({
+          after: outerAfter,
+          before: outerBefore,
+          changeSetId: `wcs_fs_concurrent_overlap_${orderName}_outer`,
+          createdAt: timestamp,
+          inputSnapshotId: `wis_fs_concurrent_overlap_${orderName}_outer`,
+          materializationRecordId: `wmr_fs_concurrent_overlap_${orderName}_outer`,
+        });
+        const innerChangeSet = buildFilesystemWorkspaceChangeSet({
+          after: innerAfter,
+          before: innerBefore,
+          changeSetId: `wcs_fs_concurrent_overlap_${orderName}_inner`,
+          createdAt: timestamp,
+          inputSnapshotId: `wis_fs_concurrent_overlap_${orderName}_inner`,
+          materializationRecordId: `wmr_fs_concurrent_overlap_${orderName}_inner`,
+        });
+        await stageFilesystemWorkspaceChanges({
+          changeSet: outerChangeSet,
+          sourceRoot: outerWorkerRoot,
+          stagingRoot: outerStagingRoot,
+        });
+        await stageFilesystemWorkspaceChanges({
+          changeSet: innerChangeSet,
+          sourceRoot: innerWorkerRoot,
+          stagingRoot: innerStagingRoot,
+        });
+        const outerInput = {
+          before: outerBefore,
+          changeSet: outerChangeSet,
+          expectedContent: 'outer review\n',
+          reviewId: `swr_fs_concurrent_overlap_${orderName}_outer`,
+          stagingRoot: outerStagingRoot,
+          targetRoot,
+        };
+        const innerInput = {
+          before: innerBefore,
+          changeSet: innerChangeSet,
+          expectedContent: 'inner review\n',
+          reviewId: `swr_fs_concurrent_overlap_${orderName}_inner`,
+          stagingRoot: innerStagingRoot,
+          targetRoot: innerTargetRoot,
+        };
+        const [firstInput, secondInput] =
+          order === 'outer-first' ? [outerInput, innerInput] : [innerInput, outerInput];
+        const firstApply = applyStagedFilesystemChanges({
+          appliedAt: timestamp,
+          before: firstInput.before,
+          changeSet: firstInput.changeSet,
+          persistResult: async () => {
+            firstPersistEntered.open();
+            await releaseFirstPersist.promise;
+          },
+          reviewId: firstInput.reviewId,
+          stagingRoot: firstInput.stagingRoot,
+          stagingRootIdentity: await rootIdentity(firstInput.stagingRoot),
+          targetRoot: firstInput.targetRoot,
+          targetRootIdentity: await rootIdentity(firstInput.targetRoot),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        await firstPersistEntered.promise;
+        const secondApply = applyStagedFilesystemChanges({
+          appliedAt: timestamp,
+          before: secondInput.before,
+          changeSet: secondInput.changeSet,
+          persistResult: () => {
+            secondPersistedBeforeRelease ||= !firstReleased;
+          },
+          reviewId: secondInput.reviewId,
+          stagingRoot: secondInput.stagingRoot,
+          stagingRootIdentity: await rootIdentity(secondInput.stagingRoot),
+          targetRoot: secondInput.targetRoot,
+          targetRootIdentity: await rootIdentity(secondInput.targetRoot),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const probeResult = await applyStagedFilesystemChanges({
+          appliedAt: probe.timestamp,
+          before: probe.before,
+          changeSet: probe.changeSet,
+          persistResult: ignoreApplyResult,
+          reviewId: `swr_fs_concurrent_overlap_${orderName}_probe`,
+          stagingRoot: probe.stagingRoot,
+          stagingRootIdentity: await rootIdentity(probe.stagingRoot),
+          targetRoot: probe.targetRoot,
+          targetRootIdentity: await rootIdentity(probe.targetRoot),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        const secondPersistedBeforeFirstRelease = secondPersistedBeforeRelease;
+
+        firstReleased = true;
+        releaseFirstPersist.open();
+        const [firstResult, secondResult] = await Promise.all([firstApply, secondApply]);
+
+        expect(secondPersistedBeforeFirstRelease).toBe(false);
+        expect([firstResult.status, secondResult.status, probeResult.status]).toEqual([
+          'applied',
+          'conflicted',
+          'applied',
+        ]);
+        expect(readFileSync(join(innerTargetRoot, 'notes.txt'), 'utf8')).toBe(
+          firstInput.expectedContent
+        );
+      } finally {
+        firstReleased = true;
+        releaseFirstPersist.open();
+        await rm(targetRoot, { force: true, recursive: true });
+        await rm(outerWorkerRoot, { force: true, recursive: true });
+        await rm(outerStagingRoot, { force: true, recursive: true });
+        await rm(innerWorkerRoot, { force: true, recursive: true });
+        await rm(innerStagingRoot, { force: true, recursive: true });
+        await rm(probe.targetRoot, { force: true, recursive: true });
+        await rm(probe.workerRoot, { force: true, recursive: true });
+        await rm(probe.stagingRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it('does not let a later sibling bypass an earlier queued ancestor reservation', async () => {
     const targetContainer = createRoot('openkit-fs-target-concurrent-no-barging-');
@@ -1888,39 +1892,42 @@ describe('filesystem workspace synchronization', () => {
   it.each([
     ['modified', 'worker\n'],
     ['deleted', null],
-  ] as const)('reports a conflict when a %s target has been chmodded since its snapshot', async (status, workerContent) => {
-    const fixture = await createChangedFileFixture(`permission_${status}`, workerContent);
+  ] as const)(
+    'reports a conflict when a %s target has been chmodded since its snapshot',
+    async (status, workerContent) => {
+      const fixture = await createChangedFileFixture(`permission_${status}`, workerContent);
 
-    try {
-      expect(fixture.changeSet.changedPaths).toMatchObject([{ status }]);
-      await chmod(join(fixture.targetRoot, 'notes.txt'), 0o600);
+      try {
+        expect(fixture.changeSet.changedPaths).toMatchObject([{ status }]);
+        await chmod(join(fixture.targetRoot, 'notes.txt'), 0o600);
 
-      const result = await applyStagedFilesystemChanges({
-        appliedAt: fixture.timestamp,
-        before: fixture.before,
-        changeSet: fixture.changeSet,
-        persistResult: ignoreApplyResult,
-        reviewId: `swr_fs_permission_${status}`,
-        stagingRoot: fixture.stagingRoot,
-        stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
-        targetRoot: fixture.targetRoot,
-        targetRootIdentity: await rootIdentity(fixture.targetRoot),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      });
+        const result = await applyStagedFilesystemChanges({
+          appliedAt: fixture.timestamp,
+          before: fixture.before,
+          changeSet: fixture.changeSet,
+          persistResult: ignoreApplyResult,
+          reviewId: `swr_fs_permission_${status}`,
+          stagingRoot: fixture.stagingRoot,
+          stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
+          targetRoot: fixture.targetRoot,
+          targetRootIdentity: await rootIdentity(fixture.targetRoot),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
 
-      expect(result).toMatchObject({
-        appliedPaths: [],
-        conflictRecords: ['Target permissions changed since snapshot: notes.txt'],
-        status: 'conflicted',
-      });
-      expect(readFileSync(join(fixture.targetRoot, 'notes.txt'), 'utf8')).toBe('base\n');
-      expect((await stat(join(fixture.targetRoot, 'notes.txt'))).mode & 0o777).toBe(0o600);
-    } finally {
-      await rm(fixture.targetRoot, { force: true, recursive: true });
-      await rm(fixture.workerRoot, { force: true, recursive: true });
-      await rm(fixture.stagingRoot, { force: true, recursive: true });
+        expect(result).toMatchObject({
+          appliedPaths: [],
+          conflictRecords: ['Target permissions changed since snapshot: notes.txt'],
+          status: 'conflicted',
+        });
+        expect(readFileSync(join(fixture.targetRoot, 'notes.txt'), 'utf8')).toBe('base\n');
+        expect((await stat(join(fixture.targetRoot, 'notes.txt'))).mode & 0o777).toBe(0o600);
+      } finally {
+        await rm(fixture.targetRoot, { force: true, recursive: true });
+        await rm(fixture.workerRoot, { force: true, recursive: true });
+        await rm(fixture.stagingRoot, { force: true, recursive: true });
+      }
     }
-  });
+  );
 
   it('rejects a staged file whose reviewed content changed before apply', async () => {
     const fixture = await createChangedFileFixture('staging_drift', 'worker\n');
@@ -2016,76 +2023,75 @@ describe('filesystem workspace synchronization', () => {
     }
   });
 
-  it.each([
-    'missing',
-    'corrupt',
-    'mismatch',
-  ] as const)('fails closed and preserves a deterministic rollback preparation with %s owner proof', async (ownerState) => {
-    const fixture = await createChangedFileFixture(
-      `rollback_preparation_owner_${ownerState}`,
-      'worker\n'
-    );
-    const reviewId = `swr_fs_rollback_preparation_owner_${ownerState}`;
-    const preparationRoot = rollbackPreparationRootFor(fixture.stagingRoot, reviewId);
-    const preparationOwnerPath = `${preparationRoot}.owner.json`;
-    const sentinelPath = join(preparationRoot, 'sentinel.txt');
+  it.each(['missing', 'corrupt', 'mismatch'] as const)(
+    'fails closed and preserves a deterministic rollback preparation with %s owner proof',
+    async (ownerState) => {
+      const fixture = await createChangedFileFixture(
+        `rollback_preparation_owner_${ownerState}`,
+        'worker\n'
+      );
+      const reviewId = `swr_fs_rollback_preparation_owner_${ownerState}`;
+      const preparationRoot = rollbackPreparationRootFor(fixture.stagingRoot, reviewId);
+      const preparationOwnerPath = `${preparationRoot}.owner.json`;
+      const sentinelPath = join(preparationRoot, 'sentinel.txt');
 
-    try {
-      const stagingRootIdentity = await rootIdentity(fixture.stagingRoot);
-      const targetRootIdentity = await rootIdentity(fixture.targetRoot);
-      const targetRealPath = await realpath(fixture.targetRoot);
-      await mkdir(preparationRoot);
-      await writeFile(sentinelPath, 'partial rollback data\n');
-      if (ownerState === 'corrupt') {
-        await writeFile(preparationOwnerPath, '{not-json\n');
-      } else if (ownerState === 'mismatch') {
-        await writeFile(
-          preparationOwnerPath,
-          `${JSON.stringify({
-            changeSetId: fixture.changeSet.id,
-            reviewId: `${reviewId}_other`,
+      try {
+        const stagingRootIdentity = await rootIdentity(fixture.stagingRoot);
+        const targetRootIdentity = await rootIdentity(fixture.targetRoot);
+        const targetRealPath = await realpath(fixture.targetRoot);
+        await mkdir(preparationRoot);
+        await writeFile(sentinelPath, 'partial rollback data\n');
+        if (ownerState === 'corrupt') {
+          await writeFile(preparationOwnerPath, '{not-json\n');
+        } else if (ownerState === 'mismatch') {
+          await writeFile(
+            preparationOwnerPath,
+            `${JSON.stringify({
+              changeSetId: fixture.changeSet.id,
+              reviewId: `${reviewId}_other`,
+              stagingRootIdentity,
+              targetRootDigest: `sha256:${createHash('sha256')
+                .update(Buffer.from(targetRealPath))
+                .digest('hex')}`,
+              targetRootIdentity,
+              version: 1,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            })}\n`
+          );
+        }
+
+        await expect(
+          applyStagedFilesystemChanges({
+            appliedAt: fixture.timestamp,
+            before: fixture.before,
+            changeSet: fixture.changeSet,
+            persistResult: ignoreApplyResult,
+            reviewId,
+            stagingRoot: fixture.stagingRoot,
             stagingRootIdentity,
-            targetRootDigest: `sha256:${createHash('sha256')
-              .update(Buffer.from(targetRealPath))
-              .digest('hex')}`,
+            targetRoot: fixture.targetRoot,
             targetRootIdentity,
-            version: 1,
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          })}\n`
-        );
+          })
+        ).rejects.toThrow();
+        expect({
+          ownerExists: existsSync(preparationOwnerPath),
+          preparationExists: existsSync(preparationRoot),
+          sentinel: readFileSync(sentinelPath, 'utf8'),
+          targetContent: readFileSync(join(fixture.targetRoot, 'notes.txt'), 'utf8'),
+        }).toEqual({
+          ownerExists: ownerState !== 'missing',
+          preparationExists: true,
+          sentinel: 'partial rollback data\n',
+          targetContent: 'base\n',
+        });
+      } finally {
+        await rm(fixture.targetRoot, { force: true, recursive: true });
+        await rm(fixture.workerRoot, { force: true, recursive: true });
+        await rm(fixture.stagingRoot, { force: true, recursive: true });
       }
-
-      await expect(
-        applyStagedFilesystemChanges({
-          appliedAt: fixture.timestamp,
-          before: fixture.before,
-          changeSet: fixture.changeSet,
-          persistResult: ignoreApplyResult,
-          reviewId,
-          stagingRoot: fixture.stagingRoot,
-          stagingRootIdentity,
-          targetRoot: fixture.targetRoot,
-          targetRootIdentity,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toThrow();
-      expect({
-        ownerExists: existsSync(preparationOwnerPath),
-        preparationExists: existsSync(preparationRoot),
-        sentinel: readFileSync(sentinelPath, 'utf8'),
-        targetContent: readFileSync(join(fixture.targetRoot, 'notes.txt'), 'utf8'),
-      }).toEqual({
-        ownerExists: ownerState !== 'missing',
-        preparationExists: true,
-        sentinel: 'partial rollback data\n',
-        targetContent: 'base\n',
-      });
-    } finally {
-      await rm(fixture.targetRoot, { force: true, recursive: true });
-      await rm(fixture.workerRoot, { force: true, recursive: true });
-      await rm(fixture.stagingRoot, { force: true, recursive: true });
     }
-  });
+  );
 
   it('refuses crash recovery when a target was human-edited after rollback preparation', async () => {
     const fixture = await createChangedFileFixture('recovery_human_edit', 'worker\n');
@@ -2392,44 +2398,44 @@ describe('filesystem workspace synchronization', () => {
     }
   });
 
-  it.each([
-    'missing',
-    'corrupt',
-  ] as const)('fails closed and preserves rollback backups when the ready marker is %s', async (markerState) => {
-    const fixture = await createChangedFileFixture(`recovery_${markerState}`, 'worker\n');
-    const reviewId = `swr_fs_recovery_${markerState}`;
-    const rollbackRoot = rollbackRootFor(fixture.stagingRoot, reviewId);
-    const backupPath = join(rollbackRoot, 'files', 'notes.txt');
+  it.each(['missing', 'corrupt'] as const)(
+    'fails closed and preserves rollback backups when the ready marker is %s',
+    async (markerState) => {
+      const fixture = await createChangedFileFixture(`recovery_${markerState}`, 'worker\n');
+      const reviewId = `swr_fs_recovery_${markerState}`;
+      const rollbackRoot = rollbackRootFor(fixture.stagingRoot, reviewId);
+      const backupPath = join(rollbackRoot, 'files', 'notes.txt');
 
-    try {
-      await mkdir(join(rollbackRoot, 'files'), { recursive: true });
-      await writeFile(backupPath, 'base\n');
-      if (markerState === 'corrupt') {
-        await writeFile(join(rollbackRoot, 'ready.json'), '{not-json\n');
+      try {
+        await mkdir(join(rollbackRoot, 'files'), { recursive: true });
+        await writeFile(backupPath, 'base\n');
+        if (markerState === 'corrupt') {
+          await writeFile(join(rollbackRoot, 'ready.json'), '{not-json\n');
+        }
+        await writeFile(join(fixture.targetRoot, 'notes.txt'), 'worker\n');
+
+        await expect(
+          applyStagedFilesystemChanges({
+            appliedAt: fixture.timestamp,
+            before: fixture.before,
+            changeSet: fixture.changeSet,
+            persistResult: ignoreApplyResult,
+            reviewId,
+            stagingRoot: fixture.stagingRoot,
+            stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
+            targetRoot: fixture.targetRoot,
+            targetRootIdentity: await rootIdentity(fixture.targetRoot),
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).rejects.toThrow();
+        expect(readFileSync(backupPath, 'utf8')).toBe('base\n');
+      } finally {
+        await rm(fixture.targetRoot, { force: true, recursive: true });
+        await rm(fixture.workerRoot, { force: true, recursive: true });
+        await rm(fixture.stagingRoot, { force: true, recursive: true });
       }
-      await writeFile(join(fixture.targetRoot, 'notes.txt'), 'worker\n');
-
-      await expect(
-        applyStagedFilesystemChanges({
-          appliedAt: fixture.timestamp,
-          before: fixture.before,
-          changeSet: fixture.changeSet,
-          persistResult: ignoreApplyResult,
-          reviewId,
-          stagingRoot: fixture.stagingRoot,
-          stagingRootIdentity: await rootIdentity(fixture.stagingRoot),
-          targetRoot: fixture.targetRoot,
-          targetRootIdentity: await rootIdentity(fixture.targetRoot),
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toThrow();
-      expect(readFileSync(backupPath, 'utf8')).toBe('base\n');
-    } finally {
-      await rm(fixture.targetRoot, { force: true, recursive: true });
-      await rm(fixture.workerRoot, { force: true, recursive: true });
-      await rm(fixture.stagingRoot, { force: true, recursive: true });
     }
-  });
+  );
 });
 
 const publication = vi.hoisted(() => ({
@@ -2567,41 +2573,39 @@ describe('filesystem publication durability', () => {
     }
   });
 
-  it.each([
-    'rollback-file',
-    'rollback-parent',
-    'replacement-file',
-    'replacement-parent',
-  ] as const)('does not commit an applied result at the %s synchronization failure', async (boundary) => {
-    const f = await createChangedFileFixture(`durable-${boundary}`, 'after\n');
-    const persisted = vi.fn();
-    publication.events.length = 0;
-    publication.fail = (path, directory) => {
-      const rollback = publication.events.find(
-        (event) => event.op === 'rename' && event.from?.endsWith('.prepare')
-      );
-      const replacement = publication.events.find(
-        (event) => event.op === 'rename' && event.path === join(f.targetRoot, 'notes.txt')
-      );
-      const match =
-        boundary === 'rollback-file'
-          ? !directory && path.endsWith('.prepare/files/notes.txt')
-          : boundary === 'rollback-parent'
-            ? directory && rollback !== undefined && path === dirname(rollback.path)
-            : boundary === 'replacement-file'
-              ? !directory && path.endsWith('/content') && path.includes('/.openkit-write-')
-              : directory && replacement !== undefined && path === f.targetRoot;
-      if (match) publication.fail = undefined;
-      return match;
-    };
-    try {
-      await expect(applyDurabilityFixture(f, persisted)).rejects.toThrow();
-      expect(persisted).not.toHaveBeenCalled();
-      expect(readFileSync(join(f.targetRoot, 'notes.txt'), 'utf8')).toBe('base\n');
-    } finally {
-      publication.fail = undefined;
-      for (const path of [f.targetRoot, f.workerRoot, f.stagingRoot])
-        await rm(path, { recursive: true, force: true });
+  it.each(['rollback-file', 'rollback-parent', 'replacement-file', 'replacement-parent'] as const)(
+    'does not commit an applied result at the %s synchronization failure',
+    async (boundary) => {
+      const f = await createChangedFileFixture(`durable-${boundary}`, 'after\n');
+      const persisted = vi.fn();
+      publication.events.length = 0;
+      publication.fail = (path, directory) => {
+        const rollback = publication.events.find(
+          (event) => event.op === 'rename' && event.from?.endsWith('.prepare')
+        );
+        const replacement = publication.events.find(
+          (event) => event.op === 'rename' && event.path === join(f.targetRoot, 'notes.txt')
+        );
+        const match =
+          boundary === 'rollback-file'
+            ? !directory && path.endsWith('.prepare/files/notes.txt')
+            : boundary === 'rollback-parent'
+              ? directory && rollback !== undefined && path === dirname(rollback.path)
+              : boundary === 'replacement-file'
+                ? !directory && path.endsWith('/content') && path.includes('/.openkit-write-')
+                : directory && replacement !== undefined && path === f.targetRoot;
+        if (match) publication.fail = undefined;
+        return match;
+      };
+      try {
+        await expect(applyDurabilityFixture(f, persisted)).rejects.toThrow();
+        expect(persisted).not.toHaveBeenCalled();
+        expect(readFileSync(join(f.targetRoot, 'notes.txt'), 'utf8')).toBe('base\n');
+      } finally {
+        publication.fail = undefined;
+        for (const path of [f.targetRoot, f.workerRoot, f.stagingRoot])
+          await rm(path, { recursive: true, force: true });
+      }
     }
-  });
+  );
 });

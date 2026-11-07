@@ -116,76 +116,77 @@ function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: 
 }
 
 describe('scope-owned admission', () => {
-  it.each([
-    'absent',
-    'empty',
-  ] as const)('refuses %s expected server authority without an empty replacement', (fault) => {
-    const dataRoot = root();
-    const core = openCoreDb(dataRoot);
-    applyMigrations(core);
-    expect(ensureLocalUser(core)).toBeTruthy();
-    core.sqlite.close();
-    const markerPath = join(dataRoot, 'server', 'layout.json');
-    const marker = readFileSync(markerPath);
-    const path = coreDbPath(dataRoot);
-    if (fault === 'absent') rmSync(path);
-    else writeFileSync(path, '');
-    let replacement: ReturnType<typeof openCoreDbWithIntegrityCheck> | undefined;
-    try {
-      expect(() => {
-        replacement = openCoreDbWithIntegrityCheck(dataRoot);
-      }).toThrow(/Core database is missing/);
-      expect(existsSync(path)).toBe(fault === 'empty');
-      if (fault === 'empty') expect(readFileSync(path)).toEqual(Buffer.alloc(0));
-      expect(readFileSync(markerPath)).toEqual(marker);
-    } finally {
-      replacement?.sqlite.close();
+  it.each(['absent', 'empty'] as const)(
+    'refuses %s expected server authority without an empty replacement',
+    (fault) => {
+      const dataRoot = root();
+      const core = openCoreDb(dataRoot);
+      applyMigrations(core);
+      expect(ensureLocalUser(core)).toBeTruthy();
+      core.sqlite.close();
+      const markerPath = join(dataRoot, 'server', 'layout.json');
+      const marker = readFileSync(markerPath);
+      const path = coreDbPath(dataRoot);
+      if (fault === 'absent') rmSync(path);
+      else writeFileSync(path, '');
+      let replacement: ReturnType<typeof openCoreDbWithIntegrityCheck> | undefined;
+      try {
+        expect(() => {
+          replacement = openCoreDbWithIntegrityCheck(dataRoot);
+        }).toThrow(/Core database is missing/);
+        expect(existsSync(path)).toBe(fault === 'empty');
+        if (fault === 'empty') expect(readFileSync(path)).toEqual(Buffer.alloc(0));
+        expect(readFileSync(markerPath)).toEqual(marker);
+      } finally {
+        replacement?.sqlite.close();
+      }
     }
-  });
+  );
 
-  it.each([
-    'corrupt',
-    'missing',
-    'empty',
-  ] as const)('refuses Workspace database state %s without recreation', async (fault) => {
-    const dataRoot = root();
-    for (const id of [badId, goodId]) {
-      const db = openWorkspaceDb(dataRoot, id);
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
-      db.sqlite.close();
-    }
-    initializeWorkspaceKnowledgePredecessor(dataRoot, goodId);
-    const path = workspaceDbPath(dataRoot, badId);
-    const damaged =
-      fault === 'empty' ? Buffer.alloc(0) : Buffer.from('unreadable canonical Workspace authority');
-    if (fault === 'missing') rmSync(path);
-    else writeFileSync(path, damaged);
+  it.each(['corrupt', 'missing', 'empty'] as const)(
+    'refuses Workspace database state %s without recreation',
+    async (fault) => {
+      const dataRoot = root();
+      for (const id of [badId, goodId]) {
+        const db = openWorkspaceDb(dataRoot, id);
+        applyScopedMigrations(db, undefined, 'pre-knowledge');
+        db.sqlite.close();
+      }
+      initializeWorkspaceKnowledgePredecessor(dataRoot, goodId);
+      const path = workspaceDbPath(dataRoot, badId);
+      const damaged =
+        fault === 'empty'
+          ? Buffer.alloc(0)
+          : Buffer.from('unreadable canonical Workspace authority');
+      if (fault === 'missing') rmSync(path);
+      else writeFileSync(path, damaged);
 
-    await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
-    expect(isScopeAdmitted(dataRoot, 'workspace', badId)).toBe(false);
-    expect(() => openBootVerifiedWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
-    expect(() => openWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
-    if (fault === 'missing') expect(existsSync(path)).toBe(false);
-    else expect(readFileSync(path)).toEqual(damaged);
-    const good = openBootVerifiedWorkspaceDb(dataRoot, goodId);
-    try {
-      good.sqlite.exec(
-        "CREATE TABLE sibling_proof (value TEXT); INSERT INTO sibling_proof VALUES ('usable')"
-      );
-      expect(good.sqlite.prepare('SELECT value FROM sibling_proof').pluck().get()).toBe('usable');
-    } finally {
-      good.sqlite.close();
+      await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
+      expect(isScopeAdmitted(dataRoot, 'workspace', badId)).toBe(false);
+      expect(() => openBootVerifiedWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
+      expect(() => openWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
+      if (fault === 'missing') expect(existsSync(path)).toBe(false);
+      else expect(readFileSync(path)).toEqual(damaged);
+      const good = openBootVerifiedWorkspaceDb(dataRoot, goodId);
+      try {
+        good.sqlite.exec(
+          "CREATE TABLE sibling_proof (value TEXT); INSERT INTO sibling_proof VALUES ('usable')"
+        );
+        expect(good.sqlite.prepare('SELECT value FROM sibling_proof').pluck().get()).toBe('usable');
+      } finally {
+        good.sqlite.close();
+      }
+      const readiness = withScopeAdmissionReadiness(createBootReadinessSnapshot(), dataRoot);
+      expect(readiness.acceptingProductWork).toBe(true);
+      expect(readiness.subsystems.storage.state).toBe('degraded');
+      expect(readiness.subsystems.storage.reasons).toEqual([
+        expect.objectContaining({
+          code: 'storage.scope-quarantined',
+          blocks: [`workspace:${badId}`],
+        }),
+      ]);
     }
-    const readiness = withScopeAdmissionReadiness(createBootReadinessSnapshot(), dataRoot);
-    expect(readiness.acceptingProductWork).toBe(true);
-    expect(readiness.subsystems.storage.state).toBe('degraded');
-    expect(readiness.subsystems.storage.reasons).toEqual([
-      expect.objectContaining({
-        code: 'storage.scope-quarantined',
-        blocks: [`workspace:${badId}`],
-      }),
-    ]);
-  });
+  );
 
   it('loads healthy native history without publishing a corrupt sibling cache', async () => {
     const dataRoot = root();

@@ -125,48 +125,49 @@ describe('Deployment data-root backup', () => {
     expect(client.operations['backup.create']).not.toHaveBeenCalled();
   });
 
-  it.each([
-    401, 403,
-  ])('handles initial %s denial on create and recovers without credentials', async (status) => {
-    const client = makeClient();
-    vi.mocked(client.operations['backup.create']).mockRejectedValueOnce(
-      new ApiCallError(status, POISON)
-    );
-    const { container } = renderScreen(client);
-    await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
-    expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(container.querySelector('input')).toBeNull();
-    expect(container.innerHTML).not.toContain(POISON);
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByRole('button', { name: 'Create backup' })).toBeInTheDocument();
-    expect(client.operations['backup.create']).toHaveBeenCalledTimes(1);
-  });
+  it.each([401, 403])(
+    'handles initial %s denial on create and recovers without credentials',
+    async (status) => {
+      const client = makeClient();
+      vi.mocked(client.operations['backup.create']).mockRejectedValueOnce(
+        new ApiCallError(status, POISON)
+      );
+      const { container } = renderScreen(client);
+      await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      expect(container.querySelector('input')).toBeNull();
+      expect(container.innerHTML).not.toContain(POISON);
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByRole('button', { name: 'Create backup' })).toBeInTheDocument();
+      expect(client.operations['backup.create']).toHaveBeenCalledTimes(1);
+    }
+  );
 
-  it.each([
-    'backup.create',
-    'backup.verify',
-  ] as const)('clears prior records on %s denial; Retry never replays a mutation', async (method) => {
-    const client = makeClient();
-    const { container } = renderScreen(client);
-    await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
-    await screen.findByText('Backup created');
-    vi.mocked(client.operations[method]).mockRejectedValueOnce(new ApiCallError(403, POISON));
-    await userEvent.click(
-      screen.getByRole('button', {
-        name: method === 'backup.create' ? 'Create backup' : 'Verify backup',
-      })
-    );
-    expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(container.innerHTML).not.toContain(BACKUP_ID);
-    expect(container.innerHTML).not.toContain(POISON);
-    const calls = vi.mocked(client.operations[method]).mock.calls.length;
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await screen.findByRole('button', { name: 'Create backup' });
-    expect(client.operations[method]).toHaveBeenCalledTimes(calls);
-    expect(screen.queryByText('Backup created')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Create backup' }));
-    expect(await screen.findByText('Backup created')).toBeInTheDocument();
-  });
+  it.each(['backup.create', 'backup.verify'] as const)(
+    'clears prior records on %s denial; Retry never replays a mutation',
+    async (method) => {
+      const client = makeClient();
+      const { container } = renderScreen(client);
+      await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
+      await screen.findByText('Backup created');
+      vi.mocked(client.operations[method]).mockRejectedValueOnce(new ApiCallError(403, POISON));
+      await userEvent.click(
+        screen.getByRole('button', {
+          name: method === 'backup.create' ? 'Create backup' : 'Verify backup',
+        })
+      );
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      expect(container.innerHTML).not.toContain(BACKUP_ID);
+      expect(container.innerHTML).not.toContain(POISON);
+      const calls = vi.mocked(client.operations[method]).mock.calls.length;
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      await screen.findByRole('button', { name: 'Create backup' });
+      expect(client.operations[method]).toHaveBeenCalledTimes(calls);
+      expect(screen.queryByText('Backup created')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Create backup' }));
+      expect(await screen.findByText('Backup created')).toBeInTheDocument();
+    }
+  );
 
   it('hides a successful summary after a denied follow-up create', async () => {
     const client = makeClient();

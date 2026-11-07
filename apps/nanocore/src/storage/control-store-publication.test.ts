@@ -357,29 +357,32 @@ describe('FsStore to native publication ownership', () => {
   it.each([
     ['file', 1],
     ['parent', 2],
-  ] as const)('refuses a native %s sync failure without an accepted reference after cold reopen', async (_kind, fault) => {
-    const f = await fixture();
-    const before = f.history();
-    const turn = structuredClone(f.store.getTurnById(f.turn.id));
-    f.arm(fault);
-    await expect(f.store.createItem(f.item)).rejects.toThrow();
-    const rows = f.stop();
-    expect(
-      rows.some(
-        (row) => row.phase === 'sync-failed' && row.where === 'worker' && row.kind === _kind
-      )
-    ).toBe(true);
-    // DX: failed publication may leave unreferenced bytes, never an accepted dangling reference.
-    expect(f.history()).toEqual(before);
-    expect(f.store.getTurnById(f.turn.id)).toEqual(turn);
-    await shutdownControlStoreWorkerClient();
-    const cold = createTestStore({ dataRoot: f.root });
-    expect(cold.getTurnById(f.turn.id)).toEqual(turn);
-    expect(f.history()).toEqual(before);
-    // A definite refusal does not invent an accepted record or prevent a fresh owner invocation.
-    await expect(cold.createItem(f.item)).resolves.toEqual(f.item);
-    expect(f.history().some((entry) => entry.id === f.item.id)).toBe(true);
-  });
+  ] as const)(
+    'refuses a native %s sync failure without an accepted reference after cold reopen',
+    async (_kind, fault) => {
+      const f = await fixture();
+      const before = f.history();
+      const turn = structuredClone(f.store.getTurnById(f.turn.id));
+      f.arm(fault);
+      await expect(f.store.createItem(f.item)).rejects.toThrow();
+      const rows = f.stop();
+      expect(
+        rows.some(
+          (row) => row.phase === 'sync-failed' && row.where === 'worker' && row.kind === _kind
+        )
+      ).toBe(true);
+      // DX: failed publication may leave unreferenced bytes, never an accepted dangling reference.
+      expect(f.history()).toEqual(before);
+      expect(f.store.getTurnById(f.turn.id)).toEqual(turn);
+      await shutdownControlStoreWorkerClient();
+      const cold = createTestStore({ dataRoot: f.root });
+      expect(cold.getTurnById(f.turn.id)).toEqual(turn);
+      expect(f.history()).toEqual(before);
+      // A definite refusal does not invent an accepted record or prevent a fresh owner invocation.
+      await expect(cold.createItem(f.item)).resolves.toEqual(f.item);
+      expect(f.history().some((entry) => entry.id === f.item.id)).toBe(true);
+    }
+  );
 });
 
 /** Records exact bytes and link targets without traversing symbolic links. */

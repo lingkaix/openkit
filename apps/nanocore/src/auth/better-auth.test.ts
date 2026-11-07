@@ -153,100 +153,100 @@ describe('createBetterAuth', () => {
     ].flatMap((policy) =>
       (['expired', 'revoked'] as const).map((tokenState) => ({ ...policy, tokenState }))
     )
-  )('protects bootstrap and retains $signup signup after the administrator Token is $tokenState', async ({
-    enabled,
-    tokenState,
-  }) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-bootstrap-'));
-    const coreDb = openCoreDb(dataRoot);
-    const now = new Date('2026-10-30T00:00:00.000Z');
-    const tokenExpiresAt = new Date(now.getTime() + 60_000);
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(now);
-    try {
-      applyMigrations(coreDb);
-      const issued = ensureServerBootstrapToken(coreDb, { now });
-      expect(issued !== null).toBe(true);
-      writeServerBootstrapTokenEmission(dataRoot, issued!);
-      const baseURL = 'https://core.openkit.example';
-      const auth = createBetterAuth(coreDb, {
-        env: { BETTER_AUTH_SECRET: randomBytes(32).toString('hex') },
-        mode: 'server',
-        openKitConfig: {
-          server: { publicBaseUrl: baseURL },
-          ...(enabled === undefined ? {} : { auth: { signup: { enabled } } }),
-        },
-      });
-      const signUp = () =>
-        auth.handler(
-          new Request(`${baseURL}/api/auth/sign-up/email`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              email: `${randomUUID()}@example.test`,
-              name: 'Signup fixture',
-              password: randomBytes(24).toString('base64url'),
-            }),
-          })
-        );
-      const userCount = () =>
-        (
-          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+  )(
+    'protects bootstrap and retains $signup signup after the administrator Token is $tokenState',
+    async ({ enabled, tokenState }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-bootstrap-'));
+      const coreDb = openCoreDb(dataRoot);
+      const now = new Date('2026-10-30T00:00:00.000Z');
+      const tokenExpiresAt = new Date(now.getTime() + 60_000);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(now);
+      try {
+        applyMigrations(coreDb);
+        const issued = ensureServerBootstrapToken(coreDb, { now });
+        expect(issued !== null).toBe(true);
+        writeServerBootstrapTokenEmission(dataRoot, issued!);
+        const baseURL = 'https://core.openkit.example';
+        const auth = createBetterAuth(coreDb, {
+          env: { BETTER_AUTH_SECRET: randomBytes(32).toString('hex') },
+          mode: 'server',
+          openKitConfig: {
+            server: { publicBaseUrl: baseURL },
+            ...(enabled === undefined ? {} : { auth: { signup: { enabled } } }),
+          },
+        });
+        const signUp = () =>
+          auth.handler(
+            new Request(`${baseURL}/api/auth/sign-up/email`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                email: `${randomUUID()}@example.test`,
+                name: 'Signup fixture',
+                password: randomBytes(24).toString('base64url'),
+              }),
+            })
+          );
+        const userCount = () =>
+          (
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+              count: number;
+            }
+          ).count;
+
+        const before = await signUp();
+        // #542: an incomplete ceremony refuses signup without making its issued bootstrap unusable.
+        expect.soft(before.status >= 400 && before.status < 500).toBe(true);
+        expect.soft(userCount()).toBe(0);
+        for (const table of ['account', 'session']) {
+          const row = coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
             count: number;
-          }
-        ).count;
+          };
+          expect.soft(row.count).toBe(0);
+        }
+        const consumed = await consumeServerBootstrapToken(coreDb, {
+          token: issued!.token,
+          ownerUserId: allocateEntityId('usr'),
+          displayName: 'Bootstrap owner',
+          email: `${randomUUID()}@example.test`,
+          password: randomBytes(24).toString('base64url'),
+          tokenExpiresAt: tokenExpiresAt.toISOString(),
+          now,
+        });
+        expect(consumed.status).toBe('consumed');
+        if (consumed.status !== 'consumed') throw new Error('Bootstrap consumption failed.');
+        expect(userCount()).toBe(1);
+        expect(
+          (await verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now })) !== null
+        ).toBe(true);
 
-      const before = await signUp();
-      // #542: an incomplete ceremony refuses signup without making its issued bootstrap unusable.
-      expect.soft(before.status >= 400 && before.status < 500).toBe(true);
-      expect.soft(userCount()).toBe(0);
-      for (const table of ['account', 'session']) {
-        const row = coreDb.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
-          count: number;
-        };
-        expect.soft(row.count).toBe(0);
+        const permitted = enabled !== false;
+        const after = await signUp();
+        expect(after.status === 200).toBe(permitted);
+        if (!permitted) expect(after.status >= 400 && after.status < 500).toBe(true);
+        expect(userCount()).toBe(permitted ? 2 : 1);
+
+        if (tokenState === 'expired') vi.setSystemTime(tokenExpiresAt.getTime() + 1);
+        else revokeOpenKitAccessTokenRecord(coreDb, consumed.record.tokenId, now);
+        expect(
+          (await verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now: new Date() })) ===
+            null
+        ).toBe(true);
+        // Ceremony completion survives credential lifecycle changes on this same auth instance.
+        const afterCredentialEnds = await signUp();
+        expect(afterCredentialEnds.status === 200).toBe(permitted);
+        if (!permitted)
+          expect(afterCredentialEnds.status >= 400 && afterCredentialEnds.status < 500).toBe(true);
+        expect(userCount()).toBe(permitted ? 3 : 1);
+      } finally {
+        vi.useRealTimers();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
-      const consumed = await consumeServerBootstrapToken(coreDb, {
-        token: issued!.token,
-        ownerUserId: allocateEntityId('usr'),
-        displayName: 'Bootstrap owner',
-        email: `${randomUUID()}@example.test`,
-        password: randomBytes(24).toString('base64url'),
-        tokenExpiresAt: tokenExpiresAt.toISOString(),
-        now,
-      });
-      expect(consumed.status).toBe('consumed');
-      if (consumed.status !== 'consumed') throw new Error('Bootstrap consumption failed.');
-      expect(userCount()).toBe(1);
-      expect(
-        (await verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now })) !== null
-      ).toBe(true);
-
-      const permitted = enabled !== false;
-      const after = await signUp();
-      expect(after.status === 200).toBe(permitted);
-      if (!permitted) expect(after.status >= 400 && after.status < 500).toBe(true);
-      expect(userCount()).toBe(permitted ? 2 : 1);
-
-      if (tokenState === 'expired') vi.setSystemTime(tokenExpiresAt.getTime() + 1);
-      else revokeOpenKitAccessTokenRecord(coreDb, consumed.record.tokenId, now);
-      expect(
-        (await verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now: new Date() })) ===
-          null
-      ).toBe(true);
-      // Ceremony completion survives credential lifecycle changes on this same auth instance.
-      const afterCredentialEnds = await signUp();
-      expect(afterCredentialEnds.status === 200).toBe(permitted);
-      if (!permitted)
-        expect(afterCredentialEnds.status >= 400 && afterCredentialEnds.status < 500).toBe(true);
-      expect(userCount()).toBe(permitted ? 3 : 1);
-    } finally {
-      vi.useRealTimers();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
-  });
+  );
 
   it('resolves the local fallback and validates server secrets without opening storage', () => {
     expect(resolveBetterAuthSecret({}, 'local')).toContain('local-development-secret');

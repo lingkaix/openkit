@@ -92,351 +92,355 @@ afterEach(async () => {
 });
 
 describe('Codex App Server adapter', () => {
-  it.each([
-    false,
-    true,
-  ])('continues pinned tool history through real Gateway native compaction; failSummary=%s', async (failSummary) => {
-    const roots = await tempRoots();
-    closers.push(() => rm(roots.base, { recursive: true, force: true }));
-    await writeFile(join(roots.state, 'config.toml'), 'model_auto_compact_token_limit = 20000\n');
-    const requests: Array<{ kind: string; body: Record<string, unknown> }> = [];
-    const mcp = await mcpServer();
-    let providerCalls = 0;
-    const providerBodies: Record<string, unknown>[] = [];
-    const providerTransport = await responsesServer((body, response) => {
-      const request = JSON.parse(body);
-      providerBodies.push(request);
-      providerCalls += 1;
-      if (providerCalls === 1) {
-        const definitions = request.tools as Array<Record<string, unknown>>;
-        const hasExec = definitions.some(
-          (tool) =>
-            tool.type === 'namespace' &&
-            tool.name === 'functions' &&
-            (tool.tools as Array<Record<string, unknown>>).some(
-              (child) => child.type === 'custom' && child.name === 'exec'
-            )
-        );
-        if (!hasExec) writeFunctionCall(response, advertisedMcpTool(body));
-        else {
-          // The pin can expose MCP through its native code-mode tool. Invoke only the synthetic alpha fixture.
-          const item = {
-            type: 'custom_tool_call',
-            id: 'ctc_fixture',
-            call_id: 'call_fixture',
-            name: 'exec',
-            namespace: 'functions',
-            input:
-              'const tool = ALL_TOOLS.find(tool => tool.name.endsWith("alpha_tool")); if (!tool) throw new Error("Fixture alpha tool is missing."); text(await tools[tool.name]({}));',
-            status: 'completed',
-          };
-          const events = [
-            {
-              type: 'response.created',
-              response: { id: 'resp_tool', status: 'in_progress', output: [] },
-            },
-            {
-              type: 'response.output_item.added',
-              output_index: 0,
-              item: { ...item, input: '', status: 'in_progress' },
-            },
-            { type: 'response.custom_tool_call_input.delta', output_index: 0, delta: item.input },
-            { type: 'response.output_item.done', output_index: 0, item },
-            {
-              type: 'response.completed',
-              response: { id: 'resp_tool', status: 'completed', output: [item] },
-            },
-          ];
-          response.writeHead(200, { 'content-type': 'text/event-stream' });
+  it.each([false, true])(
+    'continues pinned tool history through real Gateway native compaction; failSummary=%s',
+    async (failSummary) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      await writeFile(join(roots.state, 'config.toml'), 'model_auto_compact_token_limit = 20000\n');
+      const requests: Array<{ kind: string; body: Record<string, unknown> }> = [];
+      const mcp = await mcpServer();
+      let providerCalls = 0;
+      const providerBodies: Record<string, unknown>[] = [];
+      const providerTransport = await responsesServer((body, response) => {
+        const request = JSON.parse(body);
+        providerBodies.push(request);
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          const definitions = request.tools as Array<Record<string, unknown>>;
+          const hasExec = definitions.some(
+            (tool) =>
+              tool.type === 'namespace' &&
+              tool.name === 'functions' &&
+              (tool.tools as Array<Record<string, unknown>>).some(
+                (child) => child.type === 'custom' && child.name === 'exec'
+              )
+          );
+          if (!hasExec) writeFunctionCall(response, advertisedMcpTool(body));
+          else {
+            // The pin can expose MCP through its native code-mode tool. Invoke only the synthetic alpha fixture.
+            const item = {
+              type: 'custom_tool_call',
+              id: 'ctc_fixture',
+              call_id: 'call_fixture',
+              name: 'exec',
+              namespace: 'functions',
+              input:
+                'const tool = ALL_TOOLS.find(tool => tool.name.endsWith("alpha_tool")); if (!tool) throw new Error("Fixture alpha tool is missing."); text(await tools[tool.name]({}));',
+              status: 'completed',
+            };
+            const events = [
+              {
+                type: 'response.created',
+                response: { id: 'resp_tool', status: 'in_progress', output: [] },
+              },
+              {
+                type: 'response.output_item.added',
+                output_index: 0,
+                item: { ...item, input: '', status: 'in_progress' },
+              },
+              { type: 'response.custom_tool_call_input.delta', output_index: 0, delta: item.input },
+              { type: 'response.output_item.done', output_index: 0, item },
+              {
+                type: 'response.completed',
+                response: { id: 'resp_tool', status: 'completed', output: [item] },
+              },
+            ];
+            response.writeHead(200, { 'content-type': 'text/event-stream' });
+            response.end(
+              events
+                .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+                .join('')
+            );
+          }
+          return true;
+        }
+        const summary = providerCalls === 3;
+        if (providerCalls >= 3 && failSummary) {
+          response.writeHead(503, { 'content-type': 'application/json' });
           response.end(
-            events
-              .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
-              .join('')
+            JSON.stringify({
+              error: { code: 'provider_unavailable', message: 'Synthetic summary refusal.' },
+            })
+          );
+          return true;
+        }
+        const text = summary
+          ? 'Synthetic summary: cedar; tool already completed; continue pending work.'
+          : 'Synthetic ordinary reply.';
+        const item = {
+          id: `msg_probe_${providerCalls}`,
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text, annotations: [] }],
+        };
+        const inputTokens = providerCalls === 2 ? 30000 : 100;
+        const payload = {
+          id: `resp_probe_${providerCalls}`,
+          status: 'completed',
+          output: [item],
+          usage: { input_tokens: inputTokens, output_tokens: 10, total_tokens: inputTokens + 10 },
+        };
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(
+          `event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } })}\n\n`
+        );
+        response.write(
+          `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: text })}\n\n`
+        );
+        response.write(
+          `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item })}\n\n`
+        );
+        response.end(
+          `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: payload })}\n\n`
+        );
+        return true;
+      });
+      const models = createDefaultPiAiGatewayModels();
+      const stock = models.getProvider('openai')!;
+      const template = models.getModels().find((model) => model.api === 'openai-responses')!;
+      models.setProvider({ ...stock, models: [{ ...template, id: 'gpt-6-astra' }] });
+      const provider = {
+        id: 'local-stock',
+        adapterId: stock.id,
+        apiKey: INFERENCE_SECRET,
+        baseUrl: `http://127.0.0.1:${providerTransport.port}/v1`,
+        models: ['gpt-6-astra'],
+        requiresApiKey: true,
+        gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+      } as ResolvedLLMProviderConfig;
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+      });
+      const admissionFailures: unknown[] = [];
+      const inference = await responsesServer(async (body, response, nativeRequest) => {
+        const parsed = JSON.parse(body);
+        const metadata = JSON.parse(parsed.client_metadata['x-codex-turn-metadata']);
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(nativeRequest.headers))
+          if (typeof value === 'string') headers.set(key, value);
+        const hint = codexInferenceRuntimeHintMapping.map(headers, parsed);
+        expect(hint?.requestKind).toBe(metadata.request_kind);
+        const admitted = { ...parsed };
+        for (const field of codexInferenceRuntimeHintMapping.bodyFields) delete admitted[field];
+        requests.push({ kind: metadata.request_kind, body: admitted });
+        try {
+          const stream = await dispatcher.createResponsesStream(
+            provider,
+            admitted as OpenAICompatibleResponsesRequest
+          );
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          const reader = stream.getReader();
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            response.write(chunk.value);
+          }
+          response.end();
+        } catch (error) {
+          admissionFailures.push(error);
+          if (!response.headersSent)
+            response.writeHead(503, { 'content-type': 'application/json' });
+          response.end(
+            JSON.stringify({
+              error: { code: 'provider_unavailable', message: 'Synthetic summary failure.' },
+            })
           );
         }
         return true;
-      }
-      const summary = providerCalls === 3;
-      if (providerCalls >= 3 && failSummary) {
-        response.writeHead(503, { 'content-type': 'application/json' });
-        response.end(
-          JSON.stringify({
-            error: { code: 'provider_unavailable', message: 'Synthetic summary refusal.' },
-          })
-        );
-        return true;
-      }
-      const text = summary
-        ? 'Synthetic summary: cedar; tool already completed; continue pending work.'
-        : 'Synthetic ordinary reply.';
-      const item = {
-        id: `msg_probe_${providerCalls}`,
-        type: 'message',
-        role: 'assistant',
-        status: 'completed',
-        content: [{ type: 'output_text', text, annotations: [] }],
-      };
-      const inputTokens = providerCalls === 2 ? 30000 : 100;
-      const payload = {
-        id: `resp_probe_${providerCalls}`,
-        status: 'completed',
-        output: [item],
-        usage: { input_tokens: inputTokens, output_tokens: 10, total_tokens: inputTokens + 10 },
-      };
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.write(
-        `event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } })}\n\n`
-      );
-      response.write(
-        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: text })}\n\n`
-      );
-      response.write(
-        `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item })}\n\n`
-      );
-      response.end(
-        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: payload })}\n\n`
-      );
-      return true;
-    });
-    const models = createDefaultPiAiGatewayModels();
-    const stock = models.getProvider('openai')!;
-    const template = models.getModels().find((model) => model.api === 'openai-responses')!;
-    models.setProvider({ ...stock, models: [{ ...template, id: 'gpt-6-astra' }] });
-    const provider = {
-      id: 'local-stock',
-      adapterId: stock.id,
-      apiKey: INFERENCE_SECRET,
-      baseUrl: `http://127.0.0.1:${providerTransport.port}/v1`,
-      models: ['gpt-6-astra'],
-      requiresApiKey: true,
-      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
-    } as ResolvedLLMProviderConfig;
-    const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient({ models }),
-    });
-    const admissionFailures: unknown[] = [];
-    const inference = await responsesServer(async (body, response, nativeRequest) => {
-      const parsed = JSON.parse(body);
-      const metadata = JSON.parse(parsed.client_metadata['x-codex-turn-metadata']);
-      const headers = new Headers();
-      for (const [key, value] of Object.entries(nativeRequest.headers))
-        if (typeof value === 'string') headers.set(key, value);
-      const hint = codexInferenceRuntimeHintMapping.map(headers, parsed);
-      expect(hint?.requestKind).toBe(metadata.request_kind);
-      const admitted = { ...parsed };
-      for (const field of codexInferenceRuntimeHintMapping.bodyFields) delete admitted[field];
-      requests.push({ kind: metadata.request_kind, body: admitted });
-      try {
-        const stream = await dispatcher.createResponsesStream(
-          provider,
-          admitted as OpenAICompatibleResponsesRequest
-        );
-        response.writeHead(200, { 'content-type': 'text/event-stream' });
-        const reader = stream.getReader();
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          response.write(chunk.value);
-        }
-        response.end();
-      } catch (error) {
-        admissionFailures.push(error);
-        if (!response.headersSent) response.writeHead(503, { 'content-type': 'application/json' });
-        response.end(
-          JSON.stringify({
-            error: { code: 'provider_unavailable', message: 'Synthetic summary failure.' },
-          })
-        );
-      }
-      return true;
-    });
-    const session = await testAdapter.openSession(
-      openInput(
-        roots,
-        {
-          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-          capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
-        },
-        {
-          HTTP_PROXY: 'http://127.0.0.1:9',
-          HTTPS_PROXY: 'http://127.0.0.1:9',
-          ALL_PROXY: 'http://127.0.0.1:9',
-          http_proxy: 'http://127.0.0.1:9',
-          https_proxy: 'http://127.0.0.1:9',
-          all_proxy: 'http://127.0.0.1:9',
-          NO_PROXY: '127.0.0.1,localhost',
-          no_proxy: '127.0.0.1,localhost',
-        }
-      )
-    );
-    sessions.push(session);
-    const selected = {
-      ...route('gpt-6-astra'),
-      modelParameters: {
-        contextWindow: 256000,
-        maxOutputTokens: 16384,
-        inputModalities: ['text'] as const,
-        reasoning: true,
-      },
-    };
-    const firstInput = {
-      ...turnInput(roots, ['alpha'], 'Remember the synthetic word cedar.'),
-      llmRoute: selected,
-      allowedLlmRoutes: [selected],
-    };
-    const secondInput = {
-      ...turnInput(roots, ['alpha'], 'Continue the synthetic fixture.'),
-      llmRoute: selected,
-      allowedLlmRoutes: [selected],
-    };
-    const first = await (await session.startTurn(firstInput)).settled;
-    const second = await (await session.startTurn(secondInput)).settled;
-    expect(first.status).toBe('completed');
-    expect(second.status).toBe(failSummary ? 'failed' : 'completed');
-    if (failSummary) {
-      expect(second.diagnostics?.stderr).toContain('Failed to run pre-sampling compact');
-      expect(second.assistantText).toBeNull();
-      const firstCompaction = requests.findIndex((request) => request.kind === 'compaction');
-      expect(
-        requests.slice(firstCompaction).every((request) => request.kind === 'compaction')
-      ).toBe(true);
-      expect(admissionFailures.length).toBeGreaterThan(0);
-    } else expect(second.assistantText).toContain('Synthetic ordinary reply.');
-
-    const compaction = requests.filter((request) => request.kind === 'compaction');
-    expect(compaction.length).toBeGreaterThan(0);
-    for (const request of compaction) {
-      const input = request.body.input as Array<Record<string, unknown>>;
-      const ordinaryInput = requests.find((entry) => entry.kind === 'turn')?.body.input as
-        | Array<Record<string, unknown>>
-        | undefined;
-      // Native compaction retains the original history declaration, including its item identity.
-      expect(input[0]).toMatchObject({
-        type: 'additional_tools',
-        role: 'developer',
-        tools: expect.any(Array),
       });
-      expect(input[0]?.tools).not.toEqual([]);
-      expect(input[0]).toEqual(ordinaryInput?.[0]);
-      // Prompt.tools is empty; the historical input prefix is a separate native field.
-      expect(request.body).not.toHaveProperty('tools');
-      expect(
-        input.some((item) => item.type === 'function_call' || item.type === 'custom_tool_call')
-      ).toBe(true);
-      expect(
-        input.some(
-          (item) => item.type === 'function_call_output' || item.type === 'custom_tool_call_output'
+      const session = await testAdapter.openSession(
+        openInput(
+          roots,
+          {
+            inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+            capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+          },
+          {
+            HTTP_PROXY: 'http://127.0.0.1:9',
+            HTTPS_PROXY: 'http://127.0.0.1:9',
+            ALL_PROXY: 'http://127.0.0.1:9',
+            http_proxy: 'http://127.0.0.1:9',
+            https_proxy: 'http://127.0.0.1:9',
+            all_proxy: 'http://127.0.0.1:9',
+            NO_PROXY: '127.0.0.1,localhost',
+            no_proxy: '127.0.0.1,localhost',
+          }
         )
-      ).toBe(true);
-      expect(JSON.stringify(input)).toContain('tool-done');
-    }
-    if (!failSummary) {
-      expect(requests.map((request) => request.kind)).toEqual([
-        'turn',
-        'turn',
-        'compaction',
-        'turn',
-      ]);
-      expect(admissionFailures).toEqual([]);
-      expect(providerBodies[2]?.input).toEqual(compaction[0]?.body.input);
-      const nativeCompactionInput = compaction[0]?.body.input as
-        | Array<Record<string, unknown>>
-        | undefined;
-      // This fixture's namespace and local-tool forms retain their native representation.
-      expect(providerBodies[2]?.tools).toEqual(nativeCompactionInput?.[0]?.tools);
-      expect(providerBodies[2]?.tools).toEqual(providerBodies[0]?.tools);
-    }
-    for (const body of providerBodies) {
-      expect(body).not.toHaveProperty('compaction_trigger');
-      expect(body).not.toHaveProperty('context_management');
-      expect(body).not.toHaveProperty('client_metadata');
-    }
-    expect(mcp.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
-    await session.close().catch(() => undefined);
-    expect(session.childState()).toBe('absent');
-  }, 60_000);
-
-  it.each([
-    'context-event',
-    'mid-frame',
-    'mid-utf8',
-  ])('R1 refuses retaining close after exit before buffered %s and EOF', async (tail) => {
-    const roots = await tempRoots();
-    closers.push(() => rm(roots.base, { recursive: true, force: true }));
-    const path = join(roots.state, 'rollout.jsonl');
-    const frames = [
-      {
-        ordinal: 0,
-        type: 'session_meta',
-        payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.166.0' },
-      },
-      { ordinal: 1, type: 'turn_context', payload: { turn_id: 'controlled-turn' } },
-      {
-        ordinal: 2,
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'prompt' }],
-          internal_chat_message_metadata_passthrough: {
-            turn_id: 'controlled-turn',
-            content_item_kinds: ['user.text'],
-          },
-        },
-      },
-      {
-        ordinal: 3,
-        type: 'event_msg',
-        payload: { type: 'task_complete', turn_id: 'controlled-turn', last_agent_message: null },
-      },
-    ];
-    await writeFile(path, `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
-    const child = controlledPeer(
-      path,
-      { turn: { id: 'controlled-turn', status: 'completed', items: [] } },
-      NATIVE_THREAD,
-      {
-        threadRead: {
-          thread: {
-            id: NATIVE_THREAD,
-            historyMode: 'paginated',
-            turns: [
-              {
-                id: 'controlled-turn',
-                status: 'completed',
-                items: [{ type: 'userMessage', content: [{ type: 'text', text: 'prompt' }] }],
-              },
-            ],
-          },
-        },
-      }
-    );
-    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
-    sessions.push(session);
-    await (await session.startTurn(turnInput(roots, [], 'prompt'))).settled;
-    child.stdin.on('finish', () => {
-      child.exitCode = 0;
-      child.emit('exit', 0, null);
-      child.stdout.write(
-        tail === 'context-event'
-          ? `${JSON.stringify({ method: 'item/completed', params: { threadId: NATIVE_THREAD, turnId: 'controlled-turn', item: { type: 'agentMessage', text: 'late context' } } })}\n`
-          : tail === 'mid-frame'
-            ? '{"method":'
-            : Buffer.from([0xe2, 0x82])
       );
-      child.stdout.end();
-      child.stderr.end();
-    });
-    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
-    expect(session.nativeEvidence?.()).toMatchObject({
-      processExited: true,
-      pipesDrained: true,
-      persistencePreservingClose: false,
-    });
-    expect(await readFile(path, 'utf8')).toBe(
-      `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`
-    );
-  });
+      sessions.push(session);
+      const selected = {
+        ...route('gpt-6-astra'),
+        modelParameters: {
+          contextWindow: 256000,
+          maxOutputTokens: 16384,
+          inputModalities: ['text'] as const,
+          reasoning: true,
+        },
+      };
+      const firstInput = {
+        ...turnInput(roots, ['alpha'], 'Remember the synthetic word cedar.'),
+        llmRoute: selected,
+        allowedLlmRoutes: [selected],
+      };
+      const secondInput = {
+        ...turnInput(roots, ['alpha'], 'Continue the synthetic fixture.'),
+        llmRoute: selected,
+        allowedLlmRoutes: [selected],
+      };
+      const first = await (await session.startTurn(firstInput)).settled;
+      const second = await (await session.startTurn(secondInput)).settled;
+      expect(first.status).toBe('completed');
+      expect(second.status).toBe(failSummary ? 'failed' : 'completed');
+      if (failSummary) {
+        expect(second.diagnostics?.stderr).toContain('Failed to run pre-sampling compact');
+        expect(second.assistantText).toBeNull();
+        const firstCompaction = requests.findIndex((request) => request.kind === 'compaction');
+        expect(
+          requests.slice(firstCompaction).every((request) => request.kind === 'compaction')
+        ).toBe(true);
+        expect(admissionFailures.length).toBeGreaterThan(0);
+      } else expect(second.assistantText).toContain('Synthetic ordinary reply.');
+
+      const compaction = requests.filter((request) => request.kind === 'compaction');
+      expect(compaction.length).toBeGreaterThan(0);
+      for (const request of compaction) {
+        const input = request.body.input as Array<Record<string, unknown>>;
+        const ordinaryInput = requests.find((entry) => entry.kind === 'turn')?.body.input as
+          | Array<Record<string, unknown>>
+          | undefined;
+        // Native compaction retains the original history declaration, including its item identity.
+        expect(input[0]).toMatchObject({
+          type: 'additional_tools',
+          role: 'developer',
+          tools: expect.any(Array),
+        });
+        expect(input[0]?.tools).not.toEqual([]);
+        expect(input[0]).toEqual(ordinaryInput?.[0]);
+        // Prompt.tools is empty; the historical input prefix is a separate native field.
+        expect(request.body).not.toHaveProperty('tools');
+        expect(
+          input.some((item) => item.type === 'function_call' || item.type === 'custom_tool_call')
+        ).toBe(true);
+        expect(
+          input.some(
+            (item) =>
+              item.type === 'function_call_output' || item.type === 'custom_tool_call_output'
+          )
+        ).toBe(true);
+        expect(JSON.stringify(input)).toContain('tool-done');
+      }
+      if (!failSummary) {
+        expect(requests.map((request) => request.kind)).toEqual([
+          'turn',
+          'turn',
+          'compaction',
+          'turn',
+        ]);
+        expect(admissionFailures).toEqual([]);
+        expect(providerBodies[2]?.input).toEqual(compaction[0]?.body.input);
+        const nativeCompactionInput = compaction[0]?.body.input as
+          | Array<Record<string, unknown>>
+          | undefined;
+        // This fixture's namespace and local-tool forms retain their native representation.
+        expect(providerBodies[2]?.tools).toEqual(nativeCompactionInput?.[0]?.tools);
+        expect(providerBodies[2]?.tools).toEqual(providerBodies[0]?.tools);
+      }
+      for (const body of providerBodies) {
+        expect(body).not.toHaveProperty('compaction_trigger');
+        expect(body).not.toHaveProperty('context_management');
+        expect(body).not.toHaveProperty('client_metadata');
+      }
+      expect(mcp.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
+      await session.close().catch(() => undefined);
+      expect(session.childState()).toBe('absent');
+    },
+    60_000
+  );
+
+  it.each(['context-event', 'mid-frame', 'mid-utf8'])(
+    'R1 refuses retaining close after exit before buffered %s and EOF',
+    async (tail) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      const path = join(roots.state, 'rollout.jsonl');
+      const frames = [
+        {
+          ordinal: 0,
+          type: 'session_meta',
+          payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.166.0' },
+        },
+        { ordinal: 1, type: 'turn_context', payload: { turn_id: 'controlled-turn' } },
+        {
+          ordinal: 2,
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'prompt' }],
+            internal_chat_message_metadata_passthrough: {
+              turn_id: 'controlled-turn',
+              content_item_kinds: ['user.text'],
+            },
+          },
+        },
+        {
+          ordinal: 3,
+          type: 'event_msg',
+          payload: { type: 'task_complete', turn_id: 'controlled-turn', last_agent_message: null },
+        },
+      ];
+      await writeFile(path, `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
+      const child = controlledPeer(
+        path,
+        { turn: { id: 'controlled-turn', status: 'completed', items: [] } },
+        NATIVE_THREAD,
+        {
+          threadRead: {
+            thread: {
+              id: NATIVE_THREAD,
+              historyMode: 'paginated',
+              turns: [
+                {
+                  id: 'controlled-turn',
+                  status: 'completed',
+                  items: [{ type: 'userMessage', content: [{ type: 'text', text: 'prompt' }] }],
+                },
+              ],
+            },
+          },
+        }
+      );
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+      });
+      sessions.push(session);
+      await (await session.startTurn(turnInput(roots, [], 'prompt'))).settled;
+      child.stdin.on('finish', () => {
+        child.exitCode = 0;
+        child.emit('exit', 0, null);
+        child.stdout.write(
+          tail === 'context-event'
+            ? `${JSON.stringify({ method: 'item/completed', params: { threadId: NATIVE_THREAD, turnId: 'controlled-turn', item: { type: 'agentMessage', text: 'late context' } } })}\n`
+            : tail === 'mid-frame'
+              ? '{"method":'
+              : Buffer.from([0xe2, 0x82])
+        );
+        child.stdout.end();
+        child.stderr.end();
+      });
+      await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        pipesDrained: true,
+        persistencePreservingClose: false,
+      });
+      expect(await readFile(path, 'utf8')).toBe(
+        `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`
+      );
+    }
+  );
 
   it('R3 settles capture-off interruption when actual structural finalization stalls', async () => {
     const roots = await tempRoots();
@@ -635,63 +639,67 @@ describe('Codex App Server adapter', () => {
     'missing-terminal',
     'torn',
     'post-barrier-context',
-  ])('refuses an unqualified native retaining close: %s', async (mode) => {
-    const roots = await tempRoots();
-    closers.push(() => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const session = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        capabilityBaseUrl: 'http://127.0.0.1:9',
-      })
-    );
-    sessions.push(session);
-    await (await session.startTurn(turnInput(roots, []))).settled;
-    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
-    const request = rpc.request.bind(rpc);
-    vi.spyOn(rpc, 'request').mockImplementation(async (method, params, timeout) => {
-      if (method !== 'thread/read') return request(method, params, timeout);
-      if (mode === 'barrier-failure') throw new Error('Injected persistence refusal');
-      const history = (await request(method, params, timeout)) as {
-        thread: { id: string; path: string; historyMode: string };
-      };
-      if (mode === 'legacy') history.thread.historyMode = 'legacy';
-      if (mode === 'sibling') history.thread.id = 'sibling';
-      if (mode === 'missing-terminal' || mode === 'torn' || mode === 'post-barrier-context') {
-        const original = await readFile(history.thread.path, 'utf8');
-        const frames = original
-          .trimEnd()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        if (mode === 'missing-terminal') {
-          frames.pop();
-          await writeFile(
-            history.thread.path,
-            `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`
-          );
-        } else if (mode === 'torn') await writeFile(history.thread.path, original.slice(0, -3));
-        else
-          await writeFile(
-            history.thread.path,
-            original +
-              JSON.stringify({
-                ordinal: frames.length,
-                type: 'turn_context',
-                payload: { turn_id: 'next-context' },
-              }) +
-              '\n'
-          );
-      }
-      return history;
-    });
-    const first = session.close();
-    await expect(first).rejects.toThrow(/drain\/persistence/);
-    expect(session.close()).toBe(first);
-    expect(session.nativeEvidence?.()).toMatchObject({
-      processExited: true,
-      persistencePreservingClose: false,
-    });
-  }, 60_000);
+  ])(
+    'refuses an unqualified native retaining close: %s',
+    async (mode) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const session = await testAdapter.openSession(
+        openInput(roots, {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: 'http://127.0.0.1:9',
+        })
+      );
+      sessions.push(session);
+      await (await session.startTurn(turnInput(roots, []))).settled;
+      const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+      const request = rpc.request.bind(rpc);
+      vi.spyOn(rpc, 'request').mockImplementation(async (method, params, timeout) => {
+        if (method !== 'thread/read') return request(method, params, timeout);
+        if (mode === 'barrier-failure') throw new Error('Injected persistence refusal');
+        const history = (await request(method, params, timeout)) as {
+          thread: { id: string; path: string; historyMode: string };
+        };
+        if (mode === 'legacy') history.thread.historyMode = 'legacy';
+        if (mode === 'sibling') history.thread.id = 'sibling';
+        if (mode === 'missing-terminal' || mode === 'torn' || mode === 'post-barrier-context') {
+          const original = await readFile(history.thread.path, 'utf8');
+          const frames = original
+            .trimEnd()
+            .split('\n')
+            .map((line) => JSON.parse(line));
+          if (mode === 'missing-terminal') {
+            frames.pop();
+            await writeFile(
+              history.thread.path,
+              `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`
+            );
+          } else if (mode === 'torn') await writeFile(history.thread.path, original.slice(0, -3));
+          else
+            await writeFile(
+              history.thread.path,
+              original +
+                JSON.stringify({
+                  ordinal: frames.length,
+                  type: 'turn_context',
+                  payload: { turn_id: 'next-context' },
+                }) +
+                '\n'
+            );
+        }
+        return history;
+      });
+      const first = session.close();
+      await expect(first).rejects.toThrow(/drain\/persistence/);
+      expect(session.close()).toBe(first);
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        persistencePreservingClose: false,
+      });
+    },
+    60_000
+  );
 
   it('refuses retaining close when orderly EOF shutdown needs signal escalation', async () => {
     const roots = await tempRoots();
@@ -723,281 +731,291 @@ describe('Codex App Server adapter', () => {
     });
   }, 60_000);
 
-  it.each([
-    'native evidence',
-    'structural off',
-    'retaining close',
-  ])('qualifies idle paginated %s and preserves exact successor context', async (proof) => {
-    const roots = await tempRoots();
-    closers.push(() => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const open = openInput(roots, {
-      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-      capabilityBaseUrl: 'http://127.0.0.1:9',
-    });
-    const session = await testAdapter.openSession(open);
-    sessions.push(session);
-    const observations: unknown[] = [];
-    const bodies: Uint8Array[] = [];
-    const input = turnInput(roots, [], 'Remember the word cedar.');
-    const result = await (
-      await session.startTurn({
-        ...input,
-        runtimeCapture: {
-          ...input.runtimeCapture,
-          emit: async (record, body) => {
-            observations.push(record);
-            if (body) bodies.push(body);
-          },
-        },
-      })
-    ).settled;
-    const handle = await session.nativeHandle();
-    expect(handle.state).toBe('ready');
-    if (handle.state !== 'ready') throw new Error('Missing exact handle');
-    if (proof === 'native evidence') {
-      expect(result.nativeEvidence).toEqual({ nativeTerminal: true });
-      return;
-    }
-    if (proof === 'structural off') {
-      expect(observations.length).toBeGreaterThan(0);
-      expect(JSON.stringify(observations)).toContain('child-metadata');
-      expect(bodies).toEqual([]);
-      return;
-    }
-    await expect(session.close()).resolves.toBeUndefined();
-    expect(session.nativeEvidence?.()).toMatchObject({
-      processExited: true,
-      pipesDrained: true,
-      persistencePreservingClose: true,
-    });
-    await rm(roots.control, { recursive: true, force: true });
-    await mkdir(roots.control, { recursive: true });
-    const successor = await testAdapter.openSession({ ...open, resumeReference: handle.reference });
-    sessions.push(successor);
-    const next = await (
-      await successor.startTurn(turnInput(roots, [], 'What word did I ask you to remember?'))
-    ).settled;
-    expect(next.status).toBe('completed');
-    expect(inference.bodies.at(-1)).toContain('cedar');
-    expect(inference.bodies.at(-1)).toContain('alpha-answer');
-  }, 60_000);
-
-  it.each([
-    false,
-    true,
-  ])('runs an admitted multi-route set through the Turn boundary with blocked external proxies and provenance %s', async (provenance) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const mcp = await mcpServer();
-    const models: readonly [string, number, ('text' | 'image' | 'pdf')[]][] = [
-      ['model-alpha', 256000, ['text', 'image', 'pdf']],
-      ['model-beta', 256000, ['text', 'image', 'pdf']],
-      ['model-gamma', 256000, ['text', 'image', 'pdf']],
-      ['model-delta', 268000, ['text', 'image', 'pdf']],
-      ['model-epsilon', 111000, ['text']],
-      ['model-zeta', 200000, ['text', 'image']],
-    ];
-    const routes: WorkerAdapterLlmRoute[] = models.map(
-      ([model, contextWindow, inputModalities]) => ({
-        ...route(model),
-        id: model,
-        providerInstanceId: 'openkit-gateway',
-        endpoint: {
-          kind: 'openai-compatible',
-          upstream: { kind: 'nanocore-gateway', baseUrlRef: 'openkit-gateway' },
-        },
-        // Exercise complete model metadata with a bounded synthetic output limit.
-        modelParameters: {
-          contextWindow,
-          maxOutputTokens: 16384,
-          inputModalities,
-          reasoning: true,
-        },
-      })
-    );
-    const session = await testAdapter.openSession(
-      openInput(
-        roots,
-        {
-          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-          capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
-        },
-        {
-          // Reqwest and native Git fail at loopback without resolving remote services.
-          HTTP_PROXY: 'http://127.0.0.1:9',
-          HTTPS_PROXY: 'http://127.0.0.1:9',
-          ALL_PROXY: 'http://127.0.0.1:9',
-          http_proxy: 'http://127.0.0.1:9',
-          https_proxy: 'http://127.0.0.1:9',
-          all_proxy: 'http://127.0.0.1:9',
-          NO_PROXY: '127.0.0.1,localhost',
-          no_proxy: '127.0.0.1,localhost',
-          GIT_ALLOW_PROTOCOL: 'https',
-        }
-      )
-    );
-    sessions.push(session);
-    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
-    const packagePath = join(roots.control, 'package.json');
-    const finalStatuses: unknown[] = [];
-    const startupFailures: unknown[] = [];
-    let started = false;
-    const lineage = {
-      agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
-      packageSnapshotId: 'pkg_codex',
-      threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
-      turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
-      workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
-    };
-    await writeFile(
-      packagePath,
-      JSON.stringify({
-        capabilities: {
-          mode: 'enabled',
-          protocol: 'openkit-worker-capability-v1',
-          routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
-        },
-        control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
-          mode: 'sandbox-integration',
-          bindings: {
-            capabilities: {
-              pathPrefix: '/capabilities/',
-              tokenRef: 'runtime://openkit/capability-token',
-            },
-            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
-            workerControl: {
-              pathPrefix: '/worker-control/',
-              tokenRef: 'runtime://openkit/worker-control-token',
-            },
-          },
-          ...(provenance
-            ? {
-                transcript: {
-                  runtimeProvenance: {
-                    rawStreamsRoot: workerTurnCapturePaths(
-                      lineage.threadId,
-                      'codex',
-                      lineage.turnId
-                    ).rawStreamsRoot,
-                    streamManifestPath: workerTurnCapturePaths(
-                      lineage.threadId,
-                      'codex',
-                      lineage.turnId
-                    ).streamManifestPath,
-                    nativeOriginIndexPath: workerTurnCapturePaths(
-                      lineage.threadId,
-                      'codex',
-                      lineage.turnId
-                    ).nativeOriginIndexPath,
-                    maxStreamCount: 64,
-                    maxTotalBytes: 256 * 1024 * 1024,
-                  },
-                },
-              }
-            : {}),
-        },
-        llm: { mode: 'gateway', preferredLogicalModelId: 'model-delta', routes },
-        observability: { captureCoverage: { scope: 'server', value: 'off' } },
-        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
-        extensions: { openkit: { turnInput: 'Complete the runtime smoke test.' } },
-        supply: { skills: [], mcpServers: [{ id: 'openkit-generative' }, { id: 'openkit-work' }] },
-      })
-    );
-    const execution = runResidentTurn({
-      adapterId: 'codex',
-      credentialValues: [INFERENCE_SECRET, CAPABILITY_SECRET],
-      environment: {},
-      integration: {
-        ready: Promise.resolve(),
-        bindTurnRouteTokens() {},
-        clearTurnRouteTokens() {},
-        async drainTurn() {
-          return 0;
-        },
-      } as unknown as SandboxIntegrationClient,
-      fetch: async (url, init) => {
-        if (url.endsWith('/final-status')) finalStatuses.push(JSON.parse(init?.body ?? '{}'));
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
-        };
-      },
-      lineage,
-      onStarted: () => {
-        started = true;
-      },
-      onStartupFailure: (failure) => {
-        startupFailures.push(failure);
-      },
-      packagePath,
-      resident: session,
-      runtimeEnvironmentNames: new Set(),
-      nativeEnvironment: null,
-      sessionDir: join(roots.control, 'session'),
-      signal: new AbortController().signal,
-      tokens: {
-        controlToken: 'synthetic-control',
-        inferenceToken: 'synthetic-inference',
-        capabilityToken: 'synthetic-capability',
-      },
-      turnDirectory: join(roots.control, 'turn'),
-    });
-    if (provenance) {
-      await expect(execution).rejects.toThrow(
-        'Codex App Server provenance is not implemented for this pin.'
-      );
-      expect(started).toBe(false);
-      expect(startupFailures).toEqual([{ stage: 'native_spawn', reason: 'failed' }]);
-      expect(finalStatuses).toEqual([
-        expect.objectContaining({
-          body: expect.objectContaining({
-            status: 'failed',
-            stopReason: 'error',
-            diagnostics: {
-              native: 'Codex App Server provenance is not implemented for this pin.',
-              timeline: expect.any(String),
-            },
-          }),
-        }),
-      ]);
-      const timeline = JSON.parse(finalStatuses[0]!.body.diagnostics.timeline);
-      expect(timeline.entries[0]).toMatchObject({ label: 'turn_start', ms: 0 });
-      expect(timeline.entries.at(-1)).toMatchObject({ label: 'sealed' });
-      expect(timeline.entries).toEqual(
-        expect.arrayContaining([expect.objectContaining({ label: 'terminal', reason: 'failed' })])
-      );
-      expect(
-        timeline.entries.some((entry: { label: string }) => entry.label === 'native_accepted')
-      ).toBe(false);
-      expect(inference.bodies).toHaveLength(0);
-      expect(mcp.requests).toHaveLength(0);
-      expect(await session.nativeHandle()).toEqual({ state: 'pending' });
-      expect(countRollouts(await walk(roots.state))).toBe(0);
-    } else {
-      await expect(execution).resolves.toEqual({
-        status: 'completed',
-        nativeEvidence: {
-          nativeTerminal: true,
-        },
+  it.each(['native evidence', 'structural off', 'retaining close'])(
+    'qualifies idle paginated %s and preserves exact successor context',
+    async (proof) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const open = openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
       });
-      expect(started).toBe(true);
-      expect(startupFailures).toEqual([]);
-      expect(finalStatuses).toEqual([
-        expect.objectContaining({
-          body: expect.objectContaining({ status: 'completed', stopReason: 'completed' }),
-        }),
-      ]);
-      expect(inference.bodies.length).toBeGreaterThan(0);
-      expect(JSON.parse(inference.bodies[0]!).model).toBe('model-delta');
-      for (const id of ['openkit-generative', 'openkit-work'])
-        expect(mcp.requests.some((request) => request.path?.includes(id))).toBe(true);
-    }
-    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-  }, 30_000);
+      const session = await testAdapter.openSession(open);
+      sessions.push(session);
+      const observations: unknown[] = [];
+      const bodies: Uint8Array[] = [];
+      const input = turnInput(roots, [], 'Remember the word cedar.');
+      const result = await (
+        await session.startTurn({
+          ...input,
+          runtimeCapture: {
+            ...input.runtimeCapture,
+            emit: async (record, body) => {
+              observations.push(record);
+              if (body) bodies.push(body);
+            },
+          },
+        })
+      ).settled;
+      const handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+      if (handle.state !== 'ready') throw new Error('Missing exact handle');
+      if (proof === 'native evidence') {
+        expect(result.nativeEvidence).toEqual({ nativeTerminal: true });
+        return;
+      }
+      if (proof === 'structural off') {
+        expect(observations.length).toBeGreaterThan(0);
+        expect(JSON.stringify(observations)).toContain('child-metadata');
+        expect(bodies).toEqual([]);
+        return;
+      }
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        pipesDrained: true,
+        persistencePreservingClose: true,
+      });
+      await rm(roots.control, { recursive: true, force: true });
+      await mkdir(roots.control, { recursive: true });
+      const successor = await testAdapter.openSession({
+        ...open,
+        resumeReference: handle.reference,
+      });
+      sessions.push(successor);
+      const next = await (
+        await successor.startTurn(turnInput(roots, [], 'What word did I ask you to remember?'))
+      ).settled;
+      expect(next.status).toBe('completed');
+      expect(inference.bodies.at(-1)).toContain('cedar');
+      expect(inference.bodies.at(-1)).toContain('alpha-answer');
+    },
+    60_000
+  );
+
+  it.each([false, true])(
+    'runs an admitted multi-route set through the Turn boundary with blocked external proxies and provenance %s',
+    async (provenance) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const mcp = await mcpServer();
+      const models: readonly [string, number, ('text' | 'image' | 'pdf')[]][] = [
+        ['model-alpha', 256000, ['text', 'image', 'pdf']],
+        ['model-beta', 256000, ['text', 'image', 'pdf']],
+        ['model-gamma', 256000, ['text', 'image', 'pdf']],
+        ['model-delta', 268000, ['text', 'image', 'pdf']],
+        ['model-epsilon', 111000, ['text']],
+        ['model-zeta', 200000, ['text', 'image']],
+      ];
+      const routes: WorkerAdapterLlmRoute[] = models.map(
+        ([model, contextWindow, inputModalities]) => ({
+          ...route(model),
+          id: model,
+          providerInstanceId: 'openkit-gateway',
+          endpoint: {
+            kind: 'openai-compatible',
+            upstream: { kind: 'nanocore-gateway', baseUrlRef: 'openkit-gateway' },
+          },
+          // Exercise complete model metadata with a bounded synthetic output limit.
+          modelParameters: {
+            contextWindow,
+            maxOutputTokens: 16384,
+            inputModalities,
+            reasoning: true,
+          },
+        })
+      );
+      const session = await testAdapter.openSession(
+        openInput(
+          roots,
+          {
+            inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+            capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+          },
+          {
+            // Reqwest and native Git fail at loopback without resolving remote services.
+            HTTP_PROXY: 'http://127.0.0.1:9',
+            HTTPS_PROXY: 'http://127.0.0.1:9',
+            ALL_PROXY: 'http://127.0.0.1:9',
+            http_proxy: 'http://127.0.0.1:9',
+            https_proxy: 'http://127.0.0.1:9',
+            all_proxy: 'http://127.0.0.1:9',
+            NO_PROXY: '127.0.0.1,localhost',
+            no_proxy: '127.0.0.1,localhost',
+            GIT_ALLOW_PROTOCOL: 'https',
+          }
+        )
+      );
+      sessions.push(session);
+      expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+      const packagePath = join(roots.control, 'package.json');
+      const finalStatuses: unknown[] = [];
+      const startupFailures: unknown[] = [];
+      let started = false;
+      const lineage = {
+        agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
+        packageSnapshotId: 'pkg_codex',
+        threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
+        turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
+        workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
+      };
+      await writeFile(
+        packagePath,
+        JSON.stringify({
+          capabilities: {
+            mode: 'enabled',
+            protocol: 'openkit-worker-capability-v1',
+            routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
+          },
+          control: {
+            adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
+            mode: 'sandbox-integration',
+            bindings: {
+              capabilities: {
+                pathPrefix: '/capabilities/',
+                tokenRef: 'runtime://openkit/capability-token',
+              },
+              inference: {
+                pathPrefix: '/inference/',
+                tokenRef: 'runtime://openkit/inference-token',
+              },
+              workerControl: {
+                pathPrefix: '/worker-control/',
+                tokenRef: 'runtime://openkit/worker-control-token',
+              },
+            },
+            ...(provenance
+              ? {
+                  transcript: {
+                    runtimeProvenance: {
+                      rawStreamsRoot: workerTurnCapturePaths(
+                        lineage.threadId,
+                        'codex',
+                        lineage.turnId
+                      ).rawStreamsRoot,
+                      streamManifestPath: workerTurnCapturePaths(
+                        lineage.threadId,
+                        'codex',
+                        lineage.turnId
+                      ).streamManifestPath,
+                      nativeOriginIndexPath: workerTurnCapturePaths(
+                        lineage.threadId,
+                        'codex',
+                        lineage.turnId
+                      ).nativeOriginIndexPath,
+                      maxStreamCount: 64,
+                      maxTotalBytes: 256 * 1024 * 1024,
+                    },
+                  },
+                }
+              : {}),
+          },
+          llm: { mode: 'gateway', preferredLogicalModelId: 'model-delta', routes },
+          observability: { captureCoverage: { scope: 'server', value: 'off' } },
+          runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
+          extensions: { openkit: { turnInput: 'Complete the runtime smoke test.' } },
+          supply: {
+            skills: [],
+            mcpServers: [{ id: 'openkit-generative' }, { id: 'openkit-work' }],
+          },
+        })
+      );
+      const execution = runResidentTurn({
+        adapterId: 'codex',
+        credentialValues: [INFERENCE_SECRET, CAPABILITY_SECRET],
+        environment: {},
+        integration: {
+          ready: Promise.resolve(),
+          bindTurnRouteTokens() {},
+          clearTurnRouteTokens() {},
+          async drainTurn() {
+            return 0;
+          },
+        } as unknown as SandboxIntegrationClient,
+        fetch: async (url, init) => {
+          if (url.endsWith('/final-status')) finalStatuses.push(JSON.parse(init?.body ?? '{}'));
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+          };
+        },
+        lineage,
+        onStarted: () => {
+          started = true;
+        },
+        onStartupFailure: (failure) => {
+          startupFailures.push(failure);
+        },
+        packagePath,
+        resident: session,
+        runtimeEnvironmentNames: new Set(),
+        nativeEnvironment: null,
+        sessionDir: join(roots.control, 'session'),
+        signal: new AbortController().signal,
+        tokens: {
+          controlToken: 'synthetic-control',
+          inferenceToken: 'synthetic-inference',
+          capabilityToken: 'synthetic-capability',
+        },
+        turnDirectory: join(roots.control, 'turn'),
+      });
+      if (provenance) {
+        await expect(execution).rejects.toThrow(
+          'Codex App Server provenance is not implemented for this pin.'
+        );
+        expect(started).toBe(false);
+        expect(startupFailures).toEqual([{ stage: 'native_spawn', reason: 'failed' }]);
+        expect(finalStatuses).toEqual([
+          expect.objectContaining({
+            body: expect.objectContaining({
+              status: 'failed',
+              stopReason: 'error',
+              diagnostics: {
+                native: 'Codex App Server provenance is not implemented for this pin.',
+                timeline: expect.any(String),
+              },
+            }),
+          }),
+        ]);
+        const timeline = JSON.parse(finalStatuses[0]!.body.diagnostics.timeline);
+        expect(timeline.entries[0]).toMatchObject({ label: 'turn_start', ms: 0 });
+        expect(timeline.entries.at(-1)).toMatchObject({ label: 'sealed' });
+        expect(timeline.entries).toEqual(
+          expect.arrayContaining([expect.objectContaining({ label: 'terminal', reason: 'failed' })])
+        );
+        expect(
+          timeline.entries.some((entry: { label: string }) => entry.label === 'native_accepted')
+        ).toBe(false);
+        expect(inference.bodies).toHaveLength(0);
+        expect(mcp.requests).toHaveLength(0);
+        expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+        expect(countRollouts(await walk(roots.state))).toBe(0);
+      } else {
+        await expect(execution).resolves.toEqual({
+          status: 'completed',
+          nativeEvidence: {
+            nativeTerminal: true,
+          },
+        });
+        expect(started).toBe(true);
+        expect(startupFailures).toEqual([]);
+        expect(finalStatuses).toEqual([
+          expect.objectContaining({
+            body: expect.objectContaining({ status: 'completed', stopReason: 'completed' }),
+          }),
+        ]);
+        expect(inference.bodies.length).toBeGreaterThan(0);
+        expect(JSON.parse(inference.bodies[0]!).model).toBe('model-delta');
+        for (const id of ['openkit-generative', 'openkit-work'])
+          expect(mcp.requests.some((request) => request.path?.includes(id))).toBe(true);
+      }
+      expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+    },
+    30_000
+  );
 
   it('resolves the pinned vendor binary and keeps launch arguments free of secrets', () => {
     const binary = vendorBinary;
@@ -1171,236 +1189,244 @@ describe('Codex App Server adapter', () => {
     expect(await readFile(join(roots.state, 'rules/deny.rules'), 'utf8')).toBe(rule);
   }, 30_000);
 
-  it.each([
-    'stdio',
-    'disabled',
-  ] as const)('refuses an authored protected MCP id before native work and recovers after rename: %s', async (transport) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const gateway = await mcpServer();
-    const entry = `command = ${JSON.stringify(process.execPath)}\nargs = ["-e", "process.exit(1)"]\n`;
-    const authored = `[mcp_servers.alpha]\n${transport === 'disabled' ? 'enabled = false\n' : ''}${entry}`;
-    await writeFile(join(roots.state, 'config.toml'), authored);
-    const session = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
-      })
-    );
-    sessions.push(session);
-    const error = await session
-      .startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))
-      .catch((error: unknown) => error);
-    const refusal = WorkerErrorEnvelopeSchema.parse(error);
-    expect(refusal.code).toBe('codex_mcp_id_collision');
-    expect(refusal.message).toContain('Rename your authored entry');
-    expect(refusal.diagnostics[0]?.message).toContain('"alpha"');
-    expect(inference.bodies).toHaveLength(0);
-    expect(gateway.requestCount).toBe(0);
-    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
-    expect(session.childState()).toBe('running');
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
-    const renamed = `[mcp_servers.usr_00000000-0000-78d3-bbee-9aa249ff6790]\nenabled = false\n${entry}`;
-    await writeFile(join(roots.state, 'config.toml'), renamed);
-    expect(
-      (await (await session.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))).settled)
-        .status
-    ).toBe('completed');
-    expect(inference.bodies.at(-1)).toContain('tool-done');
-    expect(gateway.requestCount).toBeGreaterThan(0);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(renamed);
-    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-  }, 30_000);
+  it.each(['stdio', 'disabled'] as const)(
+    'refuses an authored protected MCP id before native work and recovers after rename: %s',
+    async (transport) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const gateway = await mcpServer();
+      const entry = `command = ${JSON.stringify(process.execPath)}\nargs = ["-e", "process.exit(1)"]\n`;
+      const authored = `[mcp_servers.alpha]\n${transport === 'disabled' ? 'enabled = false\n' : ''}${entry}`;
+      await writeFile(join(roots.state, 'config.toml'), authored);
+      const session = await testAdapter.openSession(
+        openInput(roots, {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+        })
+      );
+      sessions.push(session);
+      const error = await session
+        .startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))
+        .catch((error: unknown) => error);
+      const refusal = WorkerErrorEnvelopeSchema.parse(error);
+      expect(refusal.code).toBe('codex_mcp_id_collision');
+      expect(refusal.message).toContain('Rename your authored entry');
+      expect(refusal.diagnostics[0]?.message).toContain('"alpha"');
+      expect(inference.bodies).toHaveLength(0);
+      expect(gateway.requestCount).toBe(0);
+      expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+      expect(session.childState()).toBe('running');
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+      const renamed = `[mcp_servers.usr_00000000-0000-78d3-bbee-9aa249ff6790]\nenabled = false\n${entry}`;
+      await writeFile(join(roots.state, 'config.toml'), renamed);
+      expect(
+        (await (await session.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))).settled)
+          .status
+      ).toBe('completed');
+      expect(inference.bodies.at(-1)).toContain('tool-done');
+      expect(gateway.requestCount).toBeGreaterThan(0);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(renamed);
+      expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+    },
+    30_000
+  );
 
-  it.each([
-    false,
-    true,
-  ])('overlays an authored HTTP MCP collision and warns on completed Turns; disabled=%s', async (disabled) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const gateway = await mcpServer();
-    const authoredServer = await mcpServer({
-      port: 0,
-      host: '127.0.0.1',
-      credential: 'authored-local-token',
-    });
-    const authored = `[mcp_servers.alpha]\nenabled = ${!disabled}\ndefault_tools_approval_mode = "prompt"\nurl = "http://127.0.0.1:${authoredServer.port}/authored-mcp"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer authored-local-token"\n`;
-    await writeFile(join(roots.state, 'config.toml'), authored);
-    const session = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
-      })
-    );
-    sessions.push(session);
-    const suppliedIds = ['alpha', 'external'];
-    const result = await (
-      await session.startTurn(turnInput(roots, suppliedIds, 'invoke alpha tool'))
-    ).settled;
-    expect(result.status).toBe('completed');
-    expect(result.diagnostics?.nativeConfiguration).toBe(
-      'Warning: managed MCP entry "alpha" overrides authored HTTP entry.'
-    );
-    expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE_SECRET);
-    expect(JSON.stringify(result.diagnostics)).not.toContain(CAPABILITY_SECRET);
-    expect(inference.bodies[1]).toContain('function_call_output');
-    expect(inference.bodies[1]).toContain('tool-done');
-    expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
-    expect(
-      gateway.requests.every((request) => request.authorization === `Bearer ${CAPABILITY_SECRET}`)
-    ).toBe(true);
-    expect(authoredServer.requestCount).toBe(0);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
-    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-    expect(session.childState()).toBe('running');
-    const later = await (await session.startTurn(turnInput(roots, suppliedIds, 'Say other.')))
-      .settled;
-    expect(later.status).toBe('completed');
-    expect(later.diagnostics?.nativeConfiguration).toBe(result.diagnostics?.nativeConfiguration);
-  }, 30_000);
+  it.each([false, true])(
+    'overlays an authored HTTP MCP collision and warns on completed Turns; disabled=%s',
+    async (disabled) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const gateway = await mcpServer();
+      const authoredServer = await mcpServer({
+        port: 0,
+        host: '127.0.0.1',
+        credential: 'authored-local-token',
+      });
+      const authored = `[mcp_servers.alpha]\nenabled = ${!disabled}\ndefault_tools_approval_mode = "prompt"\nurl = "http://127.0.0.1:${authoredServer.port}/authored-mcp"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer authored-local-token"\n`;
+      await writeFile(join(roots.state, 'config.toml'), authored);
+      const session = await testAdapter.openSession(
+        openInput(roots, {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+        })
+      );
+      sessions.push(session);
+      const suppliedIds = ['alpha', 'external'];
+      const result = await (
+        await session.startTurn(turnInput(roots, suppliedIds, 'invoke alpha tool'))
+      ).settled;
+      expect(result.status).toBe('completed');
+      expect(result.diagnostics?.nativeConfiguration).toBe(
+        'Warning: managed MCP entry "alpha" overrides authored HTTP entry.'
+      );
+      expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE_SECRET);
+      expect(JSON.stringify(result.diagnostics)).not.toContain(CAPABILITY_SECRET);
+      expect(inference.bodies[1]).toContain('function_call_output');
+      expect(inference.bodies[1]).toContain('tool-done');
+      expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
+      expect(
+        gateway.requests.every((request) => request.authorization === `Bearer ${CAPABILITY_SECRET}`)
+      ).toBe(true);
+      expect(authoredServer.requestCount).toBe(0);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+      expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+      expect(session.childState()).toBe('running');
+      const later = await (await session.startTurn(turnInput(roots, suppliedIds, 'Say other.')))
+        .settled;
+      expect(later.status).toBe('completed');
+      expect(later.diagnostics?.nativeConfiguration).toBe(result.diagnostics?.nativeConfiguration);
+    },
+    30_000
+  );
 
-  it.each([
-    'accepted',
-    'drain-failed',
-    'final-refused',
-  ] as const)('retains a real native protected-binding warning through shared Turn closeout: %s', async (delivery) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const gateway = await mcpServer();
-    const authored = '[mcp_servers.alpha]\nenabled = false\nurl = "http://127.0.0.1:9/authored"\n';
-    await writeFile(join(roots.state, 'config.toml'), authored);
-    const session = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
-      })
-    );
-    sessions.push(session);
-    const lineage = {
-      agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
-      packageSnapshotId: 'pkg_codex',
-      threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
-      turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
-      workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
-    };
-    const packagePath = join(roots.control, 'warning-package.json');
-    await writeFile(
-      packagePath,
-      JSON.stringify({
-        capabilities: {
-          mode: 'enabled',
-          protocol: 'openkit-worker-capability-v1',
-          routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
-        },
-        control: {
-          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
-          mode: 'sandbox-integration',
-          bindings: {
-            capabilities: {
-              pathPrefix: '/capabilities/',
-              tokenRef: 'runtime://openkit/capability-token',
-            },
-            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
-            workerControl: {
-              pathPrefix: '/worker-control/',
-              tokenRef: 'runtime://openkit/worker-control-token',
+  it.each(['accepted', 'drain-failed', 'final-refused'] as const)(
+    'retains a real native protected-binding warning through shared Turn closeout: %s',
+    async (delivery) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const gateway = await mcpServer();
+      const authored =
+        '[mcp_servers.alpha]\nenabled = false\nurl = "http://127.0.0.1:9/authored"\n';
+      await writeFile(join(roots.state, 'config.toml'), authored);
+      const session = await testAdapter.openSession(
+        openInput(roots, {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+        })
+      );
+      sessions.push(session);
+      const lineage = {
+        agentSessionId: 'as_00000000-0000-7d2a-839d-e6c0a55127b5',
+        packageSnapshotId: 'pkg_codex',
+        threadId: 'th_00000000-0000-73d3-bcd1-416c0245cba5',
+        turnId: 'tu_00000000-0000-7e9f-8e6f-02b73d71a9bb',
+        workspaceId: 'ws_00000000-0000-7276-a6bd-b7156d05fdfd',
+      };
+      const packagePath = join(roots.control, 'warning-package.json');
+      await writeFile(
+        packagePath,
+        JSON.stringify({
+          capabilities: {
+            mode: 'enabled',
+            protocol: 'openkit-worker-capability-v1',
+            routes: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'],
+          },
+          control: {
+            adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
+            mode: 'sandbox-integration',
+            bindings: {
+              capabilities: {
+                pathPrefix: '/capabilities/',
+                tokenRef: 'runtime://openkit/capability-token',
+              },
+              inference: {
+                pathPrefix: '/inference/',
+                tokenRef: 'runtime://openkit/inference-token',
+              },
+              workerControl: {
+                pathPrefix: '/worker-control/',
+                tokenRef: 'runtime://openkit/worker-control-token',
+              },
             },
           },
-        },
-        llm: { mode: 'gateway', preferredLogicalModelId: route().model, routes: [route()] },
-        observability: { captureCoverage: { scope: 'server', value: 'off' } },
-        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
-        extensions: { openkit: { turnInput: 'invoke alpha tool' } },
-        supply: { skills: [], mcpServers: [{ id: 'alpha' }] },
-      })
-    );
-    const finalStatuses: Array<{
-      sequence: number;
-      body: {
-        status: string;
-        stopReason: string;
-        diagnostics?: Record<string, string>;
-      };
-    }> = [];
-    const drainFailure = new Error('Synthetic Integration drain failed.');
-    const execution = runResidentTurn({
-      adapterId: 'codex',
-      credentialValues: [INFERENCE_SECRET, CAPABILITY_SECRET],
-      environment: {},
-      integration: {
-        ready: Promise.resolve(),
-        bindTurnRouteTokens() {},
-        clearTurnRouteTokens() {},
-        async drainTurn() {
-          if (delivery === 'drain-failed') throw drainFailure;
-          return 0;
-        },
-      } as unknown as SandboxIntegrationClient,
-      fetch: async (url, init) => {
-        if (url.endsWith('/final-status')) {
-          finalStatuses.push(JSON.parse(init?.body ?? '{}'));
-          if (delivery === 'final-refused')
-            return {
-              ok: false,
-              status: 403,
-              text: async () => JSON.stringify({ code: 'worker_control_revoked' }),
-            };
-        }
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+          llm: { mode: 'gateway', preferredLogicalModelId: route().model, routes: [route()] },
+          observability: { captureCoverage: { scope: 'server', value: 'off' } },
+          runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
+          extensions: { openkit: { turnInput: 'invoke alpha tool' } },
+          supply: { skills: [], mcpServers: [{ id: 'alpha' }] },
+        })
+      );
+      const finalStatuses: Array<{
+        sequence: number;
+        body: {
+          status: string;
+          stopReason: string;
+          diagnostics?: Record<string, string>;
         };
-      },
-      lineage,
-      onStarted() {},
-      packagePath,
-      resident: session,
-      runtimeEnvironmentNames: new Set(),
-      nativeEnvironment: null,
-      sessionDir: join(roots.control, 'warning-output'),
-      signal: new AbortController().signal,
-      tokens: {
-        controlToken: 'synthetic-control',
-        inferenceToken: 'synthetic-inference',
-        capabilityToken: 'synthetic-capability',
-      },
-      turnDirectory: join(roots.control, 'warning-turn'),
-    });
-    if (delivery === 'accepted')
-      await expect(execution).resolves.toMatchObject({ status: 'completed' });
-    else if (delivery === 'drain-failed') await expect(execution).rejects.toBe(drainFailure);
-    else
-      await expect(execution).rejects.toMatchObject({
-        code: 'worker_control_revoked',
-        status: 403,
+      }> = [];
+      const drainFailure = new Error('Synthetic Integration drain failed.');
+      const execution = runResidentTurn({
+        adapterId: 'codex',
+        credentialValues: [INFERENCE_SECRET, CAPABILITY_SECRET],
+        environment: {},
+        integration: {
+          ready: Promise.resolve(),
+          bindTurnRouteTokens() {},
+          clearTurnRouteTokens() {},
+          async drainTurn() {
+            if (delivery === 'drain-failed') throw drainFailure;
+            return 0;
+          },
+        } as unknown as SandboxIntegrationClient,
+        fetch: async (url, init) => {
+          if (url.endsWith('/final-status')) {
+            finalStatuses.push(JSON.parse(init?.body ?? '{}'));
+            if (delivery === 'final-refused')
+              return {
+                ok: false,
+                status: 403,
+                text: async () => JSON.stringify({ code: 'worker_control_revoked' }),
+              };
+          }
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+          };
+        },
+        lineage,
+        onStarted() {},
+        packagePath,
+        resident: session,
+        runtimeEnvironmentNames: new Set(),
+        nativeEnvironment: null,
+        sessionDir: join(roots.control, 'warning-output'),
+        signal: new AbortController().signal,
+        tokens: {
+          controlToken: 'synthetic-control',
+          inferenceToken: 'synthetic-inference',
+          capabilityToken: 'synthetic-capability',
+        },
+        turnDirectory: join(roots.control, 'warning-turn'),
       });
-    expect(finalStatuses).toHaveLength(1);
-    const terminal = finalStatuses[0]!.body;
-    expect(terminal).toMatchObject({
-      status: delivery === 'drain-failed' ? 'failed' : 'completed',
-      stopReason: delivery === 'drain-failed' ? 'error' : 'completed',
-      diagnostics: {
-        nativeConfiguration: 'Warning: managed MCP entry "alpha" overrides authored HTTP entry.',
-      },
-    });
-    const records = (await readFile(join(roots.control, 'warning-output', 'events.jsonl'), 'utf8'))
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(records.at(-1)?.sequence).toBe(finalStatuses[0]!.sequence);
-    expect(records.at(-1)?.event.data).toEqual(terminal);
-    expect(inference.bodies.at(-1)).toContain('tool-done');
-    expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
-    for (const secret of [INFERENCE_SECRET, CAPABILITY_SECRET]) {
-      expect(JSON.stringify(finalStatuses)).not.toContain(secret);
-      expect(JSON.stringify(records)).not.toContain(secret);
-    }
-  }, 30_000);
+      if (delivery === 'accepted')
+        await expect(execution).resolves.toMatchObject({ status: 'completed' });
+      else if (delivery === 'drain-failed') await expect(execution).rejects.toBe(drainFailure);
+      else
+        await expect(execution).rejects.toMatchObject({
+          code: 'worker_control_revoked',
+          status: 403,
+        });
+      expect(finalStatuses).toHaveLength(1);
+      const terminal = finalStatuses[0]!.body;
+      expect(terminal).toMatchObject({
+        status: delivery === 'drain-failed' ? 'failed' : 'completed',
+        stopReason: delivery === 'drain-failed' ? 'error' : 'completed',
+        diagnostics: {
+          nativeConfiguration: 'Warning: managed MCP entry "alpha" overrides authored HTTP entry.',
+        },
+      });
+      const records = (
+        await readFile(join(roots.control, 'warning-output', 'events.jsonl'), 'utf8')
+      )
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(records.at(-1)?.sequence).toBe(finalStatuses[0]!.sequence);
+      expect(records.at(-1)?.event.data).toEqual(terminal);
+      expect(inference.bodies.at(-1)).toContain('tool-done');
+      expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+      for (const secret of [INFERENCE_SECRET, CAPABILITY_SECRET]) {
+        expect(JSON.stringify(finalStatuses)).not.toContain(secret);
+        expect(JSON.stringify(records)).not.toContain(secret);
+      }
+    },
+    30_000
+  );
 
   it('bounds assistant text and redacts a diagnostic prefix', () => {
     expect(normalizeCodexAssistant('completed', ['  cedar  '])).toEqual({
@@ -1476,23 +1502,21 @@ describe('Codex App Server adapter', () => {
     child.kill('SIGKILL');
   });
 
-  it.each([
-    'null',
-    '[]',
-    '{"method":7}',
-    '{"id":1,"error":{"message":7}}',
-  ])('contains malformed RPC frame %s', async (frame) => {
-    const child = childThatNeverExits();
-    const broken: string[] = [];
-    new CodexAppServer(
-      child,
-      [],
-      () => undefined,
-      (reason) => broken.push(reason)
-    );
-    child.stdout.write(`${frame}\n`);
-    await expect.poll(() => broken.length).toBe(1);
-  });
+  it.each(['null', '[]', '{"method":7}', '{"id":1,"error":{"message":7}}'])(
+    'contains malformed RPC frame %s',
+    async (frame) => {
+      const child = childThatNeverExits();
+      const broken: string[] = [];
+      new CodexAppServer(
+        child,
+        [],
+        () => undefined,
+        (reason) => broken.push(reason)
+      );
+      child.stdout.write(`${frame}\n`);
+      await expect.poll(() => broken.length).toBe(1);
+    }
+  );
 
   it('contains invalid UTF-8 from native stdout', async () => {
     const child = childThatNeverExits();
@@ -1527,22 +1551,24 @@ describe('Codex App Server adapter', () => {
     expect(session.childState()).toBe('absent');
   });
 
-  it.each([
-    'terminal-retryable-context-error',
-    'terminal-unrelated-context-error',
-  ] as const)('does not infer a terminal limit from an error notification: %s', async (mode) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const child = spawnScriptedCodex(mode);
-    trackChild(child);
-    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
-    sessions.push(session);
-    expect(await (await session.startTurn(turnInput(roots, []))).settled).toMatchObject({
-      status: 'completed',
-      stopReason: 'completed',
-      assistantText: 'ok',
-    });
-  });
+  it.each(['terminal-retryable-context-error', 'terminal-unrelated-context-error'] as const)(
+    'does not infer a terminal limit from an error notification: %s',
+    async (mode) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const child = spawnScriptedCodex(mode);
+      trackChild(child);
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+      });
+      sessions.push(session);
+      expect(await (await session.startTurn(turnInput(roots, []))).settled).toMatchObject({
+        status: 'completed',
+        stopReason: 'completed',
+        assistantText: 'ok',
+      });
+    }
+  );
 
   it('refuses contradictory completed terminal context-limit evidence', async () => {
     const roots = await tempRoots();
@@ -1578,24 +1604,23 @@ describe('Codex App Server adapter', () => {
     expect(await session.nativeHandle()).toEqual({ state: 'pending' });
   });
 
-  it.each([
-    'CODEX_HOME',
-    'CODEX_SQLITE_HOME',
-    'CODEX_ROLLOUT_TRACE_ROOT',
-  ])('refuses Codex managed environment %s before spawn', async (name) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    let spawned = false;
-    await expect(
-      openCodexResidentSession(openInput(roots, {}, { [name]: 'literal-canary' }), {
-        spawnProcess: () => {
-          spawned = true;
-          return controlledPeer();
-        },
-      })
-    ).rejects.toThrow(`Codex rejected environment ${name}.`);
-    expect(spawned).toBe(false);
-  });
+  it.each(['CODEX_HOME', 'CODEX_SQLITE_HOME', 'CODEX_ROLLOUT_TRACE_ROOT'])(
+    'refuses Codex managed environment %s before spawn',
+    async (name) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      let spawned = false;
+      await expect(
+        openCodexResidentSession(openInput(roots, {}, { [name]: 'literal-canary' }), {
+          spawnProcess: () => {
+            spawned = true;
+            return controlledPeer();
+          },
+        })
+      ).rejects.toThrow(`Codex rejected environment ${name}.`);
+      expect(spawned).toBe(false);
+    }
+  );
 
   it('launches pinned Codex with a harmless OPENAI_ setting in the child environment', async () => {
     const roots = await tempRoots();
@@ -1690,121 +1715,130 @@ describe('Codex App Server adapter', () => {
     'mapped unspecified address',
     'localhost nonreserved path',
     'unspecified nonreserved path',
-  ] as const)('protects resumed effective configuration from %s before any bound Turn', async (source) => {
-    const temporary = await tempRoots();
-    const roots = { ...temporary, work: await realpath(temporary.work) };
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const mcp = await mcpServer();
-    const bindings = {
-      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-      capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
-    };
-    const first = await testAdapter.openSession(openInput(roots, bindings));
-    sessions.push(first);
-    expect((await (await first.startTurn(turnInput(roots, [], 'Say other.'))).settled).status).toBe(
-      'completed'
-    );
-    const reference = await readyReferenceOf(first);
-    await expect(first.close()).resolves.toBeUndefined();
-    const homeConfig =
-      source === 'trusted project'
-        ? `[projects.${JSON.stringify(roots.work)}]\ntrust_level = "trusted"\n`
-        : `[mcp_servers.alpha]\nurl = "http://${source.startsWith('unspecified') ? '0.0.0.0' : source === 'mapped unspecified address' ? '[::ffff:0.0.0.0]' : source === 'localhost nonreserved path' ? 'localhost' : '[::ffff:127.0.0.1]'}:${mcp.port}/${source.endsWith('nonreserved path') ? 'local-mcp' : 'capabilities/mcp/alpha'}"\n`;
-    await writeFile(join(roots.state, 'config.toml'), homeConfig);
-    const projectConfig = `[mcp_servers.alpha]\nurl = "http://127.0.0.1:${mcp.port}/capabilities/mcp/alpha"\n`;
-    if (source === 'trusted project') {
-      await mkdir(join(roots.work, '.git'));
-      await mkdir(join(roots.work, '.codex'));
-      await writeFile(join(roots.work, '.codex', 'config.toml'), projectConfig);
-    }
-    mcp.idle = true;
-    const before = mcp.requestCount;
-    const nativeRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
-    const successor = await openCodexResidentSession(
-      openInput(roots, {
-        ...bindings,
-        resumeReference: reference,
-        agentSessionId: 'as_00000000-0000-7676-bc56-917f2bb67701',
-      }),
-      {
-        binaryPath: vendorBinary,
-        spawnProcess(binary, args, options) {
-          const child = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
-          const write = child.stdin.write;
-          child.stdin.write = ((...args: Parameters<typeof write>) => {
-            const message = JSON.parse(args[0].toString());
-            if (message.method) nativeRequests.push(message);
-            return write.apply(child.stdin, args);
-          }) as typeof write;
-          return child;
-        },
+  ] as const)(
+    'protects resumed effective configuration from %s before any bound Turn',
+    async (source) => {
+      const temporary = await tempRoots();
+      const roots = { ...temporary, work: await realpath(temporary.work) };
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const mcp = await mcpServer();
+      const bindings = {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+      };
+      const first = await testAdapter.openSession(openInput(roots, bindings));
+      sessions.push(first);
+      expect(
+        (await (await first.startTurn(turnInput(roots, [], 'Say other.'))).settled).status
+      ).toBe('completed');
+      const reference = await readyReferenceOf(first);
+      await expect(first.close()).resolves.toBeUndefined();
+      const homeConfig =
+        source === 'trusted project'
+          ? `[projects.${JSON.stringify(roots.work)}]\ntrust_level = "trusted"\n`
+          : `[mcp_servers.alpha]\nurl = "http://${source.startsWith('unspecified') ? '0.0.0.0' : source === 'mapped unspecified address' ? '[::ffff:0.0.0.0]' : source === 'localhost nonreserved path' ? 'localhost' : '[::ffff:127.0.0.1]'}:${mcp.port}/${source.endsWith('nonreserved path') ? 'local-mcp' : 'capabilities/mcp/alpha'}"\n`;
+      await writeFile(join(roots.state, 'config.toml'), homeConfig);
+      const projectConfig = `[mcp_servers.alpha]\nurl = "http://127.0.0.1:${mcp.port}/capabilities/mcp/alpha"\n`;
+      if (source === 'trusted project') {
+        await mkdir(join(roots.work, '.git'));
+        await mkdir(join(roots.work, '.codex'));
+        await writeFile(join(roots.work, '.codex', 'config.toml'), projectConfig);
       }
-    );
-    sessions.push(successor);
-    expect(await readyReferenceOf(successor)).toEqual(reference);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(mcp.requestCount).toBe(before);
-    mcp.idle = false;
-    expect(nativeRequests.find((request) => request.method === 'thread/read')?.params).toEqual({
-      threadId: Buffer.from(reference).toString(),
-      includeTurns: false,
-    });
-    expect(nativeRequests.find((request) => request.method === 'config/read')?.params).toEqual({
-      includeLayers: false,
-      cwd: roots.work,
-    });
-    expect(
-      nativeRequests.find((request) => request.method === 'thread/resume')?.params
-    ).toMatchObject({ cwd: roots.work, config: { mcp_servers: { alpha: { enabled: false } } } });
+      mcp.idle = true;
+      const before = mcp.requestCount;
+      const nativeRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const successor = await openCodexResidentSession(
+        openInput(roots, {
+          ...bindings,
+          resumeReference: reference,
+          agentSessionId: 'as_00000000-0000-7676-bc56-917f2bb67701',
+        }),
+        {
+          binaryPath: vendorBinary,
+          spawnProcess(binary, args, options) {
+            const child = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+            const write = child.stdin.write;
+            child.stdin.write = ((...args: Parameters<typeof write>) => {
+              const message = JSON.parse(args[0].toString());
+              if (message.method) nativeRequests.push(message);
+              return write.apply(child.stdin, args);
+            }) as typeof write;
+            return child;
+          },
+        }
+      );
+      sessions.push(successor);
+      expect(await readyReferenceOf(successor)).toEqual(reference);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(mcp.requestCount).toBe(before);
+      mcp.idle = false;
+      expect(nativeRequests.find((request) => request.method === 'thread/read')?.params).toEqual({
+        threadId: Buffer.from(reference).toString(),
+        includeTurns: false,
+      });
+      expect(nativeRequests.find((request) => request.method === 'config/read')?.params).toEqual({
+        includeLayers: false,
+        cwd: roots.work,
+      });
+      expect(
+        nativeRequests.find((request) => request.method === 'thread/resume')?.params
+      ).toMatchObject({ cwd: roots.work, config: { mcp_servers: { alpha: { enabled: false } } } });
 
-    expect(
-      (await (await successor.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))).settled)
-        .status
-    ).toBe('completed');
-    expect(mcp.requestCount).toBeGreaterThan(before);
-    expect(
-      inference.bodies.some((body) => body.includes('mcp__alpha') && body.includes('alpha_tool'))
-    ).toBe(true);
-    expect(inference.bodies.at(-1)).toContain('tool-done');
-    expect(
-      nativeRequests
-        .filter((request) => request.method === 'config/read')
-        .map((request) => request.params)
-    ).toEqual([
-      { includeLayers: false, cwd: roots.work },
-      { includeLayers: false, cwd: roots.work },
-    ]);
-    expect(
-      nativeRequests.filter((request) => request.method === 'thread/resume').at(-1)?.params
-    ).toMatchObject({
-      threadId: Buffer.from(reference).toString(),
-      cwd: roots.work,
-      model: route().model,
-      modelProvider: 'openkit-worker-inference',
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
-      config: {
-        mcp_servers: {
-          alpha: {
-            enabled: true,
-            url: `${bindings.capabilityBaseUrl}/mcp/alpha`,
-            http_headers: { Authorization: `Bearer ${CAPABILITY_SECRET}` },
+      expect(
+        (
+          await (
+            await successor.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool'))
+          ).settled
+        ).status
+      ).toBe('completed');
+      expect(mcp.requestCount).toBeGreaterThan(before);
+      expect(
+        inference.bodies.some((body) => body.includes('mcp__alpha') && body.includes('alpha_tool'))
+      ).toBe(true);
+      expect(inference.bodies.at(-1)).toContain('tool-done');
+      expect(
+        nativeRequests
+          .filter((request) => request.method === 'config/read')
+          .map((request) => request.params)
+      ).toEqual([
+        { includeLayers: false, cwd: roots.work },
+        { includeLayers: false, cwd: roots.work },
+      ]);
+      expect(
+        nativeRequests.filter((request) => request.method === 'thread/resume').at(-1)?.params
+      ).toMatchObject({
+        threadId: Buffer.from(reference).toString(),
+        cwd: roots.work,
+        model: route().model,
+        modelProvider: 'openkit-worker-inference',
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+        config: {
+          mcp_servers: {
+            alpha: {
+              enabled: true,
+              url: `${bindings.capabilityBaseUrl}/mcp/alpha`,
+              http_headers: { Authorization: `Bearer ${CAPABILITY_SECRET}` },
+            },
           },
         },
-      },
-    });
-    expect(
-      (await (await successor.startTurn(turnInput(roots, ['alpha'], 'Say other.'))).settled)
-        .diagnostics?.nativeConfiguration
-    ).toContain('"alpha"');
-    expect(mcp.idle).toBe(false);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(homeConfig);
-    if (source === 'trusted project') {
-      expect(await readFile(join(roots.work, '.codex', 'config.toml'), 'utf8')).toBe(projectConfig);
-    }
-    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-  }, 30_000);
+      });
+      expect(
+        (await (await successor.startTurn(turnInput(roots, ['alpha'], 'Say other.'))).settled)
+          .diagnostics?.nativeConfiguration
+      ).toContain('"alpha"');
+      expect(mcp.idle).toBe(false);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(homeConfig);
+      if (source === 'trusted project') {
+        expect(await readFile(join(roots.work, '.codex', 'config.toml'), 'utf8')).toBe(
+          projectConfig
+        );
+      }
+      expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+    },
+    30_000
+  );
 
   it('restores an unsupplied authored Gateway entry without injecting credentials', async () => {
     const roots = await tempRoots();
@@ -2049,174 +2083,178 @@ Authorization = "Bearer retained-capability-auth"
     expect(countRollouts(await walk(roots.state))).toBe(0);
   });
 
-  it.each([
-    '[::1]',
-    'localhost',
-  ])('honors an idle then active independent IPv6 local MCP via %s', async (hostname) => {
-    const temporary = await tempRoots();
-    const roots = { ...temporary, work: await realpath(temporary.work) };
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const gateway = await mcpServer();
-    const local = await mcpServer({
-      port: gateway.port,
-      host: '::1',
-      credential: 'local-mcp-auth',
-    });
-    const seed = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
-      })
-    );
-    sessions.push(seed);
-    await (await seed.startTurn(turnInput(roots, [], 'Say other.'))).settled;
-    const reference = await readyReferenceOf(seed);
-    await expect(seed.close()).resolves.toBeUndefined();
-    // The effective project layer replaces a stale home Gateway identity with an ordinary local MCP.
-    const authored = `[projects.${JSON.stringify(roots.work)}]\ntrust_level = "trusted"\n[mcp_servers.alpha]\nurl = "http://127.0.0.1:${gateway.port}/capabilities/mcp/alpha"\n`;
-    const project = `[mcp_servers.alpha]\nurl = "http://${hostname}:${gateway.port}/capabilities/mcp/alpha"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer local-mcp-auth"\n`;
-    const homeConfig = hostname === 'localhost' ? project : authored;
-    await writeFile(join(roots.state, 'config.toml'), homeConfig);
-    if (hostname !== 'localhost') {
-      await mkdir(join(roots.work, '.git'));
-      await mkdir(join(roots.work, '.codex'));
-      await writeFile(join(roots.work, '.codex', 'config.toml'), project);
-    }
-    gateway.idle = true;
-    local.idle = true;
-    const session = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
-        resumeReference: reference,
-      })
-    );
-    sessions.push(session);
-    expect(await readyReferenceOf(session)).toEqual(reference);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(local.requestCount).toBe(0);
-    expect(gateway.requestCount).toBe(0);
-    local.idle = false;
-    gateway.idle = false;
-    expect(
-      (await (await session.startTurn(turnInput(roots, [], 'invoke alpha tool'))).settled).status
-    ).toBe('completed');
-    expect(local.requestCount).toBeGreaterThan(0);
-    expect(inference.bodies.some((body) => body.includes('mcp__alpha'))).toBe(true);
-    expect(inference.bodies.at(-1)).toContain('tool-done');
-    expect(gateway.requestCount).toBe(0);
-    expect(
-      local.requests.every((request) => request.authorization === 'Bearer local-mcp-auth')
-    ).toBe(true);
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(homeConfig);
-    if (hostname !== 'localhost') {
-      expect(await readFile(join(roots.work, '.codex', 'config.toml'), 'utf8')).toBe(project);
-    }
-    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-  }, 30_000);
-
-  it.each([
-    false,
-    true,
-  ])('uses retained local stdio MCP without providing it Gateway credentials; supplied HTTP collision=%s', async (crossTransport) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const inference = await responsesServer();
-    const gateway = crossTransport ? await mcpServer() : undefined;
-    const seed = await testAdapter.openSession(
-      openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
-    );
-    sessions.push(seed);
-    await (await seed.startTurn(turnInput(roots, [], 'Say other.'))).settled;
-    const reference = await readyReferenceOf(seed);
-    await expect(seed.close()).resolves.toBeUndefined();
-    const localScript = join(roots.work, 'local-mcp.cjs');
-    const marker = join(roots.work, 'local-called.json');
-    const launched = join(roots.work, 'local-launched');
-    const disabledScript = join(roots.work, 'disabled-mcp.cjs');
-    const disabledLaunch = join(roots.work, 'disabled-launched');
-    await writeFile(
-      disabledScript,
-      `require('node:fs').writeFileSync(${JSON.stringify(disabledLaunch)}, 'unexpected');`
-    );
-    await writeFile(
-      localScript,
-      `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(launched)}, 'launched');
-let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; while ((i = buffer.indexOf('\\n')) >= 0) { const msg = JSON.parse(buffer.slice(0, i)); buffer = buffer.slice(i + 1); if (msg.id === undefined) continue; let result = {}; if (msg.method === 'initialize') result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'local', version: '1' } }; if (msg.method === 'tools/list') result = { tools: [{ name: 'local_tool', description: 'Local marker', inputSchema: { type: 'object', properties: {} } }] }; if (msg.method === 'tools/call') { fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ method: msg.method, env: process.env })); result = { content: [{ type: 'text', text: 'local-success' }] }; } process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n'); } });`
-    );
-    const authored = `[mcp_servers.local]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(localScript)}]\n[mcp_servers.disabled]\nenabled = false\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(disabledScript)}]\n`;
-    await writeFile(join(roots.state, 'config.toml'), authored);
-    const session = await testAdapter.openSession(
-      openInput(roots, {
-        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-        resumeReference: reference,
-      })
-    );
-    sessions.push(session);
-    expect(await readyReferenceOf(session)).toEqual(reference);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
-    const result = await (await session.startTurn(turnInput(roots, [], 'invoke alpha tool')))
-      .settled;
-    expect(result.status).toBe('completed');
-    expect(
-      inference.bodies.some((body) => body.includes('mcp__local') && body.includes('local_tool'))
-    ).toBe(true);
-    const called = await readFile(marker, 'utf8');
-    expect(called).toContain('tools/call');
-    expect(inference.bodies.at(-1)).toContain('local-success');
-    expect(called).not.toContain(INFERENCE_SECRET);
-    expect(called).not.toContain(CAPABILITY_SECRET);
-    await expect(readFile(disabledLaunch)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
-    expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-    if (crossTransport && gateway) {
-      const exact = await readyReferenceOf(session);
-      // Tool-call history is outside the established whole-history text projection.
-      await expect(session.close()).rejects.toThrow(/flush boundary/);
-      expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
-      expect(session.childState()).toBe('absent');
-      await rm(launched);
-      const successor = await testAdapter.openSession(
+  it.each(['[::1]', 'localhost'])(
+    'honors an idle then active independent IPv6 local MCP via %s',
+    async (hostname) => {
+      const temporary = await tempRoots();
+      const roots = { ...temporary, work: await realpath(temporary.work) };
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const gateway = await mcpServer();
+      const local = await mcpServer({
+        port: gateway.port,
+        host: '::1',
+        credential: 'local-mcp-auth',
+      });
+      const seed = await testAdapter.openSession(
         openInput(roots, {
           inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
           capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
-          resumeReference: exact,
         })
       );
-      sessions.push(successor);
-      expect(await readyReferenceOf(successor)).toEqual(exact);
-      await delay(250);
-      await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
+      sessions.push(seed);
+      await (await seed.startTurn(turnInput(roots, [], 'Say other.'))).settled;
+      const reference = await readyReferenceOf(seed);
+      await expect(seed.close()).resolves.toBeUndefined();
+      // The effective project layer replaces a stale home Gateway identity with an ordinary local MCP.
+      const authored = `[projects.${JSON.stringify(roots.work)}]\ntrust_level = "trusted"\n[mcp_servers.alpha]\nurl = "http://127.0.0.1:${gateway.port}/capabilities/mcp/alpha"\n`;
+      const project = `[mcp_servers.alpha]\nurl = "http://${hostname}:${gateway.port}/capabilities/mcp/alpha"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer local-mcp-auth"\n`;
+      const homeConfig = hostname === 'localhost' ? project : authored;
+      await writeFile(join(roots.state, 'config.toml'), homeConfig);
+      if (hostname !== 'localhost') {
+        await mkdir(join(roots.work, '.git'));
+        await mkdir(join(roots.work, '.codex'));
+        await writeFile(join(roots.work, '.codex', 'config.toml'), project);
+      }
+      gateway.idle = true;
+      local.idle = true;
+      const session = await testAdapter.openSession(
+        openInput(roots, {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+          resumeReference: reference,
+        })
+      );
+      sessions.push(session);
+      expect(await readyReferenceOf(session)).toEqual(reference);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(local.requestCount).toBe(0);
       expect(gateway.requestCount).toBe(0);
-      const error = await successor
-        .startTurn(turnInput(roots, ['local'], 'invoke alpha tool'))
-        .catch((error: unknown) => error);
-      const refusal = WorkerErrorEnvelopeSchema.parse(error);
-      expect(refusal.code).toBe('codex_mcp_id_collision');
-      expect(refusal.message).toContain('Rename your authored entry');
-      expect(refusal.diagnostics).toEqual([
-        {
-          code: 'native_config_collision',
-          message:
-            'Warning: authored MCP entry "local" conflicts with a protected OpenKit id; Turn preparation was refused.',
-        },
-      ]);
-      expect(successor.childState()).toBe('running');
-      expect(await readyReferenceOf(successor)).toEqual(exact);
-      expect(gateway.requestCount).toBe(0);
-      await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
+      local.idle = false;
+      gateway.idle = false;
       expect(
-        (await (await successor.startTurn(turnInput(roots, [], 'invoke alpha tool'))).settled)
-          .status
+        (await (await session.startTurn(turnInput(roots, [], 'invoke alpha tool'))).settled).status
       ).toBe('completed');
-      expect(await readFile(launched, 'utf8')).toBe('launched');
+      expect(local.requestCount).toBeGreaterThan(0);
+      expect(inference.bodies.some((body) => body.includes('mcp__alpha'))).toBe(true);
+      expect(inference.bodies.at(-1)).toContain('tool-done');
       expect(gateway.requestCount).toBe(0);
+      expect(
+        local.requests.every((request) => request.authorization === 'Bearer local-mcp-auth')
+      ).toBe(true);
+      expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(homeConfig);
+      if (hostname !== 'localhost') {
+        expect(await readFile(join(roots.work, '.codex', 'config.toml'), 'utf8')).toBe(project);
+      }
+      expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
+    },
+    30_000
+  );
+
+  it.each([false, true])(
+    'uses retained local stdio MCP without providing it Gateway credentials; supplied HTTP collision=%s',
+    async (crossTransport) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const inference = await responsesServer();
+      const gateway = crossTransport ? await mcpServer() : undefined;
+      const seed = await testAdapter.openSession(
+        openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` })
+      );
+      sessions.push(seed);
+      await (await seed.startTurn(turnInput(roots, [], 'Say other.'))).settled;
+      const reference = await readyReferenceOf(seed);
+      await expect(seed.close()).resolves.toBeUndefined();
+      const localScript = join(roots.work, 'local-mcp.cjs');
+      const marker = join(roots.work, 'local-called.json');
+      const launched = join(roots.work, 'local-launched');
+      const disabledScript = join(roots.work, 'disabled-mcp.cjs');
+      const disabledLaunch = join(roots.work, 'disabled-launched');
+      await writeFile(
+        disabledScript,
+        `require('node:fs').writeFileSync(${JSON.stringify(disabledLaunch)}, 'unexpected');`
+      );
+      await writeFile(
+        localScript,
+        `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(launched)}, 'launched');
+let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; while ((i = buffer.indexOf('\\n')) >= 0) { const msg = JSON.parse(buffer.slice(0, i)); buffer = buffer.slice(i + 1); if (msg.id === undefined) continue; let result = {}; if (msg.method === 'initialize') result = { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'local', version: '1' } }; if (msg.method === 'tools/list') result = { tools: [{ name: 'local_tool', description: 'Local marker', inputSchema: { type: 'object', properties: {} } }] }; if (msg.method === 'tools/call') { fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ method: msg.method, env: process.env })); result = { content: [{ type: 'text', text: 'local-success' }] }; } process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n'); } });`
+      );
+      const authored = `[mcp_servers.local]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(localScript)}]\n[mcp_servers.disabled]\nenabled = false\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(disabledScript)}]\n`;
+      await writeFile(join(roots.state, 'config.toml'), authored);
+      const session = await testAdapter.openSession(
+        openInput(roots, {
+          inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+          resumeReference: reference,
+        })
+      );
+      sessions.push(session);
+      expect(await readyReferenceOf(session)).toEqual(reference);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
+      const result = await (await session.startTurn(turnInput(roots, [], 'invoke alpha tool')))
+        .settled;
+      expect(result.status).toBe('completed');
+      expect(
+        inference.bodies.some((body) => body.includes('mcp__local') && body.includes('local_tool'))
+      ).toBe(true);
+      const called = await readFile(marker, 'utf8');
+      expect(called).toContain('tools/call');
+      expect(inference.bodies.at(-1)).toContain('local-success');
+      expect(called).not.toContain(INFERENCE_SECRET);
+      expect(called).not.toContain(CAPABILITY_SECRET);
+      await expect(readFile(disabledLaunch)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
       expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
-    }
-  }, 30_000);
+      if (crossTransport && gateway) {
+        const exact = await readyReferenceOf(session);
+        // Tool-call history is outside the established whole-history text projection.
+        await expect(session.close()).rejects.toThrow(/flush boundary/);
+        expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+        expect(session.childState()).toBe('absent');
+        await rm(launched);
+        const successor = await testAdapter.openSession(
+          openInput(roots, {
+            inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+            capabilityBaseUrl: `http://127.0.0.1:${gateway.port}/capabilities`,
+            resumeReference: exact,
+          })
+        );
+        sessions.push(successor);
+        expect(await readyReferenceOf(successor)).toEqual(exact);
+        await delay(250);
+        await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(gateway.requestCount).toBe(0);
+        const error = await successor
+          .startTurn(turnInput(roots, ['local'], 'invoke alpha tool'))
+          .catch((error: unknown) => error);
+        const refusal = WorkerErrorEnvelopeSchema.parse(error);
+        expect(refusal.code).toBe('codex_mcp_id_collision');
+        expect(refusal.message).toContain('Rename your authored entry');
+        expect(refusal.diagnostics).toEqual([
+          {
+            code: 'native_config_collision',
+            message:
+              'Warning: authored MCP entry "local" conflicts with a protected OpenKit id; Turn preparation was refused.',
+          },
+        ]);
+        expect(successor.childState()).toBe('running');
+        expect(await readyReferenceOf(successor)).toEqual(exact);
+        expect(gateway.requestCount).toBe(0);
+        await expect(readFile(launched)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(
+          (await (await successor.startTurn(turnInput(roots, [], 'invoke alpha tool'))).settled)
+            .status
+        ).toBe('completed');
+        expect(await readFile(launched, 'utf8')).toBe('launched');
+        expect(gateway.requestCount).toBe(0);
+        expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
+        expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual(
+          []
+        );
+      }
+    },
+    30_000
+  );
 
   it(
     'preserves retained config and unknown files through open and close',
@@ -2279,23 +2317,25 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     await expect(session.close()).rejects.toThrow();
   });
 
-  it.each([
-    'terminal-same-chunk',
-    'terminal-before',
-  ])('settles a terminal that races turn acceptance: %s', async (mode) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const child = spawnScriptedCodex(mode);
-    trackChild(child);
-    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
-    sessions.push(session);
-    const turn = await session.startTurn(turnInput(roots, []));
-    const outcome = await Promise.race([
-      turn.settled,
-      new Promise((resolve) => setTimeout(() => resolve('hung'), 100)),
-    ]);
-    expect(outcome).toMatchObject({ status: 'completed', assistantText: 'ok' });
-  });
+  it.each(['terminal-same-chunk', 'terminal-before'])(
+    'settles a terminal that races turn acceptance: %s',
+    async (mode) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const child = spawnScriptedCodex(mode);
+      trackChild(child);
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+      });
+      sessions.push(session);
+      const turn = await session.startTurn(turnInput(roots, []));
+      const outcome = await Promise.race([
+        turn.settled,
+        new Promise((resolve) => setTimeout(() => resolve('hung'), 100)),
+      ]);
+      expect(outcome).toMatchObject({ status: 'completed', assistantText: 'ok' });
+    }
+  );
 
   it('contains a malformed frame during an accepted Turn and stops its binding', async () => {
     const roots = await tempRoots();
@@ -3093,65 +3133,65 @@ describe('round 4 failure boundaries', () => {
     }
   });
 
-  it.each([
-    'open',
-    'preparation',
-  ])('allows %s beyond the former local setup budget', async (phase) => {
-    const roots = await tempRoots();
-    closers.push(() => rm(roots.base, { recursive: true, force: true }));
-    const child = controlledPeer();
-    const signals = vi.spyOn(child, 'kill');
-    let session: WorkerResidentSession | undefined;
-    if (phase === 'preparation') {
-      session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
-    }
-    const respond = child.stdin.listeners('data')[0]!;
-    child.stdin.removeAllListeners('data');
-    let acknowledge: () => void = () => undefined;
-    const requested = new Promise<void>((resolve) => {
-      child.stdin.on('data', (chunk: Buffer) => {
-        const message = JSON.parse(chunk.toString());
-        if (message.method !== 'config/read') {
-          respond(chunk);
-          return;
-        }
-        acknowledge = () =>
-          child.stdout.write(`${JSON.stringify({ id: message.id, result: { config: {} } })}\n`);
-        resolve();
-      });
-    });
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-    const starting =
-      phase === 'open'
-        ? openCodexResidentSession(openInput(roots), { spawnProcess: () => child })
-        : session!.startTurn(turnInput(roots, []));
-    starting.catch(() => undefined);
-    try {
-      await requested;
-      await vi.advanceTimersByTimeAsync(5_500);
-      expect(signals).not.toHaveBeenCalled();
-      acknowledge();
-      const result = await starting;
-      if (phase === 'open') {
-        session = result as WorkerResidentSession;
-        expect(session.childState()).toBe('running');
-        expect(await session.nativeHandle()).toEqual({ state: 'pending' });
-      } else {
-        child.stdout.write(terminalFrame());
-        await expect(
-          (result as Awaited<ReturnType<WorkerResidentSession['startTurn']>>).settled
-        ).resolves.toMatchObject({ status: 'completed' });
+  it.each(['open', 'preparation'])(
+    'allows %s beyond the former local setup budget',
+    async (phase) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      const child = controlledPeer();
+      const signals = vi.spyOn(child, 'kill');
+      let session: WorkerResidentSession | undefined;
+      if (phase === 'preparation') {
+        session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
       }
-    } finally {
-      child.exitCode = 0;
-      child.emit('exit', 0, null);
-      await vi.advanceTimersByTimeAsync(LIFECYCLE_DEFAULTS.nativeStopMs);
-      await starting.catch(() => undefined);
-      vi.useRealTimers();
-      await session?.close().catch(() => undefined);
-      signals.mockRestore();
+      const respond = child.stdin.listeners('data')[0]!;
+      child.stdin.removeAllListeners('data');
+      let acknowledge: () => void = () => undefined;
+      const requested = new Promise<void>((resolve) => {
+        child.stdin.on('data', (chunk: Buffer) => {
+          const message = JSON.parse(chunk.toString());
+          if (message.method !== 'config/read') {
+            respond(chunk);
+            return;
+          }
+          acknowledge = () =>
+            child.stdout.write(`${JSON.stringify({ id: message.id, result: { config: {} } })}\n`);
+          resolve();
+        });
+      });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+      const starting =
+        phase === 'open'
+          ? openCodexResidentSession(openInput(roots), { spawnProcess: () => child })
+          : session!.startTurn(turnInput(roots, []));
+      starting.catch(() => undefined);
+      try {
+        await requested;
+        await vi.advanceTimersByTimeAsync(5_500);
+        expect(signals).not.toHaveBeenCalled();
+        acknowledge();
+        const result = await starting;
+        if (phase === 'open') {
+          session = result as WorkerResidentSession;
+          expect(session.childState()).toBe('running');
+          expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+        } else {
+          child.stdout.write(terminalFrame());
+          await expect(
+            (result as Awaited<ReturnType<WorkerResidentSession['startTurn']>>).settled
+          ).resolves.toMatchObject({ status: 'completed' });
+        }
+      } finally {
+        child.exitCode = 0;
+        child.emit('exit', 0, null);
+        await vi.advanceTimersByTimeAsync(LIFECYCLE_DEFAULTS.nativeStopMs);
+        await starting.catch(() => undefined);
+        vi.useRealTimers();
+        await session?.close().catch(() => undefined);
+        signals.mockRestore();
+      }
     }
-  });
+  );
 
   async function fixture() {
     const roots = await tempRoots();
@@ -3166,34 +3206,34 @@ describe('round 4 failure boundaries', () => {
     return { roots, child, session };
   }
 
-  it.each([
-    { transport: 'unknown' },
-    { url: 'http://127.0.0.1:9/mcp', command: 'authored-stdio' },
-  ])('refuses a protected non-HTTP effective entry before native setup: %j', async (entry) => {
-    const { roots, child, session } = await fixture();
-    const methods: string[] = [];
-    child.stdin.removeAllListeners('data');
-    child.stdin.on('data', (chunk) => {
-      const request = JSON.parse(chunk.toString());
-      methods.push(request.method);
-      child.stdout.write(
-        `${JSON.stringify({ id: request.id, result: { config: { mcp_servers: { alpha: entry } } } })}\n`
-      );
-    });
-    const error = await session
-      .startTurn(turnInput(roots, ['alpha']))
-      .catch((error: unknown) => error);
-    expect(WorkerErrorEnvelopeSchema.parse(error)).toMatchObject({
-      code: 'codex_mcp_id_collision',
-      message: expect.stringContaining('Rename your authored entry'),
-      diagnostics: [
-        { code: 'native_config_collision', message: expect.stringContaining('"alpha"') },
-      ],
-    });
-    expect(methods).toEqual(['config/read']);
-    expect(session.childState()).toBe('running');
-    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
-  });
+  it.each([{ transport: 'unknown' }, { url: 'http://127.0.0.1:9/mcp', command: 'authored-stdio' }])(
+    'refuses a protected non-HTTP effective entry before native setup: %j',
+    async (entry) => {
+      const { roots, child, session } = await fixture();
+      const methods: string[] = [];
+      child.stdin.removeAllListeners('data');
+      child.stdin.on('data', (chunk) => {
+        const request = JSON.parse(chunk.toString());
+        methods.push(request.method);
+        child.stdout.write(
+          `${JSON.stringify({ id: request.id, result: { config: { mcp_servers: { alpha: entry } } } })}\n`
+        );
+      });
+      const error = await session
+        .startTurn(turnInput(roots, ['alpha']))
+        .catch((error: unknown) => error);
+      expect(WorkerErrorEnvelopeSchema.parse(error)).toMatchObject({
+        code: 'codex_mcp_id_collision',
+        message: expect.stringContaining('Rename your authored entry'),
+        diagnostics: [
+          { code: 'native_config_collision', message: expect.stringContaining('"alpha"') },
+        ],
+      });
+      expect(methods).toEqual(['config/read']);
+      expect(session.childState()).toBe('running');
+      expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+    }
+  );
 
   it.each([
     'EOF',
@@ -3231,46 +3271,46 @@ describe('round 4 failure boundaries', () => {
     expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
   });
 
-  it.each([
-    'completed',
-    'inProgress',
-  ])('rejects numeric accepted Turn identity: %s', async (status) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const child = controlledPeer(undefined, { turn: { id: 42, status, items: [] } });
-    const session = await openCodexResidentSession(openInput(roots), {
-      spawnProcess: () => child,
-      // No exit is emitted; invalid acceptance must reject through the unproved-stop path.
-      stopGraceMs: 5,
-    });
-    const turn = await session.startTurn(turnInput(roots, []));
-    const observed = turn.settled.then(
-      () => 'resolved',
-      () => 'rejected'
-    );
-    expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
-    expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
-  });
+  it.each(['completed', 'inProgress'])(
+    'rejects numeric accepted Turn identity: %s',
+    async (status) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const child = controlledPeer(undefined, { turn: { id: 42, status, items: [] } });
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+        // No exit is emitted; invalid acceptance must reject through the unproved-stop path.
+        stopGraceMs: 5,
+      });
+      const turn = await session.startTurn(turnInput(roots, []));
+      const observed = turn.settled.then(
+        () => 'resolved',
+        () => 'rejected'
+      );
+      expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+    }
+  );
 
-  it.each([
-    'completed',
-    'inProgress',
-  ])('rejects missing required accepted Turn items: %s', async (status) => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const child = controlledPeer(undefined, { turn: { id: 'controlled-turn', status } });
-    const session = await openCodexResidentSession(openInput(roots), {
-      spawnProcess: () => child,
-      // No exit is emitted; invalid acceptance must reject through the unproved-stop path.
-      stopGraceMs: 5,
-    });
-    const turn = await session.startTurn(turnInput(roots, []));
-    const observed = turn.settled.then(
-      () => 'resolved',
-      () => 'rejected'
-    );
-    expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
-  });
+  it.each(['completed', 'inProgress'])(
+    'rejects missing required accepted Turn items: %s',
+    async (status) => {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const child = controlledPeer(undefined, { turn: { id: 'controlled-turn', status } });
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+        // No exit is emitted; invalid acceptance must reject through the unproved-stop path.
+        stopGraceMs: 5,
+      });
+      const turn = await session.startTurn(turnInput(roots, []));
+      const observed = turn.settled.then(
+        () => 'resolved',
+        () => 'rejected'
+      );
+      expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
+    }
+  );
 
   it('rejects coercible native thread identity', async () => {
     const roots = await tempRoots();
@@ -3370,21 +3410,21 @@ describe('round 4 failure boundaries', () => {
     ).toEqual([[roots.work], []]);
   });
 
-  it.each([
-    'identical',
-    'contradictory',
-  ])('poisons duplicate terminal before publication: %s', async (mode) => {
-    const { roots, child, session } = await fixture();
-    const turn = await session.startTurn(turnInput(roots, []));
-    const observed = turn.settled.then(
-      () => 'resolved',
-      () => 'rejected'
-    );
-    child.stdout.write(
-      terminalFrame() + terminalFrame(mode === 'identical' ? 'completed' : 'failed')
-    );
-    expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
-  });
+  it.each(['identical', 'contradictory'])(
+    'poisons duplicate terminal before publication: %s',
+    async (mode) => {
+      const { roots, child, session } = await fixture();
+      const turn = await session.startTurn(turnInput(roots, []));
+      const observed = turn.settled.then(
+        () => 'resolved',
+        () => 'rejected'
+      );
+      child.stdout.write(
+        terminalFrame() + terminalFrame(mode === 'identical' ? 'completed' : 'failed')
+      );
+      expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
+    }
+  );
 
   it('fences a terminal received after publication', async () => {
     const { roots, child, session } = await fixture();
@@ -3868,41 +3908,40 @@ describe('round 4 failure boundaries', () => {
       ],
       expected: { status: 'failed', assistantText: null, stopReason: 'malformed-result' },
     },
-  ])('normalizes correlated native phases: $name', async ({
-    notificationItems,
-    items,
-    expected,
-  }) => {
-    const { roots, child, session } = await fixture();
-    const turn = await session.startTurn(turnInput(roots, []));
-    if (notificationItems) {
-      for (const item of items)
-        child.stdout.write(
-          `${JSON.stringify({
-            method: 'item/completed',
-            params: { threadId: NATIVE_THREAD, turnId: 'controlled-turn', item },
-          })}\n`
-        );
-      // Item completion alone must not settle the addressed Turn.
-      expect(
-        await Promise.race([turn.settled.then(() => 'settled'), delay(5).then(() => 'pending')])
-      ).toBe('pending');
-    }
-    child.stdout.write(
-      `${JSON.stringify({
-        method: 'turn/completed',
-        params: {
-          threadId: NATIVE_THREAD,
-          turn: {
-            id: 'controlled-turn',
-            status: 'completed',
-            items: notificationItems ? [] : items,
+  ])(
+    'normalizes correlated native phases: $name',
+    async ({ notificationItems, items, expected }) => {
+      const { roots, child, session } = await fixture();
+      const turn = await session.startTurn(turnInput(roots, []));
+      if (notificationItems) {
+        for (const item of items)
+          child.stdout.write(
+            `${JSON.stringify({
+              method: 'item/completed',
+              params: { threadId: NATIVE_THREAD, turnId: 'controlled-turn', item },
+            })}\n`
+          );
+        // Item completion alone must not settle the addressed Turn.
+        expect(
+          await Promise.race([turn.settled.then(() => 'settled'), delay(5).then(() => 'pending')])
+        ).toBe('pending');
+      }
+      child.stdout.write(
+        `${JSON.stringify({
+          method: 'turn/completed',
+          params: {
+            threadId: NATIVE_THREAD,
+            turn: {
+              id: 'controlled-turn',
+              status: 'completed',
+              items: notificationItems ? [] : items,
+            },
           },
-        },
-      })}\n`
-    );
-    expect(await turn.settled).toMatchObject(expected);
-  });
+        })}\n`
+      );
+      expect(await turn.settled).toMatchObject(expected);
+    }
+  );
 
   it('redacts and bounds unknown native method records and UTF-8 diagnostics', async () => {
     const child = controlledPeer();
@@ -3936,49 +3975,50 @@ describe('round 4 failure boundaries', () => {
     }
   });
 
-  it.each([
-    'unknown-native-code',
-    -32099,
-  ])('does not accept unknown native RPC error semantics as refusal: %s', async (code) => {
-    const { roots, child, session } = await fixture();
-    child.stdin.removeAllListeners('data');
-    child.stdin.on('data', (chunk) => {
-      for (const line of chunk.toString().trim().split('\n')) {
-        const message = JSON.parse(line);
-        if (message.method === 'config/read') {
-          child.stdout.write(`${JSON.stringify({ id: message.id, result: { config: {} } })}\n`);
-          continue;
+  it.each(['unknown-native-code', -32099])(
+    'does not accept unknown native RPC error semantics as refusal: %s',
+    async (code) => {
+      const { roots, child, session } = await fixture();
+      child.stdin.removeAllListeners('data');
+      child.stdin.on('data', (chunk) => {
+        for (const line of chunk.toString().trim().split('\n')) {
+          const message = JSON.parse(line);
+          if (message.method === 'config/read') {
+            child.stdout.write(`${JSON.stringify({ id: message.id, result: { config: {} } })}\n`);
+            continue;
+          }
+          child.stdout.write(
+            `${JSON.stringify({
+              id: message.id,
+              error: { code, message: 'bad', provedRefusal: true },
+            })}\n`
+          );
         }
-        child.stdout.write(
-          `${JSON.stringify({
-            id: message.id,
-            error: { code, message: 'bad', provedRefusal: true },
-          })}\n`
-        );
-      }
-    });
-    const turn = await session.startTurn(turnInput(roots, []));
-    await expect(turn.settled).rejects.toThrow();
-    expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
-  });
+      });
+      const turn = await session.startTurn(turnInput(roots, []));
+      await expect(turn.settled).rejects.toThrow();
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+    }
+  );
 
-  it.each([
-    'request',
-    'notify',
-  ])('admits no native write after the control budget expires: %s', async (operation) => {
-    const child = controlledPeer();
-    const rpc = new CodexAppServer(
-      child,
-      [],
-      () => undefined,
-      () => undefined
-    );
-    const writes = vi.fn();
-    child.stdin.on('data', writes);
-    if (operation === 'request') await expect(rpc.request('config/read', {}, 0)).rejects.toThrow();
-    else await expect(rpc.notify('initialized', 0)).rejects.toThrow();
-    expect(writes).not.toHaveBeenCalled();
-  });
+  it.each(['request', 'notify'])(
+    'admits no native write after the control budget expires: %s',
+    async (operation) => {
+      const child = controlledPeer();
+      const rpc = new CodexAppServer(
+        child,
+        [],
+        () => undefined,
+        () => undefined
+      );
+      const writes = vi.fn();
+      child.stdin.on('data', writes);
+      if (operation === 'request')
+        await expect(rpc.request('config/read', {}, 0)).rejects.toThrow();
+      else await expect(rpc.notify('initialized', 0)).rejects.toThrow();
+      expect(writes).not.toHaveBeenCalled();
+    }
+  );
 
   it('bounds the complete backpressured send and cleans listeners', async () => {
     const child = controlledPeer();
@@ -4714,184 +4754,190 @@ function replyFor(body: string): string {
   return 'alpha-answer';
 }
 
-it.each([
-  { levels: [] },
-  { levels: ['low'] },
-])('s4: delivers effort on retained native conversation and reports native selection %j', async ({
-  levels,
-}) => {
-  const roots = await tempRoots();
-  closers.push(() => rm(roots.base, { recursive: true, force: true }));
-  const inference = await responsesServer();
-  const session = await testAdapter.openSession(
-    openInput(roots, {
-      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-      capabilityBaseUrl: 'http://127.0.0.1:9',
-    })
-  );
-  sessions.push(session);
-  const base = turnInput(roots, []);
-  const reasoning = { ...base.llmRoute, reasoningEffortLevels: levels as ReasoningEffort[] };
-  const plain = { ...base.allowedLlmRoutes[1]!, reasoningEffortLevels: undefined };
-  const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
-    ...base,
-    turnId: text,
-    turnInput: text,
-    llmRoute,
-    allowedLlmRoutes: [reasoning, plain],
-  });
-  const bodies = () => inference.bodies.map((body) => JSON.parse(body));
-  const level = (body: Record<string, unknown>) =>
-    (body.reasoning as { effort?: string } | undefined)?.effort;
-  let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
-  for (const [index, effort] of (
-    ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
-  ).entries()) {
-    // Live Gateway advertisement never resets or restricts the retained native selection.
-    if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
-    const before = bodies().length;
-    const admitted = input(`effort-${index}`);
-    const result = await (
-      await session.startTurn({
-        ...admitted,
-        ...(effort === undefined ? {} : { reasoningEffort: effort }),
+it.each([{ levels: [] }, { levels: ['low'] }])(
+  's4: delivers effort on retained native conversation and reports native selection %j',
+  async ({ levels }) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
       })
+    );
+    sessions.push(session);
+    const base = turnInput(roots, []);
+    const reasoning = { ...base.llmRoute, reasoningEffortLevels: levels as ReasoningEffort[] };
+    const plain = { ...base.allowedLlmRoutes[1]!, reasoningEffortLevels: undefined };
+    const input = (text: string, llmRoute: WorkerResidentTurnInput['llmRoute'] = reasoning) => ({
+      ...base,
+      turnId: text,
+      turnInput: text,
+      llmRoute,
+      allowedLlmRoutes: [reasoning, plain],
+    });
+    const bodies = () => inference.bodies.map((body) => JSON.parse(body));
+    const level = (body: Record<string, unknown>) =>
+      (body.reasoning as { effort?: string } | undefined)?.effort;
+    let handle: Awaited<ReturnType<typeof session.nativeHandle>> | undefined;
+    for (const [index, effort] of (
+      ['low', 'high', undefined, 'none', 'minimal', 'medium', 'xhigh', 'max'] as const
+    ).entries()) {
+      // Live Gateway advertisement never resets or restricts the retained native selection.
+      if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
+      const before = bodies().length;
+      const admitted = input(`effort-${index}`);
+      const result = await (
+        await session.startTurn({
+          ...admitted,
+          ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        })
+      ).settled;
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
+      const expected = effort ?? 'high';
+      expect(bodies().slice(before).map(level)).toEqual([expected]);
+      expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+
+      if (handle) expect(await session.nativeHandle()).toEqual(handle);
+      else handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+    }
+    const before = bodies().length;
+    const result = await (
+      await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
     ).settled;
     expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-    const expected = effort ?? 'high';
-    expect(bodies().slice(before).map(level)).toEqual([expected]);
+    // Engineer Ruling 11: the native selection persists. Gateway owns dropping
+    // this inherited wire value for the plain route.
+    expect(bodies().slice(before).map(level)).toEqual(['max']);
+    expect(result.diagnostics?.reasoningEffortDelivery).toBe(
+      'not-delivered: model has no reasoning'
+    );
     expect(result.diagnostics?.reasoningEffort).toBe('unknown');
+    expect(await session.nativeHandle()).toEqual(handle);
+    const count = bodies().length;
+    await expect(
+      session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+    const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
+    await expect(
+      session.startTurn({
+        ...input('unknown-route'),
+        llmRoute: invalidRoute,
+        allowedLlmRoutes: [invalidRoute, plain],
+      })
+    ).rejects.toThrow();
+    expect(bodies()).toHaveLength(count);
+  },
+  180000
+);
 
-    if (handle) expect(await session.nativeHandle()).toEqual(handle);
-    else handle = await session.nativeHandle();
-    expect(handle.state).toBe('ready');
-  }
-  const before = bodies().length;
-  const result = await (
-    await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
-  ).settled;
-  expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  // Engineer Ruling 11: the native selection persists. Gateway owns dropping
-  // this inherited wire value for the plain route.
-  expect(bodies().slice(before).map(level)).toEqual(['max']);
-  expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
-  expect(result.diagnostics?.reasoningEffort).toBe('unknown');
-  expect(await session.nativeHandle()).toEqual(handle);
-  const count = bodies().length;
-  await expect(
-    session.startTurn({ ...input('unknown-core'), reasoningEffort: 'ultra' as ReasoningEffort })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-  const invalidRoute = { ...reasoning, reasoningEffortLevels: ['ultra'] as ReasoningEffort[] };
-  await expect(
-    session.startTurn({
-      ...input('unknown-route'),
-      llmRoute: invalidRoute,
-      allowedLlmRoutes: [invalidRoute, plain],
-    })
-  ).rejects.toThrow();
-  expect(bodies()).toHaveLength(count);
-}, 180000);
-
-it.each([
-  'turn',
-  'route',
-])('s4: rejects unknown %s effort before native control effects', async (where) => {
-  const roots = await tempRoots();
-  closers.push(() => rm(roots.base, { recursive: true, force: true }));
-  const inference = await responsesServer();
-  const session = await testAdapter.openSession(
-    openInput(roots, {
-      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
-      capabilityBaseUrl: 'http://127.0.0.1:9',
-    })
-  );
-  sessions.push(session);
-  const base = turnInput(roots, []);
-  const route = {
-    ...base.llmRoute,
-    reasoningEffortLevels: (where === 'route' ? ['ultra'] : []) as ReasoningEffort[],
-  };
-  await expect(
-    session.startTurn({
-      ...base,
-      llmRoute: route,
-      allowedLlmRoutes: [route],
-      ...(where === 'turn' ? { reasoningEffort: 'ultra' as ReasoningEffort } : {}),
-    })
-  ).rejects.toThrow();
-  expect(inference.bodies).toHaveLength(0);
-  expect(await session.nativeHandle()).toEqual({ state: 'pending' });
-}, 180000);
+it.each(['turn', 'route'])(
+  's4: rejects unknown %s effort before native control effects',
+  async (where) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
+      })
+    );
+    sessions.push(session);
+    const base = turnInput(roots, []);
+    const route = {
+      ...base.llmRoute,
+      reasoningEffortLevels: (where === 'route' ? ['ultra'] : []) as ReasoningEffort[],
+    };
+    await expect(
+      session.startTurn({
+        ...base,
+        llmRoute: route,
+        allowedLlmRoutes: [route],
+        ...(where === 'turn' ? { reasoningEffort: 'ultra' as ReasoningEffort } : {}),
+      })
+    ).rejects.toThrow();
+    expect(inference.bodies).toHaveLength(0);
+    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+  },
+  180000
+);
 
 // RET Native Transcripts And Runtime Logs: stderr is restricted content; App Server stdout is RPC only.
-it.each([
-  'drain',
-  'crash',
-] as const)('RET E3 keeps exact bounded stderr through %s without RPC stdout', async (ending) => {
-  const roots = await tempRoots();
-  closers.push(() => rm(roots.base, { recursive: true, force: true }));
-  const child = controlledPeer();
-  const stop = () => {
-    child.exitCode = ending === 'crash' ? 17 : 0;
-    child.emit('exit', child.exitCode, null);
-    child.stdout.end();
-    child.stderr.end();
-    child.emit('close', child.exitCode, null);
-  };
-  child.kill = (() => {
-    stop();
-    return true;
-  }) as typeof child.kill;
-  child.stdin.on('finish', stop);
-  const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
-  sessions.push(session);
-  const received: Array<{
-    record: import('../runtime-capture.js').RuntimeObservation;
-    body?: Buffer;
-  }> = [];
-  const input = turnInput(roots, []);
-  const active = await session.startTurn({
-    ...input,
-    runtimeCapture: {
-      ...input.runtimeCapture,
-      captureCoverage: { scope: 'task', value: 'on' },
-      ...{ nativeLogMaxBytes: 7, authoredVersion: '0.166.0' },
-      emit: async (record, body) => {
-        received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+it.each(['drain', 'crash'] as const)(
+  'RET E3 keeps exact bounded stderr through %s without RPC stdout',
+  async (ending) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const child = controlledPeer();
+    const stop = () => {
+      child.exitCode = ending === 'crash' ? 17 : 0;
+      child.emit('exit', child.exitCode, null);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', child.exitCode, null);
+    };
+    child.kill = (() => {
+      stop();
+      return true;
+    }) as typeof child.kill;
+    child.stdin.on('finish', stop);
+    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+    sessions.push(session);
+    const received: Array<{
+      record: import('../runtime-capture.js').RuntimeObservation;
+      body?: Buffer;
+    }> = [];
+    const input = turnInput(roots, []);
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.166.0' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
       },
-    },
-  });
-  const settled = active.settled.catch(() => null);
-  child.stderr.write(Buffer.from([0x61, 0, 0xe2]));
-  child.stderr.write(Buffer.from([0x82, 0xac, 0x62, 0x63, 0x64]));
-  // A valid additive RPC notification is not a native log or a native transcript source.
-  child.stdout.write(
-    '{"method":"future/native","params":{"canary":"RPC-STDOUT-MUST-NOT-PUBLISH"}}\n'
-  );
-  if (ending === 'crash') stop();
-  else child.stdout.write(terminalFrame());
-  await settled;
-  const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
-  expect(Buffer.concat(logs.map(({ body }) => body!))).toEqual(
-    Buffer.from([0x61, 0, 0xe2, 0x82, 0xac, 0x62, 0x63])
-  );
-  expect(logs.every(({ record }) => record.fact.native?.logSource === 'stderr')).toBe(true);
-  expect(
-    logs.every(
-      ({ record }) =>
-        record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
-    )
-  ).toBe(true);
-  expect(
-    received.some(
-      ({ record }) => record.fact.kind === 'runtime-log' && record.fact.reason === 'limit-exceeded'
-    )
-  ).toBe(true);
-  expect(
-    Buffer.concat(received.flatMap(({ body }) => (body ? [body] : []))).includes(
-      Buffer.from('RPC-STDOUT-MUST-NOT-PUBLISH')
-    )
-  ).toBe(false);
-  expect(received.some(({ record }) => record.fact.native?.logSource === 'stdout-log')).toBe(false);
-}, 15_000);
+    });
+    const settled = active.settled.catch(() => null);
+    child.stderr.write(Buffer.from([0x61, 0, 0xe2]));
+    child.stderr.write(Buffer.from([0x82, 0xac, 0x62, 0x63, 0x64]));
+    // A valid additive RPC notification is not a native log or a native transcript source.
+    child.stdout.write(
+      '{"method":"future/native","params":{"canary":"RPC-STDOUT-MUST-NOT-PUBLISH"}}\n'
+    );
+    if (ending === 'crash') stop();
+    else child.stdout.write(terminalFrame());
+    await settled;
+    const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
+    expect(Buffer.concat(logs.map(({ body }) => body!))).toEqual(
+      Buffer.from([0x61, 0, 0xe2, 0x82, 0xac, 0x62, 0x63])
+    );
+    expect(logs.every(({ record }) => record.fact.native?.logSource === 'stderr')).toBe(true);
+    expect(
+      logs.every(
+        ({ record }) =>
+          record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
+      )
+    ).toBe(true);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.kind === 'runtime-log' && record.fact.reason === 'limit-exceeded'
+      )
+    ).toBe(true);
+    expect(
+      Buffer.concat(received.flatMap(({ body }) => (body ? [body] : []))).includes(
+        Buffer.from('RPC-STDOUT-MUST-NOT-PUBLISH')
+      )
+    ).toBe(false);
+    expect(received.some(({ record }) => record.fact.native?.logSource === 'stdout-log')).toBe(
+      false
+    );
+  },
+  15_000
+);

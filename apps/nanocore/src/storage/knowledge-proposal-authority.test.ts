@@ -232,107 +232,116 @@ describe('knowledge proposal authority', () => {
     expect(bytes.slice(0, bytes.indexOf('\n---\n', 4))).not.toMatch(/^status:/m);
   });
 
-  it.each([
-    'changed',
-    'missing',
-  ] as const)('preserves exact Proposal evidence when its independent original bytes are %s', async (name) => {
-    const f = await createOwners();
-    const sourceContent = 'Captured source bytes remain immutable evidence.\n';
-    const source = await call(f, 'knowledge.source.register', {
-      requestId: authorityRequestId('register-source'),
-      kind: 'document',
-      title: 'Captured proposal evidence',
-      content: sourceContent,
-    });
-    expect(source.source.contentDigest).toBe(digest(sourceContent));
-    const sourceReference = `source:${source.source.id}@${digest(sourceContent)}`;
-    const proposal = await draft(
-      f,
-      sourceReference,
-      `source-valid-before-${name}`,
-      `source/accepted-before-${name}`
-    );
-    const path = join(f.workspaceRoot, 'knowledge', 'raw', 'sources', source.source.id, 'original');
-    if (name === 'changed') writeFileSync(path, 'Changed captured source bytes.\n');
-    else rmSync(path);
-    const laterDraft = await draft(
-      f,
-      sourceReference,
-      `source-${name}-draft`,
-      `source/${name}-draft`
-    );
-    expect(laterDraft.sourceReferences).toEqual([sourceReference]);
-    expect(
-      f.store
-        .listKnowledgeProposals(f.workspaceId)
-        .map((value) => value.id)
-        .sort()
-    ).toEqual([proposal.id, laterDraft.id].sort());
-    const decision = await call(
-      f,
-      'knowledge.proposal.decide',
-      decisionInput(f, proposal, 'accepted', `review-${name}`)
-    );
-    expect(decision.review.decision).toBe('accepted');
-    expect(decision.application).toMatchObject({
-      knowledgePageId: proposal.knowledgePageId,
-      present: true,
-      notebookRevision: proposal.candidateRevision,
-    });
-    expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
-    expect(currentPage(f, proposal.knowledgePageId)).toBeDefined();
-    expect(
-      f.notebook.readRevision(currentNotebookRevision(f)).files[`${proposal.knowledgePageId}.md`]
-    ).toContain(sourceReference);
-  });
-
-  it.each([
-    'accepted',
-    'rejected',
-  ] as const)('appends defer then %s with exact binding and rejects post-terminal decisions', async (terminalDecision) => {
-    const f = await createFixture(`proposal-${terminalDecision}`);
-    const deferred = await decide(f, 'deferred', `review-defer-${terminalDecision}`);
-    const terminal = await decide(f, terminalDecision, `review-terminal-${terminalDecision}`);
-    const decisions = f.store.listKnowledgeProposalReviewDecisions(f.workspaceId);
-    for (const [response, decision, label] of [
-      [deferred, 'deferred', `review-defer-${terminalDecision}`],
-      [terminal, terminalDecision, `review-terminal-${terminalDecision}`],
-    ] as const) {
-      expect(response.review).toEqual({
-        reviewId: deriveEntityId('kr', {
-          ownerScope: f.proposal.ownerScope,
-          proposalId: f.proposal.id,
-          requestId: authorityRequestId(label),
-        }),
-        proposalId: f.proposal.id,
-        workspaceId: f.workspaceId,
-        ownerScope: f.proposal.ownerScope,
-        baseRevision: f.proposal.baseRevision,
-        candidateRevision: f.proposal.candidateRevision,
-        requestId: authorityRequestId(label),
-        decision,
-        actor: REVIEWER,
-        proposalDigest: digest(readFileSync(f.proposalPath, 'utf8')),
-        knowledgePageId: f.knowledgePageId,
-        contentDigest: f.contentDigest,
-        targetAbsentAtDecision: decision === 'accepted' ? true : null,
-        decidedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+  it.each(['changed', 'missing'] as const)(
+    'preserves exact Proposal evidence when its independent original bytes are %s',
+    async (name) => {
+      const f = await createOwners();
+      const sourceContent = 'Captured source bytes remain immutable evidence.\n';
+      const source = await call(f, 'knowledge.source.register', {
+        requestId: authorityRequestId('register-source'),
+        kind: 'document',
+        title: 'Captured proposal evidence',
+        content: sourceContent,
       });
+      expect(source.source.contentDigest).toBe(digest(sourceContent));
+      const sourceReference = `source:${source.source.id}@${digest(sourceContent)}`;
+      const proposal = await draft(
+        f,
+        sourceReference,
+        `source-valid-before-${name}`,
+        `source/accepted-before-${name}`
+      );
+      const path = join(
+        f.workspaceRoot,
+        'knowledge',
+        'raw',
+        'sources',
+        source.source.id,
+        'original'
+      );
+      if (name === 'changed') writeFileSync(path, 'Changed captured source bytes.\n');
+      else rmSync(path);
+      const laterDraft = await draft(
+        f,
+        sourceReference,
+        `source-${name}-draft`,
+        `source/${name}-draft`
+      );
+      expect(laterDraft.sourceReferences).toEqual([sourceReference]);
+      expect(
+        f.store
+          .listKnowledgeProposals(f.workspaceId)
+          .map((value) => value.id)
+          .sort()
+      ).toEqual([proposal.id, laterDraft.id].sort());
+      const decision = await call(
+        f,
+        'knowledge.proposal.decide',
+        decisionInput(f, proposal, 'accepted', `review-${name}`)
+      );
+      expect(decision.review.decision).toBe('accepted');
+      expect(decision.application).toMatchObject({
+        knowledgePageId: proposal.knowledgePageId,
+        present: true,
+        notebookRevision: proposal.candidateRevision,
+      });
+      expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
+      expect(currentPage(f, proposal.knowledgePageId)).toBeDefined();
+      expect(
+        f.notebook.readRevision(currentNotebookRevision(f)).files[`${proposal.knowledgePageId}.md`]
+      ).toContain(sourceReference);
     }
-    expect(decisions).toEqual([deferred.review, terminal.review]);
-    expect(decodeRetainedReviews(f)).toEqual(decisions);
-    expect(deferred.application).toBeNull();
-    expect(f.notebook.retainedCandidate(f.proposal.id).revision).toBe(f.proposal.candidateRevision);
-    if (terminalDecision === 'rejected') {
-      expect(terminal.application).toBeNull();
-      expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
+  );
+
+  it.each(['accepted', 'rejected'] as const)(
+    'appends defer then %s with exact binding and rejects post-terminal decisions',
+    async (terminalDecision) => {
+      const f = await createFixture(`proposal-${terminalDecision}`);
+      const deferred = await decide(f, 'deferred', `review-defer-${terminalDecision}`);
+      const terminal = await decide(f, terminalDecision, `review-terminal-${terminalDecision}`);
+      const decisions = f.store.listKnowledgeProposalReviewDecisions(f.workspaceId);
+      for (const [response, decision, label] of [
+        [deferred, 'deferred', `review-defer-${terminalDecision}`],
+        [terminal, terminalDecision, `review-terminal-${terminalDecision}`],
+      ] as const) {
+        expect(response.review).toEqual({
+          reviewId: deriveEntityId('kr', {
+            ownerScope: f.proposal.ownerScope,
+            proposalId: f.proposal.id,
+            requestId: authorityRequestId(label),
+          }),
+          proposalId: f.proposal.id,
+          workspaceId: f.workspaceId,
+          ownerScope: f.proposal.ownerScope,
+          baseRevision: f.proposal.baseRevision,
+          candidateRevision: f.proposal.candidateRevision,
+          requestId: authorityRequestId(label),
+          decision,
+          actor: REVIEWER,
+          proposalDigest: digest(readFileSync(f.proposalPath, 'utf8')),
+          knowledgePageId: f.knowledgePageId,
+          contentDigest: f.contentDigest,
+          targetAbsentAtDecision: decision === 'accepted' ? true : null,
+          decidedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        });
+      }
+      expect(decisions).toEqual([deferred.review, terminal.review]);
+      expect(decodeRetainedReviews(f)).toEqual(decisions);
+      expect(deferred.application).toBeNull();
+      expect(f.notebook.retainedCandidate(f.proposal.id).revision).toBe(
+        f.proposal.candidateRevision
+      );
+      if (terminalDecision === 'rejected') {
+        expect(terminal.application).toBeNull();
+        expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
+      }
+      await expectAuthorityFailure(
+        async () => await decide(f, 'deferred', `review-after-${terminalDecision}`),
+        'conflict'
+      );
+      expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toEqual(decisions);
     }
-    await expectAuthorityFailure(
-      async () => await decide(f, 'deferred', `review-after-${terminalDecision}`),
-      'conflict'
-    );
-    expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toEqual(decisions);
-  });
+  );
 
   it('publishes exact accepted bytes and replays the named commit without resurrecting a reversed page', async () => {
     const f = await createFixture('proposal-accepted-page');
@@ -537,79 +546,80 @@ describe('knowledge proposal authority', () => {
     expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
   });
 
-  it.each([
-    'target',
-    'source',
-  ] as const)('blocks publication while the %s has an unresolved conflict', async (subject) => {
-    const f = await createFixture(`proposal-unresolved-${subject}`);
-    const id = await conflict(
-      f,
-      subject === 'target'
-        ? formatReferenceUri({ scopeId: workspacePageScope(f), objectId: f.knowledgePageId })
-        : f.sourceReference,
-      `conflict-${subject}`
-    );
-    await refreshConflictProposal(f, `conflicted-${subject}-current-proposal`);
-    const before = currentNotebookRevision(f);
-    const priorPage = currentPage(f, f.knowledgePageId);
-    await expectAuthorityFailure(
-      async () => await decide(f, 'accepted', `review-unresolved-${subject}`),
-      'conflict'
-    );
-    expect(JSON.parse(retainedProposalState(f, f.proposal.id).reviewsJson)).toEqual([]);
-    expect(currentPage(f, f.knowledgePageId)).toBe(priorPage);
-    expect(currentNotebookRevision(f)).toBe(before);
-    await edit(
-      f,
-      id,
-      updateOkfFrontmatter({
-        path: `${id}.md`,
-        content: currentPage(f, id)!,
-        updates: { conflict_status: 'resolved' },
-      }),
-      `resolve-${subject}`
-    );
-    await refreshConflictProposal(f, `resolved-${subject}-current-proposal`);
-    expect((await decide(f, 'accepted', `review-resolved-${subject}`)).application?.present).toBe(
-      true
-    );
-    expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
-  }, 60_000);
-
-  it.each([
-    'existing-target',
-    'tampered-proposal',
-  ] as const)('refuses without Review or page mutation for %s', async (kind) => {
-    const f = await createFixture(`proposal-fail-${kind}`);
-    let existing: string | undefined;
-    if (kind === 'existing-target') {
-      const published = await edit(
+  it.each(['target', 'source'] as const)(
+    'blocks publication while the %s has an unresolved conflict',
+    async (subject) => {
+      const f = await createFixture(`proposal-unresolved-${subject}`);
+      const id = await conflict(
         f,
-        f.knowledgePageId,
-        f.canonicalPageBytes,
-        'human-target-winner'
+        subject === 'target'
+          ? formatReferenceUri({ scopeId: workspacePageScope(f), objectId: f.knowledgePageId })
+          : f.sourceReference,
+        `conflict-${subject}`
       );
-      expect(published.notebookRevision).not.toBe(f.proposal.baseRevision);
-      existing = currentPage(f, f.knowledgePageId);
-    } else {
-      const original = readFileSync(f.proposalPath, 'utf8');
-      const tampered = original.replace(
-        f.proposal.rationale,
-        'Tampered retained Proposal rationale.'
+      await refreshConflictProposal(f, `conflicted-${subject}-current-proposal`);
+      const before = currentNotebookRevision(f);
+      const priorPage = currentPage(f, f.knowledgePageId);
+      await expectAuthorityFailure(
+        async () => await decide(f, 'accepted', `review-unresolved-${subject}`),
+        'conflict'
       );
-      expect(tampered).not.toBe(original);
-      chmodSync(f.proposalPath, 0o600);
-      writeFileSync(f.proposalPath, tampered);
+      expect(JSON.parse(retainedProposalState(f, f.proposal.id).reviewsJson)).toEqual([]);
+      expect(currentPage(f, f.knowledgePageId)).toBe(priorPage);
+      expect(currentNotebookRevision(f)).toBe(before);
+      await edit(
+        f,
+        id,
+        updateOkfFrontmatter({
+          path: `${id}.md`,
+          content: currentPage(f, id)!,
+          updates: { conflict_status: 'resolved' },
+        }),
+        `resolve-${subject}`
+      );
+      await refreshConflictProposal(f, `resolved-${subject}-current-proposal`);
+      expect((await decide(f, 'accepted', `review-resolved-${subject}`)).application?.present).toBe(
+        true
+      );
+      expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
+    },
+    60_000
+  );
+
+  it.each(['existing-target', 'tampered-proposal'] as const)(
+    'refuses without Review or page mutation for %s',
+    async (kind) => {
+      const f = await createFixture(`proposal-fail-${kind}`);
+      let existing: string | undefined;
+      if (kind === 'existing-target') {
+        const published = await edit(
+          f,
+          f.knowledgePageId,
+          f.canonicalPageBytes,
+          'human-target-winner'
+        );
+        expect(published.notebookRevision).not.toBe(f.proposal.baseRevision);
+        existing = currentPage(f, f.knowledgePageId);
+      } else {
+        const original = readFileSync(f.proposalPath, 'utf8');
+        const tampered = original.replace(
+          f.proposal.rationale,
+          'Tampered retained Proposal rationale.'
+        );
+        expect(tampered).not.toBe(original);
+        chmodSync(f.proposalPath, 0o600);
+        writeFileSync(f.proposalPath, tampered);
+      }
+      const before = currentNotebookRevision(f);
+      await expectAuthorityFailure(
+        async () => await decide(f, 'accepted', `review-fail-${kind}`),
+        kind === 'existing-target' ? 'conflict' : 'recovery_required'
+      );
+      expect(JSON.parse(retainedProposalState(f, f.proposal.id).reviewsJson)).toEqual([]);
+      expect(currentNotebookRevision(f)).toBe(before);
+      expect(currentPage(f, f.knowledgePageId)).toBe(existing);
     }
-    const before = currentNotebookRevision(f);
-    await expectAuthorityFailure(
-      async () => await decide(f, 'accepted', `review-fail-${kind}`),
-      kind === 'existing-target' ? 'conflict' : 'recovery_required'
-    );
-    expect(JSON.parse(retainedProposalState(f, f.proposal.id).reviewsJson)).toEqual([]);
-    expect(currentNotebookRevision(f)).toBe(before);
-    expect(currentPage(f, f.knowledgePageId)).toBe(existing);
-  });
+  );
 
   it('reverses unchanged accepted bytes in a new commit and retains original Proposal and Review evidence', async () => {
     const f = await createFixture('proposal-reversal');
@@ -744,26 +754,31 @@ describe('knowledge proposal authority', () => {
     expect(currentPage(f, f.knowledgePageId)).toBe(edited);
   });
 
-  it.each([
-    'changed page bytes',
-    'missing immutable page object',
-  ] as const)('fails closed when reversal sees %s', async (kind) => {
-    const f = await createFixture(`proposal-reversal-${kind}`);
-    const accepted = await decide(f, 'accepted', `review-reversal-${kind}`);
-    let edited: string | undefined;
-    let missing: string | undefined;
-    if (kind === 'changed page bytes') {
-      await edit(f, f.knowledgePageId, `${f.canonicalPageBytes}\nchanged\n`, 'human-changed-page');
-      edited = currentPage(f, f.knowledgePageId);
-    } else missing = removeCandidateBlob(f);
-    const before = currentNotebookRevision(f);
-    await expectAuthorityFailure(
-      async () => await reverse(f, accepted.review.reviewId),
-      kind === 'changed page bytes' ? 'conflict' : 'recovery_required'
-    );
-    expect(currentNotebookRevision(f)).toBe(before);
-    if (missing) expect(existsSync(missing)).toBe(false);
-    else expect(currentPage(f, f.knowledgePageId)).toBe(edited);
-    expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
-  });
+  it.each(['changed page bytes', 'missing immutable page object'] as const)(
+    'fails closed when reversal sees %s',
+    async (kind) => {
+      const f = await createFixture(`proposal-reversal-${kind}`);
+      const accepted = await decide(f, 'accepted', `review-reversal-${kind}`);
+      let edited: string | undefined;
+      let missing: string | undefined;
+      if (kind === 'changed page bytes') {
+        await edit(
+          f,
+          f.knowledgePageId,
+          `${f.canonicalPageBytes}\nchanged\n`,
+          'human-changed-page'
+        );
+        edited = currentPage(f, f.knowledgePageId);
+      } else missing = removeCandidateBlob(f);
+      const before = currentNotebookRevision(f);
+      await expectAuthorityFailure(
+        async () => await reverse(f, accepted.review.reviewId),
+        kind === 'changed page bytes' ? 'conflict' : 'recovery_required'
+      );
+      expect(currentNotebookRevision(f)).toBe(before);
+      if (missing) expect(existsSync(missing)).toBe(false);
+      else expect(currentPage(f, f.knowledgePageId)).toBe(edited);
+      expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
+    }
+  );
 });

@@ -495,115 +495,116 @@ describe('Vault native commit boundaries', () => {
 
 // Core Storage owns these durable metadata transitions; this fixture claims no physical removal.
 describe('Vault native binding withdrawal currentness', () => {
-  it.each([
-    'unchanged',
-    'requester-disabled',
-    'competing-receipt',
-  ] as const)('decides the original requester and unique active receipt after FIFO predecessors (%s)', async (change) => {
-    const f = await fixture();
-    const userId = ensureLocalUser(f.db);
-    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
-    await createVaultReference(f.db, {
-      ...createInput(),
-      ownerScope: 'workspace',
-      workspaceId,
-    });
-    const grant = await createVaultGrant(f.db, {
-      grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9c',
-      vaultReferenceId: referenceId,
-      ownerScope: 'workspace',
-      workspaceId,
-      allowedInjectionPaths: ['runtime-file'],
-      lifetime: 'workspace',
-      now: () => clock,
-    });
-    const plan = await createVaultInjectionPlan(f.db, {
-      planId: 'plan_native_withdraw',
-      grantId: grant.grantId,
-      injectionVisibility: 'runtime-file',
-      targetPath: '/sandbox/synthetic-withdrawal',
-      expirationBehavior: 'Deny expired use.',
-      revocationBehavior: 'Close the affected binding.',
-      redactionRule: 'Exclude material.',
-      backendCapabilityRequirement: 'runtime-file',
-      now: () => clock,
-    });
-    const receiptInput = {
-      receiptId: 'receipt_native_withdraw',
-      planId: plan.planId,
-      grantId: grant.grantId,
-      agentSessionId: 'as_00000000-0000-7a76-a462-96e7448d3d9c',
-      backendSummary: 'Synthetic completed delivery metadata.',
-      injectedAt: clock,
-      revocationStatus: 'active' as const,
-    };
-    const receipt = await createVaultInjectionReceipt(f.db, receiptInput);
-    const requester = {
-      kind: 'public' as const,
-      actor: { kind: 'local' as const, userId },
-      actorRef: { kind: 'user' as const, id: userId },
-    };
-    // The real requester owner produces the captured revision before any competing mutation.
-    const coreAuthority = {
-      workspaceId,
-      requester,
-      revision: policyDigest(
-        readVaultRequesterAuthority(f.db, workspaceId, requester, 'vault.use', true)
-      ),
-    };
-    arm(f, 1);
-    const predecessor =
-      change === 'competing-receipt'
-        ? f.start(() =>
-            createVaultInjectionReceipt(f.db, {
-              ...receiptInput,
-              receiptId: 'receipt_native_competing',
-            })
-          )
-        : undefined;
-    if (predecessor) await reached(f, predecessor);
-    const withdrawal = f.start(() =>
-      getControlStoreWorkerClient().vault(f.db, 'binding-revoke-withdraw', {
-        receiptId: receipt.receiptId,
+  it.each(['unchanged', 'requester-disabled', 'competing-receipt'] as const)(
+    'decides the original requester and unique active receipt after FIFO predecessors (%s)',
+    async (change) => {
+      const f = await fixture();
+      const userId = ensureLocalUser(f.db);
+      recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: userId });
+      await createVaultReference(f.db, {
+        ...createInput(),
+        ownerScope: 'workspace',
+        workspaceId,
+      });
+      const grant = await createVaultGrant(f.db, {
+        grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9c',
+        vaultReferenceId: referenceId,
+        ownerScope: 'workspace',
+        workspaceId,
+        allowedInjectionPaths: ['runtime-file'],
+        lifetime: 'workspace',
+        now: () => clock,
+      });
+      const plan = await createVaultInjectionPlan(f.db, {
+        planId: 'plan_native_withdraw',
+        grantId: grant.grantId,
+        injectionVisibility: 'runtime-file',
+        targetPath: '/sandbox/synthetic-withdrawal',
+        expirationBehavior: 'Deny expired use.',
+        revocationBehavior: 'Close the affected binding.',
+        redactionRule: 'Exclude material.',
+        backendCapabilityRequirement: 'runtime-file',
+        now: () => clock,
+      });
+      const receiptInput = {
+        receiptId: 'receipt_native_withdraw',
         planId: plan.planId,
-        agentSessionId: receiptInput.agentSessionId,
-        plan,
-        coreAuthority,
-      })
-    );
-    if (predecessor) {
-      // Posting behind an already held native request preserves the actual FIFO predecessor.
-      await nextTurn();
-      expect(withdrawal.settled()).toBe(false);
-    } else {
-      await reached(f, withdrawal);
-      if (change === 'requester-disabled') {
-        f.db.sqlite.transaction(() => {
-          expect(disableCanonicalUser(f.db, userId)?.changed).toBe(true);
-        })();
+        grantId: grant.grantId,
+        agentSessionId: 'as_00000000-0000-7a76-a462-96e7448d3d9c',
+        backendSummary: 'Synthetic completed delivery metadata.',
+        injectedAt: clock,
+        revocationStatus: 'active' as const,
+      };
+      const receipt = await createVaultInjectionReceipt(f.db, receiptInput);
+      const requester = {
+        kind: 'public' as const,
+        actor: { kind: 'local' as const, userId },
+        actorRef: { kind: 'user' as const, id: userId },
+      };
+      // The real requester owner produces the captured revision before any competing mutation.
+      const coreAuthority = {
+        workspaceId,
+        requester,
+        revision: policyDigest(
+          readVaultRequesterAuthority(f.db, workspaceId, requester, 'vault.use', true)
+        ),
+      };
+      arm(f, 1);
+      const predecessor =
+        change === 'competing-receipt'
+          ? f.start(() =>
+              createVaultInjectionReceipt(f.db, {
+                ...receiptInput,
+                receiptId: 'receipt_native_competing',
+              })
+            )
+          : undefined;
+      if (predecessor) await reached(f, predecessor);
+      const withdrawal = f.start(() =>
+        getControlStoreWorkerClient().vault(f.db, 'binding-revoke-withdraw', {
+          receiptId: receipt.receiptId,
+          planId: plan.planId,
+          agentSessionId: receiptInput.agentSessionId,
+          plan,
+          coreAuthority,
+        })
+      );
+      if (predecessor) {
+        // Posting behind an already held native request preserves the actual FIFO predecessor.
+        await nextTurn();
+        expect(withdrawal.settled()).toBe(false);
+      } else {
+        await reached(f, withdrawal);
+        if (change === 'requester-disabled') {
+          f.db.sqlite.transaction(() => {
+            expect(disableCanonicalUser(f.db, userId)?.changed).toBe(true);
+          })();
+        }
+      }
+      releaseNative(f.gate);
+      if (predecessor) expect(await predecessor.result).toMatchObject({ ok: true });
+      const result = await withdrawal.result;
+      if (change === 'unchanged') {
+        expect(result).toEqual({ ok: true, value: null });
+        expect(getVaultInjectionPlan(f.db, plan.planId)?.status).toBe('revoked');
+        expect(listVaultInjectionReceipts(f.db)).toEqual([
+          { ...receipt, revocationStatus: 'stale-session' },
+        ]);
+      } else {
+        expect(result).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
+        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
+        expect(listVaultInjectionReceipts(f.db)).toHaveLength(
+          change === 'competing-receipt' ? 2 : 1
+        );
+        expect(
+          listVaultInjectionReceipts(f.db).every((row) => row.revocationStatus === 'active')
+        ).toBe(true);
+        expect(
+          listVaultInjectionReceipts(f.db).find((row) => row.receiptId === receipt.receiptId)
+        ).toEqual(receipt);
       }
     }
-    releaseNative(f.gate);
-    if (predecessor) expect(await predecessor.result).toMatchObject({ ok: true });
-    const result = await withdrawal.result;
-    if (change === 'unchanged') {
-      expect(result).toEqual({ ok: true, value: null });
-      expect(getVaultInjectionPlan(f.db, plan.planId)?.status).toBe('revoked');
-      expect(listVaultInjectionReceipts(f.db)).toEqual([
-        { ...receipt, revocationStatus: 'stale-session' },
-      ]);
-    } else {
-      expect(result).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
-      expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
-      expect(listVaultInjectionReceipts(f.db)).toHaveLength(change === 'competing-receipt' ? 2 : 1);
-      expect(
-        listVaultInjectionReceipts(f.db).every((row) => row.revocationStatus === 'active')
-      ).toBe(true);
-      expect(
-        listVaultInjectionReceipts(f.db).find((row) => row.receiptId === receipt.receiptId)
-      ).toEqual(receipt);
-    }
-  });
+  );
 });
 
 // COORD04:04 retains the original receipt bound while the complete session projection is counted as pending bytes.
@@ -687,130 +688,137 @@ it.each([
   ['create', 'administrator'],
   ['narrow', 'token'],
   ['narrow', 'administrator'],
-] as const)('refuses public Workspace grant %s after %s withdrawal before native BEGIN', async (action, withdrawal) => {
-  const { createOpenKitAccessTokenRecord, revokeOpenKitAccessTokenRecord } = await import(
-    '../auth/access-token-store.js'
-  );
-  const { Worker } = await import('node:worker_threads');
-  const { FsStore } = await import('../lib/store.js');
-  const { createOperationInvocation } = await import('../operation-composition.js');
-  const { WorkspaceMutationAdmission } = await import('../workspace-mutation-admission.js');
-  const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
-  const { listVaultGrants } = await import('../vault/vault-grants.js');
-  const { listSqliteAuditEvents } = await import('../audit-events.js');
-  const { openWorkspaceDb } = await import('./db.js');
-  const { applyScopedMigrations } = await import('./migrate.js');
-  const f = await fixture();
-  const userId = ensureLocalUser(f.db);
-  const token = createOpenKitAccessTokenRecord(f.db, {
-    ownerUserId: userId,
-    scope: 'server-admin',
-    workspaceIds: [],
-    expiresAt: '2999-01-01T00:00:00Z',
-  });
-  const actor = {
-    kind: 'token',
-    userId,
-    tokenId: token.tokenId,
-    tokenScope: 'server-admin',
-  } as const;
-  const store = new FsStore({ dataRoot: f.db.dataRoot });
-  const workspace = await store.createWorkspace('Late issuer withdrawal');
-  recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId: workspace.id, ownerUserId: userId });
-  const unlock = createVaultUnlockState({
-    backendKind: 'encrypted-file',
-    storeDir: join(f.db.dataRoot, 'synthetic-vault'),
-  });
-  unlock.unlock({ masterKey: Buffer.alloc(32, 19) });
-  const invoke = createOperationInvocation({
-    coreDb: f.db,
-    dataRoot: f.db.dataRoot,
-    store,
-    repositoryWorkspaceDb: (id: string) => {
-      const db = openWorkspaceDb(f.db.dataRoot, id);
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
-      return db;
-    },
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
-    inflightCommands: new WeakMap(),
-    vaultUnlockState: unlock,
-  });
-  const call = (operation: string, input: unknown) =>
-    invoke(operation as never, input as never, { kind: 'public', actor }) as Promise<
-      Record<string, unknown>
-    >;
-  let operation: ReturnType<typeof f.start> | undefined;
-  try {
-    const reference = await call('vault.secret-create', {
-      workspaceId: workspace.id,
-      secretKind: 'mcp-credential',
-      material: 'synthetic-late-issuer',
-    });
-    const old = await call('vault.grant-create', {
-      workspaceId: workspace.id,
-      referenceId: reference.referenceId,
-      injectionPath: 'runtime-file',
-    });
-    const grantsBefore = listVaultGrants(f.db);
-    const successfulAuditIds = () =>
-      listSqliteAuditEvents(f.db.sqlite)
-        .filter(
-          (event) =>
-            event.outcome === 'succeeded' &&
-            ['vault.workspace_grant', 'vault.workspace_narrow-grant'].includes(event.action)
-        )
-        .map((event) => event.id);
-    const auditBefore = successfulAuditIds();
-    const nativeRefusals: string[] = [];
-    const emit = Worker.prototype.emit;
-    const refusalSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
-      this: InstanceType<typeof Worker>,
-      event: string | symbol,
-      ...args: unknown[]
-    ) {
-      const reply = args[0] as { status?: string; commit?: string } | undefined;
-      if (event === 'message' && reply?.status === 'error' && reply.commit)
-        nativeRefusals.push(reply.commit);
-      return emit.call(this, event, ...args);
-    });
-    arm(f, 1);
-    operation = f.start(() =>
-      action === 'create'
-        ? call('vault.grant-create', {
-            workspaceId: workspace.id,
-            referenceId: reference.referenceId,
-            injectionPath: 'runtime-file',
-          })
-        : call('vault.grant-narrow', {
-            workspaceId: workspace.id,
-            grantId: old.grantId,
-            constraints: { expiresAt: '2998-01-01T00:00:00.000Z' },
-          })
+] as const)(
+  'refuses public Workspace grant %s after %s withdrawal before native BEGIN',
+  async (action, withdrawal) => {
+    const { createOpenKitAccessTokenRecord, revokeOpenKitAccessTokenRecord } = await import(
+      '../auth/access-token-store.js'
     );
-    await reached(f, operation);
-    // These are the actual identity owners. BEGIN is still held, so no competing writer is blocked.
-    if (withdrawal === 'token') revokeOpenKitAccessTokenRecord(f.db, token.tokenId);
-    else f.db.sqlite.transaction(() => disableCanonicalUser(f.db, userId))();
-    releaseNative(f.gate);
-    const result = await operation.result;
-    // Public refusal plus complete durable equality is the deciding not-committed oracle.
-    expect(result.ok).toBe(false);
-    expect(nativeRefusals).toEqual(['not-committed']);
-    refusalSpy.mockRestore();
-    if (result.ok) throw new Error('Withdrawn issuer published a successful grant mutation.');
-    expect(result.error).toHaveProperty('status');
-    expect([403, 409]).toContain((result.error as { status: number }).status);
-    expect(listVaultGrants(f.db)).toEqual(grantsBefore);
-    expect(listVaultGrants(f.db).find((grant) => grant.grantId === old.grantId)).toEqual(
-      grantsBefore.find((grant) => grant.grantId === old.grantId)
-    );
-    expect(successfulAuditIds()).toEqual(auditBefore);
-  } finally {
-    releaseNative(f.gate);
-    await operation?.result;
-    unlock.lock();
+    const { Worker } = await import('node:worker_threads');
+    const { FsStore } = await import('../lib/store.js');
+    const { createOperationInvocation } = await import('../operation-composition.js');
+    const { WorkspaceMutationAdmission } = await import('../workspace-mutation-admission.js');
+    const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
+    const { listVaultGrants } = await import('../vault/vault-grants.js');
+    const { listSqliteAuditEvents } = await import('../audit-events.js');
+    const { openWorkspaceDb } = await import('./db.js');
+    const { applyScopedMigrations } = await import('./migrate.js');
+    const f = await fixture();
+    const userId = ensureLocalUser(f.db);
+    const token = createOpenKitAccessTokenRecord(f.db, {
+      ownerUserId: userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00Z',
+    });
+    const actor = {
+      kind: 'token',
+      userId,
+      tokenId: token.tokenId,
+      tokenScope: 'server-admin',
+    } as const;
+    const store = new FsStore({ dataRoot: f.db.dataRoot });
+    const workspace = await store.createWorkspace('Late issuer withdrawal');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      workspaceId: workspace.id,
+      ownerUserId: userId,
+    });
+    const unlock = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(f.db.dataRoot, 'synthetic-vault'),
+    });
+    unlock.unlock({ masterKey: Buffer.alloc(32, 19) });
+    const invoke = createOperationInvocation({
+      coreDb: f.db,
+      dataRoot: f.db.dataRoot,
+      store,
+      repositoryWorkspaceDb: (id: string) => {
+        const db = openWorkspaceDb(f.db.dataRoot, id);
+        applyScopedMigrations(db, undefined, 'pre-knowledge');
+        return db;
+      },
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      inflightCommands: new WeakMap(),
+      vaultUnlockState: unlock,
+    });
+    const call = (operation: string, input: unknown) =>
+      invoke(operation as never, input as never, { kind: 'public', actor }) as Promise<
+        Record<string, unknown>
+      >;
+    let operation: ReturnType<typeof f.start> | undefined;
+    try {
+      const reference = await call('vault.secret-create', {
+        workspaceId: workspace.id,
+        secretKind: 'mcp-credential',
+        material: 'synthetic-late-issuer',
+      });
+      const old = await call('vault.grant-create', {
+        workspaceId: workspace.id,
+        referenceId: reference.referenceId,
+        injectionPath: 'runtime-file',
+      });
+      const grantsBefore = listVaultGrants(f.db);
+      const successfulAuditIds = () =>
+        listSqliteAuditEvents(f.db.sqlite)
+          .filter(
+            (event) =>
+              event.outcome === 'succeeded' &&
+              ['vault.workspace_grant', 'vault.workspace_narrow-grant'].includes(event.action)
+          )
+          .map((event) => event.id);
+      const auditBefore = successfulAuditIds();
+      const nativeRefusals: string[] = [];
+      const emit = Worker.prototype.emit;
+      const refusalSpy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+        this: InstanceType<typeof Worker>,
+        event: string | symbol,
+        ...args: unknown[]
+      ) {
+        const reply = args[0] as { status?: string; commit?: string } | undefined;
+        if (event === 'message' && reply?.status === 'error' && reply.commit)
+          nativeRefusals.push(reply.commit);
+        return emit.call(this, event, ...args);
+      });
+      arm(f, 1);
+      operation = f.start(() =>
+        action === 'create'
+          ? call('vault.grant-create', {
+              workspaceId: workspace.id,
+              referenceId: reference.referenceId,
+              injectionPath: 'runtime-file',
+            })
+          : call('vault.grant-narrow', {
+              workspaceId: workspace.id,
+              grantId: old.grantId,
+              constraints: { expiresAt: '2998-01-01T00:00:00.000Z' },
+            })
+      );
+      await reached(f, operation);
+      // These are the actual identity owners. BEGIN is still held, so no competing writer is blocked.
+      if (withdrawal === 'token') revokeOpenKitAccessTokenRecord(f.db, token.tokenId);
+      else f.db.sqlite.transaction(() => disableCanonicalUser(f.db, userId))();
+      releaseNative(f.gate);
+      const result = await operation.result;
+      // Public refusal plus complete durable equality is the deciding not-committed oracle.
+      expect(result.ok).toBe(false);
+      expect(nativeRefusals).toEqual(['not-committed']);
+      refusalSpy.mockRestore();
+      if (result.ok) throw new Error('Withdrawn issuer published a successful grant mutation.');
+      expect(result.error).toHaveProperty('status');
+      expect([403, 409]).toContain((result.error as { status: number }).status);
+      expect(listVaultGrants(f.db)).toEqual(grantsBefore);
+      expect(listVaultGrants(f.db).find((grant) => grant.grantId === old.grantId)).toEqual(
+        grantsBefore.find((grant) => grant.grantId === old.grantId)
+      );
+      expect(successfulAuditIds()).toEqual(auditBefore);
+    } finally {
+      releaseNative(f.gate);
+      await operation?.result;
+      unlock.lock();
+    }
   }
-});
+);
 
 // Core Vault and Durable Control Store: the existing grant-revoke owner decides after FIFO,
 // and grant/plan/receipt projection changes share its savepoint and covering FULL ACK.
@@ -822,159 +830,168 @@ describe('native User reference owner withdrawal', () => {
     'token-revoked',
     'reference-owner-changed',
     'grant-workspace-changed',
-  ] as const)('preserves current owner authority and the original withdrawal tuple (%s)', async (scenario) => {
-    const f = await fixture();
-    const localUserId = ensureLocalUser(f.db);
-    const auth = createBetterAuth(f.db, { env: {} });
-    const { user } = await auth.api.signUpEmail({
-      body: {
-        name: 'Native reference owner',
-        email: `${randomUUID()}@example.invalid`,
-        password: randomUUID(),
-      },
-    });
-    let actor: Actor = { kind: 'session', userId: user.id };
-    let tokenId: string | undefined;
-    if (scenario === 'token-revoked') {
-      const token = createOpenKitAccessTokenRecord(f.db, {
-        ownerUserId: user.id,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
+  ] as const)(
+    'preserves current owner authority and the original withdrawal tuple (%s)',
+    async (scenario) => {
+      const f = await fixture();
+      const localUserId = ensureLocalUser(f.db);
+      const auth = createBetterAuth(f.db, { env: {} });
+      const { user } = await auth.api.signUpEmail({
+        body: {
+          name: 'Native reference owner',
+          email: `${randomUUID()}@example.invalid`,
+          password: randomUUID(),
+        },
       });
-      tokenId = token.tokenId;
-      actor = { kind: 'token', userId: user.id, tokenId, tokenScope: 'server-admin' };
-    }
-    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: localUserId });
-    const otherWorkspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba202';
-    recordWorkspaceOwnerMembership({
-      coreDb: f.db,
-      workspaceId: otherWorkspaceId,
-      ownerUserId: localUserId,
-    });
-    const reference = await createVaultReference(f.db, {
-      ...createInput(),
-      ownerScope: 'user',
-      userId: user.id,
-    });
-    const grant = await createVaultGrant(f.db, {
-      grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9c',
-      vaultReferenceId: referenceId,
-      ownerScope: 'workspace',
-      workspaceId,
-      allowedInjectionPaths: ['gateway-only'],
-      lifetime: 'workspace',
-    });
-    const untouched = await createVaultGrant(f.db, {
-      ...grant,
-      grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9d',
-      workspaceId: otherWorkspaceId,
-    });
-    const plan = await createVaultInjectionPlan(f.db, {
-      planId: 'plan_native_user_withdrawal',
-      grantId: grant.grantId,
-      injectionVisibility: 'gateway-only',
-      expirationBehavior: 'Deny expired use.',
-      revocationBehavior: 'Close affected connection.',
-      redactionRule: 'Exclude material.',
-      backendCapabilityRequirement: 'gateway-only',
-    });
-    const receipt = await createVaultInjectionReceipt(f.db, {
-      receiptId: 'receipt_native_user_withdrawal',
-      planId: plan.planId,
-      grantId: grant.grantId,
-      agentSessionId: 'as_00000000-0000-7a76-a462-96e7448d3d9c',
-      backendSummary: 'Synthetic acknowledged connection.',
-      injectedAt: clock,
-      revocationStatus: 'active',
-    });
-    if (scenario === 'projection-rollback')
-      f.db.sqlite.exec(`CREATE TRIGGER reject_user_withdrawal_projection
+      let actor: Actor = { kind: 'session', userId: user.id };
+      let tokenId: string | undefined;
+      if (scenario === 'token-revoked') {
+        const token = createOpenKitAccessTokenRecord(f.db, {
+          ownerUserId: user.id,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        tokenId = token.tokenId;
+        actor = { kind: 'token', userId: user.id, tokenId, tokenScope: 'server-admin' };
+      }
+      recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: localUserId });
+      const otherWorkspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba202';
+      recordWorkspaceOwnerMembership({
+        coreDb: f.db,
+        workspaceId: otherWorkspaceId,
+        ownerUserId: localUserId,
+      });
+      const reference = await createVaultReference(f.db, {
+        ...createInput(),
+        ownerScope: 'user',
+        userId: user.id,
+      });
+      const grant = await createVaultGrant(f.db, {
+        grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9c',
+        vaultReferenceId: referenceId,
+        ownerScope: 'workspace',
+        workspaceId,
+        allowedInjectionPaths: ['gateway-only'],
+        lifetime: 'workspace',
+      });
+      const untouched = await createVaultGrant(f.db, {
+        ...grant,
+        grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9d',
+        workspaceId: otherWorkspaceId,
+      });
+      const plan = await createVaultInjectionPlan(f.db, {
+        planId: 'plan_native_user_withdrawal',
+        grantId: grant.grantId,
+        injectionVisibility: 'gateway-only',
+        expirationBehavior: 'Deny expired use.',
+        revocationBehavior: 'Close affected connection.',
+        redactionRule: 'Exclude material.',
+        backendCapabilityRequirement: 'gateway-only',
+      });
+      const receipt = await createVaultInjectionReceipt(f.db, {
+        receiptId: 'receipt_native_user_withdrawal',
+        planId: plan.planId,
+        grantId: grant.grantId,
+        agentSessionId: 'as_00000000-0000-7a76-a462-96e7448d3d9c',
+        backendSummary: 'Synthetic acknowledged connection.',
+        injectedAt: clock,
+        revocationStatus: 'active',
+      });
+      if (scenario === 'projection-rollback')
+        f.db.sqlite.exec(`CREATE TRIGGER reject_user_withdrawal_projection
         BEFORE UPDATE ON vault_injection_receipts
         BEGIN SELECT RAISE(ABORT, 'Synthetic withdrawal projection failure'); END`);
-    const commits = f.commits();
-    const success = scenario === 'full-ack-and-cold-read';
-    arm(f, success ? 2 : 1, success);
-    const pending = f.start(() =>
-      getControlStoreWorkerClient().vault(f.db, 'grant-revoke', {
-        grantId: grant.grantId,
-        // These are current records from the real owners, never an earlier allow Boolean.
-        publicMutation: { actor, workspaceId, reference },
-      })
-    );
-    try {
-      await reached(f, pending);
-      if (scenario === 'requester-disabled')
-        f.db.sqlite.transaction(() => disableCanonicalUser(f.db, user.id))();
-      else if (scenario === 'token-revoked') revokeOpenKitAccessTokenRecord(f.db, tokenId!);
-      else if (scenario === 'reference-owner-changed')
-        f.fixtureSql('UPDATE vault_references SET user_id = ? WHERE reference_id = ?').run(
-          localUserId,
-          referenceId
-        );
-      else if (scenario === 'grant-workspace-changed')
-        f.fixtureSql('UPDATE vault_grants SET workspace_id = ? WHERE grant_id = ?').run(
-          otherWorkspaceId,
-          grant.grantId
-        );
-      // Storage owns the deliberate post-admission changes above. Product Main stays query-only.
-      f.db.sqlite.pragma('query_only = ON');
-      if (success) {
-        expect(Atomics.load(f.gate, 4)).toBe(2); // SQLite FULL, read in the actual writer before COMMIT.
-        expect(getVaultGrant(f.db, grant.grantId)).toEqual(grant);
-        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
-        expect(listVaultInjectionReceipts(f.db)).toEqual([receipt]);
-      }
-      releaseNative(f.gate);
-      if (success) {
-        await reached(f, pending, 'reply');
-        expect(f.commits() - commits).toBe(1);
-        expect(getVaultGrant(f.db, grant.grantId)).toEqual({ ...grant, status: 'revoked' });
-        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual({ ...plan, status: 'revoked' });
-        expect(listVaultInjectionReceipts(f.db)).toEqual([
-          { ...receipt, revocationStatus: 'revoked' },
-        ]);
-        expect(pending.settled()).toBe(false);
-        deliverReplies();
-        expect(await pending.result).toEqual({ ok: true, value: { ...grant, status: 'revoked' } });
-        await shutdownControlStoreWorkerClient();
-        const cold = openCoreDb(f.db.dataRoot);
-        try {
-          expect(getVaultGrant(cold, grant.grantId)).toEqual({ ...grant, status: 'revoked' });
-          expect(getVaultInjectionPlan(cold, plan.planId)).toEqual({ ...plan, status: 'revoked' });
-          expect(listVaultInjectionReceipts(cold)).toEqual([
+      const commits = f.commits();
+      const success = scenario === 'full-ack-and-cold-read';
+      arm(f, success ? 2 : 1, success);
+      const pending = f.start(() =>
+        getControlStoreWorkerClient().vault(f.db, 'grant-revoke', {
+          grantId: grant.grantId,
+          // These are current records from the real owners, never an earlier allow Boolean.
+          publicMutation: { actor, workspaceId, reference },
+        })
+      );
+      try {
+        await reached(f, pending);
+        if (scenario === 'requester-disabled')
+          f.db.sqlite.transaction(() => disableCanonicalUser(f.db, user.id))();
+        else if (scenario === 'token-revoked') revokeOpenKitAccessTokenRecord(f.db, tokenId!);
+        else if (scenario === 'reference-owner-changed')
+          f.fixtureSql('UPDATE vault_references SET user_id = ? WHERE reference_id = ?').run(
+            localUserId,
+            referenceId
+          );
+        else if (scenario === 'grant-workspace-changed')
+          f.fixtureSql('UPDATE vault_grants SET workspace_id = ? WHERE grant_id = ?').run(
+            otherWorkspaceId,
+            grant.grantId
+          );
+        // Storage owns the deliberate post-admission changes above. Product Main stays query-only.
+        f.db.sqlite.pragma('query_only = ON');
+        if (success) {
+          expect(Atomics.load(f.gate, 4)).toBe(2); // SQLite FULL, read in the actual writer before COMMIT.
+          expect(getVaultGrant(f.db, grant.grantId)).toEqual(grant);
+          expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
+          expect(listVaultInjectionReceipts(f.db)).toEqual([receipt]);
+        }
+        releaseNative(f.gate);
+        if (success) {
+          await reached(f, pending, 'reply');
+          expect(f.commits() - commits).toBe(1);
+          expect(getVaultGrant(f.db, grant.grantId)).toEqual({ ...grant, status: 'revoked' });
+          expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual({ ...plan, status: 'revoked' });
+          expect(listVaultInjectionReceipts(f.db)).toEqual([
             { ...receipt, revocationStatus: 'revoked' },
           ]);
-          expect(getVaultGrant(cold, untouched.grantId)).toEqual(untouched);
-          expect(getVaultReference(cold, referenceId)).toEqual(reference);
-        } finally {
-          cold.sqlite.close();
-        }
-      } else {
-        expect(await pending.result).toMatchObject({
-          ok: false,
-          error: { commit: 'not-committed' },
-        });
-        if (scenario === 'projection-rollback')
+          expect(pending.settled()).toBe(false);
+          deliverReplies();
+          expect(await pending.result).toEqual({
+            ok: true,
+            value: { ...grant, status: 'revoked' },
+          });
+          await shutdownControlStoreWorkerClient();
+          const cold = openCoreDb(f.db.dataRoot);
+          try {
+            expect(getVaultGrant(cold, grant.grantId)).toEqual({ ...grant, status: 'revoked' });
+            expect(getVaultInjectionPlan(cold, plan.planId)).toEqual({
+              ...plan,
+              status: 'revoked',
+            });
+            expect(listVaultInjectionReceipts(cold)).toEqual([
+              { ...receipt, revocationStatus: 'revoked' },
+            ]);
+            expect(getVaultGrant(cold, untouched.grantId)).toEqual(untouched);
+            expect(getVaultReference(cold, referenceId)).toEqual(reference);
+          } finally {
+            cold.sqlite.close();
+          }
+        } else {
           expect(await pending.result).toMatchObject({
             ok: false,
-            error: { code: 'constraint', commit: 'not-committed' },
+            error: { commit: 'not-committed' },
           });
-        expect(getVaultGrant(f.db, grant.grantId)).toEqual(
-          scenario === 'grant-workspace-changed'
-            ? { ...grant, workspaceId: otherWorkspaceId }
-            : grant
-        );
-        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
-        expect(listVaultInjectionReceipts(f.db)).toEqual([receipt]);
-        expect(getVaultGrant(f.db, untouched.grantId)).toEqual(untouched);
+          if (scenario === 'projection-rollback')
+            expect(await pending.result).toMatchObject({
+              ok: false,
+              error: { code: 'constraint', commit: 'not-committed' },
+            });
+          expect(getVaultGrant(f.db, grant.grantId)).toEqual(
+            scenario === 'grant-workspace-changed'
+              ? { ...grant, workspaceId: otherWorkspaceId }
+              : grant
+          );
+          expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
+          expect(listVaultInjectionReceipts(f.db)).toEqual([receipt]);
+          expect(getVaultGrant(f.db, untouched.grantId)).toEqual(untouched);
+        }
+      } finally {
+        releaseNative(f.gate);
+        deliverReplies();
+        await pending.result;
       }
-    } finally {
-      releaseNative(f.gate);
-      deliverReplies();
-      await pending.result;
     }
-  });
+  );
 });
 
 /** Reuses the physical SQLite/FULL/reply instrument with a real fixed-User operation composition. */
@@ -1227,58 +1244,61 @@ describe('Login metadata native acknowledgement and currentness', () => {
     'version-changed',
     'reference-revoked',
     'reference-unbound',
-  ] as const)('rechecks exact captured authority after native FIFO admission (%s)', async (change) => {
-    const f = await nativeLoginFixture();
-    let actor: Actor = f.actor;
-    let tokenId: string | undefined;
-    if (change === 'token-revoked') {
-      const token = createOpenKitAccessTokenRecord(f.db, {
-        ownerUserId: f.actor.userId,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
-      });
-      tokenId = token.record.tokenId;
-      actor = { kind: 'token', userId: f.actor.userId, tokenId, tokenScope: 'server-admin' };
+  ] as const)(
+    'rechecks exact captured authority after native FIFO admission (%s)',
+    async (change) => {
+      const f = await nativeLoginFixture();
+      let actor: Actor = f.actor;
+      let tokenId: string | undefined;
+      if (change === 'token-revoked') {
+        const token = createOpenKitAccessTokenRecord(f.db, {
+          ownerUserId: f.actor.userId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        tokenId = token.record.tokenId;
+        actor = { kind: 'token', userId: f.actor.userId, tokenId, tokenScope: 'server-admin' };
+      }
+      const boundary = interceptLoginVault(f, 1);
+      const pending = f.start(() => f.call('vault.login-quarantine', actor));
+      try {
+        await reached(f, pending);
+        if (change === 'requester-disabled')
+          f.db.sqlite.transaction(() => disableCanonicalUser(f.db, f.actor.userId))();
+        else if (change === 'token-revoked') revokeOpenKitAccessTokenRecord(f.db, tokenId!);
+        else if (change === 'owner-changed')
+          f.fixtureSql('UPDATE vault_references SET user_id = ? WHERE reference_id = ?').run(
+            f.localUserId,
+            f.login.referenceId
+          );
+        else if (change === 'version-changed')
+          f.fixtureSql(
+            'UPDATE vault_references SET current_version = 2 WHERE reference_id = ?'
+          ).run(f.login.referenceId);
+        else if (change === 'reference-unbound')
+          f.fixtureSql(
+            "UPDATE vault_references SET status = 'unbound', current_version = 0 WHERE reference_id = ?"
+          ).run(f.login.referenceId);
+        else
+          f.fixtureSql("UPDATE vault_references SET status = 'revoked' WHERE reference_id = ?").run(
+            f.login.referenceId
+          );
+        const current = getVaultReference(f.db, f.login.referenceId);
+        f.db.sqlite.pragma('query_only = ON');
+        releaseNative(f.gate);
+        const outcome = await pending.result;
+        expect(outcome.ok).toBe(false);
+        expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
+        expect(boundary.calls()).toBe(1);
+        expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
+      } finally {
+        releaseNative(f.gate);
+        deliverReplies();
+        await pending.result;
+      }
     }
-    const boundary = interceptLoginVault(f, 1);
-    const pending = f.start(() => f.call('vault.login-quarantine', actor));
-    try {
-      await reached(f, pending);
-      if (change === 'requester-disabled')
-        f.db.sqlite.transaction(() => disableCanonicalUser(f.db, f.actor.userId))();
-      else if (change === 'token-revoked') revokeOpenKitAccessTokenRecord(f.db, tokenId!);
-      else if (change === 'owner-changed')
-        f.fixtureSql('UPDATE vault_references SET user_id = ? WHERE reference_id = ?').run(
-          f.localUserId,
-          f.login.referenceId
-        );
-      else if (change === 'version-changed')
-        f.fixtureSql('UPDATE vault_references SET current_version = 2 WHERE reference_id = ?').run(
-          f.login.referenceId
-        );
-      else if (change === 'reference-unbound')
-        f.fixtureSql(
-          "UPDATE vault_references SET status = 'unbound', current_version = 0 WHERE reference_id = ?"
-        ).run(f.login.referenceId);
-      else
-        f.fixtureSql("UPDATE vault_references SET status = 'revoked' WHERE reference_id = ?").run(
-          f.login.referenceId
-        );
-      const current = getVaultReference(f.db, f.login.referenceId);
-      f.db.sqlite.pragma('query_only = ON');
-      releaseNative(f.gate);
-      const outcome = await pending.result;
-      expect(outcome.ok).toBe(false);
-      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
-      expect(boundary.calls()).toBe(1);
-      expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
-    } finally {
-      releaseNative(f.gate);
-      deliverReplies();
-      await pending.result;
-    }
-  });
+  );
 });
 
 /** Additional metadata facts must remain current at the same real public-to-native crossing. */
@@ -1346,51 +1366,50 @@ describe('Login release retained lifecycle and metadata currentness', () => {
     }
   });
 
-  it.each([
-    'account-equality-changed',
-    'subtype-removed',
-  ] as const)('refuses stale public release after native FIFO admission (%s)', async (change) => {
-    const f = await nativeLoginFixture();
-    await f.call('vault.login-quarantine');
-    expect(getVaultReference(f.db, f.login.referenceId)).toMatchObject({
-      login: { quarantined: true },
-    });
-    const boundary = interceptLoginVault(f, 1);
-    const pending = f.start(() => f.call('vault.login-release'));
-    try {
-      await reached(f, pending);
-      // Faults change only the newly selected metadata. Existing status/version/owner/credential tests remain primary.
-      if (change === 'account-equality-changed')
-        f.fixtureSql('UPDATE vault_references SET login_account_id = ? WHERE reference_id = ?').run(
-          'synthetic-successor-equality',
-          f.login.referenceId
-        );
-      else
-        f.fixtureSql(
-          'UPDATE vault_references SET login_provider = NULL, login_account_id = NULL, login_quarantined = NULL WHERE reference_id = ?'
-        ).run(f.login.referenceId);
-      const current = getVaultReference(f.db, f.login.referenceId);
-      const retained = f.db.sqlite
-        .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
-        .get(f.login.referenceId);
-      f.db.sqlite.pragma('query_only = ON');
-      releaseNative(f.gate);
-      const outcome = await pending.result;
-      expect(outcome.ok).toBe(false);
-      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
-      expect(
-        f.db.sqlite
+  it.each(['account-equality-changed', 'subtype-removed'] as const)(
+    'refuses stale public release after native FIFO admission (%s)',
+    async (change) => {
+      const f = await nativeLoginFixture();
+      await f.call('vault.login-quarantine');
+      expect(getVaultReference(f.db, f.login.referenceId)).toMatchObject({
+        login: { quarantined: true },
+      });
+      const boundary = interceptLoginVault(f, 1);
+      const pending = f.start(() => f.call('vault.login-release'));
+      try {
+        await reached(f, pending);
+        // Faults change only the newly selected metadata. Existing status/version/owner/credential tests remain primary.
+        if (change === 'account-equality-changed')
+          f.fixtureSql(
+            'UPDATE vault_references SET login_account_id = ? WHERE reference_id = ?'
+          ).run('synthetic-successor-equality', f.login.referenceId);
+        else
+          f.fixtureSql(
+            'UPDATE vault_references SET login_provider = NULL, login_account_id = NULL, login_quarantined = NULL WHERE reference_id = ?'
+          ).run(f.login.referenceId);
+        const current = getVaultReference(f.db, f.login.referenceId);
+        const retained = f.db.sqlite
           .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
-          .get(f.login.referenceId)
-      ).toEqual(retained);
-      expect(boundary.calls()).toBe(1);
-      expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
-    } finally {
-      releaseNative(f.gate);
-      deliverReplies();
-      await pending.result;
+          .get(f.login.referenceId);
+        f.db.sqlite.pragma('query_only = ON');
+        releaseNative(f.gate);
+        const outcome = await pending.result;
+        expect(outcome.ok).toBe(false);
+        expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
+        expect(
+          f.db.sqlite
+            .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
+            .get(f.login.referenceId)
+        ).toEqual(retained);
+        expect(boundary.calls()).toBe(1);
+        expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
+      } finally {
+        releaseNative(f.gate);
+        deliverReplies();
+        await pending.result;
+      }
     }
-  });
+  );
 });
 
 import { createApp } from '../test-support/app.js';
@@ -1711,67 +1730,67 @@ describe('User Login share native publication', () => {
 
 /** Acquisition publication repeats current initiating authority in the actual native writer. */
 describe('User Login reference creation authority fences', () => {
-  it.each([
-    'disabled-owner',
-    'revoked-administrator',
-  ] as const)('refuses %s after native admission and before reference creation', async (change) => {
-    const f = await nativeLoginFixture();
-    let actor: Actor = f.actor;
-    let tokenId: string | undefined;
-    if (change === 'revoked-administrator') {
-      const { record } = createOpenKitAccessTokenRecord(f.db, {
-        ownerUserId: f.actor.userId,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
-      });
-      tokenId = record.tokenId;
-      actor = { kind: 'token', userId: f.actor.userId, tokenId, tokenScope: 'server-admin' };
-    }
-    const nextReferenceId = allocateEntityId('vault');
-    const input = {
-      ...createInput(),
-      referenceId: nextReferenceId,
-      ownerScope: 'user' as const,
-      backendKind: f.login.backendKind,
-      userId: actor.userId,
-      secretKind: 'codex-auth-json',
-      login: f.login.login!,
-      publicMutation: { actor },
-    };
-    const beforeCommits = f.commits();
-    const beforeSubmissions = f.submissions();
-    arm(f, 1);
-    const pending = f.start(() => createVaultReference(f.db, input));
-    try {
-      await reached(f, pending);
-      if (change === 'disabled-owner')
-        expect(
-          f.db.sqlite.transaction(() => disableCanonicalUser(f.db, actor.userId))()
-        ).not.toBeNull();
-      else
-        expect(revokeOpenKitAccessTokenRecord(f.db, tokenId!)).toMatchObject({
-          status: 'revoked',
+  it.each(['disabled-owner', 'revoked-administrator'] as const)(
+    'refuses %s after native admission and before reference creation',
+    async (change) => {
+      const f = await nativeLoginFixture();
+      let actor: Actor = f.actor;
+      let tokenId: string | undefined;
+      if (change === 'revoked-administrator') {
+        const { record } = createOpenKitAccessTokenRecord(f.db, {
+          ownerUserId: f.actor.userId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
         });
-      f.db.sqlite.pragma('query_only = ON');
-      releaseNative(f.gate);
-      const outcome = await pending.result;
-      expect(outcome.ok).toBe(false);
-      if (outcome.ok) throw new Error('Current authority was lost before native publication.');
-      expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
-      expect(outcome.error).toMatchObject({ commit: 'not-committed' });
-      expect(getVaultReference(f.db, nextReferenceId)).toBeNull();
-      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(f.login);
-      // The request rolls back its savepoint; the enclosing FULL batch still commits.
-      expect(Atomics.load(f.gate, 4)).toBe(2);
-      expect(f.commits()).toBe(beforeCommits + 1);
-      expect(f.submissions() - beforeSubmissions).toBe(1);
-    } finally {
-      releaseNative(f.gate);
-      deliverReplies();
-      await pending.result;
+        tokenId = record.tokenId;
+        actor = { kind: 'token', userId: f.actor.userId, tokenId, tokenScope: 'server-admin' };
+      }
+      const nextReferenceId = allocateEntityId('vault');
+      const input = {
+        ...createInput(),
+        referenceId: nextReferenceId,
+        ownerScope: 'user' as const,
+        backendKind: f.login.backendKind,
+        userId: actor.userId,
+        secretKind: 'codex-auth-json',
+        login: f.login.login!,
+        publicMutation: { actor },
+      };
+      const beforeCommits = f.commits();
+      const beforeSubmissions = f.submissions();
+      arm(f, 1);
+      const pending = f.start(() => createVaultReference(f.db, input));
+      try {
+        await reached(f, pending);
+        if (change === 'disabled-owner')
+          expect(
+            f.db.sqlite.transaction(() => disableCanonicalUser(f.db, actor.userId))()
+          ).not.toBeNull();
+        else
+          expect(revokeOpenKitAccessTokenRecord(f.db, tokenId!)).toMatchObject({
+            status: 'revoked',
+          });
+        f.db.sqlite.pragma('query_only = ON');
+        releaseNative(f.gate);
+        const outcome = await pending.result;
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) throw new Error('Current authority was lost before native publication.');
+        expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+        expect(outcome.error).toMatchObject({ commit: 'not-committed' });
+        expect(getVaultReference(f.db, nextReferenceId)).toBeNull();
+        expect(getVaultReference(f.db, f.login.referenceId)).toEqual(f.login);
+        // The request rolls back its savepoint; the enclosing FULL batch still commits.
+        expect(Atomics.load(f.gate, 4)).toBe(2);
+        expect(f.commits()).toBe(beforeCommits + 1);
+        expect(f.submissions() - beforeSubmissions).toBe(1);
+      } finally {
+        releaseNative(f.gate);
+        deliverReplies();
+        await pending.result;
+      }
     }
-  });
+  );
 
   it('refuses a privileged initiating actor creating a Login for a different User', async () => {
     const f = await nativeLoginFixture();

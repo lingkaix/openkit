@@ -405,81 +405,81 @@ describe('worker Context Package read projection', () => {
     ).toEqual(expected);
   });
 
-  it.each([
-    'accepted-turn',
-    'admission',
-  ] as const)('fails closed when %s authority lacks its canonical trace', async (authority) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-context-missing-trace-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    const thread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Missing accepted context trace'
-    );
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Run accepted worker turn.',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
-    );
-
-    try {
-      if (authority === 'accepted-turn') {
-        await store.createAgentSession({
-          id: 'as_00000000-0000-7b9a-ba85-578bca58899d',
-          agentId: 'agent_codex_host',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: thread.id,
-          status: 'busy',
-          message: null,
-          createdAt: turn.startedAt!,
-          updatedAt: turn.startedAt!,
-        });
-        await store.updateTurn(turn.id, {
-          agentSessionId: 'as_00000000-0000-7b9a-ba85-578bca58899d',
-        });
-      } else {
-        createSchedulerAdmissionEntry(coreDb, {
-          backendId: 'nanohost',
-          queueEntryId: 'queue_missing_context_trace',
-          requestId: 'request_missing_context_trace',
-          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: thread.id,
-          turnId: turn.id,
-          turnInput: 'Run accepted worker turn.',
-          requestedAgentId: 'agent_codex_host',
-          profileRef: 'agent_codex_host',
-        });
-        coreDb.sqlite
-          .prepare(
-            "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
-          )
-          .run('queue_missing_context_trace');
-      }
-
-      expect(() =>
-        projectThreadMaterialContext({
-          coreDb,
-          store,
-          workspaceDb,
-          threadId: thread.id,
-          materialId: 'mat_00000000-0000-780b-aa01-5f7fb6dd4093',
-        })
-      ).toThrow(
-        'An accepted worker Turn or admitted scheduler entry lacks its Context Package trace.'
+  it.each(['accepted-turn', 'admission'] as const)(
+    'fails closed when %s authority lacks its canonical trace',
+    async (authority) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-context-missing-trace-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      const thread = await store.createThread(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'Missing accepted context trace'
       );
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+      const turn = await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        thread.id,
+        'Run accepted worker turn.',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      );
+
+      try {
+        if (authority === 'accepted-turn') {
+          await store.createAgentSession({
+            id: 'as_00000000-0000-7b9a-ba85-578bca58899d',
+            agentId: 'agent_codex_host',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            status: 'busy',
+            message: null,
+            createdAt: turn.startedAt!,
+            updatedAt: turn.startedAt!,
+          });
+          await store.updateTurn(turn.id, {
+            agentSessionId: 'as_00000000-0000-7b9a-ba85-578bca58899d',
+          });
+        } else {
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost',
+            queueEntryId: 'queue_missing_context_trace',
+            requestId: 'request_missing_context_trace',
+            triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: thread.id,
+            turnId: turn.id,
+            turnInput: 'Run accepted worker turn.',
+            requestedAgentId: 'agent_codex_host',
+            profileRef: 'agent_codex_host',
+          });
+          coreDb.sqlite
+            .prepare(
+              "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
+            )
+            .run('queue_missing_context_trace');
+        }
+
+        expect(() =>
+          projectThreadMaterialContext({
+            coreDb,
+            store,
+            workspaceDb,
+            threadId: thread.id,
+            materialId: 'mat_00000000-0000-780b-aa01-5f7fb6dd4093',
+          })
+        ).toThrow(
+          'An accepted worker Turn or admitted scheduler entry lacks its Context Package trace.'
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 });
 
 /** Compact structured worker request used to prove objective extraction. */
@@ -514,49 +514,49 @@ describe('thread taskInputs projection', () => {
     vi.mocked(readWorkerContextPackageTrace).mockRestore();
   });
 
-  it.each([
-    'An ordinary human instruction.',
-    '{"tone":"Concise"}',
-  ])('leaves an ineligible request verbatim without Context Package verification: %s', async (text) => {
-    // Task Mode's readable initiating request owner permits only proven structured requests.
-    // A negative eligibility check must not spend the full verifier on an impossible summary.
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-inputs-ineligible-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    try {
-      const thread = await store.createThread(workspaceId, 'Ordinary initiating request');
-      const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-      const turn = await store.createTurn(workspaceId, thread.id, text, actor);
-      const item = await store.createItem({
-        id: 'it_00000000-0000-7420-8000-000000000001',
-        owner: { kind: 'workspace', workspaceId },
-        threadId: thread.id,
-        turnId: turn.id,
-        type: 'user-message',
-        status: 'completed',
-        actor,
-        text,
-        createdAt: turn.startedAt!,
-        completedAt: turn.startedAt,
-      });
-      vi.mocked(readWorkerContextPackageTrace).mockClear();
-      expect(projectThreadTaskInputs({ coreDb, store, threadId: thread.id, workspaceDb })).toEqual(
-        []
-      );
-      expect(store.listThreadItems(workspaceId, thread.id)).toContainEqual(item);
-      expect(readWorkerContextPackageTrace).not.toHaveBeenCalled();
-    } finally {
-      closeWorkspaceProductReadHandles();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+  it.each(['An ordinary human instruction.', '{"tone":"Concise"}'])(
+    'leaves an ineligible request verbatim without Context Package verification: %s',
+    async (text) => {
+      // Task Mode's readable initiating request owner permits only proven structured requests.
+      // A negative eligibility check must not spend the full verifier on an impossible summary.
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-inputs-ineligible-'));
+      const coreDb = openCoreDb(dataRoot);
+      applyMigrations(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      try {
+        const thread = await store.createThread(workspaceId, 'Ordinary initiating request');
+        const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+        const turn = await store.createTurn(workspaceId, thread.id, text, actor);
+        const item = await store.createItem({
+          id: 'it_00000000-0000-7420-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId },
+          threadId: thread.id,
+          turnId: turn.id,
+          type: 'user-message',
+          status: 'completed',
+          actor,
+          text,
+          createdAt: turn.startedAt!,
+          completedAt: turn.startedAt,
+        });
+        vi.mocked(readWorkerContextPackageTrace).mockClear();
+        expect(
+          projectThreadTaskInputs({ coreDb, store, threadId: thread.id, workspaceDb })
+        ).toEqual([]);
+        expect(store.listThreadItems(workspaceId, thread.id)).toContainEqual(item);
+        expect(readWorkerContextPackageTrace).not.toHaveBeenCalled();
+      } finally {
+        closeWorkspaceProductReadHandles();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('maps the objective from a verified trace through the exact request Item', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-inputs-valid-'));
@@ -717,123 +717,127 @@ describe('thread taskInputs projection', () => {
   });
 });
 
-it.each([
-  'authority',
-  'thread-projection',
-] as const)('keeps the ordinary S39 admission cut when a real WAL owner requeues the selected attempt (%s)', async (route) => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 's39-admission-snapshot-'));
-  const coreDb = openCoreDb(dataRoot);
-  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  let writer: ReturnType<typeof openCoreDb> | undefined;
-  onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    if (writer?.sqlite.open) writer.sqlite.close();
-    if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
-  applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
-  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-  const store = createTestStore({ dataRoot });
-  await seedDemoWorkspace(store);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
-  const selectedThread = await store.createThread(workspaceId, 'Original S39 admission inventory');
-  workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  let selected: ReturnType<typeof requireSchedulerAdmissionEntry> | undefined;
-  let attemptId = '';
-  for (let index = 0; index < 129; index += 1) {
-    const entry = createSchedulerAdmissionEntry(coreDb, {
-      backendId: 'nanohost',
-      triggerActor: { kind: 'user', id: userId },
-      queueEntryId: index === 128 ? 'queue_s39_z' : `queue_s39_f${String(index).padStart(3, '0')}`,
+it.each(['authority', 'thread-projection'] as const)(
+  'keeps the ordinary S39 admission cut when a real WAL owner requeues the selected attempt (%s)',
+  async (route) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 's39-admission-snapshot-'));
+    const coreDb = openCoreDb(dataRoot);
+    let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+    let writer: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      if (writer?.sqlite.open) writer.sqlite.close();
+      if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const store = createTestStore({ dataRoot });
+    await seedDemoWorkspace(store);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+    const selectedThread = await store.createThread(
       workspaceId,
-      threadId: index === 128 ? selectedThread.id : testEntityId('th', `s39-snapshot-${index}`),
-      turnId: testEntityId('tu', `s39-snapshot-${index}`),
-      turnInput: 'Inspect original admission selection.',
-      requestedAgentId: 'agent_worker',
-      now: () => '2026-07-05T00:00:00.000Z',
-    });
-    const attempt = createSchedulerExecutionAttempt(coreDb, {
-      entry,
-      preparationInput: { admission: entry },
-    });
-    if (index === 128) {
-      selected = requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId);
-      attemptId = attempt.attemptId;
-    }
-  }
-  const expected = selected!;
-  expect(expected.status).toBe('admitted');
-  const actualOwner = await vi.importActual<typeof import('./worker-context-authorities.js')>(
-    './worker-context-authorities.js'
-  );
-  const reader = actualOwner.createWorkerContextPackageAuthorityReader({
-    coreDb,
-    store,
-    workspaceDb,
-  });
-  writer = openCoreDb(dataRoot);
-  const writeDb = writer;
-  const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
-  let crossed = false;
-  // This is one owner callback, not complete S39 verification or an execution grant.
-  const observation = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql) => {
-    const statement = prepare(sql);
-    if (
-      sql.includes('FROM scheduler_admission_entries') &&
-      sql.includes('ORDER BY enqueued_at ASC')
-    ) {
-      const all = statement.all.bind(statement);
-      vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
-        const rows = all(...parameters);
-        if (!crossed) {
-          crossed = true;
-          closeSchedulerExecutionAttemptWithoutEffects(writeDb, {
-            attemptId,
-            noOutstandingEffects: true,
-            cause: 'fixture-no-effects',
-            requeue: true,
-          });
-        }
-        return rows;
+      'Original S39 admission inventory'
+    );
+    workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    let selected: ReturnType<typeof requireSchedulerAdmissionEntry> | undefined;
+    let attemptId = '';
+    for (let index = 0; index < 129; index += 1) {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: userId },
+        queueEntryId:
+          index === 128 ? 'queue_s39_z' : `queue_s39_f${String(index).padStart(3, '0')}`,
+        workspaceId,
+        threadId: index === 128 ? selectedThread.id : testEntityId('th', `s39-snapshot-${index}`),
+        turnId: testEntityId('tu', `s39-snapshot-${index}`),
+        turnInput: 'Inspect original admission selection.',
+        requestedAgentId: 'agent_worker',
+        now: () => '2026-07-05T00:00:00.000Z',
       });
-    }
-    return statement;
-  });
-  try {
-    expect(coreDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
-    expect(writeDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
-    const observed =
-      route === 'authority'
-        ? reader.readAdmission(workspaceId, expected.threadId, expected.turnId)
-        : undefined;
-    let projectionFailure: unknown;
-    if (route === 'thread-projection') {
-      // The original ordinary root must retain this admitted row and refuse its absent trace.
-      try {
-        readVerifiedThreadWorkerContextTraces({
-          coreDb,
-          store,
-          workspaceDb: workspaceDb!,
-          threadId: expected.threadId,
-        });
-      } catch (error) {
-        projectionFailure = error;
+      const attempt = createSchedulerExecutionAttempt(coreDb, {
+        entry,
+        preparationInput: { admission: entry },
+      });
+      if (index === 128) {
+        selected = requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId);
+        attemptId = attempt.attemptId;
       }
     }
-    expect(crossed).toBe(true);
-    expect(requireSchedulerExecutionAttempt(writeDb, attemptId).phase).toBe('closed');
-    expect(requireSchedulerAdmissionEntry(writeDb, expected.queueEntryId).status).toBe('queued');
-    if (route === 'authority') expect(observed).toEqual(expected);
-    else
-      expect(projectionFailure).toMatchObject({
-        code: 'recovery_required',
-        status: 409,
-        message:
-          'An accepted worker Turn or admitted scheduler entry lacks its Context Package trace.',
-      });
-  } finally {
-    observation.mockRestore();
+    const expected = selected!;
+    expect(expected.status).toBe('admitted');
+    const actualOwner = await vi.importActual<typeof import('./worker-context-authorities.js')>(
+      './worker-context-authorities.js'
+    );
+    const reader = actualOwner.createWorkerContextPackageAuthorityReader({
+      coreDb,
+      store,
+      workspaceDb,
+    });
+    writer = openCoreDb(dataRoot);
+    const writeDb = writer;
+    const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+    let crossed = false;
+    // This is one owner callback, not complete S39 verification or an execution grant.
+    const observation = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (
+        sql.includes('FROM scheduler_admission_entries') &&
+        sql.includes('ORDER BY enqueued_at ASC')
+      ) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
+          const rows = all(...parameters);
+          if (!crossed) {
+            crossed = true;
+            closeSchedulerExecutionAttemptWithoutEffects(writeDb, {
+              attemptId,
+              noOutstandingEffects: true,
+              cause: 'fixture-no-effects',
+              requeue: true,
+            });
+          }
+          return rows;
+        });
+      }
+      return statement;
+    });
+    try {
+      expect(coreDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+      expect(writeDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+      const observed =
+        route === 'authority'
+          ? reader.readAdmission(workspaceId, expected.threadId, expected.turnId)
+          : undefined;
+      let projectionFailure: unknown;
+      if (route === 'thread-projection') {
+        // The original ordinary root must retain this admitted row and refuse its absent trace.
+        try {
+          readVerifiedThreadWorkerContextTraces({
+            coreDb,
+            store,
+            workspaceDb: workspaceDb!,
+            threadId: expected.threadId,
+          });
+        } catch (error) {
+          projectionFailure = error;
+        }
+      }
+      expect(crossed).toBe(true);
+      expect(requireSchedulerExecutionAttempt(writeDb, attemptId).phase).toBe('closed');
+      expect(requireSchedulerAdmissionEntry(writeDb, expected.queueEntryId).status).toBe('queued');
+      if (route === 'authority') expect(observed).toEqual(expected);
+      else
+        expect(projectionFailure).toMatchObject({
+          code: 'recovery_required',
+          status: 409,
+          message:
+            'An accepted worker Turn or admitted scheduler entry lacks its Context Package trace.',
+        });
+    } finally {
+      observation.mockRestore();
+    }
   }
-});
+);

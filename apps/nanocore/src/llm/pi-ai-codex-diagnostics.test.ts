@@ -167,51 +167,54 @@ describe('stock Codex HTTP rejection diagnostics', () => {
     ['chat', true, true],
     ['responses', false, true],
     ['responses', true, true],
-  ] as const)('carries only diagnostic HTTP status without replay: format=%s stream=%s observerThrows=%s', async (format, stream, observerThrows) => {
-    const { models, model, provider } = stockFixture();
-    const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient({ models }),
-    });
-    const fetch = vi.fn(async () => rejection(401));
-    vi.stubGlobal('fetch', fetch);
-    const observe = vi.fn((_status: number) => {
-      if (observerThrows) throw new Error('Diagnostic sink failed.');
-    });
-    const handoff = vi.fn();
-    const attempted: string[] = [];
-    const logicalModel: ResolvedLogicalModel = {
-      id: 'fixture-logical',
-      displayName: 'Fixture',
-      capabilities: [],
-      modelFamilyId: null,
-      autoFailover: true,
-      routes: ['primary', 'backup'].map((id) => ({
-        id,
-        providerProfileId: id,
-        providerModel: model.id,
-        available: true,
-        unavailableReason: null,
-      })),
-    };
-    const outcome = await dispatchLogicalModel({
-      logicalModel,
-      signal: new AbortController().signal,
-      resolveGatewayProvider: () => provider,
-      attempt: async ({ provider: selected, execution }) => {
-        attempted.push(`${execution.attemptOrder}:${execution.retryIndex}`);
-        return invoke(dispatcher, selected, format, stream, {
-          onProviderHttpRejection: observe,
-          onProviderHandoff: handoff,
-        });
-      },
-    }).catch((error: unknown) => error);
-    expectUnsettledUnknown(outcome);
-    expect(outcome).toHaveProperty('cause.message', 'Opaque synthetic rejection.');
-    expect(attempted).toEqual(['0:0']);
-    expect(handoff).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(observe.mock.calls).toEqual([[401]]);
-  });
+  ] as const)(
+    'carries only diagnostic HTTP status without replay: format=%s stream=%s observerThrows=%s',
+    async (format, stream, observerThrows) => {
+      const { models, model, provider } = stockFixture();
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+      });
+      const fetch = vi.fn(async () => rejection(401));
+      vi.stubGlobal('fetch', fetch);
+      const observe = vi.fn((_status: number) => {
+        if (observerThrows) throw new Error('Diagnostic sink failed.');
+      });
+      const handoff = vi.fn();
+      const attempted: string[] = [];
+      const logicalModel: ResolvedLogicalModel = {
+        id: 'fixture-logical',
+        displayName: 'Fixture',
+        capabilities: [],
+        modelFamilyId: null,
+        autoFailover: true,
+        routes: ['primary', 'backup'].map((id) => ({
+          id,
+          providerProfileId: id,
+          providerModel: model.id,
+          available: true,
+          unavailableReason: null,
+        })),
+      };
+      const outcome = await dispatchLogicalModel({
+        logicalModel,
+        signal: new AbortController().signal,
+        resolveGatewayProvider: () => provider,
+        attempt: async ({ provider: selected, execution }) => {
+          attempted.push(`${execution.attemptOrder}:${execution.retryIndex}`);
+          return invoke(dispatcher, selected, format, stream, {
+            onProviderHttpRejection: observe,
+            onProviderHandoff: handoff,
+          });
+        },
+      }).catch((error: unknown) => error);
+      expectUnsettledUnknown(outcome);
+      expect(outcome).toHaveProperty('cause.message', 'Opaque synthetic rejection.');
+      expect(attempted).toEqual(['0:0']);
+      expect(handoff).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(observe.mock.calls).toEqual([[401]]);
+    }
+  );
 
   it('keeps overlapping call observers isolated when responses arrive in reverse order', async () => {
     const { models, provider } = stockFixture();
@@ -254,108 +257,106 @@ describe('stock Codex HTTP rejection diagnostics', () => {
 });
 
 describe('stock xAI HTTP rejection diagnostics', () => {
-  it.each([
-    'nested',
-    'flat',
-    'invalid',
-    'oversized',
-  ] as const)('retains bounded typed HTTP 422 details without granting replay: %s', async (shape) => {
-    const models = createModels();
-    models.setProvider(xaiProvider());
-    const model = models
-      .getModels()
-      .find((entry) => entry.provider === 'xai' && entry.api === 'openai-responses');
-    if (!model) throw new Error('The stock xAI fixture requires a native Responses model.');
-    const provider = { ...providerConfig(model.id), adapterId: 'xai' };
-    const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: new PiAiGatewayClient({ models }),
-    });
-    const urls: string[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      urls.push(input instanceof Request ? input.url : String(input));
-      const response = new Response(
-        shape === 'invalid'
-          ? 'not JSON'
-          : shape === 'oversized'
-            ? JSON.stringify({ error: { message: 'x'.repeat(17 * 1024) } })
-            : JSON.stringify(
-                shape === 'nested'
-                  ? {
-                      error: {
+  it.each(['nested', 'flat', 'invalid', 'oversized'] as const)(
+    'retains bounded typed HTTP 422 details without granting replay: %s',
+    async (shape) => {
+      const models = createModels();
+      models.setProvider(xaiProvider());
+      const model = models
+        .getModels()
+        .find((entry) => entry.provider === 'xai' && entry.api === 'openai-responses');
+      if (!model) throw new Error('The stock xAI fixture requires a native Responses model.');
+      const provider = { ...providerConfig(model.id), adapterId: 'xai' };
+      const dispatcher = new LLMGatewayProviderDispatcher({
+        piAiClient: new PiAiGatewayClient({ models }),
+      });
+      const urls: string[] = [];
+      const fetch = vi.fn(async (input: RequestInfo | URL) => {
+        urls.push(input instanceof Request ? input.url : String(input));
+        const response = new Response(
+          shape === 'invalid'
+            ? 'not JSON'
+            : shape === 'oversized'
+              ? JSON.stringify({ error: { message: 'x'.repeat(17 * 1024) } })
+              : JSON.stringify(
+                  shape === 'nested'
+                    ? {
+                        error: {
+                          type: 'schema_error',
+                          code: 'tool_type_rejected',
+                          param: 'tools[0].type',
+                          message: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
+                          body: 'body-canary',
+                        },
+                        private: 'unselected-canary',
+                      }
+                    : {
                         type: 'schema_error',
                         code: 'tool_type_rejected',
                         param: 'tools[0].type',
-                        message: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
+                        error: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
                         body: 'body-canary',
-                      },
-                      private: 'unselected-canary',
-                    }
-                  : {
-                      type: 'schema_error',
-                      code: 'tool_type_rejected',
-                      param: 'tools[0].type',
-                      error: `Unsupported custom tool; ${syntheticAuth}; ${'detail '.repeat(80)}`,
-                      body: 'body-canary',
-                      private: 'unselected-canary',
-                    }
-              ),
-        { status: 422 }
-      );
-      response.headers.set('x-private-provider', 'header-canary');
-      return response;
-    });
-    vi.stubGlobal('fetch', fetch);
-    const observe = vi.fn();
-    const attempted: string[] = [];
-    const logicalModel: ResolvedLogicalModel = {
-      id: 'fixture-logical',
-      displayName: 'Fixture',
-      capabilities: [],
-      modelFamilyId: null,
-      autoFailover: true,
-      routes: ['primary', 'backup'].map((id) => ({
-        id,
-        providerProfileId: id,
-        providerModel: model.id,
-        available: true,
-        unavailableReason: null,
-      })),
-    };
-    const outcome = await dispatchLogicalModel({
-      logicalModel,
-      signal: new AbortController().signal,
-      resolveGatewayProvider: () => provider,
-      attempt: async ({ provider: selected, execution }) => {
-        attempted.push(`${execution.attemptOrder}:${execution.retryIndex}`);
-        return invoke(dispatcher, selected, 'responses', true, {
-          onProviderHttpRejection: observe,
-        });
-      },
-    }).catch((error: unknown) => error);
-    expectUnsettledUnknown(outcome);
-    expect(attempted).toEqual(['0:0']);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(urls).toEqual(['https://api.x.ai/v1/responses']);
-    if (shape === 'invalid' || shape === 'oversized') {
-      expect(observe.mock.calls).toEqual([[422]]);
-      return;
-    }
-    expect(observe.mock.calls).toEqual([
-      [
-        422,
-        {
-          type: 'schema_error',
-          code: 'tool_type_rejected',
-          param: 'tools[0].type',
-          message: `Unsupported custom tool; [redacted]; ${'detail '.repeat(80)}`.slice(0, 200),
+                        private: 'unselected-canary',
+                      }
+                ),
+          { status: 422 }
+        );
+        response.headers.set('x-private-provider', 'header-canary');
+        return response;
+      });
+      vi.stubGlobal('fetch', fetch);
+      const observe = vi.fn();
+      const attempted: string[] = [];
+      const logicalModel: ResolvedLogicalModel = {
+        id: 'fixture-logical',
+        displayName: 'Fixture',
+        capabilities: [],
+        modelFamilyId: null,
+        autoFailover: true,
+        routes: ['primary', 'backup'].map((id) => ({
+          id,
+          providerProfileId: id,
+          providerModel: model.id,
+          available: true,
+          unavailableReason: null,
+        })),
+      };
+      const outcome = await dispatchLogicalModel({
+        logicalModel,
+        signal: new AbortController().signal,
+        resolveGatewayProvider: () => provider,
+        attempt: async ({ provider: selected, execution }) => {
+          attempted.push(`${execution.attemptOrder}:${execution.retryIndex}`);
+          return invoke(dispatcher, selected, 'responses', true, {
+            onProviderHttpRejection: observe,
+          });
         },
-      ],
-    ]);
-    expect(JSON.stringify(observe.mock.calls)).not.toContain(syntheticAuth);
-    expect(JSON.stringify(observe.mock.calls)).not.toMatch(
-      /header-canary|body-canary|unselected-canary/
-    );
-  });
+      }).catch((error: unknown) => error);
+      expectUnsettledUnknown(outcome);
+      expect(attempted).toEqual(['0:0']);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(urls).toEqual(['https://api.x.ai/v1/responses']);
+      if (shape === 'invalid' || shape === 'oversized') {
+        expect(observe.mock.calls).toEqual([[422]]);
+        return;
+      }
+      expect(observe.mock.calls).toEqual([
+        [
+          422,
+          {
+            type: 'schema_error',
+            code: 'tool_type_rejected',
+            param: 'tools[0].type',
+            message: `Unsupported custom tool; [redacted]; ${'detail '.repeat(80)}`.slice(0, 200),
+          },
+        ],
+      ]);
+      expect(JSON.stringify(observe.mock.calls)).not.toContain(syntheticAuth);
+      expect(JSON.stringify(observe.mock.calls)).not.toMatch(
+        /header-canary|body-canary|unselected-canary/
+      );
+    }
+  );
 });
 
 describe('controlled Codex hook evidence guards', () => {
@@ -389,31 +390,21 @@ describe('controlled Codex hook evidence guards', () => {
     expect(observe).not.toHaveBeenCalled();
   });
 
-  it.each([
-    0,
-    199,
-    200,
-    299,
-    302,
-    399,
-    401.5,
-    600,
-    NaN,
-    Infinity,
-    '401',
-    undefined,
-  ])('ignores non-rejection or malformed observed status %s', async (status) => {
-    const { dispatcher, provider } = semanticFixture(async (options, model) => {
-      await options?.onResponse?.({ status: status as number, headers: {} }, model);
-    });
-    const observe = vi.fn();
-    expectUnsettledUnknown(
-      await invoke(dispatcher, provider, 'responses', false, {
-        onProviderHttpRejection: observe,
-      }).catch((error: unknown) => error)
-    );
-    expect(observe).not.toHaveBeenCalled();
-  });
+  it.each([0, 199, 200, 299, 302, 399, 401.5, 600, NaN, Infinity, '401', undefined])(
+    'ignores non-rejection or malformed observed status %s',
+    async (status) => {
+      const { dispatcher, provider } = semanticFixture(async (options, model) => {
+        await options?.onResponse?.({ status: status as number, headers: {} }, model);
+      });
+      const observe = vi.fn();
+      expectUnsettledUnknown(
+        await invoke(dispatcher, provider, 'responses', false, {
+          onProviderHttpRejection: observe,
+        }).catch((error: unknown) => error)
+      );
+      expect(observe).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([400, 599])('accepts bounded integer HTTP rejection status %s', async (status) => {
     const { dispatcher, provider } = semanticFixture(async (options, model) => {
@@ -428,21 +419,21 @@ describe('controlled Codex hook evidence guards', () => {
     expect(observe.mock.calls).toEqual([[status]]);
   });
 
-  it.each([
-    'id',
-    'provider',
-  ] as const)('ignores rejection evidence for a foreign model %s', async (key) => {
-    const { dispatcher, provider } = semanticFixture(async (options, model) => {
-      await options?.onResponse?.({ status: 401, headers: {} }, { ...model, [key]: 'foreign' });
-    });
-    const observe = vi.fn();
-    expectUnsettledUnknown(
-      await invoke(dispatcher, provider, 'responses', false, {
-        onProviderHttpRejection: observe,
-      }).catch((error: unknown) => error)
-    );
-    expect(observe).not.toHaveBeenCalled();
-  });
+  it.each(['id', 'provider'] as const)(
+    'ignores rejection evidence for a foreign model %s',
+    async (key) => {
+      const { dispatcher, provider } = semanticFixture(async (options, model) => {
+        await options?.onResponse?.({ status: 401, headers: {} }, { ...model, [key]: 'foreign' });
+      });
+      const observe = vi.fn();
+      expectUnsettledUnknown(
+        await invoke(dispatcher, provider, 'responses', false, {
+          onProviderHttpRejection: observe,
+        }).catch((error: unknown) => error)
+      );
+      expect(observe).not.toHaveBeenCalled();
+    }
+  );
 
   it('preserves successful Codex turn-state continuity without emitting rejection evidence', async () => {
     let headers: StreamOptions['headers'];

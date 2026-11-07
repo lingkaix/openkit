@@ -315,288 +315,294 @@ async function held(f: Awaited<ReturnType<typeof fixture>>, stage: 1 | 2 | 3) {
   return { gate, result };
 }
 
-it.each([
-  'user',
-  'server',
-] as const)('publishes and cold-replays exact %s bytes with actual Main connections query-only', async (kind) => {
-  const f = await fixture(kind);
-  f.queryOnly();
-  const first = await publishScopedNotebook(f.input, f.request);
-  expect(f.notebook.readRevision(first.notebookRevision).files['note.md']).toBe(
-    f.request.changes[0]!.content
-  );
-  expect(first).toMatchObject({
-    ownerScope: f.owner.ownerScope,
-    baseRevision: f.base,
-    receiptRef: {
-      operation: 'knowledge.notebook.update',
-      requestId: f.request.requestId,
-      ownerScope: f.owner.ownerScope,
-    },
-  });
-  const original = f.rows();
-  expect(original.audits.map((row: any) => row.action)).toEqual([
-    'knowledge.notebook.admit',
-    'knowledge.notebook.update',
-  ]);
-  expect(original.receipts).toHaveLength(1);
-  const receipt = f.input.store.getCommandRequest(
-    'knowledge.notebook.update',
-    f.request.requestId,
-    kind === 'user'
-      ? { userId: f.userDb.userId, actorId: f.input.actor.userId }
-      : { coreId: 'server' as const, actorId: f.input.actor.userId },
-    f.db
-  )!;
-  expect(receipt.inputHash).toBe(
-    commandInputHash({ ...f.request, ownerScope: f.owner.ownerScope })
-  );
-  expect(receipt.response).toEqual({
-    kind: 'knowledge_notebook_revision',
-    id: first.notebookRevision,
-  });
-  await shutdownControlStoreWorkerClient();
-  f.coreDb.sqlite.close();
-  f.userDb.sqlite.close();
-  const coldCore = openCoreDb(f.root);
-  const coldUser = openUserDb(f.root, f.userDb.userId);
-  onTestFinished(() => {
-    if (coldCore.sqlite.open) coldCore.sqlite.close();
-    if (coldUser.sqlite.open) coldUser.sqlite.close();
-  });
-  coldCore.sqlite.pragma('query_only = ON');
-  coldUser.sqlite.pragma('query_only = ON');
-  const cold = {
-    ...f.input,
-    coreDb: coldCore,
-    ...(kind === 'user' ? { userDb: coldUser } : {}),
-    store: new FsStore({ dataRoot: f.root }),
-    inflightCommands: new WeakMap(),
-  };
-  await expect(publishScopedNotebook(cold, f.request)).resolves.toEqual(first);
-  expect(readScopedNotebookHistory(cold).revisions[0]?.revision).toBe(first.notebookRevision);
-  await expect(
-    publishScopedNotebook(cold, { ...f.request, summary: 'Changed input' })
-  ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
-  expect(
-    cold.store.getCommandRequest(
-      receipt.command,
-      receipt.requestId,
-      receipt.scope,
-      kind === 'user' ? coldUser : coldCore
-    )
-  ).toEqual(receipt);
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('refuses %s admission SQL before Git and preserves no completion or receipt', async (kind) => {
-  const f = await fixture(kind);
-  f.db.sqlite.exec(
-    "CREATE TRIGGER refuse_scoped_admit BEFORE INSERT ON audit_events WHEN NEW.action='knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT,'scoped admission fault'); END"
-  );
-  f.queryOnly();
-  await expect(publishScopedNotebook(f.input, f.request)).rejects.toMatchObject({
-    commit: 'not-committed',
-  });
-  expect(f.notebook.publishedRevision()).toBe(f.base);
-  expect(f.rows()).toEqual({ audits: [], receipts: [] });
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('preserves %s Git and admission after completion SQL refusal without reconstructing a receipt', async (kind) => {
-  const f = await fixture(kind);
-  f.db.sqlite.exec(
-    "CREATE TRIGGER refuse_scoped_complete BEFORE INSERT ON audit_events WHEN NEW.action='knowledge.notebook.update' BEGIN SELECT RAISE(ABORT,'scoped completion fault'); END"
-  );
-  f.queryOnly();
-  await expect(publishScopedNotebook(f.input, f.request)).rejects.toMatchObject({
-    commit: 'not-committed',
-  });
-  const published = f.notebook.publishedRevision();
-  expect(published).not.toBe(f.base);
-  const prefix = f.rows();
-  expect(prefix.audits.map((row: any) => row.action)).toEqual(['knowledge.notebook.admit']);
-  expect(prefix.receipts).toEqual([]);
-  await expect(
-    publishScopedNotebook(
-      { ...f.input, store: new FsStore({ dataRoot: f.root }), inflightCommands: new WeakMap() },
-      f.request
-    )
-  ).rejects.toMatchObject({ code: 'recovery_required' });
-  expect(f.notebook.publishedRevision()).toBe(published);
-  expect(f.rows()).toEqual(prefix);
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('preserves every original %s prefix when an actual FULL reply is lost, without retry', async (kind) => {
-  // This loop is sequential: each stage needs a fresh isolated owner and request.
-  for (const stage of [1, 2, 3] as const) {
+it.each(['user', 'server'] as const)(
+  'publishes and cold-replays exact %s bytes with actual Main connections query-only',
+  async (kind) => {
     const f = await fixture(kind);
     f.queryOnly();
-    const hold = await held(f, stage);
-    const prefix = f.rows();
-    expect(prefix.audits.map((row: any) => row.action)).toEqual(
-      stage === 1
-        ? ['knowledge.notebook.admit']
-        : ['knowledge.notebook.admit', 'knowledge.notebook.update']
+    const first = await publishScopedNotebook(f.input, f.request);
+    expect(f.notebook.readRevision(first.notebookRevision).files['note.md']).toBe(
+      f.request.changes[0]!.content
     );
-    expect(prefix.receipts).toHaveLength(stage === 3 ? 1 : 0);
-    const head = f.notebook.publishedRevision();
-    expect(head === f.base).toBe(stage === 1);
-    const posts = faults.messages.length;
-    const workers = faults.workers.length;
-    await faults.workers[Atomics.load(hold.gate, 5)]!.terminate();
-    expect(await hold.result).toMatchObject({ ok: false, error: { commit: 'unknown' } });
-    expect(faults.messages).toHaveLength(posts);
-    expect(faults.workers).toHaveLength(workers);
-    expect(f.rows()).toEqual(prefix);
-    expect(f.notebook.publishedRevision()).toBe(head);
-    await shutdownControlStoreWorkerClient();
-    release();
-  }
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('refuses a Main rewrite of an original moved %s receipt', async (kind) => {
-  const f = await fixture(kind);
-  // Keep Main writable for this deliberate bypass attempt; query_only could conceal missing membership.
-  const first = await publishScopedNotebook(f.input, f.request);
-  const scope =
-    kind === 'user'
-      ? { userId: f.userDb.userId, actorId: f.input.actor.userId }
-      : { coreId: 'server' as const, actorId: f.input.actor.userId };
-  const receipt = f.input.store.getCommandRequest(
-    'knowledge.notebook.update',
-    f.request.requestId,
-    scope,
-    f.db
-  )!;
-  expect(receipt.response.id).toBe(first.notebookRevision);
-  const prefix = f.rows();
-  expect(() => f.input.store.recordCommandRequest(receipt, f.db)).toThrow();
-  expect(f.rows()).toEqual(prefix);
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('rechecks current %s authority after the actual admission FULL wait before Git and later transport', async (kind) => {
-  const f = await fixture(kind);
-  f.queryOnly();
-  const hold = await held(f, 1);
-  const prefix = f.rows();
-  f.revoke();
-  const posts = faults.messages.length;
-  release();
-  expect(await hold.result).toMatchObject({
-    ok: false,
-    error: { message: 'Scoped notebook access denied.' },
-  });
-  expect(f.notebook.publishedRevision()).toBe(f.base);
-  expect(f.rows()).toEqual(prefix);
-  expect(faults.messages).toHaveLength(posts);
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('rechecks current %s authority after native opening before a family request is posted', async (kind) => {
-  const f = await fixture(kind);
-  await f.client.close(f.database);
-  f.queryOnly();
-  let reached!: () => void;
-  const waiting = new Promise<void>((resolve) => {
-    reached = resolve;
-  });
-  faults.open = { reached };
-  const result = observed(publishScopedNotebook(f.input, f.request));
-  // Existing tests use the same 5000 ms explicit native hold bound.
-  await vi.waitFor(() => expect(faults.open?.deliver).toBeTypeOf('function'), { timeout: 5000 });
-  await waiting;
-  f.revoke();
-  const posts = faults.messages.length;
-  release();
-  expect(await result).toMatchObject({
-    ok: false,
-    error: { message: 'Scoped notebook access denied.' },
-  });
-  expect(f.notebook.publishedRevision()).toBe(f.base);
-  expect(f.rows()).toEqual({ audits: [], receipts: [] });
-  expect(faults.messages).toHaveLength(posts);
-});
-
-it.each([
-  'user',
-  'server',
-] as const)('prunes only owned %s Notebook receipts and preserves an expired Source peer partition', async (kind) => {
-  const f = await fixture(kind);
-  const { registerUserKnowledgeSource } = await import('../knowledge/scoped-knowledge-sources.js');
-  const { registerServerKnowledgeSource } = await import('../knowledge/server-knowledge-owner.js');
-  // Produce every row through its real owner. A fake Main Date makes naturally expired receipts,
-  // while native timers and real Worker scheduling remain unchanged.
-  vi.useFakeTimers({ toFake: ['Date'] });
-  let peerRequestId: string;
-  let oldRequestId: string;
-  try {
-    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
-    peerRequestId = randomUUID();
-    const source = {
-      requestId: peerRequestId,
-      kind: 'document' as const,
-      title: 'Expired peer receipt',
-      content: 'Retain this peer partition.',
-    };
-    if (kind === 'user')
-      await registerUserKnowledgeSource({ ...f.input, userDb: f.userDb }, source);
-    else await registerServerKnowledgeSource(f.input, source);
-    f.request.baseRevision = f.notebook.publishedRevision();
-    oldRequestId = f.request.requestId;
-    await publishScopedNotebook(f.input, f.request);
-  } finally {
-    vi.useRealTimers();
-  }
-  const peer = f.db.sqlite
-    .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
-    .all(peerRequestId!);
-  expect(peer).toHaveLength(1);
-  expect(
-    f.db.sqlite
-      .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
-      .all(oldRequestId!)
-  ).toHaveLength(1);
-  f.queryOnly();
-  await publishScopedNotebook(f.input, {
-    ...f.request,
-    requestId: randomUUID(),
-    baseRevision: f.notebook.publishedRevision(),
-    summary: 'Fresh publication after exact expiry boundary',
-    changes: [
-      {
-        ...f.request.changes[0]!,
-        content: f.request.changes[0]!.content.replace(
-          'Preserve exact scoped bytes.',
-          'Fresh scoped content after expiry.'
-        ),
+    expect(first).toMatchObject({
+      ownerScope: f.owner.ownerScope,
+      baseRevision: f.base,
+      receiptRef: {
+        operation: 'knowledge.notebook.update',
+        requestId: f.request.requestId,
+        ownerScope: f.owner.ownerScope,
       },
-    ],
-  });
-  expect(
-    f.db.sqlite
-      .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
-      .all(oldRequestId!)
-  ).toEqual([]);
-  expect(
-    f.db.sqlite.prepare('SELECT * FROM idempotency_requests WHERE request_id=?').all(peerRequestId!)
-  ).toEqual(peer);
-});
+    });
+    const original = f.rows();
+    expect(original.audits.map((row: any) => row.action)).toEqual([
+      'knowledge.notebook.admit',
+      'knowledge.notebook.update',
+    ]);
+    expect(original.receipts).toHaveLength(1);
+    const receipt = f.input.store.getCommandRequest(
+      'knowledge.notebook.update',
+      f.request.requestId,
+      kind === 'user'
+        ? { userId: f.userDb.userId, actorId: f.input.actor.userId }
+        : { coreId: 'server' as const, actorId: f.input.actor.userId },
+      f.db
+    )!;
+    expect(receipt.inputHash).toBe(
+      commandInputHash({ ...f.request, ownerScope: f.owner.ownerScope })
+    );
+    expect(receipt.response).toEqual({
+      kind: 'knowledge_notebook_revision',
+      id: first.notebookRevision,
+    });
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    f.userDb.sqlite.close();
+    const coldCore = openCoreDb(f.root);
+    const coldUser = openUserDb(f.root, f.userDb.userId);
+    onTestFinished(() => {
+      if (coldCore.sqlite.open) coldCore.sqlite.close();
+      if (coldUser.sqlite.open) coldUser.sqlite.close();
+    });
+    coldCore.sqlite.pragma('query_only = ON');
+    coldUser.sqlite.pragma('query_only = ON');
+    const cold = {
+      ...f.input,
+      coreDb: coldCore,
+      ...(kind === 'user' ? { userDb: coldUser } : {}),
+      store: new FsStore({ dataRoot: f.root }),
+      inflightCommands: new WeakMap(),
+    };
+    await expect(publishScopedNotebook(cold, f.request)).resolves.toEqual(first);
+    expect(readScopedNotebookHistory(cold).revisions[0]?.revision).toBe(first.notebookRevision);
+    await expect(
+      publishScopedNotebook(cold, { ...f.request, summary: 'Changed input' })
+    ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+    expect(
+      cold.store.getCommandRequest(
+        receipt.command,
+        receipt.requestId,
+        receipt.scope,
+        kind === 'user' ? coldUser : coldCore
+      )
+    ).toEqual(receipt);
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'refuses %s admission SQL before Git and preserves no completion or receipt',
+  async (kind) => {
+    const f = await fixture(kind);
+    f.db.sqlite.exec(
+      "CREATE TRIGGER refuse_scoped_admit BEFORE INSERT ON audit_events WHEN NEW.action='knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT,'scoped admission fault'); END"
+    );
+    f.queryOnly();
+    await expect(publishScopedNotebook(f.input, f.request)).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(f.notebook.publishedRevision()).toBe(f.base);
+    expect(f.rows()).toEqual({ audits: [], receipts: [] });
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'preserves %s Git and admission after completion SQL refusal without reconstructing a receipt',
+  async (kind) => {
+    const f = await fixture(kind);
+    f.db.sqlite.exec(
+      "CREATE TRIGGER refuse_scoped_complete BEFORE INSERT ON audit_events WHEN NEW.action='knowledge.notebook.update' BEGIN SELECT RAISE(ABORT,'scoped completion fault'); END"
+    );
+    f.queryOnly();
+    await expect(publishScopedNotebook(f.input, f.request)).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    const published = f.notebook.publishedRevision();
+    expect(published).not.toBe(f.base);
+    const prefix = f.rows();
+    expect(prefix.audits.map((row: any) => row.action)).toEqual(['knowledge.notebook.admit']);
+    expect(prefix.receipts).toEqual([]);
+    await expect(
+      publishScopedNotebook(
+        { ...f.input, store: new FsStore({ dataRoot: f.root }), inflightCommands: new WeakMap() },
+        f.request
+      )
+    ).rejects.toMatchObject({ code: 'recovery_required' });
+    expect(f.notebook.publishedRevision()).toBe(published);
+    expect(f.rows()).toEqual(prefix);
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'preserves every original %s prefix when an actual FULL reply is lost, without retry',
+  async (kind) => {
+    // This loop is sequential: each stage needs a fresh isolated owner and request.
+    for (const stage of [1, 2, 3] as const) {
+      const f = await fixture(kind);
+      f.queryOnly();
+      const hold = await held(f, stage);
+      const prefix = f.rows();
+      expect(prefix.audits.map((row: any) => row.action)).toEqual(
+        stage === 1
+          ? ['knowledge.notebook.admit']
+          : ['knowledge.notebook.admit', 'knowledge.notebook.update']
+      );
+      expect(prefix.receipts).toHaveLength(stage === 3 ? 1 : 0);
+      const head = f.notebook.publishedRevision();
+      expect(head === f.base).toBe(stage === 1);
+      const posts = faults.messages.length;
+      const workers = faults.workers.length;
+      await faults.workers[Atomics.load(hold.gate, 5)]!.terminate();
+      expect(await hold.result).toMatchObject({ ok: false, error: { commit: 'unknown' } });
+      expect(faults.messages).toHaveLength(posts);
+      expect(faults.workers).toHaveLength(workers);
+      expect(f.rows()).toEqual(prefix);
+      expect(f.notebook.publishedRevision()).toBe(head);
+      await shutdownControlStoreWorkerClient();
+      release();
+    }
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'refuses a Main rewrite of an original moved %s receipt',
+  async (kind) => {
+    const f = await fixture(kind);
+    // Keep Main writable for this deliberate bypass attempt; query_only could conceal missing membership.
+    const first = await publishScopedNotebook(f.input, f.request);
+    const scope =
+      kind === 'user'
+        ? { userId: f.userDb.userId, actorId: f.input.actor.userId }
+        : { coreId: 'server' as const, actorId: f.input.actor.userId };
+    const receipt = f.input.store.getCommandRequest(
+      'knowledge.notebook.update',
+      f.request.requestId,
+      scope,
+      f.db
+    )!;
+    expect(receipt.response.id).toBe(first.notebookRevision);
+    const prefix = f.rows();
+    expect(() => f.input.store.recordCommandRequest(receipt, f.db)).toThrow();
+    expect(f.rows()).toEqual(prefix);
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'rechecks current %s authority after the actual admission FULL wait before Git and later transport',
+  async (kind) => {
+    const f = await fixture(kind);
+    f.queryOnly();
+    const hold = await held(f, 1);
+    const prefix = f.rows();
+    f.revoke();
+    const posts = faults.messages.length;
+    release();
+    expect(await hold.result).toMatchObject({
+      ok: false,
+      error: { message: 'Scoped notebook access denied.' },
+    });
+    expect(f.notebook.publishedRevision()).toBe(f.base);
+    expect(f.rows()).toEqual(prefix);
+    expect(faults.messages).toHaveLength(posts);
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'rechecks current %s authority after native opening before a family request is posted',
+  async (kind) => {
+    const f = await fixture(kind);
+    await f.client.close(f.database);
+    f.queryOnly();
+    let reached!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    faults.open = { reached };
+    const result = observed(publishScopedNotebook(f.input, f.request));
+    // Existing tests use the same 5000 ms explicit native hold bound.
+    await vi.waitFor(() => expect(faults.open?.deliver).toBeTypeOf('function'), { timeout: 5000 });
+    await waiting;
+    f.revoke();
+    const posts = faults.messages.length;
+    release();
+    expect(await result).toMatchObject({
+      ok: false,
+      error: { message: 'Scoped notebook access denied.' },
+    });
+    expect(f.notebook.publishedRevision()).toBe(f.base);
+    expect(f.rows()).toEqual({ audits: [], receipts: [] });
+    expect(faults.messages).toHaveLength(posts);
+  }
+);
+
+it.each(['user', 'server'] as const)(
+  'prunes only owned %s Notebook receipts and preserves an expired Source peer partition',
+  async (kind) => {
+    const f = await fixture(kind);
+    const { registerUserKnowledgeSource } = await import(
+      '../knowledge/scoped-knowledge-sources.js'
+    );
+    const { registerServerKnowledgeSource } = await import(
+      '../knowledge/server-knowledge-owner.js'
+    );
+    // Produce every row through its real owner. A fake Main Date makes naturally expired receipts,
+    // while native timers and real Worker scheduling remain unchanged.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    let peerRequestId: string;
+    let oldRequestId: string;
+    try {
+      vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
+      peerRequestId = randomUUID();
+      const source = {
+        requestId: peerRequestId,
+        kind: 'document' as const,
+        title: 'Expired peer receipt',
+        content: 'Retain this peer partition.',
+      };
+      if (kind === 'user')
+        await registerUserKnowledgeSource({ ...f.input, userDb: f.userDb }, source);
+      else await registerServerKnowledgeSource(f.input, source);
+      f.request.baseRevision = f.notebook.publishedRevision();
+      oldRequestId = f.request.requestId;
+      await publishScopedNotebook(f.input, f.request);
+    } finally {
+      vi.useRealTimers();
+    }
+    const peer = f.db.sqlite
+      .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+      .all(peerRequestId!);
+    expect(peer).toHaveLength(1);
+    expect(
+      f.db.sqlite
+        .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
+        .all(oldRequestId!)
+    ).toHaveLength(1);
+    f.queryOnly();
+    await publishScopedNotebook(f.input, {
+      ...f.request,
+      requestId: randomUUID(),
+      baseRevision: f.notebook.publishedRevision(),
+      summary: 'Fresh publication after exact expiry boundary',
+      changes: [
+        {
+          ...f.request.changes[0]!,
+          content: f.request.changes[0]!.content.replace(
+            'Preserve exact scoped bytes.',
+            'Fresh scoped content after expiry.'
+          ),
+        },
+      ],
+    });
+    expect(
+      f.db.sqlite
+        .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
+        .all(oldRequestId!)
+    ).toEqual([]);
+    expect(
+      f.db.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+        .all(peerRequestId!)
+    ).toEqual(peer);
+  }
+);
 
 it('publishes and replays through public memory.create while every Main User open is query-only', async () => {
   const f = await fixture('user');
@@ -693,79 +699,84 @@ it('publishes and replays exact human Server Review through the public operation
   expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
 });
 
-it.each([
-  'user',
-  'server',
-] as const)('keeps an expired moved %s Notebook receipt when an unmoved Source owner publishes', async (kind) => {
-  const f = await fixture(kind);
-  const { registerUserKnowledgeSource } = await import('../knowledge/scoped-knowledge-sources.js');
-  const { registerServerKnowledgeSource } = await import('../knowledge/server-knowledge-owner.js');
-  vi.useFakeTimers({ toFake: ['Date'] });
-  try {
-    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
-    await publishScopedNotebook(f.input, f.request);
-  } finally {
-    vi.useRealTimers();
+it.each(['user', 'server'] as const)(
+  'keeps an expired moved %s Notebook receipt when an unmoved Source owner publishes',
+  async (kind) => {
+    const f = await fixture(kind);
+    const { registerUserKnowledgeSource } = await import(
+      '../knowledge/scoped-knowledge-sources.js'
+    );
+    const { registerServerKnowledgeSource } = await import(
+      '../knowledge/server-knowledge-owner.js'
+    );
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
+      await publishScopedNotebook(f.input, f.request);
+    } finally {
+      vi.useRealTimers();
+    }
+    const original = f.rows().receipts;
+    expect(original).toHaveLength(1);
+    // The peer keeps its existing writer. A query-only Main connection could mask a bad prune partition.
+    const source = {
+      requestId: randomUUID(),
+      kind: 'document' as const,
+      title: 'Fresh peer publication',
+      content: 'Keep native Notebook receipts with their owner.',
+    };
+    if (kind === 'user')
+      await registerUserKnowledgeSource({ ...f.input, userDb: f.userDb }, source);
+    else await registerServerKnowledgeSource(f.input, source);
+    expect(f.rows().receipts).toEqual(original);
+    expect(
+      f.db.sqlite
+        .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
+        .all(source.requestId)
+    ).toHaveLength(1);
   }
-  const original = f.rows().receipts;
-  expect(original).toHaveLength(1);
-  // The peer keeps its existing writer. A query-only Main connection could mask a bad prune partition.
-  const source = {
-    requestId: randomUUID(),
-    kind: 'document' as const,
-    title: 'Fresh peer publication',
-    content: 'Keep native Notebook receipts with their owner.',
-  };
-  if (kind === 'user') await registerUserKnowledgeSource({ ...f.input, userDb: f.userDb }, source);
-  else await registerServerKnowledgeSource(f.input, source);
-  expect(f.rows().receipts).toEqual(original);
-  expect(
-    f.db.sqlite
-      .prepare('SELECT request_id FROM idempotency_requests WHERE request_id=?')
-      .all(source.requestId)
-  ).toHaveLength(1);
-});
+);
 
-it.each([
-  'user',
-  'server',
-] as const)('reads original %s Notebook receipts by path without Main writes or expiry pruning', async (kind) => {
-  const f = await fixture(kind);
-  f.queryOnly();
-  const first = await publishScopedNotebook(f.input, f.request);
-  const scope =
-    kind === 'user'
-      ? { userId: f.userDb.userId, actorId: f.input.actor.userId }
-      : { coreId: 'server' as const, actorId: f.input.actor.userId };
-  const original = f.rows();
-  expect(original.receipts).toHaveLength(1);
-  const receipt = f.input.store.getCommandRequest(
-    'knowledge.notebook.update',
-    f.request.requestId,
-    scope,
-    f.db
-  )!;
-  expect(receipt).toMatchObject({
-    command: 'knowledge.notebook.update',
-    requestId: f.request.requestId,
-    scope,
-    inputHash: commandInputHash({ ...f.request, ownerScope: f.owner.ownerScope }),
-    response: { kind: 'knowledge_notebook_revision', id: first.notebookRevision },
-  });
-  // Core Storage requires one physical writer; this lookup must observe the original receipt.
-  expect(
-    f.input.store.getCommandRequest('knowledge.notebook.update', f.request.requestId, scope)
-  ).toEqual(receipt);
-  expect(f.rows()).toEqual(original);
-  // Core Protocol makes the exact expiry boundary absent; only the native owner may prune it.
-  vi.useFakeTimers({ toFake: ['Date'] });
-  try {
-    vi.setSystemTime(new Date(receipt.expiresAt));
+it.each(['user', 'server'] as const)(
+  'reads original %s Notebook receipts by path without Main writes or expiry pruning',
+  async (kind) => {
+    const f = await fixture(kind);
+    f.queryOnly();
+    const first = await publishScopedNotebook(f.input, f.request);
+    const scope =
+      kind === 'user'
+        ? { userId: f.userDb.userId, actorId: f.input.actor.userId }
+        : { coreId: 'server' as const, actorId: f.input.actor.userId };
+    const original = f.rows();
+    expect(original.receipts).toHaveLength(1);
+    const receipt = f.input.store.getCommandRequest(
+      'knowledge.notebook.update',
+      f.request.requestId,
+      scope,
+      f.db
+    )!;
+    expect(receipt).toMatchObject({
+      command: 'knowledge.notebook.update',
+      requestId: f.request.requestId,
+      scope,
+      inputHash: commandInputHash({ ...f.request, ownerScope: f.owner.ownerScope }),
+      response: { kind: 'knowledge_notebook_revision', id: first.notebookRevision },
+    });
+    // Core Storage requires one physical writer; this lookup must observe the original receipt.
     expect(
       f.input.store.getCommandRequest('knowledge.notebook.update', f.request.requestId, scope)
-    ).toBeNull();
+    ).toEqual(receipt);
     expect(f.rows()).toEqual(original);
-  } finally {
-    vi.useRealTimers();
+    // Core Protocol makes the exact expiry boundary absent; only the native owner may prune it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(receipt.expiresAt));
+      expect(
+        f.input.store.getCommandRequest('knowledge.notebook.update', f.request.requestId, scope)
+      ).toBeNull();
+      expect(f.rows()).toEqual(original);
+    } finally {
+      vi.useRealTimers();
+    }
   }
-});
+);

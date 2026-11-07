@@ -45,36 +45,34 @@ describe('public network admission', () => {
     expect(() => assertPublicNetworkGrants(manifest(), facts())).not.toThrow();
   });
 
-  it.each([
-    'localhost.',
-    '127.0.0.1.',
-    '0x7f000001',
-    '[::ffff:127.0.0.1]',
-  ])('rejects private canonical public hosts: %s', (host) => {
-    expect(() => assertPublicNetworkGrants(manifest([{ ...publicGrant, host }]), facts())).toThrow(
-      /private|localhost/i
-    );
-  });
+  it.each(['localhost.', '127.0.0.1.', '0x7f000001', '[::ffff:127.0.0.1]'])(
+    'rejects private canonical public hosts: %s',
+    (host) => {
+      expect(() =>
+        assertPublicNetworkGrants(manifest([{ ...publicGrant, host }]), facts())
+      ).toThrow(/private|localhost/i);
+    }
+  );
 
-  it.each([
-    'https://SEARCH.EXAMPLE.COM./v1',
-    'https://search.example.com:8443/models',
-  ])('excludes current Provider hosts across ports and paths: %s', (baseUrl) => {
-    const current = {
-      ...facts(),
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'private-provider',
-          kind: 'direct',
-          displayName: 'Provider',
-          baseUrl,
-          models: [],
-          readiness: { status: 'disabled' },
-        },
-      ]),
-    };
-    expect(() => assertPublicNetworkGrants(manifest(), current)).toThrow(/excluded/i);
-  });
+  it.each(['https://SEARCH.EXAMPLE.COM./v1', 'https://search.example.com:8443/models'])(
+    'excludes current Provider hosts across ports and paths: %s',
+    (baseUrl) => {
+      const current = {
+        ...facts(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'private-provider',
+            kind: 'direct',
+            displayName: 'Provider',
+            baseUrl,
+            models: [],
+            readiness: { status: 'disabled' },
+          },
+        ]),
+      };
+      expect(() => assertPublicNetworkGrants(manifest(), current)).toThrow(/excluded/i);
+    }
+  );
 
   it('excludes configured Gateway/control hosts', () => {
     expect(() =>
