@@ -95,7 +95,12 @@ describe('loadProviderRegistryFromDataRoot', () => {
       const result = loadProviderRegistryFromDataRoot(dataRoot);
       const serialized = JSON.stringify(result.providerDiagnostics);
 
-      expect(result.providerDiagnostics.redactedSnapshot).toEqual([
+      // The inert built-in local profiles are always loaded; only authored profiles are asserted.
+      expect(
+        result.providerDiagnostics.redactedSnapshot.filter(
+          (profile) => !profile.id.startsWith('openkit-local-')
+        )
+      ).toEqual([
         expect.objectContaining({
           baseUrl: 'https://openrouter.ai/api/v1',
           id: 'core-openrouter',

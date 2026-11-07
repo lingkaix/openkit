@@ -970,7 +970,12 @@ function shutdown(signal: NodeJS.Signals): void {
   let listenerCloseFailed = false;
   shutdownCompletion = closeWithDeadline({
     close: (onClosed) => {
-      void closeActiveLocalAiSupervisor()
+      // The phase harness evaluates this function without the module binding.
+      const localAiClosed =
+        typeof closeActiveLocalAiSupervisor === 'function'
+          ? closeActiveLocalAiSupervisor()
+          : Promise.resolve();
+      void Promise.resolve(localAiClosed)
         .catch((error) => {
           console.error('Local AI shutdown failed.', error);
         })

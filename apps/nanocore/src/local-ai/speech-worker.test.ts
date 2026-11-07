@@ -20,7 +20,14 @@ it('reports one second for one second of float32 PCM', async () => {
   const model = join(root, 'model');
   const punct = join(root, 'punct');
   const js = join(root, 'js');
-  for (const directory of [model, punct, js]) mkdirSync(directory);
+  const bin = join(root, 'bin');
+  for (const directory of [model, punct, js, bin]) mkdirSync(directory);
+  // The CI image has no ffmpeg. This process-boundary stand-in emits one second of 16 kHz float32.
+  writeFileSync(
+    join(bin, 'ffmpeg'),
+    `#!${process.execPath}\nprocess.stdin.on('data', () => undefined);\nprocess.stdin.on('end', () => { process.stdout.write(Buffer.alloc(64_000)); process.exit(0); });\n`,
+    { mode: 0o755 }
+  );
   writeFileSync(join(model, 'model.onnx'), 'fixture');
   writeFileSync(join(model, 'tokens.txt'), 'fixture');
   writeFileSync(join(punct, 'punct.onnx'), 'fixture');
@@ -38,7 +45,7 @@ it('reports one second for one second of float32 PCM', async () => {
     ['--experimental-strip-types', fileURLToPath(new URL('./speech-worker.ts', import.meta.url))],
     {
       env: {
-        PATH: process.env.PATH,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
         OPENKIT_SPEECH_MODEL: model,
         OPENKIT_SPEECH_PUNCT: punct,
         OPENKIT_SPEECH_JS: js,
