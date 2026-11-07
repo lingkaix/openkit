@@ -524,6 +524,9 @@ export function Composer({
                   <button
                     key={`${artifact.id}:${artifact.version}`}
                     type="button"
+                    aria-pressed={selectedArtifacts.some(
+                      (candidate) => candidate.id === artifact.id
+                    )}
                     onClick={() => {
                       setSelectedArtifacts((current) =>
                         current.some((candidate) => candidate.id === artifact.id)
@@ -548,6 +551,8 @@ export function Composer({
                   <input
                     ref={fileInputRef}
                     type="file"
+                    aria-label="Attach files"
+                    tabIndex={-1}
                     disabled={disabled}
                     multiple
                     className="sr-only"

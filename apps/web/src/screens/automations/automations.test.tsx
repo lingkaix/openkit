@@ -173,6 +173,22 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it('exposes whether automation history is expanded', async () => {
+  const user = userEvent.setup();
+  fixture();
+  const history = await screen.findByRole('button', {
+    name: 'History Poll status',
+    expanded: false,
+  });
+  await user.click(history);
+  expect(
+    screen.getByRole('button', { name: 'History Poll status', expanded: true })
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'History Poll status' })).toHaveTextContent(
+    'Hide history'
+  );
+});
+
 it('creates a paused fixed-interval schedule in the selected Workspace and existing Thread', async () => {
   const user = userEvent.setup();
   const { operations } = fixture({}, []);

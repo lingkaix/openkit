@@ -956,8 +956,17 @@ describe('P3 review: New Task admission and Workspace scope', () => {
     const dialog = await openDesktopNewTask(user);
     await user.click(within(dialog).getByText('Someone already available'));
     expect(dialog).not.toHaveTextContent(/shard/i);
-    expect(within(dialog).getByRole('button', { name: 'New Task worker' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Codex Agent' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: 'New Task worker', pressed: true })
+    ).toBeInTheDocument();
+    const codex = within(dialog).getByRole('button', { name: 'Codex Agent', pressed: false });
+    await user.click(codex);
+    expect(
+      within(dialog).getByRole('button', { name: 'Codex Agent', pressed: true })
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: 'New Task worker', pressed: false })
+    ).toBeInTheDocument();
   });
 
   it('drops a failed New Task when the Workspace changes and retries in the new Workspace', async () => {

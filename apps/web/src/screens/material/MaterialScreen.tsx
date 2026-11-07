@@ -608,6 +608,7 @@ function MaterialSurfaceBody({
                 key={material.materialId}
                 size="sm"
                 variant={material.materialId === selectedMaterialId ? 'outline' : 'quiet'}
+                aria-pressed={material.materialId === selectedMaterialId}
                 className="justify-start rounded-ok text-left"
                 onPress={() => onSelect(material.materialId)}
               >

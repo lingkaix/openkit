@@ -61,8 +61,16 @@ it('requires all exact diff parts before acceptance and keeps a failed read unav
   expect(accept).toBeDisabled();
   await user.click(accept);
   expect(decide).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'Inspect changes' }));
-  await user.click(await screen.findByRole('button', { name: 'Read notes.md' }));
+  expect(
+    screen.getByRole('button', { name: 'Inspect changes', expanded: false })
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Inspect changes', expanded: false }));
+  expect(screen.getByRole('button', { name: 'Hide changes', expanded: true })).toBeInTheDocument();
+  expect(
+    await screen.findByRole('button', { name: 'Read notes.md', expanded: false })
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Read notes.md', expanded: false }));
+  expect(screen.getByRole('button', { name: 'Hide notes.md', expanded: true })).toBeInTheDocument();
   expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't read notes.md");
   expect(accept).toBeDisabled();
   await user.click(screen.getByRole('button', { name: 'Try again' }));

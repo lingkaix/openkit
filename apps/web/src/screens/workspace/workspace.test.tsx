@@ -1997,6 +1997,36 @@ async function changeLiveDirectoryFiles(input: HTMLInputElement, selected: File[
 }
 
 describe('Catalog', () => {
+  it('exposes whether Skill history is expanded', async () => {
+    const user = userEvent.setup();
+    const get = vi.fn().mockResolvedValue({
+      revision: 3,
+      candidates: [],
+      skills: [
+        {
+          availability: 'available',
+          currentDigest: `sha256:${'a'.repeat(64)}`,
+          description: null,
+          displayName: 'Repo guidelines',
+          id: 'repo-guidelines',
+          pinDigest: null,
+          versions: [{ createdAt: TIMESTAMP_NEW, digest: `sha256:${'a'.repeat(64)}` }],
+        },
+      ],
+      mcp: [],
+      plugins: [],
+    });
+    renderApp('/catalog', makeClient({ operations: { 'catalog.read': get } }));
+    const history = await screen.findByRole('button', {
+      name: 'Inspect Skill history',
+      expanded: false,
+    });
+    await user.click(history);
+    expect(
+      screen.getByRole('button', { name: 'Close Skill history', expanded: true })
+    ).toBeInTheDocument();
+  });
+
   it('loads one chosen curated Skill without selecting a version automatically', async () => {
     const user = userEvent.setup();
     const importSkill = vi.fn().mockResolvedValue({});

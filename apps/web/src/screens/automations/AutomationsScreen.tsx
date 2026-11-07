@@ -327,6 +327,7 @@ function AutomationRow({
           size="sm"
           variant="quiet"
           aria-label={`History ${record.name}`}
+          aria-expanded={showHistory}
           onPress={() => setShowHistory(!showHistory)}
         >
           {showHistory ? 'Hide history' : 'History'}

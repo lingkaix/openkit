@@ -154,6 +154,7 @@ export function CatalogScreen() {
                     <div className="flex min-w-0 shrink-0 flex-wrap gap-2">
                       <Button
                         size="sm"
+                        aria-expanded={historySkillId === skill.id}
                         isDisabled={writeBlocked}
                         onPress={() =>
                           setHistorySkillId(historySkillId === skill.id ? null : skill.id)

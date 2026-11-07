@@ -93,6 +93,7 @@ export function KnowledgeProposalRow({
           <Button
             size="sm"
             variant="outline"
+            aria-expanded={open}
             isDisabled={blocked}
             onPress={() => setOpen((value) => !value)}
           >
@@ -222,6 +223,7 @@ function ProposalPage({
       <Button
         size="sm"
         variant="outline"
+        aria-expanded={open}
         isDisabled={blocked}
         onPress={() => setOpen((value) => !value)}
       >

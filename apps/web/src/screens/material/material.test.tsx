@@ -240,6 +240,31 @@ beforeEach(() => {
   useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_ID });
 });
 
+it('exposes which Workspace Material is selected', async () => {
+  const user = userEvent.setup();
+  const second = {
+    ...MATERIAL,
+    materialId: 'mat_00000000-0000-72a5-8964-fa2b62341db0',
+    title: 'Launch checklist',
+  };
+  renderMaterial(
+    makeClient({
+      operations: {
+        'material.list': vi.fn().mockResolvedValue({ materials: [MATERIAL, second] }),
+      },
+    })
+  );
+  expect(
+    await screen.findByRole('button', { name: 'Release notes', pressed: true })
+  ).toBeInTheDocument();
+  const checklist = screen.getByRole('button', { name: 'Launch checklist', pressed: false });
+  await user.click(checklist);
+  expect(
+    await screen.findByRole('button', { name: 'Launch checklist', pressed: true })
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Release notes', pressed: false })).toBeInTheDocument();
+});
+
 describe('Material route identity', () => {
   it.each([
     'plain',

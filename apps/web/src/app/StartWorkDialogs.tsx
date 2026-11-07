@@ -356,14 +356,19 @@ export function NewTaskDialog({
           <summary className="cursor-pointer text-sm font-bold">Someone already available</summary>
           <div className="mt-2 flex flex-col gap-1">
             {fallback ? (
-              <Button variant="quiet" onPress={() => chooseTarget(fallback)}>
+              <Button
+                variant={selected?.targetRef === fallback.targetRef ? 'outline' : 'quiet'}
+                aria-pressed={selected?.targetRef === fallback.targetRef}
+                onPress={() => chooseTarget(fallback)}
+              >
                 New Task worker
               </Button>
             ) : null}
             {workers.map((worker) => (
               <Button
                 key={worker.targetRef}
-                variant="quiet"
+                variant={selected?.targetRef === worker.targetRef ? 'outline' : 'quiet'}
+                aria-pressed={selected?.targetRef === worker.targetRef}
                 isDisabled={worker.availability !== 'available'}
                 onPress={() => chooseTarget(worker)}
               >
