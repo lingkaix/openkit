@@ -627,10 +627,10 @@ describe('Assistant history Tool through canonical Items and real R2', () => {
     expect(f.scriptErrors).toEqual([]);
     expect(changed).toBe(true);
     const raw = await response.text();
-    expect(response.status, raw).toBe(fault === 'source revision' ? 500 : 403);
+    expect(response.status, raw).toBe(403);
     const body = JSON.parse(raw);
     expect(body.code).toBe(
-      fault === 'source revision' ? 'chat_mode_failed' : 'workspace_access_denied'
+      fault === 'source revision' ? 'history_unavailable' : 'workspace_access_denied'
     );
     expect(JSON.stringify(body)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(body)).not.toContain(f.privateItem.id);

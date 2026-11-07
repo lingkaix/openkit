@@ -4326,6 +4326,9 @@ export function createConversationService({
           error.status
         );
       }
+      if (error instanceof OperationError && error.code === 'history_unavailable') {
+        throw new TurnStartValidationError(error.code, error.message, error.status);
+      }
 
       if (chatInput.fileInputs?.length && error instanceof FileAdmissionError)
         throw new TurnStartValidationError(error.code, error.message, 507);
