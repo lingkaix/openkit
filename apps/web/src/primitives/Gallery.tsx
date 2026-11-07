@@ -45,11 +45,12 @@ function Specimen({ title, children }: { title: string; children: React.ReactNod
  *
  * Renders every primitive once so it can be reviewed for fidelity against the
  * applicable design references and previewed under each theme. This is the
- * primitive tier's proof surface mounted at the developer route.
+ * primitive tier's proof surface mounted at the developer route. Phone width
+ * is one column; two columns start at the 800px shell break.
  */
 export function Gallery() {
   return (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4 min-[800px]:grid-cols-2">
       <Specimen title="Buttons">
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="accent">Approve plan</Button>

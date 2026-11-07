@@ -410,6 +410,13 @@ describe('primitive tier — behavior', () => {
     expect(action.closest('.ok-toast')).not.toHaveClass('min-w-[340px]');
   });
 
+  it('stacks the Debug catalog in one column until 800px', () => {
+    render(<Gallery />);
+    const catalog = screen.getByRole('heading', { name: 'Buttons' }).parentElement?.parentElement;
+    expect(catalog).toHaveClass('grid', 'grid-cols-1', 'min-[800px]:grid-cols-2');
+    expect(catalog).not.toHaveClass('grid-cols-2');
+  });
+
   it('CodeView renders the exact input bytes visibly in preformatted code', () => {
     const CodeView = requiredPrimitive<ComponentType<{ label: string; value: string }>>('CodeView');
     const value = 'first line\n  second\t<&>';
