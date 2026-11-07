@@ -531,6 +531,7 @@ describe('live Provider readiness composition', () => {
         f.running.id,
         f.preferred.id,
       ]);
+      for (const [, dependencies] of f.resolver.mock.calls) expectLiveOwners(dependencies, f);
       expect(f.resolver.mock.results.every((result) => result.type === 'return')).toBe(true);
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
       expect(
@@ -557,6 +558,7 @@ describe('live Provider readiness composition', () => {
       expect(facts).toMatchObject({ toolInSupply: false, credentialsValid: false });
       expect(f.resolver).toHaveBeenCalledTimes(1);
       expect(f.resolver.mock.calls[0]![0].id).toBe(f.running.id);
+      expectLiveOwners(f.resolver.mock.calls[0]![1], f);
       expect(f.resolver.mock.results[0]!.type).toBe('return');
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
       expect(

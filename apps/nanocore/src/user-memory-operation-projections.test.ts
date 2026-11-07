@@ -168,6 +168,17 @@ it('routes private Memory ask and tell to the User KM and retains exact delivere
       f.context
     )
   ).toEqual(f.answer);
+  expect(f.ask).toHaveBeenCalledWith(
+    expect.objectContaining({
+      source: 'memory',
+      caller: 'internal-agent',
+      access: expect.objectContaining({
+        outputThreadId: f.timeline.id,
+        outputTurnId: f.turn.id,
+        requestActor: f.context.actor,
+      }),
+    })
+  );
   expect(f.notebook().publishedRevision()).toBe(f.baseRevision);
   const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
   expect(calls).toHaveLength(1);
@@ -185,6 +196,12 @@ it('routes private Memory ask and tell to the User KM and retains exact delivere
     f.context
   );
   expect(told).toMatchObject({ outcome: 'no-change' });
+  expect(f.store.getTurnById((told as { turnId: string }).turnId).internalExecution).toMatchObject({
+    knowledge: {
+      askingThreadId: f.timeline.id,
+      askingTurnId: f.turn.id,
+    },
+  });
   expect(f.notebook().publishedRevision()).toBe(
     (told as { notebookRevision: string }).notebookRevision
   );
@@ -237,6 +254,7 @@ it('refuses a shared caller before User recall or tell and keeps human Review un
       context
     )
   ).rejects.toMatchObject({ code: 'memory_access_denied' });
+  expect(f.ask).not.toHaveBeenCalled();
   expect(f.notebook().publishedRevision()).toBe(published);
   expect(listUserKnowledgeSources({ coreDb: f.coreDb, userDb: f.userDb, actor: f.actor })).toEqual(
     sourcesBefore
