@@ -472,7 +472,10 @@ export function Composer({
       <textarea
         ref={textareaRef}
         value={value}
-        disabled={disabled}
+        // A submission in flight only locks the text. Disabling the focused field would drop focus
+        // to the page (and on a phone close the keyboard) on every Send.
+        disabled={Boolean(disabledReason) || fileHandoff !== null}
+        readOnly={isSubmitting || pending}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={disabledReason ?? placeholder}

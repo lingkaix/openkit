@@ -760,7 +760,14 @@ describe('primitive tier — behavior', () => {
 
   it('keeps Message focused through a mouse Send and submits the selected artifact version', async () => {
     const user = userEvent.setup();
-    const onSubmit = vi.fn();
+    let settle: () => void = () => {};
+    // Hold the submission open so the check covers the pending render as well as the settled one.
+    const onSubmit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        })
+    );
     const artifactId = 'ar_00000000-0000-7b97-b1e4-18ef545a7af3';
     render(
       <Composer
@@ -777,6 +784,8 @@ describe('primitive tier — behavior', () => {
     const input = screen.getByRole('textbox', { name: 'Message' });
     input.focus();
     await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(input).toHaveFocus();
+    await act(async () => settle());
     expect(input).toHaveFocus();
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
