@@ -1,9 +1,9 @@
 import {
   KnowledgeSourceIdSchema,
+  KnowledgeUserOwnerScopeSchema,
   RequestIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
-  UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -28,6 +28,7 @@ import {
   validKnowledgeProposalShape,
 } from './knowledge-manager.js';
 import {
+  KnowledgeNotebookPageIdSchema,
   KnowledgeNotebookPathSchema,
   UpdateKnowledgeNotebookRequestSchema,
 } from './knowledge-notebook.js';
@@ -45,9 +46,7 @@ import {
 import type { OperationDefinition } from './operation-contract.js';
 
 /** User ownership is resolved by current authentication, never selected by a Memory request. */
-export const MemoryOwnerSchema = z
-  .object({ kind: z.literal('user'), userId: UserIdSchema })
-  .strict();
+export const MemoryOwnerSchema = KnowledgeUserOwnerScopeSchema;
 /** Same fixed-base Proposal and append-only Review families at the authenticated User owner. */
 const { workspaceId: _proposalWorkspace, ...proposalShape } =
   KnowledgeManagerDraftedProposalSchema.shape;
@@ -73,9 +72,7 @@ export const MemoryProposalDecisionResponseSchema = z
   })
   .strict();
 
-const PageIdSchema = z
-  .string()
-  .refine((id) => KnowledgeNotebookPathSchema.safeParse(`${id}.md`).success);
+const PageIdSchema = KnowledgeNotebookPageIdSchema;
 const DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const PageFactsSchema = z.object({
   id: PageIdSchema,
@@ -86,25 +83,27 @@ const PageFactsSchema = z.object({
 });
 
 /** Exact existing User notebook publication and scoped receipt, shared by explicit editing and restoration. */
-export const MemoryPublicationSchema = z.object({
-  outcome: z.literal('published'),
-  ownerScope: MemoryOwnerSchema,
-  baseRevision: z.string().min(1).nullable(),
-  notebookRevision: z.string().min(1),
-  changedPageIds: z.array(PageIdSchema).max(256),
-  receiptRef: z
-    .object({
-      operation: z.enum([
-        'knowledge.notebook.create',
-        'knowledge.notebook.update',
-        'knowledge.notebook.restore',
-        'knowledge.notebook.delete',
-      ]),
-      requestId: RequestIdSchema,
-      ownerScope: MemoryOwnerSchema,
-    })
-    .strict(),
-});
+export const MemoryPublicationSchema = z
+  .object({
+    outcome: z.literal('published'),
+    ownerScope: MemoryOwnerSchema,
+    baseRevision: z.string().min(1).nullable(),
+    notebookRevision: z.string().min(1),
+    changedPageIds: z.array(PageIdSchema).max(256),
+    receiptRef: z
+      .object({
+        operation: z.enum([
+          'knowledge.notebook.create',
+          'knowledge.notebook.update',
+          'knowledge.notebook.restore',
+          'knowledge.notebook.delete',
+        ]),
+        requestId: RequestIdSchema,
+        ownerScope: MemoryOwnerSchema,
+      })
+      .strict(),
+  })
+  .strict();
 
 /** Exact personally authored OKF bytes at one immutable published base. */
 export const ChangeMemoryPageRequestSchema = z

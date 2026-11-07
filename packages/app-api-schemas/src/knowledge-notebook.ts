@@ -2,8 +2,8 @@ import {
   KnowledgeBaseIdSchema,
   KnowledgeNotebookPageSchema,
   KnowledgeSourceIdSchema,
+  KnowledgeWorkspaceOwnerScopeSchema,
   RequestIdSchema,
-  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 
@@ -13,6 +13,11 @@ export const KnowledgeNotebookPathSchema = z
   .max(243)
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*\.md$/)
   .refine((path) => !path.slice(0, -3).endsWith('.md'));
+
+/** Page id whose markdown path is a bundle-relative Notebook path. */
+export const KnowledgeNotebookPageIdSchema = z
+  .string()
+  .refine((id) => KnowledgeNotebookPathSchema.safeParse(`${id}.md`).success);
 
 /** Transient edit address; the Source branch cannot collide with a bundle-relative Page path. */
 export const KnowledgeNotebookEditPathSchema = z.union([
@@ -74,9 +79,7 @@ export const UpdateKnowledgeNotebookRequestSchema = z
   });
 
 /** Exact existing Workspace content owner, repeated in the native command receipt. */
-const WorkspaceNotebookOwnerSchema = z
-  .object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema })
-  .strict();
+const WorkspaceNotebookOwnerSchema = KnowledgeWorkspaceOwnerScopeSchema;
 
 /** Completed publication evidence identifies one immutable commit and its existing command receipt. */
 export const UpdateKnowledgeNotebookResponseSchema = z
@@ -85,7 +88,7 @@ export const UpdateKnowledgeNotebookResponseSchema = z
     ownerScope: WorkspaceNotebookOwnerSchema,
     baseRevision: z.string().min(1),
     notebookRevision: z.string().min(1),
-    changedPageIds: z.array(z.string().min(1)).max(256),
+    changedPageIds: z.array(KnowledgeNotebookPageIdSchema).max(256),
     receiptRef: z
       .object({
         operation: z.enum([

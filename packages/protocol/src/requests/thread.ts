@@ -70,5 +70,8 @@ export const GetThreadResponseSchema = ThreadSchema;
  */
 export const ListThreadItemsResponseSchema = z.object({
   items: z.array(ItemSchema),
-  nextCursor: z.string().nullable(),
+  nextCursor: z.string().min(1).nullable(),
 });
+
+/** Durable thread item replay response. */
+export type ListThreadItemsResponse = z.infer<typeof ListThreadItemsResponseSchema>;

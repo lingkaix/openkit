@@ -2,6 +2,7 @@ import {
   ArchiveThreadRequestSchema,
   CreateThreadRequestSchema,
   ItemIdSchema,
+  ListThreadItemsResponseSchema,
   ListThreadsResponseSchema,
   ThreadIdSchema,
   ThreadSchema,
@@ -9,7 +10,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { ListThreadItemsResponseSchema, ThreadDashboardResponseSchema } from './dashboard.js';
+import { ThreadDashboardResponseSchema } from './dashboard.js';
 import type { OperationDefinition } from './operation-contract.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */

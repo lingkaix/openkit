@@ -1,5 +1,6 @@
 import {
   KnowledgeMaintenanceOutcomeSchema,
+  KnowledgeServerOwnerScopeSchema,
   RequestIdSchema,
   ThreadIdSchema,
   ThreadSchema,
@@ -52,13 +53,13 @@ export const InterruptServerTurnResponseSchema = z
 const { workspaceId: _proposalWorkspace, ...proposalShape } =
   KnowledgeManagerDraftedProposalSchema.shape;
 export const ServerKnowledgeProposalSchema = z
-  .object({ ...proposalShape, ownerScope: z.object({ kind: z.literal('server') }).strict() })
+  .object({ ...proposalShape, ownerScope: KnowledgeServerOwnerScopeSchema })
   .strict()
   .refine(validKnowledgeProposalShape, 'A Proposal requires one complete candidate.');
 /** Existing human Review core for the same exact Server candidate. */
 const { workspaceId: _reviewWorkspace, ...reviewShape } = KnowledgeProposalReviewSchema.shape;
 export const ServerKnowledgeReviewSchema = z
-  .object({ ...reviewShape, ownerScope: z.object({ kind: z.literal('server') }).strict() })
+  .object({ ...reviewShape, ownerScope: KnowledgeServerOwnerScopeSchema })
   .strict()
   .refine(
     (value) => (value.knowledgePageId !== undefined) !== (value.changedPageIds !== undefined),

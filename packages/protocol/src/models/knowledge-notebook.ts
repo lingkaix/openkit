@@ -2,11 +2,24 @@ import { z } from 'zod';
 import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 import { ActorRefSchema, UserActorRefSchema } from './actor.js';
 
+/** Exact User notebook owner. */
+export const KnowledgeUserOwnerScopeSchema = z
+  .object({ kind: z.literal('user'), userId: UserActorRefSchema.shape.id })
+  .strict();
+
+/** Exact Workspace notebook owner. */
+export const KnowledgeWorkspaceOwnerScopeSchema = z
+  .object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema })
+  .strict();
+
+/** Exact Server notebook owner. */
+export const KnowledgeServerOwnerScopeSchema = z.object({ kind: z.literal('server') }).strict();
+
 /** Exact durable notebook owner; query context and source restrictions remain independent. */
 export const KnowledgeOwnerScopeSchema = z.union([
-  z.object({ kind: z.literal('user'), userId: UserActorRefSchema.shape.id }).strict(),
-  z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }).strict(),
-  z.object({ kind: z.literal('server') }).strict(),
+  KnowledgeUserOwnerScopeSchema,
+  KnowledgeWorkspaceOwnerScopeSchema,
+  KnowledgeServerOwnerScopeSchema,
 ]);
 
 /** Existing notebook owner resolved by current operation admission, never a model-supplied root. */

@@ -1,9 +1,15 @@
 import {
   ActorRefSchema,
+  AgentHealthSchema,
+  AgentIdSchema,
   ArtifactIdSchema,
   ArtifactSchema,
   ItemIdSchema,
-  ItemSchema,
+  ListThreadItemsResponseSchema,
+  PendingRequestDispositionSchema,
+  PendingRequestEndingSchema,
+  PendingRequestResolutionSchema,
+  PendingRequestStateSchema,
   ProductTurnSchema,
   StopReasonSchema,
   ThreadIdSchema,
@@ -222,14 +228,7 @@ export const WorkspaceDashboardResponseSchema = z.object({
   defaultContext: z.object({
     agentId: z.string().min(1).nullable(),
   }),
-  agentHealth: z.array(
-    z.object({
-      agentId: z.string().min(1),
-      status: z.string().min(1),
-      message: z.string().nullable(),
-      checkedAt: z.string().nullable(),
-    })
-  ),
+  agentHealth: z.array(AgentHealthSchema.extend({ agentId: AgentIdSchema })),
   recentThreads: z.array(ThreadSchema),
   activeWork: z.array(WorkspaceActiveWorkSchema).default([]),
   recentCompletions: z.array(WorkspaceCompletionSchema).default([]),
@@ -273,12 +272,10 @@ export const ThreadDashboardResponseSchema = z.object({
         requestId: z.string().min(1),
         approvalEffect: ApprovalEffectPreviewSchema.optional(),
         canRespond: z.boolean().optional(),
-        state: z.enum(['pending', 'resolved', 'ended', 'inspect-only']),
-        resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
-        ending: z.enum(['withdrawn', 'invalidated']).nullable(),
-        disposition: z
-          .enum(['approved-executed', 'denied-not-executed', 'execution-error', 'outcome-unknown'])
-          .nullable(),
+        state: z.enum([...PendingRequestStateSchema.options, 'inspect-only']),
+        resolution: PendingRequestResolutionSchema.nullable(),
+        ending: PendingRequestEndingSchema.nullable(),
+        disposition: PendingRequestDispositionSchema.nullable(),
       })
     )
     .optional(),
@@ -313,21 +310,10 @@ export const ThreadDashboardResponseSchema = z.object({
 
 /** Agent health refresh response payload. */
 export const AgentHealthRefreshResponseSchema = z.object({
-  items: z.array(
-    z.object({
-      agentId: z.string().min(1),
-      status: z.string().min(1),
-      message: z.string().nullable(),
-      checkedAt: z.string().nullable(),
-    })
-  ),
+  items: z.array(AgentHealthSchema.extend({ agentId: AgentIdSchema })),
 });
 
-/** Thread item replay response payload. */
-export const ListThreadItemsResponseSchema = z.object({
-  items: z.array(ItemSchema),
-  nextCursor: z.string().min(1).nullable(),
-});
+export { ListThreadItemsResponseSchema };
 
 /** Compact artifact summary shown in product work status surfaces. */
 export type DashboardArtifactSummary = z.infer<typeof DashboardArtifactSummarySchema>;
@@ -369,5 +355,4 @@ export type ThreadDashboardResponse = z.infer<typeof ThreadDashboardResponseSche
 export type ThreadTaskInput = z.infer<typeof ThreadTaskInputSchema>;
 /** Agent health refresh response payload. */
 export type AgentHealthRefreshResponse = z.infer<typeof AgentHealthRefreshResponseSchema>;
-/** Thread item replay response payload. */
-export type ListThreadItemsResponse = z.infer<typeof ListThreadItemsResponseSchema>;
+export type { ListThreadItemsResponse } from '@openkit/protocol';

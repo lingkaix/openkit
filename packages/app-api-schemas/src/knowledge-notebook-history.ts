@@ -2,7 +2,7 @@ import { ActorRefSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
   KnowledgeNotebookEditPathSchema,
-  KnowledgeNotebookPathSchema,
+  KnowledgeNotebookPageIdSchema,
   UpdateKnowledgeNotebookRequestSchema,
   UpdateKnowledgeNotebookResponseSchema,
 } from './knowledge-notebook.js';
@@ -12,7 +12,7 @@ export const KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES = 64 * 1024;
 
 const RevisionSchema = z.string().min(1);
 const PageIdsSchema = z
-  .array(z.string().refine((id) => KnowledgeNotebookPathSchema.safeParse(`${id}.md`).success))
+  .array(KnowledgeNotebookPageIdSchema)
   .min(1)
   .max(256)
   .refine((ids) => new Set(ids).size === ids.length, 'Notebook page IDs must be unique.');

@@ -1,5 +1,9 @@
 import {
   AccessTokenIdSchema,
+  PendingRequestClaimSchema,
+  PendingRequestDispositionSchema,
+  PendingRequestResolutionSchema,
+  PendingRequestStateSchema,
   PolicyDelegationV1Schema,
   PolicyResourceV1Schema,
   RequestIdSchema,
@@ -224,12 +228,12 @@ export const GoalViewSchema = z.object({
     z.object({
       requestId: id,
       operation: z.string(),
-      state: z.enum(['pending', 'resolved', 'ended']),
-      resolution: z.string().nullable(),
+      state: PendingRequestStateSchema,
+      resolution: PendingRequestResolutionSchema.nullable(),
       reason: z.string().nullable(),
       decidingActorId: id.nullable(),
-      claim: z.enum(['unclaimed', 'claimed', 'finished']),
-      disposition: z.string().nullable(),
+      claim: PendingRequestClaimSchema,
+      disposition: PendingRequestDispositionSchema.nullable(),
       exactIntent: z.record(z.string(), z.unknown()),
     })
   ),
