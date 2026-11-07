@@ -4,7 +4,8 @@ This directory owns the shared capability-call and usage-record lifecycle for Wo
 
 ## Boundaries
 
-- `usage-ledger.ts` starts and finishes capability calls, records measurements, and reads exportable ledger rows.
+- `usage-ledger.ts` starts capability calls, records measurements, reads exportable ledger rows, and keeps the public finish, recovery, and export facades.
+- `usage-ledger-native.ts` owns the existing `finishCapabilityCallInDb` transaction and its complete helper closure: terminal Call compare-and-set, admitted attribution, delivered-answer framing, linked Audit, Call lookup and decoding, source-id normalization and decoding, and canonical extensions. Worker checkpoints and Control Capability bind that transaction from this file. The native module has no runtime import of the ledger, the worker client, Control Capability orchestration, or Policy evaluation.
 - Storage table definitions remain in `../storage/schema/`; route-specific authorization and dispatch remain with their feature owners.
 - Record only redacted lineage and positive, source-attributed measurements; failed calls must not fabricate usage.
 

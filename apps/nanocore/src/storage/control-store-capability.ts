@@ -31,7 +31,6 @@ import { z } from 'zod';
 import { recordUserAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
   clearCapabilityCallItemInDb,
-  finishCapabilityCallInDb,
   hasCapabilityCallRequestId,
   normalizeCapabilityRequestId,
   persistLlmCapabilityCallSystemPromptDigestInDb,
@@ -41,6 +40,7 @@ import {
   writeCapabilityCallCacheInDb,
   writeGatewayRouteLineageInDb,
 } from '../capability/usage-ledger.js';
+import { finishCapabilityCallInDb } from '../capability/usage-ledger-native.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   prepareCapturedCapabilityAdmission,
