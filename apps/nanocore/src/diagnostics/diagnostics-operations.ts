@@ -66,6 +66,7 @@ export function createDiagnosticsOperationImplementations(
           status: 'ok',
           endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],
           defaultModelId: runtimeConfig().gatewayConfig.defaultLogicalModelId ?? null,
+          titleModelId: runtimeConfig().gatewayConfig.titleLogicalModelId ?? null,
           models: resolveLogicalModelCatalog(
             runtimeConfig().gatewayConfig,
             runtimeConfig().providerRegistry,

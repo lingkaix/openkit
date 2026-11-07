@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
 import { Readable } from 'node:stream';
 import { gunzipSync } from 'node:zlib';
 import {
@@ -39,6 +39,20 @@ export async function ensureArtifact(
   ensureCanonicalDirectory(root);
   ensureCanonicalDirectory(join(root, 'staging'));
   const body = await readVerifiedBody(artifact, fetchImpl, onProgress, signal);
+  if (artifact.archive === 'file') {
+    const fileName = artifact.fileName;
+    if (!fileName) throw new Error('File artifact has no name.');
+    const extracted = createPrivateTreeSync(join(root, 'staging'), 'artifact-');
+    try {
+      materializePrivateTreeSync(extracted, [{ kind: 1, path: fileName, content: body }]);
+      ensureCanonicalDirectory(join(destination, '..'));
+      publishCanonicalPath(extracted, destination);
+    } catch (error) {
+      removePrivateTreeSync(extracted);
+      throw error;
+    }
+    return;
+  }
   const tar = artifact.archive === 'tar.gz' ? gunzipSync(body) : bunzip.decode(body);
   const entries = await readTarEntries(tar);
   const extracted = createPrivateTreeSync(join(root, 'staging'), 'artifact-');
@@ -106,41 +120,82 @@ function throwIfDownloadAborted(signal: AbortSignal | undefined): void {
 async function readTarEntries(
   tar: Buffer
 ): Promise<Array<{ readonly content?: Buffer; readonly kind: 0 | 1 | 2; readonly path: string }>> {
-  const raw: Array<{ path: string; content?: Buffer; directory: boolean }> = [];
+  const raw: Array<{ path: string; content?: Buffer; directory: boolean; symlink?: string }> = [];
   await new Promise<void>((resolve, reject) => {
     const parser = extract();
-    parser.on('entry', (header: { name: string; type?: string | null }, stream, next) => {
-      const chunks: Buffer[] = [];
-      stream.on('data', (chunk: unknown) => {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
-      });
-      stream.on('end', () => {
-        const safe = safeTarPath(header.name);
-        if (safe && header.type !== 'symlink') {
-          raw.push({
-            path: safe,
-            directory: header.type === 'directory',
-            ...(header.type === 'directory' ? {} : { content: Buffer.concat(chunks) }),
-          });
-        }
-        next();
-      });
-      stream.on('error', reject);
-      stream.resume();
-    });
+    parser.on(
+      'entry',
+      (header: { name: string; linkname?: string; type?: string | null }, stream, next) => {
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: unknown) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+        });
+        stream.on('end', () => {
+          const safe = safeTarPath(header.name);
+          if (safe && header.type === 'symlink' && safeSymlinkTarget(header.linkname)) {
+            raw.push({ path: safe, directory: false, symlink: header.linkname });
+          } else if (safe && header.type !== 'symlink') {
+            raw.push({
+              path: safe,
+              directory: header.type === 'directory',
+              ...(header.type === 'directory' ? {} : { content: Buffer.concat(chunks) }),
+            });
+          }
+          next();
+        });
+        stream.on('error', reject);
+        stream.resume();
+      }
+    );
     parser.on('finish', () => resolve());
     parser.on('error', reject);
     Readable.from(tar).pipe(parser);
   });
   const prefix = sharedPrefix(raw.map((entry) => entry.path));
-  return raw
-    .map((entry) => {
-      const path = prefix ? entry.path.slice(prefix.length) : entry.path;
-      return entry.directory
-        ? { kind: 0 as const, path }
-        : { kind: 1 as const, path, content: entry.content ?? Buffer.alloc(0) };
-    })
-    .filter((entry) => entry.path.length > 0);
+  const stripped = raw.map((entry) => ({
+    ...entry,
+    path: prefix ? entry.path.slice(prefix.length) : entry.path,
+  }));
+  const files = new Map<string, Buffer>();
+  const links = new Map<string, string>();
+  for (const entry of stripped) {
+    if (!entry.path) continue;
+    if (entry.symlink) links.set(entry.path, entry.symlink);
+    else if (!entry.directory) files.set(entry.path, entry.content ?? Buffer.alloc(0));
+  }
+  const resolveLink = (path: string, seen: Set<string>): Buffer | undefined => {
+    const file = files.get(path);
+    if (file) return file;
+    const link = links.get(path);
+    if (!link || seen.has(path)) return undefined;
+    const target = safeLinkPath(path, link);
+    if (!target) return undefined;
+    seen.add(path);
+    return resolveLink(target, seen);
+  };
+  for (const path of links.keys()) {
+    if (files.has(path)) continue;
+    const content = resolveLink(path, new Set());
+    if (content) files.set(path, content);
+  }
+  return [...files.entries()].map(([path, content]) => ({
+    // kind 2 is the existing materializer's executable file. llama-server is the only member that must be exec'd.
+    kind: (path === 'llama-server' || path.endsWith('/llama-server') ? 2 : 1) as 1 | 2,
+    path,
+    content,
+  }));
+}
+
+/** Accepts an in-archive relative symlink target. */
+function safeSymlinkTarget(target: string | undefined): target is string {
+  return !!target && !target.startsWith('/') && !target.split('/').includes('..');
+}
+
+/** Resolves one relative symlink against its directory and refuses a path that leaves the archive. */
+function safeLinkPath(path: string, target: string): string | null {
+  const resolved = normalize(join(dirname(path), target));
+  if (resolved.startsWith('..') || resolved.startsWith('/')) return null;
+  return resolved;
 }
 
 /** Rejects paths that would escape the staging directory. */

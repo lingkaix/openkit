@@ -60,6 +60,8 @@ export const GatewayConfigSchema = z
     schemaVersion: z.literal(1),
     enabled: z.boolean().default(true),
     defaultLogicalModelId: z.string().min(1).optional(),
+    /** Logical model that names fresh thread titles. Absent means no title call. */
+    titleLogicalModelId: z.string().min(1).optional(),
     logicalModels: z.array(GatewayLogicalModelSchema).default([]),
     /** Ordered speech route. It is not a logical chat model. */
     transcription: z.preprocess(normalizeTranscription, GatewayTranscriptionSchema.optional()),
@@ -77,6 +79,16 @@ export const GatewayConfigSchema = z
         code: 'custom',
         message: `Default logical model is not declared: ${value.defaultLogicalModelId}.`,
         path: ['defaultLogicalModelId'],
+      });
+    }
+    if (
+      value.titleLogicalModelId &&
+      !value.logicalModels.some((model) => model.id === value.titleLogicalModelId)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `Title logical model is not declared: ${value.titleLogicalModelId}.`,
+        path: ['titleLogicalModelId'],
       });
     }
   });

@@ -306,6 +306,7 @@ function diagnosticsFixture(
       status: 'ok',
       endpoints: ['/v1/chat/completions'],
       defaultModelId: 'notes',
+      titleModelId: null,
       models: options.models ?? MODELS,
     },
     providers: {

@@ -183,6 +183,7 @@ const DIAGNOSTICS = {
     status: 'ok',
     endpoints: ['/v1/chat/completions'],
     defaultModelId: 'default',
+    titleModelId: null,
     models: [{ id: 'default', displayName: 'Default', capabilities: ['chat'] }],
   },
   providers: {

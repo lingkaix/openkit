@@ -11,6 +11,7 @@ import {
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { createTaskKnowledgePreparation } from '../knowledge-operations.js';
 import type { FsStore } from '../lib/store.js';
+import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
 import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
@@ -175,9 +176,10 @@ export function createCoordinatorTaskTool(options: {
           responseKind: 'turn',
           responseId: (turn) => turn.id,
           execute: async (commandReceipt): Promise<Awaited<ReturnType<FsStore['createTurn']>>> => {
+            const initialName = input.request.objective.slice(0, 100);
             await options.store.createThread(
               goal.workspaceId,
-              input.request.objective.slice(0, 100),
+              initialName,
               threadId,
               'conversation',
               {
@@ -186,6 +188,14 @@ export function createCoordinatorTaskTool(options: {
                 parentThreadId: coordinator.threadId,
               }
             );
+            scheduleThreadTitle({
+              store: options.store,
+              workspaceId: goal.workspaceId,
+              threadId,
+              initialName,
+              sourceText: input.request.objective,
+              actor: { kind: 'user', id: actor.userId },
+            });
             let resolveAccepted!: (turn: Awaited<ReturnType<FsStore['createTurn']>>) => void;
             let rejectAccepted!: (reason: unknown) => void;
             const accepted = new Promise<Awaited<ReturnType<FsStore['createTurn']>>>(

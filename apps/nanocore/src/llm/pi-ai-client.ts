@@ -639,7 +639,9 @@ export class PiAiGatewayClient {
           transport,
           async (message, failure) => {
             observedFailure = failure;
-            await publishObservedUsage(onUsage, message.usage, model, knownCost);
+            if (!failure || providerReportedUsage(message.usage)) {
+              await publishObservedUsage(onUsage, message.usage, model, knownCost);
+            }
           },
           createChatToolValidator(declaredTools)
         ),
@@ -778,7 +780,9 @@ export class PiAiGatewayClient {
           transport,
           async (message, failure) => {
             observedFailure = failure;
-            await publishObservedUsage(onUsage, message.usage, model, knownCost);
+            if (!failure || providerReportedUsage(message.usage)) {
+              await publishObservedUsage(onUsage, message.usage, model, knownCost);
+            }
           }
         ),
       transport.signal,
@@ -1811,7 +1815,8 @@ export class PiAiGatewayClient {
               );
             if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
               usageObserved = true;
-              await onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
+              const usage = event.type === 'done' ? event.message.usage : event.error.usage;
+              if (event.type === 'done' || providerReportedUsage(usage)) await onUsage?.(usage);
             }
             if (onModelEvent) await observeModelEvent(event, onModelEvent);
             validateEvent(event);
@@ -1958,7 +1963,9 @@ export class PiAiGatewayClient {
               const drained = drainThinking(controller);
               if (!usageObserved) {
                 usageObserved = true;
-                await onUsage?.(event.error.usage);
+                if (providerReportedUsage(event.error.usage)) {
+                  await onUsage?.(event.error.usage);
+                }
               }
               const usage = toChatUsage(event.error.usage);
               if (usage) {
@@ -3987,7 +3994,8 @@ function toResponsesSseStream(
               : undefined;
           if (!usageObserved && (event.type === 'done' || event.type === 'error')) {
             usageObserved = true;
-            await onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
+            const usage = event.type === 'done' ? event.message.usage : event.error.usage;
+            if (event.type === 'done' || providerReportedUsage(usage)) await onUsage?.(usage);
           }
           if (onModelEvent) await observeModelEvent(event, onModelEvent);
           if (event.type === 'done' || event.type === 'error')
@@ -4306,7 +4314,7 @@ function toResponsesSseStream(
           if (event.type === 'error') {
             if (!usageObserved) {
               usageObserved = true;
-              await onUsage?.(event.error.usage);
+              if (providerReportedUsage(event.error.usage)) await onUsage?.(event.error.usage);
             }
             terminal = true;
             controller.error(observedFailure);
@@ -4947,6 +4955,26 @@ interface ResolvedAdapterModel {
  * @param model Request-local model whose rates feed calculateCost.
  * @param knownCost Whether authored, catalog, and real stock rates are complete.
  */
+/** A failed pi-ai message starts at all-zero usage until a provider usage object is parsed. */
+function providerReportedUsage(usage: unknown): boolean {
+  const record = readRecord(usage);
+  if (!record) return false;
+  if ('reasoning' in record) return true;
+  for (const key of [
+    'input',
+    'output',
+    'cacheRead',
+    'cache_read',
+    'cacheWrite',
+    'cache_write',
+    'totalTokens',
+  ]) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value !== 0) return true;
+  }
+  return false;
+}
+
 function publishObservedUsage(
   onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
   usage: unknown,

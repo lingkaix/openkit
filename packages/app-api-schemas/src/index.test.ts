@@ -736,6 +736,7 @@ function appDiagnosticsPayload(): Record<string, unknown> {
       status: 'ok',
       endpoints: ['/health'],
       defaultModelId: 'default',
+      titleModelId: null,
       models: [{ id: 'default', displayName: 'Default', capabilities: ['chat'] }],
     },
     providers: { diagnostics: [], registry: [] },

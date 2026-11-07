@@ -38,6 +38,7 @@ import {
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
 import { policyDigest } from '../policy/statements.js';
 import { evaluateThreadAuthorization } from '../policy/workspace-resource-access.js';
@@ -1601,6 +1602,14 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     productOwner: { kind: 'workspace', workspaceId: input.workspaceId },
     contentMount,
   });
+  let freshGoalTitle:
+    | {
+        readonly workspaceId: string;
+        readonly threadId: string;
+        readonly initialName: string;
+        readonly sourceText: string;
+      }
+    | undefined;
   const invokePrepared = async (
     receipt: IdempotentCommandReceipt | null,
     input: GoalArguments
@@ -1864,6 +1873,14 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     }
     if (proposalTurnId && !outcome.replayed)
       await store.updateTurn(proposalTurnId, { status: 'completed', completedAt: now() });
+    if (id === 'goal.create' && !outcome.replayed && 'intent' in input && outcome.view.goal) {
+      freshGoalTitle = {
+        workspaceId: input.workspaceId,
+        threadId: outcome.view.goal.threadId,
+        initialName: input.intent.slice(0, 100),
+        sourceText: input.intent,
+      };
+    }
     return outcome.view;
   };
   // These commands alone append to an existing Coordinator Turn; authority is rechecked inside.
@@ -1894,6 +1911,15 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         execute: invoke,
         replay: () => readNativeGoalView(db, goalId),
       });
+  if (freshGoalTitle)
+    scheduleThreadTitle({
+      store,
+      workspaceId: freshGoalTitle.workspaceId,
+      threadId: freshGoalTitle.threadId,
+      initialName: freshGoalTitle.initialName,
+      sourceText: freshGoalTitle.sourceText,
+      actor: { kind: 'user', id: context.actor.userId },
+    });
   if (id === 'goal.create' && input.originThreadId && result.goal) {
     // The committed Goal is authority; publish its replayable origin snapshot outside SQL admission.
     const origin = input.originThreadId;

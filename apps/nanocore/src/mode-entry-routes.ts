@@ -95,6 +95,7 @@ import { ModelCaptureError, withTurnModelCapture } from './llm/model-capture.js'
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { scheduleThreadTitle } from './llm/thread-title-schedule.js';
 import {
   createAssistantSkillReadInvocation,
   createOperationInvocation,
@@ -3434,6 +3435,14 @@ export function createConversationService({
               parentThreadId: threadId,
             })
           ).id;
+          scheduleThreadTitle({
+            store,
+            workspaceId,
+            threadId: receivingThreadId,
+            initialName: title,
+            sourceText: chatInput.input,
+            actor: triggerActor,
+          });
         }
         if (!agentId) {
           throw new TurnStartValidationError(
@@ -4592,13 +4601,22 @@ export function createConversationService({
               409
             );
           handoffEffectStarted = true;
+          const confirmedTitle = proposed.input.trim().split(/\r?\n/, 1)[0] || 'Confirmed task';
           await store.createThread(
             targetWorkspaceId,
-            proposed.input.trim().split(/\r?\n/, 1)[0] || 'Confirmed task',
+            confirmedTitle,
             receivingThreadId,
             'conversation',
             { visibility: 'workspace', threadSource: 'worker', parentThreadId: turn.threadId }
           );
+          scheduleThreadTitle({
+            store,
+            workspaceId: targetWorkspaceId,
+            threadId: receivingThreadId,
+            initialName: confirmedTitle,
+            sourceText: proposed.input,
+            actor: { kind: 'user', id: actorId },
+          });
           const taskDb = repositoryWorkspaceDb(targetWorkspaceId);
           // Only the explicitly confirmed brief crosses the audience boundary.
           const workerRequest = delegation.coordinator.workerRequest;

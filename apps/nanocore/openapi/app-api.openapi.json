@@ -145887,6 +145887,12 @@
                   "null"
                 ]
               },
+              "titleModelId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "models": {
                 "type": "array",
                 "items": {
@@ -146228,6 +146234,7 @@
               "status",
               "endpoints",
               "defaultModelId",
+              "titleModelId",
               "models"
             ],
             "additionalProperties": false
@@ -156500,5 +156507,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4fe19d0b5b6de730dfe53593d557a43a0aacf36f08d9101ef64ccc5d06a1d799"
+  "x-openkit-source-digest": "sha256:b0612369238a87190ca4f7f8998e3f59471af364d2b1c6188a8cd10b4193b255"
 }

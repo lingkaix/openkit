@@ -1079,6 +1079,31 @@ function emptyWorkspaceFileRecords(workspace: WorkspaceRecord): WorkspaceFileRec
   };
 }
 
+/** Title write guard. The name is the title captured when generation started. */
+export interface ThreadUpdatePrecondition {
+  readonly status: 'active';
+  readonly name: string;
+}
+
+/** The thread was renamed, archived, deleted, or otherwise no longer matches the guarded title. */
+export class ThreadUpdatePreconditionError extends Error {
+  public constructor() {
+    super('Thread no longer has the expected active title.');
+    this.name = 'ThreadUpdatePreconditionError';
+  }
+}
+
+/** Refuses a title write when the same record read is no longer the guarded active name. */
+export function assertThreadUpdatePrecondition(
+  record: { readonly status?: unknown; readonly name?: unknown },
+  precondition: ThreadUpdatePrecondition | undefined
+): void {
+  if (!precondition) return;
+  if (record.status !== precondition.status || record.name !== precondition.name) {
+    throw new ThreadUpdatePreconditionError();
+  }
+}
+
 /**
  * Native product Store with immutable Storage history and independent file-owned resources.
  */
@@ -4609,19 +4634,22 @@ export class FsStore {
    * @param threadId Thread to update.
    * @param input Thread metadata patch.
    * @param admission Original command receipt and admitted Audit, when this is a command rather than a lifecycle mutation.
+   * @param precondition When set, the same record read must still be this active title. A mismatch throws and does not write.
    * @returns Committed Thread after native acknowledgement, including the original response's resource on replay.
    */
   public async updateThread(
     workspaceId: string,
     threadId: string,
     input: Partial<Pick<Thread, 'name' | 'status'>>,
-    admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
+    admission?: Pick<ControlAdmission, 'receipt' | 'audit'>,
+    precondition?: ThreadUpdatePrecondition
   ): Promise<Thread> {
     if ('owner' in input) throw new Error('Thread update cannot change field: owner');
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
       const previous = readNativeProduct(scope, 'thread', threadId);
       if (!previous) throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
+      assertThreadUpdatePrecondition(previous.record, precondition);
       const updated = ThreadSchema.parse({
         ...previous.record,
         ...(input.name !== undefined ? { name: input.name } : {}),
@@ -4637,6 +4665,7 @@ export class FsStore {
       return this.acknowledgedThreadResult(workspaceId, updated, result);
     }
     const thread = this.getThread(workspaceId, threadId);
+    assertThreadUpdatePrecondition(thread, precondition);
     const updated: Thread = {
       ...thread,
       ...(input.name !== undefined ? { name: input.name } : {}),

@@ -127,6 +127,8 @@ import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { bindThreadTitleScheduler } from './llm/thread-title-schedule.js';
+import { bindTitleGeneration, scheduleThreadTitle } from './llm/title-generation.js';
 import { createLocalAiSupervisor } from './local-ai/supervisor.js';
 import {
   createConversationService,
@@ -2261,6 +2263,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       checkMemoryForgetIntent(sqlite, record, actor, options.coreDb!, sharedStore);
     else checkGoalCommandIntent(sqlite, record);
   };
+
+  bindTitleGeneration({
+    runtimeConfig,
+    repositoryWorkspaceDb,
+    dispatcher: llmGatewayDispatcher,
+    resolveGatewayProvider,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+    providerCredentialConfigured,
+  });
+  bindThreadTitleScheduler(scheduleThreadTitle);
 
   const chatService = createConversationService({
     knowledgeAgent,

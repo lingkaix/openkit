@@ -1319,7 +1319,206 @@ function LogicalModelCard({
 
 type GatewayEdit = Parameters<typeof GatewayEditor>[0]['target'];
 
-/** Speech enable stays on the Gateway page. The small-LLM card arrives with that runtime. */
+const LLM_MODELS = [
+  { id: 'qwen3-0.6b-q4_k_m', label: 'Qwen3 0.6B' },
+  { id: 'qwen3-1.7b-q4_k_m', label: 'Qwen3 1.7B' },
+] as const;
+
+/** Small-LLM enable stays on the Gateway page. The default model is Qwen3 0.6B. */
+export function LocalSmallLlmCard({
+  client,
+  disconnected,
+  onChanged,
+}: {
+  client: CoreClient;
+  disconnected: boolean;
+  onChanged: () => void;
+}) {
+  const status = useQuery({
+    queryKey: [...settingsKeys.aiInterface, 'local-ai'],
+    queryFn: () => client.operations['local-ai.status']({}),
+    retry: false,
+  });
+  const [accepted, setAccepted] = useState(false);
+  const [modelId, setModelId] = useState<string>(LLM_MODELS[0].id);
+  const refresh = () => {
+    onChanged();
+    void status.refetch();
+  };
+  const enable = useMutation({
+    mutationFn: () =>
+      client.operations['local-ai.enable']({
+        backendId: 'llama-cpp',
+        acceptLicense: true,
+        modelId,
+      }),
+    onSuccess: refresh,
+  });
+  const disable = useMutation({
+    mutationFn: () => client.operations['local-ai.disable']({ backendId: 'llama-cpp' }),
+    onSuccess: refresh,
+  });
+  const llm = status.data?.backends.find((backend) => backend.backendId === 'llama-cpp');
+  const busy = enable.isPending || disable.isPending;
+  return (
+    <Card className="flex min-w-0 flex-col gap-2">
+      <h3 className="text-base font-bold text-fg-strong">Local Small LLM</h3>
+      {status.isLoading ? <Skeleton lines={2} /> : null}
+      {status.isError ? (
+        <ErrorBanner
+          message={failureMessage(status.error, 'Local Small LLM status')}
+          onRetry={() => status.refetch()}
+        />
+      ) : null}
+      {llm ? (
+        <>
+          <p className="text-sm text-fg">
+            {llm.phase}
+            {llm.selectedModelId ? ` · ${llm.selectedModelId}` : ''}
+          </p>
+          {llm.license ? <p className="text-sm text-fg-muted">{llm.license}</p> : null}
+          {llm.downloadBytes !== undefined ? (
+            <p className="text-sm text-fg-muted">
+              Download size: {llm.downloadBytes.toLocaleString('en-US')} bytes
+            </p>
+          ) : null}
+          {llm.phase === 'downloading' && llm.bytesTotal ? (
+            <p className="text-sm text-fg-muted">
+              {llm.bytesReceived.toLocaleString('en-US')} / {llm.bytesTotal.toLocaleString('en-US')}{' '}
+              bytes
+            </p>
+          ) : null}
+          {llm.message ? <p className="text-sm text-fg-muted">{llm.message}</p> : null}
+          {llm.enabled ? (
+            <Button
+              className="min-h-11 w-fit"
+              variant="outline"
+              isDisabled={disconnected || busy}
+              onPress={() => disable.mutate()}
+            >
+              Disable local LLM
+            </Button>
+          ) : (
+            <>
+              <Select
+                label="Local LLM model"
+                items={LLM_MODELS.map((model) => ({ id: model.id, label: model.label }))}
+                selectedKey={modelId}
+                onSelectionChange={(key) => {
+                  if (key === LLM_MODELS[0].id || key === LLM_MODELS[1].id) setModelId(key);
+                }}
+                isDisabled={disconnected || busy}
+              />
+              <Switch
+                className="min-h-11"
+                isSelected={accepted}
+                onChange={setAccepted}
+                isDisabled={disconnected || busy}
+              >
+                I accept the model license
+              </Switch>
+              <Button
+                className="min-h-11 w-fit"
+                isDisabled={disconnected || busy || !accepted}
+                onPress={() => enable.mutate()}
+              >
+                Enable local LLM
+              </Button>
+            </>
+          )}
+        </>
+      ) : null}
+      {enable.isError ? (
+        <ErrorBanner
+          message={failureMessage(enable.error, 'Enable local LLM')}
+          onRetry={() => enable.mutate()}
+        />
+      ) : null}
+      {disable.isError ? (
+        <ErrorBanner
+          message={failureMessage(disable.error, 'Disable local LLM')}
+          onRetry={() => disable.mutate()}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
+/** Binds fresh thread titles to one logical model through the existing Gateway save and reload. */
+export function TitleModelBinding({
+  client,
+  disconnected,
+  diagnostics,
+  onChanged,
+}: {
+  client: CoreClient;
+  disconnected: boolean;
+  diagnostics: ClientAppDiagnostics;
+  onChanged: () => void;
+}) {
+  const saved = diagnostics.gateway.titleModelId ?? 'off';
+  const [selected, setSelected] = useState(saved);
+  useEffect(() => setSelected(saved), [saved]);
+  const items = [
+    { id: 'off', label: 'Off' },
+    ...diagnostics.gateway.models.map((model) => ({ id: model.id, label: model.displayName })),
+  ];
+  if (!items.some((item) => item.id === saved)) items.push({ id: saved, label: saved });
+  const save = useMutation({
+    mutationFn: async () => {
+      const read = await client.operations['runtime.file-read']({ id: 'gateway.jsonc' });
+      if (!read.file.revision) throw new Error('Source revision unavailable.');
+      const content = applyEdits(
+        read.content,
+        modify(read.content, ['titleLogicalModelId'], selected === 'off' ? undefined : selected, {
+          formattingOptions: { insertSpaces: true, tabSize: 2 },
+        })
+      );
+      const validation = await client.operations['runtime.validate']({
+        files: [{ id: 'gateway.jsonc', content }],
+        mode: 'safe',
+      });
+      if (!validation.valid) throw new Error('Candidate validation failed.');
+      await client.operations['runtime.file-update']({
+        id: 'gateway.jsonc',
+        kind: 'gateway',
+        content,
+        expectedRevision: read.file.revision,
+      });
+      await client.operations['runtime.reload']({ mode: 'safe' });
+      onChanged();
+    },
+  });
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <Select
+        label="Title model"
+        items={items}
+        selectedKey={selected}
+        onSelectionChange={(key) => {
+          if (typeof key === 'string') setSelected(key);
+        }}
+        isDisabled={disconnected || save.isPending}
+      />
+      <Button
+        className="min-h-11 w-fit"
+        variant="outline"
+        isDisabled={disconnected || save.isPending || selected === saved}
+        onPress={() => save.mutate()}
+      >
+        Save title model
+      </Button>
+      {save.isError ? (
+        <ErrorBanner
+          message={failureMessage(save.error, 'Save title model')}
+          onRetry={() => save.mutate()}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Speech enable stays on the Gateway page. */
 export function LocalSpeechCard({
   client,
   disconnected,
@@ -1477,6 +1676,12 @@ export function GatewayConfiguration({
       <p className="text-sm text-fg-muted">
         Default: {diagnostics.gateway.defaultModelId ?? 'Not configured'}
       </p>
+      <TitleModelBinding
+        client={client}
+        disconnected={disconnected}
+        diagnostics={diagnostics}
+        onChanged={onChanged}
+      />
       <Card className="flex min-w-0 flex-col gap-2">
         <h3 className="text-base font-bold text-fg-strong">Voice transcription</h3>
         {diagnostics.gateway.transcription ? (
@@ -1506,6 +1711,7 @@ export function GatewayConfiguration({
         </Button>
       </Card>
       <LocalSpeechCard client={client} disconnected={disconnected} onChanged={onChanged} />
+      <LocalSmallLlmCard client={client} disconnected={disconnected} onChanged={onChanged} />
       {cards.length === 0 ? (
         <EmptyState
           icon="connect"

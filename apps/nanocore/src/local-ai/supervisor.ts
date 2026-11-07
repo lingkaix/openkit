@@ -1,18 +1,30 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
+import { scheduler } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import type { LocalAiBackendStatus, LocalAiStatus } from '@openkit/app-api-schemas';
 import { directoryContainsFiles, removeCanonicalTreeSync } from '@openkit/storage';
 import { OperationError } from '../operation-error.js';
 import {
   type LocalArtifact,
+  llamaServerArguments,
+  llmArtifacts,
+  llmDownloadBytes,
+  llmLicenseText,
+  llmWeightArtifact,
   speechArtifacts,
   speechDownloadBytes,
   speechLicenseText,
 } from './catalog.js';
 import { ensureArtifact } from './download.js';
-import { LOCAL_SPEECH_MODEL_ID } from './profiles.js';
+import {
+  LOCAL_LLM_DEFAULT_MODEL_ID,
+  LOCAL_LLM_OPTIONAL_MODEL_ID,
+  LOCAL_SPEECH_MODEL_ID,
+} from './profiles.js';
 import { type LocalAiState, localAiRoot, readLocalAiState, writeLocalAiState } from './store.js';
 import {
   forgetLoopbackFixture,
@@ -24,6 +36,7 @@ import {
   rememberLoopbackFixture,
   takePendingLoopbackFixtures,
 } from './supply.js';
+import { abortLocalTitleCalls } from './title-abort.js';
 
 /** Child used by the speech supervisor. Production uses a real process. */
 export interface SpeechWorkerProcess {
@@ -43,11 +56,19 @@ export type SpawnSpeechWorker = (input: {
   readonly runtimeDir: string;
 }) => SpeechWorkerProcess;
 
+/** How llama-server is started. Tests replace this. */
+export type SpawnLlamaServer = (input: {
+  readonly binary: string;
+  readonly args: readonly string[];
+  readonly libraryDir: string;
+}) => SpeechWorkerProcess;
+
 /** Construction input. Only dataRoot is required in production. */
 export interface LocalAiSupervisorOptions {
   readonly dataRoot: string;
   readonly lookupFfmpeg?: () => boolean;
   readonly spawnSpeech?: SpawnSpeechWorker;
+  readonly spawnLlama?: SpawnLlamaServer;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => number;
 }
@@ -99,18 +120,21 @@ export class LocalAiSupervisor {
   private readonly dataRoot: string;
   private readonly lookupFfmpeg: () => boolean;
   private readonly spawnSpeech: SpawnSpeechWorker;
+  private readonly spawnLlama: SpawnLlamaServer;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly backends = new Map<LocalBackendId, BackendRuntime>();
   private gate: Promise<void> = Promise.resolve();
   private closed = false;
   private downloadAbort: AbortController | undefined;
+  private downloadOwner: LocalBackendId | undefined;
   private healthTimer: ReturnType<typeof setInterval> | undefined;
 
   public constructor(options: LocalAiSupervisorOptions) {
     this.dataRoot = options.dataRoot;
     this.lookupFfmpeg = options.lookupFfmpeg ?? ffmpegOnPath;
     this.spawnSpeech = options.spawnSpeech ?? spawnSpeechWorker;
+    this.spawnLlama = options.spawnLlama ?? spawnLlamaServer;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
     const state = readLocalAiState(options.dataRoot);
@@ -170,7 +194,7 @@ export class LocalAiSupervisor {
     this.applyFixture(input);
   }
 
-  /** Accepts the license and starts speech. The LLM and Apple backends are not started in this phase. */
+  /** Accepts the license and starts speech or llama. The Apple backend is not started in this phase. */
   public enable(input: {
     readonly backendId: LocalBackendId;
     readonly acceptLicense: true;
@@ -186,7 +210,9 @@ export class LocalAiSupervisor {
     readonly deleteModels?: boolean;
   }): Promise<LocalAiStatus> {
     const runtime = this.backends.get(input.backendId);
-    if (input.backendId === 'sherpa-onnx-asr') this.cancelInitialization();
+    const endpoint = runtime?.baseUrl;
+    this.cancelInitialization(input.backendId);
+    if (input.backendId === 'llama-cpp' && endpoint) abortLocalTitleCalls(endpoint);
     if (runtime) {
       runtime.enabled = false;
       runtime.generation += 1;
@@ -210,6 +236,8 @@ export class LocalAiSupervisor {
   /** Kills a remaining child and drops the published endpoint. */
   public async close(): Promise<void> {
     this.closed = true;
+    const llamaEndpoint = this.backends.get('llama-cpp')?.baseUrl;
+    if (llamaEndpoint) abortLocalTitleCalls(llamaEndpoint);
     if (this.healthTimer) clearInterval(this.healthTimer);
     if (active === this) {
       registerLocalSupplyProbe(undefined);
@@ -244,8 +272,16 @@ export class LocalAiSupervisor {
     runtime.message = undefined;
   }
 
-  /** Starts speech again after a process restart when state.json says it is enabled. */
+  /** Restarts each enabled backend on its own. One backend's early return does not skip the other. */
   private async restoreEnabled(): Promise<void> {
+    if (this.closed) return;
+    await this.restoreSpeech();
+    if (this.closed) return;
+    await this.restoreLlama();
+  }
+
+  /** Starts speech again after a process restart when state.json says it is enabled. */
+  private async restoreSpeech(): Promise<void> {
     if (this.closed) return;
     const runtime = this.backends.get('sherpa-onnx-asr');
     if (!runtime?.enabled || runtime.fixture) return;
@@ -263,7 +299,7 @@ export class LocalAiSupervisor {
     const generation = runtime.generation;
     this.ensureHealthTimer();
     try {
-      await this.downloadMissing(runtime, artifacts, generation);
+      await this.downloadMissing(runtime, artifacts, generation, 'sherpa-onnx-asr');
       if (this.closed || runtime.generation !== generation || !runtime.enabled || runtime.fixture)
         return;
       await this.startSpeech(runtime, generation);
@@ -281,13 +317,14 @@ export class LocalAiSupervisor {
     readonly modelId?: string;
     readonly threads?: number;
   }): Promise<LocalAiStatus> {
-    if (input.backendId !== 'sherpa-onnx-asr') {
+    if (input.backendId === 'apple-native') {
       throw new OperationError(
         'local_backend_unavailable',
         'This local backend cannot be enabled in this build.',
         409
       );
     }
+    if (input.backendId === 'llama-cpp') return this.enableLlamaLocked(input);
     const runtime = this.runtime(input.backendId);
     const modelId = input.modelId ?? LOCAL_SPEECH_MODEL_ID;
     if (modelId !== LOCAL_SPEECH_MODEL_ID) {
@@ -341,7 +378,7 @@ export class LocalAiSupervisor {
       );
     }
     try {
-      await this.downloadMissing(runtime, artifacts, generation);
+      await this.downloadMissing(runtime, artifacts, generation, 'sherpa-onnx-asr');
       if (this.closed || runtime.generation !== generation || !runtime.enabled)
         return this.status();
       await this.startSpeech(runtime, generation);
@@ -351,6 +388,73 @@ export class LocalAiSupervisor {
       runtime.phase = 'error';
       runtime.baseUrl = null;
       runtime.message = error instanceof Error ? error.message : 'Speech start failed.';
+      throw error;
+    }
+    return this.status();
+  }
+
+  private async enableLlamaLocked(input: {
+    readonly modelId?: string;
+    readonly threads?: number;
+  }): Promise<LocalAiStatus> {
+    const runtime = this.runtime('llama-cpp');
+    const modelId = input.modelId ?? LOCAL_LLM_DEFAULT_MODEL_ID;
+    if (modelId !== LOCAL_LLM_DEFAULT_MODEL_ID && modelId !== LOCAL_LLM_OPTIONAL_MODEL_ID) {
+      throw new OperationError(
+        'local_model_not_downloaded',
+        'The LLM backend has two models.',
+        409
+      );
+    }
+    const threads = 4;
+    if (
+      runtime.enabled &&
+      runtime.selectedModelId === modelId &&
+      runtime.threads === threads &&
+      runtime.phase === 'ready' &&
+      runtime.baseUrl !== null &&
+      (runtime.fixture !== null || runtime.child !== null)
+    ) {
+      return this.status();
+    }
+    const observed = runtime.generation;
+    runtime.baseUrl = null;
+    await killChild(runtime);
+    if (this.closed || runtime.generation !== observed) return this.status();
+    runtime.enabled = true;
+    runtime.selectedModelId = modelId;
+    runtime.threads = threads;
+    runtime.exits = [];
+    runtime.generation += 1;
+    const generation = runtime.generation;
+    this.persist();
+    this.ensureHealthTimer();
+    if (runtime.fixture) {
+      runtime.baseUrl = runtime.fixture.baseUrl;
+      runtime.phase = 'ready';
+      return this.status();
+    }
+    const artifacts = llmArtifacts(modelId);
+    if (artifacts.length === 0) {
+      runtime.phase = 'error';
+      runtime.message = 'This platform has no pinned llama runtime.';
+      throw new OperationError(
+        'local_backend_unavailable',
+        'This platform has no pinned llama runtime.',
+        409
+      );
+    }
+    try {
+      await this.downloadMissing(runtime, artifacts, generation, 'llama-cpp');
+      if (this.closed || runtime.generation !== generation || !runtime.enabled)
+        return this.status();
+      await this.startLlama(runtime, generation);
+    } catch (error) {
+      if (this.closed || runtime.generation !== generation || !runtime.enabled)
+        return this.status();
+      runtime.phase = 'error';
+      runtime.baseUrl = null;
+      runtime.message = error instanceof Error ? error.message : 'llama-server start failed.';
       throw error;
     }
     return this.status();
@@ -377,6 +481,13 @@ export class LocalAiSupervisor {
         }
       }
     }
+    if (input.deleteModels && input.backendId === 'llama-cpp') {
+      const root = localAiRoot(this.dataRoot);
+      for (const modelId of [LOCAL_LLM_DEFAULT_MODEL_ID, LOCAL_LLM_OPTIONAL_MODEL_ID]) {
+        const artifact = llmWeightArtifact(modelId);
+        if (artifact) removeCanonicalTreeSync(join(root, artifact.publishPath));
+      }
+    }
     this.persist();
     return this.status();
   }
@@ -384,7 +495,8 @@ export class LocalAiSupervisor {
   private async downloadMissing(
     runtime: BackendRuntime,
     artifacts: readonly LocalArtifact[],
-    generation: number
+    generation: number,
+    backendId: LocalBackendId
   ): Promise<void> {
     for (const artifact of artifacts) {
       if (this.closed || runtime.generation !== generation || !runtime.enabled) return;
@@ -392,6 +504,7 @@ export class LocalAiSupervisor {
       if (directoryContainsFiles(published)) continue;
       const controller = new AbortController();
       this.downloadAbort = controller;
+      this.downloadOwner = backendId;
       runtime.phase = 'downloading';
       runtime.bytesReceived = 0;
       runtime.bytesTotal = artifact.bytes;
@@ -408,7 +521,10 @@ export class LocalAiSupervisor {
           controller.signal
         );
       } finally {
-        if (this.downloadAbort === controller) this.downloadAbort = undefined;
+        if (this.downloadAbort === controller) {
+          this.downloadAbort = undefined;
+          this.downloadOwner = undefined;
+        }
       }
       if (
         controller.signal.aborted ||
@@ -426,7 +542,8 @@ export class LocalAiSupervisor {
   }
 
   /** Drops an in-flight download so disable and shutdown are not queued behind it. */
-  private cancelInitialization(): void {
+  private cancelInitialization(backendId?: LocalBackendId): void {
+    if (backendId && this.downloadOwner !== backendId) return;
     this.downloadAbort?.abort();
   }
 
@@ -521,7 +638,169 @@ export class LocalAiSupervisor {
     }
   }
 
+  private async restoreLlama(): Promise<void> {
+    const runtime = this.backends.get('llama-cpp');
+    if (!runtime?.enabled || runtime.fixture) return;
+    const modelId = runtime.selectedModelId ?? LOCAL_LLM_DEFAULT_MODEL_ID;
+    const artifacts = llmArtifacts(modelId);
+    if (artifacts.length === 0) {
+      runtime.phase = 'error';
+      runtime.message = 'This platform has no pinned llama runtime.';
+      return;
+    }
+    const generation = runtime.generation;
+    this.ensureHealthTimer();
+    try {
+      await this.downloadMissing(runtime, artifacts, generation, 'llama-cpp');
+      if (this.closed || runtime.generation !== generation || !runtime.enabled || runtime.fixture)
+        return;
+      await this.startLlama(runtime, generation);
+    } catch (error) {
+      if (runtime.generation !== generation) return;
+      runtime.phase = 'error';
+      runtime.baseUrl = null;
+      runtime.message = error instanceof Error ? error.message : 'llama-server start failed.';
+    }
+  }
+
+  private async startLlama(runtime: BackendRuntime, generation: number): Promise<void> {
+    if (this.closed || runtime.generation !== generation || !runtime.enabled) return;
+    if (runtime.child) {
+      runtime.baseUrl = null;
+      await killChild(runtime);
+    }
+    if (this.closed || runtime.generation !== generation || !runtime.enabled) return;
+    const modelId = runtime.selectedModelId ?? LOCAL_LLM_DEFAULT_MODEL_ID;
+    const artifacts = llmArtifacts(modelId);
+    const runtimeArtifact = artifacts.find((artifact) => artifact.publishPath.startsWith('bin/'));
+    const weight = llmWeightArtifact(modelId);
+    if (!runtimeArtifact || !weight?.fileName) throw new Error('LLM artifacts are incomplete.');
+    runtime.phase = 'starting';
+    runtime.baseUrl = null;
+    const root = localAiRoot(this.dataRoot);
+    const libraryDir = join(root, runtimeArtifact.publishPath);
+    const binary = findLlamaServer(libraryDir);
+    const port = await ephemeralPort();
+    const modelPath = join(root, weight.publishPath, weight.fileName);
+    const child = this.spawnLlama({
+      binary,
+      args: llamaServerArguments({ port, modelPath, threads: runtime.threads }),
+      libraryDir,
+    });
+    runtime.child = child;
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-500);
+    });
+    let exited = false;
+    child.once('exit', () => {
+      exited = true;
+      if (runtime.child !== child && runtime.child !== null) return;
+      if (runtime.child === child) runtime.child = null;
+      if (runtime.suppressRestart) return;
+      runtime.baseUrl = null;
+      void this.enqueue(() => this.onLlamaExit(runtime, generation, stderr));
+    });
+    const baseUrl = `http://127.0.0.1:${port}/v1`;
+    let healthy = false;
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      if (this.closed || runtime.generation !== generation || !runtime.enabled || exited) break;
+      if (await this.probe(baseUrl)) {
+        healthy = true;
+        break;
+      }
+      await scheduler.wait(200);
+    }
+    if (this.closed || runtime.generation !== generation || !runtime.enabled) {
+      await killChild(runtime);
+      return;
+    }
+    if (!healthy) {
+      await killChild(runtime);
+      const detail = stderr.trim();
+      throw new Error(
+        detail
+          ? `llama-server did not become healthy. ${detail}`
+          : 'llama-server did not become healthy.'
+      );
+    }
+    runtime.baseUrl = baseUrl;
+    runtime.phase = 'ready';
+    runtime.message = undefined;
+  }
+
+  private async onLlamaExit(
+    runtime: BackendRuntime,
+    generation: number,
+    stderr: string
+  ): Promise<void> {
+    if (this.closed || runtime.generation !== generation || !runtime.enabled) return;
+    runtime.baseUrl = null;
+    runtime.exits.push(this.now());
+    const recent = runtime.exits.filter((stamp) => this.now() - stamp < 60_000);
+    runtime.exits = recent;
+    if (recent.length >= 3) {
+      runtime.phase = 'degraded';
+      runtime.message = 'llama-server stopped after repeated exits.';
+      return;
+    }
+    runtime.phase = 'starting';
+    runtime.message = stderr.trim() || undefined;
+    try {
+      await this.startLlama(runtime, generation);
+    } catch (error) {
+      if (runtime.generation !== generation) return;
+      runtime.phase = 'error';
+      runtime.message = error instanceof Error ? error.message : 'llama-server restart failed.';
+    }
+  }
+
+  private async checkLlamaHealth(): Promise<void> {
+    const runtime = this.backends.get('llama-cpp');
+    if (!runtime?.enabled) return;
+    if (runtime.fixture && (runtime.phase === 'ready' || runtime.phase === 'degraded')) {
+      const healthy = await this.probe(runtime.fixture.baseUrl);
+      if (healthy) {
+        runtime.baseUrl = runtime.fixture.baseUrl;
+        runtime.phase = 'ready';
+        runtime.message = undefined;
+      } else {
+        runtime.baseUrl = null;
+        runtime.phase = 'degraded';
+        runtime.message = 'Loopback LLM endpoint failed health.';
+      }
+      return;
+    }
+    if (runtime.phase !== 'ready' || !runtime.baseUrl) return;
+    const generation = runtime.generation;
+    const healthy = await this.probe(runtime.baseUrl);
+    if (runtime.generation !== generation || !runtime.enabled) return;
+    if (healthy) return;
+    runtime.baseUrl = null;
+    runtime.phase = 'starting';
+    await killChild(runtime);
+    if (runtime.fixture) {
+      runtime.phase = 'degraded';
+      runtime.message = 'Loopback LLM endpoint failed health.';
+      return;
+    }
+    runtime.exits.push(this.now());
+    if (runtime.exits.filter((stamp) => this.now() - stamp < 60_000).length >= 3) {
+      runtime.phase = 'degraded';
+      runtime.message = 'LLM health failed repeatedly.';
+      return;
+    }
+    try {
+      await this.startLlama(runtime, generation);
+    } catch (error) {
+      if (runtime.generation !== generation) return;
+      runtime.phase = 'error';
+      runtime.message = error instanceof Error ? error.message : 'llama-server restart failed.';
+    }
+  }
+
   private async checkHealthLocked(): Promise<void> {
+    await this.checkLlamaHealth();
     const runtime = this.backends.get('sherpa-onnx-asr');
     if (!runtime?.enabled) return;
     if (runtime.fixture && (runtime.phase === 'ready' || runtime.phase === 'degraded')) {
@@ -652,7 +931,12 @@ export class LocalAiSupervisor {
     ) {
       phase = 'ffmpeg_missing';
     }
-    const downloadBytes = backendId === 'sherpa-onnx-asr' ? speechDownloadBytes() : 0;
+    const downloadBytes =
+      backendId === 'sherpa-onnx-asr'
+        ? speechDownloadBytes()
+        : backendId === 'llama-cpp'
+          ? llmDownloadBytes(runtime.selectedModelId ?? LOCAL_LLM_DEFAULT_MODEL_ID)
+          : 0;
     return {
       backendId,
       enabled: runtime.enabled,
@@ -661,6 +945,7 @@ export class LocalAiSupervisor {
       bytesReceived: runtime.bytesReceived,
       bytesTotal: runtime.bytesTotal,
       ...(backendId === 'sherpa-onnx-asr' ? { license: speechLicenseText() } : {}),
+      ...(backendId === 'llama-cpp' ? { license: llmLicenseText() } : {}),
       ...(downloadBytes > 0 ? { downloadBytes } : {}),
       ...(runtime.message ? { message: runtime.message } : {}),
     };
@@ -750,6 +1035,50 @@ function spawnSpeechWorker(input: {
     });
   }
   return spawn(process.execPath, nodeArgs, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function spawnLlamaServer(input: {
+  readonly binary: string;
+  readonly args: readonly string[];
+  readonly libraryDir: string;
+}): ChildProcess {
+  const env = {
+    PATH: process.env.PATH ?? '',
+    HOME: process.env.HOME ?? '',
+    TMPDIR: process.env.TMPDIR ?? '',
+    LD_LIBRARY_PATH: input.libraryDir,
+  };
+  const nice = spawnSync('nice', ['-n', '10', 'true'], { stdio: 'ignore' });
+  if (nice.status === 0) {
+    return spawn('nice', ['-n', '10', input.binary, ...input.args], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+  return spawn(input.binary, [...input.args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function findLlamaServer(directory: string): string {
+  const direct = join(directory, 'llama-server');
+  if (existsSync(direct)) return direct;
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const nested = join(directory, entry.name, 'llama-server');
+    if (existsSync(nested)) return nested;
+  }
+  throw new Error('Published llama runtime has no llama-server binary.');
+}
+
+function ephemeralPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = address && typeof address === 'object' ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 function readReadyPort(child: SpeechWorkerProcess): Promise<number> {

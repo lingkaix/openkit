@@ -77,6 +77,7 @@ function diagnosticsWithInputModalities(inputModalities: string[] | null) {
       status: 'ok',
       endpoints: ['/v1/responses'],
       defaultModelId: 'tier',
+      titleModelId: null,
       models: [
         {
           id: 'tier',

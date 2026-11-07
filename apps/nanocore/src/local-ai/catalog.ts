@@ -7,9 +7,11 @@ export interface LocalArtifact {
   readonly url: string;
   readonly bytes: number;
   readonly sha256: string;
-  readonly archive: 'tar.bz2' | 'tar.gz';
-  /** Path relative to server/files/local-ai. */
+  readonly archive: 'tar.bz2' | 'tar.gz' | 'file';
+  /** Path relative to server/files/local-ai. A file artifact publishes fileName inside this directory. */
   readonly publishPath: string;
+  /** File name inside publishPath when archive is `file`. */
+  readonly fileName?: string;
 }
 
 const SENSE_VOICE_LICENSE =
@@ -90,6 +92,137 @@ export function speechDownloadBytes(
   arch: string = process.arch
 ): number {
   return speechArtifacts(platform, arch).reduce((sum, artifact) => sum + artifact.bytes, 0);
+}
+
+const LLAMA_LICENSE = 'MIT';
+const QWEN_LICENSE = 'Apache-2.0 (Qwen/Qwen3-0.6B and Qwen/Qwen3-1.7B).';
+
+const llamaBinary: Record<string, LocalArtifact> = {
+  'linux-x64': {
+    id: 'llama-cpp-b12182-linux-x64',
+    license: LLAMA_LICENSE,
+    url: 'https://github.com/ggml-org/llama.cpp/releases/download/b12182/llama-b12182-bin-ubuntu-x64.tar.gz',
+    bytes: 23_058_802,
+    sha256: 'c1dbfdb9cbef7ee50b6ab08142d6424184d68b242906837770439ed118c57d99',
+    archive: 'tar.gz',
+    publishPath: 'bin/llama-b12182-linux-x64',
+  },
+  'linux-arm64': {
+    id: 'llama-cpp-b12182-linux-arm64',
+    license: LLAMA_LICENSE,
+    url: 'https://github.com/ggml-org/llama.cpp/releases/download/b12182/llama-b12182-bin-ubuntu-arm64.tar.gz',
+    bytes: 18_731_999,
+    sha256: '57a4c7f59d2e8c790872141f0f9299cd5cc53b20e3ef3fcf2a7f3344eb8f1e72',
+    archive: 'tar.gz',
+    publishPath: 'bin/llama-b12182-linux-arm64',
+  },
+  'darwin-arm64': {
+    id: 'llama-cpp-b12182-macos-arm64',
+    license: LLAMA_LICENSE,
+    url: 'https://github.com/ggml-org/llama.cpp/releases/download/b12182/llama-b12182-bin-macos-arm64.tar.gz',
+    bytes: 16_698_597,
+    sha256: '71cfee075e0c54852e225dafdc8dc79c32b26e8d45f052369b7d4f78d2ccf1a6',
+    archive: 'tar.gz',
+    publishPath: 'bin/llama-b12182-macos-arm64',
+  },
+};
+
+const qwen06: LocalArtifact = {
+  id: 'qwen3-0.6b-q4_k_m',
+  license: QWEN_LICENSE,
+  url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf',
+  bytes: 396_705_472,
+  sha256: 'ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a',
+  archive: 'file',
+  publishPath: 'models/qwen3-0.6b-q4_k_m',
+  fileName: 'Qwen3-0.6B-Q4_K_M.gguf',
+};
+
+const qwen17: LocalArtifact = {
+  id: 'qwen3-1.7b-q4_k_m',
+  license: QWEN_LICENSE,
+  url: 'https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf',
+  bytes: 1_282_439_264,
+  sha256: 'd2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5',
+  archive: 'file',
+  publishPath: 'models/qwen3-1.7b-q4_k_m',
+  fileName: 'Qwen3-1.7B-Q4_K_M.gguf',
+};
+
+const llmWeights: Record<string, LocalArtifact> = {
+  'qwen3-0.6b-q4_k_m': qwen06,
+  'qwen3-1.7b-q4_k_m': qwen17,
+};
+
+/** Pinned llama.cpp runtime for this platform. macOS arm64 keeps the published Metal build. */
+export function llamaRuntimeArtifact(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): LocalArtifact | undefined {
+  return llamaBinary[`${platform}-${arch}`];
+}
+
+/** Pinned GGUF for one local LLM model id. */
+export function llmWeightArtifact(modelId: string): LocalArtifact | undefined {
+  return llmWeights[modelId];
+}
+
+/** Runtime plus the selected GGUF. An unknown platform or model yields nothing. */
+export function llmArtifacts(
+  modelId: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): readonly LocalArtifact[] {
+  const runtime = llamaRuntimeArtifact(platform, arch);
+  const weight = llmWeightArtifact(modelId);
+  if (!runtime || !weight) return [];
+  return [runtime, weight];
+}
+
+/** License text shown before an LLM download. */
+export function llmLicenseText(): string {
+  return `Runtime: ${LLAMA_LICENSE}. Weights: ${QWEN_LICENSE}`;
+}
+
+/** Bytes of the runtime and one GGUF. */
+export function llmDownloadBytes(
+  modelId: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch
+): number {
+  return llmArtifacts(modelId, platform, arch).reduce((sum, artifact) => sum + artifact.bytes, 0);
+}
+
+/** Arguments for one llama-server process. The model path is the published GGUF. */
+export function llamaServerArguments(input: {
+  readonly port: number;
+  readonly modelPath: string;
+  readonly threads?: number;
+}): string[] {
+  const threads = input.threads ?? 4;
+  return [
+    '--host',
+    '127.0.0.1',
+    '--port',
+    String(input.port),
+    '--threads',
+    String(threads),
+    '--threads-batch',
+    String(threads),
+    '--parallel',
+    '1',
+    '--ctx-size',
+    '6144',
+    '--cache-type-k',
+    'q8_0',
+    '--cache-type-v',
+    'q8_0',
+    '--reasoning',
+    'off',
+    '--no-webui',
+    '--model',
+    input.modelPath,
+  ];
 }
 
 /** SHA-256 of complete bytes. */

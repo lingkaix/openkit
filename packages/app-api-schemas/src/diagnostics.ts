@@ -423,6 +423,7 @@ function appDiagnosticsResponseSchema<T extends z.ZodType>(build: T) {
         status: z.string().min(1),
         endpoints: z.array(z.string().min(1)),
         defaultModelId: z.string().nullable(),
+        titleModelId: z.string().nullable(),
         models: z.array(
           z
             .object({
