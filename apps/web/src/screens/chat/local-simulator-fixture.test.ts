@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { seedSimulatorInferenceConfig } from '../../../e2e/_lib/simulator-inference';
 
-const nanoCoreDist = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../nanocore/dist');
+const nanoCoreSrc = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../nanocore/src');
 
 const roots: string[] = [];
 
@@ -24,12 +24,12 @@ describe('local simulator fixture', () => {
     const profilesConfig = JSON.parse(
       await readFile(join(dataRoot, 'config', 'internal-role-profiles.jsonc'), 'utf8')
     );
-    const load = (name: string) => import(pathToFileURL(resolve(nanoCoreDist, name)).href);
+    const load = (name: string) => import(pathToFileURL(resolve(nanoCoreSrc, name)).href);
     const [{ loadProviderProfiles }, { ProviderRegistry }, { resolveInternalRoleProfile }] =
       await Promise.all([
-        load('config/providers-loader.js'),
-        load('providers/registry.js'),
-        load('internal-agents/profile-resolver.js'),
+        load('config/providers-loader.ts'),
+        load('providers/registry.ts'),
+        load('internal-agents/profile-resolver.ts'),
       ]);
     const resolved = resolveInternalRoleProfile({
       roleId: 'assistant',

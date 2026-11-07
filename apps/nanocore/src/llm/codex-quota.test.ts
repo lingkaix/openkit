@@ -227,10 +227,10 @@ const redeemRequestId = '00000000-0000-4000-8000-000000000001';
 
 describe('proveCodexCredentialCurrent', () => {
   it.each([
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-    Date.now() - 1,
-  ])('returns false before reading when the deadline is %s', async (absoluteDeadline) => {
+    ['not a finite instant', Number.NaN],
+    ['infinite', Number.POSITIVE_INFINITY],
+    ['already elapsed', 0],
+  ] as const)('returns false before reading when the deadline is %s', async (_label, absoluteDeadline) => {
     const read = vi.fn();
     await expect(proveCodexCredentialCurrent({ read }, presented, absoluteDeadline)).resolves.toBe(
       false
