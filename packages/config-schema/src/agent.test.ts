@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
-import { AuthoredAgentConfigSchema } from './agent.js';
-import { getConfigSchemaCatalog } from './catalog.js';
+import {
+  AuthoredAgentConfigSchema,
+  getConfigSchemaCatalog,
+  WORKER_CREDENTIAL_FILE_REQUIREMENT,
+  WorkerCredentialBindingsSchema,
+  WorkerCredentialReceiptSchema,
+} from './index.js';
 
 /** Returns one valid opaque worker AgentManifest fixture. */
 function validAgentConfig() {
@@ -628,4 +633,221 @@ it('admits canonical Agent and selected-profile effort defaults', () => {
       profiles: [{ id: 'deep', reasoningEffort: 'default' }],
     }).success
   ).toBe(false);
+});
+
+describe('authored agent model set, duplicate declarations, and worker credential bindings', () => {
+  it('requires preferredLogicalModelId in allowedLogicalModelIds unless all is selected and rejects duplicate model ids', () => {
+    const base = validAgentConfig();
+    expect(
+      AuthoredAgentConfigSchema.parse({
+        ...base,
+        models: { preferredLogicalModelId: 'custom', allowedLogicalModelIds: 'all' },
+      }).models.allowedLogicalModelIds
+    ).toBe('all');
+
+    const missingPreferred = AuthoredAgentConfigSchema.safeParse({
+      ...base,
+      models: { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: ['fast'] },
+    });
+    expect(missingPreferred.success).toBe(false);
+    if (!missingPreferred.success) {
+      expect(missingPreferred.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['models', 'preferredLogicalModelId'],
+          message: 'The preferred logical model must be included in the allowed model list.',
+        })
+      );
+    }
+
+    expect(
+      AuthoredAgentConfigSchema.safeParse({
+        ...base,
+        models: {
+          preferredLogicalModelId: 'reasoning',
+          allowedLogicalModelIds: ['reasoning', 'reasoning'],
+        },
+      }).success
+    ).toBe(false);
+  });
+
+  it('rejects duplicate profile, credential, requirement, filesystem, and network ids and forbidden authority sections', () => {
+    const base = validAgentConfig();
+    expect(() =>
+      AuthoredAgentConfigSchema.parse({
+        ...base,
+        profiles: [{ id: 'dup' }, { id: 'dup' }],
+      })
+    ).toThrow('Duplicate Agent profile: dup.');
+
+    expect(() =>
+      AuthoredAgentConfigSchema.parse({
+        ...base,
+        sandbox: {
+          ...base.sandbox,
+          credentialDeclarations: [
+            {
+              id: 'cred_1',
+              purpose: 'Authenticate tool A.',
+              requirementId: 'req-1',
+              targetEnvVarName: 'TOKEN_A',
+              visibility: 'runtime-env',
+            },
+            {
+              id: 'cred_1',
+              purpose: 'Authenticate tool B.',
+              requirementId: 'req-2',
+              targetEnvVarName: 'TOKEN_B',
+              visibility: 'runtime-env',
+            },
+          ],
+        },
+      })
+    ).toThrow('Duplicate credential declaration: cred_1.');
+
+    expect(() =>
+      AuthoredAgentConfigSchema.parse({
+        ...base,
+        sandbox: {
+          ...base.sandbox,
+          credentialDeclarations: [
+            {
+              id: 'cred_1',
+              purpose: 'Authenticate tool A.',
+              requirementId: 'req-dup',
+              targetEnvVarName: 'TOKEN_A',
+              visibility: 'runtime-env',
+            },
+            {
+              id: 'cred_2',
+              purpose: 'Authenticate tool B.',
+              requirementId: 'req-dup',
+              targetEnvVarName: 'TOKEN_B',
+              visibility: 'runtime-env',
+            },
+          ],
+        },
+      })
+    ).toThrow('Duplicate credential requirement: req-dup.');
+
+    expect(() =>
+      AuthoredAgentConfigSchema.parse({
+        ...base,
+        sandbox: {
+          ...base.sandbox,
+          filesystem: [
+            { id: 'fs_dup', targetPath: '/workspace/a', access: 'read-only', purpose: 'Read A.' },
+            { id: 'fs_dup', targetPath: '/workspace/b', access: 'read-only', purpose: 'Read B.' },
+          ],
+        },
+      })
+    ).toThrow('Duplicate sandbox filesystem declaration: fs_dup.');
+
+    expect(() =>
+      AuthoredAgentConfigSchema.parse({
+        ...base,
+        sandbox: {
+          ...base.sandbox,
+          network: [
+            base.sandbox.network[0]!,
+            { ...base.sandbox.network[0]!, host: 'other.example.com' },
+          ],
+        },
+      })
+    ).toThrow('Duplicate sandbox network declaration: runtime_api.');
+
+    for (const forbidden of ['vault', 'policy', 'providers', 'tools', 'scale'] as const) {
+      expect(
+        AuthoredAgentConfigSchema.safeParse({ ...base, [forbidden]: {} }).success,
+        forbidden
+      ).toBe(false);
+    }
+  });
+
+  it('validates placement-neutral worker credential file bindings, non-overlapping sandbox paths, and receipts', () => {
+    const binding = {
+      declarationId: 'decl_1',
+      planId: 'plan_1',
+      receiptId: 'rcpt_1',
+      material: {
+        referenceId: 'vault_00000000-0000-7000-8000-000000000001',
+        version: 1,
+        format: WORKER_CREDENTIAL_FILE_REQUIREMENT.format,
+      },
+      target: { kind: 'file' as const, path: '/sandbox/.config/tool/auth.json' },
+      access: WORKER_CREDENTIAL_FILE_REQUIREMENT.access,
+      requiredProtection: { ...WORKER_CREDENTIAL_FILE_REQUIREMENT.requiredProtection },
+    };
+
+    expect(WorkerCredentialBindingsSchema.parse([binding])).toEqual([binding]);
+
+    const receipt = {
+      declarationId: 'decl_1',
+      planId: 'plan_1',
+      receiptId: 'rcpt_1',
+      materialVersion: 1,
+      access: 'read-only' as const,
+      realizedProtection: { ...WORKER_CREDENTIAL_FILE_REQUIREMENT.requiredProtection },
+    };
+    expect(WorkerCredentialReceiptSchema.parse(receipt)).toEqual(receipt);
+    expect(
+      WorkerCredentialReceiptSchema.safeParse({
+        ...receipt,
+        realizedProtection: { ...receipt.realizedProtection, ephemeral: false },
+      }).success
+    ).toBe(false);
+
+    for (const badPath of [
+      '/workspace/creds.json',
+      '/sandbox/openkit',
+      '/sandbox/openkit/creds.json',
+      '/sandbox/../creds.json',
+      '/sandbox/./creds.json',
+      '/sandbox//creds.json',
+      '/sandbox/creds\\file.json',
+      '/sandbox/creds\u0000.json',
+    ]) {
+      expect(
+        WorkerCredentialBindingsSchema.safeParse([
+          { ...binding, target: { kind: 'file', path: badPath } },
+        ]).success,
+        badPath
+      ).toBe(false);
+    }
+
+    // Rejects overlapping target paths, duplicate identities, and control characters in identities.
+    expect(() =>
+      WorkerCredentialBindingsSchema.parse([
+        binding,
+        {
+          ...binding,
+          declarationId: 'decl_2',
+          planId: 'plan_2',
+          receiptId: 'rcpt_2',
+          target: { kind: 'file', path: '/sandbox/.config/tool/auth.json/nested' },
+        },
+      ])
+    ).toThrow(
+      'Credential bindings require unique identities and nonoverlapping canonical targets.'
+    );
+
+    expect(() =>
+      WorkerCredentialBindingsSchema.parse([
+        binding,
+        {
+          ...binding,
+          planId: 'plan_2',
+          receiptId: 'rcpt_2',
+          target: { kind: 'file', path: '/sandbox/.config/other.json' },
+        },
+      ])
+    ).toThrow(
+      'Credential bindings require unique identities and nonoverlapping canonical targets.'
+    );
+
+    expect(() =>
+      WorkerCredentialBindingsSchema.parse([{ ...binding, declarationId: 'decl\u0007control' }])
+    ).toThrow(
+      'Credential bindings require unique identities and nonoverlapping canonical targets.'
+    );
+  });
 });

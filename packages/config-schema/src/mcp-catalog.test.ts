@@ -510,4 +510,126 @@ describe('workspace MCP server catalog', () => {
     expect(digestFromA.catalogDigest).not.toBe(digestFromB.catalogDigest);
     expect(digestFromA.catalogDigest).not.toBe(digestNone.catalogDigest);
   });
+
+  it('rejects reserved MCP environment names, unmatched env bindings, duplicates, and raw secrets', () => {
+    const baseStdio = {
+      allowedTools: ['echo'],
+      credentialBindings: [],
+      enabled: true,
+      id: 'echo',
+      schemaPolicy: 'tracking' as const,
+      transport: {
+        args: [],
+        command: 'node',
+        environment: {},
+        environmentValues: {},
+        kind: 'stdio' as const,
+      },
+    };
+
+    for (const reserved of ['PLUGIN_ROOT', 'PLUGIN_DATA'] as const) {
+      expect(() =>
+        WorkspaceMcpServerCatalogSchema.parse({
+          schemaVersion: 1,
+          servers: [
+            {
+              ...baseStdio,
+              transport: { ...baseStdio.transport, environmentValues: { [reserved]: '/custom' } },
+            },
+          ],
+        })
+      ).toThrow(`Reserved MCP environment name cannot be configured: ${reserved}.`);
+      expect(() =>
+        WorkspaceMcpServerCatalogSchema.parse({
+          schemaVersion: 1,
+          servers: [
+            {
+              ...baseStdio,
+              credentialBindings: [
+                {
+                  slot: 'plugin-slot',
+                  vaultGrantId: 'grant_00000000-0000-7c78-a264-4a45a0259439',
+                  sink: { kind: 'env', name: reserved },
+                },
+              ],
+              transport: {
+                ...baseStdio.transport,
+                environment: { [reserved]: { credentialSlot: 'plugin-slot' } },
+              },
+            },
+          ],
+        })
+      ).toThrow(`Reserved MCP environment name cannot be configured: ${reserved}.`);
+    }
+
+    expect(() =>
+      WorkspaceMcpServerCatalogSchema.parse({
+        schemaVersion: 1,
+        servers: [
+          {
+            ...baseStdio,
+            credentialBindings: [
+              {
+                slot: 'access-token',
+                vaultGrantId: 'grant_00000000-0000-7c78-a264-4a45a0259439',
+                sink: { kind: 'env', name: 'ACCESS_TOKEN' },
+              },
+            ],
+          },
+        ],
+      })
+    ).toThrow('Every MCP env credential binding requires one matching template.');
+
+    expect(() =>
+      WorkspaceMcpServerCatalogSchema.parse({
+        schemaVersion: 1,
+        servers: [{ ...baseStdio, allowedTools: ['echo', 'echo'] }],
+      })
+    ).toThrow('Duplicate value: echo.');
+
+    expect(() =>
+      WorkspaceMcpServerCatalogSchema.parse({
+        schemaVersion: 1,
+        servers: [baseStdio, { ...baseStdio, allowedTools: ['other'] }],
+      })
+    ).toThrow('Duplicate value: echo.');
+
+    for (const secretCanary of ['sk-canary', 'ghp_canary', 'hf_canary', 'okt_canary']) {
+      expect(() =>
+        WorkspaceMcpServerCatalogSchema.parse({
+          schemaVersion: 1,
+          servers: [
+            {
+              ...baseStdio,
+              transport: {
+                ...baseStdio.transport,
+                environmentValues: { API_HINT: secretCanary },
+              },
+            },
+          ],
+        })
+      ).toThrow('Workspace MCP catalogs must not contain raw-secret-shaped strings.');
+    }
+  });
+
+  it('refuses missing or disabled MCP servers during resolution', () => {
+    const catalog = parseWorkspaceMcpServerCatalog({
+      schemaVersion: 1,
+      servers: [
+        {
+          allowedTools: ['echo'],
+          enabled: false,
+          id: 'echo',
+          schemaPolicy: 'tracking',
+          transport: { command: 'node', kind: 'stdio' },
+        },
+      ],
+    });
+    expect(() => resolveWorkspaceMcpServer({ catalog, serverId: 'missing' })).toThrow(
+      'Workspace MCP server not found: missing'
+    );
+    expect(() => resolveWorkspaceMcpServer({ catalog, serverId: 'echo' })).toThrow(
+      'Workspace MCP server disabled: echo'
+    );
+  });
 });

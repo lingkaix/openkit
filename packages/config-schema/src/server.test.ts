@@ -574,6 +574,105 @@ describe('server config schema', () => {
       ])
     );
   });
+
+  it('rejects colliding NanoHost credential slot paths and raw-secret-shaped strings', () => {
+    const baseNanohost = {
+      bind: { host: '127.0.0.1', port: 4318 },
+      credentialRef: 'nanohost-transport:primary',
+      credentialSlots: {
+        A: {
+          secretPath: '/run/credentials/nanohost-a.token',
+          companionPath: '/run/credentials/nanohost-a.meta',
+        },
+        B: {
+          secretPath: '/run/credentials/nanohost-b.token',
+          companionPath: '/run/credentials/nanohost-b.meta',
+        },
+      },
+      deploymentId: 'dep_00000000-0000-7bdd-bdc3-910a52eaec87',
+      identityId: 'integration_nanohost_primary',
+      rendezvousUrl: 'https://nanocore.example:8443',
+    };
+
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        nanohost: {
+          ...baseNanohost,
+          credentialSlots: {
+            ...baseNanohost.credentialSlots,
+            A: {
+              secretPath: '/run/credentials/same.path',
+              companionPath: '/run/credentials/same.path',
+            },
+          },
+        },
+      })
+    ).toThrow('NanoHost credential secret and companion paths must be distinct.');
+
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        nanohost: {
+          ...baseNanohost,
+          credentialSlots: {
+            ...baseNanohost.credentialSlots,
+            B: {
+              secretPath: '/run/credentials/nanohost-a.token',
+              companionPath: '/run/credentials/nanohost-b.meta',
+            },
+          },
+        },
+      })
+    ).toThrow('NanoHost credential slot paths must be distinct.');
+
+    for (const secretCanary of ['okt_canary', 'sk-canary', 'ghp_canary', 'hf_canary']) {
+      expect(() =>
+        OpenKitConfigSchema.parse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          nanohost: { ...baseNanohost, credentialRef: secretCanary },
+        })
+      ).toThrow('NanoHost deployment configuration must not contain raw-secret-shaped strings.');
+      expect(() =>
+        OpenKitConfigSchema.parse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          appUpdate: {
+            host: '127.0.0.1',
+            user: secretCanary,
+            port: 22,
+            identityFile: '/run/openkit/app-update/id_ed25519',
+            knownHostsFile: '/run/openkit/app-update/known_hosts',
+          },
+        })
+      ).toThrow('NanoHost deployment configuration must not contain raw-secret-shaped strings.');
+    }
+  });
+
+  it('enforces port bounds and server fileReserveBytes limits', () => {
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        server: { fileReserveBytes: 0, bind: { host: '127.0.0.1', port: 65_535 } },
+      }).server
+    ).toEqual({ fileReserveBytes: 0, bind: { host: '127.0.0.1', port: 65_535 } });
+
+    for (const port of [0, -1, 65_536, 80.5]) {
+      expect(
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          server: { bind: { port } },
+        }).success
+      ).toBe(false);
+    }
+    for (const fileReserveBytes of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          server: { fileReserveBytes },
+        }).success
+      ).toBe(false);
+    }
+  });
 });
 
 it('retains the authored Policy collection without conflating its format with a revision', () => {

@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
@@ -287,6 +287,92 @@ describe('workspace config schema', () => {
       }).createIfMissing
     ).toBe(true);
   });
+
+  it('rejects duplicate agent bindings, internal-role bindings, and credential requirement ids', () => {
+    const grantId = 'grant_00000000-0000-7e7f-9490-8daf56dd548e';
+    const dupAgents = WorkspaceConfigSchema.safeParse({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: {
+        name: 'Duplicate agents',
+        agents: [{ agentId: 'agent_codex' }, { agentId: 'agent_codex' }],
+      },
+    });
+    expect(dupAgents.success).toBe(false);
+    if (!dupAgents.success) {
+      expect(dupAgents.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['workspace', 'agents', 1, 'agentId'],
+          message: 'Duplicate agentId: agent_codex.',
+        })
+      );
+    }
+
+    const dupRoles = WorkspaceConfigSchema.safeParse({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: {
+        name: 'Duplicate roles',
+        internalRoles: [{ roleId: 'assistant' }, { roleId: 'assistant' }],
+      },
+    });
+    expect(dupRoles.success).toBe(false);
+    if (!dupRoles.success) {
+      expect(dupRoles.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['workspace', 'internalRoles', 1, 'roleId'],
+          message: 'Duplicate roleId: assistant.',
+        })
+      );
+    }
+
+    const dupReqs = WorkspaceConfigSchema.safeParse({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: {
+        name: 'Duplicate requirements',
+        agents: [
+          {
+            agentId: 'agent_codex',
+            credentialBindings: [
+              { requirementId: 'github-token', vaultGrantId: grantId },
+              { requirementId: 'github-token', vaultGrantId: grantId },
+            ],
+          },
+        ],
+      },
+    });
+    expect(dupReqs.success).toBe(false);
+    if (!dupReqs.success) {
+      expect(dupReqs.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['workspace', 'agents', 0, 'credentialBindings', 1, 'requirementId'],
+          message: 'Duplicate requirementId: github-token.',
+        })
+      );
+    }
+  });
+
+  it('rejects unsafe repositoryInspection excludedPaths and unknown assistant fields', () => {
+    for (const excludedPath of ['/abs/path', '../escape', 'win\\path', 'empty//segment', '']) {
+      expect(
+        WorkspaceConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          workspace: {
+            name: 'Unsafe inspection path',
+            assistant: { repositoryInspection: { excludedPaths: [excludedPath] } },
+          },
+        }).success,
+        excludedPath
+      ).toBe(false);
+    }
+    expect(
+      WorkspaceConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        workspace: {
+          name: 'Strict inspection section',
+          assistant: { repositoryInspection: { enabled: true, extra: true } },
+        },
+      }).success
+    ).toBe(false);
+  });
 });
 
 describe('workspace root materialization', () => {
@@ -373,6 +459,34 @@ describe('workspace root materialization', () => {
         },
       })
     ).toThrow(WorkspaceRootValidationError);
+  });
+
+  it('rejects a workspace root path that resolves to a regular file instead of a directory', () => {
+    const workspaceRoot = createWorkspaceRoot();
+    writeFileSync(join(workspaceRoot, 'not-a-dir'), 'file-bytes');
+
+    let caught: unknown;
+    try {
+      materializeWorkspaceRoots({
+        workspaceRoot,
+        config: {
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          workspace: {
+            name: 'File root workspace',
+            roots: [{ id: 'file-root', kind: 'host-dir', path: 'not-a-dir', access: 'read-only' }],
+          },
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(WorkspaceRootValidationError);
+    expect((caught as WorkspaceRootValidationError).diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'workspace_root_not_directory',
+        path: '$.workspace.roots.file-root.path',
+      }),
+    ]);
   });
 });
 

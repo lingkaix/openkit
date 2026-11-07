@@ -147,4 +147,24 @@ describe('openkit-tree-v1', () => {
       rmSync(root, { force: true, recursive: true });
     }
   });
+
+  it('rejects directory content, cumulative file-byte overflow, and malformed path segments', () => {
+    expect(() =>
+      hashOpenKitTreeEntries([{ kind: 0, path: 'dir', content: Buffer.from('bytes') }])
+    ).toThrow('Directory entries cannot carry content: dir.');
+
+    expect(() =>
+      hashOpenKitTreeEntries(
+        [
+          { kind: 1, path: 'a.txt', content: Buffer.from('123') },
+          { kind: 1, path: 'b.txt', content: Buffer.from('45') },
+        ],
+        { maxBytes: 4, maxEntries: 10 }
+      )
+    ).toThrow('Resource tree exceeds 4 file bytes.');
+
+    for (const invalidPath of ['', '/abs', 'a\0b', 'a/./b', 'a//b', 'a'.repeat(4_097)]) {
+      expect(() => hashOpenKitTreeEntries([{ kind: 0, path: invalidPath }]), invalidPath).toThrow();
+    }
+  });
 });

@@ -112,6 +112,41 @@ describe('workspace export manifest schema', () => {
       })
     ).toThrow();
   });
+
+  it('rejects mismatched workspace lineage and duplicate or malformed inventory entries', () => {
+    const base = manifest();
+    expect(() =>
+      WorkspaceExportManifestSchema.parse({
+        ...base,
+        lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000002' },
+      })
+    ).toThrow('Workspace export lineage must match workspaceId.');
+
+    expect(() =>
+      WorkspaceExportManifestSchema.parse({
+        ...base,
+        contentInventory: [base.contentInventory[0]!, base.contentInventory[0]!],
+      })
+    ).toThrow('Duplicate inventory path: records/workspace-record.json');
+
+    for (const invalidEntry of [
+      { ...base.contentInventory[0]!, path: 'records\\workspace-record.json' },
+      { ...base.contentInventory[0]!, bytes: -1 },
+      { ...base.contentInventory[0]!, bytes: 1.5 },
+      {
+        ...base.contentInventory[0]!,
+        digest: 'sha256:AB4A13E5A040B76A82521F52DABDDD42E7E4D4244C47E16EE8C6E1AA16233F3F',
+      },
+      { ...base.contentInventory[0]!, extra: true },
+    ]) {
+      expect(
+        WorkspaceExportManifestSchema.safeParse({
+          ...base,
+          contentInventory: [invalidEntry],
+        }).success
+      ).toBe(false);
+    }
+  });
 });
 
 /**
@@ -197,5 +232,39 @@ describe('data-root backup manifest schema', () => {
         consistency: 'crash-consistent',
       })
     ).toThrow('Cold backups must be clean.');
+  });
+
+  it('enforces hot crash-consistent pairing, completion timestamp ordering, and unique inventory paths', () => {
+    const base = backupManifest();
+    expect(
+      DataRootBackupManifestSchema.parse({
+        ...base,
+        backupMode: 'hot',
+        consistency: 'crash-consistent',
+      }).backupMode
+    ).toBe('hot');
+
+    expect(() =>
+      DataRootBackupManifestSchema.parse({
+        ...base,
+        backupMode: 'hot',
+        consistency: 'clean',
+      })
+    ).toThrow('Hot backups must be crash-consistent.');
+
+    expect(() =>
+      DataRootBackupManifestSchema.parse({
+        ...base,
+        backupStartedAt: '2026-07-05T01:00:00.000Z',
+        backupCompletedAt: '2026-07-05T00:59:59.000Z',
+      })
+    ).toThrow('Backup completion timestamp must not precede start timestamp.');
+
+    expect(() =>
+      DataRootBackupManifestSchema.parse({
+        ...base,
+        contentInventory: [base.contentInventory[0]!, base.contentInventory[0]!],
+      })
+    ).toThrow('Duplicate inventory path: server/layout.json');
   });
 });
