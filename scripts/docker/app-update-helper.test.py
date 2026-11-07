@@ -1169,7 +1169,7 @@ class DoctorReadinessTests(unittest.TestCase):
             "service": "nanocore", "boot": {"bootId": PREVIOUS_BOOT_ID, "overall": "failed", "acceptingProductWork": False, "subsystems": ready_boot_subsystems(storage={"state": "failed", "reasons": [{"code": "storage.unavailable", "message": "Storage unavailable.", "blocks": ["product_work"]}]})},
             "process": {"observedAt": "2026-10-14T00:00:00.000Z", "uptimeSeconds": 1, "nodeVersion": "v24.18.0", "memory": {"rssBytes": 1, "heapUsedBytes": 1, "heapTotalBytes": 1}, "telemetry": {"enabled": False, "exportConfigured": False}},
             "build": {"releaseTag": None, "sourceCommit": None},
-            "gateway": {"status": "ok", "endpoints": ["/health"], "defaultModelId": None, "models": []},
+            "gateway": {"status": "ok", "endpoints": ["/health"], "defaultModelId": None, "titleModelId": None, "models": []},
             "providers": {"diagnostics": [], "registry": []}, "capabilities": [],
             "runtimeConfig": {"currentVersion": 1, "loadedAt": "2026-10-14T00:00:00.000Z", "lastReload": None, "lastFailedReload": None, "pendingRestart": []},
             "readiness": readiness,
