@@ -38767,32 +38767,49 @@
             "items": {
               "type": "object",
               "properties": {
-                "agentId": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "status": {
                   "type": "string",
-                  "minLength": 1
+                  "enum": [
+                    "unknown",
+                    "starting",
+                    "ready",
+                    "running",
+                    "offline",
+                    "failed"
+                  ]
                 },
                 "message": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "checkedAt": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
+                },
+                "agentId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "required": [
-                "agentId",
                 "status",
                 "message",
-                "checkedAt"
+                "checkedAt",
+                "agentId"
               ],
               "additionalProperties": false
             }
@@ -45271,9 +45288,11 @@
             "type": "object",
             "properties": {
               "schemaVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "type": "number",
+                "const": 1
+              },
+              "minCoreVersion": {
+                "not": {}
               },
               "recordType": {
                 "type": "string",
@@ -45293,22 +45312,74 @@
                   "workspaceId": {
                     "type": "string",
                     "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "itemId": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "knowledgeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentSessionId": {
+                    "type": "string",
+                    "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "aepSnapshotId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "capabilityCallId": {
+                    "type": "string",
+                    "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "policyDecisionId": {
+                    "type": "string",
+                    "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "vaultGrantId": {
+                    "type": "string",
+                    "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidenceBundleId": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
                   "workspaceId"
                 ],
-                "additionalProperties": false
+                "additionalProperties": {}
               },
               "createdAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "updatedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "contentDigest": {
                 "type": "string",
@@ -45316,21 +45387,14 @@
               },
               "redactionLevel": {
                 "type": "string",
-                "enum": [
-                  "metadata",
-                  "redacted",
-                  "full"
-                ]
+                "minLength": 1
               },
               "sensitivity": {
                 "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
+                "minLength": 1
               },
               "requiredFeatures": {
+                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -45338,9 +45402,11 @@
                 }
               },
               "extensions": {
+                "default": {},
                 "type": "object",
                 "propertyNames": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 },
                 "additionalProperties": {}
               },
@@ -45352,18 +45418,18 @@
                 "type": "string",
                 "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "knowledgeNotebookRevision": {
+                "type": "string",
+                "minLength": 1
+              },
               "exportCreatedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "exportFormatVersion": {
                 "type": "number",
                 "const": 3
-              },
-              "knowledgeNotebookRevision": {
-                "type": "string",
-                "minLength": 1
               },
               "contentInventory": {
                 "type": "array",
@@ -45412,7 +45478,7 @@
               "exportFormatVersion",
               "contentInventory"
             ],
-            "additionalProperties": false
+            "additionalProperties": {}
           },
           "fileCount": {
             "type": "integer",
@@ -72363,8 +72429,7 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             }
           },
           "receiptRef": {
@@ -72510,8 +72575,7 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             }
           },
           "receiptRef": {
@@ -72739,8 +72803,7 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             }
           },
           "receiptRef": {
@@ -72873,8 +72936,7 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             }
           },
           "receiptRef": {
@@ -81513,9 +81575,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -81545,9 +81616,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -82248,9 +82329,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -82280,9 +82370,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -82984,9 +83084,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -83016,9 +83125,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -83731,9 +83850,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -83763,9 +83891,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -84472,9 +84610,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -84504,9 +84651,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -85693,9 +85850,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -85725,9 +85891,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -86430,9 +86606,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -86462,9 +86647,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -87165,9 +87360,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -87197,9 +87401,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -87977,9 +88191,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -88009,9 +88232,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -88699,9 +88932,18 @@
                   ]
                 },
                 "resolution": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "granted",
+                        "denied",
+                        "answered"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "reason": {
@@ -88731,9 +88973,19 @@
                   ]
                 },
                 "disposition": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "approved-executed",
+                        "denied-not-executed",
+                        "execution-error",
+                        "outcome-unknown"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "exactIntent": {
@@ -104277,32 +104529,49 @@
             "items": {
               "type": "object",
               "properties": {
-                "agentId": {
-                  "type": "string",
-                  "minLength": 1
-                },
                 "status": {
                   "type": "string",
-                  "minLength": 1
+                  "enum": [
+                    "unknown",
+                    "starting",
+                    "ready",
+                    "running",
+                    "offline",
+                    "failed"
+                  ]
                 },
                 "message": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "checkedAt": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
+                },
+                "agentId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "required": [
-                "agentId",
                 "status",
                 "message",
-                "checkedAt"
+                "checkedAt",
+                "agentId"
               ],
               "additionalProperties": false
             }
@@ -105037,7 +105306,8 @@
                 },
                 "summary": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 4096
                 }
               },
               "required": [
@@ -105098,7 +105368,8 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "schemaPolicy": {
@@ -105277,9 +105548,14 @@
                   ]
                 },
                 "description": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "displayName": {
@@ -105399,9 +105675,14 @@
                   ]
                 },
                 "description": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "displayName": {
@@ -105535,9 +105816,14 @@
                 ]
               },
               "description": {
-                "type": [
-                  "string",
-                  "null"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "displayName": {
@@ -105743,9 +106029,14 @@
                 "additionalProperties": false
               },
               "publisherVersion": {
-                "type": [
-                  "string",
-                  "null"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -105975,9 +106266,14 @@
                   "additionalProperties": false
                 },
                 "publisherVersion": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 }
               },
@@ -106292,9 +106588,14 @@
                 "additionalProperties": false
               },
               "publisherVersion": {
-                "type": [
-                  "string",
-                  "null"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -106873,7 +107174,8 @@
               },
               "summary": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 4096
               }
             },
             "required": [
@@ -107185,7 +107487,8 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "schemaPolicy": {
@@ -107295,7 +107598,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           "declaration": {},
@@ -107371,7 +107675,8 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "schemaPolicy": {
@@ -107491,7 +107796,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           "declaration": {},
@@ -107568,7 +107874,8 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "schemaPolicy": {
@@ -107786,7 +108093,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           "bindingRevision": {
@@ -108476,7 +108784,8 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "schemaPolicy": {
@@ -108643,7 +108952,8 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "schemaPolicy": {
@@ -108983,7 +109293,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           "declaration": {},
@@ -109054,7 +109365,8 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "schemaPolicy": {
@@ -109174,7 +109486,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           "declaration": {},
@@ -109250,7 +109563,8 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "schemaPolicy": {
@@ -109411,7 +109725,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           "bindingRevision": {
@@ -110834,7 +111149,8 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "schemaPolicy": {
@@ -115502,6 +115818,7 @@
                 },
                 "definitionJson": {
                   "type": "string",
+                  "minLength": 1,
                   "maxLength": 262144
                 }
               },
@@ -115808,6 +116125,7 @@
               },
               "definitionJson": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 262144
               }
             },
@@ -115942,6 +116260,7 @@
                     },
                     "definitionJson": {
                       "type": "string",
+                      "minLength": 1,
                       "maxLength": 262144
                     }
                   },
@@ -116169,6 +116488,7 @@
                 },
                 "definitionJson": {
                   "type": "string",
+                  "minLength": 1,
                   "maxLength": 262144
                 }
               },
@@ -133666,8 +133986,23 @@
                       "type": "object",
                       "properties": {
                         "host": {
-                          "type": "string",
-                          "minLength": 1
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "hostname",
+                              "pattern": "^(?=.{1,253}\\.?$)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[-0-9a-zA-Z]{0,61}[0-9a-zA-Z])?)*\\.?$"
+                            },
+                            {
+                              "type": "string",
+                              "format": "ipv4",
+                              "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
+                            },
+                            {
+                              "type": "string",
+                              "format": "ipv6",
+                              "pattern": "^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$"
+                            }
+                          ]
                         },
                         "port": {
                           "type": "integer",
@@ -148164,9 +148499,11 @@
             "type": "object",
             "properties": {
               "schemaVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "type": "number",
+                "const": 1
+              },
+              "minCoreVersion": {
+                "not": {}
               },
               "recordType": {
                 "type": "string",
@@ -148182,20 +148519,75 @@
               },
               "lineage": {
                 "type": "object",
-                "propertyNames": {
-                  "type": "string"
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "itemId": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "knowledgeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentSessionId": {
+                    "type": "string",
+                    "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "aepSnapshotId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "capabilityCallId": {
+                    "type": "string",
+                    "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "policyDecisionId": {
+                    "type": "string",
+                    "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "vaultGrantId": {
+                    "type": "string",
+                    "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidenceBundleId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 },
                 "additionalProperties": {}
               },
               "createdAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "updatedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "contentDigest": {
                 "type": "string",
@@ -148203,21 +148595,14 @@
               },
               "redactionLevel": {
                 "type": "string",
-                "enum": [
-                  "metadata",
-                  "redacted",
-                  "full"
-                ]
+                "minLength": 1
               },
               "sensitivity": {
                 "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
+                "minLength": 1
               },
               "requiredFeatures": {
+                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -148225,9 +148610,11 @@
                 }
               },
               "extensions": {
+                "default": {},
                 "type": "object",
                 "propertyNames": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 },
                 "additionalProperties": {}
               },
@@ -148238,12 +148625,12 @@
               "backupStartedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "backupCompletedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "backupMode": {
                 "type": "string",
@@ -148312,7 +148699,7 @@
               "backupFormatVersion",
               "contentInventory"
             ],
-            "additionalProperties": false
+            "additionalProperties": {}
           },
           "fileCount": {
             "type": "integer",
@@ -148368,9 +148755,11 @@
             "type": "object",
             "properties": {
               "schemaVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "type": "number",
+                "const": 1
+              },
+              "minCoreVersion": {
+                "not": {}
               },
               "recordType": {
                 "type": "string",
@@ -148386,20 +148775,75 @@
               },
               "lineage": {
                 "type": "object",
-                "propertyNames": {
-                  "type": "string"
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "itemId": {
+                    "type": "string",
+                    "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "knowledgeId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "agentSessionId": {
+                    "type": "string",
+                    "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "aepSnapshotId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "capabilityCallId": {
+                    "type": "string",
+                    "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "policyDecisionId": {
+                    "type": "string",
+                    "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "vaultGrantId": {
+                    "type": "string",
+                    "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evidenceBundleId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 },
                 "additionalProperties": {}
               },
               "createdAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "updatedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "contentDigest": {
                 "type": "string",
@@ -148407,21 +148851,14 @@
               },
               "redactionLevel": {
                 "type": "string",
-                "enum": [
-                  "metadata",
-                  "redacted",
-                  "full"
-                ]
+                "minLength": 1
               },
               "sensitivity": {
                 "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
+                "minLength": 1
               },
               "requiredFeatures": {
+                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -148429,9 +148866,11 @@
                 }
               },
               "extensions": {
+                "default": {},
                 "type": "object",
                 "propertyNames": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 },
                 "additionalProperties": {}
               },
@@ -148442,12 +148881,12 @@
               "backupStartedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "backupCompletedAt": {
                 "type": "string",
                 "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
               },
               "backupMode": {
                 "type": "string",
@@ -148516,7 +148955,7 @@
               "backupFormatVersion",
               "contentInventory"
             ],
-            "additionalProperties": false
+            "additionalProperties": {}
           },
           "fileCount": {
             "type": "integer",
@@ -155143,9 +155582,14 @@
                   ]
                 },
                 "description": {
-                  "type": [
-                    "string",
-                    "null"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
                   ]
                 },
                 "displayName": {
@@ -155529,5 +155973,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:dad50c6465bcd7d808648fb68952349425e26955ae82c426406245167c77c0a7"
+  "x-openkit-source-digest": "sha256:b5c2d05e101b17701a960e0538cfd9616e0f8a39ea013cad690059727b3915e2"
 }
