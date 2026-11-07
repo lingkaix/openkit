@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { type KnowledgeOwnerScope, parseReferenceScope } from '@openkit/protocol';
+import {
+  type KnowledgeOwnerScope,
+  parseReferenceScope,
+  parseReferenceUri,
+} from '@openkit/protocol';
 import MarkdownIt from 'markdown-it';
 import type { NotebookRevision } from './notebook.js';
+import { NotebookError } from './notebook-error.js';
 import {
   parseKnowledgePageSourceReference,
   parseOkfDocument,
+  stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from './okf.js';
 
@@ -241,4 +247,44 @@ export function validateNotebookCandidate(input: {
     errors,
     diagnosticsTruncated,
   };
+}
+
+/** Computes exact page identity independently of Git commit identity. */
+export function pageDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+/** Resolves a pinned page only when the supplied tree contains its exact source version. */
+export function pinnedNotebookPage(
+  reference: string,
+  files: Readonly<Record<string, string>>,
+  scopeId: string
+): string | null {
+  const pin = parseReferenceUri(reference);
+  if (!pin || pin.reference.scopeId !== scopeId || pin.contentDigest === undefined) return null;
+  const content = files[`${pin.reference.objectId}.md`];
+  if (content === undefined || pageDigest(content) !== pin.contentDigest)
+    throw new Error('Portable Knowledge Page requires unavailable pinned source bytes.');
+  return pin.reference.objectId;
+}
+
+/** Supplies only exact target-tree page pins to initial validation, with no Review or work grant. */
+export function importedWorkspaceNotebookReferences(
+  files: Readonly<Record<string, string>>,
+  scopeId: string
+): ReadonlyMap<string, ReadonlySet<string>> {
+  return new Map(
+    Object.entries(files).map(([path, content]) => {
+      const parsed = parseOkfDocument({ path, content });
+      if (!parsed.ok) throw new NotebookError('invalid_request');
+      const refs = stringListFrontmatterField(parsed.document, 'source_refs');
+      if (refs === null && !parsed.document.reserved) throw new NotebookError('invalid_request');
+      return [
+        path.slice(0, -3),
+        new Set(
+          (refs ?? []).filter((reference) => pinnedNotebookPage(reference, files, scopeId) !== null)
+        ),
+      ];
+    })
+  );
 }
