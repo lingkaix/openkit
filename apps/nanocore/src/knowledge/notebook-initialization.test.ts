@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RequestIdSchema } from '@openkit/protocol';
+import { formatReferenceUri, RequestIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -343,6 +343,187 @@ User-authored note.
     ).rejects.toThrow('Fresh Workspace publication requires native notebook attribution.');
     expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
     expect(target.listWorkspaces()).toEqual([]);
+  });
+
+  it('validates imported initial page pins, OKF framing, and retained bytes before SQL publication', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-pin-import-target-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'notebook-pin-import-source-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(sourceRoot);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    });
+    const source = createTestStore({ dataRoot: sourceRoot });
+    const workspace = await source.createWorkspace('Imported pinned notebook');
+    const target = createTestStore({ dataRoot });
+    const targetScope = `page/workspace/${workspace.id}/${knowledgeBaseId}`;
+    const otherScope = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
+    const digest = (content: string) =>
+      `sha256:${createHash('sha256').update(content).digest('hex')}`;
+    const page = (
+      title: string,
+      sourceRefsYaml: string,
+      body = 'Exact authored body: 漢字.\r\n\t  \n',
+      extraFrontmatter = ''
+    ) => `---
+type: KnowledgePage
+title: ${title}
+schema_version: openkit-scope-knowledge-schema-v4
+requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+openkit_status: active
+status: stable
+scope: {kind: workspace, workspaceId: ${workspace.id}}
+${sourceRefsYaml}review_state: user-authored
+sensitivity: normal
+freshness: current
+created_at: "2026-10-16T00:00:00.000Z"
+updated_at: "2026-10-16T00:00:00.000Z"
+${extraFrontmatter}---
+${body}`;
+    const evidence = page(
+      'Evidence page',
+      'source_refs: []\n',
+      'Exact evidence body: 漢字.\r\n\t  \n',
+      'custom_retained: {nested: [exact, bytes]}\n'
+    );
+    const evidencePin = formatReferenceUri(
+      { scopeId: targetScope, objectId: 'topic/evidence' },
+      digest(evidence)
+    );
+    const foreignPin = formatReferenceUri(
+      { scopeId: otherScope, objectId: 'topic/evidence' },
+      digest(evidence)
+    );
+    const dependent = page('Dependent page', `source_refs: ["${evidencePin}"]\n`);
+    const importWithFiles = (
+      initialNotebookFiles: Readonly<Record<string, string>>,
+      requestId = randomUUID(),
+      initialNotebookSchemaText?: string
+    ) =>
+      target.importWorkspaceSnapshot({
+        workspace,
+        defaultKnowledgeBaseId: knowledgeBaseId,
+        threads: [],
+        turns: [],
+        knowledge: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        notebookInitialization: {
+          requestId,
+          producer,
+          instructionReference: 'workspace.import:pin-validation',
+        },
+        initialNotebookFiles,
+        ...(initialNotebookSchemaText === undefined ? {} : { initialNotebookSchemaText }),
+      });
+
+    for (const [initialNotebookFiles, expectedError] of [
+      [
+        { 'dependent.md': dependent },
+        'Portable Knowledge Page requires unavailable pinned source bytes.',
+      ],
+      [
+        {
+          'topic/evidence.md': page(
+            'Evidence page',
+            'source_refs: []\n',
+            'Changed evidence bytes.\n'
+          ),
+          'dependent.md': dependent,
+        },
+        'Portable Knowledge Page requires unavailable pinned source bytes.',
+      ],
+      [
+        {
+          'topic/evidence.md': evidence,
+          'dependent.md': page('Dependent page', `source_refs: ["${foreignPin}"]\n`),
+        },
+        'Notebook invalid request.',
+      ],
+      [{ 'broken.md': '---\ntitle: Unclosed frontmatter\n' }, 'Notebook invalid request.'],
+      [
+        { 'broken.md': page('Malformed source_refs', 'source_refs: [123]\n') },
+        'Notebook invalid request.',
+      ],
+      [{ 'broken.md': page('Missing source_refs', '') }, 'Notebook invalid request.'],
+    ] as const) {
+      await expect(importWithFiles(initialNotebookFiles)).rejects.toThrow(expectedError);
+      expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
+      expect(target.listWorkspaces()).toEqual([]);
+    }
+
+    const topicIndex = '# Topic\n\nRetained reserved navigation.\n';
+    const topicLog = '# Topic history\n\n## 2026-10-16\n* Retained reserved history.\n';
+    const schemaText = `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}# Retained imported schema comment.\n`;
+    const requestId = randomUUID();
+    await importWithFiles(
+      {
+        'topic/index.md': topicIndex,
+        'topic/log.md': topicLog,
+        'topic/evidence.md': evidence,
+        'dependent.md': dependent,
+      },
+      requestId,
+      schemaText
+    );
+    const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      const selected = readWorkspaceNotebookSelection({
+        workspaceDb,
+        workspaceRoot,
+        knowledgeBaseId,
+      });
+      const revision = selected.notebook.publishedRevision();
+      expect(selected.head.notebookCommit).toBe(revision);
+      expect(selected.scopeSchemaText).toBe(schemaText);
+      expect(
+        readFileSync(join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')
+      ).toBe(schemaText);
+      const retained = selected.notebook.readRevision(revision);
+      expect(retained.parentRevision).toBeNull();
+      expect(retained.files).toEqual({
+        'index.md':
+          '---\nokf_version: "0.2"\n---\n# Knowledge\n\n* [dependent](<dependent.md>)\n* [topic](<topic/>)\n',
+        'topic/index.md': topicIndex,
+        'topic/log.md': topicLog,
+        'topic/evidence.md': evidence,
+        'dependent.md': dependent,
+      });
+      expect(retained.metadata).toMatchObject({
+        producer,
+        changeRequest: { requestId },
+        authority: { kind: 'direct', instructionReference: 'workspace.import:pin-validation' },
+        sourceReferences: [evidencePin],
+      });
+      const rows = workspaceDb.sqlite
+        .prepare(
+          'SELECT action, notebook_admission_json AS evidence FROM audit_events ORDER BY rowid'
+        )
+        .all() as Array<{ action: string; evidence: string }>;
+      expect(rows.map(({ action }) => action)).toEqual([
+        'knowledge.notebook.admit',
+        'knowledge.notebook.initialize',
+      ]);
+      for (const row of rows)
+        expect(JSON.parse(row.evidence)).toMatchObject({
+          ownerScope: { kind: 'workspace', workspaceId: workspace.id },
+          requestId,
+          baseRevision: null,
+          candidateRevision: revision,
+          producer,
+          sourceReferences: [evidencePin],
+        });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   });
 
   it('publishes one parentless revision with exact responsible actor and both Audit facts', async () => {
