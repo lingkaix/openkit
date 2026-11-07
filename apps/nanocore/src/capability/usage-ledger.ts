@@ -6,13 +6,11 @@ import {
   CapabilityCallSchema,
   CapabilityCallStatusSchema,
   type GatewayRouteLineageEntry,
-  GatewayRouteLineageEntrySchema,
   RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
   type ServerUsageRecord,
   ServerUsageRecordSchema,
-  SystemPromptDigestSchema,
   type UsageRecord,
   UsageRecordSchema,
   workspaceIdForOwner,
@@ -920,65 +918,6 @@ export function stampCapabilityCallSchemaSnapshot(
     });
 }
 
-/** Binds one running call to exactly one schema snapshot before its effect. */
-export function stampCapabilityCallSchemaSnapshotInDb(
-  input: Omit<StampCapabilityCallSchemaSnapshotInput, 'workspaceDb'> & {
-    workspaceDb: Pick<WorkspaceDb, 'sqlite'>;
-  }
-): void {
-  const call = findCapabilityCallById(input.workspaceDb, input.callId);
-  const parsed = CapabilityCallSchema.shape.schemaSnapshotId.unwrap().parse(input.schemaSnapshotId);
-  if (call?.schema_snapshot_id === parsed) return;
-  const result = input.workspaceDb.sqlite
-    .prepare(
-      `UPDATE capability_calls
-       SET schema_snapshot_id = ?
-       WHERE call_id = ? AND status = 'running' AND schema_snapshot_id IS NULL`
-    )
-    .run(parsed, input.callId);
-  if (result.changes === 1) return;
-  const stored = findCapabilityCallById(input.workspaceDb, input.callId);
-  if (stored?.schema_snapshot_id !== parsed) {
-    throw new Error(`Capability call schema snapshot conflicts: ${input.callId}`);
-  }
-}
-
-/**
- * Records the system-prompt digest on an already-opened gateway-entry family llm CapabilityCall row.
- *
- * @param input Owning database, durable call id, and digest.
- * @throws When the row is missing, is not a gateway-entry llm call, or the digest is not recorded.
- */
-export function persistLlmCapabilityCallSystemPromptDigestInDb(input: {
-  /** Workspace database that owns the opened CapabilityCall. */
-  readonly workspaceDb: WorkspaceDb | CoreDb;
-  /** Durable capability call id. */
-  readonly callId: string;
-  /** Pre-adapter system-prompt digest. */
-  readonly systemPromptDigest: string;
-}): void {
-  const systemPromptDigest = SystemPromptDigestSchema.parse(input.systemPromptDigest);
-  const retainedCall = input.workspaceDb.sqlite
-    .prepare(`SELECT schema_version FROM capability_calls
-      WHERE call_id = ? AND family = 'llm'
-        AND capability_id IN ('llm.chat_completions', 'llm.responses')`)
-    .get(input.callId) as { schema_version: number } | undefined;
-  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
-  const result = input.workspaceDb.sqlite
-    .prepare(
-      `UPDATE capability_calls
-       SET system_prompt_digest = ?
-       WHERE call_id = ?
-         AND family = 'llm'
-         AND capability_id IN ('llm.chat_completions', 'llm.responses')`
-    )
-    .run(systemPromptDigest, input.callId);
-
-  if (result.changes !== 1) {
-    throw new Error(`LLM capability call system-prompt digest was not recorded: ${input.callId}`);
-  }
-}
-
 /**
  * Terminates non-terminal capability calls left behind by a prior process.
  *
@@ -1539,39 +1478,6 @@ export function writeGatewayRouteLineage(
     });
 }
 
-export function writeGatewayRouteLineageInDb(
-  input: Omit<GatewayCallLedgerBinding, 'call'> & {
-    readonly call: Pick<StartedCapabilityCall, 'id'>;
-    readonly logicalModelId: string;
-    readonly entry: GatewayRouteLineageEntry;
-    readonly entryIndex?: number;
-  }
-): number {
-  return input.workspaceDb.sqlite.transaction(() => {
-    const row = findCapabilityCallById(input.workspaceDb, input.call.id);
-    if (!row || row.status !== 'running')
-      throw new Error('Gateway lineage requires its running CapabilityCall.');
-    const extensions = CanonicalCapabilityCallExtensionsSchema.parse(
-      row.extensions_json === null ? {} : JSON.parse(row.extensions_json)
-    );
-    const lineage = extensions['openkit.gateway/routeLineage'] ?? {
-      logicalModelId: input.logicalModelId,
-      entries: [],
-    };
-    if (lineage.logicalModelId !== input.logicalModelId)
-      throw new Error('Gateway lineage logical model conflicts.');
-    const index = input.entryIndex ?? lineage.entries.length;
-    if (index > lineage.entries.length || index < 0)
-      throw new Error('Gateway lineage entry is missing.');
-    lineage.entries[index] = GatewayRouteLineageEntrySchema.parse(input.entry);
-    extensions['openkit.gateway/routeLineage'] = lineage;
-    input.workspaceDb.sqlite
-      .prepare('UPDATE capability_calls SET extensions_json = ? WHERE call_id = ?')
-      .run(JSON.stringify(extensions), input.call.id);
-    return index;
-  })();
-}
-
 /** Caller request identities are single-use across running and terminal Gateway calls. */
 export function hasCapabilityCallRequestId(
   workspaceDb: WorkspaceDb,
@@ -1585,35 +1491,4 @@ export function hasCapabilityCallRequestId(
     .get(workspaceId, requestId) as { schema_version: number } | undefined;
   if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return row !== undefined;
-}
-
-/** Updates the original worker cache fields on the same retained Call. */
-export function writeCapabilityCallCacheInDb(input: {
-  readonly workspaceDb: WorkspaceDb;
-  readonly callId: string;
-  readonly runtimeCacheLineageRef: string | null;
-  readonly summary: string;
-}): void {
-  const retainedCall = input.workspaceDb.sqlite
-    .prepare('SELECT schema_version FROM capability_calls WHERE call_id = ?')
-    .get(input.callId) as { schema_version: number } | undefined;
-  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
-  input.workspaceDb.sqlite
-    .prepare(
-      'UPDATE capability_calls SET runtime_cache_lineage_ref = ?, summary = ? WHERE call_id = ?'
-    )
-    .run(input.runtimeCacheLineageRef, input.summary, input.callId);
-}
-
-/** Preserves the original running-only Item clear before the Call terminal mutation. */
-export function clearCapabilityCallItemInDb(workspaceDb: WorkspaceDb, callId: string): void {
-  const retainedCall = workspaceDb.sqlite
-    .prepare("SELECT schema_version FROM capability_calls WHERE call_id = ? AND status = 'running'")
-    .get(callId) as { schema_version: number } | undefined;
-  if (retainedCall) readRetainedV1({ schemaVersion: retainedCall.schema_version }, () => undefined);
-  workspaceDb.sqlite
-    .prepare(`UPDATE capability_calls
-             SET item_id = NULL
-             WHERE call_id = ? AND status = 'running'`)
-    .run(callId);
 }

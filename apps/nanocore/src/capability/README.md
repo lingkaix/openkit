@@ -5,7 +5,7 @@ This directory owns the shared capability-call and usage-record lifecycle for Wo
 ## Boundaries
 
 - `usage-ledger.ts` starts capability calls, records measurements, reads exportable ledger rows, and keeps the public finish, recovery, and export facades.
-- `usage-ledger-native.ts` owns the existing `finishCapabilityCallInDb` transaction and its complete helper closure: terminal Call compare-and-set, admitted attribution, delivered-answer framing, linked Audit, Call lookup and decoding, source-id normalization and decoding, and canonical extensions. Worker checkpoints and Control Capability bind that transaction from this file. The native module has no runtime import of the ledger, the worker client, Control Capability orchestration, or Policy evaluation.
+- `usage-ledger-native.ts` owns the existing `finishCapabilityCallInDb` transaction and its complete helper closure: terminal Call compare-and-set, admitted attribution, delivered-answer framing, linked Audit, Call lookup and decoding, source-id normalization and decoding, and canonical extensions. It also owns the supplied-connection Call updates `stampCapabilityCallSchemaSnapshotInDb`, `persistLlmCapabilityCallSystemPromptDigestInDb`, `writeGatewayRouteLineageInDb`, `writeCapabilityCallCacheInDb`, and `clearCapabilityCallItemInDb`. Worker checkpoints bind the finish transaction from this file. Control Capability binds that finish transaction and these five Call updates from this file. The native module has no runtime import of the ledger, the worker client, Control Capability orchestration, or Policy evaluation.
 - Storage table definitions remain in `../storage/schema/`; route-specific authorization and dispatch remain with their feature owners.
 - Record only redacted lineage and positive, source-attributed measurements; failed calls must not fabricate usage.
 
@@ -39,4 +39,4 @@ A captured MCP submission refusal joins its existing PermissionDecision, linked 
 
 Both Workspace LLM/MCP admission paths require an existing non-null authority actor before native dispatch or call insertion/replay. The shared recorder checks attribution presence only; producers retain current Policy admission. Unattributed Server diagnostics and existing other-family evidence stay separate, and historical actorless rows gain no inferred actor.
 
-`usage-ledger.ts` records the pre-adapter system-prompt digest on the existing eligible CapabilityCall row in the supplied native savepoint. Control Capability calls this native mutation through the existing ledger owner; prompt selection and digest computation remain in `../llm/system-prompt-digest.ts`.
+`usage-ledger-native.ts` records the pre-adapter system-prompt digest on the existing eligible CapabilityCall row in the supplied native savepoint. Control Capability calls this native mutation directly; prompt selection and digest computation remain in `../llm/system-prompt-digest.ts`.
