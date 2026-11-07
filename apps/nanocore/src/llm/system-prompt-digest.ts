@@ -1,6 +1,6 @@
 import { canonicalJsonText, SystemPromptDigestSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import type { persistLlmCapabilityCallSystemPromptDigestInDb } from '../capability/usage-ledger.js';
+import type { persistLlmCapabilityCallSystemPromptDigestInDb } from '../capability/usage-ledger-native.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 
 /** Gateway endpoint family that carries a pre-adapter system prompt. */
