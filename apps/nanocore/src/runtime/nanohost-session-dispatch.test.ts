@@ -5,7 +5,7 @@ import { connect as connectHttp2, createServer as createHttp2Server } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
-import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base';
+import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';

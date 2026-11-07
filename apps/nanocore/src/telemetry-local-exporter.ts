@@ -16,7 +16,7 @@ import {
   type PushMetricExporter,
   type ResourceMetrics,
 } from '@opentelemetry/sdk-metrics';
-import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
+import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace';
 
 const REQUEST_BYTES = 1_048_576;
 const SEGMENT_BYTES = 16 * 1_048_576;

@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 import { trace } from '@opentelemetry/api';
-import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {

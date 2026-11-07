@@ -8,8 +8,8 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
   type SpanExporter,
-} from '@opentelemetry/sdk-trace-base';
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+  TracerProvider,
+} from '@opentelemetry/sdk-trace';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -250,10 +250,10 @@ describe('telemetry lifecycle', () => {
     await shutdownTelemetry();
 
     const foreign = new InMemorySpanExporter();
-    const foreignProvider = new NodeTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(foreign)],
+    const foreignProvider = new TracerProvider({
+      spanProcessors: [new SimpleSpanProcessor({ exporter: foreign })],
     });
-    foreignProvider.register();
+    trace.setGlobalTracerProvider(foreignProvider);
     const logs: string[] = [];
     vi.spyOn(console, 'info').mockImplementation((message: unknown) => {
       logs.push(String(message));

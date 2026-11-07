@@ -26,8 +26,8 @@ import {
   BatchSpanProcessor,
   SimpleSpanProcessor,
   type SpanExporter,
-} from '@opentelemetry/sdk-trace-base';
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+  TracerProvider,
+} from '@opentelemetry/sdk-trace';
 import type { MiddlewareHandler } from 'hono';
 import { createLocalTraceExporter } from './telemetry-local-exporter.js';
 
@@ -65,7 +65,7 @@ const INVALID_ENDPOINT_DIAGNOSTIC =
   'Telemetry export is disabled because OTEL_EXPORTER_OTLP_ENDPOINT is not a valid HTTP(S) URL.';
 const START_FAILURE_DIAGNOSTIC = 'Telemetry export could not start; product boot continues.';
 
-let activeProvider: NodeTracerProvider | null = null;
+let activeProvider: TracerProvider | null = null;
 let activeMeterProvider: MeterProvider | null = null;
 let stageDuration: Histogram | null = null;
 let activeContextManager: AsyncLocalStorageContextManager | null = null;
@@ -142,8 +142,9 @@ export function startTelemetry(options: {
       metricExporters.push(local.metrics);
       processors.push(
         options.exporter
-          ? new SimpleSpanProcessor(local)
-          : new BatchSpanProcessor(local, {
+          ? new SimpleSpanProcessor({ exporter: local })
+          : new BatchSpanProcessor({
+              exporter: local,
               maxQueueSize: MAX_QUEUE_SIZE,
               exportTimeoutMillis: EXPORT_TIMEOUT_MS,
             })
@@ -160,8 +161,9 @@ export function startTelemetry(options: {
         options.exporter ?? new OTLPTraceExporter({ url: tracesExportUrl(rawEndpoint) });
       processors.push(
         options.exporter
-          ? new SimpleSpanProcessor(exporter)
-          : new BatchSpanProcessor(exporter, {
+          ? new SimpleSpanProcessor({ exporter })
+          : new BatchSpanProcessor({
+              exporter: exporter,
               maxQueueSize: MAX_QUEUE_SIZE,
               exportTimeoutMillis: EXPORT_TIMEOUT_MS,
             })
@@ -193,7 +195,7 @@ export function startTelemetry(options: {
         ? { 'deployment.environment.name': options.deploymentEnvironment }
         : {}),
     });
-    const provider = new NodeTracerProvider({
+    const provider = new TracerProvider({
       resource,
       spanProcessors: processors,
     });
