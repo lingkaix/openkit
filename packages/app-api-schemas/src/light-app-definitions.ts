@@ -50,7 +50,14 @@ export const LightAppDefinitionVersionSchema = z
     parentDigest: digest.nullable(),
     producer: SkillCatalogProducerSchema,
     createdAt: z.string().min(1),
-    definitionJson: z.string().max(256 * 1024),
+    definitionJson: z
+      .string()
+      .min(1)
+      .max(262_144)
+      .refine(
+        (value) => new TextEncoder().encode(value).length <= 262_144,
+        'Light App definition exceeds the 256 KiB UTF-8 limit.'
+      ),
   })
   .strict();
 /** Exact retained definition pin in the current Workspace. */

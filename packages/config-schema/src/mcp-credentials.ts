@@ -6,6 +6,13 @@ const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const SDK_MANAGED_HTTP_HEADERS = new Set(['accept', 'content-type']);
 
+/** Canonical MCP tool name selected by Workspace policy. */
+export const WorkspaceMcpToolNameSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => value === value.trim(), 'MCP tool names must not have outer whitespace.');
+
 /** Canonical non-secret HTTP endpoint shared by declaration, transport and browser request validation. */
 export const McpHttpEndpointSchema = z.url().refine((value) => {
   let endpoint: URL;

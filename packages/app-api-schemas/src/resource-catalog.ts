@@ -1,6 +1,7 @@
 import {
   McpHttpEndpointSchema,
   WorkspaceMcpCredentialBindingSchema,
+  WorkspaceMcpToolNameSchema,
 } from '@openkit/config-schema/mcp-credentials';
 import { AuditEventIdSchema, RequestIdSchema, ResourceCandidateIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
@@ -41,7 +42,7 @@ export const SkillCatalogEntrySchema = z
   .object({
     availability: z.enum(['available', 'removed']),
     currentDigest: z.string().regex(SHA256).nullable(),
-    description: z.string().nullable(),
+    description: z.string().min(1).nullable(),
     displayName: z.string().min(1),
     id: z.string().regex(CATALOG_ID),
   })
@@ -84,7 +85,7 @@ export const SkillCatalogVersionSchema = z
     ),
     producer: SkillCatalogProducerSchema,
     provenance: SkillCatalogProvenanceSchema,
-    publisherVersion: z.string().nullable(),
+    publisherVersion: z.string().min(1).nullable(),
   })
   .strict();
 
@@ -107,7 +108,7 @@ export const SkillCatalogCandidateSchema = z
     id: ResourceCandidateIdSchema,
     producer: SkillCatalogProducerSchema,
     submitter: SkillCatalogProducerSchema.nullable(),
-    summary: z.string().min(1),
+    summary: z.string().min(1).max(4_096),
   })
   .strict();
 
@@ -120,7 +121,7 @@ export const McpCatalogEntrySchema = z
     displayName: z.string().min(1),
     enabled: z.boolean(),
     id: z.string().regex(CATALOG_ID),
-    allowedTools: z.array(z.string().min(1)),
+    allowedTools: z.array(WorkspaceMcpToolNameSchema),
     schemaPolicy: z.enum(['pinned', 'tracking']).nullable(),
     timeoutMs: z.number().int().positive().nullable(),
     transportKind: z.enum(['stdio', 'http']).nullable(),
@@ -306,7 +307,7 @@ export const CatalogMutationResponseSchema = z
 /** Create an inactive MCP configuration. */
 export const CreateMcpConfigRequestSchema = z
   .object({
-    allowedTools: z.array(z.string().min(1)),
+    allowedTools: z.array(WorkspaceMcpToolNameSchema),
     declaration: z.unknown().superRefine((value, context) => {
       if (
         value &&
@@ -351,7 +352,7 @@ export const SelectMcpVersionRequestSchema = z
 /** Update an MCP binding; omitted credentials preserve the current bindings and a supplied array replaces them. */
 export const UpdateMcpBindingRequestSchema = z
   .object({
-    allowedTools: z.array(z.string().min(1)).min(1),
+    allowedTools: z.array(WorkspaceMcpToolNameSchema).min(1),
     bindingRevision: z.number().int().nonnegative(),
     credentialBindings: z.array(WorkspaceMcpCredentialBindingSchema).optional(),
     enabled: z.boolean(),

@@ -256,10 +256,7 @@ export const WorkerEnvironmentImageDeclarationSchema = z
           .array(
             z
               .object({
-                host: z
-                  .string()
-                  .min(1)
-                  .refine((host) => !host.includes('*')),
+                host: z.union([z.hostname(), z.ipv4(), z.ipv6()]),
                 port: z.number().int().min(1).max(65_535),
               })
               .strict()

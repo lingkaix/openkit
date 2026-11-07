@@ -1,11 +1,16 @@
 import { createHash } from 'node:crypto';
 import { canonicalJsonText } from '@openkit/protocol';
 import { z } from 'zod';
-import { McpHttpEndpointSchema, WorkspaceMcpCredentialBindingSchema } from './mcp-credentials.js';
+import {
+  McpHttpEndpointSchema,
+  WorkspaceMcpCredentialBindingSchema,
+  WorkspaceMcpToolNameSchema,
+} from './mcp-credentials.js';
 
 export {
   WorkspaceMcpCredentialBindingSchema,
   WorkspaceMcpCredentialSinkSchema,
+  WorkspaceMcpToolNameSchema,
 } from './mcp-credentials.js';
 
 const MCP_SERVER_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -18,13 +23,6 @@ const RAW_SECRET =
 
 /** Canonical Workspace MCP server id. */
 export const WorkspaceMcpServerIdSchema = z.string().regex(MCP_SERVER_ID);
-
-/** Canonical MCP tool name selected by Workspace policy. */
-export const WorkspaceMcpToolNameSchema = z
-  .string()
-  .min(1)
-  .max(256)
-  .refine((value) => value === value.trim(), 'MCP tool names must not have outer whitespace.');
 
 /** NanoCore-spawned stdio MCP transport. */
 export const WorkspaceMcpStdioTransportSchema = z

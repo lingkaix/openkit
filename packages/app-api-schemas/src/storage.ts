@@ -1,7 +1,10 @@
-import { WORKSPACE_EXPORT_FORMAT_VERSION } from '@openkit/config-schema/workspace-export';
+import {
+  DataRootBackupManifestSchema,
+  WorkspaceExportInventoryEntrySchema,
+  WorkspaceExportManifestSchema,
+} from '@openkit/config-schema/workspace-export';
 import {
   DataRootBackupIdSchema,
-  DeploymentIdSchema,
   UserIdSchema,
   WorkspaceExportIdSchema,
   WorkspaceIdSchema,
@@ -91,63 +94,11 @@ export const StorageLayoutReportResponseSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
-/** One file entry inside a workspace export content inventory. */
-export const WorkspaceExportInventoryEntrySchema = z
-  .object({
-    path: z.string().min(1),
-    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    bytes: z.number().int().nonnegative(),
-  })
-  .strict();
-
-/** Public workspace export manifest returned by NanoCore after verification. */
-export const WorkspaceExportManifestSchema = z
-  .object({
-    schemaVersion: z.number().int().positive(),
-    recordType: z.literal('workspace-export'),
-    id: WorkspaceExportIdSchema,
-    ownerScope: z.literal('workspace'),
-    lineage: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-    contentDigest: z.string().min(1),
-    redactionLevel: z.enum(['metadata', 'redacted', 'full']),
-    sensitivity: z.enum(['public', 'internal', 'restricted']),
-    requiredFeatures: z.array(z.string().min(1)),
-    extensions: z.record(z.string(), z.unknown()),
-    sourceDeploymentId: DeploymentIdSchema,
-    workspaceId: WorkspaceIdSchema,
-    exportCreatedAt: z.string().datetime(),
-    exportFormatVersion: z.literal(WORKSPACE_EXPORT_FORMAT_VERSION),
-    knowledgeNotebookRevision: z.string().min(1).optional(),
-    contentInventory: z.array(WorkspaceExportInventoryEntrySchema),
-  })
-  .strict();
-
-/** Public data-root backup manifest returned by NanoCore after verification. */
-export const DataRootBackupManifestSchema = z
-  .object({
-    schemaVersion: z.number().int().positive(),
-    recordType: z.literal('data-root-backup'),
-    id: DataRootBackupIdSchema,
-    ownerScope: z.literal('server'),
-    lineage: z.record(z.string(), z.unknown()),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-    contentDigest: z.string().min(1),
-    redactionLevel: z.enum(['metadata', 'redacted', 'full']),
-    sensitivity: z.enum(['public', 'internal', 'restricted']),
-    requiredFeatures: z.array(z.string().min(1)),
-    extensions: z.record(z.string(), z.unknown()),
-    sourceDeploymentId: DeploymentIdSchema,
-    backupStartedAt: z.string().datetime(),
-    backupCompletedAt: z.string().datetime(),
-    backupMode: z.enum(['cold', 'hot']),
-    consistency: z.enum(['clean', 'crash-consistent']),
-    backupFormatVersion: z.literal(1),
-    contentInventory: z.array(WorkspaceExportInventoryEntrySchema),
-  })
-  .strict();
+export {
+  DataRootBackupManifestSchema,
+  WorkspaceExportInventoryEntrySchema,
+  WorkspaceExportManifestSchema,
+};
 
 /** Response returned after creating and verifying one workspace export tree. */
 export const WorkspaceExportResponseSchema = z
