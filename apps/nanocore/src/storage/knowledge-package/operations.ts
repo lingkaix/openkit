@@ -18,10 +18,12 @@ import type { RuntimeConfigManager } from '../../config/runtime-config.js';
 import { findWorkspaceConfig } from '../../config/runtime-config.js';
 import { DEFAULT_NOTEBOOK_INDEX, NotebookError } from '../../knowledge/notebook.js';
 import { publishWorkspaceNotebook } from '../../knowledge/notebook-publication.js';
-import { validateNotebookCandidate } from '../../knowledge/notebook-validation.js';
+import {
+  importedWorkspaceNotebookReferences,
+  validateNotebookCandidate,
+} from '../../knowledge/notebook-validation.js';
 import {
   assertPortableWorkspaceNotebookDisclosure,
-  importedWorkspaceNotebookReferences,
   remintPortableWorkspaceNotebookPages,
 } from '../../knowledge/notebook-workspace-portability.js';
 import {
