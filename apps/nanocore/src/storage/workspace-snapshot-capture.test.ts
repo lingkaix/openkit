@@ -30,7 +30,7 @@ import {
   type Node,
   ScriptTarget,
   transpileModule,
-} from 'typescript';
+} from 'typescript6';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';

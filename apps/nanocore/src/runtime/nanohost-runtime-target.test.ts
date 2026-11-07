@@ -14,7 +14,7 @@ import {
   type Node,
   ScriptTarget,
   transpileModule,
-} from 'typescript';
+} from 'typescript6';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {

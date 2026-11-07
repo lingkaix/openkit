@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { constants, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import ts from 'typescript6';
 
 const sqliteOwner = 'apps/nanocore/src/storage/control-store-worker.ts';
 const byteOwner = 'packages/storage/src/local.ts';

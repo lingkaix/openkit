@@ -79,7 +79,8 @@
     "@vitest/coverage-v8": "5.1.0",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
+    "typescript6": "npm:typescript@^6.0.3",
     "vitest": "^5.1.0"
   }
 }

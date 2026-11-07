@@ -9,7 +9,7 @@ import {
   ModuleKind,
   ScriptTarget,
   transpileModule,
-} from 'typescript';
+} from 'typescript6';
 import { describe, expect, it, vi } from 'vitest';
 import { runBootPhases } from './phases.js';
 import {

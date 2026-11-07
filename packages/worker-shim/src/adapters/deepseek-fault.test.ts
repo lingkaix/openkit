@@ -20,7 +20,7 @@ function probe(scenario: string): Promise<{ code: number | null; output: string 
   const script = `
     import { registerHooks } from 'node:module';
     import { readFileSync, existsSync } from 'node:fs';
-    import ts from 'typescript';
+    import ts from 'typescript6';
     registerHooks({
       resolve(specifier, context, next) {
         if (specifier.endsWith('.js') && specifier.startsWith('.') && context.parentURL) {

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { isBuiltin } from 'node:module';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
-import ts from 'typescript';
+import ts from 'typescript6';
 import { expect, it } from 'vitest';
 
 /** Finds Node globals in shipped modules, including delayed schema refinements. */

@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
-import ts from 'typescript';
+import ts from 'typescript6';
 
 // Pre-3b files, including the accepted87f6f8892 frozen Workspace journal test, retain setup.
 // This fixed path set is not regenerated when new tests add storage coupling.
