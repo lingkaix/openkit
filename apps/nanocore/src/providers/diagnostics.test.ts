@@ -64,11 +64,12 @@ describe('createProviderDiagnostics', () => {
         }),
       ])
     );
-    expect(diagnostics.redactedSnapshot).toEqual([
-      expect.objectContaining({
-        id: 'required-extension',
-      }),
-    ]);
+    // The inert built-in local profiles are always loaded; only authored profiles are asserted.
+    expect(
+      diagnostics.redactedSnapshot
+        .map((profile) => profile.id)
+        .filter((id) => !id.startsWith('openkit-local-'))
+    ).toEqual(['required-extension']);
     expect(JSON.stringify(diagnostics)).not.toContain('sk-raw-secret');
   });
 });
