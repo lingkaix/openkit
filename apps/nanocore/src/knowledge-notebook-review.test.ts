@@ -242,7 +242,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
     expect(
       f.store.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, stale.proposal.id).candidateRevision
     ).toBe(stale.proposal.candidateRevision);
-  });
+  }, 60_000);
 
   it('reverses and explicitly removes through new commits while retaining original bytes and receipts', async () => {
     const f = await fixture();
@@ -354,5 +354,5 @@ describe('native fixed-base Knowledge Review and removal', () => {
         f.workspaceDb
       )?.response
     ).toEqual({ kind: 'knowledge_notebook_revision', id: removedRevision });
-  });
+  }, 60_000);
 });

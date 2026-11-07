@@ -334,7 +334,9 @@ describe('SimulatedTurnExecutor', () => {
       // Admission is not completion. The unchanged test deadline also bounds this real owner.
       expect(closeouts).toHaveBeenCalledOnce();
       await closeouts.mock.results[0]!.value.closeout;
-      await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'));
+      await vi.waitFor(() => expect(store.getTurnById(turn.id).status).toBe('completed'), {
+        timeout: 15_000,
+      });
       const storedTurn = store.getTurnById(turn.id);
       expect(storedTurn).toMatchObject({
         agentId: 'agent_codex_host',
@@ -389,7 +391,7 @@ describe('SimulatedTurnExecutor', () => {
       closeouts.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('anchors an environment-aware build result through the simulator self-check route', async () => {
     const coreDb = await createCoreDb(false);

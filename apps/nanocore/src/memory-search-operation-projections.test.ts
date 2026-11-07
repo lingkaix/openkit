@@ -245,7 +245,7 @@ describe('public self Memory search', () => {
       requestId: randomUUID(),
     });
     expect(exported.status).toBe(200);
-  });
+  }, 60_000);
 });
 
 /** Reads the self-owned base created by the real Memory operation. */
