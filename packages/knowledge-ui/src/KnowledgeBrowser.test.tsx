@@ -225,6 +225,46 @@ describe('KnowledgeBrowser import', () => {
   });
 });
 
+describe('KnowledgeBrowser phone preview', () => {
+  it('keeps the host extension in the preview when the phone list is hidden', async () => {
+    const user = userEvent.setup();
+    const original = window.matchMedia;
+    window.matchMedia = (query: string): MediaQueryList =>
+      ({
+        matches: query === '(max-width: 799px)',
+        media: query,
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+      }) as MediaQueryList;
+    const page = knowledgeNode({ id: 'page-1', title: 'Alpha note' });
+    const read = vi.fn(async () => ({ node: page, body: 'Alpha note body.', version: 'rev-1' }));
+    const list = async () => ({ nodes: [page], nextCursor: null });
+    try {
+      render(
+        <KnowledgeBrowser
+          client={knowledgeClient({ list, read })}
+          parentId={null}
+          extensions={{
+            node: (node) => <span>Host controls for {node.title}</span>,
+          }}
+        />
+      );
+      await screen.findByRole('button', { name: 'Search' });
+      await user.click(await screen.findByRole('button', { name: 'Alpha note' }));
+      const preview = await screen.findByRole('article', { name: 'Preview' });
+      expect(within(preview).getByText('Host controls for Alpha note')).toBeVisible();
+      expect(within(preview).queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+      expect(within(preview).queryByText('Alpha note body.')).not.toBeInTheDocument();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+});
+
 describe('KnowledgeBrowser extensions', () => {
   it('renders the node extension only when the host passes it', async () => {
     const page = knowledgeNode({ id: 'page-1', title: 'Reading room opening hours' });

@@ -273,14 +273,16 @@ export function KnowledgeBrowser({ client, parentId, extensions }: KnowledgeBrow
                 Download
               </a>
             ) : null}
-            {!isImage(selected.node.mediaType) &&
-            !isPdf(selected.node.mediaType) &&
-            selected.body ? (
+            {reading && extensions?.node ? (
+              extensions.node(selected.node)
+            ) : !isImage(selected.node.mediaType) &&
+              !isPdf(selected.node.mediaType) &&
+              selected.body ? (
               <p>{selected.body}</p>
             ) : null}
-            {selected.body !== null &&
-            !isImage(selected.node.mediaType) &&
-            !isPdf(selected.node.mediaType) ? (
+            {reading && extensions?.node ? null : selected.body !== null &&
+              !isImage(selected.node.mediaType) &&
+              !isPdf(selected.node.mediaType) ? (
               editing ? (
                 <div>
                   <TextField value={draft} onChange={setDraft}>
