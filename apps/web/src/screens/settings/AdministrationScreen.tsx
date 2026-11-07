@@ -849,7 +849,7 @@ function EnvironmentPreparation({
             />
           ) : null}
           {configFile.isSuccess && !source ? (
-            <p className="text-sm font-bold text-negative-fg">
+            <p role="alert" className="text-sm font-bold text-negative-fg">
               The selected file does not contain a usable Agent id and runtime image declaration.
             </p>
           ) : null}
@@ -1203,8 +1203,8 @@ function ActivationResultCard({ result }: { result: ActivationResult }) {
   const incomplete =
     result.configuration === null ||
     result.affected.some((environment) => environment.disposition === 'unknown');
-  return (
-    <div className="rounded-ok border border-border bg-sunken p-3">
+  const body = (
+    <>
       <p className="text-sm font-bold text-fg-strong">Activation command result</p>
       {result.configuration ? (
         <p className="text-xs text-fg-muted">
@@ -1231,6 +1231,19 @@ function ActivationResultCard({ result }: { result: ActivationResult }) {
           Successor Turn prompt: {result.replaceNow.prompt}
         </p>
       ) : null}
+    </>
+  );
+  const className = 'rounded-ok border border-border bg-sunken p-3';
+  if (incomplete) {
+    return (
+      <div role="alert" aria-label="Activation command result" className={className}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <div role="status" aria-label="Activation command result" className={className}>
+      {body}
     </div>
   );
 }
@@ -1302,7 +1315,7 @@ function PurgeResult({ outcome }: { outcome: 'purged' | 'retained' | 'unknown' }
   if (outcome === 'unknown') {
     return (
       <Card>
-        <p className="text-sm font-bold text-negative-fg">
+        <p role="alert" className="text-sm font-bold text-negative-fg">
           Deletion result unknown. Refresh status before requesting another deletion.
         </p>
       </Card>
@@ -1310,7 +1323,7 @@ function PurgeResult({ outcome }: { outcome: 'purged' | 'retained' | 'unknown' }
   }
   return (
     <Card>
-      <p className="text-sm text-fg">
+      <p role="status" className="text-sm text-fg">
         {outcome === 'purged'
           ? 'The Sandbox was deleted.'
           : 'The Sandbox was kept because it cannot be deleted in its current state.'}

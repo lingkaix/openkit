@@ -24,7 +24,12 @@ function Location() {
 }
 
 /** Keeps Assistant entry tests on the production Sidebar and current selected-Workspace admission. */
-function renderAssistantNavigation(createThread: CoreClient['operations']['thread.create']) {
+function renderAssistantNavigation(
+  createThread: CoreClient['operations']['thread.create'],
+  navigation: CoreClient['operations']['conversation.navigation'] = vi
+    .fn()
+    .mockResolvedValue({ items: [] })
+) {
   const projectId = 'ws_019a0000-0000-7000-8000-000000000101';
   useWorkspaceStore.setState({ currentWorkspaceId: projectId });
   const client = {
@@ -48,7 +53,7 @@ function renderAssistantNavigation(createThread: CoreClient['operations']['threa
           registryRevision: 1,
         })),
       }),
-      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      'conversation.navigation': navigation,
       'thread.create': createThread,
       'thread.update': vi.fn(),
       'conversation.submit': vi.fn(),
@@ -368,7 +373,9 @@ describe('conversation navigation sidebar', () => {
         queryKey: chatKeys.threads('ws_00000000-0000-7b10-9af8-12fd37a880e0'),
       });
     });
-    expect(await screen.findByText(/Conversation status unavailable/)).toBeInTheDocument();
+    expect(
+      (await screen.findByText(/Conversation status unavailable/)).closest('[role="status"]')
+    ).not.toBeNull();
     expect(screen.getByRole('button', { name: 'Conversation 1' })).toHaveAccessibleDescription(
       'Task · Status unavailable'
     );
@@ -801,7 +808,9 @@ function register_ConversationGoalGroups_test_tsx_0() {
       await act(async () => {
         await cache.invalidateQueries({ queryKey: chatKeys.threads(workspaceId), exact: true });
       });
-      await screen.findByText('Goal tasks are unavailable.');
+      expect(
+        (await screen.findByText('Goal tasks are unavailable.')).closest('[role="status"]')
+      ).not.toBeNull();
       expect(screen.queryByText('Ship parser')).not.toBeInTheDocument();
       expect(
         screen.queryByRole('list', { name: 'Attempts for Linked Task' })
@@ -816,6 +825,20 @@ function register_ConversationGoalGroups_test_tsx_0() {
   });
 }
 register_ConversationGoalGroups_test_tsx_0();
+
+it('announces that conversations are loading', async () => {
+  let finish!: (value: { items: [] }) => void;
+  renderAssistantNavigation(
+    vi.fn(),
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+  );
+  expect(await screen.findByText('Loading conversations…')).toHaveAttribute('role', 'status');
+  finish({ items: [] });
+  await waitFor(() => expect(screen.queryByText('Loading conversations…')).not.toBeInTheDocument());
+});
 
 it('returns focus to Search when Escape closes the search overlay', async () => {
   const user = userEvent.setup();

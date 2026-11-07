@@ -724,7 +724,11 @@ export function Composer({
           </button>
         </div>
       ) : null}
-      {submitHold ? <p className="mt-2 text-xs text-fg-muted">{submitHold}</p> : null}
+      {submitHold ? (
+        <p role="status" className="mt-2 text-xs text-fg-muted">
+          {submitHold}
+        </p>
+      ) : null}
     </form>
   );
 }
@@ -798,9 +802,13 @@ function WorkerEnvironmentPicker({
           }}
         />
         {environments?.status === 'denied' ? (
-          <p className="text-xs text-fg-muted">Access denied</p>
+          <p role="status" className="text-xs text-fg-muted">
+            Access denied
+          </p>
         ) : environments?.status === 'error' ? (
-          <p className="text-xs text-fg-muted">Couldn't load Sandboxes.</p>
+          <p role="status" className="text-xs text-fg-muted">
+            Couldn't load Sandboxes.
+          </p>
         ) : selectedItem && 'createdAt' in selectedItem ? (
           <>
             <p className="text-xs text-fg-muted">{selectedItem.lineage}</p>
@@ -811,7 +819,11 @@ function WorkerEnvironmentPicker({
                 {formatRecordedTime(selectedItem.createdAt)}
               </time>
             </p>
-            {check ? <p className="text-xs text-fg-muted">{check.message}</p> : null}
+            {check ? (
+              <p role="status" className="text-xs text-fg-muted">
+                {check.message}
+              </p>
+            ) : null}
           </>
         ) : null}
       </div>

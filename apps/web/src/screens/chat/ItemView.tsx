@@ -95,95 +95,97 @@ function UserInputRequestView({
   const complete = item.questions.every((question) => Boolean(answers[question.id]?.trim()));
 
   return (
-    <ItemCard
-      kind="notice"
-      title="Needs your input"
-      meta={
-        item.questions.some((question) => question.question === item.prompt)
-          ? undefined
-          : item.prompt
-      }
-    >
-      {containsSecret ? (
-        <div className="flex flex-col gap-3">
-          {item.questions.map((question) => (
-            <div key={question.id}>
-              <p className="font-bold text-fg-strong">{question.header}</p>
-              <p className="text-xs text-fg-muted">{question.question}</p>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <form
-          className="flex flex-col gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (readOnly || pending || !complete || !onSubmit) return;
-            const completeAnswers = Object.fromEntries(
-              item.questions.map((question) => [question.id, [answers[question.id] as string]])
-            ) as Record<string, [string]>;
-            onSubmit(item.userInputRequestId, completeAnswers);
-          }}
-        >
-          {item.questions.map((question) => (
-            <div key={question.id} className="flex flex-col gap-2">
-              <p className="text-xs text-fg-muted">{question.question}</p>
-              {question.options ? (
-                <>
-                  <RadioGroup
-                    aria-label={question.header}
-                    isDisabled={readOnly || pending}
-                    value={answers[question.id] ?? null}
-                    onChange={(value) =>
-                      setAnswers((current) => ({ ...current, [question.id]: value }))
-                    }
-                    items={question.options.map((option) => ({
-                      id: option.label,
-                      label: option.label,
-                      content: (
-                        <>
-                          <span className="font-bold text-fg-strong">{option.label}</span>
-                          <span className="text-xs text-fg-muted">{option.description}</span>
-                        </>
-                      ),
-                    }))}
-                  />
-                  {question.isOther ? (
-                    <TextField
-                      label="Other"
+    <div role="status" aria-label="Needs your input">
+      <ItemCard
+        kind="notice"
+        title="Needs your input"
+        meta={
+          item.questions.some((question) => question.question === item.prompt)
+            ? undefined
+            : item.prompt
+        }
+      >
+        {containsSecret ? (
+          <div className="flex flex-col gap-3">
+            {item.questions.map((question) => (
+              <div key={question.id}>
+                <p className="font-bold text-fg-strong">{question.header}</p>
+                <p className="text-xs text-fg-muted">{question.question}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (readOnly || pending || !complete || !onSubmit) return;
+              const completeAnswers = Object.fromEntries(
+                item.questions.map((question) => [question.id, [answers[question.id] as string]])
+              ) as Record<string, [string]>;
+              onSubmit(item.userInputRequestId, completeAnswers);
+            }}
+          >
+            {item.questions.map((question) => (
+              <div key={question.id} className="flex flex-col gap-2">
+                <p className="text-xs text-fg-muted">{question.question}</p>
+                {question.options ? (
+                  <>
+                    <RadioGroup
+                      aria-label={question.header}
                       isDisabled={readOnly || pending}
-                      value={
-                        question.options.some((option) => option.label === answers[question.id])
-                          ? ''
-                          : (answers[question.id] ?? '')
-                      }
+                      value={answers[question.id] ?? null}
                       onChange={(value) =>
                         setAnswers((current) => ({ ...current, [question.id]: value }))
                       }
+                      items={question.options.map((option) => ({
+                        id: option.label,
+                        label: option.label,
+                        content: (
+                          <>
+                            <span className="font-bold text-fg-strong">{option.label}</span>
+                            <span className="text-xs text-fg-muted">{option.description}</span>
+                          </>
+                        ),
+                      }))}
                     />
-                  ) : null}
-                </>
-              ) : (
-                <TextField
-                  label={question.header}
-                  isDisabled={readOnly || pending}
-                  value={answers[question.id] ?? ''}
-                  onChange={(value) =>
-                    setAnswers((current) => ({ ...current, [question.id]: value }))
-                  }
-                />
-              )}
-            </div>
-          ))}
-          {failed ? <ErrorBanner message="Couldn't submit answers." onRetry={onRetry} /> : null}
-          {!readOnly ? (
-            <Button type="submit" isDisabled={!complete || pending}>
-              {pending ? 'Submitting answers' : 'Submit answers'}
-            </Button>
-          ) : null}
-        </form>
-      )}
-    </ItemCard>
+                    {question.isOther ? (
+                      <TextField
+                        label="Other"
+                        isDisabled={readOnly || pending}
+                        value={
+                          question.options.some((option) => option.label === answers[question.id])
+                            ? ''
+                            : (answers[question.id] ?? '')
+                        }
+                        onChange={(value) =>
+                          setAnswers((current) => ({ ...current, [question.id]: value }))
+                        }
+                      />
+                    ) : null}
+                  </>
+                ) : (
+                  <TextField
+                    label={question.header}
+                    isDisabled={readOnly || pending}
+                    value={answers[question.id] ?? ''}
+                    onChange={(value) =>
+                      setAnswers((current) => ({ ...current, [question.id]: value }))
+                    }
+                  />
+                )}
+              </div>
+            ))}
+            {failed ? <ErrorBanner message="Couldn't submit answers." onRetry={onRetry} /> : null}
+            {!readOnly ? (
+              <Button type="submit" isDisabled={!complete || pending}>
+                {pending ? 'Submitting answers' : 'Submit answers'}
+              </Button>
+            ) : null}
+          </form>
+        )}
+      </ItemCard>
+    </div>
   );
 }
 

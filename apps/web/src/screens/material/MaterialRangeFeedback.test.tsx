@@ -48,6 +48,11 @@ describe('exact Material range feedback', () => {
       await user.clear(end);
       await user.type(end, to);
       expect(use).toBeDisabled();
+      expect(start).toBeInvalid();
+      expect(end).toBeInvalid();
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Choose a nonempty range within the original text, with no split Unicode character.'
+      );
     }
     expect(onChange).not.toHaveBeenCalled();
     await user.clear(start);

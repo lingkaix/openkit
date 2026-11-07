@@ -451,6 +451,7 @@ export function ThreadStream({
               {activity ? (
                 <section
                   aria-label="Runtime activity"
+                  aria-live="polite"
                   className="rounded-ok border border-border bg-sunken p-4 text-sm"
                 >
                   <h3 className="font-semibold text-fg">Runtime activity</h3>

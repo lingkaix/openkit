@@ -565,7 +565,10 @@ describe.each([
     await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
-    await screen.findByText("Couldn't send that message. Try again.");
+    expect(await screen.findByText("Couldn't send that message. Try again.")).toHaveAttribute(
+      'role',
+      'alert'
+    );
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled());
     expect(screen.getByRole('button', { name: 'Remove file arbitrary.bin' })).toBeInTheDocument();
     const retained = queryClient
@@ -2126,9 +2129,10 @@ describe('chat thread (boards 02/03)', () => {
     );
 
     expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
-    expect(
-      screen.getByRole('region', { name: 'Runtime activity' }).querySelector('input, button')
-    ).toBeNull();
+    const activity = screen.getByRole('region', { name: 'Runtime activity' });
+    expect(activity).toHaveAttribute('aria-live', 'polite');
+    expect(activity.querySelector('input, button')).toBeNull();
+    expect(screen.getByRole('status', { name: 'Needs your input' })).toBeInTheDocument();
     await user.type(await screen.findByRole('textbox', { name: 'Audience' }), 'Operators');
     await user.click(screen.getByRole('radio', { name: 'Concise' }));
     await user.click(screen.getByRole('button', { name: 'Submit answers' }));

@@ -604,7 +604,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
         <div className="border-t border-separator px-6 py-3">
           <div className="mx-auto w-full max-w-[760px]">
             {submission?.status === 'error' ? (
-              <p className="mb-2 text-xs font-medium text-negative-fg">
+              <p role="alert" className="mb-2 text-xs font-medium text-negative-fg">
                 {cancelledRequestId
                   ? 'This turn was stopped. Send starts a new turn.'
                   : "Couldn't send that message. Try again."}

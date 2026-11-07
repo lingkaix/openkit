@@ -87,7 +87,7 @@ export function ConversationGoalGroups({
         </div>
         {open ? (
           failed || (view?.isSuccess && !view.data.goal) ? (
-            <div className="pl-7 text-xs text-notice-fg">
+            <div role="status" className="pl-7 text-xs text-notice-fg">
               <p>Goal tasks are unavailable.</p>
               <Button
                 variant="quiet"
@@ -165,7 +165,9 @@ export function ConversationGoalGroups({
               ) : null}
             </>
           ) : (
-            <p className="pl-7 text-xs text-fg-muted">Loading Goal tasks…</p>
+            <p role="status" className="pl-7 text-xs text-fg-muted">
+              Loading Goal tasks…
+            </p>
           )
         ) : null}
       </div>

@@ -51,6 +51,7 @@ export function MaterialRangeFeedback({
     end <= revision.content.length &&
     !splitsSurrogate(revision.content, start) &&
     !splitsSurrogate(revision.content, end);
+  const rangeInvalid = Boolean(startText || endText) && !valid;
 
   return (
     <section
@@ -83,12 +84,14 @@ export function MaterialRangeFeedback({
           value={startText}
           onChange={setStartText}
           isDisabled={isDisabled}
+          isInvalid={rangeInvalid}
         />
         <TextField
           label="Range end"
           value={endText}
           onChange={setEndText}
           isDisabled={isDisabled}
+          isInvalid={rangeInvalid}
         />
       </div>
       <div className="flex flex-wrap gap-2">
@@ -123,8 +126,8 @@ export function MaterialRangeFeedback({
           <pre className="whitespace-pre-wrap font-sans">{value.originalText}</pre>
         </div>
       ) : null}
-      {(startText || endText) && !valid ? (
-        <p className="text-xs text-negative-fg">
+      {rangeInvalid ? (
+        <p role="alert" className="text-xs text-negative-fg">
           Choose a nonempty range within the original text, with no split Unicode character.
         </p>
       ) : null}

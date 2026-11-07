@@ -827,7 +827,7 @@ describe('Administration', () => {
       await screen.findByText(
         'Deletion result unknown. Refresh status before requesting another deletion.'
       )
-    ).toBeInTheDocument();
+    ).toHaveAttribute('role', 'alert');
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
     expect(getWorkerEnvironmentStatus).not.toHaveBeenCalled();
 
@@ -959,7 +959,11 @@ describe('Administration', () => {
       confirmation: workerEnvironmentActivationConfirmation(binding),
       requestId: expect.any(String),
     });
-    await screen.findByText('Activation command result');
+    expect(
+      await screen.findByRole(established ? 'status' : 'alert', {
+        name: 'Activation command result',
+      })
+    ).toBeInTheDocument();
     const incompleteMessage =
       'Activation is incomplete or includes an unknown host result. Inspect the exact configuration and environment status, then prepare a fresh candidate.';
     if (established) {
@@ -1318,7 +1322,9 @@ describe('Administration', () => {
       },
       requestId: expect.any(String),
     });
-    expect(await screen.findByText('Configuration write persisted')).toBeInTheDocument();
+    expect(
+      await screen.findByRole('alert', { name: 'Configuration command result' })
+    ).toBeInTheDocument();
     expect(screen.getByText('Reload failed')).toBeInTheDocument();
     expect(screen.getByText('Persisted')).toBeInTheDocument();
     expect(screen.queryByText('Ready for review')).not.toBeInTheDocument();

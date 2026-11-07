@@ -237,10 +237,12 @@ export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
         </>
       ) : null}
       {navigation.isPending ? (
-        <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
+        <p role="status" className="px-3 text-xs text-fg-muted">
+          Loading conversations…
+        </p>
       ) : null}
       {navigation.isError ? (
-        <div className="px-3 text-xs text-notice-fg">
+        <div role="status" className="px-3 text-xs text-notice-fg">
           <p>
             Conversation status unavailable
             {conversations.length ? ' — showing the last update.' : '.'}

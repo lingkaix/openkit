@@ -187,8 +187,8 @@ function MetadataBlock({ label, value }: { label: string; value: Record<string, 
 /** Separates persistence from reload and restart outcomes without implying readiness. */
 function ApplyResultCard({ result }: { result: ApplyAdministrationConfigurationResponse }) {
   const unknownReload = result.reload !== 'applied';
-  return (
-    <div className="rounded-ok border border-border bg-sunken p-3">
+  const body = (
+    <>
       <p className="text-sm font-bold text-fg-strong">Configuration command result</p>
       <p className="text-xs text-fg-muted">
         {result.persisted
@@ -210,6 +210,19 @@ function ApplyResultCard({ result }: { result: ApplyAdministrationConfigurationR
           fresh candidate; do not retry this Apply.
         </p>
       ) : null}
+    </>
+  );
+  const className = 'rounded-ok border border-border bg-sunken p-3';
+  if (unknownReload) {
+    return (
+      <div role="alert" aria-label="Configuration command result" className={className}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <div role="status" aria-label="Configuration command result" className={className}>
+      {body}
     </div>
   );
 }
