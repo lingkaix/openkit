@@ -560,8 +560,74 @@ describe('createAuthMiddleware', () => {
 
       expect(denied.status).toBe(401);
       expect(body).not.toContain(nanohostSecret);
+      expect(JSON.parse(body).code).toBe('core.auth.unauthenticated');
       expect(body).not.toContain('server-admin');
       expect(body).not.toContain('integration_nanohost_primary');
     }
+  });
+
+  it('rejects a nanohost-transport bearer on remote MCP', async () => {
+    const secret = createOpenKitAccessTokenSecret();
+    let handlerReached = false;
+    const app = new Hono();
+    app.use(
+      '*',
+      createAuthMiddleware('server', undefined, {
+        accessTokenVerifier: async (presented) =>
+          presented === secret
+            ? {
+                actor: {
+                  kind: 'token',
+                  tokenScope: 'nanohost-transport',
+                  userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b',
+                },
+                tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+              }
+            : null,
+      })
+    );
+    app.post('/mcp', (c) => {
+      handlerReached = true;
+      return c.json(c.get('actor'));
+    });
+
+    const denied = await app.request('/mcp', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secret}` },
+    });
+
+    expect(denied.status).toBe(401);
+    await expect(denied.json()).resolves.toMatchObject({ code: 'core.auth.unauthenticated' });
+    expect(handlerReached).toBe(false);
+  });
+
+  it('refuses a bearer when the Node connection binding has no socket', async () => {
+    let verifierCalls = 0;
+    const app = new Hono();
+    app.use(
+      '/api/*',
+      createAuthMiddleware('server', undefined, {
+        accessTokenVerifier: async () => {
+          verifierCalls += 1;
+          return {
+            actor: { userId: 'usr_00000000-0000-7837-b2a3-59c3cee3392b', kind: 'token' },
+            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+          };
+        },
+      })
+    );
+    app.get('/api/private', (c) => c.json(c.get('actor')));
+
+    const denied = await app.request(
+      new Request('https://127.0.0.1/api/private', {
+        headers: { authorization: 'Bearer okt_test_token' },
+      }),
+      undefined,
+      { incoming: {} }
+    );
+
+    expect(denied.status).toBe(400);
+    await expect(denied.json()).resolves.toMatchObject({ code: 'core.auth.insecure_transport' });
+    expect(verifierCalls).toBe(0);
   });
 });

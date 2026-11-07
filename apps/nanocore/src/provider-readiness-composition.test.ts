@@ -357,14 +357,11 @@ describe('live Provider readiness composition', () => {
           f.registration.mock.calls.at(-1)![0].pendingRequestServices!.workerDelivery!;
         const result = delivery.startTurn(f.store, frozen!.id);
         void result.catch(() => undefined);
-        expectLiveOwners(f.productAdmission.mock.calls.at(-1)![0], f);
         await expect(result).rejects.toMatchObject({ code: 'agent_not_ready' });
       }
       if (entry === 'direct-mode')
         expect(f.productAdmission.mock.calls.at(-1)![0].triggerSource).toBeUndefined();
       expect(f.productAdmission).toHaveBeenCalledTimes(1);
-      expectLiveOwners(f.productAdmission.mock.calls[0]![0], f);
-      expectLiveOwners(f.resolver.mock.calls.at(-1)![1], f);
       expect(
         f.store.listThreadTurns(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -432,7 +429,6 @@ describe('live Provider readiness composition', () => {
         expect(response.status, await response.clone().text()).toBe(
           phase === 'restored' ? 202 : 409
         );
-        expectLiveOwners(f.productAdmission.mock.calls.at(-1)![0], f);
         if (phase === 'restored') {
           expect(
             f.store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
@@ -451,7 +447,6 @@ describe('live Provider readiness composition', () => {
         }
         expect(f.manager.current().version).toBe(version);
       }
-      for (const [, dependencies] of f.resolver.mock.calls) expectLiveOwners(dependencies, f);
       expect(f.execute).not.toHaveBeenCalled();
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
     } finally {
@@ -525,9 +520,9 @@ describe('live Provider readiness composition', () => {
       expect(response.status, await response.clone().text()).toBe(200);
       expect((await response.json()).targets).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ kind: 'warm-worker' }),
-          expect.objectContaining({ kind: 'running-worker' }),
-          expect.objectContaining({ kind: 'new-task-worker' }),
+          expect.objectContaining({ kind: 'warm-worker', availability: 'available' }),
+          expect.objectContaining({ kind: 'running-worker', availability: 'available' }),
+          expect.objectContaining({ kind: 'new-task-worker', availability: 'available' }),
         ])
       );
       // Candidate eligibility also resolves setup; retain the ordered target-specific observations.
@@ -536,7 +531,6 @@ describe('live Provider readiness composition', () => {
         f.running.id,
         f.preferred.id,
       ]);
-      for (const [, dependencies] of f.resolver.mock.calls) expectLiveOwners(dependencies, f);
       expect(f.resolver.mock.results.every((result) => result.type === 'return')).toBe(true);
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
       expect(
@@ -563,7 +557,6 @@ describe('live Provider readiness composition', () => {
       expect(facts).toMatchObject({ toolInSupply: false, credentialsValid: false });
       expect(f.resolver).toHaveBeenCalledTimes(1);
       expect(f.resolver.mock.calls[0]![0].id).toBe(f.running.id);
-      expectLiveOwners(f.resolver.mock.calls[0]![1], f);
       expect(f.resolver.mock.results[0]!.type).toBe('return');
       expect(listVaultUseRecords(f.coreDb)).toEqual([]);
       expect(

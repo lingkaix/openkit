@@ -330,10 +330,10 @@ async function retainRuntimeFences(f: Fixture) {
 }
 
 /** Refusal must come from a registered operation, never from its absent route. */
-async function expectRefused(response: Response, statuses = [400, 403, 409]) {
-  expect(statuses, await response.clone().text()).toContain(response.status);
+async function expectRefused(response: Response, status: number, code: string) {
+  expect(response.status, await response.clone().text()).toBe(status);
   expect(response.headers.get('content-type')).toContain('application/json');
-  expect(await response.json()).toMatchObject({ code: expect.any(String) });
+  expect(await response.json()).toMatchObject({ code });
 }
 
 /** The exact owner grammar makes retained retirement distinct from deletion or capacity release. */
@@ -392,7 +392,8 @@ describe('retained-only quarantine retirement: native operation and Core authori
         ...f.request,
         confirmation: `permanently-delete-workspace:${f.workspaceId}:1`,
       }),
-      [409]
+      409,
+      'recovery_required'
     );
     expect(registry(f)).toEqual(before);
     expect(retainedTree(f.workspaceRoot)).toEqual(tree);
@@ -449,14 +450,19 @@ describe('retained-only quarantine retirement: native operation and Core authori
   it('rejects an original owner without administrator authority before disclosing a quarantined target', async () => {
     const f = await fixture();
     const before = registry(f);
-    await expectRefused(await f.call(OPERATION, f.request, f.member.secret), [403]);
+    await expectRefused(
+      await f.call(OPERATION, f.request, f.member.secret),
+      403,
+      'deployment_admin_required'
+    );
     await expectRefused(
       await f.call(
         OPERATION,
         { ...f.request, workspaceId: testEntityId('ws', 'retirement-absent') },
         f.member.secret
       ),
-      [403]
+      403,
+      'deployment_admin_required'
     );
     expect(registry(f)).toEqual(before);
   });
@@ -469,7 +475,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     const f = await fixture(fault);
     const before = registry(f);
     const tree = retainedTree(f.workspaceRoot);
-    await expectRefused(await f.call(OPERATION, f.request), [409]);
+    await expectRefused(await f.call(OPERATION, f.request), 409, 'recovery_required');
     expect(registry(f)).toEqual(before);
     expect(retainedTree(f.workspaceRoot)).toEqual(tree);
     expect(f.admission.isClosed(f.workspaceId)).toBe(false);
@@ -508,7 +514,14 @@ describe('retained-only quarantine retirement: native operation and Core authori
     const tree = retainedTree(f.workspaceRoot);
     await expectRefused(
       await f.call(OPERATION, request),
-      conflict === 'missing-registry' ? [403, 404, 409] : [400, 409]
+      conflict === 'confirmation' ? 400 : 409,
+      conflict === 'confirmation'
+        ? 'invalid_request'
+        : conflict === 'revision'
+          ? 'revision_conflict'
+          : conflict === 'deletion-owned'
+            ? 'workspace_deletion_in_progress'
+            : 'recovery_required'
     );
     expect(registry(f)).toEqual(before);
     expect(rows(f, 'idempotency_requests')).toEqual(receipts);
@@ -538,7 +551,8 @@ describe('retained-only quarantine retirement: native operation and Core authori
         expectedRegistryRevision: 2,
         confirmation: `retire-quarantined-workspace:${f.workspaceId}:2`,
       }),
-      [409]
+      409,
+      'idempotency_key_conflict'
     );
     await expectRefused(
       await f.call(OPERATION, {
@@ -546,9 +560,14 @@ describe('retained-only quarantine retirement: native operation and Core authori
         workspaceId: f.siblingId,
         confirmation: `retire-quarantined-workspace:${f.siblingId}:1`,
       }),
-      [409]
+      409,
+      'idempotency_key_conflict'
     );
-    await expectRefused(await f.call(OPERATION, { ...f.request, requestId: randomUUID() }), [409]);
+    await expectRefused(
+      await f.call(OPERATION, { ...f.request, requestId: randomUUID() }),
+      409,
+      'recovery_required'
+    );
     expect(rows(f, 'audit_events')).toEqual(audit);
     expect(rows(f, 'idempotency_requests')).toEqual(receipts);
     expect(registry(f)).toMatchObject({ revision: 2, status: 'retired' });
@@ -574,7 +593,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
       );
     const before = registry(f);
     const audit = rows(f, 'audit_events');
-    await expectRefused(await f.call(OPERATION, f.request), [409]);
+    await expectRefused(await f.call(OPERATION, f.request), 409, 'recovery_required');
     expect(registry(f)).toEqual(before);
     expect(rows(f, 'audit_events')).toEqual(audit);
   });
@@ -592,7 +611,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     );
     const response = await f.call(OPERATION, f.request);
     // A missing route does not prove transaction rollback. The retry below must reach success too.
-    await expectRefused(response, [409, 500]);
+    await expectRefused(response, 409, 'recovery_required');
     expect(registry(f)).toEqual(before);
     expect(rows(f, 'audit_events')).toEqual(audit);
     expect(rows(f, 'idempotency_requests')).toEqual(receipts);
@@ -634,7 +653,11 @@ describe('retained-only quarantine retirement: native operation and Core authori
       const response = await pending;
       if (outcome === 'settle') await expectRetired(f, response);
       else {
-        await expectRefused(response, [401, 403, 409]);
+        await expectRefused(
+          response,
+          outcome === 'revoke' ? 403 : 409,
+          outcome === 'revoke' ? 'deployment_admin_required' : 'revision_conflict'
+        );
         expect(registry(f)).toMatchObject({
           status: 'active',
           revision: outcome === 'revision' ? 2 : 1,

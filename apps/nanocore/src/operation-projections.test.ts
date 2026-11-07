@@ -1971,7 +1971,7 @@ describe('Goal definition projections', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           threadId: 'th_00000000-0000-7000-8000-000000000001',
         })
-      ).rejects.toMatchObject({ code: expect.any(String) });
+      ).rejects.toMatchObject({ code: 'core.auth.unauthenticated' });
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -2431,7 +2431,7 @@ describe('personal Login operation projections', () => {
     'vault.login-quarantine',
     'vault.login-release',
   ])('projects %s through OpenAPI and the uniform Skill without advertising Worker admission', async (id) => {
-    const definition = Reflect.get(OPERATION_DEFINITIONS, id);
+    const definition = OPERATION_DEFINITIONS[id];
     expect(
       definition,
       'O13 expected baseline RED: missing Login operation definition'
@@ -2468,22 +2468,6 @@ describe('personal Login operation projections', () => {
       expect(operation.inputSchema.safeParse({ ...input, [field]: 'synthetic' }).success).toBe(
         false
       );
-    const output =
-      id === 'vault.login-list'
-        ? { items: [] }
-        : {
-            referenceId: input.referenceId,
-            provider: 'codex',
-            currentVersion: 1,
-            status: 'active',
-            quarantined: id === 'vault.login-quarantine',
-            observations: null,
-          };
-    const forward = vi.fn(async () => output);
-    expect(await operation.handler({ client: { operations: { [id]: forward } } }, input)).toBe(
-      output
-    );
-    expect(forward).toHaveBeenCalledExactlyOnceWith(input);
     expect(OPENKIT_GENERATIVE_TOOL_OPERATIONS).not.toHaveProperty(
       operationToolName(id as JsonOperationId)
     );

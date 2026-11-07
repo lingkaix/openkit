@@ -39,10 +39,7 @@ afterEach(async () => {
 
 /** Makes an absent baseline definition an intended assertion failure instead of an import error. */
 function requireCallerDefinition() {
-  expect(
-    Reflect.get(OPERATION_DEFINITIONS, 'caller.read'),
-    'caller.read must be defined.'
-  ).toBeDefined();
+  expect(OPERATION_DEFINITIONS['caller.read'], 'caller.read must be defined.').toBeDefined();
 }
 
 /** Creates a real server session, canonical owners and isolated retained records without launching work. */
@@ -336,7 +333,7 @@ describe('caller operation projections', () => {
     );
     const admin = f.token();
     const client = clientFor(f, { authorization: `Bearer ${admin.secret}` });
-    const read = Reflect.get(client.operations, 'caller.read');
+    const read = client.operations['caller.read'];
     expect(read).toBeTypeOf('function');
     const clientResult = await read(input);
     const invoke = createOperationInvocation({

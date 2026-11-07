@@ -195,25 +195,37 @@ function success(result: AgentToolResult) {
 }
 
 /** Requires a typed bounded refusal and excludes raw filesystem or source content from it. */
-function refusal(result: AgentToolResult, f: Fixture, canary = 'source-content-canary') {
+function refusal(
+  result: AgentToolResult,
+  f: Fixture,
+  expectedCode: AssistantSkillResourceError['code'],
+  canary = 'source-content-canary'
+) {
   expect(result.isError).toBe(true);
   expect(result.content).toHaveLength(1);
   expect(result.content[0]?.type).toBe('text');
   const text = (result.content[0] as { text: string }).text;
   expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(64 * 1024);
-  expect(JSON.parse(text)).toEqual({ code: expect.any(String), message: expect.any(String) });
+  expect(JSON.parse(text)).toEqual({
+    code: expectedCode,
+    message: expect.any(String),
+  });
   expect(text).not.toContain(f.dataRoot);
   expect(text).not.toContain(canary);
 }
 
 /** Requires an actual bounded admission error rather than a missing module or fixture exception. */
-async function admissionRefusal(run: Promise<unknown>, f: Fixture) {
+async function admissionRefusal(
+  run: Promise<unknown>,
+  f: Fixture,
+  expectedCode: AssistantSkillResourceError['code']
+) {
   const error = await run.then(
     () => undefined,
     (failure: unknown) => failure
   );
-  expect(error).toBeInstanceOf(Error);
-  expect(error).toHaveProperty('code', expect.any(String));
+  expect(error).toBeInstanceOf(AssistantSkillResourceError);
+  expect((error as AssistantSkillResourceError).code).toBe(expectedCode);
   expect((error as Error).message).not.toContain(f.dataRoot);
 }
 
@@ -294,7 +306,8 @@ describe('Assistant selected Skill assembly', () => {
         },
         { callId: 'unselected', toolOccurrence: 1, signal: new AbortController().signal }
       ),
-      f
+      f,
+      'invalid_skill_read'
     );
   });
 
@@ -400,7 +413,8 @@ describe('Assistant selected Skill assembly', () => {
               ? ['alpha', 'alpha']
               : ['alpha'],
       }),
-      f
+      f,
+      'resource_unavailable'
     );
   });
 
@@ -411,7 +425,11 @@ describe('Assistant selected Skill assembly', () => {
       catalog.skills.entries[0]!.description = 'Selected description. '.repeat(4_000);
     });
 
-    await admissionRefusal(assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] }), f);
+    await admissionRefusal(
+      assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] }),
+      f,
+      'resource_unavailable'
+    );
   });
 
   it.each([
@@ -439,7 +457,11 @@ describe('Assistant selected Skill assembly', () => {
     if (condition === 'turn-lineage')
       f.threadId = (await f.store.createThread(f.workspaceId, 'Different thread')).id;
 
-    await admissionRefusal(assembleAssistantSkillResources({ ...f, skillIds: [] }), f);
+    await admissionRefusal(
+      assembleAssistantSkillResources({ ...f, skillIds: [] }),
+      f,
+      'resource_access_denied'
+    );
   });
 });
 
@@ -457,12 +479,16 @@ describe('Assistant progressive Skill reads', () => {
     );
     const spies = observeReads();
     const result = await read(assembled);
-    refusal(result, f);
+    refusal(result, f, 'resource_unavailable');
     expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
       'resource_unavailable'
     );
     expectNoSnapshotRead(spies, root);
-    await admissionRefusal(assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] }), f);
+    await admissionRefusal(
+      assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] }),
+      f,
+      'resource_unavailable'
+    );
   });
 
   it.each([
@@ -529,13 +555,12 @@ describe('Assistant progressive Skill reads', () => {
     syncBuiltinESMExports();
     const result = await read(assembled);
     await completion;
-    refusal(result, f);
+    const expectedCode = ['membership', 'user', 'audience', 'completed'].includes(condition)
+      ? 'resource_access_denied'
+      : 'resource_unavailable';
+    refusal(result, f, expectedCode);
     expect(changed).toBe(true);
-    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
-      ['membership', 'user', 'audience', 'completed'].includes(condition)
-        ? 'resource_access_denied'
-        : 'resource_unavailable'
-    );
+    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(expectedCode);
   });
 
   it('returns one strict logical success and throws owner failures instead of a model envelope', async () => {
@@ -685,7 +710,7 @@ describe('Assistant progressive Skill reads', () => {
       fileDigest: `sha256:${createHash('sha256').update('').digest('hex')}`,
       text: '',
     });
-    refusal(await read(assembled, 'assets/empty'), f);
+    refusal(await read(assembled, 'assets/empty'), f, 'invalid_skill_read');
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId)).toEqual(before);
     expect(
       fs.readdirSync(
@@ -712,10 +737,10 @@ describe('Assistant progressive Skill reads', () => {
       fs.writeFileSync(join(root, 'SKILL.md'), 'source-content-canary');
     else fs.unlinkSync(join(root, 'SKILL.md'));
     const result = await read(assembled);
-    refusal(result, f);
-    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
-      fault === 'missing-root' ? 'resource_unavailable' : 'skill_content_integrity_failed'
-    );
+    const expectedCode =
+      fault === 'missing-root' ? 'resource_unavailable' : 'skill_content_integrity_failed';
+    refusal(result, f, expectedCode);
+    expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(expectedCode);
     expect(assembled.index[0]!.versionId).toBe(original.version.digest);
   });
 
@@ -859,7 +884,13 @@ describe('Assistant progressive Skill reads', () => {
       });
     const spies = observeReads();
 
-    refusal(await read(assembled), f);
+    refusal(
+      await read(assembled),
+      f,
+      condition === 'removed' || condition === 'missing-version'
+        ? 'resource_unavailable'
+        : 'resource_access_denied'
+    );
 
     expectNoSnapshotRead(
       spies,
@@ -895,7 +926,8 @@ describe('Assistant progressive Skill reads', () => {
         },
         { callId: 'after-terminal', signal }
       ),
-      f
+      f,
+      'resource_access_denied'
     );
 
     expectNoSnapshotRead(
@@ -942,10 +974,14 @@ describe('Assistant progressive Skill reads', () => {
       },
       { ...base, versionId: `sha256:${'f'.repeat(64)}` },
       { ...base, contentDigest: `sha256:${'f'.repeat(64)}` },
-      { ...base, workspaceId: testEntityId('ws', 'untrusted-workspace') },
-      ...unsafePaths.map((path) => ({ ...base, path })),
+      ...unsafePaths.filter((path) => path !== '').map((path) => ({ ...base, path })),
     ])
-      refusal(await modelTool(assembled).execute(args, context), f);
+      refusal(await modelTool(assembled).execute(args, context), f, 'invalid_skill_read');
+    for (const args of [
+      { ...base, workspaceId: testEntityId('ws', 'untrusted-workspace') },
+      { ...base, path: '' },
+    ])
+      refusal(await modelTool(assembled).execute(args, context), f, 'resource_unavailable');
   });
 
   it.each([
@@ -982,7 +1018,11 @@ describe('Assistant progressive Skill reads', () => {
       fs.symlinkSync(outside, root);
     }
 
-    refusal(await read(assembled), f);
+    refusal(
+      await read(assembled),
+      f,
+      condition === 'root-link' ? 'resource_unavailable' : 'skill_content_integrity_failed'
+    );
   });
 
   it('refuses a linked supporting-file parent before inspecting or reading its leaf', async () => {
@@ -1006,7 +1046,7 @@ describe('Assistant progressive Skill reads', () => {
     const lstat = vi.spyOn(fs, 'lstatSync');
     const reads = observeReads();
 
-    refusal(await read(assembled, 'references/guide.md'), f);
+    refusal(await read(assembled, 'references/guide.md'), f, 'skill_content_integrity_failed');
 
     const inspectedPaths = lstat.mock.calls.map(([path]) => String(path));
     expect(inspectedPaths).not.toContain(join(parent, 'guide.md'));
@@ -1016,20 +1056,43 @@ describe('Assistant progressive Skill reads', () => {
   });
 
   it.each([
-    { name: 'binary', bytes: Buffer.from([0, 1, 2, 3]) },
-    { name: 'invalid UTF-8', bytes: Buffer.from([0xc3, 0x28]) },
-    { name: 'raw file size', bytes: Buffer.from('x'.repeat(65_536)) },
-    { name: 'JSON envelope size', bytes: Buffer.from('x'.repeat(65_500)) },
-    { name: 'escaped JSON size', bytes: Buffer.from('"\\\n'.repeat(12_000)) },
-    { name: 'UTF-8 byte size', bytes: Buffer.from('界'.repeat(22_000)) },
-  ])('returns a bounded error for $name without truncating source bytes', async ({ bytes }) => {
+    { name: 'binary', bytes: Buffer.from([0, 1, 2, 3]), code: 'skill_content_not_text' as const },
+    {
+      name: 'invalid UTF-8',
+      bytes: Buffer.from([0xc3, 0x28]),
+      code: 'skill_content_not_text' as const,
+    },
+    {
+      name: 'raw file size',
+      bytes: Buffer.from('x'.repeat(65_536)),
+      code: 'skill_content_too_large' as const,
+    },
+    {
+      name: 'JSON envelope size',
+      bytes: Buffer.from('x'.repeat(65_500)),
+      code: 'skill_content_too_large' as const,
+    },
+    {
+      name: 'escaped JSON size',
+      bytes: Buffer.from('"\\\n'.repeat(12_000)),
+      code: 'skill_content_too_large' as const,
+    },
+    {
+      name: 'UTF-8 byte size',
+      bytes: Buffer.from('界'.repeat(22_000)),
+      code: 'skill_content_too_large' as const,
+    },
+  ])('returns a bounded error for $name without truncating source bytes', async ({
+    bytes,
+    code,
+  }) => {
     const f = await fixture();
     const imported = importSkill(f, 'alpha', '# Root\n', [
       { kind: 'file', path: 'support.txt', contentBase64: bytes.toString('base64') },
     ]);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
 
-    refusal(await read(assembled, 'support.txt'), f);
+    refusal(await read(assembled, 'support.txt'), f, code);
 
     expect(
       fs.readFileSync(
@@ -1142,7 +1205,13 @@ describe('Assistant Skill sanitization through the shared loop', () => {
     expect(() => JSON.parse(text)).not.toThrow();
     if (path && observation.isError !== true) expect(JSON.parse(text).path).toBe(path);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(65_536);
-    if (expectsRefusal) refusal(observation, f, refusalCanary);
+    if (expectsRefusal)
+      refusal(
+        observation,
+        f,
+        path ? 'resource_unavailable' : 'skill_content_too_large',
+        refusalCanary
+      );
     else {
       const parsed = success(observation);
       expect(parsed).toEqual({

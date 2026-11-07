@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { readWorkerInferenceRuntimeHint } from './worker-inference-runtime-hint.js';
 
@@ -40,18 +39,27 @@ describe('normalized worker inference runtime hints', () => {
     );
   });
 
-  it('removes native parsing from Core', () => {
-    const source = readFileSync(
-      new URL('./worker-inference-runtime-hint.ts', import.meta.url),
-      'utf8'
-    );
-    for (const nativeField of [
-      'x-codex-turn-metadata',
-      'client_metadata',
-      'request_kind',
-      'collab_spawn',
-    ]) {
-      expect(source).not.toContain(nativeField);
-    }
+  it('rejects raw legacy envelopes that lack normalized fields', () => {
+    expect(() =>
+      readWorkerInferenceRuntimeHint({ 'x-codex-turn-metadata': { turn_id: 'native' } }, 'codex')
+    ).toThrow('Worker inference runtime hint is invalid.');
+    expect(() =>
+      readWorkerInferenceRuntimeHint({ client_metadata: { thread_id: 'native' } }, 'codex')
+    ).toThrow('Worker inference runtime hint is invalid.');
+  });
+
+  it('strips legacy properties when normalized fields are present', () => {
+    expect(
+      readWorkerInferenceRuntimeHint(
+        {
+          ...hint,
+          request_kind: 'turn',
+          collab_spawn: true,
+          'x-codex-turn-metadata': { turn_id: 'native' },
+          client_metadata: { session_id: 'native' },
+        },
+        'codex'
+      )
+    ).toEqual(hint);
   });
 });

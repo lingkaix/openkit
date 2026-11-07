@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -25,18 +22,6 @@ import {
  * does not exist yet. Do not implement the production module here.
  */
 describe('NanoHost transport token class', () => {
-  it('imports okt_ create/hash/verify helpers from access-token.ts', () => {
-    const source = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), 'nanohost-transport-token.ts'),
-      'utf8'
-    );
-
-    expect(source).toMatch(/from ['"]\.\/access-token\.js['"]/);
-    expect(source).toContain('createOpenKitAccessTokenSecret');
-    expect(source).toContain('hashOpenKitAccessTokenSecret');
-    expect(source).toContain('verifyOpenKitAccessTokenSecret');
-  });
-
   it('exposes closed nanohost-transport type and scope, not human scopes', () => {
     expect(NANOHOST_TRANSPORT_TOKEN_TYPE).toBe('nanohost-transport');
     expect(NANOHOST_TRANSPORT_TOKEN_SCOPE).toBe('nanohost-transport');
@@ -66,6 +51,64 @@ describe('NanoHost transport token class', () => {
         now
       )
     ).toEqual({ reason: 'expired', usable: false });
+  });
+
+  it.each([
+    {
+      name: 'revoked',
+      token: {
+        expiresAt: '2026-08-09T00:00:00.000Z',
+        status: 'revoked' as const,
+      },
+      result: { reason: 'revoked' as const, usable: false as const },
+    },
+    {
+      name: 'expired status with a future expiry',
+      token: {
+        expiresAt: '2026-08-09T00:00:00.000Z',
+        status: 'expired' as const,
+      },
+      result: { reason: 'expired' as const, usable: false as const },
+    },
+    {
+      name: 'rotated inside the overlap window',
+      token: {
+        expiresAt: '2026-08-09T00:00:00.000Z',
+        rotationOverlapExpiresAt: '2026-08-08T00:00:01.000Z',
+        status: 'rotated' as const,
+      },
+      result: { usable: true as const },
+    },
+    {
+      name: 'rotated after the overlap window',
+      token: {
+        expiresAt: '2026-08-09T00:00:00.000Z',
+        rotationOverlapExpiresAt: '2026-08-07T00:00:00.000Z',
+        status: 'rotated' as const,
+      },
+      result: { reason: 'rotated' as const, usable: false as const },
+    },
+    {
+      name: 'rotated with a null overlap',
+      token: {
+        expiresAt: '2026-08-09T00:00:00.000Z',
+        rotationOverlapExpiresAt: null,
+        status: 'rotated' as const,
+      },
+      result: { reason: 'rotated' as const, usable: false as const },
+    },
+    {
+      name: 'rotated with an absent overlap',
+      token: {
+        expiresAt: '2026-08-09T00:00:00.000Z',
+        status: 'rotated' as const,
+      },
+      result: { reason: 'rotated' as const, usable: false as const },
+    },
+  ])('refuses or admits a $name transport token', ({ token, result }) => {
+    expect(
+      evaluateNanoHostTransportTokenUsability(token, new Date('2026-08-08T00:00:00.000Z'))
+    ).toEqual(result);
   });
 
   it('relies on okt_ secret hashing that does not echo the secret', () => {

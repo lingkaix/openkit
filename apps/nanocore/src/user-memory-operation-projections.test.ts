@@ -4,9 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
-import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { createRuntimeConfigManager, type RuntimeConfigManager } from './config/runtime-config.js';
 import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
-import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
+import type { KnowledgeManagerAgentRun } from './internal-agents/knowledge-manager-agent.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
+import {
+  listUserKnowledgeSources,
+  readUserKnowledgeSource,
+} from './knowledge/scoped-knowledge-sources.js';
+import {
+  initializeScopedNotebook,
+  resolveScopedNotebookOwner,
+} from './knowledge/scoped-notebook-owner.js';
+import { runUserMemoryMaintenanceCommand } from './knowledge/user-memory-agent-maintenance.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -51,20 +61,73 @@ async function fixture() {
     uncertainty: 'No matching page.',
   };
   const ask = vi.fn(async () => answer);
-  const maintainMemory = vi.fn(async () => ({
-    threadId: timeline.id,
-    turnId: turn.id,
-    outcome: 'no-change' as const,
-    notebookRevision: baseRevision,
-    summary: 'No change.',
-  }));
+  const notebook = () =>
+    new KnowledgeNotebook({
+      repositoryPath: join(
+        resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } }).notebookRoot,
+        'notebook.git'
+      ),
+    });
+  const maintenanceConfig = {
+    current: () => ({
+      userConfigs: [
+        {
+          userId,
+          config: { knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] } },
+        },
+      ],
+    }),
+  } as unknown as RuntimeConfigManager;
+  const maintainRun = vi.fn(async (input: KnowledgeManagerAgentRun) => {
+    const submit = input.tools.find(({ name }) => name === 'knowledge.notebook.update')!;
+    await submit.execute(
+      { summary: 'Saved your preference to Memory: use green labels.' },
+      { callId: randomUUID(), toolOccurrence: 1, signal: input.signal }
+    );
+    await store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    return {
+      turnId: input.turn.id,
+      text: JSON.stringify({ summary: 'Saved your preference to Memory: use green labels.' }),
+    };
+  });
   const invoke = createOperationInvocation({
     coreDb,
     store,
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     inflightCommands: new WeakMap(),
     repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
-    knowledgeAgent: { ask, maintainMemory, maintain: vi.fn() },
+    knowledgeAgent: {
+      ask,
+      maintainMemory: (input, memoryUserDb) =>
+        runUserMemoryMaintenanceCommand(
+          {
+            store,
+            coreDb,
+            userDb: memoryUserDb,
+            runtimeConfigManager: maintenanceConfig,
+            openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
+            inflightCommands: new WeakMap(),
+            pin: async (run) => {
+              await store.updateTurn(run.turn.id, {
+                internalExecution: {
+                  roleId: 'knowledge-manager',
+                  logicalModelId: 'fixture-model',
+                  limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
+                  contextStrategy: 'compaction',
+                  threshold: 1000,
+                  knowledge: run.inputs!,
+                },
+              });
+            },
+            run: maintainRun,
+          },
+          input
+        ),
+      maintain: vi.fn(),
+    },
   });
   const context = {
     kind: 'public' as const,
@@ -81,8 +144,12 @@ async function fixture() {
   return {
     invoke,
     ask,
-    maintainMemory,
     context,
+    coreDb,
+    actor,
+    userDb,
+    notebook,
+    baseRevision,
     workspace,
     timeline,
     turn,
@@ -101,23 +168,13 @@ it('routes private Memory ask and tell to the User KM and retains exact delivere
       f.context
     )
   ).toEqual(f.answer);
-  expect(f.ask).toHaveBeenCalledWith(
-    expect.objectContaining({
-      source: 'memory',
-      caller: 'internal-agent',
-      access: expect.objectContaining({
-        outputThreadId: f.timeline.id,
-        outputTurnId: f.turn.id,
-        requestActor: f.context.actor,
-      }),
-    })
-  );
+  expect(f.notebook().publishedRevision()).toBe(f.baseRevision);
   const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id);
   expect(calls).toHaveLength(1);
   expect(calls[0]!.extensions?.['openkit.knowledge/delivery']).toEqual({
     answer: JSON.stringify(f.answer),
   });
-  await f.invoke(
+  const told = await f.invoke(
     'memory.tell',
     {
       workspaceId: f.workspace.id,
@@ -127,15 +184,24 @@ it('routes private Memory ask and tell to the User KM and retains exact delivere
     },
     f.context
   );
-  expect(f.maintainMemory).toHaveBeenCalledWith(
-    expect.objectContaining({
-      requestActor: f.context.actor,
-      tellContent: 'Keep answers short.',
-      askingThreadId: f.timeline.id,
-      askingTurnId: f.turn.id,
-    }),
-    expect.objectContaining({ userId: f.context.actor.userId })
+  expect(told).toMatchObject({ outcome: 'no-change' });
+  expect(f.notebook().publishedRevision()).toBe(
+    (told as { notebookRevision: string }).notebookRevision
   );
+  const sources = listUserKnowledgeSources({
+    coreDb: f.coreDb,
+    userDb: f.userDb,
+    actor: f.actor,
+  });
+  expect(sources).toHaveLength(1);
+  expect(
+    (
+      await readUserKnowledgeSource(
+        { coreDb: f.coreDb, userDb: f.userDb, actor: f.actor },
+        sources[0]!.id
+      )
+    )?.content
+  ).toBe('Keep answers short.');
 });
 
 it('refuses a shared caller before User recall or tell and keeps human Review unavailable to a model', async () => {
@@ -149,6 +215,12 @@ it('refuses a shared caller before User recall or tell and keeps human Review un
       visibility: 'workspace',
     }
   );
+  const published = f.notebook().publishedRevision();
+  const sourcesBefore = listUserKnowledgeSources({
+    coreDb: f.coreDb,
+    userDb: f.userDb,
+    actor: f.actor,
+  });
   const context = { ...f.context, queryContext: { threadId: shared.id } };
   await expect(
     f.invoke('memory.ask', { workspaceId: f.workspace.id, question: 'My preference?' }, context)
@@ -165,8 +237,10 @@ it('refuses a shared caller before User recall or tell and keeps human Review un
       context
     )
   ).rejects.toMatchObject({ code: 'memory_access_denied' });
-  expect(f.ask).not.toHaveBeenCalled();
-  expect(f.maintainMemory).not.toHaveBeenCalled();
+  expect(f.notebook().publishedRevision()).toBe(published);
+  expect(listUserKnowledgeSources({ coreDb: f.coreDb, userDb: f.userDb, actor: f.actor })).toEqual(
+    sourcesBefore
+  );
   await expect(
     f.invoke(
       'memory.proposal.decide',

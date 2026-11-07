@@ -212,14 +212,10 @@ describe('Personal Assistant Timeline admission', () => {
       attempts.push(await request(restarted.app, 'thread.create', command));
     }
 
-    // The owner permits reuse or a typed refusal, but never another ordinary private chat.
+    // Native admission reuses the existing private timeline.
     for (const attempt of attempts) {
-      if (attempt.status === 200) {
-        expect.soft(ThreadSchema.parse(attempt.body).id).toBe(timeline.id);
-      } else {
-        expect(attempt.status).toBe(409);
-        expect(attempt.body.code).toEqual(expect.any(String));
-      }
+      expect(attempt.status).toBe(200);
+      expect(ThreadSchema.parse(attempt.body).id).toBe(timeline.id);
     }
     const listed = await request(restarted.app, 'thread.list', { workspaceId: workspace.id });
     expect(listed.status).toBe(200);
@@ -375,7 +371,7 @@ describe('Personal Assistant Timeline admission', () => {
     };
     const refused = await request(current.app, 'workspace.invitation-create', input);
     expect(refused.status).toBe(409);
-    expect(refused.body.code).toEqual(expect.any(String));
+    expect(refused.body.code).toBe('quick_chat_not_shareable');
     expect(await request(current.app, 'workspace.invitation-create', input)).toEqual(refused);
     expect(
       current.coreDb.sqlite
