@@ -175,8 +175,8 @@ import {
 } from './runtime/captured-pending-call.js';
 import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
+import { advanceGoalForThread } from './runtime/goal-native.js';
 import {
-  advanceGoalForThread,
   checkGoalCommandIntent,
   type GoalOwnerServices,
   goalActor,
