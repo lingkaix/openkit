@@ -106,7 +106,7 @@ The first stable protocol family should define records for:
 
 Record schemas should be authored in the active machine-readable protocol schema package.
 
-Skill, model, and provider routing references are deferred from the first stable protocol family until the abstract product-visible model is settled. Runtime config details belong in agent setup and server config specs, not protocol records.
+Skill and model references are protocol projections carried with workspace resources. Provider routing references stay deferred until the abstract product-visible model is settled. Runtime config details belong in agent setup and server config specs, not protocol records.
 
 ## Protocol Version
 

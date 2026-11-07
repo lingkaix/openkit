@@ -166,7 +166,7 @@ The canonical owner must also have active membership. Ownership is stored once a
 - Workspace owner transfer MUST preserve workspace identity and history.
 - Workspace-scoped human, agent, automation, and integration actions MUST preserve an `ActorRef` when attribution is required to explain who or what caused them.
 - Credential scope, token binding, applicable membership or a currently usable administrator credential, and current permission MUST be evaluated at request time. For an ordinary caller, no one fact is sufficient by itself. The administrator eligibility rule does not make a revoked, expired, or read-only credential sufficient, and it does not skip a per-effect authority object.
-- OpenKit-authored records MUST use `AuthSession`, `AgentSession`, `ChannelSession`, or another prefixed term instead of the bare `Session`.
+- OpenKit-authored prose and concept names MUST use `AuthSession`, `AgentSession`, `ChannelSession`, or another prefixed term instead of the bare word Session. Audit `credentialKind` and the request actor's `kind` use the wire values `local`, `session`, and `token`. The value `session` is the syntax-required AuthSession discriminator defined with those values in `docs/core/evidence.md`. It does not name a bare Session concept.
 - Raw token secret material MUST NOT be exposed after issuance through identity records, item payloads, audit records, or protocol summaries.
 - Automation and integration identities MUST remain distinguishable from trigger sources.
 - A User preference MUST remain attributable to one User and, when Workspace-dependent, one Workspace; it MUST NOT mutate or impersonate Workspace-shared or Server configuration.
