@@ -73,8 +73,23 @@ export const nativeInterception = interception;
 const fixtures: Array<{ close(): void; mainWrites(): number }> = [];
 export const baseURL = 'http://127.0.0.1:3000';
 export const password = 'synthetic-password-for-native-auth';
+type NativeAuth = ReturnType<typeof createBetterAuth>;
+/** Named so declaration output never has to spell the SDK's internal context types. */
+export interface NativeAuthFixture {
+  auth: NativeAuth;
+  context: Awaited<NativeAuth['$context']>;
+  db: ReturnType<typeof openCoreDb>;
+  gate: Int32Array;
+  request(path: string, body?: unknown, cookie?: string): Promise<Response>;
+  signUp(email?: string): Promise<{ id: string; email: string; cookie: string }>;
+  fixtureSql(sql: string): Database.Statement;
+  count(table: 'users' | 'account' | 'session' | 'verification'): number;
+  commits(): number;
+}
 /** Creates the configured SDK and actual Core store; fixture SQL never enters the product wire. */
-export async function fixture(options: Parameters<typeof createBetterAuth>[1] = {}) {
+export async function fixture(
+  options: Parameters<typeof createBetterAuth>[1] = {}
+): Promise<NativeAuthFixture> {
   const root = mkdtempSync(join(tmpdir(), 'better-auth-native-'));
   const db = openCoreDb(root);
   applyMigrations(db);

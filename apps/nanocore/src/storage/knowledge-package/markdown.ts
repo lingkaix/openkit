@@ -8,7 +8,8 @@ export function remintKnowledgeMarkdown(body: string, rewrite: (href: string) =>
     .map((line) => ({ start: line.index, text: line[0].replace(/[\r\n]+$/, '') }));
   const edits = new Map<number, { end: number; text: string }>();
   type Destination = { source: string; start: number; end: number; href: string };
-  const frames: { line: number; image: boolean; destinations: Destination[] }[] = [];
+  // `src` is set when a block rule scans the whole normalized source, so offsets are document-absolute.
+  const frames: { line: number; image: boolean; src?: string; destinations: Destination[] }[] = [];
   let inlineLine = 0;
   const originalDestination = markdown.helpers.parseLinkDestination;
   // Helpers belong to this parser instance. A tentative destination is committed only if its owning rule succeeds.
@@ -34,7 +35,7 @@ export function remintKnowledgeMarkdown(body: string, rewrite: (href: string) =>
       const prefix = destination.source.slice(0, destination.start).split('\n');
       const row = prefix.length - 1;
       const sourceLine = destination.source.split('\n')[row]!;
-      const original = lines[frame.line + row];
+      const original = lines[(destination.source === frame.src ? 0 : frame.line) + row];
       const column = original?.text.indexOf(sourceLine) ?? -1;
       // Never guess an offset or rewrite a matching literal elsewhere in the page.
       if (
@@ -74,7 +75,7 @@ export function remintKnowledgeMarkdown(body: string, rewrite: (href: string) =>
     .find((candidate) => candidate.name === 'reference');
   if (!reference) throw new Error('Knowledge package Markdown parser is unavailable.');
   markdown.block.ruler.at('reference', (state, start, end, silent) => {
-    const frame = { line: start, image: false, destinations: [] as Destination[] };
+    const frame = { line: start, image: false, src: state.src, destinations: [] as Destination[] };
     frames.push(frame);
     try {
       const matched = reference(state, start, end, silent);
