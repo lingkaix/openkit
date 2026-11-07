@@ -759,7 +759,9 @@ export function denyPendingRequest(
   const deny = sqlite.transaction(() => {
     const current = readPendingRequest(sqlite, requestId);
     if (!current || current.state !== 'pending' || current.claim !== 'unclaimed') return null;
-    const governsCall = current.kind === 'approval' && current.serverId !== null;
+    const governsCall =
+      (current.kind === 'approval' && current.serverId !== null) ||
+      isCommandIntentApproval(current);
     const result = sqlite
       .prepare(
         `UPDATE pending_requests

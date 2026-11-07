@@ -76,6 +76,7 @@ import {
   ControlGoalInputSchema,
 } from './goal-codecs.js';
 import { GoalCommandError } from './goal-error.js';
+import { now } from './goal-native.js';
 import {
   StoredGoalCardTaskV1Schema,
   StoredGoalCardV1Schema,
@@ -150,7 +151,6 @@ export interface GoalOwnerServices {
   };
 }
 const inflight = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-const now = () => new Date().toISOString();
 /** Restores a stored non-secret credential identity without undefined optional properties. */
 export function goalActor(goal: GoalRecord): Actor {
   const value = goal.responsibleActorContext;
@@ -256,35 +256,6 @@ function saveGoal(db: Pick<WorkspaceDb, 'sqlite'>, goal: GoalRecord): void {
 export function advanceGoalRevision(db: Pick<WorkspaceDb, 'sqlite'>, goalId: string): void {
   const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (goal) saveGoal(db, { ...goal, changeRevision: goal.changeRevision + 1, updatedAt: now() });
-}
-/** Advances Goals addressed by this Thread or linked to its ordinary Task, inside the source commit. */
-export function advanceGoalForThread(
-  sqlite: import('better-sqlite3').Database,
-  threadId: string
-): void {
-  for (const row of sqlite
-    .prepare('SELECT schema_version AS schemaVersion FROM goal_card_tasks WHERE thread_id=?')
-    .all(threadId)) {
-    readRetainedV1(row, () => undefined);
-  }
-  for (const row of sqlite
-    .prepare(
-      'SELECT schema_version AS schemaVersion,goal_id,payload_json FROM goals WHERE thread_id=? OR goal_id IN (SELECT goal_id FROM goal_card_tasks WHERE thread_id=?)'
-    )
-    .all(threadId, threadId) as {
-    schemaVersion: unknown;
-    goal_id: string;
-    payload_json: string;
-  }[]) {
-    const goal = readRetainedV1(row, () => StoredGoalV1Schema.parse(JSON.parse(row.payload_json)));
-    sqlite
-      .prepare('UPDATE goals SET payload_json=?,schema_version=? WHERE goal_id=?')
-      .run(
-        JSON.stringify({ ...goal, changeRevision: goal.changeRevision + 1, updatedAt: now() }),
-        writeRetainedV1({}).schemaVersion,
-        row.goal_id
-      );
-  }
 }
 /** Lists only the new owner records addressing an ordinary Coordinator Thread. */
 export function listGoalsForThread(db: WorkspaceDb, threadId: string): GoalRecord[] {
