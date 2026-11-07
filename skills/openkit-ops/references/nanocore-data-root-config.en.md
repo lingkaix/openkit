@@ -90,6 +90,7 @@ Each Provider file declares one Server-supplied Provider profile. `server.jsonc.
 
 ```jsonc
 {
+  "schemaVersion": 1,
   "id": "openai-primary",
   "displayName": "OpenAI Primary",
   "kind": "direct",
@@ -103,6 +104,7 @@ Each Provider file declares one Server-supplied Provider profile. `server.jsonc.
 
 | Field | Purpose |
 | --- | --- |
+| `schemaVersion` | Required format version (`1`). |
 | `id` | Stable private Provider profile ID. |
 | `displayName` | Operator-facing label. |
 | `kind` | `direct`, `llm-gateway`, `local`, `oauth`, or `custom`. Historical `gateway` is supported only when reading retained v1 profiles. |
@@ -136,6 +138,12 @@ The Gateway maps stable logical model IDs to ordered private Provider routes. A 
     {
       "id": "general",
       "displayName": "General",
+      "contextManagement": [
+        {
+          "type": "compaction",
+          "compactThreshold": 200000
+        }
+      ],
       "routes": [
         {
           "id": "general-primary",
@@ -278,9 +286,9 @@ Inspect the returned request `id` and captured `change.expectedRevision`. A curr
 printf '%s' '{"workspaceId":"WORKSPACE","threadId":"REQUEST-THREAD","approvalRequestId":"APPROVAL-REQUEST","confirmation":"APPLY WORKSPACE RESOURCE POLICY"}' | openkit ops call workspace.resource-access-apply --input -
 ```
 
-Check `savedRevision` and `reloadStatus` separately. Only an applied reload changes future checks. A stale revision, lost requester rights or revoked deciding credential refuses the change. After an uncertain result, inspect saved and effective configuration and the existing request outcome; do not replay a consumed approval. Narrowing replaces the captured entry with fewer operations; last-grant revocation replaces it with `grants: []`; explicit removal uses `replacement: null`. Each change needs a new reviewed request.
+Check `savedRevision` and `reloadStatus` separately. Only an applied reload changes future checks. A stale revision, lost requester rights or revoked deciding credential refuses the change. After an uncertain result, inspect saved and effective configuration and the existing request outcome; do not replay a consumed approval. Narrowing reduces `scope.actions` in the permission statement; last-grant revocation retains only the `managed-boundary` statement in `replacement.statements`; explicit boundary removal uses `replacement: null`. Each change needs a new reviewed request.
 
-For an Agent assignment, use `subject: {"kind":"agent","userId":"RESPONSIBLE-USER","agentId":"REGISTERED-AGENT"}`. A human grant does not become an Agent grant. The actual AgentSession is a mapped process, not the stored Policy subject.
+For an Agent assignment, keep `scope.subjects: [{"kind":"human","id":"RESPONSIBLE-USER"}]` and use `grant: {"kind":"agent-process","agentId":"REGISTERED-AGENT"}`. A human grant does not become an Agent grant. The actual AgentSession is a mapped process, not the stored Policy subject.
 
 Export retains current effective boundaries and refuses saved/effective disagreement and a managed entry without its included canonical shared Thread. Source principals in that document do not grant target membership. Ordinary import does not publish those bindings.
 
