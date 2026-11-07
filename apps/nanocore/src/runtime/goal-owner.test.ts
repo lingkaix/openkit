@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -19,8 +20,8 @@ import {
 } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import { commandInputHash } from './idempotent-command.js';
-import { respondRecordedApproval } from './pending-request-flow.js';
-import { readPendingRequest } from './pending-requests.js';
+import { raiseRecordedPendingRequest, respondRecordedApproval } from './pending-request-flow.js';
+import { type PendingRequestRecord, readPendingRequest } from './pending-requests.js';
 
 /** Initializes real native owners and closes the worker before deleting the private root. */
 function createPersistentStore(dataRoot: string) {
@@ -358,6 +359,224 @@ describe('Proposed Plan eligibility', () => {
     }
     return f;
   }
+
+  /** Captures the complete native tuple, including receipts and any attempted work publication. */
+  function pendingGoalRows(db: ReturnType<typeof openWorkspaceDb>) {
+    return Object.fromEntries(
+      [
+        'goals',
+        'goal_cards',
+        'goal_plan_versions',
+        'goal_card_tasks',
+        'pending_requests',
+        'idempotency_requests',
+        'audit_events',
+        'control_threads',
+        'control_turns',
+        'control_product_entries',
+      ].map((table) => [table, db.sqlite.prepare(`SELECT * FROM ${table}`).all()])
+    );
+  }
+
+  /** Uses the registered public response owner, not the low-level grant or Goal-only writer. */
+  function respondPendingGoal(
+    store: FsStore,
+    input: {
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      approvalRequestId: string;
+      requestId: string;
+      decision: 'granted' | 'denied';
+    }
+  ) {
+    const actor = { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' };
+    return createPendingRequestOperationImplementations({
+      coreDb: undefined,
+      store,
+      inflightCommands: new WeakMap(),
+      repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(store.dataRoot, workspaceId),
+      checkCommandIntent: checkGoalCommandIntent,
+    })['approval.respond'](input, {
+      kind: 'public',
+      actor,
+      actorRef: { kind: 'user', id: actor.userId },
+      scope: { kind: 'workspace', workspaceId: input.workspaceId },
+    });
+  }
+
+  /** Obtains both addressing forms through owners before deliberate SQL fault injection. */
+  async function pendingGoalFixture(address: 'coordinator' | 'linked-task') {
+    const f = await (address === 'coordinator' ? fixture() : retainedFixture('goal_card_tasks'));
+    let pending: PendingRequestRecord;
+    if (address === 'coordinator') {
+      const plan = await f.propose();
+      pending = readPendingRequest(f.db.sqlite, plan.pendingRequestId)!;
+    } else {
+      const task = readGoalView(f.store, f.db, f.scope.goalId).tasks[0]!;
+      const turn = await f.store.createTurn(
+        f.scope.workspaceId,
+        task.threadId,
+        'Review the linked Task',
+        { kind: 'user', id: f.human.actor.userId }
+      );
+      pending = await raiseRecordedPendingRequest(f.store, f.db.sqlite, {
+        requestId: `ap_${f.requestId()}`,
+        workspaceId: f.scope.workspaceId,
+        threadId: task.threadId,
+        raisingTurnId: turn.id,
+        requestItemId: testEntityId('it', 'goal-linked-task-approval'),
+        kind: 'approval',
+        requesterKind: 'person',
+        responsibleUserId: f.human.actor.userId,
+        governedIntent: { action: 'review.apply' },
+        approval: { kind: 'permission', title: 'Review Task', description: 'Review this Task.' },
+        now: new Date().toISOString(),
+      });
+    }
+    const input = {
+      workspaceId: pending.workspaceId,
+      threadId: pending.threadId,
+      turnId: pending.raisingTurnId,
+      approvalRequestId: pending.requestId,
+      requestId: f.requestId(),
+    };
+    return { ...f, pending, input };
+  }
+
+  for (const address of ['coordinator', 'linked-task'] as const)
+    for (const decision of ['granted', 'denied'] as const) {
+      it(`commits ${decision} Pending and addressed ${address} Goal revision with the original receipt and replays without work`, async () => {
+        const f = await pendingGoalFixture(address);
+        const input = { ...f.input, decision };
+        const before = readGoalView(f.store, f.db, f.scope.goalId).goal!;
+        const work = pendingGoalRows(f.db);
+        // Goal's wake marker and Pending's fact must already agree at the original receipt boundary.
+        f.db.sqlite.exec(`
+          CREATE TRIGGER require_pending_goal_tuple BEFORE INSERT ON idempotency_requests
+          WHEN NEW.command_name = 'approval.respond' AND NEW.request_id = '${input.requestId}'
+          BEGIN
+            SELECT CASE WHEN NOT EXISTS (
+              SELECT 1 FROM pending_requests p JOIN goals g ON g.goal_id = '${before.goalId}'
+              WHERE p.request_id = '${f.pending.requestId}' AND p.state = 'resolved'
+                AND p.resolution = '${decision}' AND p.claim = 'unclaimed'
+                AND json_extract(g.payload_json, '$.changeRevision') = ${before.changeRevision + 1}
+            ) THEN RAISE(ABORT, 'Pending Goal tuple missing at receipt') END;
+          END;
+        `);
+        const result = await respondPendingGoal(f.store, input);
+        expect(result).toMatchObject({ id: f.pending.requestId, status: decision });
+        const advanced = readGoalView(f.store, f.db, f.scope.goalId).goal!;
+        expect(advanced).toEqual({
+          ...before,
+          changeRevision: before.changeRevision + 1,
+          updatedAt: expect.any(String),
+        });
+        expect(readPendingRequest(f.db.sqlite, f.pending.requestId)).toMatchObject({
+          state: 'resolved',
+          resolution: decision,
+          claim: 'unclaimed',
+          ...(decision === 'granted' ? { disposition: null } : {}),
+          requesterKind: f.pending.requesterKind,
+          agentSessionId: f.pending.agentSessionId,
+          agentId: f.pending.agentId,
+          governedIntent: f.pending.governedIntent,
+          decidingActor: { kind: 'user', id: f.human.actor.userId },
+          decidingActorContext: f.human.actor,
+        });
+        expect(f.db.sqlite.prepare('SELECT * FROM control_turns').all()).toEqual(
+          work.control_turns
+        );
+        expect(f.db.sqlite.prepare('SELECT * FROM goal_card_tasks').all()).toEqual(
+          work.goal_card_tasks
+        );
+        expect(
+          f.db.sqlite
+            .prepare(
+              'SELECT command_name,request_id,response_kind,response_id FROM idempotency_requests WHERE request_id=?'
+            )
+            .get(input.requestId)
+        ).toEqual({
+          command_name: 'approval.respond',
+          request_id: input.requestId,
+          response_kind: 'approval',
+          response_id: f.pending.requestId,
+        });
+        const committed = pendingGoalRows(f.db);
+        await getControlStoreWorkerClient().shutdown();
+        const reopened = new FsStore({ dataRoot: f.root });
+        expect(await respondPendingGoal(reopened, input)).toEqual(result);
+        expect(pendingGoalRows(f.db)).toEqual(committed);
+      });
+
+      it(`rolls back ${decision} Pending and ${address} Goal when the late original receipt fails`, async () => {
+        const f = await pendingGoalFixture(address);
+        const input = { ...f.input, decision };
+        const goal = readGoalView(f.store, f.db, f.scope.goalId).goal!;
+        const before = pendingGoalRows(f.db);
+        // This fault fires only after BOTH real mutations. A missing advance makes the command succeed,
+        // so an early unrelated refusal cannot substitute for the required late rollback witness.
+        f.db.sqlite.exec(`
+          CREATE TRIGGER reject_pending_goal_receipt BEFORE INSERT ON idempotency_requests
+          WHEN NEW.command_name = 'approval.respond' AND NEW.request_id = '${input.requestId}'
+            AND EXISTS (
+              SELECT 1 FROM pending_requests p JOIN goals g ON g.goal_id = '${goal.goalId}'
+              WHERE p.request_id = '${f.pending.requestId}' AND p.state = 'resolved'
+                AND p.resolution = '${decision}'
+                AND json_extract(g.payload_json, '$.changeRevision') = ${goal.changeRevision + 1}
+            )
+          BEGIN SELECT RAISE(ABORT, 'late original Pending receipt failure'); END;
+        `);
+        await expect(respondPendingGoal(f.store, input)).rejects.toMatchObject({
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+        expect(pendingGoalRows(f.db)).toEqual(before);
+        await getControlStoreWorkerClient().shutdown();
+        expect(pendingGoalRows(f.db)).toEqual(before);
+        f.db.sqlite.exec('DROP TRIGGER reject_pending_goal_receipt');
+        const reopened = new FsStore({ dataRoot: f.root });
+        expect(await respondPendingGoal(reopened, input)).toMatchObject({ status: decision });
+        expect(readGoalView(reopened, f.db, f.scope.goalId).goal!.changeRevision).toBe(
+          goal.changeRevision + 1
+        );
+      });
+    }
+
+  it('OLD-FAIL: command-intent denial records denied-not-executed with its decision', async () => {
+    const f = await pendingGoalFixture('coordinator');
+    await respondPendingGoal(f.store, { ...f.input, decision: 'denied' });
+    // Pending Requests, Execute A Granted Call: "A denial records denied-not-executed
+    // without re-evaluation." OLD denyPendingRequest limits this to server-bound calls.
+    expect(readPendingRequest(f.db.sqlite, f.pending.requestId)).toMatchObject({
+      state: 'resolved',
+      resolution: 'denied',
+      claim: 'unclaimed',
+      disposition: 'denied-not-executed',
+    });
+  });
+
+  for (const table of ['goals', 'goal_card_tasks'] as const)
+    for (const decision of ['granted', 'denied'] as const)
+      it(`refuses ${decision} Pending at an unsupported retained ${table} format without partial mutation`, async () => {
+        const f = await pendingGoalFixture('linked-task');
+        // The person approval has no Goal preview read: this refusal must come from native advancement.
+        f.db.sqlite
+          .prepare(`UPDATE ${table} SET schema_version=2,payload_json='{' WHERE goal_id=?`)
+          .run(f.scope.goalId);
+        const before = pendingGoalRows(f.db);
+        expect(() => readGoalView(f.store, f.db, f.scope.goalId)).toThrow(
+          'Unsupported retained record format.'
+        );
+        // Pending's worker reports this retained-format fault as a definite SQL refusal.
+        await expect(respondPendingGoal(f.store, { ...f.input, decision })).rejects.toMatchObject({
+          code: 'sql-failed',
+          commit: 'not-committed',
+        });
+        expect(pendingGoalRows(f.db)).toEqual(before);
+        await getControlStoreWorkerClient().shutdown();
+        expect(pendingGoalRows(f.db)).toEqual(before);
+      });
 
   it.each(
     retainedFamilies
