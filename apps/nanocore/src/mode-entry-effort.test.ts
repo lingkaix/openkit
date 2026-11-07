@@ -365,9 +365,11 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
   );
   expect(response.status, await response.clone().text()).toBe(200);
   const catalog = await response.json();
-  const choices = catalog.targets.find(
-    (target: { targetRef: string }) => target.targetRef === 'new-task-worker'
-  ).logicalModels;
+  const worker = catalog.targets.find(
+    (target: { targetRef: string; label: string }) => target.targetRef === 'new-task-worker'
+  );
+  expect(worker.label).toBe('New Task');
+  const choices = worker.logicalModels;
   expect(choices.find((model: { id: string }) => model.id === 'controlled')).toHaveProperty(
     'reasoningEffortLevels',
     ['none', 'high']

@@ -877,7 +877,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
           {
             ...NEW_TASK_TARGET,
             requiresFileHandoffConfirmation: true,
-            label: 'New Shard + Worker',
+            label: 'New Task',
           },
         ],
       },
@@ -941,7 +941,7 @@ describe('P3 review: New Task admission and Workspace scope', () => {
         ...targetCatalog(),
         targets: [
           ASSISTANT_TARGET,
-          { ...NEW_TASK_TARGET, label: 'New Shard + Worker' },
+          { ...NEW_TASK_TARGET, label: 'New Task' },
           {
             ...NEW_TASK_TARGET,
             targetRef: 'warm-worker:agent_codex_host:default',

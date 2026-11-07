@@ -13,7 +13,7 @@ const catalog = {
     {
       targetRef: 'new-task-worker',
       kind: 'new-task-worker' as const,
-      label: 'New Shard + Worker',
+      label: 'New Task',
       description: null,
       availability: 'available' as const,
       unavailableReason: null,

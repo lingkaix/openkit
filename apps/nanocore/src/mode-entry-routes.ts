@@ -2767,7 +2767,7 @@ export function createConversationService({
       targetRef: 'new-task-worker',
       kind: 'new-task-worker',
       requiresFileHandoffConfirmation: true,
-      label: 'New Shard + Worker',
+      label: 'New Task',
       description: 'Create a linked Task execution Thread and start a Worker.',
       availability: defaultSetup ? 'available' : 'unavailable',
       unavailableReason: defaultSetup ? null : 'No default Worker is ready.',
