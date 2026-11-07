@@ -9,6 +9,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { RouteUnavailableReasonSchema } from './diagnostics.js';
 import { WorkerEnvironmentStorageChoiceSchema } from './worker-environment.js';
 
 /** Binary carriage of the same conversation.submit command, with ordered exact originals. */
@@ -67,6 +68,18 @@ export const ConversationTargetCatalogSchema = z
     threadId: ThreadIdSchema.nullable(),
     targets: z.array(ConversationTargetSchema),
     defaultTargetRef: z.string().min(1),
+    /** Present only when a transcription route member is configured. */
+    transcription: z
+      .object({
+        available: z.boolean(),
+        unavailableReason: RouteUnavailableReasonSchema.nullable(),
+      })
+      .strict()
+      .refine(
+        (route) => route.available === (route.unavailableReason === null),
+        'Unavailable transcription routes require their supply reason.'
+      )
+      .optional(),
   })
   .strict();
 

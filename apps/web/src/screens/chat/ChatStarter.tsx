@@ -22,6 +22,7 @@ import {
   useSendTurn,
   useWorkspaces,
 } from './data';
+import { composerVoice } from './voice';
 
 /**
  * Chat starter (WP-4, board 01) — the usable workbench first screen.
@@ -173,6 +174,11 @@ export function ChatStarter() {
               ? "Couldn't load conversation agents."
               : undefined
         }
+        voice={composerVoice({
+          client,
+          workspaceId,
+          catalog: targets.data,
+        })}
         onSubmit={start}
       />
 

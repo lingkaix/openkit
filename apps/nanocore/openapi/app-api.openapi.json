@@ -11094,6 +11094,55 @@
         }
       }
     },
+    "/api/app/operations/composer.transcribe": {
+      "post": {
+        "operationId": "composer.transcribe",
+        "tags": [
+          "composer"
+        ],
+        "summary": "Transcribe one audio clip into text for the composer draft.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/composer.transcribe.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transcribe one audio clip into text for the composer draft.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/composer.transcribe.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/task.start": {
       "post": {
         "operationId": "task.start",
@@ -92699,6 +92748,41 @@
           "defaultTargetRef": {
             "type": "string",
             "minLength": 1
+          },
+          "transcription": {
+            "type": "object",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "unavailableReason": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "provider_profile_absent",
+                      "provider_model_delisted",
+                      "provider_not_dispatchable",
+                      "provider_api_key_missing",
+                      "subscription_vault_unavailable",
+                      "subscription_account_absent",
+                      "subscription_account_logged_out",
+                      "subscription_account_integrity_unavailable",
+                      "gateway_disabled",
+                      "provider_base_url_missing"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "available",
+              "unavailableReason"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -99425,6 +99509,55 @@
           "receivingThreadId",
           "targetRef",
           "logicalModelId"
+        ],
+        "additionalProperties": false
+      },
+      "composer.transcribe.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "audio": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "audio/webm",
+              "audio/webm;codecs=opus",
+              "audio/mp4"
+            ]
+          },
+          "language": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "audio",
+          "mimeType"
+        ],
+        "additionalProperties": false
+      },
+      "composer.transcribe.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
         ],
         "additionalProperties": false
       },
@@ -144999,7 +145132,9 @@
                                   "subscription_vault_unavailable",
                                   "subscription_account_absent",
                                   "subscription_account_logged_out",
-                                  "subscription_account_integrity_unavailable"
+                                  "subscription_account_integrity_unavailable",
+                                  "gateway_disabled",
+                                  "provider_base_url_missing"
                                 ]
                               },
                               {
@@ -145190,6 +145325,56 @@
                 },
                 "required": [
                   "summaries"
+                ],
+                "additionalProperties": false
+              },
+              "transcription": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "providerProfileId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "providerModel": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "available": {
+                    "type": "boolean"
+                  },
+                  "unavailableReason": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "provider_profile_absent",
+                          "provider_model_delisted",
+                          "provider_not_dispatchable",
+                          "provider_api_key_missing",
+                          "subscription_vault_unavailable",
+                          "subscription_account_absent",
+                          "subscription_account_logged_out",
+                          "subscription_account_integrity_unavailable",
+                          "gateway_disabled",
+                          "provider_base_url_missing"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "providerProfileId",
+                  "providerModel",
+                  "available",
+                  "unavailableReason"
                 ],
                 "additionalProperties": false
               }
@@ -155344,5 +155529,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4c500f13277b15500843eede60cfd32412171f0fa57eaccfbf47ad381488e3f9"
+  "x-openkit-source-digest": "sha256:dad50c6465bcd7d808648fb68952349425e26955ae82c426406245167c77c0a7"
 }

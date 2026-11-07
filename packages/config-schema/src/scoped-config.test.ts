@@ -71,6 +71,25 @@ describe('scoped runtime config schemas', () => {
     ).toThrow(/gateway\.routing\.future-authority/);
   });
 
+  it('admits one optional transcription route and strips unknown siblings', () => {
+    const parsed = GatewayConfigSchema.parse({
+      schemaVersion: 1,
+      logicalModels: [],
+      transcription: {
+        id: 'voice',
+        providerProfileId: 'speech',
+        providerModel: 'whisper-1',
+        extra: 'ignored',
+      },
+    });
+    expect(parsed.transcription).toEqual({
+      id: 'voice',
+      providerProfileId: 'speech',
+      providerModel: 'whisper-1',
+    });
+    expect(GatewayConfigSchema.parse({ schemaVersion: 1 }).transcription).toBeUndefined();
+  });
+
   it('validates personal per-Workspace preferences without accepting duplicate owners', () => {
     expect(
       UserConfigSchema.parse({

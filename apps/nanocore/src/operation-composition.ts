@@ -19,6 +19,7 @@ import {
   prepareCatalogSkillDecision,
 } from './catalog/catalog-operations.js';
 import { type ChannelServices, createChannelOperationImplementations } from './channel-services.js';
+import { createComposerOperationImplementations } from './composer-transcribe-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
@@ -44,6 +45,7 @@ import { createKnowledgeOperationImplementations } from './knowledge-operations.
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
 import { createLightAppDefinitionOperationImplementations } from './light-app-definition-operations.js';
+import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
 import { createMaterialOperationImplementations } from './material-operation-implementations.js';
 import { createMemoryOperationImplementations } from './memory-operations.js';
@@ -58,6 +60,11 @@ import {
   checkResourcePolicyOperationIntent,
   createResourcePolicyOperationImplementations,
 } from './policy/resource-policy-operations.js';
+import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
+import type {
+  ProviderCredentialConfigured,
+  ProviderCredentialUseContext,
+} from './providers/registry.js';
 import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -167,6 +174,19 @@ export interface OperationInvocationDependencies {
   /** Existing app-owned process-local Vault backend unlock state. */
   readonly vaultUnlockState?: VaultUnlockState;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
+  /** Existing Gateway provider resolver. The credential-use context is the third argument. */
+  readonly resolveGatewayProvider?: (
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
+  /** Presence check shared with logical-model routes. Transcription resolves the secret later. */
+  readonly providerCredentialConfigured?: ProviderCredentialConfigured;
+  /** Subscription supply checker shared with logical-model routes. */
+  readonly providerSubscriptionAccountManager?: Pick<
+    ProviderSubscriptionAccountManager,
+    'gatewayUnavailableReason'
+  >;
   /** Opens the actual public caller's existing User evidence home. */
   readonly repositoryUserDb?: (userId: string) => import('./storage/db.js').UserDb;
   readonly store?: FsStore;
@@ -276,6 +296,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createEvaluationJudgementOperationImplementations(dependencies),
     createGoalOperationImplementations(dependencies),
     createTaskConversationOperationImplementations(dependencies),
+    createComposerOperationImplementations(dependencies),
     createPendingRequestOperationImplementations({
       ...dependencies.pendingRequestServices!,
       store: dependencies.store!,

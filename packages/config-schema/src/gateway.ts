@@ -40,6 +40,8 @@ export const GatewayConfigSchema = z
     enabled: z.boolean().default(true),
     defaultLogicalModelId: z.string().min(1).optional(),
     logicalModels: z.array(GatewayLogicalModelSchema).default([]),
+    /** One optional speech route. It is not a logical chat model. */
+    transcription: GatewayRouteMemberSchema.optional(),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })

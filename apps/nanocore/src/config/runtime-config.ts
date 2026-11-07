@@ -379,7 +379,7 @@ export function loadRuntimeConfig(
   );
   const workspaceMcpServerCatalogs = loadWorkspaceMcpServerCatalogs(dataRoot);
   try {
-    assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry);
+    assertConfiguredModelsHaveKnownContext(providerLoadResult.providerRegistry, gatewayConfig);
   } catch (error) {
     gatewayDiagnostics.push({
       code: 'provider.unknown_model_context',

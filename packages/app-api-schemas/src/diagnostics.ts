@@ -75,6 +75,20 @@ export const ProviderModelDiagnosticSchema = z
   })
   .strict();
 
+/** Closed route supply reasons. Logical chat routes do not emit the transcription-only codes. */
+export const RouteUnavailableReasonSchema = z.enum([
+  'provider_profile_absent',
+  'provider_model_delisted',
+  'provider_not_dispatchable',
+  'provider_api_key_missing',
+  'subscription_vault_unavailable',
+  'subscription_account_absent',
+  'subscription_account_logged_out',
+  'subscription_account_integrity_unavailable',
+  'gateway_disabled',
+  'provider_base_url_missing',
+]);
+
 /** Ordered route availability; reading this projection performs no upstream request. */
 const LogicalModelRouteDiagnosticSchema = z
   .object({
@@ -82,18 +96,7 @@ const LogicalModelRouteDiagnosticSchema = z
     providerProfileId: z.string().min(1),
     providerModel: z.string().min(1),
     available: z.boolean(),
-    unavailableReason: z
-      .enum([
-        'provider_profile_absent',
-        'provider_model_delisted',
-        'provider_not_dispatchable',
-        'provider_api_key_missing',
-        'subscription_vault_unavailable',
-        'subscription_account_absent',
-        'subscription_account_logged_out',
-        'subscription_account_integrity_unavailable',
-      ])
-      .nullable(),
+    unavailableReason: RouteUnavailableReasonSchema.nullable(),
   })
   .strict()
   .refine(
@@ -432,6 +435,7 @@ function appDiagnosticsResponseSchema<T extends z.ZodType>(build: T) {
             .strict()
         ),
         usage: GatewayUsageSnapshotSchema.optional(),
+        transcription: LogicalModelRouteDiagnosticSchema.optional(),
       }),
       providers: ProvidersDiagnosticsSchema,
       capabilities: MetaResponseSchema.shape.capabilities,

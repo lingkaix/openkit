@@ -31,6 +31,7 @@ import { Dialog as ConfirmationDialog } from './Dialog';
 import { Icon } from './Icon';
 import { Select as FieldSelect } from './Select';
 import { ErrorBanner } from './states';
+import { appendTranscript, VoiceInputControl, type VoiceTranscribe } from './voice-input';
 
 type ConversationTarget = ConversationTargetCatalog['targets'][number];
 
@@ -152,6 +153,11 @@ export interface ComposerProps {
    */
   holdSubmit?: string;
   onSubmit?: (draft: ComposerDraft) => unknown;
+  /** Dictation. The mic is mounted only when transcribe is set and capture exists. */
+  voice?: {
+    transcribe?: VoiceTranscribe;
+    unavailableReason?: string | null;
+  };
 }
 
 /** Shared target-aware Composer used by starter and active Thread surfaces. */
@@ -170,6 +176,7 @@ export function Composer({
   variant,
   holdSubmit,
   onSubmit,
+  voice,
 }: ComposerProps) {
   const [value, setValue] = useState(initialDraft?.input ?? '');
   const [targetRef, setTargetRef] = useState(initialDraft?.targetRef ?? '');
@@ -223,6 +230,8 @@ export function Composer({
     setUnsentDraft(draft);
     return () => setUnsentDraft(false);
   }, [files.length, selectedArtifacts.length, value]);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const onVoiceBusy = useCallback((busy: boolean) => setVoiceBusy(busy), []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = Boolean(disabledReason) || isSubmitting || pending || fileHandoff !== null;
@@ -259,6 +268,7 @@ export function Composer({
   const assistantAdmitted = variant !== 'assistant' || selectedTarget?.kind === 'assistant';
   const canSubmit =
     !disabled &&
+    !voiceBusy &&
     !submitHold &&
     !pending &&
     environmentReady &&
@@ -607,6 +617,12 @@ export function Composer({
             }}
           />
         ) : null}
+        <VoiceInputControl
+          transcribe={voice?.transcribe}
+          unavailableReason={voice?.unavailableReason}
+          onBusyChange={onVoiceBusy}
+          onText={(text) => setValue((current) => appendTranscript(current, text))}
+        />
         <AriaButton
           type="submit"
           isDisabled={!canSubmit}

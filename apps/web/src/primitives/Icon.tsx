@@ -20,6 +20,7 @@ import RiHome5Line from '~icons/ri/home-5-line';
 import RiInformationLine from '~icons/ri/information-line';
 import RiKey2Line from '~icons/ri/key-2-line';
 import RiLoader4Line from '~icons/ri/loader-4-line';
+import RiMicLine from '~icons/ri/mic-line';
 import RiMore2Fill from '~icons/ri/more-2-fill';
 import RiPlugLine from '~icons/ri/plug-line';
 import RiPulseLine from '~icons/ri/pulse-line';
@@ -62,6 +63,7 @@ export type IconName =
   | 'info'
   | 'automations'
   | 'key'
+  | 'mic'
   | 'more'
   | 'repository'
   | 'agents'
@@ -95,6 +97,7 @@ const REGISTRY: Record<IconName, ComponentType<SVGProps<SVGSVGElement>>> = {
   info: RiInformationLine,
   automations: RiFlowChart,
   key: RiKey2Line,
+  mic: RiMicLine,
   more: RiMore2Fill,
   repository: RiGitRepositoryLine,
   agents: RiRobot2Line,

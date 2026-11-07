@@ -500,15 +500,47 @@ export function hasCompleteCostRates(
   return mergeAdapterCostRates(inherited, effective).complete;
 }
 
+/** Closed transcription supply reasons. Chat routes do not emit the last two. */
+export type TranscriptionUnavailableReason =
+  | 'provider_profile_absent'
+  | 'provider_model_delisted'
+  | 'provider_not_dispatchable'
+  | 'provider_api_key_missing'
+  | 'subscription_vault_unavailable'
+  | 'subscription_account_absent'
+  | 'subscription_account_logged_out'
+  | 'subscription_account_integrity_unavailable'
+  | 'gateway_disabled'
+  | 'provider_base_url_missing';
+
+/** Resolved transcription member. Absent when the Gateway file does not declare one. */
+export type ResolvedTranscriptionRoute =
+  | { readonly configured: false }
+  | {
+      readonly configured: true;
+      readonly available: boolean;
+      readonly member: NonNullable<GatewayConfig['transcription']>;
+      readonly unavailableReason: TranscriptionUnavailableReason | null;
+    };
+
 /**
  * Rejects every configured native model that lacks catalog or authored context.
  *
+ * A model used only by the transcription route is exempt. The same provider and
+ * model still need a context limit when a logical chat route names them.
+ *
  * @param providers Loaded provider registry.
+ * @param gateway Gateway file used to recognize a transcription-only model.
  * @throws When any listed model has no known positive context limit.
  */
-export function assertConfiguredModelsHaveKnownContext(providers: ProviderRegistry): void {
+export function assertConfiguredModelsHaveKnownContext(
+  providers: ProviderRegistry,
+  gateway?: Pick<GatewayConfig, 'logicalModels' | 'transcription'>
+): void {
+  const exempt = transcriptionOnlyModelKey(gateway);
   for (const profile of providers.list()) {
     for (const modelId of profile.models) {
+      if (exempt === `${profile.id}\0${modelId}`) continue;
       if (!hasKnownContext(resolveEffectiveModelMetadata(profile, modelId))) {
         throw new Error(
           `Provider ${profile.id} model ${modelId} has no known positive context limit.`
@@ -516,6 +548,98 @@ export function assertConfiguredModelsHaveKnownContext(providers: ProviderRegist
       }
     }
   }
+}
+
+/**
+ * Projects the one transcription route without contacting upstream.
+ *
+ * Credential presence is optional so a caller that has already been admitted can
+ * resolve the secret later, through the existing provider resolver.
+ *
+ * @param config Authored Gateway file.
+ * @param providers Loaded provider registry.
+ * @param subscriptionAccounts Subscription supply checker, when the process has one.
+ * @param providerCredentialConfigured Presence check that does not have to resolve Vault material.
+ * @param checkCredentials When false, credential reasons are left for the later resolver.
+ * @returns Configured flag plus availability. An omitted member is not configured.
+ */
+export function resolveTranscriptionRoute(
+  config: Pick<GatewayConfig, 'enabled' | 'transcription'>,
+  providers: ProviderRegistry,
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>,
+  providerCredentialConfigured?: ProviderCredentialConfigured,
+  checkCredentials = true
+): ResolvedTranscriptionRoute {
+  const member = config.transcription;
+  if (!member) return { configured: false };
+  if (!config.enabled) {
+    return {
+      configured: true,
+      available: false,
+      member,
+      unavailableReason: 'gateway_disabled',
+    };
+  }
+  const profile = providers.get(member.providerProfileId);
+  const unavailableReason: TranscriptionUnavailableReason | null =
+    profile === null
+      ? 'provider_profile_absent'
+      : !profile.models.includes(member.providerModel)
+        ? 'provider_model_delisted'
+        : !isProviderProfileDispatchable(profile)
+          ? 'provider_not_dispatchable'
+          : profile.baseUrl
+            ? checkCredentials
+              ? credentialReason(profile, subscriptionAccounts, providerCredentialConfigured)
+              : null
+            : 'provider_base_url_missing';
+  return {
+    configured: true,
+    available: unavailableReason === null,
+    member,
+    unavailableReason,
+  };
+}
+
+/** Returns the provider/model pair exempt from the context limit, if any. */
+function transcriptionOnlyModelKey(
+  gateway: Pick<GatewayConfig, 'logicalModels' | 'transcription'> | undefined
+): string | null {
+  const member = gateway?.transcription;
+  if (!member) return null;
+  const usedByChat = gateway.logicalModels.some((model) =>
+    model.routes.some(
+      (route) =>
+        route.providerProfileId === member.providerProfileId &&
+        route.providerModel === member.providerModel
+    )
+  );
+  return usedByChat ? null : `${member.providerProfileId}\0${member.providerModel}`;
+}
+
+/** Maps the existing credential presence result onto the closed reason set. */
+function credentialReason(
+  profile: ProviderProfile,
+  subscriptionAccounts:
+    | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
+    | undefined,
+  providerCredentialConfigured: ProviderCredentialConfigured | undefined
+): TranscriptionUnavailableReason | null {
+  const reason = credentialUnavailableReason(
+    profile,
+    subscriptionAccounts,
+    providerCredentialConfigured
+  );
+  if (
+    reason === 'provider_api_key_missing' ||
+    reason === 'subscription_vault_unavailable' ||
+    reason === 'subscription_account_absent' ||
+    reason === 'subscription_account_logged_out' ||
+    reason === 'subscription_account_integrity_unavailable'
+  ) {
+    return reason;
+  }
+  return null;
 }
 
 function lookupCatalogModel(profile: ProviderProfile, modelId: string): ModelsDevModel | undefined {

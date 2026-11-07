@@ -55,6 +55,8 @@ const ROUTE_REASON_CLASS: Record<string, string> = {
   subscription_account_absent: 'account slot missing',
   subscription_account_logged_out: 'slot not signed in',
   subscription_account_integrity_unavailable: 'slot/Vault check',
+  gateway_disabled: 'Gateway disabled',
+  provider_base_url_missing: 'missing base URL',
 };
 
 /** User-facing member availability from the admin resolver projection. */
@@ -803,7 +805,10 @@ function GatewayEditor({
 }: {
   client: CoreClient;
   disconnected: boolean;
-  target: { type: 'metadata'; key: string; model: string } | { type: 'routing'; id: string };
+  target:
+    | { type: 'metadata'; key: string; model: string }
+    | { type: 'routing'; id: string }
+    | { type: 'transcription' };
   onChanged: () => void;
 }) {
   const id = target.type === 'metadata' ? 'model-catalog.jsonc' : 'gateway.jsonc';
@@ -817,6 +822,9 @@ function GatewayEditor({
   const [base, setBase] = useState<FileRead | null>(null);
   const [draft, setDraft] = useState('');
   const [autoFailover, setAutoFailover] = useState(true);
+  const [routeId, setRouteId] = useState('');
+  const [providerProfileId, setProviderProfileId] = useState('');
+  const [providerModel, setProviderModel] = useState('');
   const [persisted, setPersisted] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
   useEffect(() => {
@@ -834,7 +842,7 @@ function GatewayEditor({
             2
           )
         );
-      } else {
+      } else if (target.type === 'routing') {
         const model = (
           source.logicalModels as {
             id: string;
@@ -845,6 +853,15 @@ function GatewayEditor({
         if (!model) throw new Error('Logical model no longer authored.');
         setDraft(JSON.stringify(projectSafeValue(model.routes), null, 2));
         setAutoFailover(model.routing?.autoFailover ?? true);
+      } else {
+        const route = source.transcription as
+          | { id?: unknown; providerProfileId?: unknown; providerModel?: unknown }
+          | undefined;
+        setRouteId(typeof route?.id === 'string' ? route.id : '');
+        setProviderProfileId(
+          typeof route?.providerProfileId === 'string' ? route.providerProfileId : ''
+        );
+        setProviderModel(typeof route?.providerModel === 'string' ? route.providerModel : '');
       }
       setBase(read.data);
     } catch {
@@ -863,8 +880,11 @@ function GatewayEditor({
       if (!base?.file.revision) throw new Error('Source revision unavailable.');
       const source = parseObject(base.content);
       const errors: ParseError[] = [];
-      const value: unknown = parse(draft, errors, { allowTrailingComma: true });
-      if (errors.length) throw new Error('Invalid JSON.');
+      const value: unknown =
+        target.type === 'transcription'
+          ? undefined
+          : parse(draft, errors, { allowTrailingComma: true });
+      if (target.type !== 'transcription' && errors.length) throw new Error('Invalid JSON.');
       const options = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
       let content = base.content;
       if (target.type === 'metadata') {
@@ -874,7 +894,7 @@ function GatewayEditor({
           content,
           modify(content, ['providers', target.key, 'models', target.model], value, options)
         );
-      } else {
+      } else if (target.type === 'routing') {
         if (!Array.isArray(value)) throw new Error('Routes must be an ordered array.');
         const index = (source.logicalModels as { id: string }[]).findIndex(
           (model) => model.id === target.id
@@ -890,6 +910,19 @@ function GatewayEditor({
             content,
             ['logicalModels', index, 'routing', 'autoFailover'],
             autoFailover,
+            options
+          )
+        );
+      } else {
+        const blank = !routeId && !providerProfileId && !providerModel;
+        if (!blank && (!routeId || !providerProfileId || !providerModel))
+          throw new Error('Transcription route needs an id, provider profile, and model.');
+        content = applyEdits(
+          content,
+          modify(
+            content,
+            ['transcription'],
+            blank ? undefined : { id: routeId, providerProfileId, providerModel },
             options
           )
         );
@@ -974,20 +1007,58 @@ function GatewayEditor({
               disabled={disconnected || save.isPending}
             />
           ) : null}
-          <details {...(target.type === 'metadata' ? { open: true } : {})}>
-            <summary className="cursor-pointer text-sm text-fg">
-              {target.type === 'metadata' ? 'Extension source' : 'Route source'}
-            </summary>
-            <JsonDraft
-              label={target.type === 'metadata' ? 'Extension metadata JSON' : 'Ordered routes JSON'}
-              value={draft}
-              onChange={(value) => {
-                setDraft(value);
-                save.reset();
-              }}
-              disabled={disconnected || save.isPending}
-            />
-          </details>
+          {target.type === 'transcription' ? (
+            <div className="flex flex-col gap-2">
+              <TextField
+                label="Route id"
+                value={routeId}
+                onChange={(value) => {
+                  setRouteId(value);
+                  save.reset();
+                }}
+                isDisabled={disconnected || save.isPending}
+              />
+              <TextField
+                label="Provider profile"
+                value={providerProfileId}
+                onChange={(value) => {
+                  setProviderProfileId(value);
+                  save.reset();
+                }}
+                isDisabled={disconnected || save.isPending}
+              />
+              <TextField
+                label="Provider model"
+                value={providerModel}
+                onChange={(value) => {
+                  setProviderModel(value);
+                  save.reset();
+                }}
+                isDisabled={disconnected || save.isPending}
+              />
+              <p className="text-xs text-fg-muted">
+                Leave all three empty to remove the transcription route.
+              </p>
+            </div>
+          ) : null}
+          {target.type === 'transcription' ? null : (
+            <details {...(target.type === 'metadata' ? { open: true } : {})}>
+              <summary className="cursor-pointer text-sm text-fg">
+                {target.type === 'metadata' ? 'Extension source' : 'Route source'}
+              </summary>
+              <JsonDraft
+                label={
+                  target.type === 'metadata' ? 'Extension metadata JSON' : 'Ordered routes JSON'
+                }
+                value={draft}
+                onChange={(value) => {
+                  setDraft(value);
+                  save.reset();
+                }}
+                disabled={disconnected || save.isPending}
+              />
+            </details>
+          )}
           {target.type === 'routing' ? (
             <Switch
               className="min-h-11"
@@ -997,13 +1068,13 @@ function GatewayEditor({
             >
               Automatic failover
             </Switch>
-          ) : (
+          ) : target.type === 'metadata' ? (
             <p className="text-xs text-fg-muted">
               Exact key {target.key} / {target.model}. Omitted leaves inherit; explicit false, zero
               and empty arrays are preserved. Profile overrides still win. Removing a leaf restores
               inheritance.
             </p>
-          )}
+          ) : null}
           {save.isError ? (
             <ErrorBanner
               message={failureMessage(save.error, 'Configuration save')}
@@ -1021,7 +1092,11 @@ function GatewayEditor({
               isDisabled={disconnected || save.isPending || read.isError || read.isFetching}
               onPress={() => save.mutate()}
             >
-              {target.type === 'metadata' ? 'Save extension' : 'Save routes'}
+              {target.type === 'metadata'
+                ? 'Save extension'
+                : target.type === 'transcription'
+                  ? 'Save transcription route'
+                  : 'Save routes'}
             </Button>
             <Button
               size="sm"
@@ -1034,7 +1109,7 @@ function GatewayEditor({
             >
               Reload source revision
             </Button>
-            {target.type === 'routing' ? (
+            {target.type === 'routing' || target.type === 'transcription' ? (
               <Button
                 className="min-h-11"
                 variant="outline"
@@ -1308,7 +1383,11 @@ export function GatewayConfiguration({
       ? diagnostics.gateway.models.find((model) => model.id === editing.id)
       : undefined;
   const editorTitle =
-    editing?.type === 'metadata' ? `Edit metadata ${editing.key} / ${editing.model}` : 'Edit route';
+    editing?.type === 'metadata'
+      ? `Edit metadata ${editing.key} / ${editing.model}`
+      : editing?.type === 'transcription'
+        ? 'Edit transcription route'
+        : 'Edit route';
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-in-use">
       <h2 id="gateway-in-use" className="text-lg font-bold text-fg-strong">
@@ -1317,6 +1396,30 @@ export function GatewayConfiguration({
       <p className="text-sm text-fg-muted">
         Default: {diagnostics.gateway.defaultModelId ?? 'Not configured'}
       </p>
+      <Card className="flex min-w-0 flex-col gap-2">
+        <h3 className="text-base font-bold text-fg-strong">Voice transcription</h3>
+        {diagnostics.gateway.transcription ? (
+          <>
+            <p className="text-sm text-fg">
+              {diagnostics.gateway.transcription.providerProfileId} /{' '}
+              {diagnostics.gateway.transcription.providerModel}
+            </p>
+            <p className="text-sm text-fg-muted">
+              {routeAvailabilityText(diagnostics.gateway.transcription)}
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-fg-muted">No transcription route.</p>
+        )}
+        <Button
+          className="min-h-11 w-fit"
+          variant="outline"
+          isDisabled={disconnected}
+          onPress={() => setEditing({ type: 'transcription' })}
+        >
+          Edit transcription route
+        </Button>
+      </Card>
       {cards.length === 0 ? (
         <EmptyState
           icon="connect"

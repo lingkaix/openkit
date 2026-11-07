@@ -3,7 +3,7 @@ import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { usePersistentNavigation } from '../../app/AppShell';
-import { useConnection } from '../../app/core-client';
+import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
   Composer,
@@ -40,6 +40,7 @@ import {
 } from './data';
 import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
+import { composerVoice } from './voice';
 
 /**
  * Indexes the first reference for each Artifact version.
@@ -149,6 +150,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
   const items = useThreadItems(workspaceId, threadId, !activeTurn);
   const targets = useConversationTargets(workspaceId, threadId);
+  const client = useCoreClient();
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
   const send = useSendTurn();
@@ -664,6 +666,15 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                           ? 'Checking the selected candidate.'
                           : undefined
                 }
+                voice={composerVoice({
+                  client,
+                  workspaceId,
+                  threadId,
+                  catalog:
+                    taskDefaultTarget && targets.data
+                      ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
+                      : targets.data,
+                })}
                 onSubmit={submitConversation}
               />
             )}

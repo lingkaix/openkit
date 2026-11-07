@@ -7,7 +7,7 @@ import type {
 import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager, RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { GatewayUsageTracker } from '../llm/gateway-usage.js';
-import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import { resolveLogicalModelCatalog, resolveTranscriptionRoute } from '../llm/logical-models.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { FamilyImplementations } from '../operation-contract.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
@@ -50,6 +50,12 @@ export function createDiagnosticsOperationImplementations(
         releaseIdentity,
       } = services!;
       const boot = getBootReadiness();
+      const transcription = resolveTranscriptionRoute(
+        runtimeConfig().gatewayConfig,
+        runtimeConfig().providerRegistry,
+        providerSubscriptionAccountManager ?? undefined,
+        providerCredentialConfigured
+      );
       return {
         service: 'nanocore',
         boot,
@@ -103,6 +109,17 @@ export function createDiagnosticsOperationImplementations(
             })
           ),
           usage: gatewayUsageTracker.snapshot(),
+          ...(transcription.configured
+            ? {
+                transcription: {
+                  id: transcription.member.id,
+                  providerProfileId: transcription.member.providerProfileId,
+                  providerModel: transcription.member.providerModel,
+                  available: transcription.available,
+                  unavailableReason: transcription.unavailableReason,
+                },
+              }
+            : {}),
         },
         providers: {
           diagnostics: runtimeConfig().providerDiagnostics.summaries,

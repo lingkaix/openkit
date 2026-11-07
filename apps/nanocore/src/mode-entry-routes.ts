@@ -86,7 +86,11 @@ import {
   type TerminalTurnPublication,
 } from './lib/store.js';
 import { LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
-import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
+import {
+  type ResolvedLogicalModel,
+  resolveLogicalModel,
+  resolveTranscriptionRoute,
+} from './llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from './llm/model-capture.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
@@ -2788,11 +2792,25 @@ export function createConversationService({
         409
       );
     }
+    const transcription = resolveTranscriptionRoute(
+      snapshot.gatewayConfig,
+      snapshot.providerRegistry,
+      providerSubscriptionAccountManager,
+      providerCredentialConfigured
+    );
     return ConversationTargetCatalogSchema.parse({
       workspaceId,
       threadId: requestedThreadId,
       targets: uniqueTargets,
       defaultTargetRef,
+      ...(transcription.configured
+        ? {
+            transcription: {
+              available: transcription.available,
+              unavailableReason: transcription.unavailableReason,
+            },
+          }
+        : {}),
     });
   }
 

@@ -19,6 +19,7 @@ import {
   loadRuntimeConfig,
   unknownModelContextFailure,
 } from './runtime-config.js';
+import { RuntimeConfigFileService } from './runtime-config-files.js';
 
 /**
  * Creates a temporary NanoCore data root for runtime config tests.
@@ -69,6 +70,45 @@ function writeConfiguredServer(dataRoot: string, model: string, extra = ''): voi
     }`
   );
   writeProviderConfig(dataRoot, model);
+}
+
+function writeSpeechGateway(dataRoot: string, chatModel: string): void {
+  const providersRoot = join(dataRoot, 'config', 'providers');
+  mkdirSync(providersRoot, { recursive: true });
+  writeFileSync(
+    join(providersRoot, 'speech.provider.jsonc'),
+    JSON.stringify({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      id: 'speech',
+      vendor: 'openai',
+      kind: 'custom',
+      displayName: 'Speech',
+      baseUrl: 'http://127.0.0.1:9/v1',
+      models: [chatModel, 'handwritten/whisper-1'],
+    })
+  );
+  mkdirSync(join(dataRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(dataRoot, 'config', 'gateway.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'reasoning',
+      logicalModels: [
+        {
+          id: 'reasoning',
+          displayName: 'Reasoning',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [{ id: 'primary', providerProfileId: 'speech', providerModel: chatModel }],
+        },
+      ],
+      transcription: {
+        id: 'voice',
+        providerProfileId: 'speech',
+        providerModel: 'handwritten/whisper-1',
+      },
+    })
+  );
 }
 
 function writeGatewayConfig(dataRoot: string, model = 'openai/gpt-5.1'): void {
@@ -1149,6 +1189,92 @@ describe('runtime config loading and reload planning', () => {
     expect(manager.current().providerRegistry.get('orca-custom')).toBeNull();
     expect(manager.status().lastFailedReload?.message).toMatch(
       /provider\.unknown_model_context.*handwritten\/local-flash/s
+    );
+  });
+
+  it('admits a transcription-only model without context through file validation and reload', async () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeSpeechGateway(dataRoot, 'openai/gpt-5.1');
+    const loaded = loadRuntimeConfig(dataRoot, { version: 1 });
+    expect(unknownModelContextFailure(loaded)).toBeNull();
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+      workspaceIds: [],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const content = readFileSync(join(dataRoot, 'config', 'gateway.jsonc'), 'utf8');
+    expect(files.validate({ files: [{ id: 'gateway.jsonc', content }], mode: 'safe' }).valid).toBe(
+      true
+    );
+    const renamed = content.replace('Reasoning', 'Reasoning renamed');
+    writeFileSync(join(dataRoot, 'config', 'gateway.jsonc'), renamed);
+    expect(
+      files.validate({ files: [{ id: 'gateway.jsonc', content: renamed }], mode: 'safe' }).valid
+    ).toBe(true);
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
+    expect(manager.current().version).toBe(2);
+    expect(manager.current().gatewayConfig.transcription?.providerModel).toBe(
+      'handwritten/whisper-1'
+    );
+  });
+
+  it('still rejects a chat route that uses the transcription model without context', async () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeSpeechGateway(dataRoot, 'openai/gpt-5.1');
+    const manager = createRuntimeConfigManager({ dataRoot });
+    expect(manager.current().version).toBe(1);
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+      workspaceIds: [],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const chatUsesWhisper = JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      defaultLogicalModelId: 'reasoning',
+      logicalModels: [
+        {
+          id: 'reasoning',
+          displayName: 'Reasoning',
+          contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+          routes: [
+            {
+              id: 'primary',
+              providerProfileId: 'speech',
+              providerModel: 'handwritten/whisper-1',
+            },
+          ],
+        },
+      ],
+      transcription: {
+        id: 'voice',
+        providerProfileId: 'speech',
+        providerModel: 'handwritten/whisper-1',
+      },
+    });
+    const validation = files.validate({
+      files: [{ id: 'gateway.jsonc', content: chatUsesWhisper }],
+      mode: 'safe',
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'provider.unknown_model_context', severity: 'error' }),
+      ])
+    );
+    writeFileSync(join(dataRoot, 'config', 'gateway.jsonc'), chatUsesWhisper);
+    const failed = await manager.reload({ dryRun: false, mode: 'safe' });
+    expect(failed.status).toBe('failed');
+    expect(manager.current().version).toBe(1);
+    expect(manager.current().gatewayConfig.logicalModels[0]?.routes[0]?.providerModel).toBe(
+      'openai/gpt-5.1'
     );
   });
 
