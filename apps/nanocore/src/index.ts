@@ -226,12 +226,18 @@ const bootResult = await runBootPhases({
             },
           };
         }
-        runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
+        runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, {
+          quarantineMalformedWorkspaceConfig: true,
+          version: 1,
+        });
         mode = resolveMode(process.env, runtimeConfigSnapshot.openKitConfig);
         bindPort = resolveBindPort(process.env, runtimeConfigSnapshot.openKitConfig);
         resolveBetterAuthSecret(process.env, mode);
         ensureConfigTemplateSurface(dataRoot);
-        runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
+        runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, {
+          quarantineMalformedWorkspaceConfig: true,
+          version: 1,
+        });
         bindHost = resolveBindHost(process.env, mode, runtimeConfigSnapshot.openKitConfig);
         bindPort = resolveBindPort(process.env, runtimeConfigSnapshot.openKitConfig);
         nanoHostListener = resolveNanoHostTransportListener(

@@ -225,6 +225,8 @@ interface LoadRuntimeConfigOptions {
   subscriptionAccounts?:
     | Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>
     | undefined;
+  /** Boot load only: refuse one malformed Workspace instead of failing the snapshot. */
+  quarantineMalformedWorkspaceConfig?: boolean;
 }
 
 /**
@@ -373,7 +375,9 @@ export function loadRuntimeConfig(
     { diagnostics: authoredDiagnostics, dataRoot, kind: 'internal-role' }
   );
   const userConfigs = loadUserConfigs(dataRoot, authoredDiagnostics);
-  const quarantinedWorkspaceIds = new Set<string>();
+  const quarantinedWorkspaceIds = options.quarantineMalformedWorkspaceConfig
+    ? new Set<string>()
+    : undefined;
   const workspaceConfigs = loadWorkspaceConfigs(
     dataRoot,
     authoredDiagnostics,
@@ -534,6 +538,7 @@ export function createRuntimeConfigManager(
   let current =
     options.initialSnapshot ??
     loadRuntimeConfig(requireDataRoot(options.dataRoot), {
+      quarantineMalformedWorkspaceConfig: true,
       subscriptionAccounts: options.subscriptionAccounts,
       providerCredentialConfigured: options.providerCredentialConfigured,
     });
@@ -1489,31 +1494,59 @@ function loadWorkspaceConfigs(
       continue;
     }
 
+    if (quarantinedWorkspaceIds) {
+      try {
+        const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
+        const result = readRetainedV1(parsed, (record) => WorkspaceConfigSchema.safeParse(record));
+        if (!result.success) {
+          quarantineMalformedWorkspaceConfig(dataRoot, id, quarantinedWorkspaceIds);
+          continue;
+        }
+        addUnknownConfigDiagnostics(
+          diagnostics,
+          'workspace',
+          parsed,
+          result.data,
+          dataRoot,
+          configPath
+        );
+        configs.push({
+          workspaceId: id,
+          path: configPath,
+          config: result.data,
+        });
+      } catch {
+        // Keep the original bytes. One Workspace cannot refuse the server load.
+        quarantineMalformedWorkspaceConfig(dataRoot, id, quarantinedWorkspaceIds);
+      }
+      continue;
+    }
+
+    const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
     let result: ReturnType<typeof WorkspaceConfigSchema.safeParse>;
     try {
-      const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
       result = readRetainedV1(parsed, (record) => WorkspaceConfigSchema.safeParse(record));
-      if (!result.success) {
-        quarantineMalformedWorkspaceConfig(dataRoot, id, quarantinedWorkspaceIds);
-        continue;
-      }
-      addUnknownConfigDiagnostics(
-        diagnostics,
-        'workspace',
-        parsed,
-        result.data,
-        dataRoot,
-        configPath
-      );
-      configs.push({
-        workspaceId: id,
-        path: configPath,
-        config: result.data,
-      });
     } catch {
-      // Keep the original bytes. One Workspace cannot refuse the server load.
-      quarantineMalformedWorkspaceConfig(dataRoot, id, quarantinedWorkspaceIds);
+      throw new Error(
+        `Invalid workspace config ${configPath}: Unsupported retained record format.`
+      );
     }
+    if (!result.success) {
+      throw new Error(`Invalid workspace config ${configPath}: ${z.prettifyError(result.error)}`);
+    }
+    addUnknownConfigDiagnostics(
+      diagnostics,
+      'workspace',
+      parsed,
+      result.data,
+      dataRoot,
+      configPath
+    );
+    configs.push({
+      workspaceId: id,
+      path: configPath,
+      config: result.data,
+    });
   }
 
   return configs;
@@ -1523,9 +1556,9 @@ function loadWorkspaceConfigs(
 function quarantineMalformedWorkspaceConfig(
   dataRoot: string,
   workspaceId: string,
-  quarantinedWorkspaceIds: Set<string> | undefined
+  quarantinedWorkspaceIds: Set<string>
 ): void {
-  quarantinedWorkspaceIds?.add(workspaceId);
+  quarantinedWorkspaceIds.add(workspaceId);
   refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
 }
 

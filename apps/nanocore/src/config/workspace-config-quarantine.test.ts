@@ -25,7 +25,7 @@ describe('malformed Workspace config quarantine', () => {
     mkdirSync(join(dataRoot, 'workspaces', malformedId, 'config'), { recursive: true });
     writeFileSync(join(dataRoot, 'workspaces', malformedId, 'config', 'data-sources.jsonc'), '{');
 
-    const snapshot = loadRuntimeConfig(dataRoot);
+    const snapshot = loadRuntimeConfig(dataRoot, { quarantineMalformedWorkspaceConfig: true });
 
     expect(snapshot.workspaceConfigs.map((entry) => entry.workspaceId)).toEqual([healthyId]);
     expect(snapshot.workspaceDataSourceCatalogs.map((entry) => entry.workspaceId)).toEqual([]);

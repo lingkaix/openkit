@@ -377,6 +377,55 @@ describe('authored configuration tolerance', () => {
     expect(readFileSync(path, 'utf8')).toBe(original);
   });
 
+  it('rejects an invalid Workspace config during write validation, keeps its bytes, and does not refuse that Workspace', () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const original = JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo' } });
+    const { dataRoot, path } = authoredFile(
+      `workspaces/${workspaceId}/config/workspace.jsonc`,
+      original
+    );
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0',
+      workspaceIds: [workspaceId],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const invalid = JSON.stringify({
+      schemaVersion: 1,
+      requiredFeatures: ['future.config.rule'],
+      workspace: { name: 'Demo' },
+    });
+    writeFileSync(path, invalid);
+
+    const validation = files.validate({
+      files: [
+        {
+          id: `workspaces/${workspaceId}/data-sources.jsonc`,
+          content: JSON.stringify({ schemaVersion: 1, sources: [] }),
+        },
+      ],
+      mode: 'safe',
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'error',
+          message: expect.stringMatching(
+            new RegExp(
+              `Invalid workspace config .*/workspaces/${workspaceId}/config/workspace\\.jsonc:[\\s\\S]*future\\.config\\.rule`
+            )
+          ),
+        }),
+      ])
+    );
+    expect(readFileSync(path, 'utf8')).toBe(invalid);
+    expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(true);
+  });
+
   it.each([
     {
       path: 'users/usr_00000000-0000-7e68-be9b-ac7521cb7be0/config/user.jsonc',
@@ -446,7 +495,7 @@ describe('authored configuration tolerance', () => {
     });
     const { dataRoot, path } = authoredFile(relativePath, content);
 
-    const snapshot = loadRuntimeConfig(dataRoot);
+    const snapshot = loadRuntimeConfig(dataRoot, { quarantineMalformedWorkspaceConfig: true });
 
     expect(snapshot.workspaceConfigs).toEqual([]);
     expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
