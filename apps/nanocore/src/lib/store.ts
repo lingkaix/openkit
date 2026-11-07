@@ -122,8 +122,10 @@ import {
   type NotebookInitialization,
 } from '../knowledge/notebook-initialization.js';
 import type { NotebookEdit } from '../knowledge/notebook-publication.js';
-import { validateNotebookCandidate } from '../knowledge/notebook-validation.js';
-import { importedWorkspaceNotebookReferences } from '../knowledge/notebook-workspace-portability.js';
+import {
+  importedWorkspaceNotebookReferences,
+  validateNotebookCandidate,
+} from '../knowledge/notebook-validation.js';
 import {
   attributedNotebookPageBytes,
   createDefaultScopeKnowledgeSchemaText,
