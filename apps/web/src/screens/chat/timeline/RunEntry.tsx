@@ -55,6 +55,9 @@ export function RunEntry({
   inspectRef,
   inspected,
   onInspect,
+  stepsInSheet,
+  onOpenSteps,
+  stepsSheetOpen,
   runningStatus,
   showActivity,
   activityLine,
@@ -73,6 +76,10 @@ export function RunEntry({
   inspectRef?: Ref<HTMLButtonElement>;
   inspected: boolean;
   onInspect: () => void;
+  /** Phone opens steps in a sheet instead of in the run. */
+  stepsInSheet?: boolean;
+  onOpenSteps?: () => void;
+  stepsSheetOpen?: boolean;
   runningStatus?: ReactNode;
   showActivity: boolean;
   activityLine?: ReactNode;
@@ -247,12 +254,18 @@ export function RunEntry({
             variant="quiet"
             size="sm"
             data-fold-control="true"
-            aria-expanded={runLens === 'full' || stepsOpen}
-            onPress={() => setStepsOpen((open) => !open)}
+            aria-expanded={stepsInSheet ? Boolean(stepsSheetOpen) : runLens === 'full' || stepsOpen}
+            onPress={() => {
+              if (stepsInSheet) {
+                onOpenSteps?.();
+                return;
+              }
+              setStepsOpen((open) => !open);
+            }}
           >
             {stepsFoldLabel(entry.stats.stepCount, entry.stats.failedStepCount)}
           </Button>
-          {runLens === 'full' || stepsOpen ? (
+          {!stepsInSheet && (runLens === 'full' || stepsOpen) ? (
             <ul data-fold-depth="2" className="mt-2 flex flex-col gap-2">
               {groups.map((group) =>
                 group.items.length > 1 ? (

@@ -33,6 +33,9 @@ export function Inspector({
   interrupted,
   onClose,
   panelRef,
+  sheet,
+  expanded,
+  onExpand,
 }: {
   turnId: string;
   items: readonly ThreadItem[];
@@ -41,25 +44,48 @@ export function Inspector({
   interrupted?: boolean;
   onClose: () => void;
   panelRef?: Ref<HTMLElement>;
+  /** Phone sheet at 60% of the viewport, expandable. Desktop keeps the side slot. */
+  sheet?: boolean;
+  expanded?: boolean;
+  onExpand?: () => void;
 }) {
   return (
     <aside
       ref={panelRef}
       aria-label={timelineCopy.inspectorLabel}
       data-surface="inspector"
+      data-sheet={sheet ? 'partial' : undefined}
+      data-expanded={sheet ? (expanded ? 'true' : 'false') : undefined}
       tabIndex={-1}
+      role={sheet ? 'dialog' : undefined}
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return;
-        if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
+        if (!sheet && event.target instanceof Element && event.target.closest('[role="dialog"]'))
+          return;
         event.preventDefault();
         onClose();
       }}
-      className="absolute inset-y-0 right-0 z-10 flex w-full shrink-0 flex-col overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu outline-none focus:ring-2 focus:ring-focus @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none"
+      className={
+        sheet
+          ? `fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-y-auto rounded-t-ok-xl border border-separator bg-layer-1 p-3 shadow-ok-modal outline-none focus:ring-2 focus:ring-focus ${expanded ? 'top-0 h-full' : 'h-[60vh]'}`
+          : 'absolute inset-y-0 right-0 z-10 flex w-full shrink-0 flex-col overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu outline-none focus:ring-2 focus:ring-focus @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none'
+      }
     >
-      <div
-        className="mx-auto mt-1 h-1 w-10 shrink-0 rounded-full bg-border @min-[47rem]/thread:hidden"
-        aria-hidden="true"
-      />
+      {sheet ? (
+        <button
+          type="button"
+          className="flex min-h-11 w-full items-center justify-center"
+          aria-label={expanded ? timelineCopy.collapseSheet : timelineCopy.expandSheet}
+          onClick={onExpand}
+        >
+          <span className="h-1 w-10 rounded-full bg-border" aria-hidden="true" />
+        </button>
+      ) : (
+        <div
+          className="mx-auto mt-1 h-1 w-10 shrink-0 rounded-full bg-border @min-[47rem]/thread:hidden"
+          aria-hidden="true"
+        />
+      )}
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-fg">{timelineCopy.inspectorLabel}</h2>
         <Button

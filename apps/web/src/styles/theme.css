@@ -149,6 +149,11 @@
     bottom: calc(1.5rem + env(safe-area-inset-bottom));
   }
   @media (max-width: 799px) {
+    input,
+    textarea,
+    select {
+      min-height: 44px;
+    }
     .ok-toast-region {
       /* The composer and the section bar own the bottom edge. */
       top: calc(0.75rem + env(safe-area-inset-top));

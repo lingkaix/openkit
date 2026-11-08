@@ -392,6 +392,69 @@ describe('error class, consequence, and empty state', () => {
   });
 });
 
+describe('hidden page stream', () => {
+  it('closes the stream when the page hides and rereads when it returns', async () => {
+    const item = {
+      id: 'it_1',
+      owner: { kind: 'workspace', workspaceId: 'ws' },
+      threadId: 'th',
+      turnId: 'tu_1',
+      type: 'user-message',
+      status: 'completed',
+      actor: { kind: 'user', id: 'usr_00000000-0000-7609-aed5-db4b5c95e76c' },
+      text: 'Still here',
+      createdAt: '2026-07-21T00:00:01.000Z',
+      completedAt: '2026-07-21T00:00:01.000Z',
+    };
+    const list = vi.fn(async () => ({ items: [item], nextCursor: null }));
+    const returned = vi.fn(async () => undefined);
+    let subscribed = 0;
+    const core = streamClient({
+      'thread.items': () => list(),
+      'thread.dashboard': async () => ({
+        turns: [{ id: 'tu_1', status: 'running', items: [item] }],
+        participants: [],
+      }),
+      subscribeTurnEvents: () => {
+        subscribed += 1;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise(() => {}),
+              return: returned,
+            };
+          },
+        };
+      },
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={core}>
+          <ThreadStream workspaceId="ws" threadId="th" />
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+    await waitFor(() => expect(subscribed).toBeGreaterThan(0));
+    const returnsBefore = returned.mock.calls.length;
+    const listsBefore = list.mock.calls.length;
+    setVisibility('hidden');
+    await waitFor(() => expect(returned.mock.calls.length).toBeGreaterThan(returnsBefore));
+    setVisibility('visible');
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(listsBefore));
+  });
+});
+
+function setVisibility(state: 'hidden' | 'visible') {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => state,
+  });
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
 function streamClient(
   operations: Record<string, unknown> & { subscribeTurnEvents?: unknown }
 ): CoreClient {

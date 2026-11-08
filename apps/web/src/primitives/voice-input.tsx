@@ -215,7 +215,7 @@ export function VoiceInputControl({
           onMouseDown={(event) => event.preventDefault()}
           onPointerDown={(event) => event.preventDefault()}
           onPress={() => void start()}
-          className="flex size-9 items-center justify-center rounded-full border border-border text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
+          className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full border border-border text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
         >
           <Icon name="mic" />
         </AriaButton>
@@ -228,7 +228,7 @@ export function VoiceInputControl({
             onMouseDown={(event) => event.preventDefault()}
             onPointerDown={(event) => event.preventDefault()}
             onPress={() => finish(true)}
-            className="flex size-9 items-center justify-center rounded-full bg-accent text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
+            className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full bg-accent text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
           >
             <Icon name="check" />
           </AriaButton>
@@ -238,7 +238,7 @@ export function VoiceInputControl({
             onMouseDown={(event) => event.preventDefault()}
             onPointerDown={(event) => event.preventDefault()}
             onPress={() => finish(false)}
-            className="flex size-9 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
+            className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
           >
             <Icon name="close" />
           </AriaButton>
@@ -251,7 +251,7 @@ export function VoiceInputControl({
           onMouseDown={(event) => event.preventDefault()}
           onPointerDown={(event) => event.preventDefault()}
           onPress={abortTranscription}
-          className="flex size-9 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           <Icon name="spinner" />
         </AriaButton>
@@ -266,7 +266,7 @@ export function VoiceInputControl({
               onMouseDown={(event) => event.preventDefault()}
               onPointerDown={(event) => event.preventDefault()}
               onPress={() => void retry()}
-              className="flex size-9 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
             >
               <Icon name="retry" />
             </AriaButton>
@@ -282,7 +282,7 @@ export function VoiceInputControl({
               setMessage(null);
               setPhase('idle');
             }}
-            className="flex size-9 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
+            className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full border border-border outline-none focus-visible:ring-2 focus-visible:ring-focus"
           >
             <Icon name="close" />
           </AriaButton>

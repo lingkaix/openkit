@@ -2,6 +2,7 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { usePersistentNavigation } from '../../app/AppShell';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -38,6 +39,7 @@ import { ThreadStream } from './ThreadStream';
 import { timelineCopy } from './timeline/copy';
 import { classifySendFailure } from './timeline/degraded';
 import { readStoredLens, writeStoredLens } from './timeline/lens-store';
+import { useTimelineSheets } from './timeline/PhoneChrome';
 import { selectAgentProfile } from './timeline/profiles';
 import { SendFailure, SendPending } from './timeline/SendState';
 import type { LensName } from './timeline/types';
@@ -207,7 +209,13 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const submitFeedback = useSubmitTurnFeedback();
   const { failed: disconnected } = useConnection();
   const panelHost = useRef<HTMLDivElement>(null);
-  const [lens, setLens] = useState<LensName>(readStoredLens);
+  const phone = !usePersistentNavigation();
+  const sheets = useTimelineSheets();
+  const [lens, setLens] = useState<LensName>(() =>
+    typeof window !== 'undefined' && window.matchMedia?.('(max-width: 799px)')?.matches
+      ? 'work'
+      : readStoredLens()
+  );
   const renameButtonRef = useRef<HTMLButtonElement>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
@@ -368,7 +376,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             </p>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
-            {activeTurn ? (
+            {activeTurn && !phone ? (
               <div className="flex flex-col items-end gap-1">
                 <p id="stop-consequence">{timelineCopy.stopConsequence}</p>
                 {interruptState?.status === 'pending' ? (
@@ -404,10 +412,17 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   key={choice}
                   size="sm"
                   variant={lens === choice ? 'outline' : 'quiet'}
+                  aria-label={
+                    choice === 'work' ? timelineCopy.lensWorkName : timelineCopy.lensFullName
+                  }
                   aria-pressed={lens === choice}
                   onPress={() => {
                     setLens(choice);
                     writeStoredLens(choice);
+                    if (phone && choice === 'full') {
+                      const turnId = dashboard.data?.turns.at(-1)?.id;
+                      if (turnId) sheets.open('steps', turnId);
+                    }
                   }}
                 >
                   {choice === 'work' ? timelineCopy.lensWork : timelineCopy.lensFull}
@@ -508,6 +523,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               mode={mode}
               stopPending={interruptState?.status === 'pending'}
               onOpen={(href) => navigate(href)}
+              sheets={sheets}
             />
             {feedbackTurn ? (
               <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">
@@ -544,7 +560,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           </div>
         </div>
 
-        <div className="border-t border-separator px-6 py-3">
+        <div
+          data-composer-dock="true"
+          className="border-t border-separator bg-layer-1 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+        >
           <div className="mx-auto w-full max-w-[760px]">
             {submission?.status === 'pending' ? <SendPending /> : null}
             {submission?.status === 'error' ? (
@@ -653,6 +672,27 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                       : targets.data,
                 })}
                 onSubmit={submitConversation}
+                phoneRun={
+                  phone
+                    ? {
+                        steerReason: timelineCopy.steerUnavailable,
+                        stop: activeTurn
+                          ? {
+                              label: timelineCopy.stopRun,
+                              pending: interruptState?.status === 'pending',
+                              consequence: timelineCopy.stopConsequence,
+                              waitReason: `${timelineCopy.stopping} ${timelineCopy.waitForStop}`,
+                              onStop: () =>
+                                interrupt.mutate({
+                                  workspaceId: workspaceId ?? '',
+                                  threadId,
+                                  turnId: activeTurn.id,
+                                }),
+                            }
+                          : undefined,
+                      }
+                    : undefined
+                }
               />
             )}
           </div>

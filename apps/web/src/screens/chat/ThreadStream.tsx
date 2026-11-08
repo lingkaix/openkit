@@ -2,6 +2,7 @@ import { createRequestId } from '@openkit/core-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { usePersistentNavigation } from '../../app/AppShell';
 import { useConnection } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import {
@@ -42,7 +43,14 @@ import {
   toNeedsYouRow,
 } from './timeline/needs-you';
 import { nowFromThread } from './timeline/now';
-import { plainActorName, runDurationMs, taskSpecObjective } from './timeline/present';
+import {
+  DecisionSheet,
+  PhoneBar,
+  PhoneSheetFrame,
+  type TimelineSheets,
+} from './timeline/PhoneChrome';
+import { shortenProgress } from './timeline/phone';
+import { isStepItem, plainActorName, runDurationMs, taskSpecObjective } from './timeline/present';
 import { selectAgentProfile } from './timeline/profiles';
 import { RunEntry } from './timeline/RunEntry';
 import {
@@ -120,6 +128,8 @@ export interface ThreadStreamProps {
    * This stream does not add a second one, and it has no Steer control.
    */
   narrativeOnly?: boolean;
+  /** URL-backed phone sheets. Desktop ignores steps and the inspector here. */
+  sheets?: TimelineSheets;
 }
 
 /**
@@ -146,8 +156,19 @@ export function ThreadStream({
   focusItemId,
   onOpen,
   narrativeOnly,
+  sheets,
 }: ThreadStreamProps) {
-  const [internalLens, setInternalLens] = useState<LensName>(readStoredLens);
+  const phone = !usePersistentNavigation();
+  const [internalLens, setInternalLens] = useState<LensName>(() =>
+    typeof window !== 'undefined' && window.matchMedia?.('(max-width: 799px)')?.matches
+      ? 'work'
+      : readStoredLens()
+  );
+  const [localDecision, setLocalDecision] = useState<string | null>(null);
+  const [localSteps, setLocalSteps] = useState<string | null>(null);
+  const [localInspect, setLocalInspect] = useState<string | null>(null);
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const phoneInspectId = phone ? (sheets?.inspectTurnId ?? localInspect) : null;
   const lens = lensProp ?? internalLens;
   const [expandedTurnId, setExpandedTurnId] = useState<string | null>(null);
   const [inspectedTurnId, setInspectedTurnId] = useState<string | null>(null);
@@ -274,13 +295,14 @@ export function ThreadStream({
   }, [focusKey, selectedTurn, items.isLoading, items.isError]);
   const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !selectedTurn);
   useEffect(() => {
-    setPortalNode(inspectedTurnId ? (panelHost?.current ?? null) : null);
-  }, [inspectedTurnId, panelHost]);
+    setPortalNode(!phone && inspectedTurnId ? (panelHost?.current ?? null) : null);
+  }, [inspectedTurnId, panelHost, phone]);
   useEffect(() => {
-    if (!inspectedTurnId) return;
-    if (panelHost && !portalNode) return;
+    const openId = phone ? phoneInspectId : inspectedTurnId;
+    if (!openId) return;
+    if (!phone && panelHost && !portalNode) return;
     panelRef.current?.focus();
-  }, [inspectedTurnId, panelHost, portalNode]);
+  }, [inspectedTurnId, panelHost, phone, phoneInspectId, portalNode]);
 
   if (items.isLoading) {
     return (
@@ -374,20 +396,70 @@ export function ThreadStream({
     turn: latestTurn ?? null,
     awaitingDecision: scoped.length > 0,
   });
+  const decisionId = sheets?.decisionId ?? (phone ? localDecision : null);
+  const stepsTurnId = phone ? (sheets?.stepsTurnId ?? localSteps) : null;
+  function openSheet(
+    kind: 'decision' | 'steps' | 'inspect',
+    id: string,
+    mode?: 'push' | 'replace'
+  ) {
+    if (sheets) {
+      sheets.open(kind, id, mode);
+      return;
+    }
+    setLocalDecision(kind === 'decision' ? id : null);
+    setLocalSteps(kind === 'steps' ? id : null);
+    setLocalInspect(kind === 'inspect' ? id : null);
+  }
+  function closeSheet() {
+    setSheetExpanded(false);
+    if (sheets) {
+      sheets.close();
+      return;
+    }
+    setLocalDecision(null);
+    setLocalSteps(null);
+    setLocalInspect(null);
+  }
+  const nextDecisionId = scoped.find((row) => row.itemId)?.itemId;
   const chrome = narrativeOnly ? null : (
-    <div className="sticky top-0 z-10 flex flex-col gap-2 bg-layer-1 py-2">
-      <AlignmentHeader model={alignment} />
-      <NowLine model={nowModel} emphasize={emphasis.now} reducedMotion={reducedMotion} />
-      <NeedsYouBar
-        rows={scoped}
-        threadId={threadId}
-        emphasize={emphasis.bar}
-        reducedMotion={reducedMotion}
-        now={clock}
-        onOpen={onOpen}
-      />
+    <div className="sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2">
+      {phone ? (
+        <>
+          {alignment?.objective ? <p className="ok-prose truncate">{alignment.objective}</p> : null}
+          {alignment?.progress ? (
+            <p className="ok-meta truncate">{shortenProgress(alignment.progress)}</p>
+          ) : null}
+          <PhoneBar
+            now={nowModel}
+            needsCount={scoped.length}
+            reducedMotion={reducedMotion}
+            onOpen={
+              nextDecisionId
+                ? () => {
+                    openSheet('decision', nextDecisionId);
+                  }
+                : undefined
+            }
+          />
+        </>
+      ) : (
+        <>
+          <AlignmentHeader model={alignment} />
+          <NowLine model={nowModel} emphasize={emphasis.now} reducedMotion={reducedMotion} />
+          <NeedsYouBar
+            rows={scoped}
+            threadId={threadId}
+            emphasize={emphasis.bar}
+            reducedMotion={reducedMotion}
+            now={clock}
+            onOpen={onOpen}
+          />
+        </>
+      )}
     </div>
   );
+  const inlineLens: LensName = phone ? 'work' : lens;
 
   if (groups.length === 0 && !live.isError) {
     if (unavailableTurn)
@@ -404,6 +476,7 @@ export function ThreadStream({
               <Button
                 variant={lens === 'work' ? 'outline' : 'quiet'}
                 size="sm"
+                aria-label={timelineCopy.lensWorkName}
                 aria-pressed={lens === 'work'}
                 onPress={() => {
                   setInternalLens('work');
@@ -415,10 +488,12 @@ export function ThreadStream({
               <Button
                 variant={lens === 'full' ? 'outline' : 'quiet'}
                 size="sm"
+                aria-label={timelineCopy.lensFullName}
                 aria-pressed={lens === 'full'}
                 onPress={() => {
                   setInternalLens('full');
                   writeStoredLens('full');
+                  if (phone && latestTurnId) openSheet('steps', latestTurnId);
                 }}
               >
                 {timelineCopy.lensFull}
@@ -617,23 +692,48 @@ export function ThreadStream({
   }
 
   function closeInspector() {
+    if (phone) {
+      closeSheet();
+      inspectButtonRef.current?.focus();
+      return;
+    }
     setInspectedTurnId(null);
     inspectButtonRef.current?.focus();
   }
 
-  const inspectedItems = (items.data ?? []).filter((item) => item.turnId === inspectedTurnId);
-  const inspectedActivity = inspectedTurnId ? activityByTurn.get(inspectedTurnId) : undefined;
-  const inspectedTurn = dashboard?.turns.find((turn) => turn.id === inspectedTurnId);
-  const inspector = inspectedTurnId ? (
+  const activeInspectId = phone ? phoneInspectId : inspectedTurnId;
+  const inspectedItems = (items.data ?? []).filter((item) => item.turnId === activeInspectId);
+  const inspectedActivity = activeInspectId ? activityByTurn.get(activeInspectId) : undefined;
+  const inspectedTurn = dashboard?.turns.find((turn) => turn.id === activeInspectId);
+  const inspector = activeInspectId ? (
     <Inspector
-      turnId={inspectedTurnId}
+      turnId={activeInspectId}
       items={inspectedItems}
       activity={inspectedActivity}
       interrupted={inspectedTurn?.status === 'interrupted'}
       onClose={closeInspector}
       panelRef={panelRef}
+      sheet={phone}
+      expanded={sheetExpanded}
+      onExpand={() => setSheetExpanded((open) => !open)}
     />
   ) : null;
+  const decisionItems = (items.data ?? []).filter(
+    (item): item is Extract<ThreadItem, { type: 'approval-request' | 'user-input-request' }> =>
+      item.type === 'approval-request' || item.type === 'user-input-request'
+  );
+  const decisionQueue = scoped.flatMap((row) => {
+    const match = decisionItems.find((item) => item.id === row.itemId);
+    return match ? [match] : [];
+  });
+  const openDecision = decisionItems.find((item) => item.id === decisionId) ?? null;
+  const decisionIndex = openDecision
+    ? decisionQueue.findIndex((item) => item.id === openDecision.id)
+    : -1;
+  const decisionsAfter = decisionIndex >= 0 ? decisionQueue.length - decisionIndex - 1 : 0;
+  const stepItems = (items.data ?? []).filter(
+    (item) => item.turnId === stepsTurnId && isStepItem(item)
+  );
 
   return (
     <TimelineNowProvider now={clock}>
@@ -660,6 +760,7 @@ export function ThreadStream({
               <Button
                 variant={lens === 'work' ? 'outline' : 'quiet'}
                 size="sm"
+                aria-label={timelineCopy.lensWorkName}
                 aria-pressed={lens === 'work'}
                 onPress={() => {
                   setInternalLens('work');
@@ -671,10 +772,12 @@ export function ThreadStream({
               <Button
                 variant={lens === 'full' ? 'outline' : 'quiet'}
                 size="sm"
+                aria-label={timelineCopy.lensFullName}
                 aria-pressed={lens === 'full'}
                 onPress={() => {
                   setInternalLens('full');
                   writeStoredLens('full');
+                  if (phone && latestTurnId) openSheet('steps', latestTurnId);
                 }}
               >
                 {timelineCopy.lensFull}
@@ -717,7 +820,8 @@ export function ThreadStream({
               ? participantNames.get(`agent:${groupTurn.agentId}`)
               : undefined;
             const actorName = plainActorName(namedAgent, 'worker');
-            const runLens = lens === 'full' || expandedTurnId === group.turnId ? 'full' : 'work';
+            const runLens =
+              !phone && (lens === 'full' || expandedTurnId === group.turnId) ? 'full' : 'work';
             const firstViewerMessage = group.items.find(
               (item) =>
                 item.type === 'user-message' &&
@@ -758,27 +862,37 @@ export function ThreadStream({
                   entry={entry}
                   items={group.items}
                   turn={groupTurn}
-                  lens={lens}
-                  expanded={expandedTurnId === group.turnId}
+                  lens={inlineLens}
+                  expanded={phone ? false : expandedTurnId === group.turnId}
+                  stepsInSheet={phone}
+                  stepsSheetOpen={stepsTurnId === group.turnId}
+                  onOpenSteps={() => openSheet('steps', group.turnId)}
                   actorName={actorName}
                   omitTrigger={Boolean(firstViewerMessage)}
                   durationMs={runDurationMs(groupTurn, Date.now())}
                   hiddenIds={groupedSourceIds}
                   renderItem={(item) => renderTimelineItem(item)}
-                  inspectRef={inspectedTurnId === group.turnId ? inspectButtonRef : undefined}
-                  inspected={inspectedTurnId === group.turnId}
-                  onInspect={() =>
+                  inspectRef={activeInspectId === group.turnId ? inspectButtonRef : undefined}
+                  inspected={activeInspectId === group.turnId}
+                  onInspect={() => {
+                    if (phone) {
+                      openSheet('inspect', group.turnId);
+                      return;
+                    }
                     setInspectedTurnId((current) =>
                       current === group.turnId ? null : group.turnId
-                    )
-                  }
+                    );
+                  }}
                   runningStatus={
                     runningStep && groupTurn ? (
                       <div role="status" className="ok-meta text-fg">
                         <Button
                           variant="quiet"
                           size="sm"
-                          onPress={() => setExpandedTurnId(group.turnId)}
+                          onPress={() => {
+                            if (phone) openSheet('steps', group.turnId);
+                            else setExpandedTurnId(group.turnId);
+                          }}
                         >
                           <span>{actorName}</span>
                           <span aria-hidden="true"> · </span>
@@ -860,7 +974,92 @@ export function ThreadStream({
           })}
         </div>
       </ThreadReadReceipts>
-      {inspector ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
+      {inspector && !phone ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
+      {phone && inspector}
+      {openDecision ? (
+        <DecisionSheet
+          item={openDecision}
+          actor={plainActorName(authorFor(openDecision), 'worker')}
+          blocking={scoped.some((row) => row.itemId === openDecision.id && row.blocking)}
+          effectText={
+            openDecision.type === 'approval-request'
+              ? approvalEffectText(
+                  dashboard?.pendingRequests?.find(
+                    (row) => row.requestId === openDecision.approvalRequestId
+                  )?.approvalEffect
+                )
+              : null
+          }
+          pending={
+            openDecision.type === 'approval-request'
+              ? respond.isPending &&
+                respond.variables?.approvalRequestId === openDecision.approvalRequestId
+              : submitAnswers.isPending &&
+                openDecision.type === 'user-input-request' &&
+                submitAnswers.variables?.userInputRequestId === openDecision.userInputRequestId
+          }
+          holdReason={holdReason}
+          more={decisionsAfter}
+          onApprove={
+            openDecision.type === 'approval-request'
+              ? () =>
+                  respond.mutate({
+                    approvalRequestId: openDecision.approvalRequestId,
+                    turnId: openDecision.turnId,
+                    decision: 'granted',
+                    requestId: createRequestId(),
+                  })
+              : undefined
+          }
+          onDeny={
+            openDecision.type === 'approval-request'
+              ? () =>
+                  respond.mutate({
+                    approvalRequestId: openDecision.approvalRequestId,
+                    turnId: openDecision.turnId,
+                    decision: 'denied',
+                    requestId: createRequestId(),
+                  })
+              : undefined
+          }
+          onSubmitAnswers={(userInputRequestId, answers) =>
+            submitAnswers.mutate({ userInputRequestId, answers, requestId: createRequestId() })
+          }
+          onNext={
+            decisionsAfter > 0 && decisionQueue[decisionIndex + 1]
+              ? () => openSheet('decision', decisionQueue[decisionIndex + 1]!.id, 'replace')
+              : undefined
+          }
+          onClose={closeSheet}
+        />
+      ) : null}
+      {phone && stepsTurnId ? (
+        <PhoneSheetFrame
+          label={timelineCopy.stepsSheet}
+          mode="partial"
+          expanded={sheetExpanded}
+          onExpand={() => setSheetExpanded((open) => !open)}
+          onClose={closeSheet}
+        >
+          <ul className="flex flex-col gap-2">
+            {stepItems.map((item) => (
+              <li key={item.id} className="ok-step">
+                {renderTimelineItem(item)}
+              </li>
+            ))}
+          </ul>
+        </PhoneSheetFrame>
+      ) : null}
     </TimelineNowProvider>
   );
+}
+
+function approvalEffectText(
+  effect: { status?: string; summary?: string | null; detail?: string | null } | null | undefined
+): string | null {
+  if (!effect || effect.status !== 'available') return null;
+  const text = [effect.summary, effect.detail]
+    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    .join('\n');
+  return text.length > 0 ? text : null;
 }

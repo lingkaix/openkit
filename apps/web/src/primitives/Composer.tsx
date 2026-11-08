@@ -158,6 +158,20 @@ export interface ComposerProps {
     transcribe?: VoiceTranscribe;
     unavailableReason?: string | null;
   };
+  /**
+   * Phone run controls. Stop is present only while a run is in progress.
+   * Steer stays disabled until an adapter can take it.
+   */
+  phoneRun?: {
+    steerReason: string;
+    stop?: {
+      label: string;
+      pending: boolean;
+      consequence: string;
+      waitReason: string;
+      onStop: () => void;
+    };
+  };
 }
 
 /** Shared target-aware Composer used by starter and active Thread surfaces. */
@@ -177,6 +191,7 @@ export function Composer({
   holdSubmit,
   onSubmit,
   voice,
+  phoneRun,
 }: ComposerProps) {
   const [value, setValue] = useState(initialDraft?.input ?? '');
   const [targetRef, setTargetRef] = useState(initialDraft?.targetRef ?? '');
@@ -524,13 +539,13 @@ export function Composer({
           ))}
         </fieldset>
       ) : null}
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2" data-composer-chips>
         <DialogTrigger isOpen={attachmentsOpen} onOpenChange={setAttachmentsOpen}>
           <AriaButton
             type="button"
             aria-label="Add artifact or upload attachment"
             isDisabled={disabled}
-            className="flex size-8 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus disabled:text-disabled-fg"
+            className="flex size-11 min-h-11 min-w-11 items-center justify-center rounded-full text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus disabled:text-disabled-fg"
           >
             <Icon name="add" />
           </AriaButton>
@@ -611,7 +626,6 @@ export function Composer({
             onChange={selectTarget}
           />
         )}
-        <span className="min-w-2 flex-1" />
         <InlineSelect
           isDisabled={disabled}
           ariaLabel="Logical model"
@@ -658,11 +672,45 @@ export function Composer({
           onMouseDown={(event) => {
             event.preventDefault();
           }}
-          className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
+          className="flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
         >
           <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
         </AriaButton>
       </div>
+      {phoneRun ? (
+        <div className="mt-2 flex flex-col gap-2">
+          <p id="steer-reason">{phoneRun.steerReason}</p>
+          {phoneRun.stop ? <p id="composer-stop-why">{phoneRun.stop.consequence}</p> : null}
+          {phoneRun.stop?.pending ? (
+            <p id="composer-stop-wait" role="status">
+              {phoneRun.stop.waitReason}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            {phoneRun.stop ? (
+              <button
+                type="button"
+                className="min-h-11 flex-1 rounded-full border border-negative-fg px-3 text-sm font-bold text-negative-fg"
+                disabled={phoneRun.stop.pending}
+                aria-describedby={
+                  phoneRun.stop.pending ? 'composer-stop-wait' : 'composer-stop-why'
+                }
+                onClick={phoneRun.stop.onStop}
+              >
+                {phoneRun.stop.label}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="min-h-11 flex-1 rounded-full border border-border px-3 text-sm font-bold text-fg"
+              disabled
+              aria-describedby="steer-reason"
+            >
+              Steer
+            </button>
+          </div>
+        </div>
+      ) : null}
       <ModalOverlay
         isOpen={fileHandoff !== null}
         onOpenChange={(open) => {
@@ -875,10 +923,11 @@ function InlineSelect({
       selectedKey={selectedKey || null}
       onSelectionChange={(key) => key != null && onChange(String(key))}
       placeholder={placeholder}
-      className="min-w-0 max-w-48"
+      className="max-w-full shrink-0"
+      data-composer-chip={ariaLabel}
     >
-      <AriaButton className="flex h-8 w-full items-center gap-1 rounded-full border border-border px-3 text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus">
-        <SelectValue className="truncate data-[placeholder]:text-fg-muted">
+      <AriaButton className="flex h-11 min-h-11 w-max max-w-full items-center gap-1 rounded-full border border-border px-3 text-sm text-fg outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus">
+        <SelectValue className="whitespace-nowrap data-[placeholder]:text-fg-muted">
           {({ selectedText }) => selectedText || placeholder}
         </SelectValue>
         <Icon name="chevron-down" size="sm" />

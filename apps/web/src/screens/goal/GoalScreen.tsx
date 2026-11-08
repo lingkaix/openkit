@@ -18,6 +18,7 @@ import { ThreadStream } from '../chat/ThreadStream';
 import { runStatusLabel, timelineCopy } from '../chat/timeline/copy';
 import { GoalNeedsYou } from '../chat/timeline/NeedsYouBar';
 import { focusGoalCard } from '../chat/timeline/needs-you';
+import { useTimelineSheets } from '../chat/timeline/PhoneChrome';
 import { looksLikeIdentifier } from '../chat/timeline/present';
 import { selectAgentProfile } from '../chat/timeline/profiles';
 import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
@@ -168,6 +169,7 @@ export function GoalScreen() {
   const [description, setDescription] = useState('');
   const [reason, setReason] = useState('');
   const [inspect, setInspect] = useState(false);
+  const sheets = useTimelineSheets();
   const cardAnchor = searchParams.get('card');
   useEffect(() => {
     if (!cardAnchor || !view.data?.cards.some((card) => card.cardId === cardAnchor)) return;
@@ -240,7 +242,7 @@ export function GoalScreen() {
   }
   return (
     <main
-      className="mx-auto max-w-3xl space-y-6 px-6 py-8"
+      className="mx-auto max-w-3xl space-y-6 px-6 py-8 pb-24"
       data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
     >
       <header className="space-y-2">
@@ -521,6 +523,7 @@ export function GoalScreen() {
         threadId={goal.threadId}
         narrativeOnly
         emptyTitle={timelineCopy.emptyGoalTitle}
+        sheets={sheets}
       />
     </main>
   );

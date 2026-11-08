@@ -35,6 +35,7 @@ import {
 import { accountGeneration } from '../account/generation';
 import { useWorkspaceStore } from '../workspace-store';
 import { submitConversationDraft } from './file-drafts';
+import { watchPageVisibility } from './stream-visibility';
 import {
   backoffDelayMs,
   isBusyStatus,
@@ -803,6 +804,28 @@ export function useLiveThreadItems(
   const reconciledItemsSignature = useRef<string | null>(null);
   const owner = useMemo(() => ({ threadId, turnId, workspaceId }), [threadId, turnId, workspaceId]);
   const lastSequence = useRef(0);
+  const hiddenStream = useRef(
+    typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  );
+  const [streamGeneration, setStreamGeneration] = useState(0);
+  useEffect(() => {
+    return watchPageVisibility({
+      onHide: () => {
+        hiddenStream.current = true;
+        setStreamGeneration((current) => current + 1);
+      },
+      onShow: () => {
+        hiddenStream.current = false;
+        if (workspaceId) {
+          void queryClient.invalidateQueries({
+            queryKey: chatKeys.items(workspaceId, threadId),
+            exact: true,
+          });
+        }
+        setStreamGeneration((current) => current + 1);
+      },
+    });
+  }, [queryClient, threadId, workspaceId]);
   const sequenceTurn = useRef(turnId);
   const reconnectPending = useRef(false);
   const [reconnectTick, setReconnectTick] = useState(0);
@@ -910,7 +933,9 @@ export function useLiveThreadItems(
   }, [dashboard.data, dashboard.isSuccess, queryClient, reconnectTick, threadId, workspaceId]);
 
   useEffect(() => {
-    if (!workspaceId || !turnId || !baselineReady) return;
+    // streamGeneration is the restart signal after the page hides or returns.
+    if (streamGeneration < 0) return;
+    if (!workspaceId || !turnId || !baselineReady || hiddenStream.current) return;
 
     let cancelled = false;
     let iterator: AsyncIterator<SseEventEnvelope> | null = null;
@@ -1051,6 +1076,7 @@ export function useLiveThreadItems(
     owner,
     queryClient,
     report,
+    streamGeneration,
     threadId,
     turnId,
     workspaceId,
