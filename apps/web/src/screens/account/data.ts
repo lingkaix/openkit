@@ -116,19 +116,6 @@ export const memberManagementKeys = {
   invitations: (workspaceId: string) => ['account', 'workspace-invitations', workspaceId] as const,
 };
 
-/**
- * Snapshot maintenance fences the Workspace and names no retry time.
- * The decision stays in flight until that refusal clears or this bound passes.
- */
-const RETRYABLE_WORKSPACE_FREEZE_MS = 20_000;
-
-/** Waits before the same decision is sent again: 250 ms, doubling to 2 s, so a held fence is not polled in a tight loop. */
-function waitForCaptureFence(attempt: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, Math.min(250 * 2 ** attempt, 2_000));
-  });
-}
-
 /** Converts one request failure through the closed sharing parser into safe UI state. */
 function safeSharingFailure(error: unknown): WorkspaceSharingFailure {
   const refusal = parseWorkspaceFreezeRefusal(error);
@@ -452,28 +439,21 @@ export function useMyWorkspaceInvitations() {
   >({
     mutationKey: myInvitationDecisionMutationKey,
     retry: false,
+    // The core-client transport already waits out a capture fence; a refusal here is final.
     mutationFn: async (variables) => {
-      const started = Date.now();
-      for (let attempt = 0; ; attempt += 1) {
-        try {
-          const input = { expectedRevision: variables.expectedRevision };
-          return variables.operation === 'accept'
-            ? await client.operations['workspace.my-invitation-accept']({
-                invitationId: variables.invitationId,
-                ...input,
-              })
-            : await client.operations['workspace.my-invitation-decline']({
-                invitationId: variables.invitationId,
-                ...input,
-              });
-        } catch (error) {
-          const refusal = parseWorkspaceFreezeRefusal(error);
-          if (refusal?.retryable && Date.now() - started < RETRYABLE_WORKSPACE_FREEZE_MS) {
-            await waitForCaptureFence(attempt);
-            continue;
-          }
-          throw safeSharingFailure(error);
-        }
+      try {
+        const input = { expectedRevision: variables.expectedRevision };
+        return variables.operation === 'accept'
+          ? await client.operations['workspace.my-invitation-accept']({
+              invitationId: variables.invitationId,
+              ...input,
+            })
+          : await client.operations['workspace.my-invitation-decline']({
+              invitationId: variables.invitationId,
+              ...input,
+            });
+      } catch (error) {
+        throw safeSharingFailure(error);
       }
     },
     onSuccess: ({ invitation }) => {

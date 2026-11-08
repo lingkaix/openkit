@@ -1,6 +1,5 @@
 import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
-import { whenCaptureFenceReleases } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 /** Real API reads do not mark a reply read; its displayed body does, and Core retains that receipt. */
@@ -13,14 +12,11 @@ test('records an actually displayed reply and retains it after Core restart', as
     const workspace = workspaces[0]?.workspace;
     if (!workspace) throw new Error('The isolated simulator has no accessible Workspace.');
     const workspaceId = workspace.id;
-    // Startup maintenance can refuse this first mutation until its capture fence releases.
-    const thread = await whenCaptureFenceReleases(() =>
-      client.operations['thread.create']({
-        workspaceId,
-        name: 'Read receipt browser proof',
-        visibility: 'workspace',
-      })
-    );
+    const thread = await client.operations['thread.create']({
+      workspaceId,
+      name: 'Read receipt browser proof',
+      visibility: 'workspace',
+    });
     const selector = { workspaceId, threadId: thread.id };
     const turn = await client.operations['turn.start']({
       ...selector,

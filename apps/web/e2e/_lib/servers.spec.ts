@@ -20,7 +20,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
-import { whenCaptureFenceReleases } from './capture-fence.js';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
@@ -258,16 +257,12 @@ test('preserves Material delivery and delivers a durable simulator answer on the
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
 
   try {
-    // Startup maintenance captures this Workspace immediately and refuses the mutation
-    // with retryable workspace_frozen until the capture fence releases.
-    const thread = await whenCaptureFenceReleases(() => {
-      const requestId = randomUUID();
-      return client.operations['thread.create']({
-        workspaceId,
-        name: 'Material pending-question reproduction',
-        visibility: 'workspace',
-        requestId,
-      });
+    // Startup maintenance may still hold its capture fence; the core-client transport waits it out.
+    const thread = await client.operations['thread.create']({
+      workspaceId,
+      name: 'Material pending-question reproduction',
+      visibility: 'workspace',
+      requestId: randomUUID(),
     });
     const { materialId } = await client.operations['material.create']({
       workspaceId,

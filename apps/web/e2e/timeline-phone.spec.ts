@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
-import { whenCaptureFenceReleases } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 // Screenshots are evidence, not assertions. Set OPENKIT_E2E_SHOTS_DIR to keep them.
@@ -24,14 +23,12 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
     if (!workspace) throw new Error('The isolated simulator has no accessible Workspace.');
     const workspaceId = workspace.id;
 
-    const thread = await whenCaptureFenceReleases(() =>
-      client.operations['thread.create']({
-        workspaceId,
-        name: 'Phone timeline',
-        visibility: 'workspace',
-        requestId: randomUUID(),
-      })
-    );
+    const thread = await client.operations['thread.create']({
+      workspaceId,
+      name: 'Phone timeline',
+      visibility: 'workspace',
+      requestId: randomUUID(),
+    });
     const content = '# Release\n\nExact worker input.\n';
     const { materialId } = await client.operations['material.create']({
       workspaceId,
@@ -132,14 +129,12 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
     await assertChips(page);
     await page.screenshot({ path: `${SHOTS}/composer.png` });
 
-    const runThread = await whenCaptureFenceReleases(() =>
-      client.operations['thread.create']({
-        workspaceId,
-        name: 'Phone run',
-        visibility: 'workspace',
-        requestId: randomUUID(),
-      })
-    );
+    const runThread = await client.operations['thread.create']({
+      workspaceId,
+      name: 'Phone run',
+      visibility: 'workspace',
+      requestId: randomUUID(),
+    });
     const runUrl = `${stack.webUrl}/tasks/${workspaceId}/${runThread.id}`;
     await page.goto(runUrl);
     await page.getByRole('textbox', { name: 'Message' }).fill('Keep this run on screen.');

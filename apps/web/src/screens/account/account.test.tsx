@@ -3069,14 +3069,8 @@ describe('account-level My invitations', () => {
     }
   );
 
-  it('keeps a decline in flight through one retryable capture freeze and then shows the declined row', async () => {
+  it('shows the backup notice once when a capture freeze outlasts the transport retry', async () => {
     const guards = guardSensitiveSinks([EMAIL]);
-    const settledInvitation = {
-      ...PENDING_INVITATION,
-      declinedAt: MEMBER_UPDATED_AT,
-      effectiveStatus: 'declined' as const,
-      revision: 22,
-    };
     const frozen = new ApiCallError(409, 'Workspace is temporarily frozen.', {
       code: 'workspace_frozen',
       details: {
@@ -3093,10 +3087,7 @@ describe('account-level My invitations', () => {
         ],
       },
     });
-    const declineWorkspaceInvitation = vi
-      .fn()
-      .mockRejectedValueOnce(frozen)
-      .mockResolvedValueOnce({ invitation: settledInvitation });
+    const declineWorkspaceInvitation = vi.fn().mockRejectedValue(frozen);
     const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
       items: [PENDING_INVITATION, OTHER_PENDING_INVITATION],
     });
@@ -3115,14 +3106,10 @@ describe('account-level My invitations', () => {
     const user = userEvent.setup();
     await user.click(await revealRowAction(user, pending, /^decline/i));
 
-    expect(
-      await within(invitations).findByRole('row', {
-        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*declined|declined.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
-      })
-    ).toBeInTheDocument();
-    expect(within(invitations).queryByRole('alert')).not.toBeInTheDocument();
-    expect(declineWorkspaceInvitation).toHaveBeenCalledTimes(2);
-    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+    expect(await within(invitations).findByRole('alert')).toHaveTextContent(
+      /backup is in progress/i
+    );
+    expect(declineWorkspaceInvitation).toHaveBeenCalledTimes(1);
     expectNoRetainedInviteEmail(queryClient, guards);
   });
 
