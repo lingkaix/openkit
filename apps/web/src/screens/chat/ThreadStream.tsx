@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useConnection } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import { Button, EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
+import { openHrefForRow } from '../workspace/data';
 import {
   type ThreadItem,
   useLiveThreadItems,
@@ -18,10 +19,23 @@ import {
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
 import { ThreadReadReceipts } from './ThreadReadReceipts';
+import { AlignmentHeader } from './timeline/AlignmentHeader';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
+import { openDecisionIds, planEmphasis } from './timeline/emphasis';
+import { buildAlignment } from './timeline/header';
 import { Inspector } from './timeline/Inspector';
 import { readStoredLens, writeStoredLens } from './timeline/lens-store';
+import { NeedsYouBar, useTimelineAttention } from './timeline/NeedsYouBar';
+import { NowLine } from './timeline/NowLine';
+import {
+  focusTimelineItem,
+  orderNeedsYou,
+  scopeNeedsYou,
+  toNeedsYouRow,
+} from './timeline/needs-you';
+import { nowFromThread } from './timeline/now';
 import { plainActorName, runDurationMs, taskSpecObjective } from './timeline/present';
+import { selectAgentProfile } from './timeline/profiles';
 import { RunEntry } from './timeline/RunEntry';
 import {
   captureCopy,
@@ -30,6 +44,14 @@ import {
   projectTimeline,
   runSeparatorCopy,
 } from './timeline/source';
+import { TimelineTime } from './timeline/TimelineTime';
+import {
+  durationDateTime,
+  NOW_ELAPSED_CLOCK_MS,
+  TIMELINE_CLOCK_MS,
+  TimelineNowProvider,
+  useReducedMotion,
+} from './timeline/time';
 import type { LensName } from './timeline/types';
 
 /** Seconds since a running Turn started. Zero when the timestamp cannot be read. */
@@ -62,6 +84,14 @@ export interface ThreadStreamProps {
   panelHost?: RefObject<HTMLDivElement | null>;
   /** Header-owned lens. When omitted, the stream shows the switch and remembers it. */
   lens?: LensName;
+  /** Chat or task framing. Task adds the alignment header. */
+  mode?: 'chat' | 'task';
+  /** Stop was pressed and the run has not reached a final state. */
+  stopPending?: boolean;
+  /** Item anchor from a Needs you jump. */
+  focusItemId?: string | null;
+  /** Open a row's owning surface. Same-thread anchors scroll instead. */
+  onOpen?: (href: string) => void;
 }
 
 /**
@@ -83,6 +113,10 @@ export function ThreadStream({
   focusTurnId,
   panelHost,
   lens: lensProp,
+  mode,
+  stopPending,
+  focusItemId,
+  onOpen,
 }: ThreadStreamProps) {
   const [internalLens, setInternalLens] = useState<LensName>(readStoredLens);
   const lens = lensProp ?? internalLens;
@@ -141,6 +175,25 @@ export function ThreadStream({
   const groupedSourceIds = new Set([...sourceGroups.values()].map((item) => item.id));
   const live = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
   const dashboard = live.data;
+  const attention = useTimelineAttention(workspaceId);
+  const reducedMotion = useReducedMotion();
+  const liveElapsed = Boolean(
+    dashboard?.turns.some((turn) => turn.status === 'running' || turn.status === 'pending')
+  );
+  const [clock, setClock] = useState(() => Date.now());
+  const itemLocated = useRef<string | null>(null);
+  useEffect(() => {
+    const timer = setInterval(
+      () => setClock(Date.now()),
+      liveElapsed ? NOW_ELAPSED_CLOCK_MS : TIMELINE_CLOCK_MS
+    );
+    return () => clearInterval(timer);
+  }, [liveElapsed]);
+  useEffect(() => {
+    if (!focusItemId || items.isLoading || !items.data) return;
+    if (itemLocated.current === focusItemId) return;
+    if (focusTimelineItem(focusItemId)) itemLocated.current = focusItemId;
+  }, [focusItemId, items.data, items.isLoading]);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
@@ -216,16 +269,79 @@ export function ThreadStream({
       turn.agentId ? (participantNames.get(`agent:${turn.agentId}`) ?? turn.agentId) : undefined,
     ])
   );
+  const profile = selectAgentProfile({
+    entryPath: dashboard?.thread?.entryPath,
+    mode,
+  });
+  const profileId = profile.state === 'ready' ? profile.profile.id : 'default';
+  const scoped = orderNeedsYou(scopeNeedsYou(attention.data ?? [], [threadId])).map((row) =>
+    toNeedsYouRow(row, openHrefForRow(row))
+  );
+  const latestTurn = dashboard?.turns.at(-1);
+  const lastKnownAt = latestTurn?.completedAt ?? latestTurn?.startedAt;
+  const nowModel = nowFromThread({
+    now: clock,
+    readFailed: live.isError,
+    stopPending: Boolean(stopPending),
+    turns: (dashboard?.turns ?? []).map((turn) => ({
+      id: turn.id,
+      status: turn.status,
+      startedAt: turn.startedAt,
+      completedAt: turn.completedAt,
+      errorMessage: turn.error?.message,
+      reasoningEffort: turn.reasoningEffort,
+    })),
+    items: items.data ?? [],
+    blockingCount: scoped.filter((row) => row.blocking).length,
+    lastKnown: latestTurn && lastKnownAt ? { status: latestTurn.status, at: lastKnownAt } : null,
+  });
+  const emphasis = planEmphasis({
+    needsYou: scoped.length > 0,
+    nowWaiting: nowModel.kind === 'waiting-for-you',
+    decisionIds: openDecisionIds(items.data ?? []),
+  });
+  const emphasized = new Set(emphasis.decisions);
+  const alignment = buildAlignment({
+    profileId,
+    now: clock,
+    taskInputs: dashboard?.taskInputs,
+    items: (items.data ?? []).map((item) => ({
+      id: item.id,
+      type: item.type,
+      createdAt: item.createdAt,
+      turnId: item.turnId,
+      text: item.type === 'user-message' ? item.text : undefined,
+      steps: item.type === 'plan' ? item.steps : undefined,
+    })),
+    turn: latestTurn ?? null,
+  });
+  const chrome = (
+    <div className="sticky top-0 z-10 flex flex-col gap-2 bg-layer-1 py-2">
+      <AlignmentHeader model={alignment} />
+      <NowLine model={nowModel} emphasize={emphasis.now} reducedMotion={reducedMotion} />
+      <NeedsYouBar
+        rows={scoped}
+        threadId={threadId}
+        emphasize={emphasis.bar}
+        reducedMotion={reducedMotion}
+        now={clock}
+        onOpen={onOpen}
+      />
+    </div>
+  );
 
   if (groups.length === 0 && !live.isError) {
     if (unavailableTurn)
       return <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>;
     return (
-      <EmptyState
-        icon="chat"
-        title={emptyTitle ?? 'No messages yet'}
-        hint="Send a message to begin."
-      />
+      <TimelineNowProvider now={clock}>
+        {chrome}
+        <EmptyState
+          icon="chat"
+          title={emptyTitle ?? 'No messages yet'}
+          hint="Send a message to begin."
+        />
+      </TimelineNowProvider>
     );
   }
 
@@ -381,6 +497,7 @@ export function ThreadStream({
         onRetryAnswers={() => {
           if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
         }}
+        emphasizePrimary={emphasized.has(item.id)}
       />
     );
   }
@@ -405,7 +522,8 @@ export function ThreadStream({
   ) : null;
 
   return (
-    <>
+    <TimelineNowProvider now={clock}>
+      {chrome}
       <ThreadReadReceipts
         key={`${workspaceId}:${threadId}:${dashboard?.viewerUserId ?? ''}`}
         workspaceId={workspaceId}
@@ -547,7 +665,13 @@ export function ThreadStream({
                           <span aria-hidden="true"> · </span>
                           <span>running</span>
                           <span aria-hidden="true"> · </span>
-                          <span>{elapsedSeconds(groupTurn.startedAt ?? '')} seconds</span>
+                          <time
+                            dateTime={durationDateTime(
+                              elapsedSeconds(groupTurn.startedAt ?? '') * 1000
+                            )}
+                          >
+                            {elapsedSeconds(groupTurn.startedAt ?? '')} seconds
+                          </time>
                           <span aria-hidden="true"> · </span>
                           <span>{runningStep.tool}</span>
                         </Button>
@@ -586,12 +710,7 @@ export function ThreadStream({
                                         failure: timelineCopy.reportedFailure,
                                       }[report.kind]}
                                   </span>
-                                  <time
-                                    dateTime={report.observedAt}
-                                    className="text-xs text-fg-muted"
-                                  >
-                                    {new Date(report.observedAt).toLocaleTimeString()}
-                                  </time>
+                                  <TimelineTime iso={report.observedAt} now={clock} />
                                 </div>
                                 {report.text !== undefined ? (
                                   <p className="mt-1 whitespace-pre-wrap break-words text-fg">
@@ -618,6 +737,6 @@ export function ThreadStream({
         </div>
       </ThreadReadReceipts>
       {inspector ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
-    </>
+    </TimelineNowProvider>
   );
 }

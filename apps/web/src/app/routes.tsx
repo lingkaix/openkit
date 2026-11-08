@@ -6,6 +6,7 @@ import { AccountBoundary, AccountScreen } from '../screens/account';
 import { ArtifactsScreen } from '../screens/artifacts';
 import { AutomationsScreen } from '../screens/automations';
 import { ChatStarter, ThreadScreen } from '../screens/chat';
+import { TimelineFixtureScreen } from '../screens/chat/timeline/TimelineFixtureScreen';
 import { GenerativeScreen } from '../screens/generative';
 import { ArtifactReviewScreen, GoalScreen } from '../screens/goal';
 import { MaterialScreen } from '../screens/material';
@@ -148,6 +149,9 @@ export function AppRoutes() {
   return (
     <AccountBoundary>
       <Routes>
+        {import.meta.env.DEV ? (
+          <Route path="/__timeline-fixture" element={<TimelineFixtureScreen />} />
+        ) : null}
         <Route element={<AppShell />}>
           <Route element={<AssistantHome />}>
             <Route path="/" />

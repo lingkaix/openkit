@@ -4,6 +4,7 @@ import type { ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
 import { resolveRender } from './lens';
 import {
+  formatRunDuration,
   groupSteps,
   isStepItem,
   noteWindow,
@@ -12,7 +13,22 @@ import {
   voiceClass,
 } from './present';
 import type { TimelineEntry, TimelineTurn } from './source';
+import { durationDateTime } from './time';
 import type { LensName } from './types';
+
+function SummaryText({ summary, durationMs }: { summary: string; durationMs: number | null }) {
+  if (durationMs == null || durationMs < 1000) return summary;
+  const label = formatRunDuration(durationMs);
+  const index = summary.indexOf(label);
+  if (index < 0) return summary;
+  return (
+    <>
+      {summary.slice(0, index)}
+      <time dateTime={durationDateTime(durationMs)}>{label}</time>
+      {summary.slice(index + label.length)}
+    </>
+  );
+}
 
 function planMark(status: string): string {
   if (status === 'completed') return '✓';
@@ -113,6 +129,8 @@ export function RunEntry({
     return (
       <div
         key={item.id}
+        id={`timeline-item-${item.id}`}
+        tabIndex={-1}
         data-voice={decision.voice}
         data-disclosure={decision.disclosure}
         data-invariant={
@@ -213,7 +231,7 @@ export function RunEntry({
       ) : null}
       {turn ? (
         <p data-voice="fact" className="ok-voice-fact ok-meta">
-          {summary}
+          <SummaryText summary={summary} durationMs={durationMs} />
           <span aria-hidden="true"> · </span>
           <span>{timelineCopy.countedFromRecords}</span>
         </p>

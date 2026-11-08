@@ -16,6 +16,8 @@ import { useDisplayedMessageBody } from './ThreadReadReceipts';
 import { timelineCopy } from './timeline/copy';
 import { visibleStatusSummary, visibleStatusTitle } from './timeline/present';
 import { contextSummaryCopy } from './timeline/source';
+import { TimelineTime } from './timeline/TimelineTime';
+import { durationDateTime, formatDuration } from './timeline/time';
 
 /** Protocol user-input request rendered by the inline Gate control. */
 type UserInputRequestItem = Extract<ThreadItem, { type: 'user-input-request' }>;
@@ -61,6 +63,11 @@ export interface ItemViewProps {
   onRetryAnswers?: () => void;
   /** Dashboard initiating-request objective for this Item id, when the verified trace supplied one. */
   requestObjective?: string;
+  /**
+   * Whether this decision's primary button may use the emphasis budget.
+   * False keeps the button usable and neutral. Unset keeps today's accent button.
+   */
+  emphasizePrimary?: boolean;
 }
 
 /** Properties for one protocol user-input request's bounded inline form. */
@@ -77,6 +84,8 @@ interface UserInputRequestViewProps {
   onSubmit?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
   /** Retry the exact previously submitted answer map. */
   onRetry?: () => void;
+  /** Whether Submit may take an emphasis slot. */
+  emphasizePrimary?: boolean;
 }
 
 /**
@@ -92,6 +101,7 @@ function UserInputRequestView({
   failed,
   onSubmit,
   onRetry,
+  emphasizePrimary,
 }: UserInputRequestViewProps) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const containsSecret = item.questions.some((question) => question.isSecret);
@@ -181,7 +191,12 @@ function UserInputRequestView({
             ))}
             {failed ? <ErrorBanner message="Couldn't submit answers." onRetry={onRetry} /> : null}
             {!readOnly ? (
-              <Button type="submit" isDisabled={!complete || pending}>
+              <Button
+                type="submit"
+                isDisabled={!complete || pending}
+                variant={emphasizePrimary === false ? 'outline' : 'accent'}
+                {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
+              >
                 {pending ? 'Submitting answers' : 'Submit answers'}
               </Button>
             ) : null}
@@ -266,6 +281,7 @@ export function ItemView({
   answerError,
   onRetryAnswers,
   requestObjective,
+  emphasizePrimary,
 }: ItemViewProps) {
   const bodyRef = useDisplayedMessageBody(item.id);
   switch (item.type) {
@@ -364,19 +380,30 @@ export function ItemView({
         />
       );
 
-    case 'command-execution':
+    case 'command-execution': {
+      const duration =
+        item.durationMs != null && item.durationMs >= 1000 ? formatDuration(item.durationMs) : null;
       return (
         <ItemCard
           kind="neutral"
           title={item.command}
           meta={item.exitCode === null ? 'running' : `exit ${item.exitCode}`}
-        />
+        >
+          {duration ? (
+            <time dateTime={durationDateTime(item.durationMs ?? 0)}>{duration}</time>
+          ) : null}
+        </ItemCard>
       );
+    }
 
     case 'approval-request':
       return (
         <div aria-live="polite" className="flex flex-col gap-2">
-          <p className="text-xs font-bold text-notice-fg">Needs you</p>
+          <p className="text-xs font-bold text-fg">
+            <span>Needs you</span>
+            <span> · </span>
+            <TimelineTime iso={item.createdAt} />
+          </p>
           <ItemCard
             kind="notice"
             title={item.title}
@@ -391,7 +418,8 @@ export function ItemView({
                     <Button
                       size="sm"
                       isDisabled={approvalPending}
-                      variant="accent"
+                      variant={emphasizePrimary === false ? 'outline' : 'accent'}
+                      {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
                       onPress={() =>
                         onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
                       }
@@ -477,6 +505,7 @@ export function ItemView({
           failed={Boolean(answerError)}
           onSubmit={onSubmitAnswers}
           onRetry={onRetryAnswers}
+          emphasizePrimary={emphasizePrimary}
         />
       );
 
@@ -494,8 +523,17 @@ export function ItemView({
         <ItemCard kind="neutral" title={item.path} meta={`File change · ${item.changeKind}`} />
       );
 
-    case 'tool-call':
-      return <ItemCard kind="informative" title={item.tool} meta={item.server ?? undefined} />;
+    case 'tool-call': {
+      const duration =
+        item.durationMs != null && item.durationMs >= 1000 ? formatDuration(item.durationMs) : null;
+      return (
+        <ItemCard kind="informative" title={item.tool} meta={item.server ?? undefined}>
+          {duration ? (
+            <time dateTime={durationDateTime(item.durationMs ?? 0)}>{duration}</time>
+          ) : null}
+        </ItemCard>
+      );
+    }
 
     case 'agent-handoff':
       return (
@@ -506,14 +544,48 @@ export function ItemView({
         />
       );
 
-    case 'status':
+    case 'status': {
+      const title = visibleStatusTitle(item.title);
+      const summary = visibleStatusSummary(item.summary);
+      if (title === timelineCopy.runAccepted) {
+        return (
+          <p data-voice="fact" data-status="fact" className="ok-voice-fact ok-meta">
+            <span>{title}</span>
+            {summary ? (
+              <>
+                <span> · </span>
+                <span>{summary}</span>
+              </>
+            ) : null}
+          </p>
+        );
+      }
+      const knownProblem =
+        title === timelineCopy.runFailedTitle || title === timelineCopy.runStoppedTitle;
+      if (item.level === 'warning' && !knownProblem) {
+        return (
+          <p data-voice="fact" data-status="unknown" className="ok-voice-fact ok-meta">
+            <span className="text-notice-fg" aria-hidden="true">
+              {timelineCopy.unknownMark}
+            </span>{' '}
+            <span>{title}</span>
+            {summary ? (
+              <>
+                <span> · </span>
+                <span>{summary}</span>
+              </>
+            ) : null}
+          </p>
+        );
+      }
       return (
         <ItemCard
-          kind={item.level === 'info' ? 'informative' : 'notice'}
-          title={visibleStatusTitle(item.title)}
-          meta={visibleStatusSummary(item.summary) ?? undefined}
+          kind={item.level === 'info' ? 'informative' : 'neutral'}
+          title={title}
+          meta={summary ?? undefined}
         />
       );
+    }
 
     case 'plan':
       return (

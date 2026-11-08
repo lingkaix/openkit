@@ -61,7 +61,8 @@ export function isLongRun(input: {
   return duration != null && duration >= LONG_RUN_DURATION_MS;
 }
 
-function formatDuration(ms: number): string {
+/** Minutes-and-hours label used by the run summary. */
+export function formatRunDuration(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
@@ -114,7 +115,7 @@ export function summaryLine(input: {
       ? input.running
         ? timelineCopy.statusRunning
         : timelineCopy.statusCompleted
-      : `${input.running ? 'running' : 'worked'} ${formatDuration(input.durationMs)}`;
+      : `${input.running ? 'running' : 'worked'} ${formatRunDuration(input.durationMs)}`;
   return [
     input.actor,
     pace,

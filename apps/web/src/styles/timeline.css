@@ -71,3 +71,45 @@
 .ok-run + .ok-run {
   margin-top: 24px;
 }
+
+.ok-now-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.ok-now-dot[data-live="true"] {
+  animation: ok-now-pulse 1.5s ease-in-out infinite;
+}
+
+.ok-decision-arrive {
+  animation: ok-decision-fade 200ms ease-out 1;
+}
+
+@keyframes ok-now-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes ok-decision-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ok-now-dot[data-live="true"],
+  .ok-decision-arrive {
+    animation: none;
+  }
+}

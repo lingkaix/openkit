@@ -480,9 +480,13 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               threadId={threadId}
               readOnly={disconnected}
               focusTurnId={new URLSearchParams(location.search).get('turnId')}
+              focusItemId={new URLSearchParams(location.search).get('item')}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
               panelHost={panelHost}
               lens={lens}
+              mode={mode}
+              stopPending={interruptState?.status === 'pending'}
+              onOpen={(href) => navigate(href)}
             />
             {feedbackTurn ? (
               <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">

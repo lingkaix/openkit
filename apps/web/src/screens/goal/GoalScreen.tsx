@@ -6,6 +6,8 @@ import { useConnection } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
 import { Button, ErrorBanner, Skeleton, StatusChip, TextField } from '../../primitives';
 import { timelineCopy } from '../chat/timeline/copy';
+import { GoalNeedsYou } from '../chat/timeline/NeedsYouBar';
+import { looksLikeIdentifier } from '../chat/timeline/present';
 import { selectAgentProfile } from '../chat/timeline/profiles';
 import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
 
@@ -161,6 +163,23 @@ export function GoalScreen() {
         <p>Responsible person: {goal.responsibleUserId}</p>
         <p>Worker results remain evidence until a person accepts completion.</p>
       </header>
+      <GoalNeedsYou
+        workspaceId={workspaceId}
+        threadIds={[goal.threadId, ...data.tasks.map((task) => task.threadId)]}
+        taskLabels={
+          new Map(
+            data.tasks.map((task) => {
+              const card = data.cards.find((entry) => entry.cardId === task.cardId);
+              const description = card?.description.trim();
+              const label =
+                description && !looksLikeIdentifier(description)
+                  ? description
+                  : timelineCopy.linkedTask;
+              return [task.threadId, label] as const;
+            })
+          )
+        }
+      />
       {error}
       {goal.disposition?.kind === 'accepted' && (
         <section className="space-y-3">
