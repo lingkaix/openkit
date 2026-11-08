@@ -408,11 +408,16 @@ describe('SimulatedTurnExecutor', () => {
       env: { OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1' },
     });
     const executor = originalRuntime.turnExecutor as SimulatedTurnExecutor;
+    let enteredRelease!: () => void;
+    const releaseEntered = new Promise<void>((resolve) => {
+      enteredRelease = resolve;
+    });
     let finishRelease!: () => void;
     const releaseHeld = new Promise<void>((resolve) => {
       finishRelease = resolve;
     });
     const release = vi.spyOn(executor, 'release').mockImplementation(async (input) => {
+      enteredRelease();
       await releaseHeld;
       return {
         attemptId: input.attemptId,
@@ -463,7 +468,14 @@ describe('SimulatedTurnExecutor', () => {
       );
       expect(response.status).toBe(202);
       const turn = (await response.json()) as { id: string };
-      await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+      // Synchronize with the actual closeout boundary; native publication has no one-second guarantee.
+      await Promise.race([
+        releaseEntered,
+        closeouts.mock.results[0]!.value.closeout.then(() => {
+          throw new Error('Self-check closeout ended without reaching release.');
+        }),
+      ]);
+      expect(release).toHaveBeenCalledOnce();
       expect(originalRuntime.isTurnExecutionActive(turn.id)).toBe(true);
       finishRelease();
       await closeouts.mock.results[0]!.value.closeout;
