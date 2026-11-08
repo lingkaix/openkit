@@ -72,6 +72,22 @@
   margin-top: 24px;
 }
 
+.ok-run-skeleton,
+.ok-bar-slot {
+  min-height: 2.75rem;
+}
+
+.ok-run-skeleton {
+  min-height: 8rem;
+}
+
+.ok-send-pending {
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+  background: transparent;
+  padding: 8px 12px;
+}
+
 .ok-now-dot {
   display: inline-block;
   width: 8px;

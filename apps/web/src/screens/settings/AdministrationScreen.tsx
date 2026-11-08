@@ -49,6 +49,7 @@ import {
   useWorkspaces,
 } from '../chat/data';
 import { ThreadStream } from '../chat/ThreadStream';
+import { timelineCopy } from '../chat/timeline/copy';
 import { selectAgentProfile } from '../chat/timeline/profiles';
 import { useWorkspaceStore } from '../workspace-store';
 import {
@@ -1072,38 +1073,48 @@ function PreparedCandidateReview({
   });
   const attempted = priorAttempts.length > 0;
   const blocked = hidden || confirmationBlocked || disconnected || attempted;
-  // Keep the mutation observer and its outcome while private candidate output is unavailable.
-  if (hidden) return null;
 
   return (
     <div className="flex flex-col gap-3 rounded-ok border border-border bg-card p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-bold text-fg-strong">Prepared environment change</h3>
-            <StatusChip tone="notice">Ready for review</StatusChip>
-          </div>
-          <p className="mt-1 text-sm text-fg">
-            Agent {candidate.details.target.agentId} · all later admissions across Workspaces and
-            profiles
-          </p>
-          <p className="break-all text-xs text-fg-muted">
-            Configuration {candidate.details.configuration.fileId} at{' '}
-            {candidate.details.configuration.expectedRevision}
-          </p>
+          {hidden ? (
+            <p className="text-sm text-fg">{timelineCopy.hiddenCandidate}</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-bold text-fg-strong">Prepared environment change</h3>
+                <StatusChip tone="notice">Ready for review</StatusChip>
+              </div>
+              <p className="mt-1 text-sm text-fg">
+                Agent {candidate.details.target.agentId} · all later admissions across Workspaces
+                and profiles
+              </p>
+              <p className="break-all text-xs text-fg-muted">
+                Configuration {candidate.details.configuration.fileId} at{' '}
+                {candidate.details.configuration.expectedRevision}
+              </p>
+            </>
+          )}
         </div>
         <Modal trigger={<Button isDisabled={blocked}>Review activation</Button>}>
           <Dialog title="Activate prepared candidate?">
-            <CandidateFacts candidate={candidate} />
-            <p className="break-all text-xs text-fg-muted">
-              Exact confirmation: {candidate.activationConfirmation}
-            </p>
-            <p className="font-bold text-negative-fg">
-              This writes the exact shared Agent manifest. If immediate replacement is selected, it
-              also fences the displayed retained environment group and submits the displayed prompt
-              as an ordinary successor Turn. Unknown results require inspection and a fresh
-              candidate.
-            </p>
+            {hidden ? (
+              <p>{timelineCopy.hiddenCandidate}</p>
+            ) : (
+              <>
+                <CandidateFacts candidate={candidate} />
+                <p className="break-all text-xs text-fg-muted">
+                  Exact confirmation: {candidate.activationConfirmation}
+                </p>
+                <p className="font-bold text-negative-fg">
+                  This writes the exact shared Agent manifest. If immediate replacement is selected,
+                  it also fences the displayed retained environment group and submits the displayed
+                  prompt as an ordinary successor Turn. Unknown results require inspection and a
+                  fresh candidate.
+                </p>
+              </>
+            )}
             <div className="flex justify-end gap-2">
               <Button slot="close" variant="quiet">
                 Cancel
@@ -1123,11 +1134,11 @@ function PreparedCandidateReview({
           </Dialog>
         </Modal>
       </div>
-      <CandidateFacts candidate={candidate} compact />
+      {hidden ? null : <CandidateFacts candidate={candidate} compact />}
       {activate.isError ? (
         <ErrorBanner message="Activation could not be confirmed. Inspect the exact configuration and environment status, then prepare a fresh candidate." />
       ) : null}
-      {activate.data ? <ActivationResultCard result={activate.data} /> : null}
+      {activate.data && !hidden ? <ActivationResultCard result={activate.data} /> : null}
     </div>
   );
 }

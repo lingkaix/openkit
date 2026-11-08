@@ -19,6 +19,83 @@ import { contextSummaryCopy } from './timeline/source';
 import { TimelineTime } from './timeline/TimelineTime';
 import { durationDateTime, formatDuration } from './timeline/time';
 
+/** Approving, denying, or withdrawing, with the consequence beside each control. */
+function ApprovalActions({
+  itemId,
+  pending,
+  pendingDecision,
+  holdReason,
+  canApprove,
+  emphasizePrimary,
+  onApprove,
+  onDeny,
+  onWithdraw,
+}: {
+  itemId: string;
+  pending: boolean;
+  pendingDecision?: 'granted' | 'denied' | 'withdraw';
+  holdReason?: string;
+  canApprove: boolean;
+  emphasizePrimary?: boolean;
+  onApprove: () => void;
+  onDeny: () => void;
+  onWithdraw?: () => void;
+}) {
+  const approveId = `approve-why-${itemId}`;
+  const denyId = `deny-why-${itemId}`;
+  const waitId = `decision-wait-${itemId}`;
+  const approvingId = `approving-${itemId}`;
+  const held = Boolean(holdReason);
+  const described = (id: string, own: boolean) =>
+    pending && own ? approvingId : pending || held ? waitId : id;
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <p id={approveId}>{timelineCopy.approveConsequence}</p>
+      <p id={denyId}>{timelineCopy.denyConsequence}</p>
+      {pending && pendingDecision === 'granted' ? (
+        <p id={approvingId} role="status">
+          {timelineCopy.approving}
+        </p>
+      ) : null}
+      {pending ? <p id={waitId}>{timelineCopy.waitForDecision}</p> : null}
+      {!pending && held ? <p id={waitId}>{holdReason}</p> : null}
+      <div className="flex flex-wrap justify-end gap-2">
+        {canApprove ? (
+          <Button
+            size="sm"
+            isDisabled={pending || held}
+            aria-describedby={described(approveId, pendingDecision === 'granted')}
+            variant={emphasizePrimary === false ? 'outline' : 'accent'}
+            {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
+            onPress={onApprove}
+          >
+            Approve
+          </Button>
+        ) : null}
+        <Button
+          size="sm"
+          variant="negative-outline"
+          isDisabled={pending || held}
+          aria-describedby={described(denyId, pendingDecision === 'denied')}
+          onPress={onDeny}
+        >
+          Deny
+        </Button>
+        {onWithdraw ? (
+          <Button
+            size="sm"
+            isDisabled={pending || held}
+            aria-describedby={described(denyId, pendingDecision === 'withdraw')}
+            onPress={onWithdraw}
+          >
+            Withdraw
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /** Protocol user-input request rendered by the inline Gate control. */
 type UserInputRequestItem = Extract<ThreadItem, { type: 'user-input-request' }>;
 
@@ -68,6 +145,10 @@ export interface ItemViewProps {
    * False keeps the button usable and neutral. Unset keeps today's accent button.
    */
   emphasizePrimary?: boolean;
+  /** Which decision is in flight, so pending copy and sibling reasons stay specific. */
+  pendingDecision?: 'granted' | 'denied' | 'withdraw';
+  /** Stale or unknown state. The control stays visible and explains why it is off. */
+  holdReason?: string;
 }
 
 /** Properties for one protocol user-input request's bounded inline form. */
@@ -191,14 +272,26 @@ function UserInputRequestView({
             ))}
             {failed ? <ErrorBanner message="Couldn't submit answers." onRetry={onRetry} /> : null}
             {!readOnly ? (
-              <Button
-                type="submit"
-                isDisabled={!complete || pending}
-                variant={emphasizePrimary === false ? 'outline' : 'accent'}
-                {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
-              >
-                {pending ? 'Submitting answers' : 'Submit answers'}
-              </Button>
+              <>
+                <p id={`answer-why-${item.id}`}>{timelineCopy.answerConsequence}</p>
+                {pending ? (
+                  <p id={`answer-wait-${item.id}`}>{timelineCopy.waitForDecision}</p>
+                ) : null}
+                {!complete && !pending ? (
+                  <p id={`answer-wait-${item.id}`}>Answer every question first.</p>
+                ) : null}
+                <Button
+                  type="submit"
+                  isDisabled={!complete || pending}
+                  aria-describedby={
+                    pending || !complete ? `answer-wait-${item.id}` : `answer-why-${item.id}`
+                  }
+                  variant={emphasizePrimary === false ? 'outline' : 'accent'}
+                  {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
+                >
+                  {pending ? 'Submitting answers' : 'Submit answers'}
+                </Button>
+              </>
             ) : null}
           </form>
         )}
@@ -282,6 +375,8 @@ export function ItemView({
   onRetryAnswers,
   requestObjective,
   emphasizePrimary,
+  pendingDecision,
+  holdReason,
 }: ItemViewProps) {
   const bodyRef = useDisplayedMessageBody(item.id);
   switch (item.type) {
@@ -413,40 +508,23 @@ export function ItemView({
               resolvedApproval ||
               approvalUnavailableReason ||
               !onApprovalDecision ? undefined : (
-                <>
-                  {approvalEffect?.status === 'available' && (
-                    <Button
-                      size="sm"
-                      isDisabled={approvalPending}
-                      variant={emphasizePrimary === false ? 'outline' : 'accent'}
-                      {...(emphasizePrimary ? { 'data-emphasis': 'true' } : {})}
-                      onPress={() =>
-                        onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
-                      }
-                    >
-                      Approve
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="negative-outline"
-                    isDisabled={approvalPending}
-                    onPress={() =>
-                      onApprovalDecision?.(item.approvalRequestId, item.turnId, 'denied')
-                    }
-                  >
-                    Deny
-                  </Button>
-                  {onWithdrawApproval && (
-                    <Button
-                      size="sm"
-                      isDisabled={approvalPending}
-                      onPress={() => onWithdrawApproval(item.approvalRequestId)}
-                    >
-                      Withdraw
-                    </Button>
-                  )}
-                </>
+                <ApprovalActions
+                  itemId={item.id}
+                  pending={Boolean(approvalPending)}
+                  pendingDecision={pendingDecision}
+                  holdReason={holdReason}
+                  canApprove={approvalEffect?.status === 'available'}
+                  emphasizePrimary={emphasizePrimary}
+                  onApprove={() =>
+                    onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
+                  }
+                  onDeny={() => onApprovalDecision?.(item.approvalRequestId, item.turnId, 'denied')}
+                  onWithdraw={
+                    onWithdrawApproval
+                      ? () => onWithdrawApproval(item.approvalRequestId)
+                      : undefined
+                  }
+                />
               )
             }
           >
@@ -476,7 +554,9 @@ export function ItemView({
                     : ': Complete detail has not been loaded.'}
                 </p>
               ))}
-            {approvalPending ? <p role="status">Submitting decision…</p> : null}
+            {approvalPending && pendingDecision !== 'granted' ? (
+              <p role="status">{timelineCopy.waitForDecision}</p>
+            ) : null}
             {approvalError && !resolvedApproval ? (
               <ErrorBanner
                 message="Couldn't submit this decision."

@@ -1,4 +1,4 @@
-import { type CoreClient, createCoreClient } from '@openkit/core-client';
+import { ApiCallError, type CoreClient, createCoreClient } from '@openkit/core-client';
 import { useQuery } from '@tanstack/react-query';
 import {
   createContext,
@@ -6,9 +6,15 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
+import {
+  type ConnectionPosture,
+  isBusyStatus,
+  readRetryAfterSeconds,
+} from '../screens/chat/timeline/degraded';
 
 /**
  * Core-client wiring (rebuild-stack data boundary). The Web UI consumes the
@@ -19,16 +25,26 @@ import {
 
 const CoreClientContext = createContext<CoreClient | null>(null);
 
+/** Why a live transport stopped, and the exact retry action that owns it. */
+export type ConnectionFailureKind = 'reconnecting' | 'busy' | 'out-of-date';
+
 /** One live transport failure and the exact retry action that owns it. */
 interface ConnectionFailure {
   owner: object;
   retry: () => void;
+  kind: ConnectionFailureKind;
+  retryAfterSeconds: number | null;
 }
 
 /** Shared operations for reporting and clearing the current live transport failure. */
 interface ConnectionFailureContextValue {
   failure: ConnectionFailure | null;
-  report: (owner: object, retry: () => void) => void;
+  report: (
+    owner: object,
+    retry: () => void,
+    kind?: ConnectionFailureKind,
+    retryAfterSeconds?: number | null
+  ) => void;
   clear: (owner: object) => void;
 }
 
@@ -61,9 +77,17 @@ export function CoreClientProvider({
   children: ReactNode;
 }) {
   const [failure, setFailure] = useState<ConnectionFailure | null>(null);
-  const report = useCallback((owner: object, retry: () => void) => {
-    setFailure({ owner, retry });
-  }, []);
+  const report = useCallback(
+    (
+      owner: object,
+      retry: () => void,
+      kind: ConnectionFailureKind = 'reconnecting',
+      retryAfterSeconds: number | null = null
+    ) => {
+      setFailure({ owner, retry, kind, retryAfterSeconds });
+    },
+    []
+  );
   const clear = useCallback((owner: object) => {
     setFailure((current) => (current?.owner === owner ? null : current));
   }, []);
@@ -98,12 +122,18 @@ export function useConnectionFailure(): ConnectionFailureContextValue {
 }
 
 export interface Connection {
-  /** The runtime is reachable. */
+  /** The runtime is reachable enough that actions still work. Reconnecting counts. */
   connected: boolean;
   /** The first probe is still in flight. */
   checking: boolean;
-  /** The runtime could not be reached. */
+  /** Sending and state-changing actions are paused. */
   failed: boolean;
+  /** Which banner, if any, the shell should show. */
+  posture: ConnectionPosture;
+  /** Epoch milliseconds of the last successful probe, when this mount has one. */
+  lastLoadedAt: number | null;
+  /** Countdown for a busy runtime. Null for every other posture. */
+  retryAfterSeconds: number | null;
   /** Retry the probe now. */
   retry: () => void;
 }
@@ -136,6 +166,7 @@ export function useConnection(): Connection {
   const client = useCoreClient();
   const stream = useConnectionFailure();
   const online = useBrowserOnline();
+  const loadedAt = useRef<number | null>(null);
   const query = useQuery({
     queryKey: ['core', 'meta'],
     queryFn: () => client.core.meta(),
@@ -143,10 +174,35 @@ export function useConnection(): Connection {
     refetchInterval: 15_000,
     staleTime: 10_000,
   });
+  if (query.isSuccess && query.dataUpdatedAt > 0) loadedAt.current = query.dataUpdatedAt;
+  const probeBusy = isBusyStatus(query.error);
+  const streamKind = stream.failure?.kind;
+  const checking = query.isLoading;
+  let posture: ConnectionPosture = 'connected';
+  if (!online) posture = 'offline';
+  else if (streamKind === 'out-of-date') posture = 'out-of-date';
+  else if (probeBusy || streamKind === 'busy') posture = 'busy';
+  else if (query.isError) posture = 'unreachable';
+  else if (streamKind === 'reconnecting') posture = 'reconnecting';
+  else if (checking) posture = 'checking';
+  const queryStatus = query.error instanceof ApiCallError ? query.error.status : null;
+  const retryAfterSeconds =
+    posture === 'busy'
+      ? (stream.failure?.retryAfterSeconds ??
+        (queryStatus === 429 || queryStatus === 503 ? readRetryAfterSeconds(query.error) : 20))
+      : null;
+  const actionsPaused =
+    posture === 'offline' ||
+    posture === 'busy' ||
+    posture === 'out-of-date' ||
+    posture === 'unreachable';
   return {
-    connected: query.isSuccess && !stream.failure,
-    checking: query.isLoading,
-    failed: query.isError || Boolean(stream.failure) || !online,
+    connected: !actionsPaused && posture !== 'checking',
+    checking,
+    failed: actionsPaused,
+    posture,
+    lastLoadedAt: loadedAt.current,
+    retryAfterSeconds,
     retry: () => {
       void query.refetch();
       stream.failure?.retry();

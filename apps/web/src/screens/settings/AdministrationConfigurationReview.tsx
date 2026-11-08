@@ -15,6 +15,7 @@ import {
   type StatusTone,
 } from '../../primitives';
 import { chatKeys } from '../chat/data';
+import { timelineCopy } from '../chat/timeline/copy';
 
 /** Exact private catalog candidate bound to one Artifact version and digest. */
 export interface ConfigurationCandidate {
@@ -85,32 +86,45 @@ export function AdministrationConfigurationReview({
     apply.mutate();
   }
 
-  // Preserve the command observer and outcome while removing private facts and portal content.
-  if (hidden) return null;
-
+  // Keep the open confirmation mounted. A failed read hides facts and blocks Apply inside it.
   return (
     <Card className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-extrabold text-fg-strong">Prepared configuration change</h2>
-            <StatusChip tone={status.tone}>{status.label}</StatusChip>
-          </div>
-          <p className="mt-1 text-sm text-fg">
-            {targetLabel(candidate.details)} · base revision {candidate.details.expectedRevision}
-          </p>
+          {hidden ? (
+            <p className="text-sm text-fg">{timelineCopy.hiddenCandidate}</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-lg font-extrabold text-fg-strong">
+                  Prepared configuration change
+                </h2>
+                <StatusChip tone={status.tone}>{status.label}</StatusChip>
+              </div>
+              <p className="mt-1 text-sm text-fg">
+                {targetLabel(candidate.details)} · base revision{' '}
+                {candidate.details.expectedRevision}
+              </p>
+            </>
+          )}
         </div>
         <Modal trigger={<Button isDisabled={blocked}>Review configuration</Button>}>
           <Dialog title="Apply configuration?">
-            <CandidateFacts candidate={candidate} />
-            <p className="break-all text-xs text-fg-muted">
-              Exact confirmation: administration.configuration.apply ·{' '}
-              {candidate.candidate.contentDigest}
-            </p>
-            <p className="font-bold text-negative-fg">
-              This writes the exact catalog metadata shown below. Persistence is not a live reload,
-              and an unknown reload requires inspection of a fresh candidate.
-            </p>
+            {hidden ? (
+              <p>{timelineCopy.hiddenCandidate}</p>
+            ) : (
+              <>
+                <CandidateFacts candidate={candidate} />
+                <p className="break-all text-xs text-fg-muted">
+                  Exact confirmation: administration.configuration.apply ·{' '}
+                  {candidate.candidate.contentDigest}
+                </p>
+                <p className="font-bold text-negative-fg">
+                  This writes the exact catalog metadata shown below. Persistence is not a live
+                  reload, and an unknown reload requires inspection of a fresh candidate.
+                </p>
+              </>
+            )}
             <div className="flex justify-end gap-2">
               <Button slot="close" variant="quiet">
                 Cancel
@@ -122,11 +136,11 @@ export function AdministrationConfigurationReview({
           </Dialog>
         </Modal>
       </div>
-      <CandidateFacts candidate={candidate} />
+      {hidden ? null : <CandidateFacts candidate={candidate} />}
       {apply.isError ? (
         <ErrorBanner message="Configuration application could not be confirmed. Inspect persistence and reload, then prepare a fresh candidate." />
       ) : null}
-      {recorded ? <ApplyResultCard result={recorded} /> : null}
+      {recorded && !hidden ? <ApplyResultCard result={recorded} /> : null}
     </Card>
   );
 }

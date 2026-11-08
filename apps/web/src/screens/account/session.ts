@@ -3,8 +3,10 @@ import { allocateEntityId } from '@openkit/protocol';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
+import { toastQueue } from '../../primitives/Toast';
 import { retainShellCacheOnLogout } from '../../pwa/shell-cache';
 import { useWorkspaceStore } from '../workspace-store';
+import { advanceAccountGeneration } from './generation';
 
 /** The single TanStack owner for protected account admission reads. */
 export const accountAdmissionKey = ['account', 'authorized-workspaces'] as const;
@@ -214,6 +216,9 @@ export function useAccountMutation() {
       }
     },
     onSuccess: (_data, variables) => {
+      advanceAccountGeneration();
+      toastQueue.clear();
+      queryClient.removeQueries({ queryKey: ['items'] });
       if (variables.operation === 'signOut') void retainShellCacheOnLogout();
       const mutationCache = queryClient.getMutationCache();
       for (const mutation of mutationCache.findAll({ mutationKey: accountChannelsKey }))

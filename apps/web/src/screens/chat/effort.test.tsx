@@ -480,7 +480,13 @@ describe.each([
         await cache.invalidateQueries({ queryKey: ['conversation-targets'] });
       });
       await act(async () => pending.reject(error));
-      expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+      expect(
+        await screen.findByText(
+          error instanceof TypeError
+            ? "We couldn't confirm OpenKit received this. Check."
+            : "Couldn't send that message. Try again."
+        )
+      ).toBeInTheDocument();
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Exact draft  ');
       expect(screen.getByRole('button', { name: 'Remove Brief' })).toBeInTheDocument();
       await user.click(screen.getByRole('button', { name: /Reasoning effort/ }));
@@ -508,7 +514,9 @@ describe.each([
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Keep omission');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("We couldn't confirm OpenKit received this. Check.")
+    ).toBeInTheDocument();
     const first = submitConversation.mock.calls[0];
     expect(first?.[0]).not.toHaveProperty('reasoningEffort');
     await act(async () => {

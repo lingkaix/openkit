@@ -32,8 +32,16 @@ import {
   type ComposerWorkerEnvironments,
   toastQueue,
 } from '../../primitives';
+import { accountGeneration } from '../account/generation';
 import { useWorkspaceStore } from '../workspace-store';
 import { submitConversationDraft } from './file-drafts';
+import {
+  backoffDelayMs,
+  isBusyStatus,
+  isCursorExpired,
+  lostUpdateSameCount,
+  readRetryAfterSeconds,
+} from './timeline/degraded';
 
 /** One item in a thread's stream (the protocol Item union, via the response type). */
 export type ThreadItem = ListThreadItemsResponse['items'][number];
@@ -603,11 +611,17 @@ export function useThreadDashboard(
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
-    queryFn: () =>
-      client.operations['thread.dashboard']({
+    queryFn: async () => {
+      const generation = accountGeneration();
+      const dashboard = await client.operations['thread.dashboard']({
         workspaceId: workspaceId as string,
         threadId: threadId,
-      }),
+      });
+      if (generation !== accountGeneration()) {
+        throw new Error('Discarded an earlier account response.');
+      }
+      return dashboard;
+    },
     enabled: Boolean(workspaceId) && enabled,
     // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
     staleTime: poll ? 5_000 : 0,
@@ -651,10 +665,14 @@ export function useThreadItems(workspaceId: string | null, threadId: string, pol
   return useQuery({
     queryKey: chatKeys.items(workspaceId ?? '', threadId),
     queryFn: async () => {
+      const generation = accountGeneration();
       const page = await client.operations['thread.items']({
         workspaceId: workspaceId as string,
         threadId,
       });
+      if (generation !== accountGeneration()) {
+        throw new Error('Discarded an earlier account response.');
+      }
       const keyWorkspace = workspaceId ?? '';
       queryClient.setQueryData(chatKeys.itemCursor(keyWorkspace, threadId), page.nextCursor);
       const earlier =
@@ -784,6 +802,17 @@ export function useLiveThreadItems(
   );
   const reconciledItemsSignature = useRef<string | null>(null);
   const owner = useMemo(() => ({ threadId, turnId, workspaceId }), [threadId, turnId, workspaceId]);
+  const lastSequence = useRef(0);
+  const sequenceTurn = useRef(turnId);
+  const reconnectPending = useRef(false);
+  const [reconnectTick, setReconnectTick] = useState(0);
+  const turnsAtDrop = useRef<Set<string>>(new Set());
+  const turnsNow = useRef(dashboard.data?.turns);
+  turnsNow.current = dashboard.data?.turns;
+  if (sequenceTurn.current !== turnId) {
+    sequenceTurn.current = turnId;
+    lastSequence.current = 0;
+  }
 
   useEffect(() => () => clear(owner), [clear, owner]);
 
@@ -852,17 +881,53 @@ export function useLiveThreadItems(
   ]);
 
   useEffect(() => {
+    // reconnectTick bumps when the stream drops, even if the dashboard object is unchanged.
+    if (!workspaceId || !dashboard.isSuccess || !reconnectPending.current || reconnectTick < 0)
+      return;
+    const cached =
+      queryClient.getQueryData<ThreadItem[]>(chatKeys.items(workspaceId, threadId)) ?? [];
+    const embedded = (dashboard.data?.turns ?? []).flatMap((turn) =>
+      (turn.items ?? []).map((item) => ({
+        id: item.id,
+        status: item.status,
+        text: 'text' in item && typeof item.text === 'string' ? item.text : undefined,
+      }))
+    );
+    const cachedSnapshot = cached.map((item) => ({
+      id: item.id,
+      status: item.status,
+      text: 'text' in item && typeof item.text === 'string' ? item.text : undefined,
+    }));
+    const startedWhileDown = (dashboard.data?.turns ?? []).some(
+      (turn) => !turnsAtDrop.current.has(turn.id)
+    );
+    if (!startedWhileDown && !lostUpdateSameCount(cachedSnapshot, embedded)) return;
+    reconnectPending.current = false;
+    void queryClient.invalidateQueries({
+      queryKey: chatKeys.items(workspaceId, threadId),
+      exact: true,
+    });
+  }, [dashboard.data, dashboard.isSuccess, queryClient, reconnectTick, threadId, workspaceId]);
+
+  useEffect(() => {
     if (!workspaceId || !turnId || !baselineReady) return;
 
     let cancelled = false;
     let iterator: AsyncIterator<SseEventEnvelope> | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
     void (async () => {
       try {
         const itemsKey = chatKeys.items(workspaceId, threadId);
         const dashboardKey = chatKeys.dashboard(workspaceId, threadId);
+        const since = lastSequence.current;
         iterator = client.core
-          .subscribeTurnEvents({ workspaceId, threadId, turnId })
+          .subscribeTurnEvents({
+            workspaceId,
+            threadId,
+            turnId,
+            ...(since > 0 ? { since } : {}),
+          })
           [Symbol.asyncIterator]();
 
         while (!cancelled) {
@@ -873,7 +938,11 @@ export function useLiveThreadItems(
           }
           if (cancelled) break;
           clear(owner);
+          reconnectPending.current = false;
           const event = next.value;
+          if (typeof event.sequence === 'number') {
+            lastSequence.current = Math.max(lastSequence.current, event.sequence);
+          }
           if (event.event === 'turn.completed' || event.event === 'turn.updated') {
             const updatedTurn = (
               event.data as {
@@ -944,13 +1013,34 @@ export function useLiveThreadItems(
             foldTurnEvent(items ?? [], next.value)
           );
         }
-      } catch {
-        if (!cancelled) report(owner, () => setAttempt(attempt + 1));
+      } catch (error) {
+        if (!cancelled) {
+          reconnectPending.current = true;
+          turnsAtDrop.current = new Set((turnsNow.current ?? []).map((turn) => turn.id));
+          setReconnectTick((current) => current + 1);
+          const retry = () => setAttempt((current) => current + 1);
+          if (isCursorExpired(error)) {
+            lastSequence.current = 0;
+            report(owner, retry, 'out-of-date');
+            void queryClient.invalidateQueries({
+              queryKey: chatKeys.items(workspaceId, threadId),
+              exact: true,
+            });
+          } else if (isBusyStatus(error)) {
+            const seconds = readRetryAfterSeconds(error);
+            report(owner, retry, 'busy', seconds);
+            retryTimer = setTimeout(retry, seconds * 1000);
+          } else {
+            report(owner, retry, 'reconnecting');
+            retryTimer = setTimeout(retry, backoffDelayMs(attempt));
+          }
+        }
       }
     })();
 
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
       void iterator?.return?.();
     };
   }, [

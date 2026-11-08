@@ -35,8 +35,10 @@ import {
 } from './data';
 import { ThreadStream } from './ThreadStream';
 import { timelineCopy } from './timeline/copy';
+import { classifySendFailure } from './timeline/degraded';
 import { readStoredLens, writeStoredLens } from './timeline/lens-store';
 import { selectAgentProfile } from './timeline/profiles';
+import { SendFailure, SendPending } from './timeline/SendState';
 import type { LensName } from './timeline/types';
 import { composerVoice } from './voice';
 
@@ -359,20 +361,31 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           ) : null}
           <div className="ml-auto flex items-center gap-2">
             {activeTurn ? (
-              <Button
-                size="sm"
-                variant="negative-outline"
-                isDisabled={!workspaceId || interruptState?.status === 'pending'}
-                onPress={() =>
-                  interrupt.mutate({
-                    workspaceId: workspaceId ?? '',
-                    threadId,
-                    turnId: activeTurn.id,
-                  })
-                }
-              >
-                {timelineCopy.stopRun}
-              </Button>
+              <div className="flex flex-col items-end gap-1">
+                <p id="stop-consequence">{timelineCopy.stopConsequence}</p>
+                {interruptState?.status === 'pending' ? (
+                  <p id="stop-wait" role="status">
+                    {timelineCopy.stopping} {timelineCopy.waitForStop}
+                  </p>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="negative-outline"
+                  isDisabled={!workspaceId || interruptState?.status === 'pending'}
+                  aria-describedby={
+                    interruptState?.status === 'pending' ? 'stop-wait' : 'stop-consequence'
+                  }
+                  onPress={() =>
+                    interrupt.mutate({
+                      workspaceId: workspaceId ?? '',
+                      threadId,
+                      turnId: activeTurn.id,
+                    })
+                  }
+                >
+                  {timelineCopy.stopRun}
+                </Button>
+              </div>
             ) : null}
             <fieldset
               aria-label={timelineCopy.lensName}
@@ -525,12 +538,27 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
 
         <div className="border-t border-separator px-6 py-3">
           <div className="mx-auto w-full max-w-[760px]">
+            {submission?.status === 'pending' ? <SendPending /> : null}
             {submission?.status === 'error' ? (
-              <p role="alert" className="mb-2 text-xs font-medium text-negative-fg">
-                {cancelledRequestId
-                  ? timelineCopy.runStopped
-                  : "Couldn't send that message. Try again."}
-              </p>
+              cancelledRequestId ? (
+                <p role="alert" className="mb-2 text-xs font-medium text-negative-fg">
+                  {timelineCopy.runStopped}
+                </p>
+              ) : (
+                <SendFailure
+                  error={submission.error}
+                  requestId={submission.variables?.draft.requestId}
+                  onRetry={() => {
+                    const draft = submission.variables?.draft;
+                    if (draft) void submitConversation(draft);
+                  }}
+                  onEdit={() => {
+                    document
+                      .querySelector<HTMLTextAreaElement>('textarea[name="message"], textarea')
+                      ?.focus();
+                  }}
+                />
+              )
             ) : null}
             {hasCandidateInput && unfinishedSubmission ? (
               <p role="status" className="mb-2 text-sm text-fg-muted">
@@ -595,13 +623,17 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 disabledReason={
                   disconnected
                     ? 'OpenKit needs a connection.'
-                    : targets.isError
-                      ? "Couldn't load conversation agents."
-                      : candidateUnavailable
-                        ? 'The selected candidate is unavailable or has changed.'
-                        : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
-                          ? 'Checking the selected candidate.'
-                          : undefined
+                    : submission?.status === 'error' &&
+                        classifySendFailure(submission.error) === 'kept' &&
+                        (latestTurn?.status === 'running' || latestTurn?.status === 'pending')
+                      ? timelineCopy.keepDraft
+                      : targets.isError
+                        ? "Couldn't load conversation agents."
+                        : candidateUnavailable
+                          ? 'The selected candidate is unavailable or has changed.'
+                          : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
+                            ? 'Checking the selected candidate.'
+                            : undefined
                 }
                 voice={composerVoice({
                   client,

@@ -1,5 +1,5 @@
 import { ItemSchema } from '@openkit/protocol';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ItemView } from '../ItemView';
 import { planEmphasis } from './emphasis';
 import { NeedsYouBar } from './NeedsYouBar';
@@ -64,8 +64,16 @@ const ACCEPTED = ItemSchema.parse({
  * The isolated browser check opens this route. It is not a product surface.
  */
 export function TimelineFixtureScreen() {
-  const live = new URLSearchParams(window.location.search).get('motion') === 'live';
+  const params = new URLSearchParams(window.location.search);
+  const live = params.get('motion') === 'live';
+  const stream = params.get('stream') === '1';
   const [open, setOpen] = useState(false);
+  const [streamed, setStreamed] = useState(!stream);
+  useEffect(() => {
+    if (!stream) return;
+    const timer = window.setTimeout(() => setStreamed(true), 400);
+    return () => window.clearTimeout(timer);
+  }, [stream]);
   const emphasis = planEmphasis({
     needsYou: true,
     nowWaiting: false,
@@ -75,6 +83,11 @@ export function TimelineFixtureScreen() {
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-8">
       <h1>Timeline fixture</h1>
+      {stream ? (
+        <div className="ok-run-skeleton" data-stream-slot="run">
+          {streamed ? <p>The first run appeared with its plan and progress.</p> : null}
+        </div>
+      ) : null}
       <NeedsYouBar
         rows={ROWS}
         threadId="th_fixture"

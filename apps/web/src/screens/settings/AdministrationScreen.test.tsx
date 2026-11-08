@@ -1464,9 +1464,12 @@ describe('Administration', () => {
         await queryClient.invalidateQueries();
       });
       if (failedRead === 'candidate') {
-        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-        expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
-        await user.click(confirmation);
+        await waitFor(() =>
+          expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
+        );
+        expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
+        expect(screen.queryByText(/OpenAI/)).not.toBeInTheDocument();
+        expect(confirmation).toBeDisabled();
       } else {
         await waitFor(() =>
           expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
@@ -1511,8 +1514,13 @@ describe('Administration', () => {
         new ApiCallError(403, 'private-parent-denied')
       );
       await act(() => queryClient.invalidateQueries({ queryKey, exact: true }));
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-      expect(screen.queryAllByText(candidateFacts)).toHaveLength(0);
+      await waitFor(() => expect(screen.queryAllByText(candidateFacts)).toHaveLength(0));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', {
+          name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+        })
+      ).toBeDisabled();
       vi.mocked(client.operations['thread.read']).mockReturnValue(new Promise<never>(() => {}));
       await act(async () => {
         void queryClient.refetchQueries({ queryKey, exact: true });
@@ -1520,8 +1528,13 @@ describe('Administration', () => {
       await waitFor(() =>
         expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('fetching')
       );
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
       expect(screen.queryAllByText(candidateFacts)).toHaveLength(0);
+      expect(
+        screen.getByRole('button', {
+          name: kind === 'environment' ? 'Activate candidate' : 'Apply configuration',
+        })
+      ).toBeDisabled();
       expect(activate).not.toHaveBeenCalled();
       expect(apply).not.toHaveBeenCalled();
       expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
@@ -1681,14 +1694,18 @@ describe('Administration', () => {
       expect(queryClient.getQueryState(queryKey)?.fetchFailureReason).toMatchObject({
         status: 403,
       });
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled()
+      );
+      expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
       expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
       await act(async () => failRetry());
       await waitFor(() =>
         expect(queryClient.getQueryState(queryKey)?.error).toMatchObject({ status: 500 })
       );
       expect(await screen.findByText("Couldn't load this thread.")).toBeInTheDocument();
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeDisabled();
+      expect(screen.getByRole('dialog', { name: 'Apply configuration?' })).toBeInTheDocument();
       expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
       let restoreItems!: () => void;
       vi.mocked(client.operations['thread.items']).mockImplementation(
@@ -1704,7 +1721,7 @@ describe('Administration', () => {
       expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
       await act(async () => restoreItems());
       await waitFor(() =>
-        expect(screen.getByRole('button', { name: 'Review configuration' })).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'Apply configuration' })).toBeEnabled()
       );
       expect(client.operations['administration.configuration-apply']).not.toHaveBeenCalled();
     } finally {

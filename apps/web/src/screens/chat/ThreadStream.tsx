@@ -4,7 +4,14 @@ import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'rea
 import { createPortal } from 'react-dom';
 import { useConnection } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
-import { Button, EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
+import {
+  Button,
+  EmptyState,
+  ErrorBanner,
+  Skeleton,
+  TurnSeparator,
+  toastQueue,
+} from '../../primitives';
 import { openHrefForRow } from '../workspace/data';
 import {
   type ThreadItem,
@@ -21,6 +28,7 @@ import { ItemView } from './ItemView';
 import { ThreadReadReceipts } from './ThreadReadReceipts';
 import { AlignmentHeader } from './timeline/AlignmentHeader';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
+import { classifyRunError, freshnessCopy, isDeniedRead } from './timeline/degraded';
 import { openDecisionIds, planEmphasis } from './timeline/emphasis';
 import { buildAlignment } from './timeline/header';
 import { Inspector } from './timeline/Inspector';
@@ -198,6 +206,30 @@ export function ThreadStream({
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
+  const itemsDenied = isDeniedRead(items.error);
+  const [missedRefreshes, setMissedRefreshes] = useState(0);
+  const seenRefreshError = useRef(0);
+  useEffect(() => {
+    if (itemsDenied || isDeniedRead(live.error)) toastQueue.clear();
+  }, [itemsDenied, live.error]);
+  useEffect(() => {
+    const stamp = Math.max(items.errorUpdatedAt, live.errorUpdatedAt);
+    if (!items.isError && !live.isError) {
+      seenRefreshError.current = 0;
+      setMissedRefreshes(0);
+      return;
+    }
+    if (stamp > seenRefreshError.current) {
+      seenRefreshError.current = stamp;
+      setMissedRefreshes((count) => count + 1);
+    }
+  }, [items.errorUpdatedAt, items.isError, live.errorUpdatedAt, live.isError]);
+  const fresh = freshnessCopy(
+    missedRefreshes,
+    Math.max(items.dataUpdatedAt, live.dataUpdatedAt),
+    clock
+  );
+  const holdReason = fresh ?? undefined;
   const focusedElement = useRef<HTMLDivElement>(null);
   const located = useRef<string | null>(null);
   const focusedDashboard =
@@ -232,15 +264,20 @@ export function ThreadStream({
   if (items.isLoading) {
     return (
       <div className="flex flex-col gap-5" aria-busy="true">
-        <Skeleton lines={2} />
-        <Skeleton lines={3} />
+        <div className="ok-bar-slot" aria-hidden="true" />
+        <div className="ok-run-skeleton" aria-hidden="true">
+          <Skeleton lines={3} />
+        </div>
       </div>
     );
   }
 
-  if (items.isError) {
+  if (itemsDenied || items.isError) {
     return (
-      <ErrorBanner message="Couldn't load this thread." onRetry={() => void items.refetch()} />
+      <ErrorBanner
+        message={itemsDenied ? timelineCopy.deniedRead : "Couldn't load this thread."}
+        onRetry={() => void items.refetch()}
+      />
     );
   }
 
@@ -338,8 +375,14 @@ export function ThreadStream({
         {chrome}
         <EmptyState
           icon="chat"
-          title={emptyTitle ?? 'No messages yet'}
-          hint="Send a message to begin."
+          title={
+            mode === 'task'
+              ? timelineCopy.emptyTaskTitle
+              : mode === 'chat'
+                ? timelineCopy.emptyChatTitle
+                : (emptyTitle ?? timelineCopy.emptyChatTitle)
+          }
+          hint={mode === 'task' ? timelineCopy.emptyTaskHint : timelineCopy.emptyChatHint}
         />
       </TimelineNowProvider>
     );
@@ -455,6 +498,16 @@ export function ThreadStream({
           withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
         }
         approvalUnavailableReason={approvalUnavailableReason(item)}
+        pendingDecision={
+          item.type !== 'approval-request'
+            ? undefined
+            : withdraw.isPending && withdraw.variables?.pendingRequestId === item.approvalRequestId
+              ? 'withdraw'
+              : respond.isPending && respond.variables?.approvalRequestId === item.approvalRequestId
+                ? respond.variables.decision
+                : undefined
+        }
+        holdReason={holdReason}
         approvalPending={
           item.type === 'approval-request' &&
           ((respond.isPending && respond.variables?.approvalRequestId === item.approvalRequestId) ||
@@ -533,6 +586,11 @@ export function ThreadStream({
         disabled={controlsReadOnly || live.isError}
       >
         <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
+          {fresh ? (
+            <p role="status" className="ok-meta">
+              {fresh}
+            </p>
+          ) : null}
           {lensProp === undefined ? (
             <fieldset
               aria-label={timelineCopy.lensName}
@@ -678,7 +736,7 @@ export function ThreadStream({
                       </div>
                     ) : null
                   }
-                  workerCue={Boolean(activity) && runLens === 'work'}
+                  workerCue={Boolean(activity && activity.entries.length > 0) && runLens === 'work'}
                   showActivity={Boolean(activity) && runLens === 'full'}
                   activityLine={
                     activity ? (
@@ -688,7 +746,9 @@ export function ThreadStream({
                         className="rounded-ok border border-border bg-sunken p-4 text-sm"
                       >
                         <h3 className="font-semibold text-fg">Runtime activity</h3>
-                        <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
+                        {activity.entries.length > 0 ? (
+                          <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
+                        ) : null}
                         <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
                         <p className="mt-1 text-fg-muted">{captureCopy(activity.contentCapture)}</p>
                         {activity.omittedEntryCount > 0 ? (
@@ -730,6 +790,9 @@ export function ThreadStream({
                     ) : null
                   }
                 />
+                {groupTurn?.status === 'failed' ? (
+                  <p className="ok-meta">{classifyRunError(groupTurn.error?.code).text}</p>
+                ) : null}
                 {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
               </div>
             );

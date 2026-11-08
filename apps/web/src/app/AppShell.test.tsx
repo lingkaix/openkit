@@ -508,8 +508,8 @@ function register_p1_shell_behavior_test_tsx_0() {
       try {
         await renderShell('/');
         await waitFor(() => expect(screen.getByText('Offline')).toBeInTheDocument());
-        expect(screen.getByText('Last opened on this device.')).toBeInTheDocument();
-        const banner = screen.getByText('Last opened on this device.').closest('[role="status"]');
+        expect(screen.getByText(/Sending is paused/)).toBeInTheDocument();
+        const banner = screen.getByText(/Sending is paused/).closest('[role="status"]');
         expect(banner).not.toBeNull();
         expect(
           within(banner as HTMLElement).getByRole('button', { name: 'Try again' })
@@ -534,7 +534,7 @@ function register_p1_shell_behavior_test_tsx_0() {
           window.dispatchEvent(new Event('offline'));
         });
         expect(await screen.findByText('Offline')).toBeInTheDocument();
-        expect(screen.getByText('Last opened on this device.')).toBeInTheDocument();
+        expect(screen.getByText(/Sending is paused/)).toBeInTheDocument();
       } finally {
         online = true;
         Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });

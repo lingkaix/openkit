@@ -565,10 +565,9 @@ describe.each([
     await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText("Couldn't send that message. Try again.")).toHaveAttribute(
-      'role',
-      'alert'
-    );
+    expect(
+      await screen.findByText("We couldn't confirm OpenKit received this. Check.")
+    ).toHaveAttribute('role', 'alert');
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled());
     expect(screen.getByRole('button', { name: 'Remove file arbitrary.bin' })).toBeInTheDocument();
     const retained = queryClient
@@ -744,7 +743,20 @@ describe('conversation failure identity', () => {
     if (targetRef === 'new-task-worker') await chooseNewTaskWorker(user);
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Retained request');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+    const uncertain =
+      error instanceof TypeError ||
+      (error instanceof ApiCallError &&
+        (error.status === 0 ||
+          error.status === 408 ||
+          error.status === 504 ||
+          error.status >= 500));
+    expect(
+      await screen.findByText(
+        uncertain
+          ? "We couldn't confirm OpenKit received this. Check."
+          : "Couldn't send that message. Try again."
+      )
+    ).toBeInTheDocument();
     const first = submitConversation.mock.calls[0];
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
@@ -1923,7 +1935,7 @@ describe('chat thread (boards 02/03)', () => {
     );
     await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
     expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
-    expect(screen.getByText('Submitting decision…')).toBeInTheDocument();
+    expect(screen.getByText('Approving…')).toBeInTheDocument();
     pending.reject(new Error('request failed'));
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't submit this decision.");
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -4281,7 +4293,7 @@ describe('live turn subscription (S6)', () => {
     await waitFor(() =>
       expect(screen.getByText('Authoritative interleaved result')).toBeInTheDocument()
     );
-    expect(await screen.findByText('Offline')).toBeInTheDocument();
+    expect(await screen.findByText('Live updates paused · reconnecting')).toBeInTheDocument();
 
     await act(async () => {
       resolveStaleItems({ items: ITEMS, nextCursor: null });
@@ -4487,16 +4499,18 @@ describe('live turn subscription (S6)', () => {
       client
     );
 
-    expect(await screen.findByText('Offline')).toBeInTheDocument();
+    expect(await screen.findByText('Live updates paused · reconnecting')).toBeInTheDocument();
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
 
     expect(await screen.findByText('Reconnected result')).toBeInTheDocument();
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText('Offline')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText('Live updates paused · reconnecting')).not.toBeInTheDocument()
+    );
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
   });
 
@@ -4551,14 +4565,16 @@ describe('live turn subscription (S6)', () => {
       client
     );
 
-    expect(await screen.findByText('Offline')).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    expect(await screen.findByText('Live updates paused · reconnecting')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
 
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText('Offline')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText('Live updates paused · reconnecting')).not.toBeInTheDocument()
+    );
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
   });
@@ -4619,7 +4635,7 @@ describe('live turn subscription (S6)', () => {
       expect(screen.getByText('Already authoritative')).toBeInTheDocument();
     });
     releaseReplay();
-    expect(await screen.findByText('Offline')).toBeInTheDocument();
+    expect(await screen.findByText('Live updates paused · reconnecting')).toBeInTheDocument();
     expect(screen.getByText('Already authoritative')).toBeInTheDocument();
   });
 });
@@ -7035,7 +7051,9 @@ describe('Worker environment Advanced choice', () => {
       await chooseRetainedEnvironment(user);
       expect(randomUUID).toHaveBeenCalledTimes(1);
       await user.click(screen.getByRole('button', { name: 'Send message' }));
-      expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
+      expect(
+        await screen.findByText("We couldn't confirm OpenKit received this. Check.")
+      ).toBeInTheDocument();
       expect(submitConversation).toHaveBeenCalledTimes(2);
       const freshDraft = {
         input: 'Replacement work',

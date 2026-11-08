@@ -109,7 +109,9 @@ export function Inspector({
       {activity ? (
         <section aria-label="Runtime activity" aria-live="polite" className="mt-4 text-sm">
           <h3 className="font-semibold text-fg">Runtime activity</h3>
-          <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
+          {activity.entries.length > 0 ? (
+            <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
+          ) : null}
           <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
           <p className="mt-1 text-fg-muted">{captureCopy(activity.contentCapture)}</p>
           {activity.omittedEntryCount > 0 ? (
