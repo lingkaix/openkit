@@ -96,9 +96,12 @@ it.each(operations)(
         observed.push(error);
         return context.text('Internal Server Error', 500);
       });
-      vi.spyOn(admission, 'isClosed').mockImplementation(() => {
-        throw failure;
-      });
+      // Reads consult the lifecycle close, mutations the full gate; both must propagate.
+      for (const gate of ['isClosed', 'isLifecycleClosed'] as const) {
+        vi.spyOn(admission, gate).mockImplementation(() => {
+          throw failure;
+        });
+      }
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const inputs = {
         'workspace.read': { workspaceId },

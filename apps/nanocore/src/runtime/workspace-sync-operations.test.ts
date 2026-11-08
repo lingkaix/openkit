@@ -947,9 +947,12 @@ describe('Workspace synchronization native projections', () => {
         return new Response('Admission error handler', { status: 500 });
       });
       f.app.onError(errorHandler);
-      vi.spyOn(f.mutationAdmission, 'isClosed').mockImplementation(() => {
-        throw fault;
-      });
+      // Reads consult the lifecycle close, mutations the full gate; both must propagate.
+      for (const gate of ['isClosed', 'isLifecycleClosed'] as const) {
+        vi.spyOn(f.mutationAdmission, gate).mockImplementation(() => {
+          throw fault;
+        });
+      }
       const before = f.observed();
       const response = await f.http(id, inputs()[id]!);
       expect(response.status).toBe(500);
