@@ -775,12 +775,14 @@ export function useLiveThreadItems(
   // thread.dashboard has no Item-count field. ProductTurn embeds Items, so the
   // idle signature uses the newest Turn's id, status, and items.length.
   const latestItemCount = latestTurn?.items?.length ?? 0;
+  const latestTurnItemKey = latestTurn?.items?.map((item) => item.id).join(',') ?? '';
   const turnsIdle =
     dashboard.data?.turns.every((turn) => isSealedTurnTerminal(turn.status)) ?? false;
   const targetScope = useRef<{ workspaceId: string; threadId: string } | null>(null);
   const idleItemsSignature = useRef<{ scope: string; signature: string; idle: boolean } | null>(
     null
   );
+  const reconciledItemsSignature = useRef<string | null>(null);
   const owner = useMemo(() => ({ threadId, turnId, workspaceId }), [threadId, turnId, workspaceId]);
 
   useEffect(() => () => clear(owner), [clear, owner]);
@@ -802,7 +804,8 @@ export function useLiveThreadItems(
   }, [dashboard.isSuccess, latestTurnId, latestTurnStatus, queryClient, threadId, workspaceId]);
 
   useEffect(() => {
-    if (!workspaceId || !dashboard.isSuccess) return;
+    // Re-checked on every dashboard poll: the items cache can settle after the signature.
+    if (!workspaceId || !dashboard.isSuccess || dashboard.dataUpdatedAt === 0) return;
     const scope = `${workspaceId}:${threadId}`;
     const signature = JSON.stringify([
       latestTurnId ?? null,
@@ -811,23 +814,35 @@ export function useLiveThreadItems(
     ]);
     const previous = idleItemsSignature.current;
     idleItemsSignature.current = { scope, signature, idle: turnsIdle };
+    if (!turnsIdle) return;
     // Only a change that stays inside a terminal Thread reads items. Opening a
     // Turn (this tab's send, or a run that is still going) keeps today's stream.
-    if (
-      !previous ||
-      previous.scope !== scope ||
-      previous.signature === signature ||
-      !previous.idle ||
-      !turnsIdle
-    )
-      return;
+    const changedWhileIdle =
+      previous?.scope === scope && previous.idle && previous.signature !== signature;
+    // The dashboard can see a Turn end before the stream delivers its last Items, or
+    // load already newer than the items cache. Read once per signature when the
+    // newest Turn embeds an Item the cache lacks.
+    const cached = new Set(
+      (queryClient.getQueryData<ThreadItem[]>(chatKeys.items(workspaceId, threadId)) ?? []).map(
+        (item) => item.id
+      )
+    );
+    const reconcileKey = `${scope}:${signature}`;
+    const missingItems =
+      reconciledItemsSignature.current !== reconcileKey &&
+      queryClient.getQueryState(chatKeys.items(workspaceId, threadId))?.status === 'success' &&
+      latestTurnItemKey.split(',').some((id) => id !== '' && !cached.has(id));
+    if (!changedWhileIdle && !missingItems) return;
+    reconciledItemsSignature.current = reconcileKey;
     void queryClient.invalidateQueries({
       queryKey: chatKeys.items(workspaceId, threadId),
       exact: true,
     });
   }, [
+    dashboard.dataUpdatedAt,
     dashboard.isSuccess,
     latestItemCount,
+    latestTurnItemKey,
     latestTurnId,
     latestTurnStatus,
     queryClient,

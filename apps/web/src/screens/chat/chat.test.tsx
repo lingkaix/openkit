@@ -5145,6 +5145,68 @@ describe('open thread external activity', () => {
     expect(listThreadItems.mock.calls.length).toBe(itemCalls);
   });
 
+  it('reads stale items once when an idle dashboard already embeds a newer Item', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const listThreadItems = vi
+      .fn()
+      .mockResolvedValueOnce({ items: ITEMS, nextCursor: null })
+      .mockResolvedValue({ items: [...ITEMS, laterItem], nextCursor: null });
+    const getThreadDashboard = vi.fn(async () => ({
+      turns: [
+        idleTurn,
+        TurnSchema.parse({ ...idleTurn, id: laterItem.turnId, items: [laterItem] }),
+      ],
+    }));
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(await screen.findByText('CATALOG_OK_GROK')).toBeInTheDocument();
+    const itemCalls = listThreadItems.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
+    });
+    expect(listThreadItems.mock.calls.length).toBe(itemCalls);
+  });
+
+  it('reads items once when a polled dashboard ends the run before its stream delivers the last Item', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const finalItem = ItemSchema.parse({ ...laterItem, turnId: ACTIVE_TURN.id });
+    let items = ITEMS;
+    const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
+    const getThreadDashboard = vi.fn().mockResolvedValue({ turns: [ACTIVE_TURN] });
+    async function* hang() {
+      await new Promise(() => undefined);
+    }
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient(
+        { 'thread.items': listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
+        { 'thread.dashboard': getThreadDashboard }
+      )
+    );
+    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+
+    items = [...ITEMS, finalItem];
+    getThreadDashboard.mockResolvedValue({
+      turns: [TurnSchema.parse({ ...COMPLETED_TURN, items: [finalItem] })],
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(await screen.findByText('CATALOG_OK_GROK')).toBeInTheDocument();
+    const itemCalls = listThreadItems.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
+    });
+    expect(listThreadItems.mock.calls.length).toBe(itemCalls);
+  });
+
   it('keeps a running Turn on today item refetch: no extra thread.items polls', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
