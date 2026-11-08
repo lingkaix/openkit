@@ -36,10 +36,10 @@ import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import {
   finishCapabilityCall,
-  normalizeCapabilityRequestId,
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
+import { normalizeCapabilityRequestId } from './capability/usage-ledger-native.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { findWorkspaceConfig } from './config/runtime-config.js';
 import { createKnowledgeAgentOperations } from './knowledge/knowledge-agent-operations.js';

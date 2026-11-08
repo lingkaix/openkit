@@ -14,7 +14,7 @@ import {
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
-import { normalizeCapabilityRequestId } from '../capability/usage-ledger.js';
+import { normalizeCapabilityRequestId } from '../capability/usage-ledger-native.js';
 import {
   CatalogIntegrityError,
   loadWorkspaceResourceCatalog,

@@ -20,7 +20,7 @@ import {
 } from './auth/operation-authorizer.js';
 import { readAutomationOperationLineage } from './automation-operations.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
-import { normalizeCapabilityRequestId } from './capability/usage-ledger.js';
+import { normalizeCapabilityRequestId } from './capability/usage-ledger-native.js';
 import {
   coordinatorOperationBindings,
   resolveCoordinatorWorkspaceCandidates,

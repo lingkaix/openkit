@@ -29,10 +29,9 @@ import {
   recordUsage,
   recoverRunningCapabilityCalls,
   startCapabilityCall,
-  startCapabilityCallInDb,
   writeGatewayRouteLineage,
 } from './usage-ledger.js';
-import { recordUsageInDb } from './usage-ledger-native.js';
+import { recordUsageInDb, startCapabilityCallInDb } from './usage-ledger-native.js';
 
 /** Establishes the existing canonical local initiator and Workspace ownership for live ledger fixtures. */
 function createWorkspaceLedgerActor(workspaceDb: ReturnType<typeof openWorkspaceDb>) {

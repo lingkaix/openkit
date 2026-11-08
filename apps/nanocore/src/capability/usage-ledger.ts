@@ -1,12 +1,9 @@
 import {
   type ActorRef,
   type AuditEvent,
-  allocateEntityId,
   type CapabilityCall,
-  CapabilityCallSchema,
   CapabilityCallStatusSchema,
   type GatewayRouteLineageEntry,
-  RequestIdSchema,
   readRetainedV1,
   type ServerUsageRecord,
   ServerUsageRecordSchema,
@@ -16,7 +13,6 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
-import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { OperationError } from '../operation-error.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import {
@@ -34,15 +30,12 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { CapabilityCallFamily } from '../storage/schema/index.js';
 
 import {
-  assertNoUnsafeLedgerValue,
+  assertWorkspaceCapabilityActor,
   CanonicalCapabilityCallExtensionsSchema,
   type CapabilityCallRow,
   capabilityCallFromRow,
-  findCapabilityCallById,
   finishCapabilityCallInDb,
-  normalizeSourceIds,
   parseSourceIdsJson,
-  readCapabilityAdmissionAttribution,
   sourceIdsJson,
 } from './usage-ledger-native.js';
 
@@ -225,18 +218,6 @@ export interface RecoverRunningCapabilityCallsInput {
   now?: Date;
 }
 
-/**
- * Returns a capability-ledger-safe request id.
- *
- * @param requestId Caller-supplied request id.
- * @returns UUID request id accepted by protocol capability schemas, or null.
- */
-export function normalizeCapabilityRequestId(requestId: string | null | undefined): string | null {
-  const parsed = RequestIdSchema.safeParse(requestId);
-
-  return parsed.success ? parsed.data : null;
-}
-
 /** Existing native admission constituents; no extra command or durable fact is introduced. */
 type NativeCapabilityAdmissionFacts = Pick<
   Extract<ControlCapabilityCommandInput, { kind: 'admit' }>,
@@ -332,206 +313,6 @@ export function startCapabilityCall(
         throw new TypeError('Invalid native capability admission result.');
       return presentControlFacts({ ...result, context: presentControlFacts(result.context) });
     });
-}
-
-/** Requires existing Workspace LLM/MCP attribution before either admission path writes or dispatches. */
-function assertWorkspaceCapabilityActor(
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
-): void {
-  if (
-    input.workspaceDb.scope !== 'core' &&
-    (input.family === 'llm' || input.family === 'mcp') &&
-    input.authorityActor == null
-  ) {
-    throw new TypeError('Workspace LLM/MCP admission requires an authority actor.');
-  }
-}
-
-/**
- * Starts one durable capability call before upstream contact.
- *
- * @param input Gateway call context and database handle.
- * @returns Durable call summary.
- */
-export function startCapabilityCallInDb(
-  input: StartServerCapabilityCallInput
-): StartedCapabilityCall<ServerGatewayCallContext>;
-export function startCapabilityCallInDb(input: StartCapabilityCallInput): StartedCapabilityCall;
-export function startCapabilityCallInDb(
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
-): StartedCapabilityCall<GatewayCallContext | ServerGatewayCallContext> {
-  assertWorkspaceCapabilityActor(input);
-  return input.workspaceDb.sqlite
-    .transaction(() => {
-      const {
-        workspaceDb: _workspaceDb,
-        now: _now,
-        callId: _callId,
-        authorityActor: _authorityActor,
-        authentication: _authentication,
-        auditLineage: _auditLineage,
-        ...safeInput
-      } = input;
-      assertNoUnsafeLedgerValue(safeInput);
-
-      const startedAt = (input.now ?? new Date()).toISOString();
-      const callId = input.callId ?? allocateEntityId('cap');
-      if (
-        input.workspaceDb.scope === 'core'
-          ? input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
-          : input.workspaceId !== input.workspaceDb.workspaceId
-      ) {
-        throw new Error('Capability call database owner mismatch.');
-      }
-      const protocolCall = CapabilityCallSchema.parse({
-        id: callId,
-        ...(input.workspaceDb.scope === 'core'
-          ? { owner: { kind: 'server' } }
-          : { owner: { kind: 'workspace', workspaceId: input.workspaceId } }),
-        threadId: input.threadId ?? null,
-        turnId: input.turnId ?? null,
-        itemId: input.itemId ?? null,
-        agentId: input.agentId ?? null,
-        agentSessionId: input.agentSessionId ?? null,
-        packageSnapshotId: input.packageSnapshotId ?? null,
-        schemaSnapshotId: input.schemaSnapshotId ?? null,
-        runtimeOriginRef: input.runtimeOriginRef ?? null,
-        runtimeCacheLineageRef: input.runtimeCacheLineageRef ?? null,
-        requestId: input.requestId ?? null,
-        sourceIds: normalizeSourceIds(input.sourceIds),
-        capabilityId: input.capabilityId,
-        status: 'running',
-        summary: input.summary ?? null,
-        errorCode: null,
-        startedAt,
-        completedAt: null,
-      });
-
-      const insertion = input.workspaceDb.sqlite
-        .prepare(
-          `INSERT OR IGNORE INTO capability_calls (
-        schema_version,
-        call_id,
-        workspace_id,
-        thread_id,
-        turn_id,
-        item_id,
-        agent_id,
-        agent_session_id,
-        request_id,
-        source_ids_json,
-        capability_id,
-        family,
-        operation,
-        status,
-        summary,
-        provider_ref,
-        service_ref,
-        redaction_class,
-        error_code,
-        started_at,
-        completed_at,
-        package_snapshot_id,
-        schema_snapshot_id,
-        runtime_origin_ref,
-        runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          writeRetainedV1(protocolCall).schemaVersion,
-          protocolCall.id,
-          protocolCall.owner.kind === 'workspace' ? protocolCall.owner.workspaceId : null,
-          protocolCall.threadId,
-          protocolCall.turnId,
-          protocolCall.itemId,
-          protocolCall.agentId,
-          protocolCall.agentSessionId,
-          protocolCall.requestId,
-          sourceIdsJson(protocolCall.sourceIds),
-          protocolCall.capabilityId,
-          input.family,
-          input.operation,
-          protocolCall.status,
-          protocolCall.summary,
-          input.providerRef ?? null,
-          input.serviceRef ?? null,
-          input.redactionClass,
-          protocolCall.errorCode,
-          protocolCall.startedAt,
-          protocolCall.completedAt,
-          protocolCall.packageSnapshotId,
-          protocolCall.schemaSnapshotId,
-          protocolCall.runtimeOriginRef,
-          protocolCall.runtimeCacheLineageRef
-        );
-
-      if (insertion.changes === 1 && input.authorityActor) {
-        const audit = {
-          action: 'capability.admit',
-          actor: input.authorityActor,
-          ...(input.authentication ? { authentication: input.authentication } : {}),
-          agentId: protocolCall.agentId,
-          agentSessionId: protocolCall.agentSessionId,
-          capabilityCallId: protocolCall.id,
-          category: 'capability' as const,
-          itemId: protocolCall.itemId,
-          now: new Date(startedAt),
-          occurredAt: new Date(startedAt),
-          outcome: 'unknown' as const,
-          requestId:
-            protocolCall.requestId ??
-            (input.auditLineage
-              ? RequestIdSchema.parse(input.auditLineage.commandRequestId)
-              : null),
-          resource: `capability:${protocolCall.capabilityId}`,
-          summary: 'Capability call admitted; effect outcome is not yet known.',
-          threadId: protocolCall.threadId,
-          turnId: protocolCall.turnId,
-        };
-        if (input.workspaceDb.scope === 'core')
-          recordServerAuditEvent({ ...audit, coreDb: input.workspaceDb });
-        else
-          recordWorkspaceAuditEvent({
-            ...audit,
-            workspaceDb: input.workspaceDb,
-            workspaceId: input.workspaceDb.workspaceId,
-          });
-      }
-
-      const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, { ...input, callId });
-      assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
-
-      return {
-        id: stored.call_id,
-        inserted: insertion.changes === 1,
-        context: {
-          agentId: stored.agent_id,
-          agentSessionId: stored.agent_session_id,
-          authorityActor:
-            readCapabilityAdmissionAttribution(input.workspaceDb, stored.call_id).actor ?? null,
-          capabilityId: stored.capability_id,
-          family: stored.family as CapabilityCallFamily,
-          itemId: stored.item_id,
-          operation: stored.operation,
-          packageSnapshotId: stored.package_snapshot_id,
-          schemaSnapshotId: stored.schema_snapshot_id,
-          providerRef: stored.provider_ref,
-          redactionClass: stored.redaction_class,
-          requestId: stored.request_id,
-          runtimeCacheLineageRef: stored.runtime_cache_lineage_ref,
-          runtimeOriginRef: stored.runtime_origin_ref,
-          serviceRef: stored.service_ref,
-          sourceIds: parseSourceIdsJson(stored.source_ids_json),
-          summary: stored.summary,
-          threadId: stored.thread_id,
-          turnId: stored.turn_id,
-          ...(input.workspaceDb.scope === 'core'
-            ? { owner: { kind: 'server' as const } }
-            : { workspaceId: input.workspaceDb.workspaceId }),
-        },
-      };
-    })
-    .immediate();
 }
 
 /**
@@ -1136,88 +917,6 @@ function usageRecordFromRow(row: unknown, server = false): UsageRecord | ServerU
   });
 }
 
-/**
- * Reads one started call by explicit id or idempotency tuple.
- *
- * @param workspaceDb Workspace-scoped database handle.
- * @param input Original start input.
- * @returns Stored capability call row.
- */
-function findCapabilityCallByIdOrIdempotency(
-  workspaceDb: WorkspaceDb | CoreDb,
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
-): CapabilityCallRow {
-  if (input.requestId) {
-    const storedByRequest = workspaceDb.sqlite
-      .prepare(
-        `SELECT * FROM capability_calls
-         WHERE workspace_id IS ?
-           AND request_id = ?
-           AND family = ?
-           AND operation = ?
-         ORDER BY started_at
-         LIMIT 1`
-      )
-      .get(input.workspaceId ?? null, input.requestId, input.family, input.operation) as
-      | CapabilityCallRow
-      | undefined;
-
-    if (storedByRequest) {
-      readRetainedV1({ schemaVersion: storedByRequest.schema_version }, () => undefined);
-      return storedByRequest;
-    }
-  }
-
-  if (input.callId) {
-    const storedById = findCapabilityCallById(workspaceDb, input.callId);
-
-    if (
-      storedById &&
-      storedById.workspace_id === (input.workspaceId ?? null) &&
-      storedById.request_id === (input.requestId ?? null) &&
-      storedById.family === input.family &&
-      storedById.operation === input.operation
-    ) {
-      return storedById;
-    }
-  }
-
-  throw new Error('Capability call was not stored.');
-}
-
-/**
- * Rejects replay when immutable effect attribution differs from the stored call.
- *
- * @param stored Existing capability-call row selected by the idempotency key.
- * @param incoming Protocol-validated incoming capability call.
- * @param input Ledger-only attribution supplied by the producer.
- */
-function assertMatchingCapabilityCallAttribution(
-  stored: CapabilityCallRow,
-  incoming: CapabilityCall,
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
-): void {
-  if (
-    stored.capability_id !== incoming.capabilityId ||
-    stored.thread_id !== incoming.threadId ||
-    stored.turn_id !== incoming.turnId ||
-    stored.item_id !== incoming.itemId ||
-    stored.agent_id !== incoming.agentId ||
-    stored.agent_session_id !== incoming.agentSessionId ||
-    stored.package_snapshot_id !== incoming.packageSnapshotId ||
-    stored.schema_snapshot_id !== incoming.schemaSnapshotId ||
-    stored.runtime_origin_ref !== incoming.runtimeOriginRef ||
-    stored.runtime_cache_lineage_ref !== incoming.runtimeCacheLineageRef ||
-    sourceIdsJson(parseSourceIdsJson(stored.source_ids_json)) !==
-      sourceIdsJson(incoming.sourceIds) ||
-    stored.provider_ref !== (input.providerRef ?? null) ||
-    stored.service_ref !== (input.serviceRef ?? null) ||
-    stored.redaction_class !== input.redactionClass
-  ) {
-    throw new Error('Capability call attribution conflicts with the existing request.');
-  }
-}
-
 /** Existing call and admitted owner supplied to the shared Gateway dispatcher. */
 export interface GatewayCallLedgerBinding {
   readonly workspaceDb: WorkspaceDb | CoreDb;
@@ -1269,19 +968,4 @@ export function writeGatewayRouteLineage(
       if (typeof result !== 'number') throw new TypeError('Invalid native lineage result.');
       return result;
     });
-}
-
-/** Caller request identities are single-use across running and terminal Gateway calls. */
-export function hasCapabilityCallRequestId(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  requestId: string
-): boolean {
-  const row = workspaceDb.sqlite
-    .prepare(
-      'SELECT schema_version FROM capability_calls WHERE workspace_id = ? AND request_id = ? LIMIT 1'
-    )
-    .get(workspaceId, requestId) as { schema_version: number } | undefined;
-  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
-  return row !== undefined;
 }
