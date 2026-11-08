@@ -302,7 +302,11 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
     await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
     await page.context().setOffline(true);
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByText('Last opened on this device.', { exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByRole('status')
+        .filter({ hasText: /^OfflineYou are seeing what loaded at .+\. Sending is paused\./ })
+    ).toBeVisible();
     await expect(page.getByPlaceholder('OpenKit needs a connection.')).toBeVisible();
     await page.evaluate(() => {
       const active = document.activeElement;
@@ -310,7 +314,11 @@ test('checks the landed surfaces at phone and desktop widths', async ({ page }) 
     });
     await shot('phone-offline');
     await page.setViewportSize({ width: 1280, height: 800 });
-    await expect(page.getByText('Last opened on this device.', { exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByRole('status')
+        .filter({ hasText: /^OfflineYou are seeing what loaded at .+\. Sending is paused\./ })
+    ).toBeVisible();
     await expect(page.getByPlaceholder('OpenKit needs a connection.')).toBeVisible();
     await shot('desktop-offline');
     await page.context().setOffline(false);

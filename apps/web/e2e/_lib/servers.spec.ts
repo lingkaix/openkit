@@ -18,8 +18,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
-import { ApiCallError, createCoreClient } from '@openkit/core-client';
+import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
+import { whenCaptureFenceReleases } from './capture-fence.js';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
@@ -245,25 +246,6 @@ test('keeps polling incomplete or non-positive JSON PID fields', () => {
     rmSync(root, { force: true, recursive: true });
   }
 });
-
-/**
- * Startup snapshot maintenance fences the Workspace until mutable state is copied.
- * `workspace_frozen` is the documented retryable refusal and names no retry time.
- */
-async function whenCaptureFenceReleases<T>(attempt: () => Promise<T>): Promise<T> {
-  const deadline = Date.now() + 20_000;
-  let refused: ApiCallError | undefined;
-  while (Date.now() < deadline) {
-    try {
-      return await attempt();
-    } catch (error) {
-      if (!(error instanceof ApiCallError) || error.code !== 'workspace_frozen') throw error;
-      refused = error;
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-  }
-  throw refused ?? new Error('Workspace capture fence did not release.');
-}
 
 /** Reproduces the Material browser handoff after the simulator ends its question-raising Turn. */
 test('preserves Material delivery and delivers a durable simulator answer on the next Task Turn', async ({
