@@ -134,7 +134,7 @@ const LATER_COMPLETED_TURN = ProductTurnSchema.parse({
   completedAt: '2026-09-16T05:22:01.000Z',
 });
 
-const MISSING_ERROR_FALLBACK = 'This turn failed. Review the conversation before trying again.';
+const MISSING_ERROR_FALLBACK = 'This run failed. Review the conversation before trying again.';
 
 const EMPTY_FAILED_DASHBOARD_TURN = ProductTurnSchema.parse({
   ...FAILED_DASHBOARD_TURN,
@@ -264,12 +264,12 @@ describe('task runtime activity', () => {
           `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
         );
         if (present) {
-          expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();
+          expect(await screen.findByText('Selected run · Waiting to start')).toBeInTheDocument();
           await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
-          expect(scroll.mock.contexts[0]).toHaveTextContent(`Recorded Turn ${target}`);
+          expect(scroll.mock.contexts[0]).toHaveTextContent('Selected run · Waiting to start');
         } else {
           expect(
-            await screen.findByText('Recorded Turn is unavailable in this Thread.')
+            await screen.findByText('This run is not in this conversation.')
           ).toBeInTheDocument();
           expect(scroll).not.toHaveBeenCalled();
         }
@@ -323,7 +323,7 @@ describe('task runtime activity', () => {
     expect(activity).toHaveTextContent('<button>Approve child</button> **not a gate**');
     expect(activity.querySelector('button, strong')).toBeNull();
     expect(activity).toHaveTextContent('Activity coverage is partial.');
-    expect(activity).toHaveTextContent('Full-content capture was enabled for this Turn.');
+    expect(activity).toHaveTextContent('Full-content capture was enabled for this run.');
     expect(activity).toHaveTextContent('3 earlier activity entries not shown.');
     expect(activity).toHaveTextContent('Text shortened for this timeline.');
     expect(
@@ -370,7 +370,7 @@ describe('task runtime activity', () => {
             ? 'Activity coverage is partial.'
             : 'Activity coverage is unavailable.';
       expect(screen.getAllByText(message)).toHaveLength(2);
-      expect(screen.getByText('Full-content capture was off for this Turn.')).toBeInTheDocument();
+      expect(screen.getByText('Full-content capture was off for this run.')).toBeInTheDocument();
       expect(screen.getByText('Full-content capture setting is unknown.')).toBeInTheDocument();
       expect(screen.queryByText('No messages yet')).not.toBeInTheDocument();
       expect(screen.queryByText(/no children|complete coverage/i)).not.toBeInTheDocument();
@@ -443,7 +443,7 @@ describe('task turn failure (dashboard reload)', () => {
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(
-      failure.compareDocumentPosition(screen.getByText('Turn 2')) & Node.DOCUMENT_POSITION_FOLLOWING
+      failure.compareDocumentPosition(screen.getByText('Run 2')) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
   });
 
@@ -533,7 +533,7 @@ describe('task turn failure (dashboard reload)', () => {
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(
-      failure.compareDocumentPosition(screen.getByText('Turn 2')) & Node.DOCUMENT_POSITION_FOLLOWING
+      failure.compareDocumentPosition(screen.getByText('Run 2')) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
   });
 });

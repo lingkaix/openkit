@@ -207,7 +207,7 @@ describe('displayed conversation receipts', () => {
       );
       await screen.findByText('first reply');
       await waitFor(() => expect(dashboard).toHaveBeenCalled());
-      const unavailableCopy = 'Recorded Turn is unavailable in this Thread.';
+      const unavailableCopy = 'This run is not in this conversation.';
       if (expectUnavailableBanner) {
         expect(await screen.findByText(unavailableCopy)).toBeInTheDocument();
       } else {

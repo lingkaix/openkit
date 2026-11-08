@@ -760,6 +760,6 @@ describe('P4 timeline disclosure', () => {
     await waitFor(() => expect(steps).toHaveFocus());
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Show Details' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Work | Full' })).toHaveFocus();
   });
 });

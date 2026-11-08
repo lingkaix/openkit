@@ -192,7 +192,7 @@ it('shows a reservation without an admitted Turn as unadmitted work', async () =
   const data = view();
   data.tasks[0] = { ...data.tasks[0]!, admittedAt: null, turns: [] };
   mount(data);
-  expect(await screen.findByText('Reserved; no Task Turn admitted.')).toBeVisible();
+  expect(await screen.findByText('Reserved; this Task has not started.')).toBeVisible();
   expect(screen.getByText('Open')).toBeVisible();
 });
 it('edits a card with its read revision and decides the exact pending proposal', async () => {

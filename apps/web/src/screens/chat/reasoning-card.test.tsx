@@ -106,7 +106,7 @@ function register_context_summary_test_tsx_0() {
     render(<ItemView item={item} />);
     expect(screen.getByText('Continuation summary')).toBeInTheDocument();
     expect(screen.getByText('Keep the original deployment constraint.')).toBeInTheDocument();
-    expect(screen.getByText(/Covers 12 earlier Items/)).toHaveTextContent(
+    expect(screen.getByText(/Covers 12 earlier messages/)).toHaveTextContent(
       'Exact history remains available.'
     );
     fireEvent.click(screen.getByText('Covered history range'));

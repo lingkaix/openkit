@@ -750,7 +750,7 @@ describe('conversation failure identity', () => {
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
     expect(submitConversation.mock.calls[1]).toEqual(first);
     expect(
-      screen.queryByText('This turn was stopped. Send starts a new turn.')
+      screen.queryByText('This run was stopped. Send starts a new run.')
     ).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('Private');
   });
@@ -1293,9 +1293,7 @@ describe('chat starter (board 01)', () => {
     );
     expect(startTurn).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
-    expect(
-      await screen.findByRole('button', { name: /^(Show|Hide) Details$/ })
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Work | Full' })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
@@ -1426,7 +1424,7 @@ describe('chat starter (board 01)', () => {
       await user.click(screen.getByRole('button', { name: 'Send message' }));
       await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
 
-      expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
       expect(screen.getByRole('heading', { name: createdThread.name })).toBeInTheDocument();
       expect(getThread).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
@@ -2719,7 +2717,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       client
     );
 
-    await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
+    await user.click(await screen.findByRole('button', { name: 'Stop run' }));
     expect(interruptTurn).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
@@ -2827,7 +2825,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       } else {
         await user.click(
           await screen.findByRole('button', {
-            name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+            name: command === 'archive' ? 'Archive thread' : 'Stop run',
           })
         );
       }
@@ -3018,7 +3016,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       } else {
         await user.click(
           await screen.findByRole('button', {
-            name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+            name: command === 'archive' ? 'Archive thread' : 'Stop run',
           })
         );
       }
@@ -3056,7 +3054,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       } else {
         await user.click(
           screen.getByRole('button', {
-            name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+            name: command === 'archive' ? 'Archive thread' : 'Stop run',
           })
         );
       }
@@ -3108,7 +3106,7 @@ describe('thread lifecycle and attribution (S7)', () => {
           ? "Couldn't rename this thread."
           : command === 'archive'
             ? "Couldn't archive this thread."
-            : "Couldn't stop this turn."
+            : "Couldn't stop this run."
       );
       await user.click(screen.getByRole('button', { name: 'Try again' }));
       await waitFor(() => expect(mutation).toHaveBeenCalledTimes(3));
@@ -3131,7 +3129,7 @@ describe('thread lifecycle and attribution (S7)', () => {
         if (command !== 'rename') {
           expect(
             await screen.findByRole('button', {
-              name: command === 'archive' ? 'Archive thread' : 'Stop turn',
+              name: command === 'archive' ? 'Archive thread' : 'Stop run',
             })
           ).toBeDisabled();
         }
@@ -3196,8 +3194,8 @@ describe('thread lifecycle and attribution (S7)', () => {
       client
     );
 
-    await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't stop this turn.");
+    await user.click(await screen.findByRole('button', { name: 'Stop run' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't stop this run.");
     expect(interruptTurn).toHaveBeenNthCalledWith(1, {
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
@@ -3218,7 +3216,7 @@ describe('thread lifecycle and attribution (S7)', () => {
 
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Stop turn' }));
+    await user.click(screen.getByRole('button', { name: 'Stop run' }));
     expect(interruptTurn).toHaveBeenNthCalledWith(2, {
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
@@ -3348,11 +3346,11 @@ describe('thread lifecycle and attribution (S7)', () => {
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
-    await user.click(await screen.findByRole('button', { name: 'Stop turn' }));
+    await user.click(await screen.findByRole('button', { name: 'Stop run' }));
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent("Couldn't stop this turn.");
-    expect(screen.getByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(alert).toHaveTextContent("Couldn't stop this run.");
+    expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     expect(screen.queryByText('Interrupted')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
@@ -3850,7 +3848,7 @@ describe('live turn subscription (S6)', () => {
       client
     );
 
-    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('button', { name: 'Good' })).not.toBeInTheDocument();
 
@@ -3866,7 +3864,7 @@ describe('live turn subscription (S6)', () => {
         )?.turns
       ).toEqual([COMPLETED_TURN])
     );
-    expect(screen.queryByRole('button', { name: 'Stop turn' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop run' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Good' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Bad' })).toBeInTheDocument();
   });
@@ -3936,7 +3934,7 @@ describe('live turn subscription (S6)', () => {
         }
       );
 
-      expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
       await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
       const initialItems = queryClient.getQueryData(itemsKey);
       const initialItemsUpdatedAt = queryClient.getQueryState(itemsKey)?.dataUpdatedAt;
@@ -4885,7 +4883,7 @@ describe('open thread external activity', () => {
       );
       expect(screen.queryByText('Please approve the reported proposal.')).not.toBeInTheDocument();
       expect(
-        screen.queryByText('Full-content capture was enabled for this Turn.')
+        screen.queryByText('Full-content capture was enabled for this run.')
       ).not.toBeInTheDocument();
       expect(screen.queryByText('Private refresh diagnostic')).not.toBeInTheDocument();
       expect(
@@ -5029,7 +5027,7 @@ describe('open thread external activity', () => {
         { 'thread.dashboard': getThreadDashboard }
       )
     );
-    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     expect(screen.getByText(requestText)).toBeVisible();
     const itemCalls = listThreadItems.mock.calls.length;
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
@@ -5052,7 +5050,7 @@ describe('open thread external activity', () => {
           threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
       )
     ).toBe(true);
-    expect(screen.getByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
 
     const late = createDeferred<Awaited<ReturnType<typeof getThreadDashboard>>>();
     getThreadDashboard.mockImplementationOnce(() => late.promise);
@@ -5071,7 +5069,7 @@ describe('open thread external activity', () => {
       completed.resolve();
     });
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Stop turn' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Stop run' })).not.toBeInTheDocument()
     );
     await act(async () => {
       late.resolve({
@@ -5137,7 +5135,7 @@ describe('open thread external activity', () => {
         }
       )
     );
-    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     const itemCalls = listThreadItems.mock.calls.length;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -5189,7 +5187,7 @@ describe('open thread external activity', () => {
         { 'thread.dashboard': getThreadDashboard }
       )
     );
-    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
 
     items = [...ITEMS, finalItem];
     getThreadDashboard.mockResolvedValue({
@@ -5223,7 +5221,7 @@ describe('open thread external activity', () => {
         { 'thread.dashboard': getThreadDashboard }
       )
     );
-    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
     const itemCalls = listThreadItems.mock.calls.length;
     const dashboardCalls = getThreadDashboard.mock.calls.length;
     await act(async () => {
@@ -6572,12 +6570,12 @@ it('closes the outputs panel from inside and returns focus to its toggle', async
   expect(screen.queryByRole('tooltip', { name: 'Close details' })).not.toBeInTheDocument();
   await user.click(close);
   expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
-  const toggle = screen.getByRole('button', { name: 'Show Details' });
+  const toggle = screen.getByRole('button', { name: 'Work | Full' });
   expect(toggle).toHaveFocus();
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await user.click(toggle);
   expect(screen.getByRole('complementary', { name: 'Details' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Hide Details' })).toHaveAttribute(
+  expect(screen.getByRole('button', { name: 'Work | Full' })).toHaveAttribute(
     'aria-expanded',
     'true'
   );
@@ -7005,7 +7003,7 @@ describe('Worker environment Advanced choice', () => {
       await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Original Chat draft');
       await user.click(screen.getByRole('button', { name: 'Send message' }));
       const cancellationExplanation = (
-        await screen.findByText(/This turn was stopped|Couldn't send that message/)
+        await screen.findByText(/This run was stopped|Couldn't send that message/)
       ).textContent;
       expect(submitConversation).toHaveBeenCalledTimes(1);
       expect(submitConversation.mock.calls[0]?.[0]).toMatchObject({
@@ -7052,7 +7050,7 @@ describe('Worker environment Advanced choice', () => {
           ...freshDraft,
         },
       ]);
-      expect(cancellationExplanation).toBe('This turn was stopped. Send starts a new turn.');
+      expect(cancellationExplanation).toBe('This run was stopped. Send starts a new run.');
       expect(randomUUID).toHaveBeenCalledTimes(2);
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Replacement work');
       expect(document.body).not.toHaveTextContent('Private transport detail');
@@ -7511,7 +7509,7 @@ describe('exact Review candidate draft handoff', () => {
       { candidateInput: candidate }
     );
     await screen.findByText(
-      'The candidate was not added. Finish the existing message, then select Use in next Turn again.'
+      'The candidate was not added. Finish the existing message, then select Use in the next run again.'
     );
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(original.input);
     expect(

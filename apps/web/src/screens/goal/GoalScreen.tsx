@@ -5,6 +5,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
 import { Button, ErrorBanner, Skeleton, StatusChip, TextField } from '../../primitives';
+import { timelineCopy } from '../chat/timeline/copy';
+import { selectAgentProfile } from '../chat/timeline/profiles';
 import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
 
 /** Current card editing is separate from immutable Plan bytes and admitted Task input. */
@@ -147,8 +149,12 @@ export function GoalScreen() {
   const scope = { workspaceId, threadId: goal.threadId, goalId: goal.goalId };
   const closed = Boolean(goal.disposition);
   const writesDisabled = disabled || closed;
+  const profile = selectAgentProfile({ entryPath: 'conversation', mode: 'goal' });
   return (
-    <main className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+    <main
+      className="mx-auto max-w-3xl space-y-6 px-6 py-8"
+      data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
+    >
       <header>
         <h1>{goal.intent}</h1>
         <StatusChip tone="neutral">{goal.disposition?.kind ?? 'Open'}</StatusChip>
@@ -322,7 +328,7 @@ export function GoalScreen() {
                   {task.missing
                     ? 'Missing Task: unresolved'
                     : task.turns.map((turn) => `${turn.turnId}: ${turn.status}`).join(', ') ||
-                      'Reserved; no Task Turn admitted.'}
+                      timelineCopy.goalReserved}
                 </p>
               </li>
             ))}

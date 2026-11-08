@@ -13,6 +13,7 @@ import { ArtifactReference } from '../artifacts/ArtifactReference';
 import type { ThreadItem } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { useDisplayedMessageBody } from './ThreadReadReceipts';
+import { contextSummaryCopy } from './timeline/source';
 
 /** Protocol user-input request rendered by the inline Gate control. */
 type UserInputRequestItem = Extract<ThreadItem, { type: 'user-input-request' }>;
@@ -319,7 +320,7 @@ export function ItemView({
         <ItemCard
           kind="informative"
           title="Continuation summary"
-          meta={`Covers ${item.sourceRange.itemCount} earlier Items. Exact history remains available.`}
+          meta={contextSummaryCopy(item.sourceRange.itemCount)}
         >
           <p className="whitespace-pre-wrap">{item.text}</p>
           <details className="mt-2">

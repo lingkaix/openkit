@@ -20,7 +20,6 @@ import { useArtifacts, useArtifactVersion } from '../artifacts/data';
 import {
   chatKeys,
   groupItemsByTurn,
-  isTimelineDetail,
   type ThreadItem,
   taskThreadPath,
   useArchiveThread,
@@ -40,6 +39,9 @@ import {
 } from './data';
 import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
+import { timelineCopy } from './timeline/copy';
+import { selectAgentProfile } from './timeline/profiles';
+import { projectTimeline } from './timeline/source';
 import { composerVoice } from './voice';
 
 /**
@@ -73,7 +75,8 @@ function SidePanel({
 }) {
   const items = useThreadItems(workspaceId, threadId);
   const list = items.data ?? [];
-  const detailGroups = groupItemsByTurn(list.filter((item) => isTimelineDetail(item)));
+  const timeline = projectTimeline({ items: list });
+  const detailGroups = groupItemsByTurn(timeline.detailItems);
   const artifacts = artifactIndex(list);
   const itemKey = (item: ThreadItem) =>
     `${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`;
@@ -308,6 +311,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const [stepsFocus, setStepsFocus] = useState<{ turnId: string; token: number } | null>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
+  const profile = selectAgentProfile({
+    entryPath: thread.data?.entryPath,
+    mode,
+    loadFailed:
+      thread.isError &&
+      (thread.data?.entryPath === 'administration' ||
+        thread.data?.entryPath === 'knowledge-manager'),
+  });
   const [renameDrafts, setRenameDrafts] = useState<
     {
       workspaceId: string;
@@ -323,8 +334,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   // Product projection that differs from sealed terminals: the failed header chip is failed-only.
   const failedTurn = latestTurn?.status === 'failed' ? latestTurn : undefined;
   const failedTurnMessage =
-    failedTurn?.error?.message ??
-    (failedTurn ? 'This turn failed. Review the conversation before trying again.' : null);
+    failedTurn?.error?.message ?? (failedTurn ? timelineCopy.runFailed : null);
   const feedbackOwner =
     submitFeedback.variables?.workspaceId === workspaceId &&
     submitFeedback.variables.threadId === threadId &&
@@ -377,7 +387,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   }
 
   return (
-    <div className="@container/thread relative isolate flex h-full">
+    <div
+      className="@container/thread relative isolate flex h-full"
+      data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
+    >
       <div className="flex h-full min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -461,7 +474,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   })
                 }
               >
-                Stop turn
+                {timelineCopy.stopRun}
               </Button>
             ) : null}
             <Button
@@ -469,8 +482,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               variant="quiet"
               ref={railToggle}
               aria-expanded={showRail}
-              aria-label={showRail ? 'Hide Details' : 'Show Details'}
-              title={showRail ? 'Hide Details' : 'Show Details'}
+              aria-label={timelineCopy.lensName}
+              title={timelineCopy.lensName}
               className="h-8 w-8 shrink-0 px-0!"
               onPress={() => setShowRail((v) => !v)}
             >
@@ -545,7 +558,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
         {interruptState?.status === 'error' && interruptState.variables ? (
           <div className="border-b border-separator px-6 py-3">
             <ErrorBanner
-              message="Couldn't stop this turn."
+              message={timelineCopy.stopFailed}
               onRetry={() => interrupt.mutate(interruptState.variables!)}
             />
           </div>
@@ -564,6 +577,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               readOnly={disconnected}
               focusTurnId={new URLSearchParams(location.search).get('turnId')}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
+              lens={showRail ? 'full' : 'work'}
               onShowSteps={(turnId) => {
                 setShowRail(true);
                 setStepsFocus((current) => ({ turnId, token: (current?.token ?? 0) + 1 }));
@@ -609,14 +623,13 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             {submission?.status === 'error' ? (
               <p role="alert" className="mb-2 text-xs font-medium text-negative-fg">
                 {cancelledRequestId
-                  ? 'This turn was stopped. Send starts a new turn.'
+                  ? timelineCopy.runStopped
                   : "Couldn't send that message. Try again."}
               </p>
             ) : null}
             {hasCandidateInput && unfinishedSubmission ? (
               <p role="status" className="mb-2 text-sm text-fg-muted">
-                The candidate was not added. Finish the existing message, then select Use in next
-                Turn again.
+                {timelineCopy.candidateNotAdded}
               </p>
             ) : null}
             {candidateUnavailable ? (

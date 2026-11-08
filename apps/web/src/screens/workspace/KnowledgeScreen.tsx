@@ -19,6 +19,7 @@ import {
   Skeleton,
   TextField,
 } from '../../primitives';
+import { selectAgentProfile } from '../chat/timeline/profiles';
 import {
   type AnswerKnowledgeManagerCommand,
   type CheckKnowledgeHealthCommand,
@@ -1278,8 +1279,16 @@ function KnowledgeManagerPanel({
       ? health.data
       : null;
 
+  const profile = selectAgentProfile({
+    entryPath: 'knowledge-manager',
+    loadFailed: false,
+  });
   return (
-    <section aria-label="Manager" className="flex flex-col gap-2">
+    <section
+      aria-label="Manager"
+      className="flex flex-col gap-2"
+      data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
+    >
       <Eyebrow>Manager</Eyebrow>
       <Card className="flex flex-col gap-3">
         <TextField

@@ -49,6 +49,7 @@ import {
   useWorkspaces,
 } from '../chat/data';
 import { ThreadStream } from '../chat/ThreadStream';
+import { selectAgentProfile } from '../chat/timeline/profiles';
 import { useWorkspaceStore } from '../workspace-store';
 import {
   AdministrationConfigurationReview,
@@ -287,6 +288,10 @@ export function AdministrationScreen() {
   }
 
   const denied = isAccessDenied(access.error);
+  const profile = selectAgentProfile({
+    entryPath: 'administration',
+    loadFailed: Boolean(threadId && administrationThread.isError),
+  });
 
   return (
     <Page>
@@ -318,6 +323,7 @@ export function AdministrationScreen() {
               <section
                 className="flex flex-col gap-3"
                 aria-labelledby="administration-conversation"
+                data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
               >
                 <div>
                   <h2
@@ -353,38 +359,40 @@ export function AdministrationScreen() {
                 {conversation.isError ? (
                   <ErrorBanner message="Couldn't send that administration request." />
                 ) : null}
-                <form
-                  className="rounded-ok-lg border border-border bg-card p-3 shadow-ok-card"
-                  onSubmit={submit}
-                >
-                  <textarea
-                    aria-label="Administration message"
-                    value={input}
-                    disabled={conversation.isPending || connection.failed}
-                    onChange={(event) => setInput(event.target.value)}
-                    placeholder="Describe the technical change or inspection you need"
-                    rows={3}
-                    className="w-full resize-y bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed"
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <span className="text-xs text-fg-muted">
-                      {threadId
-                        ? 'Continuing this private Thread'
-                        : 'A private Thread will be created'}
-                    </span>
-                    <Button
-                      type="submit"
-                      isDisabled={
-                        !input.trim() ||
-                        conversation.isPending ||
-                        connection.failed ||
-                        Boolean(threadId && !administrationThread.isSuccess)
-                      }
-                    >
-                      Send to administration
-                    </Button>
-                  </div>
-                </form>
+                {profile.state === 'error' ? null : (
+                  <form
+                    className="rounded-ok-lg border border-border bg-card p-3 shadow-ok-card"
+                    onSubmit={submit}
+                  >
+                    <textarea
+                      aria-label="Administration message"
+                      value={input}
+                      disabled={conversation.isPending || connection.failed}
+                      onChange={(event) => setInput(event.target.value)}
+                      placeholder="Describe the technical change or inspection you need"
+                      rows={3}
+                      className="w-full resize-y bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed"
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="text-xs text-fg-muted">
+                        {threadId
+                          ? 'Continuing this private Thread'
+                          : 'A private Thread will be created'}
+                      </span>
+                      <Button
+                        type="submit"
+                        isDisabled={
+                          !input.trim() ||
+                          conversation.isPending ||
+                          connection.failed ||
+                          Boolean(threadId && !administrationThread.isSuccess)
+                        }
+                      >
+                        Send to administration
+                      </Button>
+                    </div>
+                  </form>
+                )}
               </section>
             </>
           ) : null}

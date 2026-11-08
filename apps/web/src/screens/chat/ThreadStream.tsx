@@ -5,7 +5,6 @@ import { useConnection } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import { Button, EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
 import {
-  groupItemsByTurn,
   isTimelineDetail,
   type ThreadItem,
   useLiveThreadItems,
@@ -19,8 +18,15 @@ import {
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
 import { ThreadReadReceipts } from './ThreadReadReceipts';
-
-const MISSING_TURN_ERROR = 'This turn failed. Review the conversation before trying again.';
+import { selectedRunLabel, timelineCopy } from './timeline/copy';
+import { resolveRender } from './timeline/lens';
+import {
+  captureCopy,
+  coverageCopy,
+  omittedActivityCopy,
+  projectTimeline,
+  runSeparatorCopy,
+} from './timeline/source';
 
 /** Seconds since a running Turn started. Zero when the timestamp cannot be read. */
 function elapsedSeconds(startedAt: string): number {
@@ -39,32 +45,6 @@ function latestRunningStep(
   );
 }
 
-/** Item-log groups plus dashboard activity or historical failures for Turns with no Items. */
-function streamGroupsByTurn(
-  items: ThreadItem[],
-  turns: readonly { id: string; status: string }[] | undefined,
-  latestTurnId: string | undefined,
-  activityTurnIds: ReadonlySet<string>,
-  focusTurnId?: string | null
-): { turnId: string; items: ThreadItem[] }[] {
-  const groups = groupItemsByTurn(items);
-  const orderedTurns = turns ?? [];
-  const turnOrder = new Map(orderedTurns.map((turn, index) => [turn.id, index]));
-  for (const [index, turn] of orderedTurns.entries()) {
-    // Historical errors insert failed Turns only; supplied activity also needs a group without Items.
-    const historicalFailure = turn.status === 'failed' && turn.id !== latestTurnId;
-    if (
-      (!historicalFailure && !activityTurnIds.has(turn.id) && turn.id !== focusTurnId) ||
-      groups.some((group) => group.turnId === turn.id)
-    )
-      continue;
-    const next = groups.findIndex((group) => (turnOrder.get(group.turnId) ?? -1) > index);
-    groups.splice(next < 0 ? groups.length : next, 0, { turnId: turn.id, items: [] });
-  }
-
-  return groups;
-}
-
 export interface ThreadStreamProps {
   workspaceId: string | null;
   threadId: string;
@@ -74,7 +54,8 @@ export interface ThreadStreamProps {
   emptyTitle?: string;
   /** Exact retained Turn selected by a link; lookup never starts or repairs work. */
   focusTurnId?: string | null;
-  /** Opens Details and scrolls to this Turn's steps. */
+  /** Opens the Full rail and scrolls to this run's steps. */
+  lens?: 'work' | 'full';
   onShowSteps?: (turnId: string) => void;
 }
 
@@ -96,6 +77,7 @@ export function ThreadStream({
   emptyTitle,
   focusTurnId,
   onShowSteps,
+  lens = 'work',
 }: ThreadStreamProps) {
   const connection = useConnection();
   const queryClient = useQueryClient();
@@ -193,13 +175,15 @@ export function ThreadStream({
   const activityByTurn = new Map(
     live.isError ? [] : dashboard?.runtimeActivity?.map((activity) => [activity.turnId, activity])
   );
-  const groups = streamGroupsByTurn(
-    items.data ?? [],
-    dashboard?.turns,
+  const timeline = projectTimeline({
+    items: items.data ?? [],
+    turns: dashboard?.turns,
     latestTurnId,
-    new Set(activityByTurn.keys()),
-    selectedTurn ? focusTurnId : null
-  );
+    focusTurnId: selectedTurn ? focusTurnId : null,
+    activityTurnIds: new Set(activityByTurn.keys()),
+  });
+  const groups = timeline.groups;
+  const entryByTurn = new Map(timeline.entries.map((entry) => [entry.turnId, entry]));
   const participantNames = new Map(
     dashboard?.participants?.map((participant) => [
       `${participant.kind}:${participant.id}`,
@@ -215,7 +199,7 @@ export function ThreadStream({
 
   if (groups.length === 0 && !live.isError) {
     if (unavailableTurn)
-      return <p className="text-sm text-fg-muted">Recorded Turn is unavailable in this Thread.</p>;
+      return <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>;
     return (
       <EmptyState
         icon="chat"
@@ -265,7 +249,7 @@ export function ThreadStream({
           </Button>
         ) : null}
         {unavailableTurn ? (
-          <p className="text-sm text-fg-muted">Recorded Turn is unavailable in this Thread.</p>
+          <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>
         ) : null}
         {live.isError ? (
           <ErrorBanner
@@ -278,9 +262,10 @@ export function ThreadStream({
           const isLastGroup =
             groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
           const activity = groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
+          const projected = entryByTurn.get(group.turnId);
           const historicalFailure =
             groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
-              ? (groupTurn.error?.message ?? MISSING_TURN_ERROR)
+              ? (projected?.outcome?.text ?? timelineCopy.runFailed)
               : null;
           const runningStep =
             groupTurn?.status === 'running' ? latestRunningStep(group.items) : undefined;
@@ -302,11 +287,9 @@ export function ThreadStream({
             >
               {selectedTurn?.id === group.turnId &&
               groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
-                <p className="text-sm text-fg-muted">
-                  Recorded Turn {selectedTurn.id} · {selectedTurn.status}
-                </p>
+                <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
               ) : null}
-              {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
+              {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
               {runningStep && groupTurn ? (
                 <div role="status" className="text-sm text-fg">
                   <Button variant="quiet" size="sm" onPress={() => onShowSteps?.(group.turnId)}>
@@ -339,113 +322,119 @@ export function ThreadStream({
                       candidate.type === 'user-input-response' &&
                       candidate.userInputRequestId === item.userInputRequestId
                   ) ? null : (
-                  <ItemView
+                  <div
                     key={item.id}
-                    item={item}
-                    viewerUserId={dashboard?.viewerUserId}
-                    authorName={
-                      'actor' in item
-                        ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
-                        : turnAuthors.get(item.turnId)
-                    }
-                    requestObjective={
-                      item.type === 'user-message'
-                        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)
-                            ?.objective
-                        : undefined
-                    }
-                    readOnly={
-                      controlsReadOnly ||
-                      (item.type === 'user-input-request' &&
-                        (live.isError ||
-                          dashboard?.pendingRequests?.find(
-                            (record) => record.requestId === item.userInputRequestId
-                          )?.state !== 'pending'))
-                    }
-                    resolvedApproval={
-                      item.type === 'approval-request'
-                        ? (items.data ?? []).find(
-                            (
-                              candidate
-                            ): candidate is Extract<
-                              typeof candidate,
-                              { type: 'approval-decision' }
-                            > =>
-                              candidate.type === 'approval-decision' &&
-                              candidate.approvalRequestId === item.approvalRequestId
-                          )
-                        : undefined
-                    }
-                    approvalRequestTitle={
-                      item.type === 'approval-decision'
-                        ? (items.data ?? []).find(
-                            (
-                              candidate
-                            ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
-                              candidate.type === 'approval-request' &&
-                              candidate.approvalRequestId === item.approvalRequestId
-                          )?.title
-                        : undefined
-                    }
-                    approvalEffect={
-                      item.type === 'approval-request'
-                        ? dashboard?.pendingRequests?.find(
-                            (row) => row.requestId === item.approvalRequestId
-                          )?.approvalEffect
-                        : undefined
-                    }
-                    onWithdrawApproval={(pendingRequestId) =>
-                      withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
-                    }
-                    approvalUnavailableReason={approvalUnavailableReason(item)}
-                    approvalPending={
-                      item.type === 'approval-request' &&
-                      ((respond.isPending &&
-                        respond.variables?.approvalRequestId === item.approvalRequestId) ||
-                        (withdraw.isPending &&
-                          withdraw.variables?.pendingRequestId === item.approvalRequestId))
-                    }
-                    approvalError={
-                      item.type === 'approval-request' &&
-                      ((respond.isError &&
-                        respond.variables?.approvalRequestId === item.approvalRequestId) ||
-                        (withdraw.isError &&
-                          withdraw.variables?.pendingRequestId === item.approvalRequestId))
-                    }
-                    onRetryApproval={() => {
-                      if (withdraw.isError && withdraw.variables)
-                        withdraw.mutate(withdraw.variables);
-                      else if (respond.variables) respond.mutate(respond.variables);
-                    }}
-                    onApprovalDecision={(approvalRequestId, turnId, decision) =>
-                      respond.mutate({
-                        approvalRequestId,
-                        turnId,
-                        decision,
-                        requestId: createRequestId(),
-                      })
-                    }
-                    onSubmitAnswers={(userInputRequestId, answers) =>
-                      submitAnswers.mutate({
-                        userInputRequestId,
-                        answers,
-                        requestId: createRequestId(),
-                      })
-                    }
-                    answerPending={
-                      submitAnswers.isPending &&
-                      item.type === 'user-input-request' &&
-                      submitAnswers.variables?.userInputRequestId === item.userInputRequestId
-                    }
-                    answerError={
-                      submitAnswers.isError &&
-                      item.type === 'user-input-request' &&
-                      submitAnswers.variables?.userInputRequestId === item.userInputRequestId
-                    }
-                    onRetryAnswers={() => {
-                      if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
-                    }}
-                  />
+                    className="contents"
+                    data-voice={resolveRender(item.type, lens).voice}
+                    data-disclosure={resolveRender(item.type, lens).disclosure}
+                  >
+                    <ItemView
+                      item={item}
+                      viewerUserId={dashboard?.viewerUserId}
+                      authorName={
+                        'actor' in item
+                          ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
+                          : turnAuthors.get(item.turnId)
+                      }
+                      requestObjective={
+                        item.type === 'user-message'
+                          ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)
+                              ?.objective
+                          : undefined
+                      }
+                      readOnly={
+                        controlsReadOnly ||
+                        (item.type === 'user-input-request' &&
+                          (live.isError ||
+                            dashboard?.pendingRequests?.find(
+                              (record) => record.requestId === item.userInputRequestId
+                            )?.state !== 'pending'))
+                      }
+                      resolvedApproval={
+                        item.type === 'approval-request'
+                          ? (items.data ?? []).find(
+                              (
+                                candidate
+                              ): candidate is Extract<
+                                typeof candidate,
+                                { type: 'approval-decision' }
+                              > =>
+                                candidate.type === 'approval-decision' &&
+                                candidate.approvalRequestId === item.approvalRequestId
+                            )
+                          : undefined
+                      }
+                      approvalRequestTitle={
+                        item.type === 'approval-decision'
+                          ? (items.data ?? []).find(
+                              (
+                                candidate
+                              ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
+                                candidate.type === 'approval-request' &&
+                                candidate.approvalRequestId === item.approvalRequestId
+                            )?.title
+                          : undefined
+                      }
+                      approvalEffect={
+                        item.type === 'approval-request'
+                          ? dashboard?.pendingRequests?.find(
+                              (row) => row.requestId === item.approvalRequestId
+                            )?.approvalEffect
+                          : undefined
+                      }
+                      onWithdrawApproval={(pendingRequestId) =>
+                        withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
+                      }
+                      approvalUnavailableReason={approvalUnavailableReason(item)}
+                      approvalPending={
+                        item.type === 'approval-request' &&
+                        ((respond.isPending &&
+                          respond.variables?.approvalRequestId === item.approvalRequestId) ||
+                          (withdraw.isPending &&
+                            withdraw.variables?.pendingRequestId === item.approvalRequestId))
+                      }
+                      approvalError={
+                        item.type === 'approval-request' &&
+                        ((respond.isError &&
+                          respond.variables?.approvalRequestId === item.approvalRequestId) ||
+                          (withdraw.isError &&
+                            withdraw.variables?.pendingRequestId === item.approvalRequestId))
+                      }
+                      onRetryApproval={() => {
+                        if (withdraw.isError && withdraw.variables)
+                          withdraw.mutate(withdraw.variables);
+                        else if (respond.variables) respond.mutate(respond.variables);
+                      }}
+                      onApprovalDecision={(approvalRequestId, turnId, decision) =>
+                        respond.mutate({
+                          approvalRequestId,
+                          turnId,
+                          decision,
+                          requestId: createRequestId(),
+                        })
+                      }
+                      onSubmitAnswers={(userInputRequestId, answers) =>
+                        submitAnswers.mutate({
+                          userInputRequestId,
+                          answers,
+                          requestId: createRequestId(),
+                        })
+                      }
+                      answerPending={
+                        submitAnswers.isPending &&
+                        item.type === 'user-input-request' &&
+                        submitAnswers.variables?.userInputRequestId === item.userInputRequestId
+                      }
+                      answerError={
+                        submitAnswers.isError &&
+                        item.type === 'user-input-request' &&
+                        submitAnswers.variables?.userInputRequestId === item.userInputRequestId
+                      }
+                      onRetryAnswers={() => {
+                        if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
+                      }}
+                    />
+                  </div>
                 )
               )}
               {activity ? (
@@ -455,23 +444,11 @@ export function ThreadStream({
                   className="rounded-ok border border-border bg-sunken p-4 text-sm"
                 >
                   <h3 className="font-semibold text-fg">Runtime activity</h3>
-                  <p className="mt-1 text-fg-muted">
-                    {activity.coverage === 'collecting'
-                      ? 'Activity collection is ongoing.'
-                      : activity.coverage === 'partial'
-                        ? 'Activity coverage is partial.'
-                        : 'Activity coverage is unavailable.'}
-                  </p>
-                  <p className="mt-1 text-fg-muted">
-                    {activity.contentCapture === 'on'
-                      ? 'Full-content capture was enabled for this Turn.'
-                      : activity.contentCapture === 'off'
-                        ? 'Full-content capture was off for this Turn.'
-                        : 'Full-content capture setting is unknown.'}
-                  </p>
+                  <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
+                  <p className="mt-1 text-fg-muted">{captureCopy(activity.contentCapture)}</p>
                   {activity.omittedEntryCount > 0 ? (
                     <p className="mt-1 text-fg-muted">
-                      {activity.omittedEntryCount} earlier activity entries not shown.
+                      {omittedActivityCopy(activity.omittedEntryCount)}
                     </p>
                   ) : null}
                   {activity.entries.length > 0 ? (
@@ -482,10 +459,10 @@ export function ThreadStream({
                             <span className="font-medium text-fg">
                               {entry.label ??
                                 {
-                                  'child-started': 'Child activity started',
-                                  progress: 'Reported progress',
-                                  result: 'Reported result',
-                                  failure: 'Reported failure',
+                                  'child-started': timelineCopy.childStarted,
+                                  progress: timelineCopy.reportedProgress,
+                                  result: timelineCopy.reportedResult,
+                                  failure: timelineCopy.reportedFailure,
                                 }[entry.kind]}
                             </span>
                             <time dateTime={entry.observedAt} className="text-xs text-fg-muted">
@@ -499,7 +476,7 @@ export function ThreadStream({
                           ) : null}
                           {entry.textTruncated ? (
                             <p className="mt-1 text-xs text-fg-muted">
-                              Text shortened for this timeline.
+                              {timelineCopy.textShortened}
                             </p>
                           ) : null}
                         </li>
