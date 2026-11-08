@@ -1619,6 +1619,50 @@ describe('central Workspace operation authorizer', () => {
     });
   });
 
+  it('keeps a capture-fenced Workspace listed and readable while mutations stay frozen', async () => {
+    const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
+    expect(freeze.status).toBe('frozen');
+    try {
+      const collection = await fixture.app.request('/api/app/operations/workspace.list', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const read = await fixture.app.request(
+        ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
+      );
+      const mutation = await fixture.app.request(
+        ...operationRequest(
+          'automation.create',
+          {},
+          {
+            body: JSON.stringify({
+              intervalSeconds: 60,
+              threadId: fixture.turn.threadId,
+              name: 'Fenced mutation',
+              prompt: 'Do not create this.',
+              workspaceId: fixture.workspace.id,
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
+
+      expect(collection.status).toBe(200);
+      const items = (await collection.json()).items as { workspace: { id: string } }[];
+      expect(items.map(({ workspace }) => workspace.id)).toContain(fixture.workspace.id);
+      expect(read.status).toBe(200);
+      expect(mutation.status).toBe(409);
+      await expect(mutation.json()).resolves.toMatchObject({
+        code: 'workspace_frozen',
+        details: { workspaceId: fixture.workspace.id, retryable: true },
+      });
+    } finally {
+      if (freeze.status === 'frozen') freeze.release();
+    }
+  });
+
   it('projects a frozen retained Gateway route refusal without replacing unauthorized denial', async () => {
     const gateway = () =>
       fixture.app.request('/v1/responses', {

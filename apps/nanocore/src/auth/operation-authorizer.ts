@@ -246,7 +246,8 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
           return asApiError(error.message, error.code, error.status);
         throw error;
       }
-      if (input.workspaceMutationAdmission.isClosed(workspaceId)) {
+      // Capture keeps the Workspace visible and readable. Deletion close still hides it.
+      if (input.workspaceMutationAdmission.isLifecycleClosed(workspaceId)) {
         if (route.access.mutating) return frozenWorkspace(workspaceId);
         return workspaceAccessDenied();
       }
@@ -1330,7 +1331,7 @@ export function authorizedWorkspaceSet(
     : listActiveWorkspaceIdsForActor(coreDb, actor.userId);
   return candidates.filter(
     (workspaceId) =>
-      !admission.isClosed(workspaceId) &&
+      !admission.isLifecycleClosed(workspaceId) &&
       isScopeAdmitted(coreDb.dataRoot, 'workspace', workspaceId) &&
       authorizeWorkspace(coreDb, actor, workspaceId, access) !== null
   );

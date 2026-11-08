@@ -379,11 +379,11 @@ export async function admitOperation(
       }
       // Scope diagnosis follows credential eligibility, before unreadable Thread history can mask it.
       assertScopeAdmitted(coreDb.dataRoot, 'workspace', workspaceId);
-      // A gate closure cannot replace the owning storage diagnosis for an eligible caller.
+      // Deletion close hides reads. A capture fence does not: the caller remains eligible.
       if (
         definition.target.kind !== 'workspace-deletion' &&
         !definition.mutating &&
-        admission.isClosed(workspaceId)
+        admission.isLifecycleClosed(workspaceId)
       )
         throw denied();
       if (definition.scope.kind === 'opaque-child-workspace') {

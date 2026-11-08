@@ -1034,6 +1034,49 @@ function register_p2_nav_behavior_test_tsx_1() {
       expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     });
 
+    it('reopens the Assistant timeline from the phone bar after the cached navigation missed it', async () => {
+      setViewportWidth(360);
+      const user = userEvent.setup();
+      const created = threadRecord('th_019a0000-0000-7000-8000-000000000191', 'Assistant');
+      let createdTimeline = false;
+      const listNavigation = vi.fn(async () => ({
+        items: createdTimeline ? [navigationRow(created.id, 'Assistant', 'chat')] : [],
+      }));
+      const createThread = vi.fn().mockResolvedValue(created);
+      const client = makeClient({ createThread, readThread: created });
+      (
+        client.operations as unknown as {
+          'conversation.navigation': typeof listNavigation;
+        }
+      )['conversation.navigation'] = listNavigation;
+      renderAt('/', client);
+
+      await waitFor(() =>
+        expect(screen.getByLabelText('Location')).toHaveTextContent('/attention')
+      );
+      await user.click(screen.getByRole('button', { name: 'Personal Assistant' }));
+      await waitFor(() =>
+        expect(screen.getByLabelText('Location')).toHaveTextContent(
+          `/chat/${WORKSPACE_ID}/${created.id}`
+        )
+      );
+      createdTimeline = true;
+      const readsBeforeReturn = listNavigation.mock.calls.length;
+
+      await user.click(
+        within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('button', {
+          name: /^Assistant$/,
+        })
+      );
+
+      await waitFor(() => {
+        expect(listNavigation.mock.calls.length).toBeGreaterThan(readsBeforeReturn);
+        expect(screen.getByLabelText('Location')).toHaveTextContent(
+          `/chat/${WORKSPACE_ID}/${created.id}`
+        );
+      });
+    });
+
     it('keeps attention out of the phone row and lists Action Center from More', async () => {
       const user = userEvent.setup();
       setViewportWidth(360);

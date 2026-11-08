@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { EmptyState, ErrorBanner } from '../primitives';
 import {
@@ -40,16 +40,31 @@ export function AssistantHome() {
     Boolean(workspaceId) &&
     !assistant &&
     (pathname === '/' || pathname === '/attention');
+  // Phone chat unmounts this frame, so the navigation cache can still be the pre-create miss.
+  // A miss counts only after a read that started on this visit. Necessity: `/` must open the
+  // timeline that already exists. Ablation: redirecting on the cached miss sends the bar to Action Center.
+  const sawVisitFetch = useRef(false);
+  if (pathname !== '/') sawVisitFetch.current = false;
+  else if (navigation.isFetching) sawVisitFetch.current = true;
 
   useLayoutEffect(() => {
     if (pathname !== '/') return;
     if (pending || navigation.isError || !workspaceId) return;
-    if (!assistant) {
-      navigate('/attention', { replace: true });
+    if (assistant) {
+      navigate(chatThreadPath(workspaceId, assistant.thread.id), { replace: true });
       return;
     }
-    navigate(chatThreadPath(workspaceId, assistant.thread.id), { replace: true });
-  }, [assistant, navigate, navigation.isError, pathname, pending, workspaceId]);
+    if (!sawVisitFetch.current || navigation.isFetching) return;
+    navigate('/attention', { replace: true });
+  }, [
+    assistant,
+    navigate,
+    navigation.isError,
+    navigation.isFetching,
+    pathname,
+    pending,
+    workspaceId,
+  ]);
 
   if (pathname === '/' && navigation.isError) {
     return (

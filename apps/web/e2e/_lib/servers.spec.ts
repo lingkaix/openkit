@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
-import { createCoreClient } from '@openkit/core-client';
+import { ApiCallError, createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
 
@@ -246,6 +246,25 @@ test('keeps polling incomplete or non-positive JSON PID fields', () => {
   }
 });
 
+/**
+ * Startup snapshot maintenance fences the Workspace until mutable state is copied.
+ * `workspace_frozen` is the documented retryable refusal and names no retry time.
+ */
+async function whenCaptureFenceReleases<T>(attempt: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 20_000;
+  let refused: ApiCallError | undefined;
+  while (Date.now() < deadline) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (!(error instanceof ApiCallError) || error.code !== 'workspace_frozen') throw error;
+      refused = error;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+  throw refused ?? new Error('Workspace capture fence did not release.');
+}
+
 /** Reproduces the Material browser handoff after the simulator ends its question-raising Turn. */
 test('preserves Material delivery and delivers a durable simulator answer on the next Task Turn', async ({
   request,
@@ -257,11 +276,16 @@ test('preserves Material delivery and delivers a durable simulator answer on the
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
 
   try {
-    const thread = await client.operations['thread.create']({
-      workspaceId,
-      name: 'Material pending-question reproduction',
-      visibility: 'workspace',
-      requestId: randomUUID(),
+    // Startup maintenance captures this Workspace immediately and refuses the mutation
+    // with retryable workspace_frozen until the capture fence releases.
+    const thread = await whenCaptureFenceReleases(() => {
+      const requestId = randomUUID();
+      return client.operations['thread.create']({
+        workspaceId,
+        name: 'Material pending-question reproduction',
+        visibility: 'workspace',
+        requestId,
+      });
     });
     const { materialId } = await client.operations['material.create']({
       workspaceId,

@@ -265,6 +265,14 @@ export class WorkspaceMutationAdmission {
     return state.captureClosed !== null || (exclusion === 'ordinary' && state.closed);
   }
 
+  /**
+   * True only after `close()`. A capture fence is not this close.
+   * Callers still authorized for the Workspace keep seeing it; mutations use `isClosed`.
+   */
+  public isLifecycleClosed(workspaceId: string): boolean {
+    return this.gates.get(workspaceId)?.closed === true;
+  }
+
   /** Serializes deletion-request admission for one Workspace. */
   public async runDeletionExclusive<T>(
     workspaceId: string,

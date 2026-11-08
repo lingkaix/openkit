@@ -256,7 +256,8 @@ export function createWorkspaceSharingOperationImplementations(
             requireCoreDb(input.coreDb),
             publicOperationActor(context).userId
           ).filter(
-            (invitation) => !input.workspaceMutationAdmission!.isClosed(invitation.workspaceId)
+            (invitation) =>
+              !input.workspaceMutationAdmission!.isLifecycleClosed(invitation.workspaceId)
           ),
         });
       } catch (error) {
