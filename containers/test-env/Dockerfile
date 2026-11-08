@@ -85,7 +85,7 @@ RUN python3 /usr/local/lib/openkit/retrieval-dictionary.py --cache "${LINDERA_BU
 RUN mkdir -p /pnpm/store \
   && git config --global --add safe.directory /workspace
 
-RUN npx --yes playwright@1.61.1 install --with-deps chromium \
+RUN npx --yes playwright@1.65.0 install --with-deps chromium \
   && apt-get purge -y --auto-remove xvfb \
   && npm cache clean --force \
   && rm -rf /var/lib/apt/lists/*
