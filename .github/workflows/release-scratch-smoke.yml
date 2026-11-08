@@ -34,20 +34,20 @@ jobs:
       packages: read
     steps:
       - name: Checkout reviewed control C
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.control_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up pinned Node
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           install_args: node pnpm
           cache: false
 
       - name: Checkout published subject P separately
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
           path: subject
@@ -55,7 +55,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Install locked subject verifier dependencies
         working-directory: subject
@@ -87,7 +87,7 @@ jobs:
 
       - name: Upload selected result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scratch-post-smoke-${{ github.run_attempt }}
           path: ${{ runner.temp }}/cadence-smoke-${{ github.run_id }}-${{ github.run_attempt }}-result/result.json

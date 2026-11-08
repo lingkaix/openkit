@@ -537,39 +537,40 @@ test('release notes are checked before publication and verified against the gene
 // CI speed proof adds shared build; completed worker probes are retired.
 // The shard raw block changes only because its trailing temporary-probe comments are removed.
 // The Rust disk fix re-records only l0-l2-build and l0-l2-shards to add job-level CARGO_INCREMENTAL disablement.
+// The 2026-11 dependency upgrade re-records every job whose bytes carry a bumped action pin; the diff changes only `uses:` SHA pins and their version comments.
 const unchangedJobBaseline = {
-  'container-image-matrix': 'aaf9dbadd90c16a7be23c7198f043c96a0903ed9673f9692d070ff9a6d18a88d',
-  'build-app-candidate': '1097b0a19282c8c3f2d056cb5f58f86002b51c32acd99ac47f26c6d5d1fb4252',
-  'smoke-app-native': '2038f6417de2a540d8f1ae7e2cba81124fae00d9ebf63cd854b570fc8e82dc5a',
-  'publish-app-image': '36827f0a18ad56e92933c012d075eac8a1ab2883197570e9374d0c689e286fe5',
-  'test-image': 'eeae1d9c7553046e9cf830853571cd207733a866eabb4eddcccee0a1eea2f369',
-  'pr-check': 'cd25e65862cb5e88de536194e5b12295c895d4135e447fa64674c29c6db0e876',
-  'nanohost-installer': 'cca844e482336a7509a30d3c21f86a19ab1f516746bcebbffc12a2ffbbe7cf79',
-  'release-preflight': '08f1323789664bc8fbf73981b43f4a6824671abd1b646d1f549dfa3a903f1b46',
-  'web-e2e': 'e3cea381fd7e8d5b8e35ea3dae9de4b1cd861138f3846652daa0a09a2660a1c4',
-  smoke: '3c5008e35fa7e6d3b985442158e07f2943b5d84486e2aec38007791bbcfc629f',
-  'build-nanohost-amd64': '346b895871f280deff3d571843906b4952431d5dcf4870f64a53b7f140169180',
-  'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
-  'package-release-assets': 'f6b374103fdcc18bdac1d6a7e8e1a02cd354b5d2c9bcb0f6b758c9837099c232',
-  'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
-  'publish-container-images': '15b2451112e8984166de200954f02bdb38e175a02014512624473f33a2e00db0',
-  'github-release': 'f8ce0250a5d129eda5de0c8e014221f3fe38ccff26b57fe2a920efd33025b720',
-  'verify-release': '91c626072cb2dbe43b842c8ea833133a8b79ebedc3ac6e793e73f09423e2e592',
+  'container-image-matrix': '8af5c50aac4066ce90e1d0d8b6b1d7326d4ed357de5c2546ff248ae3cd8bae6d',
+  'build-app-candidate': '7f02cafd116d7d9985b2293e8ff5542d4f7c45f75156473d49e22018f2156d78',
+  'smoke-app-native': 'c8227908f12cac49e1a59ab6808c2e7c66411aafc0cc1086182d37dd7d21889e',
+  'publish-app-image': '71341c9400ad0b0182f31bc01f0c6f83c283d6ca66c6c6f8caf74d8e18813bca',
+  'test-image': '840078dfe3583f8b1533beb65927bb8aa12d523d10747257672f56f97dfd6cf8',
+  'pr-check': '223920c6494e62625e544a9191942605ac2e6612a3f860b663029bf530b2126f',
+  'nanohost-installer': '6cfb4c55855e54e82de9b7eda157eb5b4d5869174691920802024408d74d290a',
+  'release-preflight': 'd159359da1aa40b57094045783a0f7a417109137e77aa9fd34937fc1fb02f709',
+  'web-e2e': '8cfbff6a1ee272bbfd5b559150645111f2bad7040955098f6d64397a45c798ca',
+  smoke: '021973c90c7a36a8580f7db7adedfa63ea2c52e67978ce3147e86066c586ecff',
+  'build-nanohost-amd64': 'be793be1dcad9f806c5681c9adf5ef66717b62808cdce3a88d524ea1249ffe76',
+  'build-nanohost-arm64': 'db39388519b25de7ed346480164af182f7fb7029924149e751e69e219d6ae2b6',
+  'package-release-assets': '4252ff03769dc9d0509d259163369201edc7452100129b254a94c4ecb8c3b72a',
+  'qualify-nanohost': '6e33f5dc8473c6992403391f233a3cc216b00e512040fd527c99bad5cde0713a',
+  'publish-container-images': '35bfcc4891aa72782d9813fd72560dd32a3e151cfb884f0c307f9a9c9127c4bd',
+  'github-release': '14537cb9ec09fa84b18d1ac0acaa1dee60e70b0b6cb84da11bdd356a6efd2603',
+  'verify-release': '600ab24c59fc91c2a627fb520c75c5dff946da518e8864a0df9d00e389e983f5',
 };
 
 const candidateJobBaseline = {
-  'candidate-registry': 'f9fcc5d71456fd7aa6fe7ab6d55f5b4a0dc2a863e7b84497afb03912ef36d451',
-  'candidate-plan': 'db39756a270124246cc1baa3586d4102530fa2af0cf4bd0efe276bd6092dc68d',
-  'candidate-images': 'a0740482ba092070384eaadcc824d002b6ab9e593a3bf4d4f028ff8b4da81c7a',
-  'candidate-index': '70619d1d39162da573cf6081651c89affe331cde53eb95b073f86da848f4dd0a',
+  'candidate-registry': '486ee043d30b875950b43a3d13328f6ddffd4172aff7c51874fd159f1aa92bef',
+  'candidate-plan': '02f186edc0aa61e9714858a114b382bc8ce37dd2d7511b5aed18b95348352aaf',
+  'candidate-images': 'ede61de0e2b2a19e0a852afa9b3115a9eaf600ca2fa97a464428d2951d8c3976',
+  'candidate-index': '20400f70eaffe078ce67af1fc9f5ece1301cf9c130748e9dcaa0a18ee918896f',
 };
 
 const shardJobBaseline = {
-  'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
-  'l0-l2-build': '0a29f3aa1e44e2b6889a3d8901fd3cd06d77f7cdeed7d7b221647bd936aba1d9',
-  'l0-l2-shards': '16695cb0db751d6a783377926db3a49503e0ab28e0f9c6e1d2acc074bb325b26',
-  'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
-  'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
+  'l0-l2-plan': '1d4fc67c13b8cce81b9e8601ecf27393779dda994ced0c74219e9954bd11153a',
+  'l0-l2-build': '36a0a2e65087a09a85cb2fcd0e0bfae79a0c98d14ceb37c345dae30fc0c842dd',
+  'l0-l2-shards': '18eeaf9c223336183a3c3cb725ccaa2ad187f601476e54c7b981c1ae1ade7b35',
+  'l0-l2-coverage': 'fd9d261565d206838b1cf490a3102aaab77d5eecc91796f58e116aff3925ced4',
+  'l0-l2': '9252d93fb6699a3de22ee1c0227887ad06c6180a1c436fc425ebff0cfc2a0df2',
 };
 
 test('publication and complete job graphs match their frozen implementation baselines', () => {
@@ -979,10 +980,11 @@ test('Worker publication and final verification retain the reviewed cadence step
         .matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
     ].map((match) => [match[1], match[2]])
   );
+  // Re-recorded with the 2026-11 action pin upgrade; the normalization below is unchanged.
   const old = {
-    'publish-container-images': '488efd0e87eed0eb31978901f7c2d199f3cfc1ac3896edbc55f8da52982dfc4b',
-    'github-release': '164bbfa536d6b14d53b74b960234a5e6038a6f5bfecf5088b14f6e501291ec9a',
-    'verify-release': '670f751bd1aba453021c52f18bba320544d9e09aecda5f1d861807fa71e9f16c',
+    'publish-container-images': 'e19a8450e247ec3af540bb373ccad331ed6f7b573d46c3b4ce0416e3a0ec2c9f',
+    'github-release': 'f1d736f936e62ff06adb0e1b6505795ce638932ee5c4aa539c119ad2897db378',
+    'verify-release': '2bddeddcd49d56e862cce9657605a7f8a68862d8e575fe7f1ee00100482f5396',
   };
   for (const [name, digest] of Object.entries(old)) {
     const normalized = blocks
