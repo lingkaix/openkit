@@ -1,6 +1,14 @@
 import { type CoreClient, createCoreClient } from '@openkit/core-client';
 import { useQuery } from '@tanstack/react-query';
-import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 
 /**
  * Core-client wiring (rebuild-stack data boundary). The Web UI consumes the
@@ -100,6 +108,24 @@ export interface Connection {
   retry: () => void;
 }
 
+function subscribeBrowserOnline(onChange: () => void): () => void {
+  window.addEventListener('online', onChange);
+  window.addEventListener('offline', onChange);
+  return () => {
+    window.removeEventListener('online', onChange);
+    window.removeEventListener('offline', onChange);
+  };
+}
+
+/** Follows the browser's online state, so going offline re-renders without another update. */
+function useBrowserOnline(): boolean {
+  return useSyncExternalStore(
+    subscribeBrowserOnline,
+    () => navigator.onLine,
+    () => true
+  );
+}
+
 /**
  * Global connection state, derived from a lightweight `core.meta()` probe. The
  * whole app is a visible follower over NanoCore, so a disconnected state must be
@@ -109,6 +135,7 @@ export interface Connection {
 export function useConnection(): Connection {
   const client = useCoreClient();
   const stream = useConnectionFailure();
+  const online = useBrowserOnline();
   const query = useQuery({
     queryKey: ['core', 'meta'],
     queryFn: () => client.core.meta(),
@@ -119,7 +146,7 @@ export function useConnection(): Connection {
   return {
     connected: query.isSuccess && !stream.failure,
     checking: query.isLoading,
-    failed: query.isError || Boolean(stream.failure) || navigator.onLine === false,
+    failed: query.isError || Boolean(stream.failure) || !online,
     retry: () => {
       void query.refetch();
       stream.failure?.retry();
