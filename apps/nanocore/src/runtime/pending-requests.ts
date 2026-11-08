@@ -615,6 +615,25 @@ export function listThreadPendingRequests(
     .deferred();
 }
 
+/** Selects only current pending work through the active Thread index, preserving malformed-row omission. */
+export function listOpenThreadPendingRequests(
+  sqlite: Database.Database,
+  workspaceId: string,
+  threadId: string
+): PendingRequestRecord[] {
+  const rows = sqlite
+    .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests
+    WHERE workspace_id=? AND thread_id=? AND state='pending' ORDER BY created_at,request_id`)
+    .all(workspaceId, threadId) as PendingRequestRow[];
+  return rows.flatMap((row) => {
+    try {
+      return [parsePendingRequestRow(row)];
+    } catch {
+      return [];
+    }
+  });
+}
+
 /** Preserves the complete original Thread selection, ordering and inspect-only malformed-row treatment. */
 export function* readThreadPendingRequestPages(
   sqlite: Database.Database,

@@ -20,6 +20,7 @@ import { readTurnInterruptAudit } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
+import { boundedJsonText, previewUtf8 } from './bounded-read-text.js';
 import { admitGenerativePresentationRead } from './generative-ui/commands.js';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
@@ -98,31 +99,6 @@ function bytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value));
 }
 
-/** Returns an exact UTF-8 head or tail without cutting a code point or adding authored text. */
-function preview(encoded: Buffer, side: 'head' | 'tail', maximum: number): string {
-  if (encoded.byteLength <= maximum) return encoded.toString('utf8');
-  let selected =
-    side === 'head' ? encoded.subarray(0, maximum) : encoded.subarray(encoded.length - maximum);
-  for (;;) {
-    try {
-      return new TextDecoder('utf8', { fatal: true }).decode(selected);
-    } catch {
-      selected = side === 'head' ? selected.subarray(0, -1) : selected.subarray(1);
-    }
-  }
-}
-
-/** Bounds recorded header text by its serialized JSON cost, including UTF-8 and escaping. */
-function boundedText(value: string, maximum: number): string {
-  const encoded = Buffer.from(value);
-  let limit = Math.min(maximum, encoded.byteLength);
-  for (;;) {
-    const text = preview(encoded, 'head', limit);
-    if (bytes(text) <= maximum) return text;
-    limit = Math.floor(limit * 0.75);
-  }
-}
-
 /** Selects the body's recorded text field; structured bodies retain their complete JSON through the body owner. */
 function itemText(item: Item): {
   text: string;
@@ -140,7 +116,11 @@ function itemText(item: Item): {
 }
 
 /** Applies a whole-Item JSON allowance as well as the independent 4 KiB preview bound. */
-function projectItem(item: Item, budget: number, owner: ThreadTimelineReadInput): TimelineItem {
+export function projectTimelineItem(
+  item: Item,
+  budget: number,
+  owner: ThreadTimelineReadInput
+): TimelineItem {
   item = ItemSchema.parse(item);
   const base = {
     id: item.id,
@@ -159,7 +139,7 @@ function projectItem(item: Item, budget: number, owner: ThreadTimelineReadInput)
   const encoded = Buffer.from(body.text);
   let size = Math.min(4096, encoded.byteLength);
   for (;;) {
-    const text = preview(encoded, body.side, size);
+    const text = previewUtf8(encoded, body.side, size);
     const result = {
       ...base,
       detail: {
@@ -294,7 +274,7 @@ function itemWindow(
       restricted = true;
       return [];
     }
-    return [projectItem(item, itemBudget, owner)];
+    return [projectTimelineItem(item, itemBudget, owner)];
   });
   const first = positions[0]?.sequence,
     last = positions.at(-1)?.sequence;
@@ -358,8 +338,10 @@ function runEntry(
     agentId: turn.agentId ?? null,
     triggerSource: turn.triggerSource
       ? {
-          kind: boundedText(turn.triggerSource.kind, 80),
-          summary: turn.triggerSource.summary ? boundedText(turn.triggerSource.summary, 512) : null,
+          kind: boundedJsonText(turn.triggerSource.kind, 80),
+          summary: turn.triggerSource.summary
+            ? boundedJsonText(turn.triggerSource.summary, 512)
+            : null,
         }
       : null,
     startedAt: turn.startedAt,
@@ -367,8 +349,8 @@ function runEntry(
     durationMs: turn.durationMs,
     error: turn.error
       ? {
-          code: turn.error.code ? boundedText(turn.error.code, 256) : null,
-          message: boundedText(
+          code: turn.error.code ? boundedJsonText(turn.error.code, 256) : null,
+          message: boundedJsonText(
             turn.error.message,
             Math.max(128, Math.min(4096, Math.floor(budget / 4)))
           ),
@@ -408,7 +390,7 @@ function runEntry(
       restricted = true;
       return;
     }
-    const projected = projectItem(item, Math.min(allowance, remaining), owner);
+    const projected = projectTimelineItem(item, Math.min(allowance, remaining), owner);
     if (bytes(projected) > remaining) return;
     remaining -= bytes(projected) + 1;
     if (isPlan) base.plan = projected;

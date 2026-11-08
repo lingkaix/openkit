@@ -128,6 +128,19 @@ export function parseWorkspaceSyncReviewItem(
   return parsed;
 }
 
+/** Existing staged ownership excludes the same Artifact from the generic Review family; it grants no action. */
+export function hasWorkspaceReviewArtifact(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  workspaceId: string,
+  artifactId: string
+): boolean {
+  return !!workspaceDb.sqlite
+    .prepare(
+      'SELECT 1 FROM staged_workspace_reviews WHERE workspace_id=? AND artifact_id=? LIMIT 1'
+    )
+    .get(workspaceId, artifactId);
+}
+
 /**
  * Lists durable staged workspace reviews for one workspace.
  *

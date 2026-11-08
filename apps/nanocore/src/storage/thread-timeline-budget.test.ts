@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -16,11 +16,14 @@ import {
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { nativeProductScope, readNativeProduct } from './workspace-file-records.js';
 
-it('keeps the 5000-run and 10000-Item timeline fixture within the server and payload budgets', async () => {
+it('keeps timeline and dashboard windows bounded as native history and unrelated Threads grow', async () => {
   const root = mkdtempSync(join(tmpdir(), 'timeline-budget-'));
   try {
     const store = await createDemoStore({ dataRoot: root });
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Budget fixture');
+    const siblings = [];
+    for (let index = 0; index < 20; index++)
+      siblings.push(await store.createThread(DEMO_WORKSPACE_ID, `Sibling ${index}`));
     const actor = { kind: 'user' as const, id: FIXTURE_LOCAL_USER_ID };
     const seed = await store.createTurn(
       DEMO_WORKSPACE_ID,
@@ -126,6 +129,85 @@ it('keeps the 5000-run and 10000-Item timeline fixture within the server and pay
       JSON.stringify({ runs: 5_000, latestRunItems: 10_000, samples, p95 })
     );
     expect(p95).toBeLessThanOrEqual(150);
+    const forbidden = [
+      'listThreadTurns',
+      'listThreadItems',
+      'listThreads',
+      'listArtifacts',
+      'listCommandRequests',
+    ] as const;
+    const spies = forbidden.map((name) =>
+      vi.spyOn(store, name).mockImplementation(() => {
+        throw new Error(`Dashboard called ${name}`);
+      })
+    );
+    const dashboardSamples = async () => {
+      const samples: number[] = [];
+      let bytes = 0;
+      for (let sample = 0; sample < 25; sample++) {
+        const start = performance.now();
+        const response = await app.request('/api/app/operations/thread.dashboard', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(selector),
+        });
+        const text = await response.text();
+        const elapsed = performance.now() - start;
+        expect(response.status).toBe(200);
+        bytes = Buffer.byteLength(text);
+        expect(bytes).toBeLessThanOrEqual(32768);
+        const dashboard = JSON.parse(text);
+        expect(dashboard.turns).toHaveLength(1);
+        expect(dashboard.turns[0]).toMatchObject({ id: turn.id, items: [] });
+        expect(dashboard.now).toMatchObject({ turnId: turn.id, status: 'running' });
+        if (sample >= 5) samples.push(elapsed);
+      }
+      samples.sort((a, b) => a - b);
+      return { samples, p95: samples[Math.ceil(samples.length * 0.95) - 1]!, bytes };
+    };
+    try {
+      const before = await dashboardSamples();
+      await shutdownControlStoreWorkerClient();
+      const growthDb = new Database(scope.path, { fileMustExist: true });
+      try {
+        const insert = growthDb.prepare(
+          'INSERT INTO control_turns(id,thread_id,agent_session_id,status,schema_version,revision,record_json) VALUES(?,?,NULL,?,1,1,?)'
+        );
+        growthDb.transaction(() => {
+          // A metadata-only read-boundary fixture, never qualification of Turn execution or terminal receipts.
+          for (let index = 0; index < 15000; index++) {
+            const id = allocateEntityId('tu');
+            const threadId = index < 5000 ? thread.id : siblings[index % siblings.length]!.id;
+            insert.run(
+              id,
+              threadId,
+              retained.record.status,
+              JSON.stringify({ ...retained.record, id, threadId })
+            );
+          }
+        })();
+      } finally {
+        growthDb.close();
+      }
+      const after = await dashboardSamples();
+      console.info(
+        'TB4 dashboard growth',
+        JSON.stringify({
+          beforeRuns: 5000,
+          afterSelectedRuns: 10000,
+          unrelatedThreads: 20,
+          unrelatedRuns: 10000,
+          currentRunItems: 10000,
+          before,
+          after,
+        })
+      );
+      expect(after.bytes).toBe(before.bytes);
+      expect(after.p95).toBeLessThanOrEqual(150);
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   } finally {
     await disposeTestStore(root);
   }

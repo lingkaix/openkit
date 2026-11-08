@@ -22,8 +22,10 @@ import {
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { type HumanAttentionRow, HumanAttentionRowSchema } from './action-center.js';
 import { ApprovalEffectPreviewSchema } from './pending-request.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
+import { type TimelineItem, TimelineItemSchema } from './thread-timeline.js';
 
 /** Current status for a thread workbench, including the idle no-turn state. */
 export const ActiveTurnStatusSchema = z.union([TurnStatusSchema, z.literal('idle')]);
@@ -241,72 +243,145 @@ export const THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES = 50;
 /** Maximum outward text characters per activity entry; retained bodies remain complete. */
 export const THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS = 1000;
 
+// Named output boundaries keep the operation registry declaration finite without changing either runtime reader.
+const DashboardAttentionRowSchema: z.ZodType<HumanAttentionRow> = HumanAttentionRowSchema;
+const DashboardPlanSchema: z.ZodType<TimelineItem> = TimelineItemSchema;
+
 /** Thread dashboard response payload. */
-export const ThreadDashboardResponseSchema = z.object({
-  viewerUserId: UserIdSchema.nullable(),
-  participants: z.array(
-    z.union(
-      ActorRefSchema.options.map((schema) =>
+export const ThreadDashboardResponseSchema = z
+  .object({
+    /** Bounded current source coverage; absence never proves that unread history is empty. */
+    coverage: z
+      .object({
+        turns: z.literal('current-run'),
+        participants: z.literal('current-run'),
+        artifacts: z.enum(['referenced-window', 'restricted']),
+        taskInputs: z.enum(['available', 'unavailable', 'restricted']),
+        runtimeActivity: z.enum(['available', 'unavailable', 'restricted']),
+      })
+      .optional(),
+    now: z
+      .object({
+        turnId: TurnIdSchema.nullable(),
+        status: ActiveTurnStatusSchema,
+        step: z
+          .object({
+            itemId: ItemIdSchema,
+            kind: z.string(),
+            title: z.string().nullable(),
+            startedAt: TimestampSchema,
+          })
+          .nullable(),
+        lastEventAt: TimestampSchema.nullable(),
+        queuePosition: z.number().int().positive().nullable(),
+        stepsReportedLive: z.boolean().nullable(),
+      })
+      .optional(),
+    latestPlan: DashboardPlanSchema.nullable().optional(),
+    attention: z
+      .object({
+        items: z.array(DashboardAttentionRowSchema).max(8),
+        more: z.boolean(),
+        restricted: z.boolean(),
+      })
+      .optional(),
+    environment: z
+      .object({
+        visibility: z.enum(['available', 'restricted']),
+        observationAvailability: z.enum(['available', 'unavailable', 'restricted']).optional(),
+        observation: z
+          .object({
+            phase: z.string(),
+            outcome: z.string(),
+            placement: z.enum(['local', 'remote', 'unknown']),
+            observedAt: TimestampSchema,
+            ageSeconds: z.number().int().nonnegative(),
+          })
+          .nullable(),
+        model: z
+          .object({
+            id: z.string(),
+            source: z.enum(['turn-admission', 'scheduler-admission', 'package-preference']),
+          })
+          .nullable(),
+      })
+      .optional(),
+    viewerUserId: UserIdSchema.nullable(),
+    participants: z.array(
+      z.union(
+        ActorRefSchema.options.map((schema) =>
+          z
+            .object({
+              kind: schema.shape.kind,
+              id: schema.shape.id,
+              displayName: z.string().min(1),
+            })
+            .strict()
+        )
+      )
+    ),
+    thread: ThreadSchema,
+    turns: z.array(ProductTurnSchema),
+    artifacts: z.array(DashboardArtifactSummarySchema),
+    workStatus: ThreadWorkStatusSchema,
+    composer: z.object({
+      disabled: z.boolean(),
+      defaultAgentId: z.string().min(1).nullable(),
+    }),
+    itemLog: z.object({
+      href: z.string().min(1),
+    }),
+    taskInputs: z.array(ThreadTaskInputSchema),
+    /** Authoritative request state; Items remain historical communication. */
+    pendingRequests: z
+      .array(
+        z.object({
+          requestId: z.string().min(1),
+          approvalEffect: ApprovalEffectPreviewSchema.optional(),
+          canRespond: z.boolean().optional(),
+          state: z.enum([...PendingRequestStateSchema.options, 'inspect-only']),
+          resolution: PendingRequestResolutionSchema.nullable(),
+          ending: PendingRequestEndingSchema.nullable(),
+          disposition: PendingRequestDispositionSchema.nullable(),
+        })
+      )
+      .optional(),
+    /** Lossy outward activity, never retained bodies, execution authority, or proof of completeness. */
+    runtimeActivity: z
+      .array(
         z
-          .object({ kind: schema.shape.kind, id: schema.shape.id, displayName: z.string().min(1) })
+          .object({
+            turnId: TurnIdSchema,
+            contentCapture: z.enum(['off', 'on', 'unknown']),
+            coverage: z.enum(['collecting', 'partial', 'unavailable']),
+            entries: z
+              .array(
+                z
+                  .object({
+                    sequence: z.number().int().nonnegative(),
+                    observedAt: z.iso.datetime(),
+                    kind: z.enum(['child-started', 'progress', 'result', 'failure']),
+                    label: z.string().min(1).max(80).optional(),
+                    text: z.string().max(THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS).optional(),
+                    textTruncated: z.boolean(),
+                  })
+                  .strict()
+              )
+              .max(THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES),
+            omittedEntryCount: z.number().int().nonnegative(),
+          })
           .strict()
       )
-    )
-  ),
-  thread: ThreadSchema,
-  turns: z.array(ProductTurnSchema),
-  artifacts: z.array(DashboardArtifactSummarySchema),
-  workStatus: ThreadWorkStatusSchema,
-  composer: z.object({
-    disabled: z.boolean(),
-    defaultAgentId: z.string().min(1).nullable(),
-  }),
-  itemLog: z.object({
-    href: z.string().min(1),
-  }),
-  taskInputs: z.array(ThreadTaskInputSchema),
-  /** Authoritative request state; Items remain historical communication. */
-  pendingRequests: z
-    .array(
-      z.object({
-        requestId: z.string().min(1),
-        approvalEffect: ApprovalEffectPreviewSchema.optional(),
-        canRespond: z.boolean().optional(),
-        state: z.enum([...PendingRequestStateSchema.options, 'inspect-only']),
-        resolution: PendingRequestResolutionSchema.nullable(),
-        ending: PendingRequestEndingSchema.nullable(),
-        disposition: PendingRequestDispositionSchema.nullable(),
-      })
-    )
-    .optional(),
-  /** Lossy outward activity, never retained bodies, execution authority, or proof of completeness. */
-  runtimeActivity: z
-    .array(
-      z
-        .object({
-          turnId: TurnIdSchema,
-          contentCapture: z.enum(['off', 'on', 'unknown']),
-          coverage: z.enum(['collecting', 'partial', 'unavailable']),
-          entries: z
-            .array(
-              z
-                .object({
-                  sequence: z.number().int().nonnegative(),
-                  observedAt: z.iso.datetime(),
-                  kind: z.enum(['child-started', 'progress', 'result', 'failure']),
-                  label: z.string().min(1).max(80).optional(),
-                  text: z.string().max(THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS).optional(),
-                  textTruncated: z.boolean(),
-                })
-                .strict()
-            )
-            .max(THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES),
-          omittedEntryCount: z.number().int().nonnegative(),
-        })
-        .strict()
-    )
-    .optional(),
-});
+      .optional(),
+  })
+  .refine(
+    (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 32768,
+    'Dashboard exceeds its UTF-8 JSON byte budget.'
+  )
+  .refine(
+    (value) => value.turns.every((turn) => turn.items.length === 0),
+    'Dashboard run headers do not embed Items.'
+  );
 
 /** Agent health refresh response payload. */
 export const AgentHealthRefreshResponseSchema = z.object({

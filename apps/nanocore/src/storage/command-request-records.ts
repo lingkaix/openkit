@@ -424,6 +424,20 @@ export function readCommandRequestRecordsFromSqlite(
     .deferred();
 }
 
+/** Exact request-qualified receipts retain the original decoder, expiry and winner validation. */
+export function readPendingCommandRequestRecords(
+  sqlite: Database.Database,
+  requestId: string
+): CommandRequestRecord[] {
+  return (
+    sqlite
+      .prepare(`${COMMAND_REQUEST_SELECT} WHERE coalesce(
+    json_extract(scope_json,'$.approvalRequestId'),json_extract(scope_json,'$.userInputRequestId'),
+    json_extract(scope_json,'$.pendingRequestId'))=?`)
+      .all(requestId) as CommandRequestRow[]
+  ).map(mapCommandRequestRow);
+}
+
 /** Decodes the complete original scoped receipt census in released native pages, without pruning. */
 export function* readCommandRequestRecordPagesFromSqlite(
   sqlite: Database.Database

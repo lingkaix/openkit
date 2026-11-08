@@ -240,6 +240,23 @@ export function listArtifactReviews(workspaceDb: WorkspaceDb): ArtifactReviewVie
   });
 }
 
+/** Current exact Thread Review candidates use the same stored-row and version owner as Action Center. */
+export function listOpenArtifactReviewsForThreads(
+  workspaceDb: WorkspaceDb,
+  threadIds: readonly string[],
+  limit = 33
+): ArtifactReviewView[] {
+  return (
+    workspaceDb.sqlite
+      .prepare(`${REVIEW_SELECT} WHERE workspace_id=? AND decision IS NULL
+    AND source_thread_id IN (SELECT value FROM json_each(?)) ORDER BY created_at,review_id LIMIT ?`)
+      .all(workspaceDb.workspaceId, JSON.stringify(threadIds), limit) as ArtifactReviewRow[]
+  ).map((row) => {
+    assertStoredReview(workspaceDb, row);
+    return toView(row);
+  });
+}
+
 /** Lists raw portable Review owners in stable identity order. @param workspaceDb Workspace database. @returns Private export rows retaining decision request proof. */
 export function listExportableArtifactReviews(
   workspaceDb: WorkspaceDb

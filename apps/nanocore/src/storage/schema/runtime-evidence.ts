@@ -103,6 +103,13 @@ export const runtimeEvidence = sqliteTable(
   (table) => [
     index('runtime_evidence_workspace_idx').on(table.workspaceId, table.createdAt),
     index('runtime_evidence_thread_idx').on(table.workspaceId, table.threadId, table.turnId),
+    index('runtime_evidence_turn_latest_idx').on(
+      table.workspaceId,
+      table.threadId,
+      table.turnId,
+      table.createdAt,
+      table.runtimeEvidenceId
+    ),
     index('runtime_evidence_agent_session_idx').on(table.workspaceId, table.agentSessionId),
     index('runtime_evidence_phase_idx').on(table.phase, table.outcome),
   ]

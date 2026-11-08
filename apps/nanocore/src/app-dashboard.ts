@@ -1,11 +1,6 @@
 import {
   type ConversationNavigationResponse,
   ConversationNavigationResponseSchema,
-  type DashboardArtifactSummary,
-  operationHttpPath,
-  type ThreadDashboardResponse,
-  ThreadDashboardResponseSchema,
-  type ThreadWorkStatus,
   type WorkspaceDashboardResponse,
   WorkspaceDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -26,22 +21,18 @@ import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
-import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
+import { isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
-import { projectThreadTaskInputs } from './context/worker-context-projection.js';
 import type { FsStore } from './lib/store.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
-import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
-import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
-import { readCommandRequestRecordsFromSqlite } from './storage/command-request-records.js';
 import { type CoreDb, openUserDb, type UserDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { readThreadReadReceipt } from './storage/thread-read-receipts.js';
-import { readThreadRuntimeActivity } from './storage/work-observations.js';
+import { readBoundedThreadDashboard } from './thread-dashboard.js';
 import { receiptMessageItemIds } from './thread-read-state.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
@@ -192,22 +183,6 @@ function pendingQuestionItems(
 }
 
 /**
- * Converts a durable artifact into a compact dashboard summary.
- *
- * @param artifact Artifact to summarize.
- * @returns Dashboard artifact summary.
- */
-function summarizeDashboardArtifact(artifact: Artifact): DashboardArtifactSummary {
-  return {
-    id: artifact.id,
-    title: artifact.title,
-    status: artifact.status,
-    summary: artifact.summary,
-    updatedAt: artifact.updatedAt,
-  };
-}
-
-/**
  * Returns a stable product title for a thread.
  *
  * @param thread Thread to name.
@@ -254,46 +229,6 @@ function terminalAttentionKind(
  */
 function terminalTurnSummary(turn: Turn): string {
   return turn.error?.message ?? `${turn.status} turn needs review.`;
-}
-
-/**
- * Builds a thread-level product work status read model.
- *
- * @param input Thread work status source data.
- * @returns Product work status for the thread workbench.
- */
-function buildThreadWorkStatus(input: {
-  store: FsStore;
-  turns: readonly Turn[];
-  items: readonly Item[];
-  artifacts: readonly Artifact[];
-  selectedAgentId: string | null;
-  approvalDecisionAuthorized: boolean;
-  turnDecisionAuthorized: boolean;
-  responsibleUserId: string | null;
-}): ThreadWorkStatus {
-  const turns = sortTurns(input.turns);
-  const activeTurn = [...turns].reverse().find((turn) => !isSealedTurnTerminal(turn.status));
-  const latestArtifact = selectNewestArtifact(input.artifacts);
-  const pendingApprovals = pendingApprovalItems(
-    input.store,
-    input.items,
-    input.approvalDecisionAuthorized
-  );
-  const pendingQuestions = pendingQuestionItems(
-    input.store,
-    input.items,
-    input.turnDecisionAuthorized,
-    input.responsibleUserId
-  );
-
-  return {
-    selectedAgentId: input.selectedAgentId,
-    activeTurnStatus: activeTurn?.status ?? 'idle',
-    pendingApprovalCount: pendingApprovals.length,
-    pendingQuestionCount: pendingQuestions.length,
-    latestArtifact: latestArtifact ? summarizeDashboardArtifact(latestArtifact) : null,
-  };
 }
 
 /**
@@ -526,189 +461,7 @@ export function readThreadDashboard(input: {
   threadId: string;
   administratorEligible: boolean;
 }) {
-  const {
-    store,
-    coreDb,
-    runtimeConfigManager,
-    repositoryWorkspaceDb,
-    actor,
-    workspaceId,
-    threadId,
-    administratorEligible,
-  } = input;
-  const approvalDecisionAuthorized =
-    coreDb === undefined ||
-    (actor !== undefined &&
-      isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-        mutating: true,
-        policyOperation: 'approval.respond',
-      }));
-  const turnDecisionAuthorized =
-    coreDb === undefined ||
-    (actor !== undefined &&
-      isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-        mutating: true,
-        policyOperation: 'turn.run',
-      }));
-  const thread = store.getThread(workspaceId, threadId);
-  const visibleArtifacts = store
-    .listArtifacts(workspaceId)
-    .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId, administratorEligible));
-  const visibleArtifactIds = new Set(visibleArtifacts.map((artifact) => artifact.id));
-  const turns = store.listThreadTurns(workspaceId, threadId).map((turn) => ({
-    ...turn,
-    items: turn.items.filter(
-      (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
-    ),
-  }));
-  const threadItems = store.listThreadItems(workspaceId, threadId);
-  const participants = new Map<string, ThreadDashboardResponse['participants'][number]>();
-  const authors = [
-    ...threadItems.flatMap((item) => ('actor' in item ? [item.actor] : [])),
-    ...turns.flatMap((turn) =>
-      turn.agentId ? [{ kind: 'agent' as const, id: turn.agentId }] : []
-    ),
-  ];
-  for (const { kind, id } of authors) {
-    const key = `${kind}:${id}`;
-    if (participants.has(key)) continue;
-    const user =
-      kind === 'user'
-        ? (coreDb?.sqlite.prepare('SELECT display_name FROM users WHERE id = ?').get(id) as
-            | { display_name: string }
-            | undefined)
-        : undefined;
-    const agent =
-      kind === 'agent'
-        ? runtimeConfigManager.current().agentManifests.find((entry) => entry.id === id)
-        : undefined;
-    participants.set(key, {
-      kind,
-      id,
-      displayName:
-        user?.display_name.trim() ||
-        agent?.displayName.trim() ||
-        (kind === 'agent' && id === QUICK_CHAT_AGENT_ID
-          ? 'Assistant'
-          : kind === 'agent' && id === 'knowledge-manager'
-            ? 'Knowledge Manager'
-            : id),
-    });
-  }
-  const latestTurn = turns.at(-1) ?? null;
-  const defaultAgentId = resolveDefaultAgentId(
-    runtimeConfigManager.current(),
-    workspaceId,
-    actor.userId
-  );
-  const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
-  const threadArtifacts = listOutputArtifacts(
-    store,
-    coreDb,
-    workspaceId,
-    actor?.userId,
-    administratorEligible
-  ).filter((artifact) => artifact.threadId === threadId && visibleArtifactIds.has(artifact.id));
-  const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
-  let pendingRequests: ThreadDashboardResponse['pendingRequests'] = [];
-  let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
-  let runtimeActivity: ThreadDashboardResponse['runtimeActivity'];
-  if (coreDb) {
-    let workspaceDb: WorkspaceDb | undefined;
-    try {
-      workspaceDb = repositoryWorkspaceDb(workspaceId);
-      const workspaceTurns = store
-        .listThreads(workspaceId)
-        .flatMap((candidate) => store.listThreadTurns(workspaceId, candidate.id));
-      const receipts = readCommandRequestRecordsFromSqlite(workspaceDb.sqlite);
-      pendingRequests = listThreadPendingRequests(workspaceDb.sqlite, workspaceId, threadId).map(
-        (record) => ({
-          requestId: record.requestId,
-          canRespond:
-            actor?.userId === record.responsibleUserId &&
-            isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-              mutating: true,
-              policyOperation: 'approval.respond',
-            }),
-          ...(record.kind === 'approval' && !validateCanonicalLoad(record, workspaceTurns, receipts)
-            ? { approvalEffect: projectApprovalEffect({ record, store, coreDb, actor }) }
-            : {}),
-          state: validateCanonicalLoad(record, workspaceTurns, receipts)
-            ? 'inspect-only'
-            : record.state,
-          resolution: record.resolution,
-          ending: record.ending,
-          disposition: record.disposition,
-        })
-      );
-      const projected = new Set(pendingRequests.map((record) => record.requestId));
-      const unreadable = workspaceDb.sqlite
-        .prepare('SELECT request_id FROM pending_requests WHERE workspace_id = ? AND thread_id = ?')
-        .all(workspaceId, threadId) as Array<{ request_id: string }>;
-      for (const row of unreadable)
-        if (!projected.has(row.request_id))
-          pendingRequests.push({
-            requestId: row.request_id,
-            state: 'inspect-only',
-            resolution: null,
-            ending: null,
-            disposition: null,
-          });
-      try {
-        taskInputs = projectThreadTaskInputs({ coreDb, store, threadId, workspaceDb });
-      } catch {
-        taskInputs = [];
-      }
-      // Current audience and Workspace lineage admit structural activity and canonical Items, never raw capture bodies.
-      runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
-        threadId,
-        turnIds: turns.map((turn) => turn.id),
-      }).map((activity) => ({
-        turnId: activity.turnId,
-        contentCapture: activity.contentCapture,
-        coverage: activity.coverage,
-        entries: activity.entries.map((entry) => ({
-          sequence: entry.sequence,
-          observedAt: entry.observedAt,
-          kind: entry.kind,
-          label: entry.label,
-          text: entry.text,
-          textTruncated: entry.textTruncated,
-        })),
-        omittedEntryCount: activity.omittedEntryCount,
-      }));
-    } finally {
-      workspaceDb?.sqlite.close();
-    }
-  }
-
-  return ThreadDashboardResponseSchema.parse({
-    viewerUserId: actor?.userId ?? null,
-    participants: [...participants.values()],
-    thread,
-    turns,
-    artifacts,
-    workStatus: buildThreadWorkStatus({
-      store,
-      turns,
-      items: threadItems,
-      artifacts: threadArtifacts,
-      selectedAgentId,
-      approvalDecisionAuthorized,
-      turnDecisionAuthorized,
-      responsibleUserId: actor?.userId ?? null,
-    }),
-    composer: {
-      disabled: !turnDecisionAuthorized,
-      defaultAgentId,
-    },
-    itemLog: {
-      href: operationHttpPath('thread.items'),
-    },
-    taskInputs,
-    pendingRequests,
-    runtimeActivity,
-  });
+  return readBoundedThreadDashboard(input);
 }
 
 /** Owner-local navigation read failure; invocation preserves its published message, code and status. */

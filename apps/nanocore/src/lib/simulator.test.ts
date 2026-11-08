@@ -26,6 +26,7 @@ import {
 } from '../config/runtime-config.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from '../context/worker-context-package.js';
+import { projectThreadTaskInputs } from '../context/worker-context-projection.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -2857,9 +2858,19 @@ describe('SimulatedTurnExecutor', () => {
         ...operationRequest('thread.dashboard', { workspaceId, threadId })
       );
       expect(dashboardResponse.status).toBe(200);
-      expect(
-        ThreadDashboardResponseSchema.parse(await dashboardResponse.json()).taskInputs
-      ).toHaveLength(2);
+      const dashboard = ThreadDashboardResponseSchema.parse(await dashboardResponse.json());
+      expect(dashboard.taskInputs).toEqual([]);
+      expect(dashboard.coverage?.taskInputs).toBe('unavailable');
+      const sourceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+      try {
+        // The Context Package owner still verifies both actual worker objectives;
+        // the bounded dashboard does not perform the complete historical census.
+        expect(
+          projectThreadTaskInputs({ coreDb, store, workspaceDb: sourceDb, threadId })
+        ).toHaveLength(2);
+      } finally {
+        sourceDb.sqlite.close();
+      }
       expect(store.listThreadTurns(workspaceId, threadId)).toHaveLength(4);
       expect(
         store.listThreadTurns(workspaceId, threadId).every((turn) => turn.status === 'completed')

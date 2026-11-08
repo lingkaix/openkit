@@ -373,6 +373,37 @@ export function listWorkspaceRuntimeEvidence(
   ).map(runtimeEvidenceFromRow);
 }
 
+/** Allowlisted last observation for one exact run; this conveys no runtime liveness or raw evidence body. */
+export function readLatestThreadRuntimeObservation(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  workspaceId: string,
+  threadId: string,
+  turnId: string,
+  nowMs = Date.now()
+) {
+  const row = workspaceDb.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion,* FROM runtime_evidence
+    WHERE workspace_id=? AND thread_id=? AND turn_id=? ORDER BY created_at DESC,runtime_evidence_id DESC LIMIT 1`)
+    .get(workspaceId, threadId, turnId) as RuntimeEvidenceRow | undefined;
+  if (!row) return null;
+  const evidence = runtimeEvidenceFromRow(row);
+  if (
+    evidence.requiredFeatures.some(
+      (feature) => !['runtime.evidence.v1', 'worker.runtime-provenance.v1'].includes(feature)
+    )
+  )
+    throw new TypeError('Unsupported runtime observation features.');
+  const observedAt =
+    evidence.collectedAt ?? evidence.completedAt ?? evidence.startedAt ?? evidence.createdAt;
+  return {
+    phase: evidence.phase,
+    outcome: evidence.outcome,
+    placement: evidence.placement,
+    observedAt,
+    ageSeconds: Math.max(0, Math.floor((nowMs - Date.parse(observedAt)) / 1000)),
+  };
+}
+
 /**
  * Replays imported workspace runtime evidence rows.
  *

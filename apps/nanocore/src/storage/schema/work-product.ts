@@ -66,11 +66,14 @@ export const controlTurns = sqliteTable(
     agentSessionId: text('agent_session_id').references(() => controlAgentSessions.id),
     /** Immutable native admission order; assigned by the native insertion trigger in the covering transaction. */
     admissionOrder: integer('admission_order').notNull().default(0),
+    /** Derived rank among retained admissions of this Thread; not the immutable global key. */
+    threadReadOrder: integer('thread_read_order').notNull().default(0),
     status: text('status').notNull(),
     ...metadata(),
   },
   (table) => [
     index('control_turns_thread_idx').on(table.threadId, table.id),
+    index('control_turns_thread_read_order_idx').on(table.threadId, table.threadReadOrder),
     uniqueIndex('control_turns_admission_order_idx').on(table.admissionOrder),
     index('control_turns_thread_admission_idx').on(table.threadId, table.admissionOrder),
     check(
@@ -102,9 +105,39 @@ export const controlProductEntries = sqliteTable(
     schemaVersion: integer('schema_version').notNull(),
     contentJson: text('content_json').notNull(),
     identityJson: text('identity_json').notNull(),
+    /** Verified derived seek facts; original immutable content remains authoritative. */
+    readMetadataJson: text('read_metadata_json'),
+    isCurrent: integer('is_current').notNull().default(0),
+    turnAdmissionOrder: integer('turn_admission_order').notNull().default(0),
+    itemOrder: integer('item_order').notNull().default(0),
   },
   (table) => [
     primaryKey({ columns: [table.kind, table.turnId, table.sequence] }),
+    uniqueIndex('control_product_current_idx')
+      .on(table.kind, table.id)
+      .where(sql`${table.isCurrent}=1`),
+    index('control_items_thread_read_idx')
+      .on(
+        sql`json_extract(${table.identityJson},'$.threadId')`,
+        sql`json_extract(${table.identityJson},'$.type')`,
+        table.turnAdmissionOrder,
+        table.itemOrder
+      )
+      .where(sql`${table.kind}='item' AND ${table.isCurrent}=1`),
+    index('control_items_turn_status_idx')
+      .on(
+        table.turnId,
+        sql`json_extract(${table.identityJson},'$.type')`,
+        sql`json_extract(${table.readMetadataJson},'$.status')`,
+        table.itemOrder
+      )
+      .where(sql`${table.kind}='item' AND ${table.isCurrent}=1`),
+    index('control_items_request_idx')
+      .on(sql`json_extract(${table.readMetadataJson},'$.requestId')`)
+      .where(sql`${table.kind}='item' AND ${table.isCurrent}=1`),
+    index('control_items_causation_idx')
+      .on(sql`json_extract(${table.identityJson},'$.causationId')`)
+      .where(sql`${table.kind}='item' AND ${table.isCurrent}=1`),
     index('control_items_thread_actor_idx')
       .on(
         sql`json_extract(${table.identityJson}, '$.threadId')`,

@@ -9,6 +9,7 @@ import { prepareAuditEventStatement } from '../audit-events.js';
 import { BootConfigError } from '../config/mode.js';
 import { configureOwnedSqlite } from './control-store.js';
 import type { PreparedKnowledgeAuthorityTransfer } from './control-store-knowledge.js';
+import { backfillControlReadMetadata } from './control-store-read-metadata.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { applyGoalCutover, removeGoalSandboxPin } from './goal-cutover.js';
 import { applyHostRepositoryCutover } from './host-repository-cutover.js';
@@ -189,6 +190,12 @@ export function applyNativeScopeMigrations(
       if (statement) statementIndex += 1;
       try {
         const result = run(query);
+        if (
+          statement &&
+          ['0022_thread_dashboard', '0024_thread_dashboard'].includes(statement.tag ?? '') &&
+          statements[statementIndex]?.tag !== statement.tag
+        )
+          backfillControlReadMetadata(sqlite);
         if (
           statement?.tag === KNOWLEDGE_AUTHORITY_TAG &&
           statements[statementIndex]?.tag !== KNOWLEDGE_AUTHORITY_TAG

@@ -1,3 +1,11 @@
+import { readActiveThreadTurnSnapshot } from './control-store-product-records.js';
+import {
+  type CurrentThreadItems,
+  readCurrentThreadItemPositions,
+  readLastTurnEventTime,
+  readPendingItemAssociations,
+  readThreadTurnRanks,
+} from './thread-dashboard-records.js';
 import { assertSafeWorkspacePathSegment } from './workspace-path-segment.js';
 
 export { assertSafeWorkspacePathSegment } from './workspace-path-segment.js';
@@ -963,6 +971,8 @@ export function readNativeTurnItemCounts(
 /** Specialized read capabilities bound to one Thread and one SQLite snapshot. */
 export interface ThreadTimelineSnapshot {
   readonly upperOrder: number;
+  activeTurn(): ControlThreadTurnSnapshot | undefined;
+  agentSession(sessionId: string): ControlProductSnapshot | undefined;
   turns(window: ThreadTurnWindow): ControlThreadTurnSnapshot[];
   turn(turnId: string): ControlThreadTurnSnapshot | undefined;
   position(itemId: string): ThreadItemPosition | undefined;
@@ -974,6 +984,13 @@ export interface ThreadTimelineSnapshot {
   itemHead(turnId: string): number;
   counts(turnId: string): Partial<Record<Item['type'], number>>;
   catchUp(userId: string, receipts: readonly string[]): ThreadItemPosition | undefined;
+  currentPositions(input: CurrentThreadItems): ThreadItemPosition[];
+  turnRanks(turnId: string): ReturnType<typeof readThreadTurnRanks>;
+  pendingAssociations(
+    requestId: string,
+    requestItemId: string
+  ): ReturnType<typeof readPendingItemAssociations>;
+  lastEventAt(turnId: string): string | null;
 }
 
 /** Keeps every selected metadata row and immutable descriptor in one existing Workspace read cut. */
@@ -987,6 +1004,16 @@ export function withNativeThreadTimelineSnapshot<T>(
     return reader.sqlite.transaction(() =>
       read({
         upperOrder: readThreadAdmissionHead(reader.sqlite, threadId),
+        activeTurn: () => readActiveThreadTurnSnapshot(reader.sqlite, scope.owner, threadId),
+        agentSession: (sessionId) => {
+          const row = readNativeProduct(scope, 'agent-session', sessionId, reader);
+          return row?.record.threadId === threadId ? row : undefined;
+        },
+        currentPositions: (input) => readCurrentThreadItemPositions(reader.sqlite, threadId, input),
+        turnRanks: (turnId) => readThreadTurnRanks(reader.sqlite, threadId, turnId),
+        pendingAssociations: (requestId, itemId) =>
+          readPendingItemAssociations(reader.sqlite, requestId, itemId),
+        lastEventAt: (turnId) => readLastTurnEventTime(reader.sqlite, turnId),
         turns: (window) => readThreadTurnWindow(reader.sqlite, scope.owner, threadId, window),
         turn: (turnId) => readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId),
         position: (itemId) => readThreadItemPosition(reader.sqlite, threadId, itemId),

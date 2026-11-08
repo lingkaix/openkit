@@ -4,17 +4,23 @@ import {
   type HumanAttentionRow,
   ListHumanAttentionResponseSchema,
   operationHttpPath,
+  type ThreadDashboardResponse,
 } from '@openkit/app-api-schemas';
-import { compareCodeUnits } from '@openkit/protocol';
+import { compareCodeUnits, type Turn, TurnRecordSchema } from '@openkit/protocol';
 import { publishedErrorMessage } from './api-errors.js';
-import { listArtifactReviews } from './artifact-reviews.js';
+import { listArtifactReviews, listOpenArtifactReviewsForThreads } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
+import { boundedJsonText } from './bounded-read-text.js';
 import type { FsStore } from './lib/store.js';
 import { listOpenSchedulerExecutionAttempts } from './runtime/execution-attempt-records.js';
 import { pendingRequestPresentation } from './runtime/pending-request-flow.js';
-import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
+import {
+  listOpenThreadPendingRequests,
+  type PendingRequestRecord,
+  validateCanonicalLoad,
+} from './runtime/pending-requests.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import { materializeInterruptedWorkerStates } from './runtime/worker-recovery.js';
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
@@ -23,12 +29,18 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
   type SchedulerAdmissionEntryRecord,
 } from './scheduler-records.js';
+import { readPendingCommandRequestRecords } from './storage/command-request-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { hasWorkspaceReviewArtifact } from './storage/workspace-review-records.js';
 
 /**
  * Input used to build unified Human Attention rows.
  */
 interface BuildHumanAttentionRowsInput {
+  /** Explicit admitted Thread scope for bounded per-Thread/Goal projections. */
+  threadIds?: readonly string[];
+  reviewLimit?: number;
+  reviewCandidates?: ReturnType<typeof listArtifactReviews>;
   /** Authenticated actor requesting the projection. */
   actor?: Actor | undefined;
   /** Request-scoped workspace store. */
@@ -96,7 +108,7 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
         policyOperation: 'review.apply',
       }));
   const rows = [
-    ...(approvalDecisionAuthorized ? pendingRequestRows(input) : []),
+    ...(approvalDecisionAuthorized ? pendingRequestRows(input).items : []),
     ...runtimeRows(input),
     ...agentReadinessRows(input.store, input.workspaceId),
     ...(reviewDecisionAuthorized ? artifactReviewRows(input) : []),
@@ -104,10 +116,12 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
     ...(reviewDecisionAuthorized ? knowledgeReviewRows(input.store, input.workspaceId) : []),
   ];
 
-  return rows.sort(
-    (left, right) =>
-      compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.id, right.id)
-  );
+  return rows
+    .map(boundedAttentionRow)
+    .sort(
+      (left, right) =>
+        compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.id, right.id)
+    );
 }
 
 /**
@@ -117,11 +131,13 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
  * @returns Threads visible to the authenticated viewer.
  */
 function visibleThreadsForActor(input: BuildHumanAttentionRowsInput) {
-  return input.store
-    .listThreads(input.workspaceId)
-    .filter((thread) =>
-      isThreadVisible(input.store, thread, input.actor?.userId, input.administratorEligible)
-    );
+  return (
+    input.threadIds
+      ? input.threadIds.map((threadId) => input.store.getThread(input.workspaceId, threadId))
+      : input.store.listThreads(input.workspaceId)
+  ).filter((thread) =>
+    isThreadVisible(input.store, thread, input.actor?.userId, input.administratorEligible)
+  );
 }
 
 /**
@@ -135,13 +151,17 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
     return [];
   }
 
-  const workspaceReviewArtifactIds = new Set(
-    listWorkspaceSyncReviews(input.workspaceDb, input.workspaceId).map((item) => item.artifactId)
-  );
-
-  return listArtifactReviews(input.workspaceDb)
+  return (
+    input.reviewCandidates ??
+    (input.threadIds
+      ? listOpenArtifactReviewsForThreads(input.workspaceDb, input.threadIds, input.reviewLimit)
+      : listArtifactReviews(input.workspaceDb))
+  )
     .filter((review) => review.decision === null)
-    .filter((review) => !workspaceReviewArtifactIds.has(review.artifactId))
+    .filter(
+      (review) =>
+        !hasWorkspaceReviewArtifact(input.workspaceDb!, input.workspaceId, review.artifactId)
+    )
     .filter((review): review is typeof review & { sourceThreadId: string; sourceTurnId: string } =>
       Boolean(review.sourceThreadId && review.sourceTurnId)
     )
@@ -161,13 +181,15 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
       } catch {
         artifact = undefined;
       }
-      let sourceTurn: ReturnType<FsStore['getTurn']>;
+      let sourceTurn: Record<string, unknown>;
       try {
-        sourceTurn = input.store.getTurn(
+        const row = input.store.readThreadTimelineSnapshot(
           review.workspaceId,
           review.sourceThreadId,
-          review.sourceTurnId
+          (snapshot) => snapshot.turn(review.sourceTurnId)
         );
+        if (!row) return [];
+        sourceTurn = row.record;
       } catch {
         return [];
       }
@@ -319,25 +341,146 @@ function visibleWorkspaceReviewOrigin(
   return { threadId: artifact.origin.threadId, turnId: artifact.origin.turnId };
 }
 
+/** Shared descriptive display bounds leave source identities and exact decision detail with their owners. */
+function boundedAttentionRow(row: HumanAttentionRow): HumanAttentionRow {
+  return {
+    ...row,
+    title: boundedJsonText(row.title, 512),
+    summary: boundedJsonText(row.summary, 1024),
+    ...(row.recommendedAction
+      ? { recommendedAction: boundedJsonText(row.recommendedAction, 512) }
+      : {}),
+    actions: row.actions.map((action) => ({
+      ...action,
+      label: boundedJsonText(action.label, 128),
+      ...(action.reason ? { reason: boundedJsonText(action.reason, 256) } : {}),
+    })),
+  };
+}
+
+/** Minimal Thread/Goal attention uses the same rows, policy and source admission as Action Center. */
+export function readScopedHumanAttention(
+  input: BuildHumanAttentionRowsInput & { threadIds: readonly string[] }
+) {
+  const decision =
+    !input.coreDb ||
+    (!!input.actor &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'approval.respond',
+      }));
+  const review =
+    !input.coreDb ||
+    (!!input.actor &&
+      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+        mutating: true,
+        policyOperation: 'review.apply',
+      }));
+  const pending = decision ? pendingRequestRows(input) : { items: [], pendingRequests: [] };
+  const reviewCandidates =
+    review && input.workspaceDb
+      ? listOpenArtifactReviewsForThreads(input.workspaceDb, input.threadIds, 33)
+      : [];
+  const items = [
+    ...pending.items,
+    ...(review ? artifactReviewRows({ ...input, reviewCandidates }) : []),
+  ]
+    .map(boundedAttentionRow)
+    .sort(
+      (a, b) =>
+        Number(b.blocking === true) - Number(a.blocking === true) ||
+        compareCodeUnits(a.createdAt, b.createdAt) ||
+        compareCodeUnits(a.id, b.id)
+    );
+  return { items, pendingRequests: pending.pendingRequests, more: reviewCandidates.length >= 33 };
+}
+
+/** Exact indexed associations feed the unchanged canonical validator and blocking rule. */
+function pendingProjectionFacts(input: BuildHumanAttentionRowsInput, record: PendingRequestRecord) {
+  return input.store.readThreadTimelineSnapshot(input.workspaceId, record.threadId, (snapshot) => {
+    const positions = snapshot.pendingAssociations(record.requestId, record.requestItemId);
+    const kinds = new Set([
+      'approval-request',
+      'user-input-request',
+      'approval-decision',
+      'user-input-response',
+    ]);
+    const foreign = positions.some(
+      (row) => kinds.has(row.type) && row.threadId !== record.threadId
+    );
+    const related = positions.filter(
+      (row) => kinds.has(row.type) && row.threadId === record.threadId
+    );
+    const ids = new Set(
+      [
+        record.raisingTurnId,
+        record.deliveryTurnId,
+        record.publicationTurnId,
+        record.invalidationTurnId,
+        ...related.map((row) => row.turnId),
+      ].filter((id): id is string => !!id)
+    );
+    const turns = [...ids].flatMap((id) => {
+      const row = snapshot.turn(id);
+      return row
+        ? [
+            {
+              ...TurnRecordSchema.parse({ ...row.record, items: [] }),
+              items: related
+                .filter((position) => position.turnId === id)
+                .flatMap((position) => {
+                  const item = snapshot.item(position.itemId);
+                  return item ? [item] : [];
+                }),
+            } as Turn,
+          ]
+        : [];
+    });
+    const raising = turns.find((turn) => turn.id === record.raisingTurnId);
+    const latest = snapshot.turns({ upper: snapshot.upperOrder, direction: 'before', limit: 1 })[0];
+    const presentationTurns = raising ? [raising] : [];
+    if (latest && latest.record.id !== raising?.id)
+      presentationTurns.push(TurnRecordSchema.parse({ ...latest.record, items: [] }) as Turn);
+    const rank = snapshot.turnRanks(record.raisingTurnId);
+    return {
+      contradiction: foreign
+        ? { requestId: record.requestId, reason: 'request-item-lineage' }
+        : validateCanonicalLoad(
+            record,
+            turns,
+            readPendingCommandRequestRecords(input.workspaceDb!.sqlite, record.requestId)
+          ),
+      presentation: {
+        ...pendingRequestPresentation(record, presentationTurns),
+        turnsSince: rank ? Math.max(0, rank.latest - rank.position) : 0,
+      },
+    };
+  });
+}
+
 /**
  * Projects every pending request on a visible Thread.
  *
  * @param input Projection dependencies and Workspace scope.
  * @returns Approval and question rows backed by the Workspace pending-request records.
  */
-function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
+function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
+  const pendingRequests: NonNullable<ThreadDashboardResponse['pendingRequests']> = [];
   if (!input.workspaceDb) {
-    return [];
+    return { items: [], pendingRequests };
   }
   const rows: HumanAttentionRow[] = [];
   for (const thread of visibleThreadsForActor(input)) {
-    let records: ReturnType<typeof listThreadPendingRequests>;
+    let records: ReturnType<typeof listOpenThreadPendingRequests>;
     try {
-      records = listThreadPendingRequests(input.workspaceDb.sqlite, input.workspaceId, thread.id);
+      records = listOpenThreadPendingRequests(
+        input.workspaceDb.sqlite,
+        input.workspaceId,
+        thread.id
+      );
     } catch {
       continue;
     }
-    const turns = input.store.listThreadTurns(input.workspaceId, thread.id);
     for (const record of records) {
       if (record.state !== 'pending') continue;
       if (
@@ -346,14 +489,15 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
         !input.administratorEligible
       )
         continue;
-      const contradiction = validateCanonicalLoad(
-        record,
-        input.store
-          .listThreads(input.workspaceId)
-          .flatMap((candidate) => input.store.listThreadTurns(input.workspaceId, candidate.id)),
-        input.store.listCommandRequests()
-      );
-      const presentation = pendingRequestPresentation(record, turns);
+      const { contradiction, presentation } = pendingProjectionFacts(input, record);
+      pendingRequests.push({
+        requestId: record.requestId,
+        state: contradiction ? 'inspect-only' : record.state,
+        resolution: record.resolution,
+        ending: record.ending,
+        disposition: record.disposition,
+        canRespond: !contradiction && input.actor?.userId === record.responsibleUserId,
+      });
       const secret = (record.questions ?? []).some((question) => question.isSecret === true);
       if (record.kind === 'approval') {
         rows.push({
@@ -454,7 +598,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
       });
     }
   }
-  return rows;
+  return { items: rows, pendingRequests };
 }
 
 /**

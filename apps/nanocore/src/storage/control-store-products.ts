@@ -47,6 +47,7 @@ import {
   readProduct,
   tables,
 } from './control-store-product-records.js';
+import { prepareControlReadMetadata } from './control-store-read-metadata.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { userDbPath } from './fs-layout.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
@@ -115,6 +116,7 @@ export interface PreparedControlEntry {
   readonly input: ControlProductEntry;
   readonly id: string;
   readonly identityJson: string;
+  readonly readMetadataJson: string;
   /** Bounded event dependencies checked against the completed native graph, without retaining payloads or file I/O in SQL. */
   readonly referencedItemIds?: readonly string[];
 }
@@ -483,7 +485,7 @@ function appendProductEntry(sqlite: Database.Database, entry: PreparedControlEnt
     throw new ControlProductPreconditionError();
   sqlite
     .prepare(
-      'INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES (?,?,?,?,?,1,?,?)'
+      'INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json,read_metadata_json) VALUES (?,?,?,?,?,1,?,?,?)'
     )
     .run(
       input.kind,
@@ -492,7 +494,8 @@ function appendProductEntry(sqlite: Database.Database, entry: PreparedControlEnt
       entry.id,
       input.expectedRevision + 1,
       JSON.stringify(input.content),
-      entry.identityJson
+      entry.identityJson,
+      entry.readMetadataJson
     );
 }
 
@@ -793,7 +796,12 @@ async function prepareEntries(
         responsibleUserId: 'responsibleUserId' in item ? item.responsibleUserId : null,
         causationId: item.causationId ?? null,
       };
-      const prepared = { input, id: item.id, identityJson: JSON.stringify(identity) };
+      const prepared = {
+        input,
+        id: item.id,
+        identityJson: JSON.stringify(identity),
+        readMetadataJson: prepareControlReadMetadata('item', value),
+      };
       preparedPayloads.set(prepared, item);
       preparedOriginals.set(prepared, value);
       return prepared;
@@ -870,6 +878,7 @@ async function prepareEntries(
       input,
       id: `${input.turnId}:${event.sequence}`,
       identityJson: JSON.stringify({ threadId: event.threadId, turnId: input.turnId }),
+      readMetadataJson: prepareControlReadMetadata('event', value),
       referencedItemIds: [...referencedItemIds],
     };
     preparedPayloads.set(prepared, event);

@@ -389,6 +389,20 @@ export function readThreadTurnWindow(
   }));
 }
 
+/** Current active work is independent of later terminal service admissions. */
+export function readActiveThreadTurnSnapshot(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  threadId: string
+): ControlThreadTurnSnapshot | undefined {
+  const row = sqlite
+    .prepare(
+      "SELECT id FROM control_turns WHERE thread_id=? AND status IN ('pending','running') LIMIT 1"
+    )
+    .get(threadId) as { id: string } | undefined;
+  return row ? readThreadTurnSnapshot(sqlite, owner, threadId, row.id) : undefined;
+}
+
 /** Resolves one exact run's indexed metadata within the requested Thread. */
 export function readThreadTurnSnapshot(
   sqlite: Database.Database,

@@ -3179,7 +3179,9 @@ describe('app api schemas', () => {
       ],
       omittedEntryCount: 2,
     };
-    const schema = appApiSchemas.ThreadDashboardResponseSchema.partial();
+    const schema = z.object({
+      runtimeActivity: appApiSchemas.ThreadDashboardResponseSchema.shape.runtimeActivity,
+    });
     expect(schema.parse({ runtimeActivity: [activity] })).toEqual({ runtimeActivity: [activity] });
     expect(schema.parse({})).not.toHaveProperty('runtimeActivity');
     for (const coverage of ['collecting', 'partial', 'unavailable']) {
@@ -3343,6 +3345,20 @@ describe('app api schemas', () => {
       evidence: { itemIds: [], artifactIds: [] },
     });
 
+    for (const preview of ['界'.repeat(11000), '"'.repeat(20000)]) {
+      expect(
+        appApiSchemas.ThreadDashboardResponseSchema.safeParse({
+          ...dashboard,
+          thread: { ...dashboard.thread, preview },
+        }).success
+      ).toBe(false);
+    }
+    expect(
+      appApiSchemas.ThreadDashboardResponseSchema.safeParse({
+        ...dashboard,
+        turns: [{ ...dashboard.turns[0], items: [chat.item] }],
+      }).success
+    ).toBe(false);
     expect(dashboard.viewerUserId).toBe('usr_00000000-0000-7000-8000-000000000001');
     expect(dashboard.participants[0]?.displayName).toBe('Simon');
     expect(jsonContainsKey(dashboard, 'agentSessionId')).toBe(false);

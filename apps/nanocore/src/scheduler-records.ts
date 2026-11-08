@@ -763,10 +763,7 @@ export function findNextDispatchableSchedulerAdmissionEntry(
 export function findSchedulerAdmissionForTurn(
   coreDb: CoreDb,
   lineage: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
-): Pick<
-  SchedulerAdmissionEntryRecord,
-  'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
-> | null {
+): SchedulerAdmissionEntryRecord | null {
   const row = coreDb.sqlite
     .prepare(
       `${schedulerAdmissionSelectSql()} WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND status IN ('queued', 'admitted')`

@@ -3,6 +3,7 @@ import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
 import {
   check,
+  index,
   integer,
   primaryKey,
   sqliteTable,
@@ -36,6 +37,8 @@ export const artifactReviews = sqliteTable(
     contentDigest: text('content_digest').notNull(),
     /** Source Thread captured when this version became reviewable. */
     sourceThreadId: text('source_thread_id'),
+    /** Derived Goal attention scope; retained link owners still admit selected rows. */
+    readGoalId: text('read_goal_id'),
     /** Source Turn captured when this version became reviewable. */
     sourceTurnId: text('source_turn_id'),
     /** Source Agent captured when this version became reviewable. */
@@ -72,6 +75,12 @@ export const artifactReviews = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.workspaceId, table.artifactId, table.artifactVersion] }),
+    index('artifact_reviews_goal_active_idx')
+      .on(table.workspaceId, table.readGoalId, table.createdAt, table.reviewId)
+      .where(sql`${table.decision} IS NULL`),
+    index('artifact_reviews_thread_pending_idx')
+      .on(table.workspaceId, table.sourceThreadId, table.createdAt, table.reviewId)
+      .where(sql`${table.decision} IS NULL`),
     uniqueIndex('artifact_reviews_identity_idx').on(table.workspaceId, table.reviewId),
     // SQLite projects the shared arev grammar; the Review owner also verifies the complete derivation.
     check(

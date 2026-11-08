@@ -169,6 +169,13 @@
       "when": 1794157800000,
       "tag": "0023_timeline_windows",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1794161400000,
+      "tag": "0024_thread_dashboard",
+      "breakpoints": true
     }
   ]
 }

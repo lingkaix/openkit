@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProductTurnSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import * as evidenceBundles from './evidence-bundles.js';
@@ -168,9 +167,26 @@ describe('thread dashboard app API', () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect.soft(rawRead).not.toHaveBeenCalled();
-      expect.soft(body.runtimeActivity).toHaveLength(4);
+      expect(body.runtimeActivity).toBeUndefined();
+      expect(body.coverage.runtimeActivity).toBe('unavailable');
+      const sourceDb = database.openWorkspaceDb(f.dataRoot, f.workspaceId);
+      let activityRows: ReturnType<typeof workObservations.readThreadRuntimeActivity>;
+      try {
+        activityRows = workObservations.readThreadRuntimeActivity(sourceDb, {
+          threadId: thread.id,
+          turnIds: turns.map((turn) => turn.id),
+        });
+      } finally {
+        sourceDb.sqlite.close();
+      }
+      const historyResponse = await f.app.request(
+        ...operationRequest('thread.timeline', { workspaceId: f.workspaceId, threadId: thread.id })
+      );
+      expect(historyResponse.status).toBe(200);
+      const history = await historyResponse.json();
+      expect.soft(activityRows).toHaveLength(4);
       for (const [index, reply] of [latest, second, undefined, off].entries()) {
-        const activity = body.runtimeActivity.find(
+        const activity = activityRows.find(
           (entry: { turnId: string }) => entry.turnId === turns[index]!.id
         );
         expect.soft(activity).toMatchObject({
@@ -213,7 +229,7 @@ describe('thread dashboard app API', () => {
         }
       }
       expect
-        .soft(JSON.stringify(body.runtimeActivity))
+        .soft(JSON.stringify(activityRows))
         .not.toMatch(
           /Restricted raw canary|Earlier first reply|native-source|native-origin|Later user message/
         );
@@ -221,7 +237,7 @@ describe('thread dashboard app API', () => {
         .soft(
           turns.map(
             (turn) =>
-              body.turns.find((projected: { id: string }) => projected.id === turn.id)?.status
+              history.runs.find((projected: { id: string }) => projected.id === turn.id)?.status
           )
         )
         .toEqual(['completed', 'completed', 'running', 'completed']);
@@ -395,30 +411,17 @@ describe('thread dashboard app API', () => {
       const body = await response.json();
       expect(body.viewerUserId).toBe('usr_00000000-0000-7000-8000-000000000001');
       expect(body.taskInputs).toEqual([]);
-      expect(body.runtimeActivity).toEqual(
-        store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id).map((turn) => ({
-          turnId: turn.id,
-          contentCapture: 'off',
-          coverage: 'unavailable',
-          entries: [],
-          omittedEntryCount: 0,
-        }))
-      );
+      expect(body.runtimeActivity).toBeUndefined();
+      expect(body.coverage).toMatchObject({
+        participants: 'current-run',
+        runtimeActivity: 'unavailable',
+      });
       expect(openedWorkspaceDb).toHaveBeenCalled();
       expect(openedWorkspaceDb.mock.results.at(-1)?.value.sqlite.open).toBe(false);
-      expect(body.participants).toEqual(
-        expect.arrayContaining([
-          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001', displayName: 'Simon' },
-          { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', displayName: 'Alex' },
-          {
-            kind: 'user',
-            id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
-            displayName: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
-          },
-          { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
-        ])
-      );
-      expect(body.participants).toHaveLength(4);
+      expect(body.participants).toEqual([
+        { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c', displayName: 'Alex' },
+        { kind: 'agent', id: 'agent_codex_host', displayName: 'Codex Agent' },
+      ]);
       expect(JSON.stringify(body.participants)).not.toContain('@example.com');
     } finally {
       openedWorkspaceDb.mockRestore();
@@ -495,7 +498,22 @@ describe('thread dashboard app API', () => {
       });
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(body.runtimeActivity).toEqual([
+      expect(body.runtimeActivity).toBeUndefined();
+      expect(body.coverage.runtimeActivity).toBe('unavailable');
+      const sourceDb = database.openWorkspaceDb(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      let activityRows: ReturnType<typeof workObservations.readThreadRuntimeActivity>;
+      try {
+        activityRows = workObservations.readThreadRuntimeActivity(sourceDb, {
+          threadId: thread.id,
+          turnIds: [turn.id],
+        });
+      } finally {
+        sourceDb.sqlite.close();
+      }
+      expect(activityRows).toEqual([
         expect.objectContaining({
           turnId: turn.id,
           contentCapture: 'off',
@@ -505,10 +523,8 @@ describe('thread dashboard app API', () => {
           ],
         }),
       ]);
-      expect(body.runtimeActivity[0].entries[0]).not.toHaveProperty('text');
-      expect(JSON.stringify(body.runtimeActivity)).not.toMatch(
-        /origin_child|origin_parent|source_child/
-      );
+      expect(activityRows[0].entries[0]).not.toHaveProperty('text');
+      expect(JSON.stringify(activityRows)).not.toMatch(/origin_child|origin_parent|source_child/);
       expect(body.turns[0].status).toBe('running');
       const timestamp = '2026-09-22T00:00:01.000Z';
       const approval = store.createApproval({
@@ -562,7 +578,21 @@ describe('thread dashboard app API', () => {
       });
       expect(unavailable.status).toBe(200);
       const unavailableBody = await unavailable.json();
-      expect(unavailableBody.runtimeActivity).toEqual([
+      const failedSourceDb = database.openWorkspaceDb(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      let failedActivity: ReturnType<typeof workObservations.readThreadRuntimeActivity>;
+      try {
+        failedActivity = workObservations.readThreadRuntimeActivity(failedSourceDb, {
+          threadId: thread.id,
+          turnIds: [turn.id],
+        });
+      } finally {
+        failedSourceDb.sqlite.close();
+      }
+      expect(unavailableBody.coverage.runtimeActivity).toBe('unavailable');
+      expect(failedActivity).toEqual([
         expect.objectContaining({
           turnId: turn.id,
           coverage: 'unavailable',
@@ -580,7 +610,7 @@ describe('thread dashboard app API', () => {
     }
   });
 
-  it('projects only safe activity fields after Thread audience checks and bounds the storage read', async () => {
+  it('does not invoke the broad activity owner after Thread audience admission', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-activity-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -666,28 +696,9 @@ describe('thread dashboard app API', () => {
       });
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
-        threadId: thread.id,
-        turnIds: [turn.id],
-      });
-      expect(body.runtimeActivity).toEqual([
-        {
-          turnId: turn.id,
-          contentCapture: 'on',
-          coverage: 'partial',
-          omittedEntryCount: 4,
-          entries: [
-            {
-              sequence: 7,
-              observedAt: entry.observedAt,
-              kind: 'result',
-              label: entry.label,
-              text: entry.text,
-              textTruncated: false,
-            },
-          ],
-        },
-      ]);
+      expect(read).not.toHaveBeenCalled();
+      expect(body.runtimeActivity).toBeUndefined();
+      expect(body.coverage.runtimeActivity).toBe('unavailable');
       expect(body.turns[0].status).toBe('running');
       expect(JSON.stringify(body)).not.toContain('must not be forwarded');
       expect(opened.mock.results.at(-1)?.value.sqlite.open).toBe(false);
@@ -821,7 +832,7 @@ describe('thread dashboard app API', () => {
         defaultAgentId: null,
       },
       itemLog: {
-        href: '/api/app/operations/thread.items',
+        href: '/api/app/operations/thread.timeline',
       },
     });
   });
@@ -1138,8 +1149,6 @@ describe('thread dashboard app API', () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         turns: expect.arrayContaining([
-          expect.objectContaining({ id: approvalTurn.id, status: 'completed' }),
-          expect.objectContaining({ id: questionTurn.id, status: 'completed' }),
           expect.objectContaining({ id: failedTurn.id, status: 'failed' }),
         ]),
         workStatus: {
@@ -1287,41 +1296,28 @@ describe('thread dashboard app API', () => {
 
     expect(res.status).toBe(200);
     const dashboard = await res.json();
-    const latestArtifact = {
-      id: 'ar_00000000-0000-735b-b1c6-b15d19a639c2',
-      title: 'Latest artifact',
-      status: 'draft',
-      summary: 'Current delegated output.',
-      updatedAt: timestamp,
-    };
-    expect(dashboard).toEqual({
-      viewerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      participants: [{ kind: 'agent', id: 'agent_codex_host', displayName: 'agent_codex_host' }],
-      thread: store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id),
-      turns: store
-        .listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)
-        .map((turn) => ProductTurnSchema.parse(turn)),
-      artifacts: [latestArtifact],
+    expect(dashboard).toMatchObject({
+      turns: [{ id: questionTurn.id, status: 'running', items: [] }],
+      artifacts: [],
       workStatus: {
         selectedAgentId: 'agent_codex_host',
         activeTurnStatus: 'running',
-        pendingApprovalCount: 1,
-        pendingQuestionCount: 1,
-        latestArtifact,
+        pendingApprovalCount: 0,
+        pendingQuestionCount: 0,
+        latestArtifact: null,
       },
       composer: { disabled: false, defaultAgentId: null },
-      itemLog: { href: '/api/app/operations/thread.items' },
-      taskInputs: [],
-      pendingRequests: [],
-      // Native admission records capture-off; unknown belongs to imported history without evidence.
-      runtimeActivity: [approvalTurn, questionTurn].map((turn) => ({
-        turnId: turn.id,
-        contentCapture: 'off',
-        coverage: 'unavailable',
-        entries: [],
-        omittedEntryCount: 0,
-      })),
+      coverage: {
+        turns: 'current-run',
+        artifacts: 'referenced-window',
+        taskInputs: 'unavailable',
+        runtimeActivity: 'unavailable',
+      },
+      attention: { items: [], more: false },
     });
+    // A legacy Gate and communication Items alone do not establish current request authority.
+    expect(dashboard.pendingRequests).toEqual([]);
+    expect(dashboard.runtimeActivity).toBeUndefined();
   });
 
   it('does not count ungated or duplicate-question decision items', async () => {
@@ -1430,7 +1426,7 @@ describe('thread dashboard app API', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       workStatus: {
-        pendingApprovalCount: 1,
+        pendingApprovalCount: 0,
         pendingQuestionCount: 0,
       },
     });

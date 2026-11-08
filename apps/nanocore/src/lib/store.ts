@@ -1,4 +1,5 @@
 import type { TaskSteerReceiptMetadata } from '../runtime/task-steer-receipt.js';
+import { prepareControlReadMetadata } from '../storage/control-store-read-metadata.js';
 import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
@@ -1652,7 +1653,12 @@ export class FsStore {
       if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, stage);
       else stage();
       const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId }, stagingRoot);
-      const entries: Array<{ input: ControlProductEntry; id: string; identity: string }> = [];
+      const entries: Array<{
+        input: ControlProductEntry;
+        id: string;
+        identity: string;
+        readMetadata: string;
+      }> = [];
       for (const turn of records.turns) {
         const revisions = new Map<string, number>();
         const items = records.itemRevisions.filter((item) => item.turnId === turn.id);
@@ -1673,6 +1679,7 @@ export class FsStore {
               content,
             },
             id: item.id,
+            readMetadata: prepareControlReadMetadata('item', writeRetainedV1(item)),
             identity: JSON.stringify({
               id: item.id,
               type: item.type,
@@ -1702,6 +1709,7 @@ export class FsStore {
               content,
             },
             id: `${turn.id}:${event.sequence}`,
+            readMetadata: prepareControlReadMetadata('event', writeRetainedV1(event)),
             identity: JSON.stringify({ threadId: turn.threadId, turnId: turn.id }),
           });
         }
@@ -1789,7 +1797,7 @@ export class FsStore {
             const input = entry.input;
             productDb.sqlite
               .prepare(
-                'INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES (?,?,?,?,?,1,?,?)'
+                'INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json,read_metadata_json) VALUES (?,?,?,?,?,1,?,?,?)'
               )
               .run(
                 input.kind,
@@ -1798,7 +1806,8 @@ export class FsStore {
                 entry.id,
                 input.expectedRevision + 1,
                 JSON.stringify(input.content),
-                entry.identity
+                entry.identity,
+                entry.readMetadata
               );
           }
         })();
@@ -5825,6 +5834,47 @@ export class FsStore {
     );
     return read({
       upperOrder: metadata.length,
+      activeTurn: () =>
+        metadata.find((row) => row.record.status === 'pending' || row.record.status === 'running'),
+      agentSession: (sessionId) => {
+        const session = this.agentSessions.get(sessionId);
+        return session?.workspaceId === workspaceId && session.threadId === threadId
+          ? { revision: 1, record: writeRetainedV1(session) }
+          : undefined;
+      },
+      currentPositions: (input) =>
+        positions
+          .filter((row) => {
+            const item = this.items.get(row.itemId)!;
+            return (
+              item.type === input.type &&
+              (!input.turnId || row.turnId === input.turnId) &&
+              (!input.status || item.status === input.status)
+            );
+          })
+          .reverse()
+          .slice(0, input.limit),
+      turnRanks: (turnId) => {
+        const index = metadata.findIndex((row) => row.record.id === turnId);
+        return index < 0 ? undefined : { position: index + 1, latest: metadata.length };
+      },
+      pendingAssociations: (requestId, requestItemId) =>
+        [...this.items.values()]
+          .filter(
+            (item) =>
+              workspaceIdForOwner(item.owner) === workspaceId &&
+              (item.id === requestItemId ||
+                item.causationId === requestItemId ||
+                ('approvalRequestId' in item && item.approvalRequestId === requestId) ||
+                ('userInputRequestId' in item && item.userInputRequestId === requestId))
+          )
+          .map((item) => ({
+            itemId: item.id,
+            turnId: item.turnId,
+            threadId: item.threadId,
+            type: item.type,
+          })),
+      lastEventAt: (turnId) => this.getTurnEvents(turnId).at(-1)?.timestamp ?? null,
       turns: (window) => {
         const selected = metadata.filter(
           (row) =>

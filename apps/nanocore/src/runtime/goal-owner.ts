@@ -268,6 +268,39 @@ export function listGoalsForThread(db: WorkspaceDb, threadId: string): GoalRecor
     }[]
   ).map((row) => readRetainedV1(row, () => StoredGoalV1Schema.parse(JSON.parse(row.payload_json))));
 }
+/** Resolves only active attention-bearing linked Tasks; retained owners prove every selected link. */
+export function readGoalAttentionScope(db: WorkspaceDb, threadId: string) {
+  const goal = listGoalsForThread(db, threadId)[0];
+  if (!goal) return { threadIds: [threadId], more: false };
+  if (goal.workspaceId !== db.workspaceId || goal.threadId !== threadId)
+    throw new TypeError('Goal attention scope lineage mismatch.');
+  const candidates = [
+    ...db.sqlite
+      .prepare(`SELECT thread_id AS threadId FROM pending_requests
+      WHERE workspace_id=? AND read_goal_id=? AND state='pending'
+      ORDER BY created_at,request_id LIMIT 33`)
+      .all(db.workspaceId, goal.goalId),
+    ...db.sqlite
+      .prepare(`SELECT source_thread_id AS threadId FROM artifact_reviews
+      WHERE workspace_id=? AND read_goal_id=? AND decision IS NULL
+      ORDER BY created_at,review_id LIMIT 33`)
+      .all(db.workspaceId, goal.goalId),
+  ] as { threadId: string }[];
+  const admitted = new Set([threadId]);
+  for (const candidate of candidates) {
+    if (candidate.threadId === threadId) continue;
+    const link = readRecord(
+      db,
+      'goal_card_tasks',
+      'thread_id',
+      candidate.threadId,
+      StoredGoalCardTaskV1Schema
+    );
+    if (link?.goalId === goal.goalId && link.threadId === candidate.threadId)
+      admitted.add(link.threadId);
+  }
+  return { threadIds: [...admitted], more: candidates.length >= 33 };
+}
 /** Captures native Goal and Task history for export; an unsupported SQL format never becomes current import input. */
 export function listExportableGoalState(db: WorkspaceDb) {
   const readFamily = <T>(table: string, schema: z.ZodType<T>): T[] =>
