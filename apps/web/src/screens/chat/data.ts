@@ -9,7 +9,12 @@ import {
   type SseEventEnvelope,
   type Thread,
 } from '@openkit/core-client';
-import { ItemSchema, type ReasoningEffort, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  ItemSchema,
+  isSealedTurnTerminal,
+  type ReasoningEffort,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import {
   type QueryClient,
   skipToken,
@@ -617,6 +622,8 @@ export function useThreadDashboard(
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
  * @param poll When true, refresh this observer every 5s in the foreground.
+ *        Chat passes this only for a pending Turn. A running Turn follows its
+ *        event stream, and a terminal Thread refetches from the dashboard signature.
  */
 type ThreadItemsInput = Parameters<CoreClient['operations']['thread.items']>[0];
 
@@ -738,7 +745,10 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
  * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
- * Every mounted Thread stream keeps its dashboard observer polling in the foreground, including observation-only updates; Chat/Task Item observers refresh only while idle.
+ * Every mounted Thread stream keeps its dashboard observer polling in the foreground,
+ * including observation-only updates. Terminal Threads do not poll items; they
+ * refetch items only when the dashboard signature changes. A running Turn keeps
+ * the event stream, and a pending Turn keeps the 5s items poll.
  * Latest dashboard Turn id/status changes invalidate this Thread's conversation-target catalog.
  * Returns the dashboard query for message attribution and authoritative action readiness.
  *
@@ -759,9 +769,18 @@ export function useLiveThreadItems(
   const [attempt, setAttempt] = useState(0);
   const dashboard = useThreadDashboard(workspaceId, threadId, enabled, true);
   const turnId = dashboard.data?.turns.findLast((turn) => turn.status === 'running')?.id;
-  const latestTurnId = dashboard.data?.turns.at(-1)?.id;
-  const latestTurnStatus = dashboard.data?.turns.at(-1)?.status;
+  const latestTurn = dashboard.data?.turns.at(-1);
+  const latestTurnId = latestTurn?.id;
+  const latestTurnStatus = latestTurn?.status;
+  // thread.dashboard has no Item-count field. ProductTurn embeds Items, so the
+  // idle signature uses the newest Turn's id, status, and items.length.
+  const latestItemCount = latestTurn?.items?.length ?? 0;
+  const turnsIdle =
+    dashboard.data?.turns.every((turn) => isSealedTurnTerminal(turn.status)) ?? false;
   const targetScope = useRef<{ workspaceId: string; threadId: string } | null>(null);
+  const idleItemsSignature = useRef<{ scope: string; signature: string; idle: boolean } | null>(
+    null
+  );
   const owner = useMemo(() => ({ threadId, turnId, workspaceId }), [threadId, turnId, workspaceId]);
 
   useEffect(() => () => clear(owner), [clear, owner]);
@@ -781,6 +800,41 @@ export function useLiveThreadItems(
       queryKey: chatKeys.conversationTargets(workspaceId, threadId),
     });
   }, [dashboard.isSuccess, latestTurnId, latestTurnStatus, queryClient, threadId, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !dashboard.isSuccess) return;
+    const scope = `${workspaceId}:${threadId}`;
+    const signature = JSON.stringify([
+      latestTurnId ?? null,
+      latestTurnStatus ?? null,
+      latestItemCount,
+    ]);
+    const previous = idleItemsSignature.current;
+    idleItemsSignature.current = { scope, signature, idle: turnsIdle };
+    // Only a change that stays inside a terminal Thread reads items. Opening a
+    // Turn (this tab's send, or a run that is still going) keeps today's stream.
+    if (
+      !previous ||
+      previous.scope !== scope ||
+      previous.signature === signature ||
+      !previous.idle ||
+      !turnsIdle
+    )
+      return;
+    void queryClient.invalidateQueries({
+      queryKey: chatKeys.items(workspaceId, threadId),
+      exact: true,
+    });
+  }, [
+    dashboard.isSuccess,
+    latestItemCount,
+    latestTurnId,
+    latestTurnStatus,
+    queryClient,
+    threadId,
+    turnsIdle,
+    workspaceId,
+  ]);
 
   useEffect(() => {
     if (!workspaceId || !turnId || !baselineReady) return;

@@ -4779,7 +4779,7 @@ describe('open thread external activity', () => {
     }
   );
 
-  it('refetches an idle open Thread on the foreground item poll', async () => {
+  it('refetches idle items once when the dashboard signature gains a Turn', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     let items = ITEMS;
     const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
@@ -4806,7 +4806,7 @@ describe('open thread external activity', () => {
     });
 
     await waitFor(() => expect(screen.getByText('CATALOG_OK_GROK')).toBeInTheDocument());
-    expect(listThreadItems.mock.calls.length).toBeGreaterThan(itemCallsAfterBaseline);
+    expect(listThreadItems.mock.calls.length).toBe(itemCallsAfterBaseline + 1);
     expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(dashboardCallsAfterBaseline);
   });
 
@@ -4961,11 +4961,11 @@ describe('open thread external activity', () => {
     expect(screen.getAllByText('On it — gathering the details.')).toHaveLength(1);
   });
 
-  it('refetches stale items when the dashboard is already new', async () => {
+  it('does not refetch idle items over five minutes while the dashboard keeps polling', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     let items = ITEMS;
     const listThreadItems = vi.fn(async () => ({ items, nextCursor: null }));
-    const getThreadDashboard = vi.fn(async () => laterDashboard());
+    const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
     renderApp(
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
@@ -4973,16 +4973,17 @@ describe('open thread external activity', () => {
     await waitFor(() => {
       expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
     });
-    expect(screen.queryByText('CATALOG_OK_GROK')).not.toBeInTheDocument();
-    const itemCallsAfterItems = listThreadItems.mock.calls.length;
+    const itemCallsAfterBaseline = listThreadItems.mock.calls.length;
+    const dashboardCallsAfterBaseline = getThreadDashboard.mock.calls.length;
 
     items = [...ITEMS, laterItem];
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
     });
 
-    await waitFor(() => expect(screen.getByText('CATALOG_OK_GROK')).toBeInTheDocument());
-    expect(listThreadItems.mock.calls.length).toBeGreaterThan(itemCallsAfterItems);
+    expect(screen.queryByText('CATALOG_OK_GROK')).not.toBeInTheDocument();
+    expect(listThreadItems.mock.calls.length).toBe(itemCallsAfterBaseline);
+    expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(dashboardCallsAfterBaseline);
   });
 
   it('refreshes verified request summaries while running without polling streamed items', async () => {
@@ -5142,6 +5143,83 @@ describe('open thread external activity', () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     expect(listThreadItems.mock.calls.length).toBe(itemCalls);
+  });
+
+  it('keeps a running Turn on today item refetch: no extra thread.items polls', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const listThreadItems = vi.fn(async () => ({ items: ITEMS, nextCursor: null }));
+    const getThreadDashboard = vi.fn().mockResolvedValue({
+      turns: [ACTIVE_TURN],
+    });
+    async function* hang() {
+      await new Promise(() => undefined);
+    }
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient(
+        { 'thread.items': listThreadItems, subscribeTurnEvents: vi.fn().mockReturnValue(hang()) },
+        { 'thread.dashboard': getThreadDashboard }
+      )
+    );
+    expect(await screen.findByRole('button', { name: 'Stop turn' })).toBeInTheDocument();
+    const itemCalls = listThreadItems.mock.calls.length;
+    const dashboardCalls = getThreadDashboard.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(listThreadItems.mock.calls.length).toBe(itemCalls);
+    expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(dashboardCalls);
+  });
+
+  it('keeps loaded earlier pages when a dashboard signature change refetches items', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const user = userEvent.setup();
+    const earlierItem = ItemSchema.parse({
+      ...laterItem,
+      id: 'it_00000000-0000-7a11-8c2d-111111111111',
+      turnId: idleTurn.id,
+      text: 'EARLIER_PAGE_GROK',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      completedAt: '2026-07-20T00:00:00.000Z',
+    });
+    let newest = ITEMS;
+    const listThreadItems = vi.fn(async (input: { cursor?: string }) =>
+      input.cursor
+        ? { items: [earlierItem], nextCursor: null }
+        : { items: newest, nextCursor: '50' }
+    );
+    const getThreadDashboard = vi.fn(async () => ({ turns: [idleTurn] }));
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
+    );
+    await user.click(await screen.findByRole('button', { name: 'Load earlier' }));
+    expect(await screen.findByText('EARLIER_PAGE_GROK')).toBeInTheDocument();
+    expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    const scroller = screen.getByText('EARLIER_PAGE_GROK').closest('.overflow-y-auto');
+    expect(scroller).toBeInstanceOf(HTMLElement);
+    if (!(scroller instanceof HTMLElement)) throw new Error('missing scroller');
+    scroller.scrollTop = 48;
+    const unpaged = () =>
+      listThreadItems.mock.calls.filter((call) => {
+        const input = call[0] as { cursor?: string };
+        return input.cursor === undefined;
+      }).length;
+    const unpagedAfterEarlier = unpaged();
+
+    newest = [...ITEMS, laterItem];
+    getThreadDashboard.mockResolvedValue(laterDashboard());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(await screen.findByText('CATALOG_OK_GROK')).toBeInTheDocument();
+    expect(screen.getByText('EARLIER_PAGE_GROK')).toBeInTheDocument();
+    expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    expect(screen.queryByRole('status', { busy: true })).not.toBeInTheDocument();
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(scroller.scrollTop).toBe(48);
+    expect(unpaged()).toBe(unpagedAfterEarlier + 1);
   });
 
   it('does not fetch unrelated Thread items when switching workspace', async () => {

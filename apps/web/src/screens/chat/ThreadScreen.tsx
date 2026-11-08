@@ -164,7 +164,10 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const dashboard = useThreadDashboard(workspaceId, threadId, true, true);
   // Product projection that differs from recovery rewritable: composer liveness follows running only, not pending.
   const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
-  const items = useThreadItems(workspaceId, threadId, !activeTurn);
+  // Pending is the open Turn that is not running ("waiting"). It keeps today's 5s
+  // items poll. A running Turn stays on the event stream. Terminal Turns do not poll.
+  const waitingTurn = dashboard.data?.turns.some((turn) => turn.status === 'pending');
+  const items = useThreadItems(workspaceId, threadId, Boolean(waitingTurn) && !activeTurn);
   const targets = useConversationTargets(workspaceId, threadId);
   const client = useCoreClient();
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
