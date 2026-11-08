@@ -122,10 +122,10 @@ export const memberManagementKeys = {
  */
 const RETRYABLE_WORKSPACE_FREEZE_MS = 20_000;
 
-/** Yields once so a still-closed capture fence can release before the same decision is sent again. */
-function waitForCaptureFence(): Promise<void> {
+/** Waits before the same decision is sent again: 250 ms, doubling to 2 s, so a held fence is not polled in a tight loop. */
+function waitForCaptureFence(attempt: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, 0);
+    setTimeout(resolve, Math.min(250 * 2 ** attempt, 2_000));
   });
 }
 
@@ -454,7 +454,7 @@ export function useMyWorkspaceInvitations() {
     retry: false,
     mutationFn: async (variables) => {
       const started = Date.now();
-      for (;;) {
+      for (let attempt = 0; ; attempt += 1) {
         try {
           const input = { expectedRevision: variables.expectedRevision };
           return variables.operation === 'accept'
@@ -469,7 +469,7 @@ export function useMyWorkspaceInvitations() {
         } catch (error) {
           const refusal = parseWorkspaceFreezeRefusal(error);
           if (refusal?.retryable && Date.now() - started < RETRYABLE_WORKSPACE_FREEZE_MS) {
-            await waitForCaptureFence();
+            await waitForCaptureFence(attempt);
             continue;
           }
           throw safeSharingFailure(error);
