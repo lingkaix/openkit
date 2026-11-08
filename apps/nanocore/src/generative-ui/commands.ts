@@ -65,6 +65,28 @@ export interface GenerativeUiCommandContext extends KernelCommandContext {
   readonly administratorEligible?: boolean;
 }
 
+/** Read-only source admission facts shared by presentation reads and referenced timeline Items. */
+type GenerativeUiReadContext = Pick<
+  GenerativeUiCommandContext,
+  'store' | 'workspaceDb' | 'workspaceId' | 'actor' | 'administratorEligible' | 'dataRoot'
+>;
+
+/** Reuses the presentation owner's exact destination and source audience checks without projecting its body. */
+export function admitGenerativePresentationRead(
+  context: GenerativeUiReadContext,
+  presentationId: string
+): void {
+  const row = requirePresentationRow(context.workspaceDb, context.workspaceId, presentationId);
+  assertThreadReadable(
+    context.store,
+    context.actor,
+    context.workspaceId,
+    row.thread_id,
+    context.administratorEligible
+  );
+  assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
+}
+
 /** SQLite row for one retained presentation. */
 interface PresentationRow {
   schema_version: number;
@@ -620,10 +642,7 @@ function assertWriteForm(
   }
 }
 
-function readItemSource(
-  context: GenerativeUiCommandContext,
-  source: GenerativeUiItemSource
-): string {
+function readItemSource(context: GenerativeUiReadContext, source: GenerativeUiItemSource): string {
   const item = requireVisibleItemSource(
     context,
     source,
@@ -916,29 +935,23 @@ function parsePresentationSource(row: PresentationRow): GenerativePresentation['
  * @returns Visible source Item.
  */
 function requireVisibleItemSource(
-  context: GenerativeUiCommandContext,
+  context: GenerativeUiReadContext,
   source: GenerativeUiItemSource,
   hidden: KernelCommandError
 ): Item {
-  const item = context.store
-    .listAllItems()
-    .find(
-      (candidate) =>
-        candidate.id === source.itemId &&
-        workspaceIdForOwner(candidate.owner) === context.workspaceId
-    );
+  const lineage = context.store.getItemLineage(context.workspaceId, source.itemId);
   if (
-    !item ||
+    !lineage ||
     !isThreadIdVisible(
       context.store,
-      workspaceIdForOwner(item.owner),
-      item.threadId,
+      context.workspaceId,
+      lineage.threadId,
       responsibleUserIdForActor(context.actor) ?? undefined,
       context.administratorEligible
     )
-  ) {
+  )
     throw hidden;
-  }
+  const item = context.store.getThreadItem(context.workspaceId, lineage.threadId, source.itemId);
   return item;
 }
 
@@ -952,7 +965,7 @@ function requireVisibleItemSource(
  * @param destThreadId Destination Thread that would receive the presentation.
  */
 function assertItemSourcePublishable(
-  context: GenerativeUiCommandContext,
+  context: GenerativeUiReadContext,
   source: PublishGenerativePresentationRequest['source'],
   destThreadId: string
 ): void {
@@ -979,7 +992,7 @@ function assertItemSourcePublishable(
 
 /** Rechecks source authority and destination audience before returning retained presentation bytes. */
 function assertSourceReadable(
-  context: GenerativeUiCommandContext,
+  context: GenerativeUiReadContext,
   source: GenerativePresentation['source'],
   destinationThreadId: string
 ): void {

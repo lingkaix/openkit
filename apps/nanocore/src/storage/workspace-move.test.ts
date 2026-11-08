@@ -183,7 +183,7 @@ async function fixture() {
     priorMoves: [],
     release: { version: release.releaseTag, buildId: release.sourceCommit },
     requiredFeatures: [],
-    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 21 } }],
+    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 22 } }],
     capture: { startedAt: now, completedAt: now, consistency: 'quiescent' },
     inventory,
     inventoryDigest: sha(JSON.stringify(inventory)),
@@ -222,7 +222,7 @@ async function fixture() {
       stagingParent: join(root, 'staging'),
       admission: new FileStorageAdmission(root, () => 0n),
       expectedRelease: manifest.release,
-      supportedDatabaseFormats: { 'drizzle.workspace': 21 },
+      supportedDatabaseFormats: { 'drizzle.workspace': 22 },
     },
     async (verified) => {
       expect(verified.manifest).toEqual(manifest);

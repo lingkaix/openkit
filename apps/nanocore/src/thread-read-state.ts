@@ -1,7 +1,9 @@
+import { existsSync } from 'node:fs';
 import type { Item } from '@openkit/protocol';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
-import { type CoreDb, openUserDb } from './storage/db.js';
+import { type CoreDb, openUserDb, openUserReadDb } from './storage/db.js';
+import { userDbPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './storage/thread-read-receipts.js';
 
@@ -83,6 +85,17 @@ export async function markThreadRead(
         owner.recheckAdmission
       )
     );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Reads only the authenticated User's retained membership; eligibility is resolved by the timeline's source snapshot. */
+export function readThreadReceiptMembership(owner: Omit<ThreadReadOwner, 'store'>): string[] {
+  if (!existsSync(userDbPath(owner.coreDb.dataRoot, owner.userId))) return [];
+  const db = openUserReadDb(owner.coreDb.dataRoot, owner.userId);
+  try {
+    return readThreadReadReceipt(db, owner.workspaceId, owner.threadId);
   } finally {
     db.sqlite.close();
   }

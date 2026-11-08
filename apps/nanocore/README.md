@@ -1,5 +1,7 @@
 # nanocore
 
+`thread.timeline` selects admission-key run windows and original Item positions in one Workspace read snapshot, then verifies the selected immutable current revisions. It does not load complete Turn histories or sibling Threads. Reference audiences and Audit permission remain separate source checks. Catch-up joins the authenticated User's actual receipt membership with their newest recorded action without marking anything read. Complete small Items use the protocol reader; larger bodies return bounded exact UTF-8 heads or tails with their original lineage. The storage guide documents the covering indexes and the retained command-receipt metadata used by this read.
+
 Capture admission returns `Retry-After: 1` only for an authorized mutation refused before effects by a live capture owner. A digest binds replay to the same authenticated principal and session; it grants no authority, and every attempt repeats current authorization. Recovery and lifecycle closures and later domain failures retain their ordinary refusals. Core-client owns the bounded 20-second JSON replay and caller cancellation policy; capture itself never waits for mutations.
 
 Thread Turn lists use native Thread-scoped indexes and immutable first-admission order, including before a run starts. Exact Thread Item lookup verifies the selected immutable body, and per-Turn kind counts read first-revision identities without body reads. The [storage guide](src/storage/README.md) describes the additive admission-key migration and unchanged ownership boundary.

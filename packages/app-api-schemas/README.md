@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+`thread.timeline` owns the bounded two-level timeline read. `THREAD_TIMELINE_PLACEMENT` is the exhaustive narrative/step mirror; renderer and voice policies stay in Web. Run entries carry bounded narrative, the current latest plan, note identities and counted original Item kinds. Each complete response stays within 256 KiB of UTF-8 JSON, and previews stay within 4 KiB of body bytes. An Item anchor includes its run window and a separate `itemWindow` with both cursors. Run and Item cursors retain their original append boundaries and grant no authority. Statistics with `coverage: partial` omit source-derived kinds that were not independently joined; restricted references expose no labels, identifiers or counts. Completed steer receipts project delivery evidence, with missing evidence shown as unknown rather than queued.
+
 `LIGHT_APP_CAPABILITIES` in `src/light-apps.ts` owns the existing fixed Kernel admission values and descriptive operation vocabulary. Schema and native admission reuse those values; app-get capability projections require the complete vocabulary. This descriptive response grants no operation or authority.
 
 Provider-subscription create accepts a supplied slot string so the existing account owner returns its stable slot-syntax error. Non-string slots and unknown request fields retain common strict-input refusal; response slot syntax is unchanged.

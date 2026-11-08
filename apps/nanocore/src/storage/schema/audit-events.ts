@@ -79,6 +79,12 @@ export const auditEvents = sqliteTable(
     occurredAt: text('occurred_at').notNull(),
   },
   (table) => [
+    index('audit_events_turn_action_idx').on(
+      table.turnId,
+      table.action,
+      table.createdAt,
+      table.auditEventId
+    ),
     index('audit_events_workspace_idx').on(table.workspaceId, table.category, table.createdAt),
     index('audit_events_capability_call_idx').on(table.capabilityCallId),
     index('audit_events_permission_decision_idx').on(table.permissionDecisionId),

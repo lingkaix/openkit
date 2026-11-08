@@ -344,6 +344,22 @@ export function listSqliteAuditEvents(
     .map(auditEventFromRow);
 }
 
+/** Reads only an exact Turn's recorded successful Stop; callers require current audit.read first. */
+export function readTurnInterruptAudit(
+  sqlite: CoreDb['sqlite'],
+  workspaceId: string,
+  threadId: string,
+  turnId: string
+): AuditEvent | null {
+  const row = sqlite
+    .prepare(`SELECT * FROM audit_events WHERE workspace_id=? AND thread_id=? AND turn_id=?
+    AND action='turn.interrupt' AND outcome='succeeded' AND resource=? ORDER BY created_at DESC,audit_event_id DESC LIMIT 1`)
+    .get(workspaceId, threadId, turnId, `turn:${turnId}`) as
+    | Parameters<typeof auditEventFromRow>[0]
+    | undefined;
+  return row ? auditEventFromRow(row) : null;
+}
+
 /**
  * Lists server audit events as protocol records.
  *

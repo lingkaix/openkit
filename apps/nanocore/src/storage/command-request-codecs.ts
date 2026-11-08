@@ -26,6 +26,10 @@ import type {
   CommandRequestScope,
   ConversationCommandReceiptMetadata,
 } from '../lib/store.js';
+import {
+  readTaskSteerReceiptMetadata,
+  TaskSteerReceiptMetadataSchema,
+} from '../runtime/task-steer-receipt.js';
 import type { ControlSqlStatement } from './control-store-worker-protocol.js';
 
 /** Exact physical owner selected by one command request scope. */
@@ -35,7 +39,7 @@ export type CommandRequestOwner =
   | { readonly scope: 'workspace'; readonly workspaceId: string }
   | { readonly scope: 'app'; readonly workspaceId: string; readonly appId: string };
 
-/** Fixed v1 payload for the sole extra metadata allowed on a retained command receipt. */
+/** Fixed v1 conversation metadata within the closed command-specific receipt families. */
 const StoredConversationMetadataV1Schema = z
   .object({
     targetRef: z.string().min(1),
@@ -158,16 +162,32 @@ export function commandRequestOwner(scope: CommandRequestScope): CommandRequestO
   );
 }
 
-/** Validates one kind-named response pointer and its sole bounded optional metadata. */
+/** Validates one kind-named response pointer and its closed command-specific metadata. */
 export function normalizeCommandRequestResponse(
   command: CommandRequestName,
   response: CommandRequestResponse
 ): CommandRequestResponse {
-  if (Object.keys(response).some((key) => !['kind', 'id', 'conversationMetadata'].includes(key)))
+  if (
+    Object.keys(response).some(
+      (key) => !['kind', 'id', 'conversationMetadata', 'steerMetadata'].includes(key)
+    )
+  )
     throw new Error('Command receipt response contains unsupported fields.');
   if (!Object.hasOwn(COMMAND_RESPONSE_ID_SCHEMAS, response.kind))
     throw new Error('Command receipt response kind is unsupported.');
   COMMAND_RESPONSE_ID_SCHEMAS[response.kind]?.parse(response.id);
+  if (response.steerMetadata !== undefined) {
+    if (
+      command !== 'task.steer' ||
+      response.conversationMetadata !== undefined ||
+      response.kind !== 'turn'
+    )
+      throw new Error('Only task.steer may retain its completed delivery metadata.');
+    const metadata = TaskSteerReceiptMetadataSchema.parse(response.steerMetadata);
+    if (metadata.turnId !== response.id)
+      throw new Error('Task steer receipt target differs from its pointer.');
+    return { kind: response.kind, id: response.id, steerMetadata: metadata };
+  }
   if (response.conversationMetadata === undefined) return { kind: response.kind, id: response.id };
   if (command !== 'conversation.submit')
     throw new Error('Only conversation.submit may store extra command receipt metadata.');
@@ -181,6 +201,13 @@ export function readConversationMetadata(json: string): ConversationCommandRecei
   const result = StoredConversationMetadataV1ReaderSchema.safeParse(JSON.parse(json));
   if (!result.success) throw new Error('conversation.submit command receipt metadata is invalid.');
   return result.data;
+}
+
+/** Selects the closed metadata family from its retained command identity before pointer normalization. */
+export function readCommandResponseMetadata(command: CommandRequestName, json: string) {
+  return command === 'task.steer'
+    ? { steerMetadata: readTaskSteerReceiptMetadata(json) }
+    : { conversationMetadata: readConversationMetadata(json) };
 }
 
 /** One serialization owner for current scoped writes and native command composition. */
@@ -197,9 +224,9 @@ export function commandRequestValues(record: CommandRequestRecord) {
     response_kind: response.kind,
     response_id: response.id,
     response_json:
-      response.conversationMetadata === undefined
+      response.conversationMetadata === undefined && response.steerMetadata === undefined
         ? null
-        : JSON.stringify(response.conversationMetadata),
+        : JSON.stringify(response.conversationMetadata ?? response.steerMetadata),
     created_at: record.createdAt,
     expires_at: record.expiresAt,
   };

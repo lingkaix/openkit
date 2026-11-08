@@ -24,7 +24,7 @@ import {
   normalizeCommandRequestResponse,
   parseStoredCommandScope,
   prepareControlCommandRequestStatement,
-  readConversationMetadata,
+  readCommandResponseMetadata,
 } from './command-request-codecs.js';
 import {
   CONTROL_NATIVE_EVALUATION_RECEIPT_SQL,
@@ -245,9 +245,9 @@ function writeCommandRequestRecordInDb(db: CommandRequestDb, record: CommandRequ
     .get(record.key) as CommandRequestRow | undefined;
   if (previous && db.scope !== 'app') readRetainedV1(previous, () => undefined);
   let responseJson =
-    response.conversationMetadata === undefined
+    response.conversationMetadata === undefined && response.steerMetadata === undefined
       ? null
-      : JSON.stringify(response.conversationMetadata);
+      : JSON.stringify(response.conversationMetadata ?? response.steerMetadata);
   if (
     previous?.responseJson &&
     previous.command === record.command &&
@@ -751,7 +751,7 @@ function decodeCommandRequestPayloadV1(row: CommandRequestRow): CommandRequestRe
       id: row.responseId,
       ...(row.responseJson === null
         ? {}
-        : { conversationMetadata: readConversationMetadata(row.responseJson) }),
+        : readCommandResponseMetadata(row.command, row.responseJson)),
     }),
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,

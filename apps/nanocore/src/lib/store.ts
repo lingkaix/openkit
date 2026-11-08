@@ -1,3 +1,4 @@
+import type { TaskSteerReceiptMetadata } from '../runtime/task-steer-receipt.js';
 import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
@@ -274,6 +275,7 @@ import {
   publishCanonicalPath,
   publishTurnFileInputs,
   readCanonicalTextFile,
+  readNativeItemLineage,
   readNativeProduct,
   readNativeProductEntries,
   readNativeProductPages,
@@ -290,11 +292,13 @@ import {
   readWorkspaceTurnEvents,
   refuseWorkspaceIdentityConflicts,
   serializeKnowledgeProposalRecord,
+  type ThreadTimelineSnapshot,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   TurnReaderSchema,
   verifyTurnFileInputs,
   type WorkspaceFileRecords,
   WorkspaceSystemRecordSchema,
+  withNativeThreadTimelineSnapshot,
   workspaceFileRecordIdentities,
   writeWorkspaceConfiguration,
   writeWorkspaceFileRecords,
@@ -406,6 +410,7 @@ export interface TerminalTurnPublication {
  * Stable command names tracked by the app-local idempotency ledger.
  */
 export type CommandRequestName =
+  | 'task.steer'
   | 'knowledge.tell'
   | 'knowledge.maintain'
   | 'knowledge.server.maintain'
@@ -613,8 +618,10 @@ export interface CommandRequestResponse {
   kind: CommandRequestResponseKind;
   /** Resource id produced by the original command. */
   id: string;
-  /** Sole bounded extra receipt metadata allowed for `conversation.submit`; rejected for every other command. */
+  /** Bounded receipt metadata allowed only for `conversation.submit`. */
   conversationMetadata?: ConversationCommandReceiptMetadata;
+  /** Completed Task steer result; native dispatch evidence stays with its existing Harness owner. */
+  steerMetadata?: TaskSteerReceiptMetadata;
 }
 
 /**
@@ -5787,6 +5794,101 @@ export class FsStore {
    */
   public listThreadItems(workspaceId: string, threadId: string): Item[] {
     return this.listThreadTurns(workspaceId, threadId).flatMap((turn) => turn.items);
+  }
+
+  /** Runs one bounded timeline selection in the existing Thread owner's read snapshot. */
+  public readThreadTimelineSnapshot<T>(
+    workspaceId: string,
+    threadId: string,
+    read: (snapshot: ThreadTimelineSnapshot) => T
+  ): T {
+    this.getThread(workspaceId, threadId);
+    if (this.dataRoot)
+      return withNativeThreadTimelineSnapshot(
+        this.nativeScope({ kind: 'workspace', workspaceId }),
+        threadId,
+        read
+      );
+    const turns = this.listThreadTurns(workspaceId, threadId);
+    const metadata = turns.map((turn, index) => ({
+      revision: 1,
+      admissionOrder: index + 1,
+      record: { ...turn, items: [] },
+    }));
+    const positions = turns.flatMap((turn, index) =>
+      turn.items.map((item, ordinal) => ({
+        itemId: item.id,
+        turnId: turn.id,
+        sequence: ordinal + 1,
+        admissionOrder: index + 1,
+      }))
+    );
+    return read({
+      upperOrder: metadata.length,
+      turns: (window) => {
+        const selected = metadata.filter(
+          (row) =>
+            row.admissionOrder <= window.upper &&
+            (window.direction === 'before'
+              ? row.admissionOrder < (window.boundary ?? Number.MAX_SAFE_INTEGER)
+              : row.admissionOrder > (window.boundary ?? 0))
+        );
+        return (window.direction === 'before' ? selected.reverse() : selected).slice(
+          0,
+          window.limit
+        );
+      },
+      turn: (turnId) => metadata.find((row) => row.record.id === turnId),
+      position: (itemId) => positions.find((row) => row.itemId === itemId),
+      positions: (turnId, input) => {
+        const selected = positions.filter(
+          (row) =>
+            row.turnId === turnId &&
+            row.sequence <= input.upper &&
+            (input.direction === 'before'
+              ? row.sequence < (input.boundary ?? Number.MAX_SAFE_INTEGER)
+              : row.sequence > (input.boundary ?? 0)) &&
+            input.types.includes(this.items.get(row.itemId)!.type)
+        );
+        return (input.direction === 'before' ? selected.reverse() : selected).slice(0, input.limit);
+      },
+      item: (itemId) => {
+        const row = positions.find((row) => row.itemId === itemId);
+        return row ? this.items.get(itemId) : undefined;
+      },
+      itemHead: (turnId) => turns.find((turn) => turn.id === turnId)?.items.length ?? 0,
+      counts: (turnId) => {
+        const counts: Partial<Record<Item['type'], number>> = {};
+        for (const item of turns.find((turn) => turn.id === turnId)?.items ?? [])
+          counts[item.type] = (counts[item.type] ?? 0) + 1;
+        return counts;
+      },
+      catchUp: (userId, receipts) =>
+        positions
+          .filter((row) => {
+            const item = this.items.get(row.itemId)!;
+            return (
+              ('actor' in item && item.actor.kind === 'user' && item.actor.id === userId) ||
+              (['user-message', 'assistant-message'].includes(item.type) &&
+                receipts.includes(item.id))
+            );
+          })
+          .at(-1),
+    });
+  }
+
+  /** Resolves minimal source lineage before the source owner's Thread audience check. */
+  public getItemLineage(
+    workspaceId: string,
+    itemId: string
+  ): { threadId: string; turnId: string } | undefined {
+    this.getWorkspace(workspaceId);
+    if (this.dataRoot)
+      return readNativeItemLineage(this.nativeScope({ kind: 'workspace', workspaceId }), itemId);
+    const item = this.items.get(itemId);
+    return item && workspaceIdForOwner(item.owner) === workspaceId
+      ? { threadId: item.threadId, turnId: item.turnId }
+      : undefined;
   }
 
   /** Resolves an exact Item inside its current Workspace and Thread without reading siblings. */

@@ -281,3 +281,45 @@ describe('administration catalog application client', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('bounded timeline client', () => {
+  it('uses the shared read operation and preserves its logical anchor without a mutation identity', async () => {
+    const selector = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+    };
+    const projection = {
+      ...selector,
+      view: 'runs',
+      runs: [],
+      items: [],
+      itemWindow: null,
+      beforeCursor: null,
+      afterCursor: null,
+      anchor: null,
+      catchUpAnchor: null,
+      restrictedReferences: false,
+    };
+    const requests: Request[] = [];
+    const client = createCoreClient({
+      baseUrl: 'http://nanocore.test',
+      fetch: async (url, init) => {
+        requests.push(new Request(url, init));
+        return Response.json(projection);
+      },
+    });
+    const input = { ...selector, anchor: { kind: 'catch-up' as const } };
+    expect(await client.operations['thread.timeline'](input)).toEqual(projection);
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe(operationHttpPath('thread.timeline'));
+    expect(requests[0]!.headers.get('x-openkit-request-id')).toBeNull();
+    expect(await requests[0]!.json()).toEqual(input);
+    const invalid = createCoreClient({
+      baseUrl: 'http://nanocore.test',
+      fetch: async () => Response.json({ ...projection, runs: [{ id: 'unqualified-run' }] }),
+    });
+    await expect(invalid.operations['thread.timeline'](selector)).rejects.toBeInstanceOf(
+      ProtocolValidationError
+    );
+  });
+});

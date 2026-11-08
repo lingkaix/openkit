@@ -379,6 +379,7 @@ describe('database setup', () => {
         '0020_scheduler_lineage_lookup.sql',
         '0021_harness_login_metadata.sql',
         '0022_thread_turn_reads.sql',
+        '0023_timeline_windows.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -410,6 +411,7 @@ describe('database setup', () => {
         'core_0020_scheduler_lineage_lookup',
         'core_0021_harness_login_metadata',
         'core_0022_thread_turn_reads',
+        'core_0023_timeline_windows',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {

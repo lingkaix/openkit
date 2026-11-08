@@ -341,6 +341,210 @@ export function readTurnItemCounts(
   return counts;
 }
 
+/** An original Item position stays fixed when later revisions are appended. */
+export interface ThreadItemPosition {
+  readonly itemId: string;
+  readonly turnId: string;
+  readonly sequence: number;
+  readonly admissionOrder: number;
+}
+
+/** Bounded keyset selectors, always subordinate to the supplied owner and Thread. */
+export interface ThreadTurnWindow {
+  readonly upper: number;
+  readonly boundary?: number;
+  readonly direction: 'before' | 'after';
+  readonly limit: number;
+}
+
+/** Uses the Thread/admission index without opening histories or sibling metadata. */
+export function readThreadTurnWindow(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  threadId: string,
+  window: ThreadTurnWindow
+): ControlThreadTurnSnapshot[] {
+  if (!readProduct(sqlite, owner, 'thread', threadId)) return [];
+  if (
+    !Number.isSafeInteger(window.upper) ||
+    window.upper < 0 ||
+    !Number.isSafeInteger(window.limit) ||
+    window.limit < 1 ||
+    window.limit > 64 ||
+    (window.boundary !== undefined &&
+      (!Number.isSafeInteger(window.boundary) || window.boundary < 0))
+  )
+    throw new ControlProductPreconditionError();
+  const before = window.direction === 'before';
+  const boundary = window.boundary ?? (before ? Number.MAX_SAFE_INTEGER : 0);
+  const rows = sqlite
+    .prepare(`SELECT * FROM control_turns WHERE thread_id=? AND admission_order<=?
+    AND admission_order ${before ? '<' : '>'} ? ORDER BY admission_order ${before ? 'DESC' : 'ASC'} LIMIT ?`)
+    .all(threadId, window.upper, boundary, window.limit) as (MetadataRow & {
+    admission_order: number;
+  })[];
+  return rows.map((row) => ({
+    ...decodeRow(sqlite, 'turn', row, owner),
+    admissionOrder: row.admission_order,
+  }));
+}
+
+/** Resolves one exact run's indexed metadata within the requested Thread. */
+export function readThreadTurnSnapshot(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  threadId: string,
+  turnId: string
+): ControlThreadTurnSnapshot | undefined {
+  const row = sqlite
+    .prepare('SELECT * FROM control_turns WHERE id=? AND thread_id=?')
+    .get(turnId, threadId) as (MetadataRow & { admission_order: number }) | undefined;
+  return row
+    ? { ...decodeRow(sqlite, 'turn', row, owner), admissionOrder: row.admission_order }
+    : undefined;
+}
+
+/** Reads the current immutable run boundary through its covering index. */
+export function readThreadAdmissionHead(sqlite: Database.Database, threadId: string): number {
+  return (
+    sqlite
+      .prepare(
+        'SELECT coalesce(max(admission_order),0) AS head FROM control_turns WHERE thread_id=?'
+      )
+      .get(threadId) as { head: number }
+  ).head;
+}
+
+/** Resolves only minimal source lineage by its indexed identity, before audience or content disclosure. */
+export function readItemLineage(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  itemId: string
+): { threadId: string; turnId: string } | undefined {
+  const row = sqlite
+    .prepare(`SELECT e.turn_id AS turnId,t.thread_id AS threadId,e.identity_json AS identity
+    FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
+    WHERE e.kind='item' AND e.id=? AND e.revision=1`)
+    .get(itemId) as { threadId: string; turnId: string; identity: string } | undefined;
+  if (!row) return undefined;
+  const turn = readProduct(sqlite, owner, 'turn', row.turnId);
+  const identity = JSON.parse(row.identity);
+  if (
+    !turn ||
+    turn.record.threadId !== row.threadId ||
+    identity.threadId !== row.threadId ||
+    identity.turnId !== row.turnId
+  )
+    throw new ControlProductPreconditionError();
+  return { threadId: row.threadId, turnId: row.turnId };
+}
+
+/** Resolves original identity before opening any body, including for foreign anchors. */
+export function readThreadItemPosition(
+  sqlite: Database.Database,
+  threadId: string,
+  itemId: string
+): ThreadItemPosition | undefined {
+  return sqlite
+    .prepare(`SELECT e.id AS itemId,e.turn_id AS turnId,e.sequence,t.admission_order AS admissionOrder
+    FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
+    WHERE e.kind='item' AND e.id=? AND e.revision=1 AND t.thread_id=?`)
+    .get(itemId, threadId) as ThreadItemPosition | undefined;
+}
+
+/** Selects bounded first-revision positions; current body revisions are resolved separately in the same cut. */
+export function readTurnItemPositions(
+  sqlite: Database.Database,
+  threadId: string,
+  turnId: string,
+  input: {
+    readonly types: readonly string[];
+    readonly upper: number;
+    readonly boundary?: number;
+    readonly direction: 'before' | 'after';
+    readonly limit: number;
+  }
+): ThreadItemPosition[] {
+  if (input.types.length === 0) return [];
+  const types = input.types.map((type) => ItemTypeSchema.parse(type));
+  if (
+    !Number.isSafeInteger(input.limit) ||
+    input.limit < 1 ||
+    input.limit > 64 ||
+    !Number.isSafeInteger(input.upper) ||
+    input.upper < 0 ||
+    (input.boundary !== undefined && (!Number.isSafeInteger(input.boundary) || input.boundary < 0))
+  )
+    throw new ControlProductPreconditionError();
+  const before = input.direction === 'before';
+  // Seek each immutable kind independently so a sparse narrative does not scan an unbounded process history.
+  const statement =
+    sqlite.prepare(`SELECT e.id AS itemId,e.turn_id AS turnId,e.sequence,t.admission_order AS admissionOrder
+    FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
+    WHERE e.kind='item' AND e.revision=1 AND e.turn_id=? AND t.thread_id=? AND e.sequence<=?
+    AND e.sequence ${before ? '<' : '>'} ? AND json_extract(e.identity_json,'$.type')=?
+    ORDER BY e.sequence ${before ? 'DESC' : 'ASC'} LIMIT ?`);
+  const rows = types.flatMap(
+    (type) =>
+      statement.all(
+        turnId,
+        threadId,
+        input.upper,
+        input.boundary ?? (before ? Number.MAX_SAFE_INTEGER : 0),
+        type,
+        input.limit
+      ) as ThreadItemPosition[]
+  );
+  rows.sort((left, right) =>
+    before ? right.sequence - left.sequence : left.sequence - right.sequence
+  );
+  return rows.slice(0, input.limit);
+}
+
+/** Captures the original Item append boundary, excluding revisions of existing Items. */
+export function readTurnItemHead(
+  sqlite: Database.Database,
+  threadId: string,
+  turnId: string
+): number {
+  return (
+    sqlite
+      .prepare(`SELECT coalesce(max(e.sequence),0) AS head FROM control_product_entries e
+    JOIN control_turns t ON t.id=e.turn_id WHERE e.kind='item' AND e.revision=1 AND e.turn_id=? AND t.thread_id=?`)
+      .get(turnId, threadId) as { head: number }
+  ).head;
+}
+
+/** Receipt membership and actor identity select B; neither receipt order nor an identifier substitutes for chronology. */
+export function readThreadCatchUpPosition(
+  sqlite: Database.Database,
+  threadId: string,
+  userId: string,
+  receiptItemIds: readonly string[]
+): ThreadItemPosition | undefined {
+  const select = `SELECT e.id AS itemId,e.turn_id AS turnId,e.sequence,t.admission_order AS admissionOrder
+    FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id`;
+  const own = sqlite
+    .prepare(`${select} WHERE e.kind='item' AND e.revision=1
+    AND json_extract(e.identity_json,'$.threadId')=? AND json_extract(e.identity_json,'$.actor.id')=?
+    AND t.thread_id=? ORDER BY t.admission_order DESC,e.sequence DESC LIMIT 1`)
+    .get(threadId, userId, threadId) as ThreadItemPosition | undefined;
+  const seen = receiptItemIds.length
+    ? (sqlite
+        .prepare(`${select} WHERE e.kind='item' AND e.revision=1
+    AND e.id IN (SELECT value FROM json_each(?)) AND t.thread_id=?
+    AND json_extract(e.identity_json,'$.type') IN ('user-message','assistant-message')
+    ORDER BY t.admission_order DESC,e.sequence DESC LIMIT 1`)
+        .get(JSON.stringify(receiptItemIds), threadId) as ThreadItemPosition | undefined)
+    : undefined;
+  if (!own) return seen;
+  if (!seen) return own;
+  return own.admissionOrder > seen.admissionOrder ||
+    (own.admissionOrder === seen.admissionOrder && own.sequence >= seen.sequence)
+    ? own
+    : seen;
+}
+
 /** Native immutable descriptor fields shared by ordered and addressed reads. */
 interface ProductEntryRow {
   readonly schema_version: number;

@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import { ThreadDashboardResponseSchema } from './dashboard.js';
 import type { OperationDefinition } from './operation-contract.js';
+import { ThreadTimelineInputSchema, ThreadTimelineResponseSchema } from './thread-timeline.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
 const publicCredentials = [
@@ -93,6 +94,20 @@ export const THREAD_OPERATION_DEFINITIONS = {
     description: 'Read one visible Thread.',
     inputSchema: z.object(threadSelector).strict(),
     outputSchema: ThreadSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+  'thread.timeline': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Read bounded admission-ordered run entries or anchored Item windows for one visible Thread.',
+    inputSchema: ThreadTimelineInputSchema,
+    outputSchema: ThreadTimelineResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },

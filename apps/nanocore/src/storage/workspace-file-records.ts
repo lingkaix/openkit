@@ -152,6 +152,16 @@ import {
   type ControlThreadTurnSnapshot,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
+  readItemLineage,
+  readThreadAdmissionHead,
+  readThreadCatchUpPosition,
+  readThreadItemPosition,
+  readThreadTurnSnapshot,
+  readThreadTurnWindow,
+  readTurnItemHead,
+  readTurnItemPositions,
+  type ThreadItemPosition,
+  type ThreadTurnWindow,
 } from './control-store-product-records.js';
 import type { WorkspaceDb } from './db.js';
 import {
@@ -893,13 +903,25 @@ export function* readNativeThreadTurnPages(
   }
 }
 
+/** Resolves only indexed Item source lineage; the caller must admit its Thread before reading bytes. */
+export function readNativeItemLineage(scope: NativeProductScope, itemId: string) {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  try {
+    return readItemLineage(reader.sqlite, scope.owner, itemId);
+  } finally {
+    reader.close();
+  }
+}
+
 /** Verifies one exact current Item's immutable bytes only after its indexed Thread selector matches. */
 export function readNativeThreadItem(
   scope: NativeProductScope,
   threadId: string,
-  itemId: string
+  itemId: string,
+  existingReader?: ControlStoreProductReadHandle
 ): Item | undefined {
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  const reader =
+    existingReader ?? openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   try {
     const entry = reader.threadItem(threadId, itemId);
     if (!entry) return undefined;
@@ -920,7 +942,7 @@ export function readNativeThreadItem(
     const { schemaVersion: _header, ...raw } = value as Record<string, unknown>;
     return preserveDescriptiveRecord(raw, item, item) as Item;
   } finally {
-    reader.close();
+    if (!existingReader) reader.close();
   }
 }
 
@@ -933,6 +955,49 @@ export function readNativeTurnItemCounts(
   const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   try {
     return reader.turnItemCounts(threadId, turnId);
+  } finally {
+    reader.close();
+  }
+}
+
+/** Specialized read capabilities bound to one Thread and one SQLite snapshot. */
+export interface ThreadTimelineSnapshot {
+  readonly upperOrder: number;
+  turns(window: ThreadTurnWindow): ControlThreadTurnSnapshot[];
+  turn(turnId: string): ControlThreadTurnSnapshot | undefined;
+  position(itemId: string): ThreadItemPosition | undefined;
+  positions(
+    turnId: string,
+    input: Parameters<typeof readTurnItemPositions>[3]
+  ): ThreadItemPosition[];
+  item(itemId: string): Item | undefined;
+  itemHead(turnId: string): number;
+  counts(turnId: string): Partial<Record<Item['type'], number>>;
+  catchUp(userId: string, receipts: readonly string[]): ThreadItemPosition | undefined;
+}
+
+/** Keeps every selected metadata row and immutable descriptor in one existing Workspace read cut. */
+export function withNativeThreadTimelineSnapshot<T>(
+  scope: NativeProductScope,
+  threadId: string,
+  read: (snapshot: ThreadTimelineSnapshot) => T
+): T {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  try {
+    return reader.sqlite.transaction(() =>
+      read({
+        upperOrder: readThreadAdmissionHead(reader.sqlite, threadId),
+        turns: (window) => readThreadTurnWindow(reader.sqlite, scope.owner, threadId, window),
+        turn: (turnId) => readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId),
+        position: (itemId) => readThreadItemPosition(reader.sqlite, threadId, itemId),
+        positions: (turnId, input) => readTurnItemPositions(reader.sqlite, threadId, turnId, input),
+        item: (itemId) => readNativeThreadItem(scope, threadId, itemId, reader),
+        itemHead: (turnId) => readTurnItemHead(reader.sqlite, threadId, turnId),
+        counts: (turnId) => reader.turnItemCounts(threadId, turnId) ?? {},
+        catchUp: (userId, receipts) =>
+          readThreadCatchUpPosition(reader.sqlite, threadId, userId, receipts),
+      })
+    )();
   } finally {
     reader.close();
   }

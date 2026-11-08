@@ -105,8 +105,14 @@ export const controlProductEntries = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.kind, table.turnId, table.sequence] }),
+    index('control_items_thread_actor_idx')
+      .on(
+        sql`json_extract(${table.identityJson}, '$.threadId')`,
+        sql`json_extract(${table.identityJson}, '$.actor.id')`
+      )
+      .where(sql`${table.kind} = 'item' AND ${table.revision} = 1`),
     index('control_items_turn_type_idx')
-      .on(table.turnId, sql`json_extract(${table.identityJson}, '$.type')`)
+      .on(table.turnId, sql`json_extract(${table.identityJson}, '$.type')`, table.sequence)
       .where(sql`${table.kind} = 'item' AND ${table.revision} = 1`),
     uniqueIndex('control_product_entries_revision_idx').on(table.kind, table.id, table.revision),
     check('control_product_entries_kind_check', sql`${table.kind} IN ('item', 'event')`),

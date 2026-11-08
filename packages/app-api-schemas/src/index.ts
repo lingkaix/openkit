@@ -69,6 +69,7 @@ export * from './server-threads.js';
 export * from './storage.js';
 export { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 export * from './task-mode.js';
+export * from './thread-timeline.js';
 export * from './vault-admin.js';
 export * from './vault-grant-requests.js';
 export * from './vault-injection.js';
