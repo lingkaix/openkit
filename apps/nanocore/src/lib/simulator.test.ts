@@ -402,16 +402,28 @@ describe('SimulatedTurnExecutor', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const executor = new SimulatedTurnExecutor({ coreDb });
-    const release = vi.spyOn(executor, 'release').mockImplementation(async (input) => ({
-      attemptId: input.attemptId,
-      backendId: input.backendId,
-      bindingRef: input.bindingRef,
-      inputRef: input.inputRef,
-      operationId: input.operationId,
-      state: 'pending',
-      fenceRef: null,
-    }));
+    const originalRuntime = createConfiguredWorkerLifecycleRuntime({
+      coreDb,
+      store,
+      env: { OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1' },
+    });
+    const executor = originalRuntime.turnExecutor as SimulatedTurnExecutor;
+    let finishRelease!: () => void;
+    const releaseHeld = new Promise<void>((resolve) => {
+      finishRelease = resolve;
+    });
+    const release = vi.spyOn(executor, 'release').mockImplementation(async (input) => {
+      await releaseHeld;
+      return {
+        attemptId: input.attemptId,
+        backendId: input.backendId,
+        bindingRef: input.bindingRef,
+        inputRef: input.inputRef,
+        operationId: input.operationId,
+        state: 'pending',
+        fenceRef: null,
+      };
+    });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
@@ -451,7 +463,11 @@ describe('SimulatedTurnExecutor', () => {
       );
       expect(response.status).toBe(202);
       const turn = (await response.json()) as { id: string };
+      await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+      expect(originalRuntime.isTurnExecutionActive(turn.id)).toBe(true);
+      finishRelease();
       await closeouts.mock.results[0]!.value.closeout;
+      expect(originalRuntime.isTurnExecutionActive(turn.id)).toBe(false);
       expect(store.getTurnById(turn.id).status).toBe('completed');
       expect(release).toHaveBeenCalledOnce();
       const session = listWorkerBackendSessions(coreDb).find((row) => row.turnId === turn.id)!;
@@ -507,6 +523,8 @@ describe('SimulatedTurnExecutor', () => {
       await closeouts.mock.results[1]!.value.closeout;
       expect(store.getTurnById(nextTurn.id).status).toBe('completed');
     } finally {
+      finishRelease();
+      await closeouts.mock.results[0]?.value.closeout;
       closeouts.mockRestore();
       release.mockRestore();
       coreDb.sqlite.close();

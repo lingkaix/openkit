@@ -536,9 +536,7 @@ function createNanoHostWorkerLifecycleRuntime(
     advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
     captureArtifact: (input) => backend.captureArtifact(input),
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
-    isTurnExecutionActive: (turnId) =>
-      turnExecutor instanceof WorkerGovernanceTurnExecutor &&
-      turnExecutor.isTurnExecutionActive(turnId),
+    isTurnExecutionActive: (turnId) => turnExecutor.isTurnExecutionActive(turnId),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
     acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
     acceptNanoHostHarnessResult: (result) => backend.acceptHarnessResult(result),

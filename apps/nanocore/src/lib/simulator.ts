@@ -213,6 +213,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   public readonly eventFamilies = SIMULATOR_EVENT_FAMILIES;
   public readonly itemTypes = SIMULATOR_ITEM_TYPES;
   public readonly itemDeltaKinds = SIMULATOR_ITEM_DELTA_KINDS;
+  private readonly activeTurnExecutions = new Set<string>();
   private readonly coreDb: CoreDb | null;
   private readonly fileAdmission: FileStorageAdmission | undefined;
 
@@ -571,6 +572,11 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     });
   }
 
+  /** Keeps maintenance from taking over this executor's live closeout owner. */
+  public isTurnExecutionActive(turnId: string): boolean {
+    return this.activeTurnExecutions.has(turnId);
+  }
+
   /**
    * Starts one deterministic simulated Turn that completes normally, with Pending Request answers delivered on later Turns.
    *
@@ -586,6 +592,21 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       triggerActor: { kind: 'system', id: 'simulator', responsibleUserId: null },
       workspaceRoots: [],
     }
+  ): Promise<void> {
+    this.activeTurnExecutions.add(turnId);
+    try {
+      await this.executeTurn(store, turnId, input, context);
+    } finally {
+      this.activeTurnExecutions.delete(turnId);
+    }
+  }
+
+  /** Executes the original simulated lifecycle under its process-local owner. */
+  private async executeTurn(
+    store: FsStore,
+    turnId: string,
+    input: string,
+    context: TurnStartRuntimeContext
   ): Promise<void> {
     if (this.coreDb && context.attemptId)
       context = {
@@ -1236,33 +1257,40 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     store: FsStore,
     session: WorkerBackendSessionRecord
   ): Promise<{ status: 'completed'; turn: ReturnType<FsStore['getTurnById']> }> {
-    if (!this.coreDb) throw new Error('Self-check recovery requires Core authority.');
-    const turn = store.getTurnById(session.turnId);
-    const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
-      agentSessionId: session.agentSessionId,
-      packageSnapshotId: session.packageSnapshotId,
-      requestId: requireSchedulerExecutionAttemptAdmissionContext(this.coreDb, session.attemptId)
-        .requestId,
-      threadId: session.threadId,
-      turnId: session.turnId,
-      workspaceId: session.workspaceId,
-    });
-    // Real backend identities and incomplete output keep their existing exclusion.
-    if (
-      session.backendSessionId !== `self-check_${session.packageSnapshotId}` ||
-      !isDeepStrictEqual(getWorkerBackendSession(this.coreDb, session.attemptId), session) ||
-      session.state !== 'cleaned' ||
-      session.workspaceHandoffState !== 'complete' ||
-      workspaceIdForOwner(turn.owner) !== session.workspaceId ||
-      turn.threadId !== session.threadId ||
-      turn.agentSessionId !== session.agentSessionId ||
-      turn.status !== 'completed' ||
-      accepted?.status !== 'completed'
-    )
-      throw new Error('Self-check recovery requires its exact completed output and cleanup.');
-    await this.readTerminalPublication(store, turn.id);
-    await this.releaseCompletedAttempt(store, turn.id, session.attemptId);
-    return { status: 'completed', turn };
+    if (this.isTurnExecutionActive(session.turnId))
+      throw new Error('Self-check closeout still has a live execution owner.');
+    this.activeTurnExecutions.add(session.turnId);
+    try {
+      if (!this.coreDb) throw new Error('Self-check recovery requires Core authority.');
+      const turn = store.getTurnById(session.turnId);
+      const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
+        agentSessionId: session.agentSessionId,
+        packageSnapshotId: session.packageSnapshotId,
+        requestId: requireSchedulerExecutionAttemptAdmissionContext(this.coreDb, session.attemptId)
+          .requestId,
+        threadId: session.threadId,
+        turnId: session.turnId,
+        workspaceId: session.workspaceId,
+      });
+      // Real backend identities and incomplete output keep their existing exclusion.
+      if (
+        session.backendSessionId !== `self-check_${session.packageSnapshotId}` ||
+        !isDeepStrictEqual(getWorkerBackendSession(this.coreDb, session.attemptId), session) ||
+        session.state !== 'cleaned' ||
+        session.workspaceHandoffState !== 'complete' ||
+        workspaceIdForOwner(turn.owner) !== session.workspaceId ||
+        turn.threadId !== session.threadId ||
+        turn.agentSessionId !== session.agentSessionId ||
+        turn.status !== 'completed' ||
+        accepted?.status !== 'completed'
+      )
+        throw new Error('Self-check recovery requires its exact completed output and cleanup.');
+      await this.readTerminalPublication(store, turn.id);
+      await this.releaseCompletedAttempt(store, turn.id, session.attemptId);
+      return { status: 'completed', turn };
+    } finally {
+      this.activeTurnExecutions.delete(session.turnId);
+    }
   }
 
   /** Records the modeled fence only after the original deterministic closeout barriers. */

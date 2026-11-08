@@ -1,6 +1,6 @@
 # nanocore
 
-The internal self-check executor resumes release after a restart only for its exact retained completed Turn, accepted final status and cleaned synthetic backend session. It uses the original modeled fence and release journal without replaying output or accepting real backend identities. Incomplete closeout retains Thread exclusion.
+The internal self-check executor resumes release after a restart only for its exact retained completed Turn, accepted final status and cleaned synthetic backend session. It uses the original modeled fence and release journal without replaying output or accepting real backend identities. Incomplete closeout retains Thread exclusion. Ordinary and recovered self-check closeout retain process-local lifecycle ownership until settlement, so maintenance cannot take over a live owner.
 
 Machine digest, identity, retained-inventory and wire orderings corrected under #532 use Protocol `compareCodeUnits`, which compares UTF-16 code units without host locale or ICU state. Producers and their corresponding verifiers use the same order. The recurring admission tie-breaker uses the same shared code-unit order.
 
