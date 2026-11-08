@@ -5,15 +5,45 @@ import { CanonicalPublicationError } from '@openkit/storage';
 import { Hono } from 'hono';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
-import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './api-errors.js';
+import {
+  asCommandError,
+  asInvalidRequestError,
+  asOperationError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
+import {
+  OperationError,
+  projectOperationError,
+  WorkspaceCaptureAdmissionError,
+} from './operation-error.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
+
+it('advertises capture replay only for the definite pre-effect admission class', async () => {
+  const actor = {
+    kind: 'session' as const,
+    userId: 'usr_00000000-0000-7000-8000-000000000001',
+    sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+  };
+  const admission = new WorkspaceCaptureAdmissionError('ws_00000000-0000-7000-8000-000000000001');
+  const late = new OperationError(admission.code, admission.message, admission.status, {
+    details: admission.details,
+  });
+  const retryable = asOperationError(admission, projectOperationError(admission), actor);
+  const ordinary = asOperationError(late, projectOperationError(late), actor);
+  expect(await ordinary.json()).toEqual(await retryable.json());
+  expect(retryable.headers.get('Retry-After')).toBe('1');
+  expect(ordinary.headers.get('Retry-After')).toBeNull();
+  expect(
+    asOperationError(admission, projectOperationError(admission)).headers.get('Retry-After')
+  ).toBeNull();
+});
 
 it.each(['string', 'error'] as const)(
   'preserves %s validation messages in a JSON 400',

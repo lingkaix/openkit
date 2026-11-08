@@ -1,10 +1,13 @@
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { CanonicalPublicationError } from '@openkit/storage';
 import { z } from 'zod';
+import { captureRetryHeaders } from './auth/capture-retry-context.js';
+import type { Actor } from './auth/identity.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import type { projectOperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './operation-error.js';
+import { WorkspaceCaptureAdmissionError } from './operation-error-core.js';
 import {
   AgentEnvironmentSnapshotPreparationError,
   AgentEnvironmentSnapshotReadError,
@@ -27,11 +30,17 @@ export function asApiError(message: string, code = 'not_found', status = 404): R
 /** Frames a classified operation failure for HTTP; unknown values keep their original error boundary. */
 export function asOperationError(
   error: unknown,
-  projected: ReturnType<typeof projectOperationError>
+  projected: ReturnType<typeof projectOperationError>,
+  actor?: Actor
 ): Response {
   if (!projected) throw error;
   const { status, ...body } = projected;
-  return Response.json(apiErrorPayload(body), { status });
+  return Response.json(apiErrorPayload(body), {
+    status,
+    ...(error instanceof WorkspaceCaptureAdmissionError
+      ? { headers: captureRetryHeaders(actor) }
+      : {}),
+  });
 }
 
 /**

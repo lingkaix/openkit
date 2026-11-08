@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS, WorkspaceSharingErrorSchema } from '@openkit/app-api-schemas';
+import { createCoreClient } from '@openkit/core-client';
 import * as policyKernel from '@openkit/policy-kernel';
+import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent } from './audit-events.js';
@@ -207,6 +209,71 @@ afterEach(async () => {
 });
 
 describe('Workspace sharing routes', () => {
+  it.each(['workspace.my-invitation-accept', 'workspace.my-invitation-decline'] as const)(
+    'centrally retries %s after capture without changing its decision identity',
+    async (operation) => {
+      const fixture = await createFixture();
+      const inviteeId = 'usr_00000000-0000-7a9e-8345-2bce44a3dce0';
+      const invitee = fixture.coreDb.sqlite
+        .prepare('SELECT email FROM users WHERE id = ?')
+        .get(inviteeId) as { email: string };
+      const created = await requestSharingMutation(
+        fixture,
+        'workspace.invitation-create',
+        { workspaceId: fixture.workspaceId },
+        { inviteeEmail: invitee.email, requestId: randomUUID() }
+      );
+      expect(created.status).toBe(201);
+      const { invitation } = (await created.json()) as {
+        invitation: { invitationId: string; revision: number };
+      };
+      fixture.actorState.current = {
+        kind: 'session',
+        userId: inviteeId,
+        sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+      };
+      const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspaceId, () => []);
+      expect(freeze.status).toBe('frozen');
+      const bodies: unknown[] = [];
+      const client = createCoreClient({
+        baseUrl: 'http://core.test',
+        fetch: async (url, init) => {
+          if (String(url).endsWith('/api/meta'))
+            return Response.json({
+              protocolVersion: PROTOCOL_VERSION,
+              capabilities: [],
+              eventFamilies: [],
+            });
+          bodies.push(init?.body);
+          const response = await fixture.app.fetch(new Request(String(url), init));
+          if (bodies.length === 1) {
+            expect(response.status).toBe(409);
+            expect(response.headers.get('Retry-After')).toBe('1');
+            expect(getWorkspaceInvitation(fixture.coreDb, invitation.invitationId)?.revision).toBe(
+              invitation.revision
+            );
+            if (freeze.status === 'frozen') freeze.release();
+          }
+          return response;
+        },
+      });
+      try {
+        const result = await client.operations[operation]({
+          invitationId: invitation.invitationId,
+          expectedRevision: invitation.revision,
+          requestId: randomUUID(),
+        });
+        expect(result.invitation.effectiveStatus).toBe(
+          operation === 'workspace.my-invitation-accept' ? 'accepted' : 'declined'
+        );
+        expect(bodies).toHaveLength(2);
+        expect(bodies[1]).toBe(bodies[0]);
+      } finally {
+        if (freeze.status === 'frozen') freeze.release();
+      }
+    }
+  );
+
   it.each([
     'removed',
     'disabled',

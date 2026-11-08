@@ -23,3 +23,19 @@ export class OperationError extends Error {
     this.path = options.path;
   }
 }
+
+/** Only the authorized pre-effect capture gate may create this retryable refusal. */
+export class WorkspaceCaptureAdmissionError extends OperationError {
+  constructor(workspaceId: string) {
+    super('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+      details: {
+        workspaceId,
+        operation: 'capture',
+        retryable: true,
+        blockers: [
+          { kind: 'publication', reason: 'frozen', reference: { workspaceId }, actions: [] },
+        ],
+      },
+    });
+  }
+}

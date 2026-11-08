@@ -1,7 +1,13 @@
+import { WorkspaceFreezeRefusalSchema } from '@openkit/app-api-schemas';
 import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
-import { ProtocolValidationError } from './errors.js';
+import { ApiCallError, ProtocolValidationError } from './errors.js';
 import { type FetchLike, parseJsonResponse } from './http.js';
+
+/** Cancellation belongs to the original caller, outside the serialized operation input. */
+export interface ClientRequestOptions {
+  readonly signal?: AbortSignal;
+}
 
 /** Shared HTTP transport used by every sub-client. */
 export interface ClientTransport {
@@ -12,16 +18,26 @@ export interface ClientTransport {
   /** Static headers applied to every HTTP request. */
   readonly headers?: HeadersInit | undefined;
   /** Fetches and validates a JSON response. */
-  getJson<TSchema extends z.ZodType>(path: string, schema: TSchema): Promise<z.infer<TSchema>>;
+  getJson<TSchema extends z.ZodType>(
+    path: string,
+    schema: TSchema,
+    options?: ClientRequestOptions
+  ): Promise<z.infer<TSchema>>;
   /** Reads one exact-media body; a supplied logical selector uses JSON POST. */
-  getStream(path: string, mediaType: string, input?: unknown): Promise<ReadableStream<Uint8Array>>;
+  getStream(
+    path: string,
+    mediaType: string,
+    input?: unknown,
+    options?: ClientRequestOptions
+  ): Promise<ReadableStream<Uint8Array>>;
   /** Posts a JSON body and validates JSON or declared empty-success logical null. */
   postJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
     schema: TSchema,
     extraHeaders?: HeadersInit,
-    emptySuccess?: boolean
+    emptySuccess?: boolean,
+    options?: ClientRequestOptions
   ): Promise<z.infer<TSchema>>;
   /** Posts one raw body and validates a JSON response. */
   postStream<TSchema extends z.ZodType>(
@@ -37,19 +53,21 @@ export interface ClientTransport {
     path: string,
     input: TInput,
     schema: TSchema,
-    extraHeaders?: HeadersInit
+    extraHeaders?: HeadersInit,
+    options?: ClientRequestOptions
   ): Promise<z.infer<TSchema>>;
   /** Patches a JSON body and validates a JSON response. */
   patchJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
     schema: TSchema,
-    extraHeaders?: HeadersInit
+    extraHeaders?: HeadersInit,
+    options?: ClientRequestOptions
   ): Promise<z.infer<TSchema>>;
   /** Deletes a resource with an empty successful response. */
   deleteEmpty(path: string): Promise<void>;
   /** Deletes a resource with a JSON command body. */
-  deleteJson<TInput>(path: string, input: TInput): Promise<void>;
+  deleteJson<TInput>(path: string, input: TInput, options?: ClientRequestOptions): Promise<void>;
   /** Converts an API path into an absolute request URL. */
   url(path: string): string;
 }
@@ -62,6 +80,26 @@ export interface ClientTransportOptions {
   fetch?: FetchLike;
   /** Optional static headers for authenticated deployments. */
   headers?: HeadersInit;
+  /** Optional lifetime cancellation for this client instance. */
+  signal?: AbortSignal;
+}
+
+/** Waits only behind a definite admission refusal; cancellation never authorizes a resend. */
+async function waitForCaptureRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 /** Creates the shared HTTP transport used by sub-clients. */
@@ -95,21 +133,86 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
 
   const url = (path: string): string => `${normalizedBaseUrl}${path}`;
 
-  const getJson: ClientTransport['getJson'] = async (path, schema) => {
-    const response = await fetcher(url(path), {
-      credentials: 'include',
-      headers: mergeHeaders(),
-      method: 'GET',
-    });
+  let authentication = new AbortController();
+
+  /** Replays only complete JSON requests that the authorized server gate definitely refused. */
+  const fetchJsonRequest = async (
+    path: string,
+    init: RequestInit,
+    requestOptions?: ClientRequestOptions
+  ): Promise<Response> => {
+    const signal = AbortSignal.any([
+      authentication.signal,
+      ...[options.signal, requestOptions?.signal].filter(
+        (value): value is AbortSignal => value !== undefined
+      ),
+    ]);
+    const headers = new Headers(init.headers);
+    const deadline = performance.now() + 20_000;
+    let retried = false;
+    for (;;) {
+      signal.throwIfAborted();
+      const remaining = deadline - performance.now();
+      // A timeout after resend is an unknown response, not the prior definite refusal.
+      const attemptSignal = retried
+        ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.ceil(remaining)))])
+        : signal;
+      const response = await fetcher(url(path), {
+        ...init,
+        headers: new Headers(headers),
+        signal: attemptSignal,
+      });
+      const context = response.headers.get('x-openkit-retry-context');
+      if (
+        response.status !== 409 ||
+        response.headers.get('Retry-After') !== '1' ||
+        !context ||
+        !/^[a-f0-9]{64}$/.test(context) ||
+        (headers.has('x-openkit-retry-context') &&
+          headers.get('x-openkit-retry-context') !== context)
+      )
+        return response;
+      let refusal: unknown;
+      try {
+        await parseJsonResponse(response.clone(), z.never());
+      } catch (error) {
+        refusal = error;
+      }
+      if (!(refusal instanceof ApiCallError) || refusal.code !== 'workspace_frozen')
+        return response;
+      const parsed = WorkspaceFreezeRefusalSchema.safeParse(refusal.details);
+      if (!parsed.success || !parsed.data.retryable || parsed.data.operation !== 'capture')
+        return response;
+      signal.throwIfAborted();
+      const wait = Math.min(1_000, deadline - performance.now());
+      if (wait <= 0) return response;
+      await waitForCaptureRetry(wait, signal);
+      if (performance.now() >= deadline) return response;
+      headers.set('x-openkit-retry-context', context);
+      await response.body?.cancel();
+      retried = true;
+    }
+  };
+
+  const getJson: ClientTransport['getJson'] = async (path, schema, requestOptions) => {
+    const response = await fetchJsonRequest(
+      path,
+      {
+        credentials: 'include',
+        headers: mergeHeaders(),
+        method: 'GET',
+      },
+      requestOptions
+    );
     return parseJsonResponse(response, schema);
   };
 
   let contractAdmitted = false;
 
   /** Admits this release-coupled consumer before its first effectful request. */
-  const admitContract = async (): Promise<void> => {
+  const admitContract = async (requestOptions?: ClientRequestOptions): Promise<void> => {
     if (contractAdmitted) return;
-    const meta = await getJson('/api/meta', MetaResponseSchema);
+    const meta = await getJson('/api/meta', MetaResponseSchema, requestOptions);
     if (meta.protocolVersion !== PROTOCOL_VERSION) {
       throw new ProtocolValidationError({
         path: ['protocolVersion'],
@@ -133,17 +236,26 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     return response;
   };
 
-  const getStream: ClientTransport['getStream'] = async (path, mediaType, input) => {
-    if (input !== undefined) await admitContract();
+  const getStream: ClientTransport['getStream'] = async (
+    path,
+    mediaType,
+    input,
+    requestOptions
+  ) => {
+    if (input !== undefined) await admitContract(requestOptions);
     const response =
       input === undefined
         ? await getDownload(path)
-        : await fetcher(url(path), {
-            credentials: 'include',
-            method: 'POST',
-            headers: jsonHeaders(),
-            body: JSON.stringify(input),
-          });
+        : await fetchJsonRequest(
+            path,
+            {
+              credentials: 'include',
+              method: 'POST',
+              headers: jsonHeaders(),
+              body: JSON.stringify(input),
+            },
+            requestOptions
+          );
     if (!response.ok) {
       await parseJsonResponse(response, z.never());
       throw new Error('Unreachable response state.');
@@ -170,15 +282,28 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     input: unknown,
     schema: TSchema,
     extraHeaders?: HeadersInit,
-    emptySuccess = false
+    emptySuccess = false,
+    requestOptions?: ClientRequestOptions
   ): Promise<z.infer<TSchema>> => {
-    await admitContract();
-    const response = await fetcher(url(path), {
-      credentials: 'include',
-      method,
-      headers: jsonHeaders(extraHeaders),
-      body: JSON.stringify(input),
-    });
+    if (
+      ['/api/auth/sign-in/email', '/api/auth/sign-up/email', '/api/auth/sign-out'].includes(path)
+    ) {
+      authentication.abort(
+        new DOMException('Authentication changed during the request.', 'AbortError')
+      );
+      authentication = new AbortController();
+    }
+    await admitContract(requestOptions);
+    const response = await fetchJsonRequest(
+      path,
+      {
+        credentials: 'include',
+        method,
+        headers: jsonHeaders(extraHeaders),
+        body: JSON.stringify(input),
+      },
+      requestOptions
+    );
 
     if (emptySuccess && response.ok) {
       if (response.status !== 204 || (await response.arrayBuffer()).byteLength !== 0) {
@@ -220,14 +345,18 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     await parseJsonResponse(response, z.null());
   };
 
-  const deleteJson: ClientTransport['deleteJson'] = async (path, input) => {
-    await admitContract();
-    const response = await fetcher(url(path), {
-      credentials: 'include',
-      method: 'DELETE',
-      headers: mergeHeaders({ 'content-type': 'application/json' }),
-      body: JSON.stringify(input),
-    });
+  const deleteJson: ClientTransport['deleteJson'] = async (path, input, requestOptions) => {
+    await admitContract(requestOptions);
+    const response = await fetchJsonRequest(
+      path,
+      {
+        credentials: 'include',
+        method: 'DELETE',
+        headers: mergeHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify(input),
+      },
+      requestOptions
+    );
 
     if (response.ok) {
       return;
@@ -244,12 +373,14 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     getJson,
     getStream,
     headers: options.headers,
-    patchJson: (path, input, schema, headers) => sendJson('PATCH', path, input, schema, headers),
-    postJson: (path, input, schema, headers, emptySuccess) =>
-      sendJson('POST', path, input, schema, headers, emptySuccess),
+    patchJson: (path, input, schema, headers, requestOptions) =>
+      sendJson('PATCH', path, input, schema, headers, false, requestOptions),
+    postJson: (path, input, schema, headers, emptySuccess, requestOptions) =>
+      sendJson('POST', path, input, schema, headers, emptySuccess, requestOptions),
     getDownload,
     postStream,
-    putJson: (path, input, schema, headers) => sendJson('PUT', path, input, schema, headers),
+    putJson: (path, input, schema, headers, requestOptions) =>
+      sendJson('PUT', path, input, schema, headers, false, requestOptions),
     url,
   };
 }

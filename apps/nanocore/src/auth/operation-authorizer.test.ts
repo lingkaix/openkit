@@ -7,8 +7,9 @@ import {
   type OperationDefinition,
   PRODUCT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
+import { createCoreClient } from '@openkit/core-client';
 import * as policyKernel from '@openkit/policy-kernel';
-import { ApiErrorSchema } from '@openkit/protocol';
+import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import {
   afterAll,
@@ -1620,6 +1621,10 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('keeps a capture-fenced Workspace listed and readable while mutations stay frozen', async () => {
+    fixture.actorState.current = {
+      ...fixture.actorState.current,
+      sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+    };
     const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
     expect(freeze.status).toBe('frozen');
     try {
@@ -1654,6 +1659,8 @@ describe('central Workspace operation authorizer', () => {
       expect(items.map(({ workspace }) => workspace.id)).toContain(fixture.workspace.id);
       expect(read.status).toBe(200);
       expect(mutation.status).toBe(409);
+      expect(mutation.headers.get('Retry-After')).toBe('1');
+      expect(mutation.headers.get('x-openkit-retry-context')).toMatch(/^[a-f0-9]{64}$/);
       await expect(mutation.json()).resolves.toMatchObject({
         code: 'workspace_frozen',
         details: { workspaceId: fixture.workspace.id, retryable: true },
@@ -1661,6 +1668,144 @@ describe('central Workspace operation authorizer', () => {
     } finally {
       if (freeze.status === 'frozen') freeze.release();
     }
+  });
+
+  it.each(['none', 'session', 'membership', 'lost-response'] as const)(
+    'retries the real capture admission once under the same session (%s change)',
+    async (change) => {
+      fixture.actorState.current = {
+        ...fixture.actorState.current,
+        ...(change === 'membership' ? { userId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8' } : {}),
+        sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+      };
+      const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
+      expect(freeze.status).toBe('frozen');
+      const input = {
+        workspaceId: fixture.workspace.id,
+        name: 'Central capture retry',
+        visibility: 'workspace' as const,
+        requestId: '0190f4c8-0000-7000-8000-000000000124',
+      };
+      const attempts: Array<{ body: BodyInit | null | undefined; requestId: string | null }> = [];
+      let refused = 0;
+      const client = createCoreClient({
+        baseUrl: 'http://core.test',
+        fetch: async (url, init) => {
+          if (String(url).endsWith('/api/meta'))
+            return Response.json({
+              protocolVersion: PROTOCOL_VERSION,
+              capabilities: [],
+              eventFamilies: [],
+            });
+          attempts.push({
+            body: init?.body,
+            requestId: new Headers(init?.headers).get('x-openkit-request-id'),
+          });
+          const response = await fixture.app.fetch(new Request(String(url), init));
+          if (response.status === 409) {
+            refused += 1;
+            expect(response.headers.get('Retry-After')).toBe('1');
+            expect(
+              fixture.store
+                .listThreads(fixture.workspace.id)
+                .some((thread) => thread.name === input.name)
+            ).toBe(false);
+            if (freeze.status === 'frozen') freeze.release();
+            if (change === 'session')
+              fixture.actorState.current = {
+                ...fixture.actorState.current,
+                sessionId: 'auth_00000000-0000-7000-8000-000000000125',
+              };
+            if (change === 'membership')
+              fixture.coreDb.sqlite
+                .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+                .run(fixture.workspace.id, fixture.actorState.current.userId);
+          }
+          if (change === 'lost-response' && response.ok)
+            throw new TypeError('Connection lost after admission.');
+          return response;
+        },
+      });
+      try {
+        if (change === 'lost-response') {
+          await expect(client.operations['thread.create'](input)).rejects.toThrow(
+            'Connection lost after admission.'
+          );
+          expect(
+            fixture.store
+              .listThreads(fixture.workspace.id)
+              .filter((thread) => thread.name === input.name)
+          ).toHaveLength(1);
+        } else if (change === 'session' || change === 'membership') {
+          await expect(client.operations['thread.create'](input)).rejects.toMatchObject({
+            status: 403,
+            code: 'workspace_access_denied',
+          });
+        } else {
+          const created = await client.operations['thread.create'](input);
+          expect(fixture.store.getThread(fixture.workspace.id, created.id).name).toBe(input.name);
+          expect(
+            fixture.store
+              .listThreads(fixture.workspace.id)
+              .filter((thread) => thread.name === input.name)
+          ).toHaveLength(1);
+        }
+        expect(refused).toBe(1);
+        expect(attempts).toHaveLength(2);
+        expect(attempts[1]).toEqual(attempts[0]);
+        if (change === 'session' || change === 'membership')
+          expect(
+            fixture.store
+              .listThreads(fixture.workspace.id)
+              .some((thread) => thread.name === input.name)
+          ).toBe(false);
+      } finally {
+        if (freeze.status === 'frozen') freeze.release();
+      }
+    }
+  );
+
+  it('does not advertise a timed retry for an unbound session or retained recovery fence', async () => {
+    const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
+    expect(freeze.status).toBe('frozen');
+    const request = () =>
+      fixture.app.request(
+        ...operationRequest(
+          'automation.create',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: fixture.workspace.id,
+              threadId: fixture.turn.threadId,
+              name: 'Must stay refused',
+              prompt: 'No effect before admission.',
+              intervalSeconds: 60,
+            }),
+          }
+        )
+      );
+    try {
+      const unbound = await request();
+      expect(unbound.status).toBe(409);
+      expect(unbound.headers.get('Retry-After')).toBeNull();
+    } finally {
+      if (freeze.status === 'frozen') freeze.release();
+    }
+    fixture.actorState.current = {
+      ...fixture.actorState.current,
+      sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+    };
+    fixture.workspaceMutationAdmission.restoreClosed(fixture.workspace.id, 'capture');
+    const recovery = await request();
+    expect(recovery.status).toBe(409);
+    expect(recovery.headers.get('Retry-After')).toBeNull();
+    fixture.workspaceMutationAdmission.reopen(fixture.workspace.id, 'capture');
+    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+    const lifecycle = await request();
+    expect(lifecycle.status).toBe(409);
+    expect(lifecycle.headers.get('Retry-After')).toBeNull();
   });
 
   it('projects a frozen retained Gateway route refusal without replacing unauthorized denial', async () => {

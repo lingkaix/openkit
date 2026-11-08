@@ -7,6 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 import { asOperationError } from './api-errors.js';
+import { captureRetryContext } from './auth/capture-retry-context.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { submitConversationFiles } from './conversation-file-routes.js';
 import type { FsStore } from './lib/store.js';
@@ -35,6 +36,9 @@ export function registerOperationJsonRoutes(
       // Initialize response headers so returned Responses and the HTTP error handler inherit the same cache policy.
       c.res.headers.set('Cache-Control', 'no-store');
       try {
+        const retryContext = c.req.header('x-openkit-retry-context');
+        if (retryContext !== undefined && retryContext !== captureRetryContext(c.get('actor')))
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
         if (operationUsesBootstrapSecret(definition) && c.get('bootstrapSecretAdmission') !== true)
           throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
         if (
@@ -93,7 +97,7 @@ export function registerOperationJsonRoutes(
         });
         return successStatus === 204 ? c.body(null, 204) : c.json(output, successStatus);
       } catch (error) {
-        return asOperationError(error, projectOperationError(error));
+        return asOperationError(error, projectOperationError(error), c.get('actor'));
       }
     });
   }

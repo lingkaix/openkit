@@ -4,7 +4,6 @@ import { type ActorRef, responsibleUserIdForActor, WorkspaceIdSchema } from '@op
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-
 import { apiErrorPayload, asApiError } from '../api-errors.js';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
@@ -42,6 +41,7 @@ import {
   requireCurrentDeploymentAdmin,
   resolveSessionDeploymentAdminTokenId,
 } from './access-token-store.js';
+import { captureRetryHeaders } from './capture-retry-context.js';
 import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import {
@@ -178,7 +178,7 @@ interface AuthorizedWorkspace {
 }
 
 /** Reports only an already-authorized target whose new mutation was not admitted. */
-function frozenWorkspace(workspaceId: string): Response {
+function frozenWorkspace(workspaceId: string, actor?: Actor, captureActive = false): Response {
   return Response.json(
     apiErrorPayload({
       code: 'workspace_frozen',
@@ -192,7 +192,7 @@ function frozenWorkspace(workspaceId: string): Response {
         ],
       },
     }),
-    { status: 409 }
+    { status: 409, ...(captureActive ? { headers: captureRetryHeaders(actor) } : {}) }
   );
 }
 
@@ -256,7 +256,12 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
         return;
       }
       const release = input.workspaceMutationAdmission.enter(workspaceId);
-      if (!release) return frozenWorkspace(workspaceId);
+      if (!release)
+        return frozenWorkspace(
+          workspaceId,
+          context.get('actor'),
+          input.workspaceMutationAdmission.isCaptureActive(workspaceId)
+        );
       try {
         await next();
       } finally {

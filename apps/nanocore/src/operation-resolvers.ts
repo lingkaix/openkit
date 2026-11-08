@@ -34,7 +34,7 @@ import type {
   InternalOperationDefinition,
   OperationInvocationContext,
 } from './operation-contract.js';
-import { OperationError } from './operation-error.js';
+import { OperationError, WorkspaceCaptureAdmissionError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
 import { evaluateProductAccess } from './policy/workspace-access.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
@@ -64,7 +64,8 @@ function denied(cause?: unknown): OperationError {
   return new OperationError('workspace_access_denied', 'Workspace access denied.', 403, { cause });
 }
 /** Reports only an already-authorized target whose new mutation was not admitted. */
-function frozenWorkspace(workspaceId: string): OperationError {
+function frozenWorkspace(workspaceId: string, captureActive = false): OperationError {
+  if (captureActive) return new WorkspaceCaptureAdmissionError(workspaceId);
   return new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
     details: {
       workspaceId,
@@ -463,10 +464,18 @@ export async function admitOperation(
   let release: (() => void) | undefined;
   if (mutationWorkspaceId) {
     if (!admission) throw denied();
-    if (admission.isClosed(mutationWorkspaceId)) throw frozenWorkspace(mutationWorkspaceId);
+    if (admission.isClosed(mutationWorkspaceId))
+      throw frozenWorkspace(
+        mutationWorkspaceId,
+        definition.mutating && admission.isCaptureActive(mutationWorkspaceId)
+      );
     if (definition.mutating) {
       release = admission.enter(mutationWorkspaceId) ?? undefined;
-      if (!release) throw frozenWorkspace(mutationWorkspaceId);
+      if (!release)
+        throw frozenWorkspace(
+          mutationWorkspaceId,
+          definition.mutating && admission.isCaptureActive(mutationWorkspaceId)
+        );
     }
   }
   const context: AdmittedOperationContext = {

@@ -1,6 +1,10 @@
 import { OperationError } from './operation-error-core.js';
 
-export { OperationError, type OperationErrorOptions } from './operation-error-core.js';
+export {
+  OperationError,
+  type OperationErrorOptions,
+  WorkspaceCaptureAdmissionError,
+} from './operation-error-core.js';
 
 import Database from 'better-sqlite3';
 import type { PiAiFailure } from './llm/pi-ai-failure.js';

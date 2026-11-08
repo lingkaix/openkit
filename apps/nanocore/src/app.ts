@@ -329,7 +329,12 @@ function createBrowserCors(
 ): ReturnType<typeof cors> {
   const allowedCors = cors({
     credentials: true,
-    exposeHeaders: ['X-OpenKit-Content-Digest', 'X-OpenKit-Byte-Length'],
+    exposeHeaders: [
+      'X-OpenKit-Content-Digest',
+      'X-OpenKit-Byte-Length',
+      'Retry-After',
+      'X-OpenKit-Retry-Context',
+    ],
     origin: (origin) => origin,
   });
 

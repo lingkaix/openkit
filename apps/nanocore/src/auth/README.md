@@ -1,5 +1,7 @@
 # Authentication And Authorization
 
+`capture-retry-context.ts` binds a definite pre-effect capture refusal to its current Actor and authenticated session. Only the authorized admission gate advertises `Retry-After: 1`; unbound sessions, recovery closures and later domain errors do not. Definition-derived JSON routes compare the retained binding before dispatch and repeat ordinary authorization, so replay never carries authority into another session. Core-client owns the single bounded wait and cancellation policy.
+
 Operation admission awaits administrator-bearer Quick Chat provisioning before it checks the resulting Workspace authority and audience. Better Auth session creation awaits the existing active-user provisioning hook before session recording. Both paths keep their current active-user, owner and membership checks.
 
 This directory owns NanoCore authentication middleware, Better Auth browser sessions, actor resolution, server access-token authentication, bootstrap credential flow, and request-scope authorization helpers.

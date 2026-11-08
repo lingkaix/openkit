@@ -1,5 +1,7 @@
 # @openkit/core-client
 
+JSON operations share one capture retry in the transport. Only a typed authorized pre-effect `workspace_frozen` response with `Retry-After: 1` and NanoCore's authentication-context binding permits replay, for at most 20 seconds. Every attempt retains the original serialized input, revision and request identity. Network errors, unknown outcomes, other refusals and raw request streams stop without replay. Call `client.operations[id](input, { signal })` to cancel a pending operation, or pass a lifetime `signal` when constructing the client. Sign-in, sign-up and sign-out cancel pending requests on that client; NanoCore checks the retained context before a replay can affect a different session. UI callers use this policy directly rather than adding decision loops.
+
 Thread dashboard reads validate the authenticated viewer id and bounded participant display names alongside existing work state; no separate user-directory request is needed for conversation attribution.
 
 Dashboard work status contains selected Agent, active Turn status, pending attention counts and latest Artifact; active-work rows contain no mode field. Conversation, Task and Goal operation results and their exact lineage prove the selected workflow.

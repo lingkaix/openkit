@@ -46,7 +46,7 @@ describe('browser CORS', () => {
       expect(allowed.headers.get('access-control-allow-origin')).toBe(origin);
       expect(allowed.headers.get('access-control-allow-credentials')).toBe('true');
       expect(allowed.headers.get('access-control-expose-headers')).toBe(
-        'X-OpenKit-Content-Digest,X-OpenKit-Byte-Length'
+        'X-OpenKit-Content-Digest,X-OpenKit-Byte-Length,Retry-After,X-OpenKit-Retry-Context'
       );
     }
 

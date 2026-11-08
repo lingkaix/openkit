@@ -7,7 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { z } from 'zod';
 import { createRequestId } from './request-id.js';
-import type { ClientTransport } from './transport.js';
+import type { ClientRequestOptions, ClientTransport } from './transport.js';
 
 type ClientOperationId = JsonOperationId | 'workspace.backup-download';
 
@@ -32,7 +32,8 @@ export type OperationClient = {
       ? OperationArguments<K> extends { requestId: string }
         ? Omit<OperationArguments<K>, 'requestId'> & { requestId?: string }
         : OperationArguments<K>
-      : OperationArguments<K>
+      : OperationArguments<K>,
+    options?: ClientRequestOptions
   ) => Promise<OperationClientResult<K>>;
 };
 
@@ -45,7 +46,7 @@ export function createOperationClient(transport: ClientTransport): OperationClie
       )
       .map(([id, definition]) => [
         id,
-        async (value: Record<string, unknown>) => {
+        async (value: Record<string, unknown>, options?: ClientRequestOptions) => {
           const parsed = definition.inputSchema.parse(
             definition.mutating && 'requestId' in definition.inputSchema.shape
               ? { ...value, requestId: value.requestId ?? createRequestId() }
@@ -53,13 +54,19 @@ export function createOperationClient(transport: ClientTransport): OperationClie
           );
           const { requestId, ...body } = parsed as typeof parsed & { requestId?: string };
           if (id === 'workspace.backup-download')
-            return transport.getStream(operationHttpPath(id), 'application/octet-stream', parsed);
+            return transport.getStream(
+              operationHttpPath(id),
+              'application/octet-stream',
+              parsed,
+              options
+            );
           return transport.postJson(
             operationHttpPath(id),
             definition.mutating ? body : parsed,
             id === 'diagnostics.app' ? AppDiagnosticsClientResponseSchema : definition.outputSchema,
             definition.mutating && requestId ? { 'x-openkit-request-id': requestId } : undefined,
-            'successStatus' in definition && definition.successStatus === 204
+            'successStatus' in definition && definition.successStatus === 204,
+            options
           );
         },
       ])

@@ -265,6 +265,12 @@ export class WorkspaceMutationAdmission {
     return state.captureClosed !== null || (exclusion === 'ordinary' && state.closed);
   }
 
+  /** A live capture owner can release its fence; retained recovery and deletion closures cannot. */
+  public isCaptureActive(workspaceId: string): boolean {
+    const state = this.gates.get(workspaceId);
+    return !!state && !state.closed && state.captureClosed?.owner != null;
+  }
+
   /**
    * True only after `close()`. A capture fence is not this close.
    * Callers still authorized for the Workspace keep seeing it; mutations use `isClosed`.
