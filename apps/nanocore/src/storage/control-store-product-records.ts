@@ -3,7 +3,12 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
-import { ContentReferenceSchema, KnowledgeBaseIdSchema, readRetainedV1 } from '@openkit/protocol';
+import {
+  ContentReferenceSchema,
+  ItemTypeSchema,
+  KnowledgeBaseIdSchema,
+  readRetainedV1,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
@@ -264,6 +269,104 @@ export function listProducts(
   return rows.map((row) => decodeRow(sqlite, kind, row, owner, prepared));
 }
 
+/** Turn metadata ordered by its immutable first native admission, independent of start time. */
+export interface ControlThreadTurnSnapshot extends ControlProductSnapshot {
+  readonly admissionOrder: number;
+}
+
+/** Reads only one Thread's indexed metadata; no other Thread is decoded. */
+export function listThreadTurnProducts(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  threadId: string,
+  afterAdmissionOrder = 0,
+  limit: number = CONTROL_PRODUCT_LIMITS.pageRows
+): ControlThreadTurnSnapshot[] {
+  if (
+    !Number.isSafeInteger(afterAdmissionOrder) ||
+    afterAdmissionOrder < 0 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > CONTROL_PRODUCT_LIMITS.pageRows
+  )
+    throw new ControlProductPreconditionError();
+  if (!readProduct(sqlite, owner, 'thread', threadId)) return [];
+  const rows = sqlite
+    .prepare(
+      'SELECT * FROM control_turns WHERE thread_id=? AND admission_order>? ORDER BY admission_order LIMIT ?'
+    )
+    .all(threadId, afterAdmissionOrder, limit) as (MetadataRow & { admission_order: number })[];
+  return rows.map((row) => {
+    if (!Number.isSafeInteger(row.admission_order) || row.admission_order <= 0)
+      throw new ControlProductPreconditionError();
+    return { ...decodeRow(sqlite, 'turn', row, owner), admissionOrder: row.admission_order };
+  });
+}
+
+/** Selects the current exact Item only after its Turn matches the requested Thread. */
+export function readThreadItemEntry(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  threadId: string,
+  itemId: string
+): (ControlProductEntryView & { readonly turnId: string }) | undefined {
+  if (!readProduct(sqlite, owner, 'thread', threadId)) return undefined;
+  const row = sqlite
+    .prepare(`SELECT e.* FROM control_product_entries e
+    JOIN control_turns t ON t.id=e.turn_id
+    WHERE e.kind='item' AND e.id=? AND t.thread_id=? ORDER BY e.revision DESC LIMIT 1`)
+    .get(itemId, threadId) as (ProductEntryRow & { turn_id: string }) | undefined;
+  if (!row) return undefined;
+  const turn = readProduct(sqlite, owner, 'turn', row.turn_id);
+  if (!turn || turn.record.threadId !== threadId) throw new ControlProductPreconditionError();
+  return { ...decodeProductEntry(row, owner), turnId: row.turn_id };
+}
+
+/** Counts first Item revisions by immutable kind without opening body bytes or later revisions. */
+export function readTurnItemCounts(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  threadId: string,
+  turnId: string
+): Partial<Record<z.infer<typeof ItemTypeSchema>, number>> | undefined {
+  const turn = readProduct(sqlite, owner, 'turn', turnId);
+  if (!turn || turn.record.threadId !== threadId) return undefined;
+  const rows = sqlite
+    .prepare(`SELECT json_extract(identity_json, '$.type') AS type, count(*) AS count
+    FROM control_product_entries WHERE kind='item' AND turn_id=? AND revision=1
+    GROUP BY json_extract(identity_json, '$.type')`)
+    .all(turnId) as { type: unknown; count: number }[];
+  const counts: Partial<Record<z.infer<typeof ItemTypeSchema>, number>> = {};
+  for (const row of rows) counts[ItemTypeSchema.parse(row.type)] = row.count;
+  return counts;
+}
+
+/** Native immutable descriptor fields shared by ordered and addressed reads. */
+interface ProductEntryRow {
+  readonly schema_version: number;
+  readonly sequence: number;
+  readonly id: string;
+  readonly revision: number;
+  readonly content_json: string;
+}
+
+/** Checks the original descriptor and scope before any immutable content read. */
+function decodeProductEntry(
+  row: ProductEntryRow,
+  owner: ControlProductOwner
+): ControlProductEntryView {
+  if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
+    throw new ControlProductPreconditionError();
+  const content = ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json));
+  assertControlProductOwner(
+    owner,
+    'representation' in content.reference
+      ? content.reference.ownerScope
+      : content.reference.locator.ownerScope
+  );
+  return { sequence: row.sequence, id: row.id, revision: row.revision, content };
+}
+
 /** Reads ordered immutable descriptors without opening, closing, or advancing the supplied snapshot. */
 export function readProductEntries(
   sqlite: Database.Database,
@@ -291,25 +394,8 @@ export function readProductEntries(
     );
     prepared?.set('entries', statement);
   }
-  const rows = statement.all(kind, turnId, after, limit) as {
-    schema_version: number;
-    sequence: number;
-    id: string;
-    revision: number;
-    content_json: string;
-  }[];
-  return rows.map((row) => {
-    if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
-      throw new ControlProductPreconditionError();
-    const content = ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json));
-    assertControlProductOwner(
-      owner,
-      'representation' in content.reference
-        ? content.reference.ownerScope
-        : content.reference.locator.ownerScope
-    );
-    return { sequence: row.sequence, id: row.id, revision: row.revision, content };
-  });
+  const rows = statement.all(kind, turnId, after, limit) as ProductEntryRow[];
+  return rows.map((row) => decodeProductEntry(row, owner));
 }
 
 /** Rejects disagreements between indexed SQL authority and its retained metadata view. */
@@ -368,6 +454,19 @@ export interface ControlStoreProductReadHandle {
   readonly sqlite: Database.Database;
   get(kind: ControlProductKind, id: string): ControlProductSnapshot | undefined;
   list(kind: ControlProductKind, afterId?: string, limit?: number): ControlProductSnapshot[];
+  threadTurns(
+    threadId: string,
+    afterAdmissionOrder?: number,
+    limit?: number
+  ): ControlThreadTurnSnapshot[];
+  threadItem(
+    threadId: string,
+    itemId: string
+  ): (ControlProductEntryView & { readonly turnId: string }) | undefined;
+  turnItemCounts(
+    threadId: string,
+    turnId: string
+  ): Partial<Record<z.infer<typeof ItemTypeSchema>, number>> | undefined;
   entries(
     turnId: string,
     kind: 'item' | 'event',
@@ -470,6 +569,21 @@ export function openControlStoreProductReadHandle(
     list(kind: ControlProductKind, afterId = '', limit = CONTROL_PRODUCT_LIMITS.pageRows) {
       assertReaderOpen();
       return listProducts(sqlite, owner, kind, afterId, limit, prepared);
+    },
+    /** Reads a bounded page from the requested Thread's admission index. */
+    threadTurns(threadId, afterAdmissionOrder = 0, limit = CONTROL_PRODUCT_LIMITS.pageRows) {
+      assertReaderOpen();
+      return listThreadTurnProducts(sqlite, owner, threadId, afterAdmissionOrder, limit);
+    },
+    /** Resolves only the requested Thread's exact Item descriptor. */
+    threadItem(threadId, itemId) {
+      assertReaderOpen();
+      return readThreadItemEntry(sqlite, owner, threadId, itemId);
+    },
+    /** Counts immutable first revisions in the requested Turn's index. */
+    turnItemCounts(threadId, turnId) {
+      assertReaderOpen();
+      return readTurnItemCounts(sqlite, owner, threadId, turnId);
     },
     /** Reads ordered immutable descriptors, not mutable transcript files or a repair authority. */
     entries(

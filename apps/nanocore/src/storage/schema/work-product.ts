@@ -64,11 +64,19 @@ export const controlTurns = sqliteTable(
       .notNull()
       .references(() => controlThreads.id),
     agentSessionId: text('agent_session_id').references(() => controlAgentSessions.id),
+    /** Immutable native admission order; assigned by the native insertion trigger in the covering transaction. */
+    admissionOrder: integer('admission_order').notNull().default(0),
     status: text('status').notNull(),
     ...metadata(),
   },
   (table) => [
     index('control_turns_thread_idx').on(table.threadId, table.id),
+    uniqueIndex('control_turns_admission_order_idx').on(table.admissionOrder),
+    index('control_turns_thread_admission_idx').on(table.threadId, table.admissionOrder),
+    check(
+      'control_turns_admission_order_check',
+      sql`${table.admissionOrder} >= 0 AND ${table.admissionOrder} <= 9007199254740991`
+    ),
     uniqueIndex('control_turns_active_thread_idx')
       .on(table.threadId)
       .where(sql`${table.status} IN ('pending', 'running')`),
@@ -97,6 +105,9 @@ export const controlProductEntries = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.kind, table.turnId, table.sequence] }),
+    index('control_items_turn_type_idx')
+      .on(table.turnId, sql`json_extract(${table.identityJson}, '$.type')`)
+      .where(sql`${table.kind} = 'item' AND ${table.revision} = 1`),
     uniqueIndex('control_product_entries_revision_idx').on(table.kind, table.id, table.revision),
     check('control_product_entries_kind_check', sql`${table.kind} IN ('item', 'event')`),
     check(

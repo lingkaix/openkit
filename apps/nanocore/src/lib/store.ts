@@ -76,7 +76,6 @@ import {
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   allocateEntityId,
-  compareCodeUnits,
   deriveEntityId,
   formatReferenceUri,
   ItemSchema,
@@ -278,9 +277,12 @@ import {
   readNativeProduct,
   readNativeProductEntries,
   readNativeProductPages,
+  readNativeThreadItem,
+  readNativeThreadTurnPages,
   readNativeTurnEvents,
   readNativeTurnHistory,
   readNativeTurnHistorySteps,
+  readNativeTurnItemCounts,
   readNativeTurnWriteHead,
   readWorkspaceArtifacts,
   readWorkspaceKnowledgePage,
@@ -4236,15 +4238,14 @@ export class FsStore {
     return TurnSchema.parse(TurnReaderSchema.parse(turn));
   }
 
-  /** Lists Server Turns in their canonical chronological order. */
+  /** Lists only this Server Thread's Turns in durable admission order. */
   public listServerThreadTurns(threadId: string): Turn[] {
     this.getServerThread(threadId);
-    const turns = this.dataRoot
-      ? listNativeProducts(this.nativeScope({ kind: 'server' }), 'turn')
-          .filter((row) => row.record.threadId === threadId)
-          .map((row) => this.getServerTurnById(row.record.id as string))
+    return this.dataRoot
+      ? [...readNativeThreadTurnPages(this.nativeScope({ kind: 'server' }), threadId)].flatMap(
+          (page) => page.map((row) => this.getServerTurnById(row.record.id as string))
+        )
       : [...this.serverTurns.values()].filter((turn) => turn.threadId === threadId);
-    return turns.sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
   }
 
   /** Updates the existing closed lifecycle without changing immutable Server owner or admission facts. */
@@ -5103,7 +5104,7 @@ export class FsStore {
   }
 
   /**
-   * List turns for one thread in chronological order.
+   * List turns for one thread in durable admission order.
    *
    * @param workspaceId Workspace that owns the thread.
    * @param threadId Thread whose turns should be returned.
@@ -5126,12 +5127,11 @@ export class FsStore {
     const turns: Turn[] = [];
     if (this.dataRoot) {
       const selected: string[] = [];
-      for (const page of readNativeProductPages(
+      for (const page of readNativeThreadTurnPages(
         this.nativeScope({ kind: 'workspace', workspaceId }),
-        'turn'
+        threadId
       )) {
-        for (const row of page)
-          if (row.record.threadId === threadId) selected.push(row.record.id as string);
+        for (const row of page) selected.push(row.record.id as string);
         yield;
       }
       for (const id of selected) turns.push(yield* this.getTurnSteps(workspaceId, threadId, id));
@@ -5141,7 +5141,7 @@ export class FsStore {
           (turn) => workspaceIdForOwner(turn.owner) === workspaceId && turn.threadId === threadId
         )
       );
-    return turns.sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
+    return turns;
   }
 
   /**
@@ -5787,6 +5787,39 @@ export class FsStore {
    */
   public listThreadItems(workspaceId: string, threadId: string): Item[] {
     return this.listThreadTurns(workspaceId, threadId).flatMap((turn) => turn.items);
+  }
+
+  /** Resolves an exact Item inside its current Workspace and Thread without reading siblings. */
+  public getThreadItem(workspaceId: string, threadId: string, itemId: string): Item {
+    this.getThread(workspaceId, threadId);
+    const item = this.dataRoot
+      ? readNativeThreadItem(this.nativeScope({ kind: 'workspace', workspaceId }), threadId, itemId)
+      : this.items.get(itemId);
+    if (!item || workspaceIdForOwner(item.owner) !== workspaceId || item.threadId !== threadId)
+      throw new StoreRecordNotFoundError(`Item not found: ${itemId}`);
+    return ItemSchema.parse(item);
+  }
+
+  /** Counts one Turn's original Items by immutable type without materializing their bodies. */
+  public getThreadTurnItemCounts(
+    workspaceId: string,
+    threadId: string,
+    turnId: string
+  ): Partial<Record<Item['type'], number>> {
+    this.getThread(workspaceId, threadId);
+    if (this.dataRoot) {
+      const counts = readNativeTurnItemCounts(
+        this.nativeScope({ kind: 'workspace', workspaceId }),
+        threadId,
+        turnId
+      );
+      if (!counts) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+      return counts;
+    }
+    const counts: Partial<Record<Item['type'], number>> = {};
+    for (const item of this.getTurn(workspaceId, threadId, turnId).items)
+      counts[item.type] = (counts[item.type] ?? 0) + 1;
+    return counts;
   }
 
   /**

@@ -149,6 +149,7 @@ import {
   type ControlProductOwner,
   type ControlProductSnapshot,
   type ControlStoreProductReadHandle,
+  type ControlThreadTurnSnapshot,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
@@ -863,6 +864,75 @@ export function* readNativeProductPages(
       after = page.at(-1)!.record.id as string;
       yield page;
     }
+  } finally {
+    reader.close();
+  }
+}
+
+/** Reads bounded Thread metadata pages in durable admission order, releasing each read cut before yielding. */
+export function* readNativeThreadTurnPages(
+  scope: Pick<NativeProductScope, 'path' | 'owner' | 'sqlite'>,
+  threadId: string,
+  afterAdmissionOrder = 0
+): Generator<readonly ControlThreadTurnSnapshot[], void, void> {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  try {
+    for (;;) {
+      const page = reader.sqlite.transaction(() =>
+        reader.threadTurns(threadId, afterAdmissionOrder).map((known) => ({
+          ...readNativeProduct(scope, 'turn', known.record.id as string, reader)!,
+          admissionOrder: known.admissionOrder,
+        }))
+      )();
+      if (!page.length) return;
+      afterAdmissionOrder = page.at(-1)!.admissionOrder;
+      yield page;
+    }
+  } finally {
+    reader.close();
+  }
+}
+
+/** Verifies one exact current Item's immutable bytes only after its indexed Thread selector matches. */
+export function readNativeThreadItem(
+  scope: NativeProductScope,
+  threadId: string,
+  itemId: string
+): Item | undefined {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  try {
+    const entry = reader.threadItem(threadId, itemId);
+    if (!entry) return undefined;
+    const value = readImmutableProductJson(scope.contentMount, scope.owner, entry.content);
+    const item = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+    if (scope.owner.kind === 'workspace') assertWorkspaceWorkOwner(item, scope.owner.workspaceId);
+    if (
+      !isDeepStrictEqual(item.owner, scope.owner) ||
+      item.id !== itemId ||
+      item.threadId !== threadId ||
+      item.turnId !== entry.turnId ||
+      (value &&
+        typeof value === 'object' &&
+        'requiredFeatures' in value &&
+        (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length > 0))
+    )
+      throw new Error('Native Item content lineage is recovery_required.');
+    const { schemaVersion: _header, ...raw } = value as Record<string, unknown>;
+    return preserveDescriptiveRecord(raw, item, item) as Item;
+  } finally {
+    reader.close();
+  }
+}
+
+/** Returns kind counts from one Turn's original Item identities, without reading body content. */
+export function readNativeTurnItemCounts(
+  scope: NativeProductScope,
+  threadId: string,
+  turnId: string
+) {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  try {
+    return reader.turnItemCounts(threadId, turnId);
   } finally {
     reader.close();
   }

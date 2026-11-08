@@ -2,6 +2,8 @@
 
 Capture admission returns `Retry-After: 1` only for an authorized mutation refused before effects by a live capture owner. A digest binds replay to the same authenticated principal and session; it grants no authority, and every attempt repeats current authorization. Recovery and lifecycle closures and later domain failures retain their ordinary refusals. Core-client owns the bounded 20-second JSON replay and caller cancellation policy; capture itself never waits for mutations.
 
+Thread Turn lists use native Thread-scoped indexes and immutable first-admission order, including before a run starts. Exact Thread Item lookup verifies the selected immutable body, and per-Turn kind counts read first-revision identities without body reads. The [storage guide](src/storage/README.md) describes the additive admission-key migration and unchanged ownership boundary.
+
 The internal self-check executor resumes release after a restart only for its exact retained completed Turn, accepted final status and cleaned synthetic backend session. It uses the original modeled fence and release journal without replaying output or accepting real backend identities. Incomplete closeout retains Thread exclusion. Ordinary and recovered self-check closeout retain process-local lifecycle ownership until settlement, so maintenance cannot take over a live owner.
 
 Machine digest, identity, retained-inventory and wire orderings corrected under #532 use Protocol `compareCodeUnits`, which compares UTF-16 code units without host locale or ICU state. Producers and their corresponding verifiers use the same order. The recurring admission tie-breaker uses the same shared code-unit order.

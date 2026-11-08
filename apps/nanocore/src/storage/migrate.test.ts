@@ -378,6 +378,7 @@ describe('database setup', () => {
         '0019_idle_cleanup_resident_lookup.sql',
         '0020_scheduler_lineage_lookup.sql',
         '0021_harness_login_metadata.sql',
+        '0022_thread_turn_reads.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -408,6 +409,7 @@ describe('database setup', () => {
         'core_0019_idle_cleanup_resident_lookup',
         'core_0020_scheduler_lineage_lookup',
         'core_0021_harness_login_metadata',
+        'core_0022_thread_turn_reads',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -2066,18 +2068,22 @@ describe('retained VaultReference Login metadata migration', () => {
     ) as { entries: Array<{ idx: number; tag: string; when: number }> };
     // O14 fixes the predecessor independently: the accepted cut adds Core0021 after Core0020.
     // Current creation would migrate before setup, so only the migration owner's historical fixture writes these rows.
-    const predecessor = createNativeJournalFolder(
-      journal.entries
-        .filter((entry) => entry.idx < 21)
-        .map((entry) => ({
-          tag: entry.tag,
-          when: entry.when,
-          sql: readFileSync(
-            new URL(`../../drizzle/core/${entry.tag}.sql`, import.meta.url),
-            'utf8'
-          ),
-        }))
-    );
+    const historicalFolder = (lastIndex: number) =>
+      createNativeJournalFolder(
+        journal.entries
+          .filter((entry) => entry.idx <= lastIndex)
+          .map((entry) => ({
+            tag: entry.tag,
+            when: entry.when,
+            sql: readFileSync(
+              new URL(`../../drizzle/core/${entry.tag}.sql`, import.meta.url),
+              'utf8'
+            ),
+          }))
+      );
+    // Exercise this fixed historical transition independently of later additive migrations.
+    const predecessor = historicalFolder(20);
+    const loginMigration = historicalFolder(21);
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
     const userId = testEntityId('usr', 'login-migration-scoped-user');
@@ -2155,7 +2161,7 @@ describe('retained VaultReference Login metadata migration', () => {
       expect(beforeColumns).not.toContain('login_account_id');
       expect(beforeColumns).not.toContain('login_quarantined');
 
-      applyNativeScopeMigrations(coreDb.sqlite, 'core');
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', loginMigration);
 
       // Private Login Metadata Operations owns three nullable scalar slots on this same reference row.
       expect(listTableNames(coreDb)).toEqual(beforeTables);
@@ -2207,7 +2213,7 @@ describe('retained VaultReference Login metadata migration', () => {
       expect(coreDb.sqlite.pragma('foreign_key_check')).toEqual([]);
 
       const migratedBytes = coreDb.sqlite.serialize();
-      applyNativeScopeMigrations(coreDb.sqlite, 'core');
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', loginMigration);
       expect(coreDb.sqlite.serialize().equals(migratedBytes)).toBe(true);
       expect(coreDb.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
         migratedLedger

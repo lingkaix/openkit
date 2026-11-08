@@ -281,8 +281,11 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
       when: number;
     }>;
   };
-  expect(productionJournal.entries.at(-1)?.tag).toBe('0019_knowledge_authority');
-  const authorityEntry = productionJournal.entries.at(-1)!;
+  const authorityEntry = productionJournal.entries.find(
+    (entry) => entry.tag === '0019_knowledge_authority'
+  );
+  expect(authorityEntry).toBeDefined();
+  if (!authorityEntry) throw new Error('The fixed Knowledge authority migration is missing.');
   const authorityMigrationFolder = (name: string, failLedger: boolean) => {
     const folder = join(root, name);
     mkdirSync(join(folder, 'meta'), { recursive: true });
