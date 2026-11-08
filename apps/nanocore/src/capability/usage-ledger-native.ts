@@ -1,12 +1,19 @@
 import {
   type AuditEvent,
+  allocateEntityId,
   CapabilityCallExtensionsSchema,
   CapabilityCallSchema,
   type GatewayRouteLineageEntry,
   GatewayRouteLineageEntrySchema,
   RequestIdSchema,
   readRetainedV1,
+  responsibleUserIdForActor,
+  type ServerUsageRecord,
+  ServerUsageRecordSchema,
   SystemPromptDigestSchema,
+  type UsageRecord,
+  UsageRecordSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -18,6 +25,7 @@ import type {
   CapabilityCallLedgerRecord,
   FinishCapabilityCallInput,
   GatewayCallLedgerBinding,
+  RecordUsageInput,
   StampCapabilityCallSchemaSnapshotInput,
   StartedCapabilityCall,
 } from './usage-ledger.js';
@@ -431,3 +439,213 @@ export function clearCapabilityCallItemInDb(workspaceDb: WorkspaceDb, callId: st
              WHERE call_id = ? AND status = 'running'`)
     .run(callId);
 }
+
+/**
+ * Records measured usage linked to a started capability call.
+ *
+ * @param input Usage rows, durable call summary and optional command audit lineage.
+ * @returns Retained IDs, including existing equivalent measurements, in input order.
+ */
+export function recordUsageInDb(input: RecordUsageInput): string[] {
+  const context = input.call.context;
+  if (
+    input.workspaceDb.scope === 'core'
+      ? context.workspaceId !== undefined ||
+        !('owner' in context) ||
+        context.owner.kind !== 'server'
+      : context.workspaceId !== input.workspaceDb.workspaceId
+  )
+    throw new Error('Usage record database owner mismatch.');
+  const ids: string[] = [];
+  const recordedAt = (input.now ?? new Date()).toISOString();
+
+  try {
+    for (const record of input.records) {
+      assertNoUnsafeLedgerValue(record);
+
+      const usage = (
+        input.workspaceDb.scope === 'core' ? ServerUsageRecordSchema : UsageRecordSchema
+      ).parse({
+        id: record.usageId ?? allocateEntityId('use'),
+        ...(input.workspaceDb.scope === 'core'
+          ? { owner: { kind: 'server' } }
+          : { workspaceId: input.call.context.workspaceId }),
+        responsibleUserId: input.call.context.authorityActor
+          ? responsibleUserIdForActor(input.call.context.authorityActor)
+          : null,
+        threadId: input.call.context.threadId ?? null,
+        turnId: input.call.context.turnId ?? null,
+        itemId: input.call.context.itemId ?? null,
+        capabilityCallId: input.call.id,
+        requestId: input.call.context.requestId ?? null,
+        agentId: input.call.context.agentId ?? null,
+        agentSessionId: input.call.context.agentSessionId ?? null,
+        sourceIds: normalizeSourceIds(input.call.context.sourceIds),
+        category: record.category,
+        unit: record.unit,
+        quantity: record.quantity,
+        modelId: record.modelId ?? null,
+        providerModel: record.providerModel ?? null,
+        providerRef: record.providerRef ?? input.call.context.providerRef ?? null,
+        source: record.source ?? null,
+        recordedAt,
+      });
+
+      const equivalent = hasEquivalentUsageRecord(input.workspaceDb, usage);
+      ids.push(equivalent ?? usage.id);
+      if (equivalent) continue;
+
+      input.workspaceDb.sqlite
+        .prepare(
+          `INSERT INTO usage_records (
+            schema_version,
+            usage_id,
+            workspace_id,
+            thread_id,
+            turn_id,
+            item_id,
+            capability_call_id,
+            request_id,
+            agent_id,
+            agent_session_id,
+            responsible_user_id,
+            source_ids_json,
+            category,
+            unit,
+            quantity,
+            model_id,
+            provider_model,
+            provider_ref,
+            source,
+            recorded_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          writeRetainedV1(usage).schemaVersion,
+          usage.id,
+          usage.workspaceId ?? null,
+          usage.threadId,
+          usage.turnId,
+          usage.itemId,
+          usage.capabilityCallId,
+          usage.requestId,
+          usage.agentId,
+          usage.agentSessionId,
+          usage.responsibleUserId,
+          sourceIdsJson(usage.sourceIds),
+          usage.category,
+          usage.unit,
+          usage.quantity,
+          usage.modelId,
+          usage.providerModel ?? null,
+          usage.providerRef,
+          usage.source,
+          usage.recordedAt
+        );
+    }
+  } catch (error) {
+    try {
+      finishCapabilityCallInDb({
+        auditLineage: input.auditLineage,
+        workspaceDb: input.workspaceDb,
+        callId: input.call.id,
+        errorCode: 'usage_record_failed',
+        status: 'failed',
+      });
+    } catch {}
+    throw error;
+  }
+  return ids;
+}
+
+/**
+ * Checks whether a retry already recorded the same usage measurement for a call.
+ *
+ * @param workspaceDb Workspace-scoped database handle.
+ * @param usage Protocol-validated usage row.
+ * @returns The retained measurement ID when an equivalent record is already stored.
+ */
+function hasEquivalentUsageRecord(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  usage: UsageRecord | ServerUsageRecord
+): string | undefined {
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT usage_id, schema_version FROM usage_records
+       WHERE capability_call_id IS ?
+         AND category = ?
+         AND unit = ?
+         AND quantity = ?
+         AND model_id IS ?
+         AND provider_model IS ?
+         AND provider_ref IS ?
+         AND source IS ?
+         AND source_ids_json = ?
+       LIMIT 1`
+    )
+    .get(
+      usage.capabilityCallId,
+      usage.category,
+      usage.unit,
+      usage.quantity,
+      usage.modelId,
+      usage.providerModel ?? null,
+      usage.providerRef,
+      usage.source,
+      sourceIdsJson(usage.sourceIds)
+    ) as { usage_id: string; schema_version: number } | undefined;
+
+  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  return row?.usage_id;
+}
+
+/**
+ * Serializes source ids for SQLite storage.
+ *
+ * @param sourceIds Source ids to serialize.
+ * @returns Stable JSON string.
+ */
+function sourceIdsJson(sourceIds: readonly string[] | null | undefined): string {
+  return JSON.stringify(normalizeSourceIds(sourceIds));
+}
+
+/**
+ * Fails closed when an attempted ledger payload contains obvious raw sensitive or payload fields.
+ *
+ * @param value Value to inspect recursively.
+ */
+function assertNoUnsafeLedgerValue(value: unknown): void {
+  const unsafeKey = findUnsafeLedgerKey(value);
+
+  if (unsafeKey) {
+    throw new Error('Capability usage ledger values must be redacted before recording.');
+  }
+}
+
+/**
+ * Finds an unsafe field name in a would-be ledger value.
+ *
+ * @param value Value to inspect recursively.
+ * @returns Unsafe key when present.
+ */
+function findUnsafeLedgerKey(value: unknown): string | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (/(prompt|argument|result|secret|token|credential|password|cache[_-]?key)/i.test(key)) {
+      return key;
+    }
+
+    const nestedKey = findUnsafeLedgerKey(nested);
+
+    if (nestedKey) {
+      return nestedKey;
+    }
+  }
+
+  return null;
+}
+
+export { assertNoUnsafeLedgerValue, sourceIdsJson };
