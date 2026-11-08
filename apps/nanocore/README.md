@@ -1,5 +1,7 @@
 # nanocore
 
+The internal self-check executor resumes release after a restart only for its exact retained completed Turn, accepted final status and cleaned synthetic backend session. It uses the original modeled fence and release journal without replaying output or accepting real backend identities. Incomplete closeout retains Thread exclusion.
+
 Machine digest, identity, retained-inventory and wire orderings corrected under #532 use Protocol `compareCodeUnits`, which compares UTF-16 code units without host locale or ICU state. Producers and their corresponding verifiers use the same order. The recurring admission tie-breaker uses the same shared code-unit order.
 
 Scheduler admission inventories retain their complete-array contract and original single Core observation. The synchronous collector drains bounded enqueue/id keyset pages inside the existing deferred SQLite transaction wrapper. The cooperative page iterator finishes each SELECT and decode before yielding, with no transaction held between steps; cooperative callers must not supply an enclosing transaction. Both paths keep the original Workspace/status filters, deterministic order and retained-row decoder.

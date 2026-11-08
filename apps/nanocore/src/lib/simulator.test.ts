@@ -39,6 +39,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
+import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -68,7 +69,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
-import type { FsStore } from './store.js';
+import { FsStore } from './store.js';
 
 /** Test-only view for fault injection at the real admitted simulator publication boundary. */
 interface MaterialProposalPublisher {
@@ -389,6 +390,125 @@ describe('SimulatedTurnExecutor', () => {
       ).toEqual([]);
     } finally {
       closeouts.mockRestore();
+      coreDb.sqlite.close();
+    }
+  }, 60_000);
+
+  it('releases a completed self-check final after restart without rerunning the Turn', async () => {
+    const coreDb = await createCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    const release = vi.spyOn(executor, 'release').mockImplementation(async (input) => ({
+      attemptId: input.attemptId,
+      backendId: input.backendId,
+      bindingRef: input.bindingRef,
+      inputRef: input.inputRef,
+      operationId: input.operationId,
+      state: 'pending',
+      fenceRef: null,
+    }));
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    const app = createApp({
+      agentManifests: [createTestAgentSetup().manifest],
+      coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Simulator inference',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      store,
+      turnExecutor: executor,
+    });
+
+    try {
+      await linkRepository(app);
+      const response = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              requestId: '0190f4c8-0000-7000-8000-000000000212',
+              input: 'Complete before restart',
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(202);
+      const turn = (await response.json()) as { id: string };
+      await closeouts.mock.results[0]!.value.closeout;
+      expect(store.getTurnById(turn.id).status).toBe('completed');
+      expect(release).toHaveBeenCalledOnce();
+      const session = listWorkerBackendSessions(coreDb).find((row) => row.turnId === turn.id)!;
+      expect(session.state).toBe('cleaned');
+      const attempt = () =>
+        coreDb.sqlite
+          .prepare('SELECT phase FROM scheduler_execution_attempts WHERE attempt_id = ?')
+          .get(session.attemptId);
+      expect(attempt()).toEqual({ phase: 'closing' });
+      const before = store.listThreadItems(session.workspaceId, session.threadId);
+      const coldDb = openCoreDb(coreDb.dataRoot);
+      try {
+        const coldStore = new FsStore({ dataRoot: coreDb.dataRoot });
+        const runtime = createConfiguredWorkerLifecycleRuntime({
+          coreDb: coldDb,
+          store: coldStore,
+          env: { OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1' },
+        });
+        await expect(
+          runtime.reconcileAcceptedFinalStatus({
+            ...session,
+            backendSessionId: 'real-backend-session',
+          })
+        ).rejects.toThrow('exact completed output and cleanup');
+        expect(attempt()).toEqual({ phase: 'closing' });
+        await runtime.reconcileAcceptedFinalStatus(session);
+        expect(attempt()).toEqual({ phase: 'closed' });
+        expect(coldStore.listThreadItems(session.workspaceId, session.threadId)).toEqual(before);
+        await runtime.reconcileAcceptedFinalStatus(session);
+        expect(attempt()).toEqual({ phase: 'closed' });
+      } finally {
+        coldDb.sqlite.close();
+      }
+      release.mockRestore();
+      const next = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: session.workspaceId,
+              threadId: session.threadId,
+              requestId: '0190f4c8-0000-7000-8000-000000000213',
+              input: 'Continue after recovery',
+            }),
+          }
+        )
+      );
+      expect(next.status).toBe(202);
+      const nextTurn = (await next.json()) as { id: string };
+      await closeouts.mock.results[1]!.value.closeout;
+      expect(store.getTurnById(nextTurn.id).status).toBe('completed');
+    } finally {
+      closeouts.mockRestore();
+      release.mockRestore();
       coreDb.sqlite.close();
     }
   }, 60_000);

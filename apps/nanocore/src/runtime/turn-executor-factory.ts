@@ -546,8 +546,11 @@ function createNanoHostWorkerLifecycleRuntime(
       backend.failHarnessDelivery(command, failure),
     runtimeTargetKind: 'nanohost',
     reconcileAcceptedFinalStatus: async (session) => {
-      if (!(turnExecutor instanceof WorkerGovernanceTurnExecutor)) {
-        throw new Error('The self-check executor cannot reconcile a real worker session.');
+      if (turnExecutor instanceof SimulatedTurnExecutor) {
+        return turnExecutor.reconcileAcceptedFinalStatus(
+          sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
+          session
+        );
       }
       const environmentPackage = await restoreDurableSession(session);
       const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });

@@ -66,7 +66,9 @@ import type {
 } from '../runtime/types.js';
 import { projectWorkerBackendCleanup } from '../runtime/worker-backend-cleanup-projection.js';
 import {
+  getWorkerBackendSession,
   listWorkerBackendSessions,
+  type WorkerBackendSessionRecord,
   workerBackendImageIdentity,
   workerBackendLineageFromRuntimeImage,
 } from '../runtime/worker-backend-session-records.js';
@@ -76,6 +78,7 @@ import {
   transitionWorkerBackendSessionState,
 } from '../runtime/worker-backend-sessions.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
+import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import { createLocalSimulatorCredentialCheckValues } from '../runtime/worker-credential-guard.js';
 import {
   acceptPreparedWorkerTurnContextPackage,
@@ -95,7 +98,10 @@ import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
-import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import {
+  requireSchedulerExecutionAttemptAdmissionContext,
+  type SchedulerWorkerStorageChoice,
+} from '../scheduler-records.js';
 import {
   FileAdmissionError,
   type FileStorageAdmission,
@@ -1220,37 +1226,81 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         context.attemptId &&
         ['completed', 'interrupted', 'cancelled'].includes(store.getTurnById(turnId).status)
       ) {
-        const attempt = await markSchedulerExecutionAttemptClosing(this.coreDb, {
-          attemptId: context.attemptId,
-          cause: `turn-${store.getTurnById(turnId).status}`,
+        await this.releaseCompletedAttempt(store, turnId, context.attemptId);
+      }
+    }
+  }
+
+  /** Finishes only the deterministic owner's durable completed closeout after process loss. */
+  public async reconcileAcceptedFinalStatus(
+    store: FsStore,
+    session: WorkerBackendSessionRecord
+  ): Promise<{ status: 'completed'; turn: ReturnType<FsStore['getTurnById']> }> {
+    if (!this.coreDb) throw new Error('Self-check recovery requires Core authority.');
+    const turn = store.getTurnById(session.turnId);
+    const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
+      agentSessionId: session.agentSessionId,
+      packageSnapshotId: session.packageSnapshotId,
+      requestId: requireSchedulerExecutionAttemptAdmissionContext(this.coreDb, session.attemptId)
+        .requestId,
+      threadId: session.threadId,
+      turnId: session.turnId,
+      workspaceId: session.workspaceId,
+    });
+    // Real backend identities and incomplete output keep their existing exclusion.
+    if (
+      session.backendSessionId !== `self-check_${session.packageSnapshotId}` ||
+      !isDeepStrictEqual(getWorkerBackendSession(this.coreDb, session.attemptId), session) ||
+      session.state !== 'cleaned' ||
+      session.workspaceHandoffState !== 'complete' ||
+      workspaceIdForOwner(turn.owner) !== session.workspaceId ||
+      turn.threadId !== session.threadId ||
+      turn.agentSessionId !== session.agentSessionId ||
+      turn.status !== 'completed' ||
+      accepted?.status !== 'completed'
+    )
+      throw new Error('Self-check recovery requires its exact completed output and cleanup.');
+    await this.readTerminalPublication(store, turn.id);
+    await this.releaseCompletedAttempt(store, turn.id, session.attemptId);
+    return { status: 'completed', turn };
+  }
+
+  /** Records the modeled fence only after the original deterministic closeout barriers. */
+  private async releaseCompletedAttempt(
+    store: FsStore,
+    turnId: string,
+    attemptId: string
+  ): Promise<void> {
+    if (!this.coreDb) throw new Error('Self-check release requires Core authority.');
+    const attempt = await markSchedulerExecutionAttemptClosing(this.coreDb, {
+      attemptId: attemptId,
+      cause: `turn-${store.getTurnById(turnId).status}`,
+    });
+    if (attempt.operationId) {
+      const correlation = schedulerExecutionCorrelation(attempt);
+      const proof = {
+        terminalHandoff: true,
+        output: true,
+        evidence: true,
+        outsideWorkspaceCollection: true,
+        integrationDrain: true,
+        routesRevoked: true,
+      } as const;
+      const release = await this.release({ ...correlation, proof });
+      if (release.state === 'released' && release.fenceRef) {
+        await closeSchedulerExecutionAttemptWithFence(this.coreDb, {
+          correlation,
+          proof,
+          fenceRef: release.fenceRef,
         });
-        if (attempt.operationId) {
-          const correlation = schedulerExecutionCorrelation(attempt);
-          const proof = {
-            terminalHandoff: true,
-            output: true,
-            evidence: true,
-            outsideWorkspaceCollection: true,
-            integrationDrain: true,
-            routesRevoked: true,
-          } as const;
-          const release = await this.release({ ...correlation, proof });
-          if (release.state === 'released' && release.fenceRef) {
-            await closeSchedulerExecutionAttemptWithFence(this.coreDb, {
-              correlation,
-              proof,
-              fenceRef: release.fenceRef,
-            });
-            const releaseDb = openWorkspaceDb(
-              this.coreDb.dataRoot,
-              workspaceIdForOwner(turn.owner)
-            );
-            try {
-              await endWorkerTurnJournalRelease(store, releaseDb, turnId, release.fenceRef);
-            } finally {
-              releaseDb.sqlite.close();
-            }
-          }
+        const releaseDb = openWorkspaceDb(
+          this.coreDb.dataRoot,
+          workspaceIdForOwner(store.getTurnById(turnId).owner)
+        );
+        try {
+          await endWorkerTurnJournalRelease(store, releaseDb, turnId, release.fenceRef);
+        } finally {
+          releaseDb.sqlite.close();
         }
       }
     }
