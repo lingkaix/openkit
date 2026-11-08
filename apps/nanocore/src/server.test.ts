@@ -11994,7 +11994,7 @@ describe('nanocore server', () => {
         postEffect(
           thirdClient,
           '/api/nanohost/transport/effects/file.export/result',
-          Buffer.from('changed-output'),
+          Buffer.from('changed-bytes'),
           exportHeaders
         )
       ).resolves.toMatchObject({ status: 409 });

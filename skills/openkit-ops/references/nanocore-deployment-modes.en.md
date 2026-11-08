@@ -179,7 +179,7 @@ The [pinned official Codex source](https://github.com/openai/codex/blob/2dae757b
 
 ## Establish the connection
 
-1. Confirm that the host can load this operations Skill, execute its bundled script, provide Node.js 24, and protect local credentials and environment state.
+1. Confirm that the host can load this operations Skill, execute its bundled script, provide Node.js 24 or 26, and protect local credentials and environment state.
 2. Resolve `scripts/openkit` relative to the installed Skill directory.
 3. Set `OPENKIT_NANOCORE_URL` only when the process must use an explicit local or remote NanoCore endpoint.
 4. Run `scripts/openkit doctor` before invoking product operations. Read service availability, product-work readiness, update readiness and maintenance safety separately. Inspect execution-host observation age; this stored readiness is not a live probe, and `freshEmpty` does not prove deployment-wide idleness.
@@ -189,7 +189,7 @@ Use the same public interface for local and remote NanoCore endpoints. Do not as
 
 ## Connect With A Named Workspace Token
 
-Use this procedure for a scoped member connection through the bundled CLI. It requires Node.js 24, the complete operations package, and the named Token already stored for the exact endpoint in the caller's protected local store. The administrator issues it with `token.create` or `token.rotate` and an explicit `destination`. Issuance must occur in the intended authorized local credential context. A slot on another machine or under another operating-system user is not available here. Do not copy encrypted files between users or expose the secret to transfer it.
+Use this procedure for a scoped member connection through the bundled CLI. It requires Node.js 24 or 26, the complete operations package, and the named Token already stored for the exact endpoint in the caller's protected local store. The administrator issues it with `token.create` or `token.rotate` and an explicit `destination`. Issuance must occur in the intended authorized local credential context. A slot on another machine or under another operating-system user is not available here. Do not copy encrypted files between users or expose the secret to transfer it.
 
 1. Set `OPENKIT_NANOCORE_URL` to the exact endpoint used for issuance. Remote connections require HTTPS.
 2. Clear any `OPENKIT_NANOCORE_TOKEN` override from this process. A named selector and a non-empty override conflict.

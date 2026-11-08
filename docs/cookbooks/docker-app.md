@@ -14,7 +14,7 @@ NanoCore's App HTTP/1.1 listener stays loopback-only and is exposed through Cadd
 scripts/docker/build-image.sh app
 ```
 
-The image is built from `node:24-bookworm-slim` to match `.node-version`.
+The image is built from `node:26-bookworm-slim` to match `.node-version`.
 
 The builder enables pnpm 10 through Corepack, installs native build tooling for `better-sqlite3`, builds the workspace packages in dependency order, and uses `pnpm deploy --prod --legacy` to create the production NanoCore tree.
 

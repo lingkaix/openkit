@@ -38,7 +38,7 @@ command -v uv >/dev/null
 command -v uvx >/dev/null
 command -v vim >/dev/null
 
-test "$(node --version)" = "v24.18.0"
+test "$(node --version)" = "v26.13.0"
 test "$(pnpm --version)" = "10.33.3"
 test "$(python --version)" = "Python 3.14.6"
 test "$(python3 --version)" = "Python 3.14.6"

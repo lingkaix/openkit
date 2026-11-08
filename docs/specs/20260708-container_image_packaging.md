@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: topology
-updated: 2026-10-13
+updated: 2026-11-08
 ---
 # Container Image Packaging And Release Publishing
 
@@ -164,7 +164,7 @@ The manifest must be valid JSON and must include:
       "context": ".",
       "kind": "app",
       "release": true,
-      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "baseImage": "node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68",
       "platforms": ["linux/amd64", "linux/arm64"],
       "smoke": "containers/app/smoke.sh",
       "smokeCommand": "openkit-app-smoke",
@@ -517,7 +517,7 @@ The initial manifest should include:
       "context": ".",
       "kind": "app",
       "release": true,
-      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "baseImage": "node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68",
       "platforms": ["linux/amd64", "linux/arm64"],
       "smoke": "containers/app/smoke.sh",
       "smokeCommand": "openkit-app-smoke",
@@ -532,7 +532,7 @@ The initial manifest should include:
       "kind": "worker",
       "release": true,
       "anonymousPull": true,
-      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "baseImage": "node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68",
       "platforms": ["linux/amd64", "linux/arm64"],
       "smoke": "containers/workers/openkit-worker-common-base-smoke.sh",
       "smokeCommand": "openkit-worker-common-base-smoke",
@@ -548,7 +548,7 @@ The initial manifest should include:
       "runtimes": ["codex", "pi", "opencode", "deepseek"],
       "release": true,
       "workerContract": "openkit-worker-v1",
-      "baseImage": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "baseImage": "node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68",
       "platforms": ["linux/amd64", "linux/arm64"],
       "smoke": "containers/worker-runtimes/smoke.sh",
       "smokeCommand": "openkit-worker-runtimes-smoke",
@@ -570,7 +570,7 @@ The initial manifest should include:
 }
 ```
 
-The first layout migration retained the existing Node base. The accepted 2026-07-21 environment refresh now uses the current digest-pinned Node 24 LTS base and the internal common-stage contract in `docs/specs/20260721-worker_execution_environment_images.md`; the upstream OpenShell Community base remains a reference rather than a release parent.
+The first layout migration retained the existing Node base. The accepted 2026-07-21 environment refresh now uses the current digest-pinned Node 26 LTS base and the internal common-stage contract in `docs/specs/20260721-worker_execution_environment_images.md`; the upstream OpenShell Community base remains a reference rather than a release parent.
 
 ### GitHub Actions Shape
 
@@ -682,7 +682,7 @@ The catalog contains `worker-common` and `worker-runtimes`, with no leaf aliases
 
 Release worker base state:
 
-- `containers/images.json` pins every current release `baseImage` value to `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d` and selects one unique target per worker artifact.
+- `containers/images.json` pins every current release `baseImage` value to `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68` and selects one unique target per worker artifact.
 - Both app Dockerfile stages use that exact cataloged digest.
 - `containers/workers/Dockerfile` uses that digest-pinned Node base for the shared shim-builder and common stages, then adds exactly the catalog-declared runtime set in each final target. `worker-runtimes` adds the four runtimes and leaves `worker-common` empty of them.
 - `test-env` is an internal sibling that pins the same Node digest in its own Dockerfile and does not derive `FROM worker-common`. After first `worker-common` GHCR publication, one internal `release: false` `kind: test` dogfood image may derive that published digest with Codex plus Pi and without OpenCode; that image is design and backlog only here and is not `worker-runtimes`.

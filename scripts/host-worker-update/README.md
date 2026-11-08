@@ -6,7 +6,7 @@ Worker preparation and activation remain in NanoCore. The concrete host observat
 
 ## External Operator Command
 
-`operator-cli.mjs` runs `updateComponents` in the fixed App, NanoHost, Worker order. Run it from the reviewed checkout with pinned Node 24 and built workspace dependencies. Select one canonical HTTPS origin, an existing protected deployment record and current grant, private invocation parameters and verified old/target archive selection, and a new evidence directory. The administrator API uses the existing endpoint-scoped credential store; the independent operator channel uses the retained `a1` SSH binding and normal host-key verification. It has no default target or new login mechanism.
+`operator-cli.mjs` runs `updateComponents` in the fixed App, NanoHost, Worker order. Run it from the reviewed checkout with pinned Node 26 and built workspace dependencies. Select one canonical HTTPS origin, an existing protected deployment record and current grant, private invocation parameters and verified old/target archive selection, and a new evidence directory. The administrator API uses the existing endpoint-scoped credential store; the independent operator channel uses the retained `a1` SSH binding and normal host-key verification. It has no default target or new login mechanism.
 
 ```sh
 node scripts/host-worker-update/operator-cli.mjs --target "$UPDATE_TARGET" --params "$UPDATE_PARAMS" --deployment-record "$UPDATE_DEPLOYMENT" --grant "$UPDATE_GRANT" --artifacts "$UPDATE_ARTIFACTS" --evidence-dir "$UPDATE_EVIDENCE"

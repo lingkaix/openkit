@@ -6301,7 +6301,7 @@ vi.mock('node:worker_threads', async (load) => {
       }
       override postMessage(
         value: unknown,
-        transferList?: readonly import('node:worker_threads').TransferListItem[]
+        transferList?: readonly import('node:worker_threads').Transferable[]
       ): void {
         this.observation?.posted(value);
         super.postMessage(value, transferList);

@@ -32,7 +32,7 @@ export function nativeCommitWorker(Worker: typeof NativeWorker): typeof NativeWo
     private policyRequest: { readonly id: number; readonly hold: PolicyAckHold } | undefined;
     override postMessage(
       value: unknown,
-      transferList?: readonly import('node:worker_threads').TransferListItem[]
+      transferList?: readonly import('node:worker_threads').Transferable[]
     ): void {
       const hold = interception.policyAck;
       if (hold && value && typeof value === 'object') {

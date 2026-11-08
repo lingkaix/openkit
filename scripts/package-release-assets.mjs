@@ -212,8 +212,8 @@ export function verifyOperationsSkillArchive(input) {
   if (!cli?.isFile() || (cli.mode & 0o111) === 0) {
     throw new Error('Operations Skill archive requires an executable scripts/openkit.');
   }
-  if (Number(process.versions.node.split('.')[0]) !== 24) {
-    throw new Error('Operations Skill CLI verification requires Node.js 24.');
+  if (![24, 26].includes(Number(process.versions.node.split('.')[0]))) {
+    throw new Error('Operations Skill CLI verification requires Node.js 24 or 26.');
   }
   const discovery = run(process.execPath, [cliPath, 'ops', 'search', 'workspace'], {
     cwd: envelopePath,

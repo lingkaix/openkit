@@ -422,7 +422,7 @@ The optional `channels.discord` object in `config/server.jsonc` selects the firs
 
 Set the Discord interaction endpoint to `/api/channels/discord/interactions` on the deployment's public HTTPS origin. The endpoint verifies the signature over the original body, application identity, and timestamp. Ordinary OpenKit bearer authentication does not replace Discord signature verification.
 
-Obtain a source checkout at the deployed release's exact revision. From its repository root, use the pinned Node.js 24.18.0 runtime to print the release-authored `/openkit` command body:
+Obtain a source checkout at the deployed release's exact revision. From its repository root, use the pinned Node.js 26.13.0 runtime to print the release-authored `/openkit` command body:
 
 ```bash
 node --input-type=module -e 'import { DISCORD_OPENKIT_COMMAND } from "./apps/nanocore/src/channels/discord-command.ts"; console.log(JSON.stringify(DISCORD_OPENKIT_COMMAND, null, 2));'

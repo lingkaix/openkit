@@ -515,7 +515,7 @@ export async function fixture(
       commitAt('HEAD', { cwd: root }) === control &&
       process.platform === 'linux' &&
       process.arch === 'x64' &&
-      Number(process.versions.node.split('.')[0]) === 24,
+      [24, 26].includes(Number(process.versions.node.split('.')[0])),
     'Separate reviewed P and amd64 control required'
   );
   const owned = resources(directory, smoke),

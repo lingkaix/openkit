@@ -1,4 +1,4 @@
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS retrieval-builder
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS retrieval-builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV RUST_VERSION=1.97.1
@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=openkit-retrieval-reg
   && cp target/release/retrieval-kernel /out/retrieval-kernel \
   && python3 scripts/retrieval-notices.py --output /out/licenses/crates
 
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS builder
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -47,7 +47,8 @@ RUN apt-get update \
     python3 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable \
+RUN npm install -g corepack@0.36.0 \
+  && corepack enable \
   && corepack prepare pnpm@10.33.3 --activate \
   && pnpm --version
 
@@ -61,7 +62,7 @@ RUN pnpm --filter @openkit/nanocore... --filter @openkit/web... build
 # Pin Zod exactly across the workspace because legacy deploy re-resolves schema-package ranges independently of NanoCore's locked converter; remove the pin once App deploy uses the shared lockfile.
 RUN pnpm --filter @openkit/nanocore deploy --prod --legacy /deploy/nanocore
 
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime
 
 LABEL org.openkit.image="app"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-app-smoke"
@@ -91,7 +92,8 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable \
+RUN npm install -g corepack@0.36.0 \
+  && corepack enable \
   && corepack prepare pnpm@10.33.3 --activate \
   && pnpm --version
 

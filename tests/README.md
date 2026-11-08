@@ -50,7 +50,7 @@ The app-owned L3 real-provider, real-subscription, real-task-mode, and NanoCore-
 
 ## Release-round acceptance instrument
 
-`support/release-round.mjs` is a Node 24 instrument for Worker qualification and shared release-round support, with the matrix owned by `docs/cookbooks/release.md`, with evidence obligations owned by `docs/specs/20260909-persistent_deployment_acceptance.md` and `docs/verification-instruments.md`.
+`support/release-round.mjs` is a Node 26 instrument for Worker qualification and shared release-round support, with the matrix owned by `docs/cookbooks/release.md`, with evidence obligations owned by `docs/specs/20260909-persistent_deployment_acceptance.md` and `docs/verification-instruments.md`.
 
 Use one private JSON parameter file and a new private evidence directory; authorize the declared live effects separately before executing the first two commands.
 

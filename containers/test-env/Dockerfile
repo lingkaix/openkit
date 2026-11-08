@@ -1,4 +1,4 @@
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
 
 LABEL org.openkit.image="test-env"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-test-env-smoke"
@@ -53,7 +53,8 @@ RUN apt-get update \
     python3 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable \
+RUN npm install -g corepack@0.36.0 \
+  && corepack enable \
   && corepack prepare pnpm@10.33.3 --activate \
   && pnpm --version
 

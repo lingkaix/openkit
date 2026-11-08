@@ -158,7 +158,7 @@ This guide does not own tool-version values, the documentation type system, test
 
 ### Node And pnpm Anchors Follow The Worker Baseline
 
-Version Maintenance above fixes the direction — the worker baseline leads and this repository follows. Node is `24.18.0` in `.mise.toml`, `.node-version`, `.nvmrc`, and `engines.node`, and `containers/test-env/Dockerfile` pins the same digest as `FROM node:… AS worker-common`. pnpm remains `10.33.3` across mise, `packageManager`, worker Corepack, and the test-env Corepack line. Owner: this decision. A later digest drift is a mirror failure repaired in the same change as the worker baseline.
+Version Maintenance above fixes the direction — the worker baseline leads and this repository follows. Node is `26.13.0` in `.mise.toml`, `.node-version`, `.nvmrc`, and `engines.node`, and `containers/test-env/Dockerfile` pins the same digest as `FROM node:… AS worker-common`. pnpm remains `10.33.3` across mise, `packageManager`, worker Corepack, and the test-env Corepack line. Owner: this decision. A later digest drift is a mirror failure repaired in the same change as the worker baseline.
 
 ### Defaults-Realization Generation Debt
 

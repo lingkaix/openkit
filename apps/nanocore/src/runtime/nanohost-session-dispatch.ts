@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
@@ -3503,20 +3504,30 @@ function effectTransportError(status: 400 | 409 | 413 | 500 | 503, message: stri
 function closeRejectedNativeFileStream(environment: unknown, status: 409): Response {
   const bindings = environment as
     | {
-        readonly incoming?: { readonly stream?: { close(code?: number): void } };
+        readonly incoming?: {
+          readonly stream?: {
+            readonly closed: boolean;
+            readonly destroyed: boolean;
+            close(code?: number): void;
+          };
+        };
         readonly outgoing?: { end(): void; writeHead(status: number, headers: object): void };
       }
     | undefined;
   if (!bindings?.outgoing || !bindings.incoming?.stream) {
     return privateEffectError(effectTransportError(status, 'NanoHost file export retry rejected.'));
   }
+  const stream = bindings.incoming.stream;
   bindings.outgoing.writeHead(status, { 'content-length': '0' });
   bindings.outgoing.end();
-  bindings.incoming.stream.close(0);
-  return new Response(null, {
-    headers: { 'x-hono-already-sent': '1' },
-    status,
+  // Reset the unread request body on the next turn: Node 26 drops the queued status frame when
+  // the stream closes in the same turn as end().
+  setImmediate(() => {
+    if (!stream.closed && !stream.destroyed) stream.close(0);
   });
+  // A plain `new Response` takes the adapter's cached path, which ignores the already-sent marker
+  // and writes a second head.
+  return RESPONSE_ALREADY_SENT;
 }
 
 /**

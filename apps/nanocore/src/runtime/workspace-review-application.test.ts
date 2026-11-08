@@ -152,7 +152,7 @@ vi.mock('node:worker_threads', async (load) => {
       /** Selects only the exact original request; every message still uses the real transport. */
       override postMessage(
         request: ControlWorkerRequest,
-        transferList?: readonly import('node:worker_threads').TransferListItem[]
+        transferList?: readonly import('node:worker_threads').Transferable[]
       ): void {
         const target = finishInterception.target;
         if (

@@ -200,8 +200,9 @@ function help(command) {
  * @returns {Promise<unknown>} Redacted diagnostic data.
  */
 async function doctor(env, state, destination) {
-  if (Number.parseInt(process.versions.node, 10) !== 24) {
-    throw new CliFailure('unsupported_host', 'OpenKit requires Node.js 24.', 2);
+  // The bundle targets node24 and carries its own undici, so both current LTS lines run it.
+  if (![24, 26].includes(Number.parseInt(process.versions.node, 10))) {
+    throw new CliFailure('unsupported_host', 'OpenKit requires Node.js 24 or 26.', 2);
   }
   const endpoint = resolveEndpoint(env);
   const credentialStore = createDefaultOpenKitCredentialStore();

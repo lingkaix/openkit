@@ -33,7 +33,7 @@ sha256sum --check --ignore-missing SHA256SUMS
 ```
 
 3. Verify `SHA256SUMS` itself against the digest in the selected release's publication evidence. Extract the two verified archives into that private directory. Keep their top-level directories and archive checksums. The NanoHost `MANIFEST.json` must match the selected tag, source commit and architecture; its own checksum file verifies the extracted payload. A mismatch stops installation.
-4. Load `skills/openkit-ops/SKILL.md` from inside the extracted operations archive. Its administrator executable is `skills/openkit-ops/scripts/openkit` relative to the archive root. Provide Node.js 24, then run local `ops search diagnostics`, `ops describe bootstrap.consume`, and `ops describe nanohost.enroll`. These commands need no running deployment. Stop on a loader, dependency or schema failure before dependent setup effects. Use only discovery forms supported by that exact package; local help availability depends on its release.
+4. Load `skills/openkit-ops/SKILL.md` from inside the extracted operations archive. Its administrator executable is `skills/openkit-ops/scripts/openkit` relative to the archive root. Provide Node.js 24 or 26, then run local `ops search diagnostics`, `ops describe bootstrap.consume`, and `ops describe nanohost.enroll`. These commands need no running deployment. Stop on a loader, dependency or schema failure before dependent setup effects. Use only discovery forms supported by that exact package; local help availability depends on its release.
 
 ### Check The Host And Reserve Persistent Inputs
 

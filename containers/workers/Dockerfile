@@ -2,7 +2,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.11.30@sha256:93b61e21202b1dab861092748e46bbd6e0e41dd84f59b9174efd2353186e1b47 AS uv
 
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS worker-shim-builder
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS worker-shim-builder
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -18,7 +18,8 @@ RUN apt-get update \
     git \
   && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable \
+RUN npm install -g corepack@0.36.0 \
+  && corepack enable \
   && corepack prepare pnpm@10.33.3 --activate \
   && pnpm --version
 
@@ -49,7 +50,7 @@ RUN pnpm --filter @openkit/protocol build \
   && pnpm --filter @openkit/worker-shim deploy --prod --legacy /deploy/worker-shim \
   && pnpm --filter @openkit/pi-runtime-host deploy --prod --legacy /deploy/pi-runtime-host
 
-FROM node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS worker-common
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS worker-common
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -115,7 +116,8 @@ RUN apt-get update \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
-RUN corepack enable \
+RUN npm install -g corepack@0.36.0 \
+  && corepack enable \
   && corepack prepare pnpm@10.33.3 --activate \
   && pnpm --version
 

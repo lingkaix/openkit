@@ -157,8 +157,8 @@ export function postPublicationSmoke(
     );
   if (commitAt('HEAD') !== params.sha)
     throw Error('Use the reviewed published checkout for smoke verification');
-  if (Number(process.versions.node.split('.')[0]) !== 24)
-    throw Error('Published CLI verification requires Node.js 24');
+  if (![24, 26].includes(Number(process.versions.node.split('.')[0])))
+    throw Error('Published CLI verification requires Node.js 24 or 26');
   mkdirSync(output, { mode: 0o700 });
   const result = {
     tag: params.tag,
