@@ -82,7 +82,11 @@ test('contains long conversation previews and keeps the next row clickable', asy
 
   // Below 800px the sidebar is replaced by the phone row; the Goal list is under Work.
   await page.setViewportSize({ width: 600, height: 803 });
-  await page.getByRole('button', { name: 'Work', exact: true }).click();
+  // The timeline's Work | Full lens also has a Work button; take the section bar's.
+  await page
+    .getByRole('navigation', { name: 'Sections' })
+    .getByRole('button', { name: 'Work', exact: true })
+    .click();
   await page.getByRole('tab', { name: 'Goals', exact: true }).click();
   await expect(row).toBeVisible();
   await expect(expander).toBeVisible();
@@ -187,7 +191,11 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
   const phoneDestinations = page.getByRole('navigation').getByRole('button');
   await expect(phoneDestinations).toHaveCount(5);
-  await expect(page.getByRole('button', { name: 'Work', exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Sections' })
+      .getByRole('button', { name: 'Work', exact: true })
+  ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Navigation' })).toHaveCount(0);
   let overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
