@@ -6,6 +6,7 @@ import { useCoreClient } from '../../../app/core-client';
 import { openHrefForRow } from '../../workspace/data';
 import { timelineCopy } from './copy';
 import {
+  focusGoalCard,
   focusTimelineItem,
   type NeedsYouRow,
   needsYouActivation,
@@ -59,6 +60,7 @@ export function NeedsYouBar({
   reducedMotion,
   now,
   onOpen,
+  resolveAnchor,
 }: {
   rows: readonly NeedsYouRow[];
   threadId?: string;
@@ -66,6 +68,8 @@ export function NeedsYouBar({
   reducedMotion: boolean;
   now?: number;
   onOpen?: (href: string) => void;
+  /** Goal cards and other anchors that are not timeline items. True means the row was handled. */
+  resolveAnchor?: (row: NeedsYouRow) => boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [fade, setFade] = useState(false);
@@ -88,6 +92,7 @@ export function NeedsYouBar({
   const summary = needsYouSummary(ordered);
 
   function activate(row: NeedsYouRow) {
+    if (resolveAnchor?.(row)) return;
     const action = needsYouActivation(row);
     if (
       action.type === 'anchor' &&
@@ -148,10 +153,14 @@ export function GoalNeedsYou({
   workspaceId,
   threadIds,
   taskLabels,
+  cardByThread,
+  onFocusCard,
 }: {
   workspaceId: string;
   threadIds: readonly string[];
   taskLabels: ReadonlyMap<string, string>;
+  cardByThread?: ReadonlyMap<string, string>;
+  onFocusCard?: (cardId: string) => void;
 }) {
   const navigate = useNavigate();
   const reducedMotion = useReducedMotion();
@@ -166,6 +175,12 @@ export function GoalNeedsYou({
       emphasize
       reducedMotion={reducedMotion}
       onOpen={(href) => navigate(href)}
+      resolveAnchor={(row) => {
+        const cardId = row.threadId ? cardByThread?.get(row.threadId) : undefined;
+        if (!cardId || !focusGoalCard(cardId)) return false;
+        onFocusCard?.(cardId);
+        return true;
+      }}
     />
   );
 }

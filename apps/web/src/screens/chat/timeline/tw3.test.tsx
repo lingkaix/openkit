@@ -2,10 +2,18 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ItemView } from '../ItemView';
+import { AlignmentHeader } from './AlignmentHeader';
 import { openDecisionIds, planEmphasis } from './emphasis';
 import { buildAlignment } from './header';
 import { NeedsYouBar } from './NeedsYouBar';
-import { type NeedsYouRow, needsYouActivation, needsYouSummary, orderNeedsYou } from './needs-you';
+import {
+  attentionDisplayTitle,
+  type NeedsYouRow,
+  needsYouActivation,
+  needsYouSummary,
+  orderNeedsYou,
+  toNeedsYouRow,
+} from './needs-you';
 import { deriveNow, nowFromThread } from './now';
 import { TimelineTime } from './TimelineTime';
 import { formatDuration, formatTimelineTime, stalenessLabel } from './time';
@@ -359,6 +367,56 @@ describe('alignment header', () => {
     });
     expect(model?.progress).toBe('2 of 5 done · now: Update tests');
     expect(model?.staleLabel).toBeNull();
+  });
+
+  it('says the task is waiting, not finished, while a decision is open', () => {
+    const model = buildAlignment({
+      profileId: 'task',
+      now: NOW,
+      items: [],
+      turn: { status: 'completed', completedAt: '2026-11-08T11:00:00.000Z' },
+      awaitingDecision: true,
+    });
+    render(<AlignmentHeader model={model} />);
+    expect(screen.getByText('Status · Waiting for you')).toBeInTheDocument();
+    expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
+  });
+
+  it('keeps Finished when no decision is open', () => {
+    const model = buildAlignment({
+      profileId: 'task',
+      now: NOW,
+      items: [],
+      turn: { status: 'completed', completedAt: '2026-11-08T11:59:00.000Z' },
+    });
+    expect(model?.statusLabel).toMatch(/Finished/);
+  });
+
+  it('uses the request question when the attention title is generic', () => {
+    const row = toNeedsYouRow(
+      {
+        id: 'question:1',
+        title: 'Answer required',
+        summary: 'Answer the question on its pending request.',
+        blocking: true,
+        createdAt: '2026-11-08T11:00:00.000Z',
+        threadId: 'th_task',
+        turnId: 'tu_run',
+        itemId: 'it_question',
+      },
+      '/tasks/ws/th',
+      'Weekly notes',
+      'Which summary tone should the weekly note use?'
+    );
+    expect(row.title).toBe('Which summary tone should the weekly note use?');
+    expect(row.taskLabel).toBe('Weekly notes');
+    const long = 'Which summary tone should the weekly note use for the shared workspace? '.repeat(
+      3
+    );
+    expect(attentionDisplayTitle('Answer required', undefined, long).endsWith('…')).toBe(true);
+    expect(attentionDisplayTitle('Answer required', undefined, long).length).toBeLessThanOrEqual(
+      80
+    );
   });
 
   it('keeps the assistant header to the title', () => {

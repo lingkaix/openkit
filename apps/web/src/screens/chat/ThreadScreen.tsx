@@ -15,6 +15,7 @@ import {
   TextField,
 } from '../../primitives';
 import { useArtifacts, useArtifactVersion } from '../artifacts/data';
+import { PartOfGoal } from '../goal/PartOfGoal';
 import {
   chatKeys,
   taskThreadPath,
@@ -299,6 +300,13 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               </span>
             ) : null}
             <h1 className="min-w-0 truncate text-sm font-bold text-fg-strong">{title}</h1>
+            {mode === 'task' ? (
+              <PartOfGoal
+                workspaceId={workspaceId}
+                threadId={threadId}
+                parentThreadId={thread.data?.parentThreadId}
+              />
+            ) : null}
             <Button
               ref={renameButtonRef}
               size="sm"

@@ -12,7 +12,10 @@ vi.mock('../../app/core-client', async (original) => ({
   ...(await original<typeof import('../../app/core-client')>()),
   useConnection: () => ({ checking: false, failed: false }),
 }));
-vi.mock('../chat/data', () => ({ useCurrentWorkspaceId: (id: string) => id }));
+vi.mock('../chat/data', async (original) => ({
+  ...(await original<typeof import('../chat/data')>()),
+  useCurrentWorkspaceId: (id: string) => id,
+}));
 const at = '2026-10-03T00:00:00.000Z';
 /** One joined view: editable current intent, exact proposed bytes and retained ordinary Task state. */
 function view(): GoalView {
@@ -111,6 +114,33 @@ function mount(data = view()) {
     'goal.completion.accept': vi.fn().mockResolvedValue(data),
     'goal.cancel': vi.fn().mockResolvedValue(data),
     'goal.create': vi.fn().mockResolvedValue(data),
+    'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+    'thread.dashboard': vi.fn().mockResolvedValue({
+      turns: [],
+      pendingRequests: [],
+      artifacts: [],
+      taskInputs: [],
+      participants: [],
+      thread: {
+        id: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        owner: {
+          kind: 'workspace',
+          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        },
+        name: 'Ship release',
+        preview: 'Ship release',
+        status: 'active',
+        visibility: 'workspace',
+        entryPath: 'conversation',
+        createdAt: at,
+        updatedAt: at,
+      },
+      viewerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workStatus: null,
+      composer: { disabled: true, defaultAgentId: null },
+      itemLog: { href: '/' },
+    }),
+    'attention.list': vi.fn().mockResolvedValue({ items: [] }),
   };
   const client = { operations } as unknown as CoreClient;
   render(
@@ -138,9 +168,7 @@ it('shows current cards, exact proposed commitment, and linked Task completion w
   expect(await screen.findByRole('heading', { name: 'Cards' })).toBeVisible();
   expect(screen.getByRole('heading', { name: 'Proposed Plan' })).toBeVisible();
   expect(screen.getByText('Exact commitment')).toBeVisible();
-  expect(
-    screen.getByRole('link', { name: /th_00000000-0000-7c8c-8c46-80c1c4a0361b/ })
-  ).toHaveAttribute(
+  expect(screen.getByRole('link', { name: 'Verify release' })).toHaveAttribute(
     'href',
     '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c8c-8c46-80c1c4a0361b'
   );
@@ -159,9 +187,12 @@ it('distinguishes a granted request from consumption and shows the actual decidi
     await screen.findByText('Granted; waiting for the Goal owner to apply this exact decision.')
   ).toBeVisible();
   expect(screen.getByText('Decision by administrator')).toBeVisible();
-  expect(
-    screen.getByText('Responsible person: usr_00000000-0000-7000-8000-000000000001')
-  ).toBeVisible();
+  expect(screen.queryByText(/usr_/)).not.toBeInTheDocument();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Inspect goal' }));
+  expect(screen.getByRole('complementary', { name: 'Inspector' })).toHaveTextContent(
+    'usr_00000000-0000-7000-8000-000000000001'
+  );
   expect(screen.getByText('Open')).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Approve Plan' })).not.toBeInTheDocument();
 });
@@ -199,10 +230,10 @@ it('edits a card with its read revision and decides the exact pending proposal',
   const operations = mount();
   const user = userEvent.setup();
   await screen.findByRole('heading', { name: 'Cards' });
-  const description = screen.getByRole('textbox', { name: 'Card description c1' });
+  const description = screen.getByRole('textbox', { name: /^Card description$/ });
   await user.clear(description);
   await user.type(description, 'Verify build');
-  await user.click(screen.getByRole('button', { name: 'Save card c1' }));
+  await user.click(screen.getByRole('button', { name: 'Save card' }));
   await waitFor(() =>
     expect(operations['goal.card.edit']).toHaveBeenCalledWith(
       expect.objectContaining({ cardId: 'c1', expectedRevision: 2, description: 'Verify build' })
@@ -237,6 +268,8 @@ it('accepts only the exact captured completion request and sends revision-bound 
     'Stop this outcome'
   );
   await user.click(screen.getByRole('button', { name: 'Cancel Goal' }));
+  expect(operations['goal.cancel']).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole('button', { name: 'Confirm cancel' }));
   await waitFor(() =>
     expect(operations['goal.cancel']).toHaveBeenCalledWith(
       expect.objectContaining({ expectedRevision: 1, reason: 'Stop this outcome' })

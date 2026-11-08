@@ -1,5 +1,39 @@
 import type { HumanAttentionRow } from '@openkit/app-api-schemas';
 import { fillCopy, timelineCopy } from './copy';
+import { looksLikeIdentifier } from './present';
+
+const GENERIC_ATTENTION_TITLE = new Set(['Answer required', 'Approval required']);
+const GENERIC_ATTENTION_SUMMARY = new Set([
+  'Answer the question on its pending request.',
+  'Review and respond to the approval request.',
+]);
+
+const ATTENTION_TITLE_MAX = 80;
+
+/** One line, shortened, for a Needs you row. */
+export function shortenAttentionText(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= ATTENTION_TITLE_MAX) return flat;
+  return `${flat.slice(0, ATTENTION_TITLE_MAX - 1).trimEnd()}…`;
+}
+
+/**
+ * Prefer the request's own question or title.
+ * A generic title stays until the row, or the loaded request it already names, carries the words.
+ */
+export function attentionDisplayTitle(
+  title: string,
+  summary?: string | null,
+  question?: string | null
+): string {
+  const asked = question?.replace(/\s+/g, ' ').trim();
+  if (asked && !looksLikeIdentifier(asked)) return shortenAttentionText(asked);
+  if (!GENERIC_ATTENTION_TITLE.has(title)) return shortenAttentionText(title);
+  const detail = summary?.replace(/\s+/g, ' ').trim();
+  if (detail && !GENERIC_ATTENTION_SUMMARY.has(detail) && !looksLikeIdentifier(detail))
+    return shortenAttentionText(detail);
+  return title;
+}
 
 /**
  * One attention row, already projected. `blocking` and `ageSeconds` are reused.
@@ -65,7 +99,16 @@ export function needsYouActivation(row: NeedsYouRow): NeedsYouActivation {
 
 /** Scroll to the card and move focus to it. False when that card is not loaded. */
 export function focusTimelineItem(itemId: string): boolean {
-  const element = document.getElementById(`timeline-item-${itemId}`);
+  return focusElement(`timeline-item-${itemId}`);
+}
+
+/** Scroll to a Goal card. False when that card is not on the board. */
+export function focusGoalCard(cardId: string): boolean {
+  return focusElement(`goal-card-${cardId}`);
+}
+
+function focusElement(id: string): boolean {
+  const element = document.getElementById(id);
   if (!(element instanceof HTMLElement)) return false;
   element.scrollIntoView?.({ block: 'center' });
   element.focus();
@@ -77,13 +120,14 @@ export function toNeedsYouRow(
   row: Pick<
     HumanAttentionRow,
     'id' | 'title' | 'blocking' | 'ageSeconds' | 'createdAt' | 'threadId' | 'turnId' | 'itemId'
-  >,
+  > & { summary?: string | null },
   surfaceHref: string | null,
-  taskLabel?: string
+  taskLabel?: string,
+  question?: string | null
 ): NeedsYouRow {
   return {
     id: row.id,
-    title: row.title,
+    title: attentionDisplayTitle(row.title, row.summary, question),
     blocking: row.blocking === true,
     ageSeconds: row.ageSeconds,
     createdAt: row.createdAt,

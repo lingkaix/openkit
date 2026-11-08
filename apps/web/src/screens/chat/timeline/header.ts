@@ -52,6 +52,8 @@ export function buildAlignment(input: {
   taskInputs?: readonly { itemId?: string; objective: string }[];
   items: readonly HeaderItem[];
   turn?: { status: string; completedAt?: string | null; startedAt?: string | null } | null;
+  /** An open decision outranks a finished run, so the header does not say Finished. */
+  awaitingDecision?: boolean;
 }): AlignmentModel | null {
   if (input.profileId !== 'task') return null;
   const loaded = new Set(input.items.flatMap((item) => (item.id ? [item.id] : [])));
@@ -96,6 +98,10 @@ export function buildAlignment(input: {
   else if (turn?.status === 'interrupted') statusLabel = timelineCopy.statusInterrupted;
   else if (turn?.status === 'cancelled') statusLabel = timelineCopy.statusCancelled;
   else if (turn) statusLabel = timelineCopy.statusUnknown;
+  if (input.awaitingDecision && turn?.status === 'completed') {
+    statusLabel = timelineCopy.statusWaiting;
+    finishedAt = null;
+  }
   return {
     objective,
     progress,

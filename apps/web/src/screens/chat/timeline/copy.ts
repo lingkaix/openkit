@@ -159,6 +159,24 @@ export const timelineCopy = {
   editDraft: 'Edit',
   checkSend: 'Check',
   reloadPage: 'Reload',
+  statusWaiting: 'Waiting for you',
+  partOfGoal: 'Part of Goal',
+  goalEditConsequence:
+    'This does not change running Tasks. The Coordinator reads it the next time it plans.',
+  approvePlanConsequence:
+    'Allows the Coordinator to start Tasks inside this plan without asking for each one.',
+  acceptGoalConsequence: 'Accepts this completion. The Goal then closes, and no new Tasks start.',
+  cancelGoalConsequence: 'Stops new work and asks running Tasks to stop. History stays.',
+  cancelCardConsequence: "Asks this card's Task to stop. The card closes. History stays.",
+  confirmCancel: 'Confirm cancel',
+  keepGoal: 'Keep this Goal',
+  missingTask: 'This Task is missing.',
+  emptyGoalTitle: "The Coordinator's notes will appear here.",
+  emptyGoalHint: 'Each run shows its plan and any handoff.',
+  inspectGoal: 'Inspect goal',
+  goalBoard: 'Goal board',
+  awaitingDecision: 'Awaiting a decision',
+  decisionRecorded: 'Decision recorded',
 } as const;
 
 export type TimelineCopyKey = keyof typeof timelineCopy;

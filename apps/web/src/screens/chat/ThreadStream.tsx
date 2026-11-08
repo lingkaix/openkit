@@ -79,6 +79,21 @@ function latestRunningStep(
   );
 }
 
+/**
+ * Question text from the request item this attention row already names.
+ * Secret questions stay off the bar. A generic row title is left unchanged when nothing is loaded.
+ */
+function carriedQuestion(
+  items: readonly ThreadItem[] | undefined,
+  itemId: string | undefined
+): string | undefined {
+  if (!itemId || !items) return undefined;
+  const item = items.find((entry) => entry.id === itemId);
+  if (item?.type !== 'user-input-request') return undefined;
+  const question = item.questions.find((entry) => !entry.isSecret);
+  return question?.question || item.prompt;
+}
+
 export interface ThreadStreamProps {
   workspaceId: string | null;
   threadId: string;
@@ -100,6 +115,11 @@ export interface ThreadStreamProps {
   focusItemId?: string | null;
   /** Open a row's owning surface. Same-thread anchors scroll instead. */
   onOpen?: (href: string) => void;
+  /**
+   * Coordinator narrative only. The Goal screen owns the board and the merged Needs you bar.
+   * This stream does not add a second one, and it has no Steer control.
+   */
+  narrativeOnly?: boolean;
 }
 
 /**
@@ -125,6 +145,7 @@ export function ThreadStream({
   stopPending,
   focusItemId,
   onOpen,
+  narrativeOnly,
 }: ThreadStreamProps) {
   const [internalLens, setInternalLens] = useState<LensName>(readStoredLens);
   const lens = lensProp ?? internalLens;
@@ -312,7 +333,7 @@ export function ThreadStream({
   });
   const profileId = profile.state === 'ready' ? profile.profile.id : 'default';
   const scoped = orderNeedsYou(scopeNeedsYou(attention.data ?? [], [threadId])).map((row) =>
-    toNeedsYouRow(row, openHrefForRow(row))
+    toNeedsYouRow(row, openHrefForRow(row), undefined, carriedQuestion(items.data, row.itemId))
   );
   const latestTurn = dashboard?.turns.at(-1);
   const lastKnownAt = latestTurn?.completedAt ?? latestTurn?.startedAt;
@@ -351,8 +372,9 @@ export function ThreadStream({
       steps: item.type === 'plan' ? item.steps : undefined,
     })),
     turn: latestTurn ?? null,
+    awaitingDecision: scoped.length > 0,
   });
-  const chrome = (
+  const chrome = narrativeOnly ? null : (
     <div className="sticky top-0 z-10 flex flex-col gap-2 bg-layer-1 py-2">
       <AlignmentHeader model={alignment} />
       <NowLine model={nowModel} emphasize={emphasis.now} reducedMotion={reducedMotion} />
@@ -373,17 +395,56 @@ export function ThreadStream({
     return (
       <TimelineNowProvider now={clock}>
         {chrome}
-        <EmptyState
-          icon="chat"
-          title={
-            mode === 'task'
-              ? timelineCopy.emptyTaskTitle
-              : mode === 'chat'
-                ? timelineCopy.emptyChatTitle
-                : (emptyTitle ?? timelineCopy.emptyChatTitle)
-          }
-          hint={mode === 'task' ? timelineCopy.emptyTaskHint : timelineCopy.emptyChatHint}
-        />
+        <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
+          {lensProp === undefined ? (
+            <fieldset
+              aria-label={timelineCopy.lensName}
+              className="m-0 flex min-w-0 gap-2 border-0 p-0"
+            >
+              <Button
+                variant={lens === 'work' ? 'outline' : 'quiet'}
+                size="sm"
+                aria-pressed={lens === 'work'}
+                onPress={() => {
+                  setInternalLens('work');
+                  writeStoredLens('work');
+                }}
+              >
+                {timelineCopy.lensWork}
+              </Button>
+              <Button
+                variant={lens === 'full' ? 'outline' : 'quiet'}
+                size="sm"
+                aria-pressed={lens === 'full'}
+                onPress={() => {
+                  setInternalLens('full');
+                  writeStoredLens('full');
+                }}
+              >
+                {timelineCopy.lensFull}
+              </Button>
+            </fieldset>
+          ) : null}
+          <EmptyState
+            icon="chat"
+            title={
+              narrativeOnly
+                ? (emptyTitle ?? timelineCopy.emptyGoalTitle)
+                : mode === 'task'
+                  ? timelineCopy.emptyTaskTitle
+                  : mode === 'chat'
+                    ? timelineCopy.emptyChatTitle
+                    : (emptyTitle ?? timelineCopy.emptyChatTitle)
+            }
+            hint={
+              narrativeOnly
+                ? timelineCopy.emptyGoalHint
+                : mode === 'task'
+                  ? timelineCopy.emptyTaskHint
+                  : timelineCopy.emptyChatHint
+            }
+          />
+        </div>
       </TimelineNowProvider>
     );
   }
