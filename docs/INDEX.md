@@ -155,6 +155,7 @@ and are not listed here.
 - `docs/specs/20261019-durable_execution_and_control_store.md` — Draft, Partial — Scope-owned transactional control, durable execution, dispatch, immutable-content placement, and replacement of split-store recovery under the engineer decisio…
 - `docs/specs/20261020-compute_neutrality_target.md` — Draft, Not Started — This Draft records the proposed placement and carriage mapping, migration order, retained-meaning dispositions and validation limits.
 - `docs/specs/20261021-protocol_identifiers_and_enums.md` — Accepted, Partial — Entity prefixes, fixed derivation namespaces, canonical name bytes, and kind-specific admission.
+- `docs/specs/20261108-conversation_timeline.md` — Accepted, In Progress — This specification owns the conversation timeline that every OpenKit agent kind presents to people: run entries, the entry-kind registry with its agent profile…
 
 ## Terminal Specifications
 

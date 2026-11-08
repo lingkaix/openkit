@@ -104,6 +104,7 @@ Kernel, protocol, and product surfaces:
 - [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md)
 - [`20260710-web_ui_rebuild_stack.md`](./20260710-web_ui_rebuild_stack.md)
 - [`20260831-unified_conversation_composer.md`](./20260831-unified_conversation_composer.md)
+- [Conversation Timeline](./20261108-conversation_timeline.md): run entries, the entry-kind registry with agent profiles and Work and Full lenses, Needs you and Now, the timeline hub and toasts, and its bounded read models.
 - [`20261012-product_integrity_check.md`](./20261012-product_integrity_check.md)
 - [`20260910-app_update_delivery.md`](./20260910-app_update_delivery.md)
 - [`20260910-agent_operator_skill.md`](./20260910-agent_operator_skill.md)
