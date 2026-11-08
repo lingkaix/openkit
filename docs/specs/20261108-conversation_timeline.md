@@ -70,7 +70,7 @@ Before this specification, Web read and repolled a Thread's whole history every 
 
 ## Decision
 
-The following product decisions are accepted (2026-11-08) and govern this contract:
+The following product decisions are accepted (2026-11-08) and govern this contract. The [Conversation Timeline Rulings](../decisions/20261108-conversation_timeline_rulings.md) record the engineer rulings among them and their reasons.
 
 1. **One timeline mechanism** for every agent kind: a registry of entry kinds, declarative agent profiles and lens policies, with no plugin system and no new protocol object.
 2. **Work | Full** is one switch over the same entries, not two interfaces.
