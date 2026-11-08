@@ -206,11 +206,12 @@ async function decideInvitation(
   const row = invitations.getByRole('row', { name: /pending/i }).first();
   await expect(row).toBeVisible();
   await row.getByRole('button', { name: operation }).click();
+  // Snapshot maintenance can refuse this mutation with retryable workspace_frozen until the capture fence releases. The screen keeps the same decision in flight for that refusal.
   await expect(
     invitations.getByRole('row', {
       name: new RegExp(operation === 'Accept' ? 'accepted' : 'declined', 'i'),
     })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 20_000 });
   await expect(row.getByRole('button', { name: /accept|decline/i })).toHaveCount(0);
 }
 

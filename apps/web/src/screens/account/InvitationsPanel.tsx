@@ -38,7 +38,8 @@ export function InvitationsPanel() {
   const retryableDecision =
     decisionError?.code === 'workspace_access_denied' ||
     decisionError?.code === 'idempotency_key_conflict' ||
-    decisionError?.code === 'recovery_required';
+    decisionError?.code === 'recovery_required' ||
+    decisionError?.code === 'workspace_frozen';
   const retryInvitation = myInvitations.invitations.data?.items.find(
     (item) => item.invitationId === myInvitations.decision.variables?.invitationId
   );

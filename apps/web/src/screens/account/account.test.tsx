@@ -3069,6 +3069,104 @@ describe('account-level My invitations', () => {
     }
   );
 
+  it('keeps a decline in flight through one retryable capture freeze and then shows the declined row', async () => {
+    const guards = guardSensitiveSinks([EMAIL]);
+    const settledInvitation = {
+      ...PENDING_INVITATION,
+      declinedAt: MEMBER_UPDATED_AT,
+      effectiveStatus: 'declined' as const,
+      revision: 22,
+    };
+    const frozen = new ApiCallError(409, 'Workspace is temporarily frozen.', {
+      code: 'workspace_frozen',
+      details: {
+        workspaceId: PENDING_INVITATION.workspaceId,
+        operation: 'capture',
+        retryable: true,
+        blockers: [
+          {
+            kind: 'publication',
+            reason: 'frozen',
+            reference: { workspaceId: PENDING_INVITATION.workspaceId },
+            actions: [],
+          },
+        ],
+      },
+    });
+    const declineWorkspaceInvitation = vi
+      .fn()
+      .mockRejectedValueOnce(frozen)
+      .mockResolvedValueOnce({ invitation: settledInvitation });
+    const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
+      items: [PENDING_INVITATION, OTHER_PENDING_INVITATION],
+    });
+    const { client } = makeSharingClient({
+      authorizedWorkspaces: { items: [] },
+      coreWorkspaces: [],
+      methods: { declineWorkspaceInvitation, listMyWorkspaceInvitations },
+    });
+    const { queryClient } = renderApp('/settings/account', client);
+
+    await screen.findByRole('heading', { name: 'Account' });
+    const invitations = screen.getByRole('region', { name: 'My invitations' });
+    const pending = await within(invitations).findByRole('row', {
+      name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*pending|pending.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+    });
+    const user = userEvent.setup();
+    await user.click(await revealRowAction(user, pending, /^decline/i));
+
+    expect(
+      await within(invitations).findByRole('row', {
+        name: /ws_00000000-0000-7b10-9af8-12fd37a880e0.*declined|declined.*ws_00000000-0000-7b10-9af8-12fd37a880e0/i,
+      })
+    ).toBeInTheDocument();
+    expect(within(invitations).queryByRole('alert')).not.toBeInTheDocument();
+    expect(declineWorkspaceInvitation).toHaveBeenCalledTimes(2);
+    expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
+    expectNoRetainedInviteEmail(queryClient, guards);
+  });
+
+  it('does not repeat a decline the server refused with a non-retryable block', async () => {
+    const blocked = new ApiCallError(409, 'Workspace is blocked.', {
+      code: 'workspace_blocked',
+      details: {
+        workspaceId: PENDING_INVITATION.workspaceId,
+        operation: 'delete',
+        retryable: false,
+        blockers: [
+          {
+            kind: 'publication',
+            reason: 'pending-publication',
+            reference: { workspaceId: PENDING_INVITATION.workspaceId },
+            actions: [],
+          },
+        ],
+      },
+    });
+    const declineWorkspaceInvitation = vi.fn().mockRejectedValue(blocked);
+    const listMyWorkspaceInvitations = vi.fn().mockResolvedValue({
+      items: [PENDING_INVITATION],
+    });
+    const { client } = makeSharingClient({
+      authorizedWorkspaces: { items: [] },
+      coreWorkspaces: [],
+      methods: { declineWorkspaceInvitation, listMyWorkspaceInvitations },
+    });
+    renderApp('/settings/account', client);
+
+    await screen.findByRole('heading', { name: 'Account' });
+    const invitations = screen.getByRole('region', { name: 'My invitations' });
+    const pending = await within(invitations).findByRole('row', { name: /pending/i });
+    const user = userEvent.setup();
+    await user.click(await revealRowAction(user, pending, /^decline/i));
+
+    expect(await within(invitations).findByRole('alert')).toHaveTextContent(
+      /workspace sharing operation failed/i
+    );
+    expect(declineWorkspaceInvitation).toHaveBeenCalledTimes(1);
+    expect(within(invitations).getByRole('row', { name: /pending/i })).toBeInTheDocument();
+  });
+
   it.each([
     [
       'invitation_not_pending',
