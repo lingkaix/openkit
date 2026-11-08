@@ -32,13 +32,13 @@ import { recordUserAuditEvent, recordWorkspaceAuditEvent } from '../audit-events
 import {
   hasCapabilityCallRequestId,
   normalizeCapabilityRequestId,
-  recordUsageInDb,
   startCapabilityCallInDb,
 } from '../capability/usage-ledger.js';
 import {
   clearCapabilityCallItemInDb,
   finishCapabilityCallInDb,
   persistLlmCapabilityCallSystemPromptDigestInDb,
+  recordUsageInDb,
   stampCapabilityCallSchemaSnapshotInDb,
   writeCapabilityCallCacheInDb,
   writeGatewayRouteLineageInDb,
