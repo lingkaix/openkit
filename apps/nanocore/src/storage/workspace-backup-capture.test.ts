@@ -376,7 +376,7 @@ function inputFor(
     admission: new FileStorageAdmission(f.root, () => 0n),
     expectedRelease: release,
     supportedDatabaseFormats: {
-      'drizzle.workspace': 20,
+      'drizzle.workspace': 21,
       'drizzle.app.1': 1,
       'drizzle.app.2': 2,
       'drizzle.app.3': 3,
@@ -703,7 +703,7 @@ describe('D0-1: capture complete stopped authority', () => {
     expect(capturedDatabases[appIndex]).toEqual(f.appRows);
     expect(verified.manifest.databaseFormats).toEqual(
       expect.arrayContaining([
-        { path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 20 } },
+        { path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 21 } },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,
           markers: { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
@@ -713,6 +713,48 @@ describe('D0-1: capture complete stopped authority', () => {
     expect(JSON.stringify(result.report)).not.toContain(f.root);
     expect(JSON.stringify(result.report)).not.toContain('Exact authored body');
   }, 120_000);
+
+  it.each(['incomplete', 'future'] as const)(
+    'refuses a %s native prefix without upgrading source data or sealing a bundle',
+    async (prefix) => {
+      const f = await fixture();
+      const db = new Database(workspaceDbPath(f.dataRoot, workspaceId));
+      try {
+        if (prefix === 'incomplete')
+          db.prepare(
+            'DELETE FROM __drizzle_migrations WHERE created_at = (SELECT max(created_at) FROM __drizzle_migrations)'
+          ).run();
+        else
+          db.prepare('INSERT INTO __drizzle_migrations(hash,created_at) VALUES(?,?)').run(
+            'unsupported-future-fixture',
+            9_999_999_999_999
+          );
+      } finally {
+        db.close();
+      }
+      const sourcePath = workspaceDbPath(f.dataRoot, workspaceId);
+      const retainedRows = (rows: ReturnType<typeof databaseRows>) =>
+        Object.fromEntries(
+          Object.entries(rows).filter(([name]) => name !== 'workspace_capture_records')
+        );
+      const original = retainedRows(databaseRows(sourcePath));
+      // Capture can checkpoint SQLite and record its refusal; retained authority must stay unchanged.
+      const retainedFiles = () =>
+        Object.fromEntries(
+          Object.entries(tree(f.workspaceRoot)).filter(
+            ([path]) => !path.startsWith('db/workspace.sqlite')
+          )
+        );
+      const originalFiles = retainedFiles();
+      const input = inputFor(f);
+      await expect(createWorkspaceBackup(input)).rejects.toMatchObject({
+        code: 'unsupported-format',
+      });
+      expect(retainedRows(databaseRows(sourcePath))).toEqual(original);
+      expect(retainedFiles()).toEqual(originalFiles);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    }
+  );
 
   it('WM 410–412: MOVE preparation has no seal and does not mark source authority moved-out', async () => {
     const f = await fixture();
@@ -1012,7 +1054,7 @@ async function sealedFixture(f: Fixture) {
         path,
         markers:
           path === 'db/workspace.sqlite'
-            ? { 'drizzle.workspace': 20 }
+            ? { 'drizzle.workspace': 21 }
             : { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
       })),
     capture: { startedAt: timestamp, completedAt: timestamp, consistency: 'quiescent' },
@@ -1099,7 +1141,7 @@ describe('D0-1: full staging, independently sealed real-owner fixtures', () => {
     const { input, manifest } = await sealedFixture(f);
     expect(manifest.databaseFormats).toEqual(
       expect.arrayContaining([
-        { path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 20 } },
+        { path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 21 } },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,
           markers: { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
