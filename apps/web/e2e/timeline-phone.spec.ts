@@ -1,11 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
 import { whenCaptureFenceReleases } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
-const SHOTS = '/home/simonx/AI/temp/backlog-20261015/evidence/timeline-design/tw7-shots';
+// Screenshots are evidence, not assertions. Set OPENKIT_E2E_SHOTS_DIR to keep them.
+const SHOTS =
+  process.env.OPENKIT_E2E_SHOTS_DIR ?? join(tmpdir(), 'openkit-e2e-shots', 'timeline-phone');
 
 test.use({ viewport: { width: 360, height: 740 } });
 
@@ -70,6 +74,10 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
     const bar = page.locator('[data-phone-bar]');
     await expect(bar).toBeVisible();
     await expect(bar).toContainText('needs you');
+    // The phone header is the title only: no trigger line drawn over the header icons.
+    await expect(page.getByText(/^Triggered by/)).toHaveCount(0);
+    const titleBox = await page.getByRole('heading', { level: 1 }).first().boundingBox();
+    expect(titleBox?.width ?? 0).toBeGreaterThan(40);
     await page.screenshot({ path: `${SHOTS}/phone-bar.png` });
 
     await bar.click();

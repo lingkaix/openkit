@@ -361,8 +361,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             ) : null}
             {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}
           </div>
-          {activeTurn ? (
-            <p className="text-xs text-fg-muted">
+          {/* The phone header is the title only; the trigger line overlapped its icons at 360 px. */}
+          {activeTurn && !phone ? (
+            <p className="min-w-0 shrink truncate text-xs text-fg-muted">
               Triggered by{' '}
               {dashboard.data?.participants?.find(
                 (participant) =>

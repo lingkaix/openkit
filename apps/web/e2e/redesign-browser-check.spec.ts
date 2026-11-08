@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CoreClient, createCoreClient, createRequestId } from '@openkit/core-client';
 import { expect, type Locator, type Page, test } from '@playwright/test';
@@ -10,8 +11,10 @@ import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js'
  * existing local fixture. Screenshots are evidence, not a second harness.
  */
 
+// Set OPENKIT_E2E_SHOTS_DIR to keep the screenshots.
 const EVIDENCE =
-  '/home/simonx/AI/temp/backlog-20261015/evidence/web-redesign/browser-check-20261106';
+  process.env.OPENKIT_E2E_SHOTS_DIR ??
+  join(tmpdir(), 'openkit-e2e-shots', 'redesign-browser-check');
 const PAGED_OPERATIONS = new Set([
   '/api/app/operations/conversation.navigation',
   '/api/app/operations/knowledge.notebook.list',
