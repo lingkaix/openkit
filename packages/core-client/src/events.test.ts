@@ -232,3 +232,53 @@ describe('subscribeTurnEvents edge cases', () => {
     expect(source.closed).toBe(true);
   });
 });
+
+it('preserves the server-authored Turn error class and exact owner action on terminal SSE', async () => {
+  const original = buildTurnEvent(1, true);
+  if (original.data.type !== 'turn-completed') throw new Error('Expected terminal fixture.');
+  const presentation = {
+    class: 'unknown-outcome',
+    summary: 'Inspect recorded effects before starting new work.',
+    actions: [
+      {
+        kind: 'inspect',
+        owner: 'turn',
+        operation: 'turn.read',
+        input: { workspaceId, threadId, turnId },
+      },
+    ],
+  };
+  const frame = {
+    ...original,
+    data: {
+      ...original.data,
+      stopReason: 'error',
+      turn: {
+        ...original.data.turn,
+        status: 'failed',
+        error: { code: 'delivery_unknown', message: 'Delivery could not be proved.', presentation },
+      },
+    },
+  };
+  const fetcher = vi.fn<typeof fetch>(
+    async () =>
+      new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+        headers: { 'content-type': 'text/event-stream' },
+      })
+  );
+  const events = subscribeTurnEvents({
+    baseUrl: 'https://core.test',
+    workspaceId,
+    threadId,
+    turnId,
+    fetch: fetcher,
+  })[Symbol.asyncIterator]();
+  const received = await events.next();
+  expect(received.done).toBe(false);
+  expect(received.value?.data).toMatchObject({
+    type: 'turn-completed',
+    turn: { error: { presentation } },
+  });
+  expect(await events.next()).toEqual({ done: true, value: undefined });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});

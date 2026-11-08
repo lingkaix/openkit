@@ -50898,6 +50898,83 @@
                         "message": {
                           "type": "string",
                           "maxLength": 4096
+                        },
+                        "presentation": {
+                          "type": "object",
+                          "properties": {
+                            "class": {
+                              "type": "string",
+                              "enum": [
+                                "work",
+                                "system",
+                                "needs-you",
+                                "unknown-outcome",
+                                "unclassified"
+                              ]
+                            },
+                            "summary": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "actions": {
+                              "maxItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "inspect"
+                                  },
+                                  "owner": {
+                                    "type": "string",
+                                    "const": "turn"
+                                  },
+                                  "operation": {
+                                    "type": "string",
+                                    "const": "turn.read"
+                                  },
+                                  "input": {
+                                    "type": "object",
+                                    "properties": {
+                                      "workspaceId": {
+                                        "type": "string",
+                                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      },
+                                      "threadId": {
+                                        "type": "string",
+                                        "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      },
+                                      "turnId": {
+                                        "type": "string",
+                                        "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      }
+                                    },
+                                    "required": [
+                                      "workspaceId",
+                                      "threadId",
+                                      "turnId"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "owner",
+                                  "operation",
+                                  "input"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "class",
+                            "summary",
+                            "actions"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -73864,6 +73941,83 @@
                         "message": {
                           "type": "string",
                           "minLength": 1
+                        },
+                        "presentation": {
+                          "type": "object",
+                          "properties": {
+                            "class": {
+                              "type": "string",
+                              "enum": [
+                                "work",
+                                "system",
+                                "needs-you",
+                                "unknown-outcome",
+                                "unclassified"
+                              ]
+                            },
+                            "summary": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "actions": {
+                              "maxItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "inspect"
+                                  },
+                                  "owner": {
+                                    "type": "string",
+                                    "const": "turn"
+                                  },
+                                  "operation": {
+                                    "type": "string",
+                                    "const": "turn.read"
+                                  },
+                                  "input": {
+                                    "type": "object",
+                                    "properties": {
+                                      "workspaceId": {
+                                        "type": "string",
+                                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      },
+                                      "threadId": {
+                                        "type": "string",
+                                        "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      },
+                                      "turnId": {
+                                        "type": "string",
+                                        "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                      }
+                                    },
+                                    "required": [
+                                      "workspaceId",
+                                      "threadId",
+                                      "turnId"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "owner",
+                                  "operation",
+                                  "input"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "class",
+                            "summary",
+                            "actions"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -77818,6 +77972,83 @@
                   "message": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "presentation": {
+                    "type": "object",
+                    "properties": {
+                      "class": {
+                        "type": "string",
+                        "enum": [
+                          "work",
+                          "system",
+                          "needs-you",
+                          "unknown-outcome",
+                          "unclassified"
+                        ]
+                      },
+                      "summary": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "actions": {
+                        "maxItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "inspect"
+                            },
+                            "owner": {
+                              "type": "string",
+                              "const": "turn"
+                            },
+                            "operation": {
+                              "type": "string",
+                              "const": "turn.read"
+                            },
+                            "input": {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "owner",
+                            "operation",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "class",
+                      "summary",
+                      "actions"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -81306,6 +81537,83 @@
                   "message": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "presentation": {
+                    "type": "object",
+                    "properties": {
+                      "class": {
+                        "type": "string",
+                        "enum": [
+                          "work",
+                          "system",
+                          "needs-you",
+                          "unknown-outcome",
+                          "unclassified"
+                        ]
+                      },
+                      "summary": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "actions": {
+                        "maxItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "inspect"
+                            },
+                            "owner": {
+                              "type": "string",
+                              "const": "turn"
+                            },
+                            "operation": {
+                              "type": "string",
+                              "const": "turn.read"
+                            },
+                            "input": {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "owner",
+                            "operation",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "class",
+                      "summary",
+                      "actions"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -85009,6 +85317,83 @@
                   "message": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "presentation": {
+                    "type": "object",
+                    "properties": {
+                      "class": {
+                        "type": "string",
+                        "enum": [
+                          "work",
+                          "system",
+                          "needs-you",
+                          "unknown-outcome",
+                          "unclassified"
+                        ]
+                      },
+                      "summary": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "actions": {
+                        "maxItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "inspect"
+                            },
+                            "owner": {
+                              "type": "string",
+                              "const": "turn"
+                            },
+                            "operation": {
+                              "type": "string",
+                              "const": "turn.read"
+                            },
+                            "input": {
+                              "type": "object",
+                              "properties": {
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "threadId": {
+                                  "type": "string",
+                                  "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "turnId": {
+                                  "type": "string",
+                                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "workspaceId",
+                                "threadId",
+                                "turnId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "owner",
+                            "operation",
+                            "input"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "class",
+                      "summary",
+                      "actions"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -114120,6 +114505,83 @@
                       "message": {
                         "type": "string",
                         "minLength": 1
+                      },
+                      "presentation": {
+                        "type": "object",
+                        "properties": {
+                          "class": {
+                            "type": "string",
+                            "enum": [
+                              "work",
+                              "system",
+                              "needs-you",
+                              "unknown-outcome",
+                              "unclassified"
+                            ]
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "actions": {
+                            "maxItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "inspect"
+                                },
+                                "owner": {
+                                  "type": "string",
+                                  "const": "turn"
+                                },
+                                "operation": {
+                                  "type": "string",
+                                  "const": "turn.read"
+                                },
+                                "input": {
+                                  "type": "object",
+                                  "properties": {
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "threadId": {
+                                      "type": "string",
+                                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "turnId": {
+                                      "type": "string",
+                                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "workspaceId",
+                                    "threadId",
+                                    "turnId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "owner",
+                                "operation",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "class",
+                          "summary",
+                          "actions"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -120594,6 +121056,83 @@
                       "message": {
                         "type": "string",
                         "minLength": 1
+                      },
+                      "presentation": {
+                        "type": "object",
+                        "properties": {
+                          "class": {
+                            "type": "string",
+                            "enum": [
+                              "work",
+                              "system",
+                              "needs-you",
+                              "unknown-outcome",
+                              "unclassified"
+                            ]
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "actions": {
+                            "maxItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "inspect"
+                                },
+                                "owner": {
+                                  "type": "string",
+                                  "const": "turn"
+                                },
+                                "operation": {
+                                  "type": "string",
+                                  "const": "turn.read"
+                                },
+                                "input": {
+                                  "type": "object",
+                                  "properties": {
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "threadId": {
+                                      "type": "string",
+                                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "turnId": {
+                                      "type": "string",
+                                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "workspaceId",
+                                    "threadId",
+                                    "turnId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "owner",
+                                "operation",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "class",
+                          "summary",
+                          "actions"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -155883,6 +156422,83 @@
                       "message": {
                         "type": "string",
                         "minLength": 1
+                      },
+                      "presentation": {
+                        "type": "object",
+                        "properties": {
+                          "class": {
+                            "type": "string",
+                            "enum": [
+                              "work",
+                              "system",
+                              "needs-you",
+                              "unknown-outcome",
+                              "unclassified"
+                            ]
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "actions": {
+                            "maxItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "inspect"
+                                },
+                                "owner": {
+                                  "type": "string",
+                                  "const": "turn"
+                                },
+                                "operation": {
+                                  "type": "string",
+                                  "const": "turn.read"
+                                },
+                                "input": {
+                                  "type": "object",
+                                  "properties": {
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "threadId": {
+                                      "type": "string",
+                                      "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "turnId": {
+                                      "type": "string",
+                                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "workspaceId",
+                                    "threadId",
+                                    "turnId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "owner",
+                                "operation",
+                                "input"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "class",
+                          "summary",
+                          "actions"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -173624,5 +174240,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:a669e9bbd274d2ad969a68f9b92bce0ce57a617e6a1ba968124f5179e9e16052"
+  "x-openkit-source-digest": "sha256:3ea1f3d56732e68b12e7442f8d924cbc5a998f4b8cc10ed175fffb648c7afb7a"
 }

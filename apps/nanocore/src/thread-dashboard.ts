@@ -1,5 +1,5 @@
 import { THREAD_TIMELINE_PLACEMENT, ThreadDashboardResponseSchema } from '@openkit/app-api-schemas';
-import { type Item, ItemTypeSchema, ProductTurnSchema } from '@openkit/protocol';
+import { type Item, ItemTypeSchema } from '@openkit/protocol';
 import { readScopedHumanAttention } from './action-center.js';
 import type { readThreadDashboard } from './app-dashboard.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
@@ -11,6 +11,7 @@ import { readGoalAttentionScope } from './runtime/goal-owner.js';
 import { readLatestThreadRuntimeObservation } from './runtime/runtime-evidence.js';
 import { findSchedulerAdmissionForTurn } from './scheduler-records.js';
 import { projectTimelineItem } from './thread-timeline.js';
+import { projectProductTurn } from './turn-error-presentation.js';
 
 /** Current bounded dashboard joins each source only after its own admission. */
 export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDashboard>[0]) {
@@ -44,7 +45,7 @@ export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDa
         })[0];
       const record = current?.record;
       const latest = current
-        ? ProductTurnSchema.parse({
+        ? projectProductTurn({
             id: record!.id,
             owner: record!.owner,
             threadId,

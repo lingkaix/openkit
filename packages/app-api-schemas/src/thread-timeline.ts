@@ -8,6 +8,7 @@ import {
   ItemTypeSchema,
   ThreadIdSchema,
   TimestampSchema,
+  TurnErrorPresentationSchema,
   TurnIdSchema,
   TurnStatusSchema,
   WorkspaceIdSchema,
@@ -152,7 +153,11 @@ export const TimelineRunEntrySchema = z.object({
   completedAt: TimestampSchema.nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   error: z
-    .object({ code: z.string().max(256).nullable(), message: z.string().max(4096) })
+    .object({
+      code: z.string().max(256).nullable(),
+      message: z.string().max(4096),
+      presentation: TurnErrorPresentationSchema.optional(),
+    })
     .nullable(),
   long: z.boolean(),
   narrative: z.array(TimelineItemSchema).max(24),

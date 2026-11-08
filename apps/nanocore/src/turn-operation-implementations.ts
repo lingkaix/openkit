@@ -1,5 +1,4 @@
 import type { TURN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { ProductTurnSchema } from '@openkit/protocol';
 import { interruptAdministrationTurn } from './administration/administration-operations.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -13,6 +12,7 @@ import { updateTurnFeedback } from './runtime/feedback.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { PendingRequestCommandError } from './runtime/pending-request-error.js';
+import { projectProductTurn } from './turn-error-presentation.js';
 import { interruptProductTurn, readTurn, startTurn } from './turn-routes.js';
 /** Joins Turn commands, feedback and detail to their existing lifecycle, receipts and evidence owners. */
 export function createTurnOperationImplementations(
@@ -47,7 +47,7 @@ export function createTurnOperationImplementations(
     'turn.interrupt': async (input, context) => {
       try {
         dependencies.store!.getTurn(input.workspaceId, input.threadId, input.turnId);
-        return ProductTurnSchema.parse(
+        return projectProductTurn(
           await interruptProductTurn({
             ...input,
             store: dependencies.store!,

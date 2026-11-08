@@ -1,5 +1,9 @@
 # @openkit/app-api-schemas
 
+Timeline run errors carry the shared optional Protocol error presentation: closed class, bounded summary and exact owner actions. NanoCore supplies the classification after source admission; these schemas do not infer it from error text. Unknown code presentation is neutral and offers no invented retry.
+
+`thread.dashboard` validates a 32 KiB response with no embedded Items. It carries current Now fields, latest plan, a bounded Minimal attention window for the Thread or Goal and linked Tasks, and recorded environment/model facts. Coverage distinguishes current-run and referenced-window data from unavailable historical runtime activity and worker objectives. Each joined source retains its original permission and lineage checks.
+
 `thread.timeline` owns the bounded two-level timeline read. `THREAD_TIMELINE_PLACEMENT` is the exhaustive narrative/step mirror; renderer and voice policies stay in Web. Run entries carry bounded narrative, the current latest plan, note identities and counted original Item kinds. Each complete response stays within 256 KiB of UTF-8 JSON, and previews stay within 4 KiB of body bytes. An Item anchor includes its run window and a separate `itemWindow` with both cursors. Run and Item cursors retain their original append boundaries and grant no authority. Statistics with `coverage: partial` omit source-derived kinds that were not independently joined; restricted references expose no labels, identifiers or counts. Completed steer receipts project delivery evidence, with missing evidence shown as unknown rather than queued.
 
 `LIGHT_APP_CAPABILITIES` in `src/light-apps.ts` owns the existing fixed Kernel admission values and descriptive operation vocabulary. Schema and native admission reuse those values; app-get capability projections require the complete vocabulary. This descriptive response grants no operation or authority.

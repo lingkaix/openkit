@@ -2,11 +2,17 @@ import { z } from 'zod';
 
 import { RequestIdSchema, ThreadIdSchema, TurnIdSchema, WorkspaceIdSchema } from '../common/ids.js';
 import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
-import { ProductTurnSchema, TurnRecordSchema, TurnSkillSelectionsSchema } from '../models/turn.js';
+import {
+  ProductTurnErrorSchema,
+  ProductTurnSchema,
+  TurnRecordSchema,
+  TurnSkillSelectionsSchema,
+} from '../models/turn.js';
 
 /** Strict release-coupled Turn read with accepted package delivery evidence. */
 const StrictTurnReadProjectionSchema = TurnRecordSchema.omit({ agentSessionId: true })
   .extend({
+    error: ProductTurnErrorSchema.nullable(),
     contextPackageDigest: z
       .string()
       .regex(/^ctxpkg_sha256_[a-f0-9]{64}$/)

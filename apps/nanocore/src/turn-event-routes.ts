@@ -1,7 +1,6 @@
 import { ProductSseEventEnvelopeSchema, workspaceIdForOwner } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-
 import { apiErrorPayload, asApiError, publishedErrorMessage } from './api-errors.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -13,6 +12,7 @@ import { isThreadIdVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import type { ProductOperation } from './policy/workspace-access.js';
 import type { CoreDb } from './storage/db.js';
+import { projectProductTurn } from './turn-error-presentation.js';
 
 /**
  * Registers the Core turn event replay and live stream route.
@@ -135,7 +135,11 @@ export function registerTurnEventRoutes({
         }
 
         lastQueuedSequence = event.sequence;
-        const productEvent = ProductSseEventEnvelopeSchema.safeParse(event);
+        const outward =
+          event.data.type === 'turn-updated' || event.data.type === 'turn-completed'
+            ? { ...event, data: { ...event.data, turn: projectProductTurn(event.data.turn) } }
+            : event;
+        const productEvent = ProductSseEventEnvelopeSchema.safeParse(outward);
         if (!productEvent.success) {
           return;
         }

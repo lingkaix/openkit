@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
   isSealedTurnTerminal,
-  ProductTurnSchema,
   type SubmitTurnInputRequestSchema,
   TurnReadProjectionSchema,
   TurnSchema,
@@ -38,6 +37,7 @@ import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js'
 import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { publishSchedulerAdmission } from './storage/scheduler-admission-publication.js';
+import { projectProductTurn } from './turn-error-presentation.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
@@ -101,7 +101,7 @@ function validateCoreTurnAdmission(
  * @returns Ordinary Turn projection without `agentSessionId`.
  */
 function projectOrdinaryTurn(turn: TurnReadModel) {
-  return ProductTurnSchema.parse(turn);
+  return projectProductTurn(turn);
 }
 
 /** Existing worker admission dependencies; invocation adds no Turn lifecycle. */

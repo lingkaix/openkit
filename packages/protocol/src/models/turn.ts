@@ -8,6 +8,7 @@ import {
   ItemIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
+  WorkspaceIdSchema,
 } from '../common/ids.js';
 import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { TimestampSchema } from '../common/timestamps.js';
@@ -98,6 +99,38 @@ export const TurnErrorSchema = z.object({
   code: z.string().min(1).nullable(),
   message: z.string().min(1),
 });
+
+/** Server-authored error classification is descriptive, independent from retained error authority. */
+export const TurnErrorPresentationSchema = z
+  .object({
+    class: z.enum(['work', 'system', 'needs-you', 'unknown-outcome', 'unclassified']),
+    summary: z.string().min(1).max(256),
+    actions: z
+      .array(
+        z
+          .object({
+            kind: z.literal('inspect'),
+            owner: z.literal('turn'),
+            operation: z.literal('turn.read'),
+            input: z
+              .object({
+                workspaceId: WorkspaceIdSchema,
+                threadId: ThreadIdSchema,
+                turnId: TurnIdSchema,
+              })
+              .strict(),
+          })
+          .strict()
+      )
+      .max(1),
+  })
+  .strict();
+/** Existing error owners retain code/message/explanation; only outward reads carry this projection. */
+export const ProductTurnErrorSchema = TurnErrorSchema.extend({
+  presentation: TurnErrorPresentationSchema.optional(),
+});
+/** Descriptive outward error class and actions supplied by its admitted owner. */
+export type TurnErrorPresentation = z.infer<typeof TurnErrorPresentationSchema>;
 
 /**
  * Bounded reason why a turn was started or resumed.
@@ -245,9 +278,9 @@ export const TurnSchema = TurnRecordSchema.superRefine(refineTurnItemRelationshi
 /**
  * Ordinary product-surface Turn projection that omits hidden AgentSession identity.
  */
-export const ProductTurnSchema = TurnRecordSchema.omit({ agentSessionId: true }).superRefine(
-  refineTurnItemRelationships
-);
+export const ProductTurnSchema = TurnRecordSchema.omit({ agentSessionId: true })
+  .extend({ error: ProductTurnErrorSchema.nullable() })
+  .superRefine(refineTurnItemRelationships);
 
 /** Ordinary product-surface Turn without AgentSession identity. */
 export type ProductTurn = z.infer<typeof ProductTurnSchema>;

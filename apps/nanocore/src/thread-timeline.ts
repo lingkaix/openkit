@@ -32,6 +32,7 @@ import type {
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
 import { readThreadReceiptMembership } from './thread-read-state.js';
+import { projectTurnErrorPresentation, turnErrorInspectAction } from './turn-error-presentation.js';
 
 const CursorSchema = z
   .object({
@@ -349,6 +350,14 @@ function runEntry(
     durationMs: turn.durationMs,
     error: turn.error
       ? {
+          presentation: projectTurnErrorPresentation(
+            turn.error,
+            turnErrorInspectAction({
+              workspaceId: owner.input.workspaceId,
+              threadId: turn.threadId,
+              turnId: turn.id,
+            })
+          ),
           code: turn.error.code ? boundedJsonText(turn.error.code, 256) : null,
           message: boundedJsonText(
             turn.error.message,

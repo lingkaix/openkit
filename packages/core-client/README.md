@@ -1,12 +1,14 @@
 # @openkit/core-client
 
+Ordinary SSE validates and preserves the server-authored Turn error presentation, including its closed class and exact owner inspection action. The client classifies no error and creates no error-retry action.
+
 JSON operations share one capture retry in the transport. Only a typed authorized pre-effect `workspace_frozen` response with `Retry-After: 1` and NanoCore's authentication-context binding permits replay, for at most 20 seconds. Every attempt retains the original serialized input, revision and request identity. Network errors, unknown outcomes, other refusals and raw request streams stop without replay. Call `client.operations[id](input, { signal })` to cancel a pending operation, or pass a lifetime `signal` when constructing the client. Sign-in, sign-up and sign-out cancel pending requests on that client; NanoCore checks the retained context before a replay can affect a different session. UI callers use this policy directly rather than adding decision loops.
 
 Thread dashboard reads validate the authenticated viewer id and bounded participant display names alongside existing work state; no separate user-directory request is needed for conversation attribution.
 
 Dashboard work status contains selected Agent, active Turn status, pending attention counts and latest Artifact; active-work rows contain no mode field. Conversation, Task and Goal operation results and their exact lineage prove the selected workflow.
 
-The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and administrator CLI consumers; the client does not infer summaries from message JSON.
+The bounded dashboard declares current-run and referenced-window coverage. Historical `taskInputs` objectives and complete runtime activity are unavailable in this projection; the client does not infer their absence or reconstruct them from message JSON. Their source owners retain full verification.
 
 `client.operations` exposes the ten Goal definitions with strict input and output codecs and automatic missing request-id insertion. `goal.read` returns current intent and cards, exact proposed and active Plan versions, shared request state and claim, linked ordinary Tasks and disposition. Human decision operations resolve exact Pending Requests; grant consumption belongs to the Goal owner and does not launch work. Retired Goal SDK methods and routes have no aliases.
 
