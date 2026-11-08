@@ -7,7 +7,7 @@ import {
   ProtocolValidationError,
 } from '@openkit/core-client';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
-import { getGlobalDispatcher } from 'undici';
+import { Agent, EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
 
 import packageMetadata from '../package.json' with { type: 'json' };
 import { describeOperation, operationCatalog, searchOperations } from './openkit-operations.mjs';
@@ -299,15 +299,22 @@ async function callOperation(operationId, env, state, destination) {
   // Current KM inputs carry no admitted deadline. Use the finite fallback, not a new input field.
   const transportMs = 660_000;
   const deadline = AbortSignal.timeout(transportMs);
-  // Fetch supplies its own phase defaults. Override only this invocation, retaining proxy/TLS routing.
-  const dispatcher = getGlobalDispatcher().compose(
-    (dispatch) => (options, handler) =>
-      dispatch({ ...options, headersTimeout: transportMs, bodyTimeout: transportMs }, handler)
-  );
+  // Fetch supplies its own phase defaults. Override only this invocation, retaining the runtime's
+  // env-proxy choice. The dispatcher and fetch both come from the bundled undici: a dispatcher
+  // handed to the runtime's own fetch must match the undici major that Node release bundles,
+  // and the CLI runs on more than one Node LTS line.
+  const phases = { headersTimeout: transportMs, bodyTimeout: transportMs };
+  // Node enables env-proxy routing for NODE_USE_ENV_PROXY=1 or --use-env-proxy, nothing else.
+  const envProxy =
+    process.env.NODE_USE_ENV_PROXY === '1' ||
+    [...process.execArgv, ...(process.env.NODE_OPTIONS ?? '').split(/\s+/)].includes(
+      '--use-env-proxy'
+    );
+  const dispatcher = envProxy ? new EnvHttpProxyAgent(phases) : new Agent(phases);
   const client = createClient(endpoint, credential, (resource, options) => {
     const callerSignal =
       options?.signal ?? (resource instanceof Request ? resource.signal : undefined);
-    return globalThis.fetch(resource, {
+    return undiciFetch(resource, {
       ...options,
       dispatcher,
       signal: callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline,
