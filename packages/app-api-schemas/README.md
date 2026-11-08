@@ -1,5 +1,8 @@
 # @openkit/app-api-schemas
 
+`thread.item-body` reads one complete original Item by a strict Workspace/Thread/Turn/Item selector. NanoCore checks the addressed Thread and the Item source independently. The body response is an explicit complete-body read and does not use the timeline preview budget.
+
+
 Timeline run errors carry the shared optional Protocol error presentation: closed class, bounded summary and exact owner actions. NanoCore supplies the classification after source admission; these schemas do not infer it from error text. Unknown code presentation is neutral and offers no invented retry.
 
 `thread.dashboard` validates a 32 KiB response with no embedded Items. It carries current Now fields, latest plan, a bounded Minimal attention window for the Thread or Goal and linked Tasks, and recorded environment/model facts. Coverage distinguishes current-run and referenced-window data from unavailable historical runtime activity and worker objectives. Each joined source retains its original permission and lineage checks.

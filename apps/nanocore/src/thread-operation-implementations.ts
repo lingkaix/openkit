@@ -14,7 +14,7 @@ import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import { markThreadRead, readThreadReadState } from './thread-read-state.js';
 import { archiveThread, createThread, updateThread } from './thread-routes.js';
-import { readThreadTimeline } from './thread-timeline.js';
+import { readThreadItemBody, readThreadTimeline } from './thread-timeline.js';
 /** Joins Thread creation, record/history reads and dashboard projection without a second lifecycle. */
 export function createThreadOperationImplementations(
   dependencies: Pick<
@@ -115,6 +115,25 @@ export function createThreadOperationImplementations(
             publicOperationActor(context)
           ),
         });
+      } catch (error) {
+        threadCommandFailure(error, 'not_found');
+      }
+    },
+    'thread.item-body': (input, context) => {
+      try {
+        const actor = publicOperationActor(context);
+        return readThreadItemBody(
+          {
+            input,
+            actor,
+            store: dependencies.store!,
+            coreDb: dependencies.coreDb,
+            repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb,
+            administratorEligible: isCurrentDeploymentAdministrator(dependencies.coreDb!, actor),
+          },
+          input.turnId,
+          input.itemId
+        );
       } catch (error) {
         threadCommandFailure(error, 'not_found');
       }

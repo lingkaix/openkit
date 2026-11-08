@@ -1,5 +1,8 @@
 # @openkit/core-client
 
+SSE preserves bounded `item-preview` events and their exact body selector. Receiving a preview does not fetch its body. Call `client.operations['thread.item-body']` only for an explicit full-body read; source admission is repeated by NanoCore.
+
+
 Ordinary SSE validates and preserves the server-authored Turn error presentation, including its closed class and exact owner inspection action. The client classifies no error and creates no error-retry action.
 
 JSON operations share one capture retry in the transport. Only a typed authorized pre-effect `workspace_frozen` response with `Retry-After: 1` and NanoCore's authentication-context binding permits replay, for at most 20 seconds. Every attempt retains the original serialized input, revision and request identity. Network errors, unknown outcomes, other refusals and raw request streams stop without replay. Call `client.operations[id](input, { signal })` to cancel a pending operation, or pass a lifetime `signal` when constructing the client. Sign-in, sign-up and sign-out cancel pending requests on that client; NanoCore checks the retained context before a replay can affect a different session. UI callers use this policy directly rather than adding decision loops.

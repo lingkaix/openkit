@@ -14,7 +14,11 @@ import {
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
-import { prepareImmutableProductJson, readImmutableProductJson } from './immutable-content.js';
+import {
+  prepareImmutableProductJson,
+  prepareRetainedProductJson,
+  readImmutableProductJson,
+} from './immutable-content.js';
 import {
   listNativeProducts,
   nativeProductScope,
@@ -88,19 +92,47 @@ function committedCut(f: Awaited<ReturnType<typeof fixture>>) {
   }
 }
 
-/** Publishes exact retained fault bytes through real immutable preparation and native SQL ownership. */
-async function appendRetainedItem(
+/** Prepares verified retained bytes; unsupported required semantics are injected into the exact retained row. */
+async function writeRetainedItemFixture(
   f: Awaited<ReturnType<typeof fixture>>,
   value: Record<string, unknown>
 ) {
   const before = committedCut(f);
   const previous = before.items.filter((entry) => entry.id === f.item.id).at(-1)!;
-  const prepared = await prepareImmutableProductJson(
+  const fault =
+    'requiredFeatures' in value &&
+    (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length > 0);
+  const prepared = await (fault ? prepareRetainedProductJson : prepareImmutableProductJson)(
     f.scope.contentMount,
     f.scope.owner,
     join(dirname(dirname(f.scope.path)), 'runtime', 'staging'),
     value
   );
+  if (fault) {
+    // The dashboard metadata publisher rejects unsupported required semantics before SQL.
+    // Inject the retained fault at the existing exact row.
+    // Public positive controls and refusal/unchanged-cut assertions still exercise their original owners.
+    expect(
+      'representation' in prepared.content.reference && prepared.content.reference.representation
+    ).toBe('inline');
+    await shutdownControlStoreWorkerClient();
+    const sqlite = new Database(f.scope.path);
+    try {
+      expect(
+        sqlite
+          .prepare(
+            "UPDATE control_product_entries SET content_json=? WHERE kind='item' AND id=? AND turn_id=? AND revision=?"
+          )
+          .run(JSON.stringify(prepared.content), f.item.id, f.turn.id, previous.revision).changes
+      ).toBe(1);
+    } finally {
+      sqlite.close();
+    }
+    expect(readImmutableProductJson(f.scope.contentMount, f.scope.owner, prepared.content)).toEqual(
+      value
+    );
+    return;
+  }
   await expect(
     getControlStoreWorkerClient().products(`workspace:${f.scope.path}`, {
       products: [
@@ -150,7 +182,7 @@ describe('addressed retained Item required semantics', () => {
         operatorNote: { purpose: 'descriptive only' },
         requiredFeatures: [],
       };
-      await appendRetainedItem(f, descriptive);
+      await writeRetainedItemFixture(f, descriptive);
       expect(readNativeProductEntries(f.scope, f.turn.id, 'item').at(-1)!.value).toEqual(
         descriptive
       );
@@ -166,7 +198,7 @@ describe('addressed retained Item required semantics', () => {
       });
 
       // Fault injection starts only after both public publication controls have acknowledged success.
-      await appendRetainedItem(f, { ...writeRetainedV1(candidate), requiredFeatures });
+      await writeRetainedItemFixture(f, { ...writeRetainedV1(candidate), requiredFeatures });
       const before = committedCut(f);
       // The established complete-history reader supplies an independent refusal control.
       expect(() => readNativeProductEntries(f.scope, f.turn.id, 'item')).toThrow();
@@ -204,7 +236,7 @@ describe('borrowed native product reader binding', () => {
       operatorNote: { purpose: 'preserve the original retained bytes' },
       requiredFeatures: [],
     };
-    await appendRetainedItem(f, retained);
+    await writeRetainedItemFixture(f, retained);
     const cut = committedCut(f);
     // This is an actual existing Workspace owner connection, not the private Worker connection.
     // The complete native producer above acknowledged before this synchronous read section.

@@ -282,3 +282,40 @@ it('preserves the server-authored Turn error class and exact owner action on ter
   expect(await events.next()).toEqual({ done: true, value: undefined });
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it('delivers a bounded Item preview and exact body selector without fetching the body', async () => {
+  const itemId = allocateEntityId('it');
+  const preview = {
+    type: 'item-preview',
+    itemId,
+    itemType: 'command-execution',
+    preview: {
+      text: 'exact tail 🙂',
+      field: 'output',
+      side: 'tail',
+      sizeBytes: 5_000_000,
+      truncated: true,
+    },
+    body: { workspaceId, threadId, turnId, itemId },
+  };
+  const first = { ...buildTurnEvent(1), event: 'item.delta', data: preview };
+  const fetcher = vi.fn<typeof fetch>(
+    async () =>
+      new Response(
+        `data: ${JSON.stringify(first)}\n\ndata: ${JSON.stringify(buildTurnEvent(2, true))}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } }
+      )
+  );
+  const received = [];
+  for await (const event of subscribeTurnEvents({
+    baseUrl: 'https://core.test',
+    workspaceId,
+    threadId,
+    turnId,
+    fetch: fetcher,
+  }))
+    received.push(event);
+  expect(received[0]?.data).toEqual(preview);
+  expect(received).toHaveLength(2);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});

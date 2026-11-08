@@ -43,7 +43,7 @@ async function withStagedProductJson<T>(
       'Canonical product publication requires the admitted native work-byte binding.'
     );
   const digest = createHash('sha256').update(bytes).digest('hex');
-  if (bytes.length > CONTROL_PRODUCT_LIMITS.payloadBytes)
+  if (bytes.length > CONTROL_PRODUCT_LIMITS.immutableBodyBytes)
     throw new Error('Control product body exceeds its byte limit.');
   const storage = new LocalStorage({
     mounts: [
@@ -204,7 +204,7 @@ export function readImmutableProductJson(
     mount,
     owner,
     content,
-    CONTROL_PRODUCT_LIMITS.payloadBytes
+    CONTROL_PRODUCT_LIMITS.immutableBodyBytes
   );
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
 }

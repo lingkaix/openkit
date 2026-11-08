@@ -1,4 +1,9 @@
-import { ProductSseEventEnvelopeSchema, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  type Item,
+  ProductItemPreviewEventSchema,
+  ProductSseEventEnvelopeSchema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { apiErrorPayload, asApiError, publishedErrorMessage } from './api-errors.js';
@@ -6,12 +11,19 @@ import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   assertAuthorizedWorkspaceLineage,
+  isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
+import { previewUtf8 } from './bounded-read-text.js';
 import type { FsStore } from './lib/store.js';
 import type { ProductOperation } from './policy/workspace-access.js';
-import type { CoreDb } from './storage/db.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import {
+  isThreadItemSourceAllowed,
+  isThreadItemSourceType,
+  itemBodyText,
+} from './thread-timeline.js';
 import { projectProductTurn } from './turn-error-presentation.js';
 
 /**
@@ -23,8 +35,10 @@ export function registerTurnEventRoutes({
   app,
   coreDb,
   requestStore,
+  repositoryWorkspaceDb,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly repositoryWorkspaceDb?: ((workspaceId: string) => WorkspaceDb) | undefined;
   readonly coreDb?: CoreDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
@@ -128,17 +142,72 @@ export function registerTurnEventRoutes({
         unsubscribe = null;
       };
 
-      /** Serializes replayed and live events without sequence gaps or duplicate writes. */
+      /** Serializes admitted replay and live frames in original sequence order without duplicate writes. */
       const queueEvent = (event: (typeof replayEvents)[number]): void => {
         if (event.sequence <= lastQueuedSequence) {
           return;
         }
 
         lastQueuedSequence = event.sequence;
-        const outward =
-          event.data.type === 'turn-updated' || event.data.type === 'turn-completed'
-            ? { ...event, data: { ...event.data, turn: projectProductTurn(event.data.turn) } }
-            : event;
+        const terminal = event.event === 'turn.completed';
+        let sourceAuthorized = () => true;
+        let outward: unknown = event;
+        const data = event.data;
+        if (data.type === 'turn-updated' || data.type === 'turn-completed') {
+          // Turn events are headers. Original Item bytes remain with the explicit body owner.
+          outward = {
+            ...event,
+            data: { ...data, turn: { ...projectProductTurn(data.turn), items: [] } },
+          };
+        } else if (
+          data.type === 'item-created' ||
+          data.type === 'item-completed' ||
+          (data.type === 'item-delta' &&
+            (Buffer.byteLength(JSON.stringify(data)) > 4096 ||
+              isThreadItemSourceType(data.itemType)))
+        ) {
+          let item: Item | null;
+          try {
+            item =
+              'item' in data ? data.item : store.getThreadItem(workspaceId, threadId, data.itemId);
+          } catch {
+            return;
+          }
+          if (!item || item.turnId !== turnId || !actor) return;
+          const selectedItem = item;
+          if (isThreadItemSourceType(selectedItem.type))
+            sourceAuthorized = () =>
+              isThreadItemSourceAllowed(selectedItem, {
+                input: { workspaceId, threadId },
+                store,
+                coreDb,
+                repositoryWorkspaceDb,
+                actor,
+                administratorEligible: !!coreDb && isCurrentDeploymentAdministrator(coreDb, actor),
+              });
+          if (!sourceAuthorized()) return;
+          if (Buffer.byteLength(JSON.stringify(data)) > 4096) {
+            const body = itemBodyText(item);
+            const bytes = Buffer.from(body.text);
+            const text = previewUtf8(bytes, body.side, 4096);
+            outward = {
+              ...event,
+              data: ProductItemPreviewEventSchema.parse({
+                type: 'item-preview',
+                itemId: item.id,
+                itemType: item.type,
+                preview: {
+                  text,
+                  field: body.field,
+                  side: body.side,
+                  sizeBytes: bytes.length,
+                  truncated: text !== body.text,
+                },
+                body: { workspaceId, threadId, turnId, itemId: item.id },
+              }),
+            };
+          }
+        }
         const productEvent = ProductSseEventEnvelopeSchema.safeParse(outward);
         if (!productEvent.success) {
           return;
@@ -154,11 +223,12 @@ export function registerTurnEventRoutes({
             return;
           }
 
+          if (!sourceAuthorized()) return;
           await stream.writeSSE({
             data: JSON.stringify(productEvent.data),
           });
 
-          if (event.event === 'turn.completed') {
+          if (terminal) {
             finished = true;
             stopListening();
             await stream.close();

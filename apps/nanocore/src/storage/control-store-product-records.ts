@@ -31,6 +31,9 @@ export const CONTROL_PRODUCT_LIMITS = {
   pageRows: 128,
   payloadBytes: 1024 * 1024,
   inlineBytes: 65_536,
+  // File-backed canonical bodies are separate from bounded control envelopes.
+  immutableBodyBytes: 32 * 1024 * 1024,
+  bodyPreparationBytes: 64 * 1024 * 1024,
 } as const;
 
 /** Admitted transient Storage binding; reference parsing cannot select another Knowledge Base or mount. */

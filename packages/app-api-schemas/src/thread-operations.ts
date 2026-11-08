@@ -2,10 +2,12 @@ import {
   ArchiveThreadRequestSchema,
   CreateThreadRequestSchema,
   ItemIdSchema,
+  ItemSchema,
   ListThreadItemsResponseSchema,
   ListThreadsResponseSchema,
   ThreadIdSchema,
   ThreadSchema,
+  TurnIdSchema,
   UpdateThreadRequestSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -108,6 +110,22 @@ export const THREAD_OPERATION_DEFINITIONS = {
       'Read bounded admission-ordered run entries or anchored Item windows for one visible Thread.',
     inputSchema: ThreadTimelineInputSchema,
     outputSchema: ThreadTimelineResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+  'thread.item-body': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Read one original Item body after exact Workspace, Thread, Turn and source admission.',
+    inputSchema: z
+      .object({ ...threadSelector, turnId: TurnIdSchema, itemId: ItemIdSchema })
+      .strict(),
+    outputSchema: z.object({ ...threadSelector, turnId: TurnIdSchema, item: ItemSchema }),
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },

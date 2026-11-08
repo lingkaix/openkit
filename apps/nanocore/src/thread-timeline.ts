@@ -56,6 +56,10 @@ const sourceKinds = new Set<Item['type']>([
   'knowledge-injection',
   'generative-ui-reference',
 ]);
+/** Identifies Items whose referenced source needs admission beyond the addressed Thread. */
+export function isThreadItemSourceType(type: Item['type']): boolean {
+  return sourceKinds.has(type);
+}
 const narrativeTypes = types.filter((type) => THREAD_TIMELINE_PLACEMENT[type] === 'narrative');
 
 /** Dependencies preserve current Thread admission and each separately joined source owner. */
@@ -101,7 +105,7 @@ function bytes(value: unknown): number {
 }
 
 /** Selects the body's recorded text field; structured bodies retain their complete JSON through the body owner. */
-function itemText(item: Item): {
+export function itemBodyText(item: Item): {
   text: string;
   field: 'text' | 'output' | 'result' | 'content' | 'json';
   side: 'head' | 'tail';
@@ -136,7 +140,7 @@ export function projectTimelineItem(
   };
   const complete = { ...base, detail: { kind: 'complete' as const, value: item } };
   if (bytes(item) <= 4096 && bytes(complete) <= budget) return complete;
-  const body = itemText(item);
+  const body = itemBodyText(item);
   const encoded = Buffer.from(body.text);
   let size = Math.min(4096, encoded.byteLength);
   for (;;) {
@@ -158,7 +162,16 @@ export function projectTimelineItem(
 }
 
 /** Structured references never inherit the shared work's audience. No joined body is read here. */
-function itemAllowed(item: Item, owner: ThreadTimelineReadInput): boolean {
+export function isThreadItemSourceAllowed(item: Item, owner: ThreadTimelineReadInput): boolean {
+  if (
+    item.type === 'artifact-reference' &&
+    owner.coreDb &&
+    !isWorkspaceOperationAuthorized(owner.coreDb, owner.actor, owner.input.workspaceId, {
+      mutating: false,
+      policyOperation: 'artifact.read',
+    })
+  )
+    return false;
   if (item.type === 'artifact-reference') {
     try {
       const artifact = owner.store.getArtifact(owner.input.workspaceId, item.artifactId);
@@ -270,7 +283,7 @@ function itemWindow(
   const items = positions.flatMap((position) => {
     const item = snapshot.item(position.itemId);
     if (!item) return missing();
-    if (!itemAllowed(item, owner)) {
+    if (!isThreadItemSourceAllowed(item, owner)) {
       if (anchor?.itemId === item.id) return missing();
       restricted = true;
       return [];
@@ -395,7 +408,7 @@ function runEntry(
   const add = (position: ThreadItemPosition, isPlan = false) => {
     const item = snapshot.item(position.itemId);
     if (!item) return missing();
-    if (!itemAllowed(item, owner)) {
+    if (!isThreadItemSourceAllowed(item, owner)) {
       restricted = true;
       return;
     }
@@ -511,7 +524,7 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
       anchor = snapshot.position(anchor.itemId) ?? missing();
     if (anchor?.itemId) {
       const item = snapshot.item(anchor.itemId) ?? missing();
-      if (!itemAllowed(item, owner)) return missing();
+      if (!isThreadItemSourceAllowed(item, owner)) return missing();
     }
     const anchoredTurn = anchor ? (snapshot.turn(anchor.turnId) ?? missing()) : undefined;
     const upperOrder = cursor?.upperOrder ?? snapshot.upperOrder;
@@ -629,4 +642,19 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
     result.restrictedReferences ||= result.runs.some((run) => run.restrictedReferences);
     return result;
   });
+}
+
+/** Reads only the original current revision after all four lineage selectors and source admission agree. */
+export function readThreadItemBody(owner: ThreadTimelineReadInput, turnId: string, itemId: string) {
+  return owner.store.readThreadTimelineSnapshot(
+    owner.input.workspaceId,
+    owner.input.threadId,
+    (snapshot) => {
+      const position = snapshot.position(itemId);
+      if (!position || position.turnId !== turnId) return missing();
+      const item = snapshot.item(itemId) ?? missing();
+      if (!isThreadItemSourceAllowed(item, owner)) return missing();
+      return { workspaceId: owner.input.workspaceId, threadId: owner.input.threadId, turnId, item };
+    }
+  );
 }

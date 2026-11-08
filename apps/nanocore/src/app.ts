@@ -2676,6 +2676,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerTurnEventRoutes({
     app,
+    repositoryWorkspaceDb,
     requestStore,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
   });

@@ -696,7 +696,11 @@ async function synchronizeControlContent(
   newDirectories?: ControlContentPreparation | null,
   entry?: ControlProductEntry
 ): Promise<Buffer> {
-  if (isMainThread || !contentMount || content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
+  if (
+    isMainThread ||
+    !contentMount ||
+    content.byteLength > CONTROL_PRODUCT_LIMITS.immutableBodyBytes
+  )
     throw new ControlProductPreconditionError();
   const inline = inlineControlContentBytes(owner, content);
   if (inline) {
@@ -763,6 +767,11 @@ async function prepareEntries(
   retainedDb?: CoreDb | WorkspaceDb
 ): Promise<PreparedControlEntry[]> {
   if (isMainThread) throw new ControlProductPreconditionError();
+  if (
+    entries.reduce((sum, entry) => sum + entry.content.byteLength, 0) >
+    CONTROL_PRODUCT_LIMITS.bodyPreparationBytes
+  )
+    throw new ControlProductPreconditionError();
   const result: PreparedControlEntry[] = [];
   const prepare = async (input: ControlProductEntry): Promise<PreparedControlEntry> => {
     if (

@@ -540,6 +540,62 @@ describe('Thread timeline windows', () => {
     expect(text).not.toContain(citation.id);
     expect(projection.runs[0].statistics.itemCounts['artifact-reference']).toBeUndefined();
     expect(projection.restrictedReferences).toBe(true);
+    const bodyResponse = await app.request('/api/app/operations/thread.item-body', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token.secret}` },
+      body: JSON.stringify({ ...f.selector, turnId: f.turn.id, itemId: citation.id }),
+    });
+    expect(bodyResponse.status).toBe(404);
+    const refusal = await bodyResponse.text();
+    expect(refusal).not.toContain('Private source');
+    expect(refusal).not.toContain(artifact.id);
+    const actual = policyKernel.evaluateAccess;
+    vi.spyOn(policyKernel, 'evaluateAccess').mockImplementation((policy, request) =>
+      actual(
+        {
+          ...policy,
+          associations: policy.associations.map((association) => ({
+            ...association,
+            accessRights: association.accessRights.filter((right) => right !== 'ar:artifact-read'),
+          })),
+        },
+        request
+      )
+    );
+    const sourceRead = vi.spyOn(f.store, 'getArtifact');
+    const deniedBody = await app.request('/api/app/operations/thread.item-body', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token.secret}` },
+      body: JSON.stringify({ ...f.selector, turnId: f.turn.id, itemId: citation.id }),
+    });
+    expect(deniedBody.status).toBe(404);
+    expect(sourceRead).not.toHaveBeenCalled();
+    await f.store.persistTurnEvent(f.turn.id, {
+      event: 'item.created',
+      ...f.selector,
+      turnId: f.turn.id,
+      data: { type: 'item-created', item: citation },
+    });
+    const completed = await f.store.completeTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    await f.store.persistTurnEvent(f.turn.id, {
+      event: 'turn.completed',
+      ...f.selector,
+      turnId: f.turn.id,
+      data: { type: 'turn-completed', stopReason: 'completed', turn: completed },
+    });
+    const stream = await app.request(
+      `/api/workspaces/${f.selector.workspaceId}/threads/${f.thread.id}/events?turnId=${f.turn.id}`,
+      { headers: { authorization: `Bearer ${token.secret}` } }
+    );
+    expect(stream.status).toBe(200);
+    const wire = await stream.text();
+    expect(wire).not.toContain('Private source');
+    expect(wire).not.toContain(citation.id);
+    expect(wire).not.toContain(artifact.id);
+    expect(wire.split('data: ').length - 1).toBe(1);
   });
 
   it('rejects a foreign Thread Item anchor without disclosing its text', async () => {

@@ -575,7 +575,39 @@ const ProductTurnCompletedEventSchema = TurnCompletedEventSchema.extend({
   turn: ProductTurnSchema,
 });
 
+/** Bounded outward Item projection; the body selector grants no read authority. */
+export const ProductItemPreviewEventSchema = z
+  .object({
+    type: z.literal('item-preview'),
+    itemId: ItemIdSchema,
+    itemType: ItemTypeSchema,
+    preview: z
+      .object({
+        text: z
+          .string()
+          .refine(
+            (text) => new TextEncoder().encode(text).byteLength <= 4096,
+            'Item previews are at most 4 KiB.'
+          ),
+        field: z.enum(['text', 'output', 'result', 'content', 'json']),
+        side: z.enum(['head', 'tail']),
+        sizeBytes: z.number().int().nonnegative(),
+        truncated: z.boolean(),
+      })
+      .strict(),
+    body: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        threadId: ThreadIdSchema,
+        turnId: TurnIdSchema,
+        itemId: ItemIdSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
 const ProductServerEventSchema = z.discriminatedUnion('type', [
+  ProductItemPreviewEventSchema,
   WorkspaceUpdatedEventSchema,
   ThreadCreatedEventSchema,
   ThreadUpdatedEventSchema,
@@ -597,7 +629,7 @@ const ProductForwardCompatibleServerEventSchema = z.union([
   ForwardCompatibleItemCreatedEventSchema,
   ForwardCompatibleItemDeltaEventSchema,
   ForwardCompatibleItemCompletedEventSchema,
-  UnknownServerEventSchema,
+  UnknownServerEventSchema.refine((event) => event.type !== 'item-preview'),
 ]);
 
 /**
@@ -609,6 +641,23 @@ export const ProductSseEventEnvelopeSchema = ForwardCompatibleSseEventEnvelopeSc
     .min(1)
     .refine((event) => event !== 'agent.session.updated', 'AgentSession events are internal.'),
   data: ProductForwardCompatibleServerEventSchema,
+}).superRefine((envelope, context) => {
+  const event = envelope.data;
+  if (event.type === 'item-preview' && 'body' in event) {
+    const parsed = ProductItemPreviewEventSchema.safeParse(event);
+    if (!parsed.success) return;
+    const preview = parsed.data;
+    if (
+      preview.itemId !== preview.body.itemId ||
+      preview.body.workspaceId !== envelope.workspaceId ||
+      preview.body.threadId !== envelope.threadId ||
+      preview.body.turnId !== envelope.turnId
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Item preview body lineage must match its envelope.',
+      });
+  }
 });
 
 /** Existing transcript event families available to work with a Server-owned narrative. */

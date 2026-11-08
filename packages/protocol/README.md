@@ -1,5 +1,8 @@
 # @openkit/protocol
 
+Ordinary product SSE adds `item-preview` with at most 4 KiB of exact UTF-8 body text, field, side, original byte size, truncation flag and an exact Workspace/Thread/Turn/Item body selector. Its selector must match the envelope lineage. This outward projection does not extend the native retained event grammar or grant body access. Ordinary Turn event projections carry headers with empty Items.
+
+
 `ProductTurnErrorSchema` adds optional server-authored presentation to outward Turn reads and ordinary SSE. It carries one closed error class, a bounded summary and exact owner inspection actions. `TurnErrorSchema` retains its original code/message/explanation boundary. This package validates the wire shape and performs no classification; NanoCore owns that projection. An error origin does not establish effect certainty or permit a retry.
 
 `@openkit/protocol` defines shared OpenKit Core schemas, request payloads, event envelopes, and JSON Schema outputs for product surfaces, public transport projections, and runtime adapters that project into stable OpenKit protocol records.

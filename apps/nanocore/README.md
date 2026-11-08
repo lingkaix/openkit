@@ -1,5 +1,8 @@
 # nanocore
 
+`thread.item-body` admits one exact Workspace/Thread/Turn/Item selector and repeats the Item source permission check before returning the original current revision. File-backed immutable bodies have a separate 32 MiB bound, with at most 64 MiB prepared per native entry transition; control-envelope and queue limits stay unchanged. Ordinary SSE replaces Item payloads above 4 KiB with `item-preview` carrying an exact UTF-8 head or tail and the body selector. Large deltas project the current admitted Item. Turn update and terminal events contain headers with empty Items. Native records and event sequences remain unchanged; clients explicitly request complete bodies.
+
+
 Conversation timeline G7 error presentation is authored in `turn-error-presentation.ts`. Stable codes select a closed descriptive class and neutral summary; only an exact typed Git observation can refine the ambiguous worker category. Authorized Turn read owners supply exact `turn.read` inspection actions. Unknown codes get neutral text and no actions, and classification never establishes effect certainty or retry safety. Timeline, bounded dashboard, Turn detail and ordinary SSE use the same projection; retained error bytes and the native error owner stay unchanged.
 
 `thread.dashboard` returns one active/latest run header without Items, indexed Now/latest-plan fields, shared Minimal Thread/Goal attention, and independently authorized recorded environment facts within 32 KiB. Coverage labels describe current-run participants and referenced Artifact windows. Historical worker objectives and complete runtime activity remain with their source owners and are unavailable in this bounded read; absence does not mean zero history.
