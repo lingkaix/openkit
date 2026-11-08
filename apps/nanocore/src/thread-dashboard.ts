@@ -1,6 +1,6 @@
 import { THREAD_TIMELINE_PLACEMENT, ThreadDashboardResponseSchema } from '@openkit/app-api-schemas';
 import { type Item, ItemTypeSchema } from '@openkit/protocol';
-import { readScopedHumanAttention } from './action-center.js';
+import { pendingProjectionFacts, readScopedHumanAttention } from './action-center.js';
 import type { readThreadDashboard } from './app-dashboard.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
@@ -8,8 +8,11 @@ import { boundedJsonText } from './bounded-read-text.js';
 import { resolveDefaultAgentId } from './config/runtime-config.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { readGoalAttentionScope } from './runtime/goal-owner.js';
+import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
+import { readPendingRequest } from './runtime/pending-requests.js';
 import { readLatestThreadRuntimeObservation } from './runtime/runtime-evidence.js';
 import { findSchedulerAdmissionForTurn } from './scheduler-records.js';
+import { hasWorkspaceReviewArtifact } from './storage/workspace-review-records.js';
 import { projectTimelineItem } from './thread-timeline.js';
 import { projectProductTurn } from './turn-error-presentation.js';
 
@@ -146,12 +149,85 @@ export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDa
         more: scope.more || scopedAttention.more || attentionRows.length > 8,
         restricted: !allowed('approval.respond', true) || !allowed('review.apply', true),
       };
-      const pendingRequests = scopedAttention.pendingRequests.filter((request) =>
-        attention.items.some(
-          (row) =>
-            row.id === `approval:${request.requestId}` || row.id === `question:${request.requestId}`
+      // Keep bounded current-run outcomes visible after a decision, without walking request history.
+      if (workspaceDb && turnId) {
+        const selected = new Set(
+          scopedAttention.pendingRequests.map((request) => request.requestId)
+        );
+        for (const type of [
+          'approval-request',
+          'user-input-request',
+          'approval-decision',
+          'user-input-response',
+        ]) {
+          for (const position of snapshot.currentPositions({ type, turnId, limit: 8 })) {
+            const item = snapshot.item(position.itemId);
+            const requestId =
+              item && 'approvalRequestId' in item
+                ? item.approvalRequestId
+                : item && 'userInputRequestId' in item
+                  ? item.userInputRequestId
+                  : null;
+            if (!requestId || selected.has(requestId)) continue;
+            let record: ReturnType<typeof readPendingRequest>;
+            try {
+              record = readPendingRequest(workspaceDb.sqlite, requestId);
+            } catch {
+              scopedAttention.pendingRequests.push({
+                requestId,
+                state: 'inspect-only',
+                resolution: null,
+                ending: null,
+                disposition: null,
+              });
+              selected.add(requestId);
+              continue;
+            }
+            if (
+              !record ||
+              record.workspaceId !== workspaceId ||
+              record.threadId !== threadId ||
+              (record.responsibleUserId !== actor.userId && !administratorEligible)
+            )
+              continue;
+            const { contradiction } = pendingProjectionFacts({ ...input, workspaceDb }, record);
+            scopedAttention.pendingRequests.push({
+              requestId,
+              state: contradiction ? 'inspect-only' : record.state,
+              resolution: record.resolution,
+              ending: record.ending,
+              disposition: record.disposition,
+              canRespond:
+                !contradiction &&
+                record.state === 'pending' &&
+                actor.userId === record.responsibleUserId &&
+                allowed('approval.respond', true),
+            });
+            selected.add(requestId);
+          }
+        }
+      }
+      const pendingRequests = scopedAttention.pendingRequests
+        .filter(
+          (request) =>
+            request.state !== 'pending' ||
+            attention.items.some(
+              (row) =>
+                row.id === `approval:${request.requestId}` ||
+                row.id === `question:${request.requestId}`
+            )
         )
-      );
+        .slice(0, 8)
+        .map((request) => {
+          if (!workspaceDb || request.state === 'inspect-only') return request;
+          const record = readPendingRequest(workspaceDb.sqlite, request.requestId);
+          return record?.kind === 'approval'
+            ? {
+                ...request,
+                approvalEffect: projectApprovalEffect({ record, store, coreDb, actor }),
+              }
+            : request;
+        });
       const artifacts = workspaceRead
         ? snapshot
             .currentPositions({ type: 'artifact-reference', limit: 8 })
@@ -165,7 +241,8 @@ export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDa
                   artifact.threadId !== threadId ||
                   artifact.status !== 'ready' ||
                   artifact.version !== item.artifactVersion ||
-                  artifact.origin.kind !== 'turn-output'
+                  artifact.origin.kind !== 'turn-output' ||
+                  (workspaceDb && hasWorkspaceReviewArtifact(workspaceDb, workspaceId, artifact.id))
                 )
                   return [];
                 return [
@@ -314,6 +391,17 @@ export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDa
         attention,
         environment,
       };
+      // Exact effects are optional decision detail. Never truncate an effect into a different action.
+      for (const request of [...result.pendingRequests].sort(
+        (a, b) => JSON.stringify(b).length - JSON.stringify(a).length
+      )) {
+        if (Buffer.byteLength(JSON.stringify(result)) <= 32768) break;
+        if ('approvalEffect' in request && request.approvalEffect?.status === 'available')
+          request.approvalEffect = {
+            status: 'unavailable',
+            reason: 'Complete exact effect exceeds the dashboard detail limit.',
+          };
+      }
       while (Buffer.byteLength(JSON.stringify(result)) > 32768 && result.attention.items.length) {
         result.attention.items.pop();
         result.attention.more = true;

@@ -599,7 +599,11 @@ describe('retained Item Actor annotations on native revision', () => {
     await shutdownControlStoreWorkerClient();
     const revised = entries();
     expect(revised).toHaveLength(2);
-    expect(revised.slice(0, retained.length)).toEqual(retained);
+    expect(retained[0]!.row).toHaveProperty('is_current', 1);
+    expect(revised.slice(0, retained.length)).toEqual(
+      retained.map((entry) => ({ ...entry, row: { ...entry.row, is_current: 0 } }))
+    );
+    expect(revised.at(-1)!.row).toHaveProperty('is_current', 1);
     expect(
       readFileSync(
         join(

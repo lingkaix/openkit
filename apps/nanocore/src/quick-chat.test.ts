@@ -1183,11 +1183,12 @@ describe('quick chat app API', () => {
       providerId: string;
       request: Parameters<PiAiGatewayClient['createResponses']>[1];
     }> = [];
+    const store = await createDemoStore({ dataRoot });
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       coreDb,
       dataRoot,
-      store: await createDemoStore({ dataRoot }),
+      store,
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (provider, request) => {
@@ -1255,7 +1256,15 @@ describe('quick chat app API', () => {
     );
     expect(dashboardResponse.status).toBe(200);
     const dashboard = await dashboardResponse.json();
-    expect(dashboard.turns).toEqual([parsed.turn]);
+    expect(dashboard.turns).toHaveLength(1);
+    expect(dashboard.turns[0]).toMatchObject({
+      id: parsed.turn.id,
+      status: 'completed',
+      agentId: 'quick-chat',
+      items: [],
+    });
+    expect(dashboard.turns[0]).not.toHaveProperty('internalExecution');
+    expect(store.getTurnById(parsed.turn.id).items).toEqual(parsed.turn.items);
     expect(dashboard.workStatus).toEqual({
       selectedAgentId: 'quick-chat',
       activeTurnStatus: 'idle',

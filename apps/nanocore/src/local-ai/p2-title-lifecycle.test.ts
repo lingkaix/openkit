@@ -553,7 +553,7 @@ async function admitTask(installation: TitleInstallation) {
     services
   );
   const inflightCommands = new WeakMap();
-  const request = createStructuredWorkerDelegationRequest({
+  const { reporting: _coreReporting, ...request } = createStructuredWorkerDelegationRequest({
     objective: 'Review the schema',
     acceptanceCriteria: ['A review exists'],
     contextRefs: [{ kind: 'workspace', id: installation.workspaceId }],

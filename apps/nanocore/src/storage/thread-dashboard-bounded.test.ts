@@ -633,3 +633,67 @@ it('uses the same exact current Artifact Review rows as Action Center', async ()
     db.sqlite.close();
   }
 });
+
+it('keeps exact approval effects when they fit and refuses oversized detail without losing attention', async () => {
+  const f = await fixture('Bounded exact decision detail');
+  const turn = await f.store.createTurn(
+    DEMO_WORKSPACE_ID,
+    f.thread.id,
+    'Review effects',
+    f.actor,
+    null,
+    { agentId: 'agent_demo' }
+  );
+  const db = openWorkspaceDb(f.root, DEMO_WORKSPACE_ID);
+  try {
+    const requestIds: string[] = [];
+    for (const size of [128, 40_000]) {
+      const requestId = crypto.randomUUID();
+      requestIds.push(requestId);
+      await raiseRecordedPendingRequest(f.store, db.sqlite, {
+        requestId,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: f.thread.id,
+        raisingTurnId: turn.id,
+        requestItemId: allocateEntityId('it'),
+        kind: 'approval',
+        requesterKind: 'worker',
+        agentId: 'agent_demo',
+        responsibleUserId: FIXTURE_LOCAL_USER_ID,
+        governedIntent: { operation: 'fixture.exact-effect', content: 'x'.repeat(size) },
+        approval: {
+          kind: 'permission',
+          title: 'Review exact effect',
+          description: 'Inspect the effect.',
+        },
+        now: '2026-11-08T12:00:00.000Z',
+      });
+    }
+    const result = await f.read();
+    expect(result.response.status).toBe(200);
+    expect(Buffer.byteLength(JSON.stringify(result.body))).toBeLessThanOrEqual(32768);
+    const small = result.body.pendingRequests.find(
+      (row: { requestId: string }) => row.requestId === requestIds[0]
+    );
+    expect(small.approvalEffect.status).toBe('available');
+    expect(JSON.parse(small.approvalEffect.detail)).toEqual({
+      operation: 'fixture.exact-effect',
+      content: 'x'.repeat(128),
+    });
+    const large = result.body.pendingRequests.find(
+      (row: { requestId: string }) => row.requestId === requestIds[1]
+    );
+    expect(large.approvalEffect).toEqual({
+      status: 'unavailable',
+      reason: 'Complete exact effect exceeds the dashboard detail limit.',
+    });
+    expect(result.body.attention.items.map((row: { id: string }) => row.id).sort()).toEqual(
+      requestIds.map((id) => `approval:${id}`).sort()
+    );
+    expect(readPendingRequest(db.sqlite, requestIds[1]!)!.governedIntent!.content).toBe(
+      'x'.repeat(40_000)
+    );
+  } finally {
+    db.sqlite.close();
+  }
+});

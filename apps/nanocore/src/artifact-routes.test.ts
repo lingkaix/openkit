@@ -831,10 +831,10 @@ describe('Core artifact routes', () => {
           'ar_00000000-0000-7f70-84f9-64a58b07cc9f',
         ]);
         expect(
-          threadDashboard.turns
-            .flatMap((item: { items: { type: string; artifactId?: string }[] }) => item.items)
-            .filter((item: { type: string }) => item.type === 'artifact-reference')
-            .map((item: { artifactId: string }) => item.artifactId)
+          store
+            .getTurnById(turn.id)
+            .items.filter((item) => item.type === 'artifact-reference')
+            .map((item) => item.artifactId)
         ).toContain('ar_00000000-0000-7c49-98d1-47c5d31a3268');
 
         const excludedReplayRes = await postJson(app, decisionPath, request);

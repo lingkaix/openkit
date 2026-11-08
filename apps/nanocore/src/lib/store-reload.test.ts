@@ -749,7 +749,11 @@ describe('FsStore canonical reload', () => {
         )
         .all(turn.id)
     );
-    expect(appendedRows.slice(0, initialRows.length)).toEqual(initialRows);
+    expect(initialRows.map((row) => (row as Record<string, unknown>).is_current)).toEqual([1]);
+    expect(appendedRows.slice(0, initialRows.length)).toEqual(
+      initialRows.map((row) => ({ ...(row as Record<string, unknown>), is_current: 0 }))
+    );
+    expect((appendedRows.at(-1) as Record<string, unknown>).is_current).toBe(1);
     expect(appendedRows).toHaveLength(initialRows.length + 1);
     expect(nativeEntries(dataRoot, workspace.id, turn.id, 'item')).toEqual([
       writeRetainedV1(item),

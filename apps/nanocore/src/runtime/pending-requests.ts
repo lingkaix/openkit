@@ -615,11 +615,12 @@ export function listThreadPendingRequests(
     .deferred();
 }
 
-/** Selects only current pending work through the active Thread index, preserving malformed-row omission. */
+/** Selects current pending work through the active Thread index; unreadable identities can remain inspect-only. */
 export function listOpenThreadPendingRequests(
   sqlite: Database.Database,
   workspaceId: string,
-  threadId: string
+  threadId: string,
+  onUnreadable?: (requestId: string) => void
 ): PendingRequestRecord[] {
   const rows = sqlite
     .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests
@@ -629,6 +630,7 @@ export function listOpenThreadPendingRequests(
     try {
       return [parsePendingRequestRow(row)];
     } catch {
+      onUnreadable?.(row.request_id);
       return [];
     }
   });

@@ -479,7 +479,7 @@ async function fixture(
   expect(domain !== null).toBe(options.publish !== false && !options.activation);
   const goalTaskPolicy = (_workspaceDb: typeof db) =>
     createGoalTaskPolicyService({ coreDb, store, domains });
-  const request = createStructuredWorkerDelegationRequest({
+  const { reporting: _coreReporting, ...request } = createStructuredWorkerDelegationRequest({
     objective: 'Read an issue',
     acceptanceCriteria: ['Read issue'],
     contextRefs: [{ kind: 'workspace', id: workspace.id }],

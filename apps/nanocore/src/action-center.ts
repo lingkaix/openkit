@@ -396,7 +396,10 @@ export function readScopedHumanAttention(
 }
 
 /** Exact indexed associations feed the unchanged canonical validator and blocking rule. */
-function pendingProjectionFacts(input: BuildHumanAttentionRowsInput, record: PendingRequestRecord) {
+export function pendingProjectionFacts(
+  input: BuildHumanAttentionRowsInput,
+  record: PendingRequestRecord
+) {
   return input.store.readThreadTimelineSnapshot(input.workspaceId, record.threadId, (snapshot) => {
     const positions = snapshot.pendingAssociations(record.requestId, record.requestItemId);
     const kinds = new Set([
@@ -476,7 +479,15 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
       records = listOpenThreadPendingRequests(
         input.workspaceDb.sqlite,
         input.workspaceId,
-        thread.id
+        thread.id,
+        (requestId) =>
+          pendingRequests.push({
+            requestId,
+            state: 'inspect-only',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          })
       );
     } catch {
       continue;
