@@ -1,0 +1,73 @@
+/* Timeline voices and measures. Colors come from the theme tokens. */
+
+.ok-timeline {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.ok-prose {
+  max-width: var(--ok-measure-prose);
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ok-meta {
+  max-width: 100%;
+  color: var(--text-color-secondary);
+  font-size: 14px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.ok-outcome {
+  max-width: var(--ok-measure-prose);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.ok-step {
+  max-width: 100%;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ok-voice-fact {
+  border-left: 3px solid var(--ok-voice-fact);
+  padding-left: 8px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ok-voice-claim {
+  font-size: 16px;
+  line-height: 1.5;
+  background: none;
+}
+
+.ok-voice-human {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.ok-voice-generated {
+  border-left: 2px dotted var(--ok-voice-generated);
+  padding-left: 8px;
+}
+
+.ok-generated-chip {
+  display: inline-block;
+  margin-bottom: 4px;
+  border: 1px dotted var(--ok-voice-generated);
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.ok-run + .ok-run {
+  margin-top: 24px;
+}

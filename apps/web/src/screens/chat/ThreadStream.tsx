@@ -1,11 +1,11 @@
 import { createRequestId } from '@openkit/core-client';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useConnection } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import { Button, EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
 import {
-  isTimelineDetail,
   type ThreadItem,
   useLiveThreadItems,
   useLoadEarlierItems,
@@ -19,7 +19,10 @@ import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
 import { ThreadReadReceipts } from './ThreadReadReceipts';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
-import { resolveRender } from './timeline/lens';
+import { Inspector } from './timeline/Inspector';
+import { readStoredLens, writeStoredLens } from './timeline/lens-store';
+import { plainActorName, runDurationMs, taskSpecObjective } from './timeline/present';
+import { RunEntry } from './timeline/RunEntry';
 import {
   captureCopy,
   coverageCopy,
@@ -27,6 +30,7 @@ import {
   projectTimeline,
   runSeparatorCopy,
 } from './timeline/source';
+import type { LensName } from './timeline/types';
 
 /** Seconds since a running Turn started. Zero when the timestamp cannot be read. */
 function elapsedSeconds(startedAt: string): number {
@@ -54,9 +58,10 @@ export interface ThreadStreamProps {
   emptyTitle?: string;
   /** Exact retained Turn selected by a link; lookup never starts or repairs work. */
   focusTurnId?: string | null;
-  /** Opens the Full rail and scrolls to this run's steps. */
-  lens?: 'work' | 'full';
-  onShowSteps?: (turnId: string) => void;
+  /** Side slot owned by the thread screen. The Inspector portals here on desktop. */
+  panelHost?: RefObject<HTMLDivElement | null>;
+  /** Header-owned lens. When omitted, the stream shows the switch and remembers it. */
+  lens?: LensName;
 }
 
 /**
@@ -76,9 +81,16 @@ export function ThreadStream({
   readOnly,
   emptyTitle,
   focusTurnId,
-  onShowSteps,
-  lens = 'work',
+  panelHost,
+  lens: lensProp,
 }: ThreadStreamProps) {
+  const [internalLens, setInternalLens] = useState<LensName>(readStoredLens);
+  const lens = lensProp ?? internalLens;
+  const [expandedTurnId, setExpandedTurnId] = useState<string | null>(null);
+  const [inspectedTurnId, setInspectedTurnId] = useState<string | null>(null);
+  const inspectButtonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const [portalNode, setPortalNode] = useState<HTMLElement | null>(null);
   const connection = useConnection();
   const queryClient = useQueryClient();
   const items = useThreadItems(workspaceId, threadId);
@@ -155,6 +167,14 @@ export function ThreadStream({
     located.current = focusKey;
   }, [focusKey, selectedTurn, items.isLoading, items.isError]);
   const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !selectedTurn);
+  useEffect(() => {
+    setPortalNode(inspectedTurnId ? (panelHost?.current ?? null) : null);
+  }, [inspectedTurnId, panelHost]);
+  useEffect(() => {
+    if (!inspectedTurnId) return;
+    if (panelHost && !portalNode) return;
+    panelRef.current?.focus();
+  }, [inspectedTurnId, panelHost, portalNode]);
 
   if (items.isLoading) {
     return (
@@ -228,268 +248,376 @@ export function ThreadStream({
     return undefined;
   }
 
-  return (
-    <ThreadReadReceipts
-      key={`${workspaceId}:${threadId}:${dashboard?.viewerUserId ?? ''}`}
-      workspaceId={workspaceId}
-      threadId={threadId}
-      viewerUserId={dashboard?.viewerUserId}
-      items={items.data ?? []}
-      disabled={controlsReadOnly || live.isError}
-    >
-      <div className="flex flex-col gap-5">
-        {earlierCursor ? (
-          <Button
-            variant="quiet"
-            size="sm"
-            isDisabled={loadEarlier.isPending}
-            onPress={() => loadEarlier.mutate(earlierCursor)}
-          >
-            Load earlier
-          </Button>
-        ) : null}
-        {unavailableTurn ? (
-          <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>
-        ) : null}
-        {live.isError ? (
-          <ErrorBanner
-            message="Runtime activity is unavailable. Retry to refresh."
-            onRetry={() => void live.refetch()}
-          />
-        ) : null}
-        {groups.map((group, index) => {
-          const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
-          const isLastGroup =
-            groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
-          const activity = groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
-          const projected = entryByTurn.get(group.turnId);
-          const historicalFailure =
-            groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
-              ? (projected?.outcome?.text ?? timelineCopy.runFailed)
-              : null;
-          const runningStep =
-            groupTurn?.status === 'running' ? latestRunningStep(group.items) : undefined;
-          const actorName = groupTurn?.agentId
-            ? (participantNames.get(`agent:${groupTurn.agentId}`) ?? groupTurn.agentId)
-            : 'Working';
-          const hasSteps = group.items.some((item) => isTimelineDetail(item));
+  function authorFor(item: ThreadItem): string | undefined {
+    const recorded =
+      'actor' in item
+        ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
+        : turnAuthors.get(item.turnId);
+    if (item.type === 'user-message') {
+      const self = item.actor.kind === 'user' && item.actor.id === dashboard?.viewerUserId;
+      const kind = self
+        ? 'self'
+        : item.actor.kind === 'automation'
+          ? 'automation'
+          : item.actor.kind === 'user'
+            ? 'person'
+            : 'agent';
+      return plainActorName(recorded, kind);
+    }
+    if (item.type === 'assistant-message') return plainActorName(recorded, 'agent');
+    return recorded ? plainActorName(recorded, 'worker') : undefined;
+  }
 
-          return (
-            <div
-              key={group.items[0]?.id ?? group.turnId}
-              className="flex flex-col gap-4"
-              ref={
-                selectedTurn?.id === group.turnId &&
-                groups.findIndex((candidate) => candidate.turnId === group.turnId) === index
-                  ? focusedElement
-                  : undefined
-              }
+  function renderTimelineItem(item: ThreadItem): ReactNode {
+    if (groupedSourceIds.has(item.id)) return null;
+    if (item.type === 'generative-ui-reference') {
+      return (
+        <GenerativePresentationView key={item.id} item={item} source={sourceGroups.get(item.id)} />
+      );
+    }
+    if (
+      item.type === 'user-input-request' &&
+      (items.data ?? []).some(
+        (candidate) =>
+          candidate.type === 'user-input-response' &&
+          candidate.userInputRequestId === item.userInputRequestId
+      )
+    ) {
+      return null;
+    }
+    const matchedObjective =
+      item.type === 'user-message'
+        ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)?.objective
+        : undefined;
+    const parsedObjective =
+      item.type === 'user-message' &&
+      !matchedObjective &&
+      (dashboard?.taskInputs?.length ?? 0) === 0
+        ? taskSpecObjective(item.text)
+        : null;
+    return (
+      <ItemView
+        item={item}
+        viewerUserId={dashboard?.viewerUserId}
+        authorName={authorFor(item)}
+        requestObjective={matchedObjective ?? parsedObjective ?? undefined}
+        readOnly={
+          controlsReadOnly ||
+          (item.type === 'user-input-request' &&
+            (live.isError ||
+              dashboard?.pendingRequests?.find(
+                (record) => record.requestId === item.userInputRequestId
+              )?.state !== 'pending'))
+        }
+        resolvedApproval={
+          item.type === 'approval-request'
+            ? (items.data ?? []).find(
+                (
+                  candidate
+                ): candidate is Extract<typeof candidate, { type: 'approval-decision' }> =>
+                  candidate.type === 'approval-decision' &&
+                  candidate.approvalRequestId === item.approvalRequestId
+              )
+            : undefined
+        }
+        approvalRequestTitle={
+          item.type === 'approval-decision'
+            ? (items.data ?? []).find(
+                (candidate): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
+                  candidate.type === 'approval-request' &&
+                  candidate.approvalRequestId === item.approvalRequestId
+              )?.title
+            : undefined
+        }
+        approvalEffect={
+          item.type === 'approval-request'
+            ? dashboard?.pendingRequests?.find((row) => row.requestId === item.approvalRequestId)
+                ?.approvalEffect
+            : undefined
+        }
+        onWithdrawApproval={(pendingRequestId) =>
+          withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
+        }
+        approvalUnavailableReason={approvalUnavailableReason(item)}
+        approvalPending={
+          item.type === 'approval-request' &&
+          ((respond.isPending && respond.variables?.approvalRequestId === item.approvalRequestId) ||
+            (withdraw.isPending && withdraw.variables?.pendingRequestId === item.approvalRequestId))
+        }
+        approvalError={
+          item.type === 'approval-request' &&
+          ((respond.isError && respond.variables?.approvalRequestId === item.approvalRequestId) ||
+            (withdraw.isError && withdraw.variables?.pendingRequestId === item.approvalRequestId))
+        }
+        onRetryApproval={() => {
+          if (withdraw.isError && withdraw.variables) withdraw.mutate(withdraw.variables);
+          else if (respond.variables) respond.mutate(respond.variables);
+        }}
+        onApprovalDecision={(approvalRequestId, turnId, decision) =>
+          respond.mutate({
+            approvalRequestId,
+            turnId,
+            decision,
+            requestId: createRequestId(),
+          })
+        }
+        onSubmitAnswers={(userInputRequestId, answers) =>
+          submitAnswers.mutate({
+            userInputRequestId,
+            answers,
+            requestId: createRequestId(),
+          })
+        }
+        answerPending={
+          submitAnswers.isPending &&
+          item.type === 'user-input-request' &&
+          submitAnswers.variables?.userInputRequestId === item.userInputRequestId
+        }
+        answerError={
+          submitAnswers.isError &&
+          item.type === 'user-input-request' &&
+          submitAnswers.variables?.userInputRequestId === item.userInputRequestId
+        }
+        onRetryAnswers={() => {
+          if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
+        }}
+      />
+    );
+  }
+
+  function closeInspector() {
+    setInspectedTurnId(null);
+    inspectButtonRef.current?.focus();
+  }
+
+  const inspectedItems = (items.data ?? []).filter((item) => item.turnId === inspectedTurnId);
+  const inspectedActivity = inspectedTurnId ? activityByTurn.get(inspectedTurnId) : undefined;
+  const inspectedTurn = dashboard?.turns.find((turn) => turn.id === inspectedTurnId);
+  const inspector = inspectedTurnId ? (
+    <Inspector
+      turnId={inspectedTurnId}
+      items={inspectedItems}
+      activity={inspectedActivity}
+      interrupted={inspectedTurn?.status === 'interrupted'}
+      onClose={closeInspector}
+      panelRef={panelRef}
+    />
+  ) : null;
+
+  return (
+    <>
+      <ThreadReadReceipts
+        key={`${workspaceId}:${threadId}:${dashboard?.viewerUserId ?? ''}`}
+        workspaceId={workspaceId}
+        threadId={threadId}
+        viewerUserId={dashboard?.viewerUserId}
+        items={items.data ?? []}
+        disabled={controlsReadOnly || live.isError}
+      >
+        <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
+          {lensProp === undefined ? (
+            <fieldset
+              aria-label={timelineCopy.lensName}
+              className="m-0 flex min-w-0 gap-2 border-0 p-0"
             >
-              {selectedTurn?.id === group.turnId &&
-              groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
-                <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
-              ) : null}
-              {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
-              {runningStep && groupTurn ? (
-                <div role="status" className="text-sm text-fg">
-                  <Button variant="quiet" size="sm" onPress={() => onShowSteps?.(group.turnId)}>
-                    <span>{actorName}</span>
-                    <span aria-hidden="true"> · </span>
-                    <span>running</span>
-                    <span aria-hidden="true"> · </span>
-                    <span>{elapsedSeconds(groupTurn.startedAt ?? '')} seconds</span>
-                    <span aria-hidden="true"> · </span>
-                    <span>{runningStep.tool}</span>
-                  </Button>
-                </div>
-              ) : null}
-              {onShowSteps && hasSteps ? (
-                <Button variant="quiet" size="sm" onPress={() => onShowSteps(group.turnId)}>
-                  Show steps
-                </Button>
-              ) : null}
-              {group.items.map((item) =>
-                isTimelineDetail(item) || groupedSourceIds.has(item.id) ? null : item.type ===
-                  'generative-ui-reference' ? (
-                  <GenerativePresentationView
-                    key={item.id}
-                    item={item}
-                    source={sourceGroups.get(item.id)}
-                  />
-                ) : item.type === 'user-input-request' &&
-                  (items.data ?? []).some(
-                    (candidate) =>
-                      candidate.type === 'user-input-response' &&
-                      candidate.userInputRequestId === item.userInputRequestId
-                  ) ? null : (
-                  <div
-                    key={item.id}
-                    className="contents"
-                    data-voice={resolveRender(item.type, lens).voice}
-                    data-disclosure={resolveRender(item.type, lens).disclosure}
-                  >
-                    <ItemView
-                      item={item}
-                      viewerUserId={dashboard?.viewerUserId}
-                      authorName={
-                        'actor' in item
-                          ? participantNames.get(`${item.actor.kind}:${item.actor.id}`)
-                          : turnAuthors.get(item.turnId)
-                      }
-                      requestObjective={
-                        item.type === 'user-message'
-                          ? dashboard?.taskInputs?.find((entry) => entry.itemId === item.id)
-                              ?.objective
-                          : undefined
-                      }
-                      readOnly={
-                        controlsReadOnly ||
-                        (item.type === 'user-input-request' &&
-                          (live.isError ||
-                            dashboard?.pendingRequests?.find(
-                              (record) => record.requestId === item.userInputRequestId
-                            )?.state !== 'pending'))
-                      }
-                      resolvedApproval={
-                        item.type === 'approval-request'
-                          ? (items.data ?? []).find(
-                              (
-                                candidate
-                              ): candidate is Extract<
-                                typeof candidate,
-                                { type: 'approval-decision' }
-                              > =>
-                                candidate.type === 'approval-decision' &&
-                                candidate.approvalRequestId === item.approvalRequestId
-                            )
-                          : undefined
-                      }
-                      approvalRequestTitle={
-                        item.type === 'approval-decision'
-                          ? (items.data ?? []).find(
-                              (
-                                candidate
-                              ): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
-                                candidate.type === 'approval-request' &&
-                                candidate.approvalRequestId === item.approvalRequestId
-                            )?.title
-                          : undefined
-                      }
-                      approvalEffect={
-                        item.type === 'approval-request'
-                          ? dashboard?.pendingRequests?.find(
-                              (row) => row.requestId === item.approvalRequestId
-                            )?.approvalEffect
-                          : undefined
-                      }
-                      onWithdrawApproval={(pendingRequestId) =>
-                        withdraw.mutate({ pendingRequestId, requestId: createRequestId() })
-                      }
-                      approvalUnavailableReason={approvalUnavailableReason(item)}
-                      approvalPending={
-                        item.type === 'approval-request' &&
-                        ((respond.isPending &&
-                          respond.variables?.approvalRequestId === item.approvalRequestId) ||
-                          (withdraw.isPending &&
-                            withdraw.variables?.pendingRequestId === item.approvalRequestId))
-                      }
-                      approvalError={
-                        item.type === 'approval-request' &&
-                        ((respond.isError &&
-                          respond.variables?.approvalRequestId === item.approvalRequestId) ||
-                          (withdraw.isError &&
-                            withdraw.variables?.pendingRequestId === item.approvalRequestId))
-                      }
-                      onRetryApproval={() => {
-                        if (withdraw.isError && withdraw.variables)
-                          withdraw.mutate(withdraw.variables);
-                        else if (respond.variables) respond.mutate(respond.variables);
-                      }}
-                      onApprovalDecision={(approvalRequestId, turnId, decision) =>
-                        respond.mutate({
-                          approvalRequestId,
-                          turnId,
-                          decision,
-                          requestId: createRequestId(),
-                        })
-                      }
-                      onSubmitAnswers={(userInputRequestId, answers) =>
-                        submitAnswers.mutate({
-                          userInputRequestId,
-                          answers,
-                          requestId: createRequestId(),
-                        })
-                      }
-                      answerPending={
-                        submitAnswers.isPending &&
-                        item.type === 'user-input-request' &&
-                        submitAnswers.variables?.userInputRequestId === item.userInputRequestId
-                      }
-                      answerError={
-                        submitAnswers.isError &&
-                        item.type === 'user-input-request' &&
-                        submitAnswers.variables?.userInputRequestId === item.userInputRequestId
-                      }
-                      onRetryAnswers={() => {
-                        if (submitAnswers.variables) submitAnswers.mutate(submitAnswers.variables);
-                      }}
-                    />
-                  </div>
-                )
-              )}
-              {activity ? (
-                <section
-                  aria-label="Runtime activity"
-                  aria-live="polite"
-                  className="rounded-ok border border-border bg-sunken p-4 text-sm"
-                >
-                  <h3 className="font-semibold text-fg">Runtime activity</h3>
-                  <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
-                  <p className="mt-1 text-fg-muted">{captureCopy(activity.contentCapture)}</p>
-                  {activity.omittedEntryCount > 0 ? (
-                    <p className="mt-1 text-fg-muted">
-                      {omittedActivityCopy(activity.omittedEntryCount)}
-                    </p>
-                  ) : null}
-                  {activity.entries.length > 0 ? (
-                    <ol className="mt-3 flex flex-col gap-3">
-                      {activity.entries.map((entry) => (
-                        <li key={entry.sequence}>
-                          <div className="flex flex-wrap items-baseline gap-2">
-                            <span className="font-medium text-fg">
-                              {entry.label ??
-                                {
-                                  'child-started': timelineCopy.childStarted,
-                                  progress: timelineCopy.reportedProgress,
-                                  result: timelineCopy.reportedResult,
-                                  failure: timelineCopy.reportedFailure,
-                                }[entry.kind]}
-                            </span>
-                            <time dateTime={entry.observedAt} className="text-xs text-fg-muted">
-                              {new Date(entry.observedAt).toLocaleTimeString()}
-                            </time>
-                          </div>
-                          {entry.text !== undefined ? (
-                            <p className="mt-1 whitespace-pre-wrap break-words text-fg">
-                              {entry.text}
-                            </p>
-                          ) : null}
-                          {entry.textTruncated ? (
-                            <p className="mt-1 text-xs text-fg-muted">
-                              {timelineCopy.textShortened}
-                            </p>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ol>
-                  ) : null}
-                </section>
-              ) : null}
-              {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
-            </div>
-          );
-        })}
-      </div>
-    </ThreadReadReceipts>
+              <Button
+                variant={lens === 'work' ? 'outline' : 'quiet'}
+                size="sm"
+                aria-pressed={lens === 'work'}
+                onPress={() => {
+                  setInternalLens('work');
+                  writeStoredLens('work');
+                }}
+              >
+                {timelineCopy.lensWork}
+              </Button>
+              <Button
+                variant={lens === 'full' ? 'outline' : 'quiet'}
+                size="sm"
+                aria-pressed={lens === 'full'}
+                onPress={() => {
+                  setInternalLens('full');
+                  writeStoredLens('full');
+                }}
+              >
+                {timelineCopy.lensFull}
+              </Button>
+            </fieldset>
+          ) : null}
+          {earlierCursor ? (
+            <Button
+              variant="quiet"
+              size="sm"
+              isDisabled={loadEarlier.isPending}
+              onPress={() => loadEarlier.mutate(earlierCursor)}
+            >
+              Load earlier
+            </Button>
+          ) : null}
+          {unavailableTurn ? (
+            <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>
+          ) : null}
+          {live.isError ? (
+            <ErrorBanner
+              message="Runtime activity is unavailable. Retry to refresh."
+              onRetry={() => void live.refetch()}
+            />
+          ) : null}
+          {groups.map((group, index) => {
+            const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
+            const isLastGroup =
+              groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
+            const activity =
+              groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
+            const projected = entryByTurn.get(group.turnId);
+            const historicalFailure =
+              groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
+                ? (projected?.outcome?.text ?? timelineCopy.runFailed)
+                : null;
+            const runningStep =
+              groupTurn?.status === 'running' ? latestRunningStep(group.items) : undefined;
+            const namedAgent = groupTurn?.agentId
+              ? participantNames.get(`agent:${groupTurn.agentId}`)
+              : undefined;
+            const actorName = plainActorName(namedAgent, 'worker');
+            const runLens = lens === 'full' || expandedTurnId === group.turnId ? 'full' : 'work';
+            const firstViewerMessage = group.items.find(
+              (item) =>
+                item.type === 'user-message' &&
+                item.actor.kind === 'user' &&
+                item.actor.id === dashboard?.viewerUserId
+            );
+            const entry =
+              projected ??
+              ({
+                turnId: group.turnId,
+                header: null,
+                narrative: [],
+                notes: [],
+                plan: null,
+                stats: { stepCount: 0, fileCount: 0, failedCommandCount: 0, failedStepCount: 0 },
+                long: false,
+                stepWindow: [],
+                outcome: null,
+              } as const);
+
+            return (
+              <div
+                key={group.turnId}
+                className="flex flex-col gap-4"
+                ref={
+                  selectedTurn?.id === group.turnId &&
+                  groups.findIndex((candidate) => candidate.turnId === group.turnId) === index
+                    ? focusedElement
+                    : undefined
+                }
+              >
+                {selectedTurn?.id === group.turnId &&
+                groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
+                  <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
+                ) : null}
+                {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
+                <RunEntry
+                  entry={entry}
+                  items={group.items}
+                  turn={groupTurn}
+                  lens={lens}
+                  expanded={expandedTurnId === group.turnId}
+                  actorName={actorName}
+                  omitTrigger={Boolean(firstViewerMessage)}
+                  durationMs={runDurationMs(groupTurn, Date.now())}
+                  hiddenIds={groupedSourceIds}
+                  renderItem={(item) => renderTimelineItem(item)}
+                  inspectRef={inspectedTurnId === group.turnId ? inspectButtonRef : undefined}
+                  inspected={inspectedTurnId === group.turnId}
+                  onInspect={() =>
+                    setInspectedTurnId((current) =>
+                      current === group.turnId ? null : group.turnId
+                    )
+                  }
+                  runningStatus={
+                    runningStep && groupTurn ? (
+                      <div role="status" className="ok-meta text-fg">
+                        <Button
+                          variant="quiet"
+                          size="sm"
+                          onPress={() => setExpandedTurnId(group.turnId)}
+                        >
+                          <span>{actorName}</span>
+                          <span aria-hidden="true"> · </span>
+                          <span>running</span>
+                          <span aria-hidden="true"> · </span>
+                          <span>{elapsedSeconds(groupTurn.startedAt ?? '')} seconds</span>
+                          <span aria-hidden="true"> · </span>
+                          <span>{runningStep.tool}</span>
+                        </Button>
+                      </div>
+                    ) : null
+                  }
+                  workerCue={Boolean(activity) && runLens === 'work'}
+                  showActivity={Boolean(activity) && runLens === 'full'}
+                  activityLine={
+                    activity ? (
+                      <section
+                        aria-label="Runtime activity"
+                        aria-live="polite"
+                        className="rounded-ok border border-border bg-sunken p-4 text-sm"
+                      >
+                        <h3 className="font-semibold text-fg">Runtime activity</h3>
+                        <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
+                        <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
+                        <p className="mt-1 text-fg-muted">{captureCopy(activity.contentCapture)}</p>
+                        {activity.omittedEntryCount > 0 ? (
+                          <p className="mt-1 text-fg-muted">
+                            {omittedActivityCopy(activity.omittedEntryCount)}
+                          </p>
+                        ) : null}
+                        {activity.entries.length > 0 ? (
+                          <ol className="mt-3 flex flex-col gap-3">
+                            {activity.entries.map((report) => (
+                              <li key={report.sequence}>
+                                <div className="flex flex-wrap items-baseline gap-2">
+                                  <span className="font-medium text-fg">
+                                    {report.label ??
+                                      {
+                                        'child-started': timelineCopy.childStarted,
+                                        progress: timelineCopy.reportedProgress,
+                                        result: timelineCopy.reportedResult,
+                                        failure: timelineCopy.reportedFailure,
+                                      }[report.kind]}
+                                  </span>
+                                  <time
+                                    dateTime={report.observedAt}
+                                    className="text-xs text-fg-muted"
+                                  >
+                                    {new Date(report.observedAt).toLocaleTimeString()}
+                                  </time>
+                                </div>
+                                {report.text !== undefined ? (
+                                  <p className="mt-1 whitespace-pre-wrap break-words text-fg">
+                                    {report.text}
+                                  </p>
+                                ) : null}
+                                {report.textTruncated ? (
+                                  <p className="mt-1 text-xs text-fg-muted">
+                                    {timelineCopy.textShortened}
+                                  </p>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ol>
+                        ) : null}
+                      </section>
+                    ) : null
+                  }
+                />
+                {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
+              </div>
+            );
+          })}
+        </div>
+      </ThreadReadReceipts>
+      {inspector ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
+    </>
   );
 }

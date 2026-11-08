@@ -58,7 +58,7 @@ describe('displayed conversation receipts', () => {
             id,
             owner: { kind: 'workspace', workspaceId: 'workspace' },
             threadId: 'thread',
-            turnId: 'turn',
+            turnId: `turn-${id}`,
             type: 'assistant-message',
             status: 'completed',
             text: `${id} reply`,

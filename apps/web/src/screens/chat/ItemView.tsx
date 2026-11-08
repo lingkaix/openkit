@@ -13,6 +13,8 @@ import { ArtifactReference } from '../artifacts/ArtifactReference';
 import type { ThreadItem } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { useDisplayedMessageBody } from './ThreadReadReceipts';
+import { timelineCopy } from './timeline/copy';
+import { visibleStatusSummary, visibleStatusTitle } from './timeline/present';
 import { contextSummaryCopy } from './timeline/source';
 
 /** Protocol user-input request rendered by the inline Gate control. */
@@ -271,13 +273,7 @@ export function ItemView({
       // Core retains exact outcome input for S39 verification; S59 publishes its human decision separately.
       if (item.actor.kind === 'system' && item.actor.id === 'nanocore-pending-request') return null;
       const body = requestObjective ? (
-        <>
-          <p>{requestObjective}</p>
-          <details className="text-xs text-fg-muted">
-            <summary className="cursor-pointer">View request details</summary>
-            <pre className="mt-2 whitespace-pre-wrap">{item.text}</pre>
-          </details>
-        </>
+        <p className="ok-prose">{requestObjective}</p>
       ) : item.actor.kind === 'user' ? (
         <p>{item.text}</p>
       ) : (
@@ -505,7 +501,7 @@ export function ItemView({
       return (
         <ItemCard
           kind="informative"
-          title={`Handoff to ${item.toAgentId}`}
+          title={timelineCopy['agent-handoff']}
           meta={item.reason ?? undefined}
         />
       );
@@ -514,8 +510,8 @@ export function ItemView({
       return (
         <ItemCard
           kind={item.level === 'info' ? 'informative' : 'notice'}
-          title={item.title}
-          meta={item.summary ?? undefined}
+          title={visibleStatusTitle(item.title)}
+          meta={visibleStatusSummary(item.summary) ?? undefined}
         />
       );
 

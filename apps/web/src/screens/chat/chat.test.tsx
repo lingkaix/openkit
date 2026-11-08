@@ -1293,7 +1293,7 @@ describe('chat starter (board 01)', () => {
     );
     expect(startTurn).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
-    expect(await screen.findByRole('button', { name: 'Work | Full' })).toBeInTheDocument();
+    expect(await screen.findByRole('group', { name: 'Work | Full' })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
@@ -1779,6 +1779,7 @@ describe('chat thread (boards 02/03)', () => {
   });
 
   it('responds to an inline approval', async () => {
+    localStorage.setItem('openkit.timeline.lens', 'full');
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockResolvedValue({});
     const client = makeClient(
@@ -2089,6 +2090,7 @@ describe('chat thread (boards 02/03)', () => {
   });
 
   it('renders every non-secret Gate question and submits one complete answer map', async () => {
+    localStorage.setItem('openkit.timeline.lens', 'full');
     const user = userEvent.setup();
     const answerUserInput = vi.fn().mockResolvedValue({
       requestId: 'uir1',
@@ -2587,7 +2589,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       expect(within(other).getByRole('img', { name: 'Alex' })).toHaveClass('rounded-full');
       expect(
         screen.getByRole('article', {
-          name: 'Message from usr_00000000-0000-7838-b1bf-3222f1a8d6a7',
+          name: 'Message from Someone',
         })
       ).toHaveClass('items-start');
       const worker = screen.getByRole('article', { name: 'Message from Codex Agent' });
@@ -2600,7 +2602,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       expect(
         within(
           screen.getByRole('article', {
-            name: 'Message from auto_00000000-0000-7db2-8081-9e80c1ee615a',
+            name: 'Message from Automation',
           })
         ).getByText('Scheduled input.')
       ).toBeInTheDocument();
@@ -3371,6 +3373,7 @@ describe('thread lifecycle and attribution (S7)', () => {
   ])(
     'renders the exact %s user-message actor without deployment-mode probing',
     async (_, actorId) => {
+      const user = userEvent.setup();
       const setupDiagnosticsOperation = vi.fn().mockRejectedValue(new Error('must not be called'));
       const client = makeClient(
         {
@@ -3387,7 +3390,12 @@ describe('thread lifecycle and attribution (S7)', () => {
         client
       );
 
-      expect(await screen.findByText(new RegExp(actorId))).toBeInTheDocument();
+      await screen.findByRole('button', { name: 'Inspect' });
+      const work = document.querySelector('[data-timeline-lens="work"]');
+      expect(work?.textContent ?? '').not.toContain(actorId);
+      await user.click(screen.getByRole('button', { name: 'Inspect' }));
+      const inspector = await screen.findByRole('complementary', { name: 'Inspector' });
+      expect(within(inspector).getByText(actorId)).toBeInTheDocument();
       expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
     }
   );
@@ -4813,6 +4821,7 @@ describe('open thread external activity', () => {
   )(
     'suppresses cached activity after a $status refresh with Items=$hasItems until retry succeeds',
     async ({ status, hasItems }) => {
+      localStorage.setItem('openkit.timeline.lens', 'full');
       const user = userEvent.setup();
       const initialDashboard = {
         pendingRequests: [
@@ -4935,6 +4944,7 @@ describe('open thread external activity', () => {
   );
 
   it('refreshes runtime activity on the existing dashboard poll without new Items', async () => {
+    localStorage.setItem('openkit.timeline.lens', 'full');
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     let reported = false;
     const getThreadDashboard = vi.fn(async () => ({
@@ -5028,7 +5038,8 @@ describe('open thread external activity', () => {
       )
     );
     expect(await screen.findByRole('button', { name: 'Stop run' })).toBeInTheDocument();
-    expect(screen.getByText(requestText)).toBeVisible();
+    expect(screen.getByText('raw-input')).toBeVisible();
+    expect(screen.queryByText(requestText)).not.toBeInTheDocument();
     const itemCalls = listThreadItems.mock.calls.length;
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(1));
 
@@ -5038,9 +5049,7 @@ describe('open thread external activity', () => {
     });
 
     expect(await screen.findByText(objective)).toBeVisible();
-    const details = screen.getByText('View request details').closest('details')!;
-    expect(details.open).toBe(false);
-    expect(details.querySelector('pre')?.textContent).toBe(requestText);
+    expect(screen.queryByText(requestText)).not.toBeInTheDocument();
     expect(listThreadItems.mock.calls.length).toBe(itemCalls);
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
     expect(
@@ -5254,6 +5263,7 @@ describe('open thread external activity', () => {
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     await user.click(await screen.findByRole('button', { name: 'Load earlier' }));
+    await user.click(await screen.findByRole('button', { name: 'Earlier notes (1)' }));
     expect(await screen.findByText('EARLIER_PAGE_GROK')).toBeInTheDocument();
     expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
     const scroller = screen.getByText('EARLIER_PAGE_GROK').closest('.overflow-y-auto');
@@ -5486,19 +5496,16 @@ describe('task thread (board 04)', () => {
     );
 
     const article = await screen.findByRole('article', {
-      name: 'Message from usr_00000000-0000-7609-aed5-db4b5c95e76c (You)',
+      name: 'Message from You (You)',
     });
     expect(within(article).getByText(INITIATING_OBJECTIVE)).toBeVisible();
-    const details = within(article).getByText('View request details').closest('details');
-    expect(details).toBeInstanceOf(HTMLDetailsElement);
-    expect((details as HTMLDetailsElement).open).toBe(false);
-    expect(details).toHaveTextContent(INITIATING_REQUEST_TEXT);
-    const preview = details!.querySelector('pre');
-    expect(preview).not.toBeVisible();
-    await user.click(within(article).getByText('View request details'));
-    expect((details as HTMLDetailsElement).open).toBe(true);
-    expect(preview).toBeVisible();
-    expect(preview).toHaveTextContent(INITIATING_REQUEST_TEXT);
+    expect(within(article).queryByText(INITIATING_REQUEST_TEXT)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Inspect' }));
+    const inspector = await screen.findByRole('complementary', { name: 'Inspector' });
+    const preview = [...inspector.querySelectorAll('pre')].find(
+      (node) => node.textContent === INITIATING_REQUEST_TEXT
+    );
+    expect(preview).toBeTruthy();
     expect(preview?.textContent).toBe(INITIATING_REQUEST_TEXT);
   });
 
@@ -5547,10 +5554,10 @@ describe('task thread (board 04)', () => {
     );
 
     const self = await screen.findByRole('article', {
-      name: 'Message from usr_00000000-0000-7609-aed5-db4b5c95e76c (You)',
+      name: 'Message from You (You)',
     });
     const other = screen.getByRole('article', {
-      name: 'Message from usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      name: 'Message from Someone',
     });
     expect(within(self).getByText(INITIATING_REQUEST_TEXT)).toBeVisible();
     expect(
@@ -5605,6 +5612,7 @@ describe('task thread (board 04)', () => {
   });
 
   it('applies the same initiating-request projection to self and agent user-message wrappers', async () => {
+    const user = userEvent.setup();
     const selfItem = ItemSchema.parse({
       ...ITEMS[0],
       id: 'it_00000000-0000-70b0-bdba-a70f39b377d6',
@@ -5652,21 +5660,19 @@ describe('task thread (board 04)', () => {
     );
 
     const self = await screen.findByRole('article', {
-      name: 'Message from usr_00000000-0000-7609-aed5-db4b5c95e76c (You)',
+      name: 'Message from You (You)',
     });
     const agent = screen.getByRole('article', { name: 'Message from Codex Agent' });
     expect(self).toHaveClass('items-end');
     expect(agent).toHaveClass('items-start');
     expect(within(self).getByText(INITIATING_OBJECTIVE)).toBeVisible();
     expect(within(agent).getByText(INITIATING_OBJECTIVE)).toBeVisible();
-    expect(
-      within(self).getByText('View request details').closest('details')!.querySelector('pre')
-        ?.textContent
-    ).toBe(INITIATING_REQUEST_TEXT);
-    expect(
-      within(agent).getByText('View request details').closest('details')!.querySelector('pre')
-        ?.textContent
-    ).toBe(`${INITIATING_REQUEST_TEXT}\n`);
+    expect(within(self).queryByText(INITIATING_REQUEST_TEXT)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Inspect' }));
+    const inspector = await screen.findByRole('complementary', { name: 'Inspector' });
+    const bodies = [...inspector.querySelectorAll('pre')].map((node) => node.textContent);
+    expect(bodies).toContain(INITIATING_REQUEST_TEXT);
+    expect(bodies).toContain(`${INITIATING_REQUEST_TEXT}\n`);
   });
 });
 
@@ -6325,6 +6331,7 @@ describe('conversation artifact inspection', () => {
   });
 
   it('distinguishes saved outputs from file-change records in the side panel and stream', async () => {
+    const user = userEvent.setup();
     const path = `src/${'long_file_name_'.repeat(12)}.ts`;
     const file = ItemSchema.parse({
       ...ITEMS[0],
@@ -6354,7 +6361,8 @@ describe('conversation artifact inspection', () => {
         }),
       })
     );
-    const panel = await screen.findByRole('complementary', { name: 'Details' });
+    await user.click(await screen.findByRole('button', { name: 'Inspect' }));
+    const panel = await screen.findByRole('complementary', { name: 'Inspector' });
     expect(await within(panel).findByText('Saved output · Version 1')).toBeInTheDocument();
     expect(within(panel).getAllByText('Saved output · Version 1')).toHaveLength(1);
     expect(within(panel).getAllByText('Saved output · Version 2')).toHaveLength(1);
@@ -6388,8 +6396,9 @@ describe('conversation artifact inspection', () => {
     });
     expect(within(dialog).getByText('Version 1')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await user.click(screen.getByRole('button', { name: 'Inspect' }));
     await user.click(
-      within(screen.getByRole('complementary', { name: 'Details' })).getByRole('button', {
+      within(screen.getByRole('complementary', { name: 'Inspector' })).getByRole('button', {
         name: 'View content',
       })
     );
@@ -6556,29 +6565,29 @@ describe('approval decision evidence', () => {
   });
 });
 
-it('closes the outputs panel from inside and returns focus to its toggle', async () => {
+it('closes the inspector from inside and returns focus to its toggle', async () => {
   const user = userEvent.setup();
   renderApp(
     '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
-    makeClient()
+    makeClient({
+      'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
+    })
   );
-  const panel = await screen.findByRole('complementary', { name: 'Details' });
+  const toggle = await screen.findByRole('button', { name: 'Inspect' });
+  await user.click(toggle);
+  const panel = await screen.findByRole('complementary', { name: 'Inspector' });
   expect(panel).toHaveClass('w-full', '@min-[47rem]/thread:w-60');
-  const close = within(panel).getByRole('button', { name: 'Close details' });
+  const close = within(panel).getByRole('button', { name: 'Close inspector' });
   expect(close).toHaveClass('min-h-11', 'min-w-11');
   close.focus();
-  expect(screen.queryByRole('tooltip', { name: 'Close details' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('tooltip', { name: 'Close inspector' })).not.toBeInTheDocument();
   await user.click(close);
-  expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
-  const toggle = screen.getByRole('button', { name: 'Work | Full' });
+  expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument();
   expect(toggle).toHaveFocus();
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await user.click(toggle);
-  expect(screen.getByRole('complementary', { name: 'Details' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Work | Full' })).toHaveAttribute(
-    'aria-expanded',
-    'true'
-  );
+  expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeInTheDocument();
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
 });
 
 const WORKER_STORAGE_REF = 'wst_00000000-0000-70fd-914d-b51e699cd632';

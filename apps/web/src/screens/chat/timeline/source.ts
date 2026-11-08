@@ -1,5 +1,6 @@
-import { groupItemsByTurn, isTimelineDetail, type ThreadItem } from '../data';
+import { groupItemsByTurn, type ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
+import { countSteps, isLongRun, isStepItem, outcomeLine } from './present';
 import type { EntryKind } from './registry';
 
 /**
@@ -13,7 +14,14 @@ export interface TimelineEntry {
   narrative: { kind: EntryKind; itemId: string }[];
   notes: { kind: 'assistant-message-earlier'; itemId: string }[];
   plan: { itemId: string } | null;
-  stats: { stepCount: number };
+  stats: {
+    stepCount: number;
+    fileCount: number;
+    failedCommandCount: number;
+    failedStepCount: number;
+  };
+  /** True for a running run, a run over 30 minutes, or a run with more than 100 steps. */
+  long: boolean;
   stepWindow: { kind: EntryKind; itemId: string }[];
   outcome: { copyKey: 'run-outcome'; text: string } | null;
 }
@@ -22,6 +30,8 @@ export interface TimelineTurn {
   id: string;
   status: string;
   error?: { message?: string } | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 export interface ProjectedTimeline {
@@ -85,32 +95,47 @@ export function projectTimeline(input: {
   const entries = groups.map((group) => {
     const turn = byTurn.get(group.turnId);
     const assistants = group.items.filter((item) => item.type === 'assistant-message');
-    const finalId = assistants.at(-1)?.id;
+    // A running run has no final message yet, so every agent message is a note.
+    const running = turn?.status === 'running';
+    const finalId = running ? undefined : assistants.at(-1)?.id;
     const plans = group.items.filter((item) => item.type === 'plan');
-    const steps = group.items.filter((item) => isTimelineDetail(item));
+    const steps = group.items.filter((item) => isStepItem(item));
+    const stats = countSteps(group.items);
     const failed =
       turn?.status === 'failed' && turn.id !== input.latestTurnId
         ? (turn.error?.message ?? timelineCopy.runFailed)
         : null;
+    const otherOutcome = failed || !turn ? null : outcomeLine(turn.status, turn.error?.message);
     return {
       turnId: group.turnId,
       header: turn ? { copyKey: 'run-trigger' as const } : null,
       narrative: group.items
-        .filter((item) => !isTimelineDetail(item))
+        .filter((item) => !isStepItem(item))
         .map((item) => ({ kind: kindOf(item), itemId: item.id })),
       notes: assistants
         .filter((item) => item.id !== finalId)
         .map((item) => ({ kind: 'assistant-message-earlier' as const, itemId: item.id })),
       plan: plans.at(-1) ? { itemId: plans.at(-1)!.id } : null,
-      stats: { stepCount: steps.length },
+      stats,
+      // TB2: exact segment counts are not on today's reads. `long` uses loaded steps and timestamps.
+      long: isLongRun({
+        status: turn?.status,
+        startedAt: turn?.startedAt,
+        completedAt: turn?.completedAt,
+        stepCount: stats.stepCount,
+      }),
       stepWindow: steps.map((item) => ({ kind: kindOf(item), itemId: item.id })),
-      outcome: failed ? { copyKey: 'run-outcome' as const, text: failed } : null,
+      outcome: failed
+        ? { copyKey: 'run-outcome' as const, text: failed }
+        : otherOutcome
+          ? { copyKey: 'run-outcome' as const, text: otherOutcome }
+          : null,
     };
   });
   return {
     entries,
     items,
-    detailItems: items.filter((item) => isTimelineDetail(item)),
+    detailItems: items.filter((item) => isStepItem(item)),
     groups,
   };
 }

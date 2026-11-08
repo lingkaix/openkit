@@ -475,6 +475,7 @@ describe('Administration', () => {
   });
 
   it('polls observation-only runtime activity in the private Administration Thread without new Items', async () => {
+    localStorage.setItem('openkit.timeline.lens', 'full');
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {
       const activity = {
@@ -537,6 +538,7 @@ describe('Administration', () => {
       expect(listThreadItems.mock.calls.length).toBe(itemReads);
       expect(screen.queryByText('Activity collection is ongoing.')).not.toBeInTheDocument();
     } finally {
+      localStorage.removeItem('openkit.timeline.lens');
       vi.useRealTimers();
     }
   });

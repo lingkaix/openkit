@@ -106,6 +106,11 @@
   /* ---- Toast (the only floating dark layer, §9.10) ------------------------- */
   --ok-toast-bg: #222222;
   --ok-toast-fg: #ffffff;
+
+  /* Timeline voices (U1) and the prose measure (U3). */
+  --ok-voice-fact: #464646;
+  --ok-voice-generated: #7326d3;
+  --ok-measure-prose: 72ch;
 }
 
 /* ===========================================================================
@@ -167,6 +172,10 @@
 
   --ok-toast-bg: #222222;
   --ok-toast-fg: #ffffff;
+
+  --ok-voice-fact: #464646;
+  --ok-voice-generated: #7326d3;
+  --ok-measure-prose: 72ch;
 }
 
 /* ===========================================================================
@@ -210,6 +219,10 @@
   --disabled-background-color: #d9ceb5;
   --disabled-content-color: #9c9070;
   --disabled-border-color: #bbaf93;
+
+  --ok-voice-fact: #3d4a3a;
+  --ok-voice-generated: #5c3d7a;
+  --ok-measure-prose: 72ch;
 }
 
 /* ===========================================================================
@@ -270,4 +283,8 @@
 
   --ok-toast-bg: #38332a;
   --ok-toast-fg: #ffffff;
+
+  --ok-voice-fact: #d5d5d5;
+  --ok-voice-generated: #dbbbfe;
+  --ok-measure-prose: 72ch;
 }

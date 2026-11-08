@@ -2,7 +2,6 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { usePersistentNavigation } from '../../app/AppShell';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -10,7 +9,6 @@ import {
   type ComposerDraft,
   EmptyState,
   ErrorBanner,
-  Eyebrow,
   Icon,
   Skeleton,
   StatusChip,
@@ -19,8 +17,6 @@ import {
 import { useArtifacts, useArtifactVersion } from '../artifacts/data';
 import {
   chatKeys,
-  groupItemsByTurn,
-  type ThreadItem,
   taskThreadPath,
   useArchiveThread,
   useComposerWorkerEnvironments,
@@ -37,105 +33,12 @@ import {
   useTurnFeedback,
   useWorkspaces,
 } from './data';
-import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
 import { timelineCopy } from './timeline/copy';
+import { readStoredLens, writeStoredLens } from './timeline/lens-store';
 import { selectAgentProfile } from './timeline/profiles';
-import { projectTimeline } from './timeline/source';
+import type { LensName } from './timeline/types';
 import { composerVoice } from './voice';
-
-/**
- * Indexes the first reference for each Artifact version.
- *
- * @param items Thread Items in conversation order.
- * @returns One Artifact-reference per output identity.
- */
-function artifactIndex(items: readonly ThreadItem[]): ThreadItem[] {
-  const seenArtifactVersions = new Set<string>();
-  return items.filter((item) => {
-    if (item.type !== 'artifact-reference') return false;
-    const identity = `${item.artifactId}:${item.artifactVersion}`;
-    if (seenArtifactVersions.has(identity)) return false;
-    seenArtifactVersions.add(identity);
-    return true;
-  });
-}
-
-/** Details — steps, file changes, reasoning, and saved outputs for this Thread. */
-function SidePanel({
-  workspaceId,
-  threadId,
-  onClose,
-  focusTurnId,
-}: {
-  workspaceId: string | null;
-  threadId: string;
-  onClose: () => void;
-  focusTurnId?: { turnId: string; token: number } | null;
-}) {
-  const items = useThreadItems(workspaceId, threadId);
-  const list = items.data ?? [];
-  const timeline = projectTimeline({ items: list });
-  const detailGroups = groupItemsByTurn(timeline.detailItems);
-  const artifacts = artifactIndex(list);
-  const itemKey = (item: ThreadItem) =>
-    `${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`;
-  const stepsPresent = detailGroups.some((group) => group.turnId === focusTurnId?.turnId);
-  useEffect(() => {
-    if (!focusTurnId || !stepsPresent) return;
-    const target = document.getElementById(`turn-steps-${focusTurnId.turnId}`);
-    if (!(target instanceof HTMLElement)) return;
-    target.scrollIntoView({ block: 'nearest' });
-    target.focus({ preventScroll: true });
-  }, [focusTurnId, stepsPresent]);
-  return (
-    <aside
-      aria-label="Details"
-      onKeyDown={(event) => {
-        if (event.key !== 'Escape') return;
-        if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
-        event.preventDefault();
-        onClose();
-      }}
-      className="absolute inset-y-0 right-0 z-10 w-full shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu @min-[47rem]/thread:static @min-[47rem]/thread:w-60 @min-[47rem]/thread:shadow-none"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <Eyebrow>Details</Eyebrow>
-        <Button
-          size="sm"
-          variant="quiet"
-          aria-label="Close details"
-          className="min-h-11 min-w-11 shrink-0 px-0!"
-          onPress={onClose}
-        >
-          <Icon name="close" />
-        </Button>
-      </div>
-      <p className="mt-1 text-xs text-fg-muted">
-        Tool steps, file changes, reasoning, and saved outputs from this conversation.
-      </p>
-      {detailGroups.map((group) => (
-        <div
-          key={group.turnId}
-          id={`turn-steps-${group.turnId}`}
-          tabIndex={-1}
-          className="mt-3 flex flex-col gap-2 outline-none focus:ring-2 focus:ring-focus"
-        >
-          {group.items.map((item) => (
-            <ItemView key={itemKey(item)} item={item} />
-          ))}
-        </div>
-      ))}
-      <div className="mt-2 flex flex-col gap-1">
-        {detailGroups.length === 0 && artifacts.length === 0 ? (
-          <p className="text-xs text-fg-muted">No outputs or file changes yet.</p>
-        ) : (
-          artifacts.map((item) => <ItemView key={itemKey(item)} item={item} />)
-        )}
-      </div>
-    </aside>
-  );
-}
 
 export interface ThreadScreenProps {
   /** Chat framing or task framing (board 02/03 vs 04). */
@@ -300,15 +203,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const feedback = useTurnFeedback(workspaceId ?? '', threadId, feedbackTurn?.id ?? null);
   const submitFeedback = useSubmitTurnFeedback();
   const { failed: disconnected } = useConnection();
-  const persistentNav = usePersistentNavigation();
-  // Below 800px the rail is an overlay. Opening it on entry covers the composer.
-  const [showRail, setShowRail] = useState(mode === 'chat' && persistentNav);
-  useEffect(() => {
-    if (!persistentNav) setShowRail(false);
-  }, [persistentNav]);
-  const railToggle = useRef<HTMLButtonElement>(null);
+  const panelHost = useRef<HTMLDivElement>(null);
+  const [lens, setLens] = useState<LensName>(readStoredLens);
   const renameButtonRef = useRef<HTMLButtonElement>(null);
-  const [stepsFocus, setStepsFocus] = useState<{ turnId: string; token: number } | null>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
   const profile = selectAgentProfile({
@@ -477,18 +374,25 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                 {timelineCopy.stopRun}
               </Button>
             ) : null}
-            <Button
-              size="sm"
-              variant="quiet"
-              ref={railToggle}
-              aria-expanded={showRail}
+            <fieldset
               aria-label={timelineCopy.lensName}
-              title={timelineCopy.lensName}
-              className="h-8 w-8 shrink-0 px-0!"
-              onPress={() => setShowRail((v) => !v)}
+              className="m-0 flex min-w-0 gap-1 border-0 p-0"
             >
-              <Icon name="view" size="lg" />
-            </Button>
+              {(['work', 'full'] as const).map((choice) => (
+                <Button
+                  key={choice}
+                  size="sm"
+                  variant={lens === choice ? 'outline' : 'quiet'}
+                  aria-pressed={lens === choice}
+                  onPress={() => {
+                    setLens(choice);
+                    writeStoredLens(choice);
+                  }}
+                >
+                  {choice === 'work' ? timelineCopy.lensWork : timelineCopy.lensFull}
+                </Button>
+              ))}
+            </fieldset>
           </div>
         </header>
         {renameDraft ? (
@@ -577,11 +481,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               readOnly={disconnected}
               focusTurnId={new URLSearchParams(location.search).get('turnId')}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
-              lens={showRail ? 'full' : 'work'}
-              onShowSteps={(turnId) => {
-                setShowRail(true);
-                setStepsFocus((current) => ({ turnId, token: (current?.token ?? 0) + 1 }));
-              }}
+              panelHost={panelHost}
+              lens={lens}
             />
             {feedbackTurn ? (
               <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">
@@ -713,18 +614,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           </div>
         </div>
       </div>
-      {showRail ? (
-        <SidePanel
-          workspaceId={workspaceId}
-          threadId={threadId}
-          focusTurnId={stepsFocus}
-          onClose={() => {
-            setShowRail(false);
-            setStepsFocus(null);
-            railToggle.current?.focus();
-          }}
-        />
-      ) : null}
+      <div ref={panelHost} className="contents" />
     </div>
   );
 }

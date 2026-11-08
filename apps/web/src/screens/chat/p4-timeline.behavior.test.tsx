@@ -398,12 +398,9 @@ function expectBefore(first: Node, second: Node) {
   expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 }
 
-/** Finds the desktop Details panel whether it is exposed as complementary or as a named region. */
+/** The Inspector is closed until a run asks for it. */
 function detailsPanel(): HTMLElement | null {
-  return (
-    screen.queryByRole('complementary', { name: 'Details' }) ??
-    screen.queryByRole('region', { name: 'Details' })
-  );
+  return screen.queryByRole('complementary', { name: 'Inspector' });
 }
 
 /** Waits for the Details panel that holds the hidden timeline steps. */
@@ -491,7 +488,7 @@ async function expectLiveApproval(surface: 'desktop' | 'phone', scroll: ReturnTy
   const details = detailsPanel();
   expect(textOutside(APPROVAL_TITLE, details).length).toBeGreaterThan(0);
   expect(textOutside(TOOL_TITLE, details)).toHaveLength(0);
-  expect(screen.getAllByRole('button', { name: 'Show steps' }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('button', { name: '1 steps' }).length).toBeGreaterThan(0);
 
   await waitFor(() => expect(announcedOrScrolled(APPROVAL_TITLE, scroll)).toBe(true));
 
@@ -626,6 +623,9 @@ describe('P4 timeline disclosure', () => {
     renderAt(THREAD_PATH, client);
 
     await screen.findByText(USER_TEXT);
+    expect(screen.queryByText(TOOL_TITLE)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Inspect' }));
     const details = await findDetailsPanel();
     expect(within(details).getByText(TOOL_TITLE)).toBeVisible();
     expect(textOutside(TOOL_TITLE, details)).toHaveLength(0);
@@ -649,7 +649,7 @@ describe('P4 timeline disclosure', () => {
     renderAt(THREAD_PATH, client);
 
     await screen.findByText(APPROVAL_TITLE);
-    const details = await findDetailsPanel();
+    const details = detailsPanel();
     expect(textOutside(APPROVAL_TITLE, details).length).toBeGreaterThan(0);
 
     const needsYou = screen.getAllByText('Needs you').find((element) => !element.closest('nav'));
@@ -660,8 +660,8 @@ describe('P4 timeline disclosure', () => {
     const deny = screen.getByRole('button', { name: 'Deny' });
     expect(approve).toBeVisible();
     expect(deny).toBeVisible();
-    expect(details.contains(approve)).toBe(false);
-    expect(details.contains(deny)).toBe(false);
+    expect(details?.contains(approve) ?? false).toBe(false);
+    expect(details?.contains(deny) ?? false).toBe(false);
   });
 
   it('keeps thread.items unpaged when nextCursor is null and shows no Load earlier control', async () => {
@@ -753,13 +753,12 @@ describe('P4 timeline disclosure', () => {
         dashboard: vi.fn().mockResolvedValue(threadDashboard()),
       })
     );
-    const showSteps = await screen.findByRole('button', { name: 'Show steps' });
+    const showSteps = await screen.findByRole('button', { name: 'Inspect' });
     await user.click(showSteps);
-    const steps = document.getElementById(`turn-steps-${TURN_ID}`);
-    expect(steps).not.toBeNull();
+    const steps = await screen.findByRole('complementary', { name: 'Inspector' });
     await waitFor(() => expect(steps).toHaveFocus());
     await user.keyboard('{Escape}');
-    expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Work | Full' })).toHaveFocus();
+    expect(screen.queryByRole('complementary', { name: 'Inspector' })).not.toBeInTheDocument();
+    expect(showSteps).toHaveFocus();
   });
 });

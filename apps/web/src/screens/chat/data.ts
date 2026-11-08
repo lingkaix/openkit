@@ -1294,9 +1294,14 @@ export function useWithdrawPendingRequest(workspaceId: string, threadId: string)
   });
 }
 
-/** Tool calls, file changes, and reasoning stay in Details. The transcript keeps the decision. */
+/** Steps fold into the run. Commands join tool calls, file changes, and reasoning. */
 export function isTimelineDetail(item: ThreadItem): boolean {
-  return item.type === 'tool-call' || item.type === 'file-change' || item.type === 'reasoning';
+  return (
+    item.type === 'tool-call' ||
+    item.type === 'command-execution' ||
+    item.type === 'file-change' ||
+    item.type === 'reasoning'
+  );
 }
 
 /** Group a flat item stream by turn, preserving order (Thread → Turn → Item). */

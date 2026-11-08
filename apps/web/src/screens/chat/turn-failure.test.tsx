@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testEntityId } from '../../../../nanocore/src/test-support/entity-ids.js';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
@@ -239,6 +239,12 @@ beforeEach(() => {
 });
 
 describe('task runtime activity', () => {
+  beforeEach(() => {
+    localStorage.setItem('openkit.timeline.lens', 'full');
+  });
+  afterEach(() => {
+    localStorage.removeItem('openkit.timeline.lens');
+  });
   it.each([true, false])(
     'locates only a retained Turn from the current authorized Thread: %s',
     async (present) => {
@@ -327,7 +333,7 @@ describe('task runtime activity', () => {
     expect(activity).toHaveTextContent('3 earlier activity entries not shown.');
     expect(activity).toHaveTextContent('Text shortened for this timeline.');
     expect(
-      screen.getByText('Worker Turn accepted').compareDocumentPosition(activity) &
+      screen.getByText('Run accepted').compareDocumentPosition(activity) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(screen.getAllByText(HISTORICAL_FAILURE_MESSAGE)).toHaveLength(1);
@@ -385,7 +391,7 @@ describe('task turn failure (dashboard reload)', () => {
     expect(await screen.findByText(FAILURE_MESSAGE)).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent(FAILURE_MESSAGE);
     expect(screen.getByText('Failed')).toBeInTheDocument();
-    expect(screen.getByText('Worker Turn accepted')).toBeInTheDocument();
+    expect(screen.getByText('Run accepted')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     await waitFor(() => expect(client.operations['turn.start']).not.toHaveBeenCalled());
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
@@ -404,7 +410,7 @@ describe('task turn failure (dashboard reload)', () => {
       )
     );
 
-    expect(await screen.findByText('Worker Turn accepted')).toBeInTheDocument();
+    expect(await screen.findByText('Run accepted')).toBeInTheDocument();
     expect(screen.queryByText('Failed')).not.toBeInTheDocument();
     expect(screen.queryByText(FAILURE_MESSAGE)).not.toBeInTheDocument();
   });
@@ -481,7 +487,7 @@ describe('task turn failure (dashboard reload)', () => {
     const second = screen.getByText('Start the worker task.');
     expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
-      second.compareDocumentPosition(screen.getByText('Worker Turn accepted')) &
+      second.compareDocumentPosition(screen.getByText('Run accepted')) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(screen.getAllByText(HISTORICAL_FAILURE_MESSAGE)).toHaveLength(1);
