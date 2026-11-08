@@ -30,16 +30,14 @@ import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { recordUserAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
-  hasCapabilityCallRequestId,
-  normalizeCapabilityRequestId,
-  startCapabilityCallInDb,
-} from '../capability/usage-ledger.js';
-import {
   clearCapabilityCallItemInDb,
   finishCapabilityCallInDb,
+  hasCapabilityCallRequestId,
+  normalizeCapabilityRequestId,
   persistLlmCapabilityCallSystemPromptDigestInDb,
   recordUsageInDb,
   stampCapabilityCallSchemaSnapshotInDb,
+  startCapabilityCallInDb,
   writeCapabilityCallCacheInDb,
   writeGatewayRouteLineageInDb,
 } from '../capability/usage-ledger-native.js';

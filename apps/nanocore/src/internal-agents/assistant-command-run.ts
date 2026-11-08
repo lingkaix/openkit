@@ -2,7 +2,7 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
-import { normalizeCapabilityRequestId } from '../capability/usage-ledger.js';
+import { normalizeCapabilityRequestId } from '../capability/usage-ledger-native.js';
 import {
   type KnowledgeOverviewInput,
   prepareKnowledgeOverview,
