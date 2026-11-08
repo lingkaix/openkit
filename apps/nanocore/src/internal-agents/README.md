@@ -1,5 +1,8 @@
 # Internal Core Roles
 
+`../agent-reporting.ts` owns concise shared built-in rule subsets and the fixed versioned Worker reporting text. Human-facing prompts count that text within the existing cap; machine-only policy and summary outputs retain their contracts. Structured delegation creation stamps the Worker text, while retained parsing and serialization preserve absence in older requests. Goal Task model input excludes reporting; the Task service stamps the same guidance before native request and checkpoint digests are computed.
+
+
 The Assistant handoff source proof imports receipt input hashing directly from `../storage/control-store-input.ts`, without loading Main idempotent-command orchestration for that helper.
 
 Unexpected Tool failures emit one best-effort structured warning with bounded logical-model, Tool and call correlation and an allowlisted exception class. Arguments, result bodies, exception text, stack and arbitrary error codes are excluded. Provider-authored call IDs enter diagnostics only as opaque digests. A failing diagnostic sink preserves the fixed model-visible failure and normal closeout.

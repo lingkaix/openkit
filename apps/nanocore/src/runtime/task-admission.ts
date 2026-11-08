@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
+  createStructuredWorkerDelegationRequest,
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
@@ -61,7 +62,7 @@ const CoordinatorTaskInputSchema = z
     withinPermittedAdjustments: z.boolean(),
     rationale: z.string().min(1),
     agentId: z.string().min(1),
-    request: StructuredWorkerDelegationRequestSchema,
+    request: StructuredWorkerDelegationRequestSchema.omit({ reporting: true }),
   })
   .strict();
 /** Uses ordinary Task preparation, reservation, scheduler, checkpoint and worker ownership. */
@@ -88,6 +89,7 @@ export function createCoordinatorTaskTool(options: {
     inputSchema,
     execute: async (value) => {
       const input = CoordinatorTaskInputSchema.parse(value);
+      const workerRequest = createStructuredWorkerDelegationRequest(input.request);
       const coordinator = options.store.getTurnById(options.coordinatorTurnId);
       const db = options.openWorkspace(workspaceIdForOwner(coordinator.owner));
       let receivingThreadId: string | undefined;
@@ -140,7 +142,7 @@ export function createCoordinatorTaskTool(options: {
             planVersionId: input.planVersionId,
             agentId: input.agentId,
             responsibleHumanId: goal.responsibleUserId,
-            resources: input.request.resources.flatMap((value) =>
+            resources: workerRequest.resources.flatMap((value) =>
               value.kind === 'policy' ? [value.resource] : []
             ),
             humanKernel: current.kernel,
@@ -158,7 +160,7 @@ export function createCoordinatorTaskTool(options: {
         const requestId = randomUUID();
         const threadId = deriveEntityId('th', ['task', requestId]);
         receivingThreadId = threadId;
-        const prompt = serializeStructuredWorkerDelegationRequest(input.request);
+        const prompt = serializeStructuredWorkerDelegationRequest(workerRequest);
         const turnId = deriveEntityId('tu', {
           command: 'task.start',
           actorId: actor.userId,
@@ -176,7 +178,7 @@ export function createCoordinatorTaskTool(options: {
           responseKind: 'turn',
           responseId: (turn) => turn.id,
           execute: async (commandReceipt): Promise<Awaited<ReturnType<FsStore['createTurn']>>> => {
-            const initialName = input.request.objective.slice(0, 100);
+            const initialName = workerRequest.objective.slice(0, 100);
             await options.store.createThread(
               goal.workspaceId,
               initialName,
@@ -193,7 +195,7 @@ export function createCoordinatorTaskTool(options: {
               workspaceId: goal.workspaceId,
               threadId,
               initialName,
-              sourceText: input.request.objective,
+              sourceText: workerRequest.objective,
               actor: { kind: 'user', id: actor.userId },
             });
             let resolveAccepted!: (turn: Awaited<ReturnType<FsStore['createTurn']>>) => void;
@@ -223,12 +225,12 @@ export function createCoordinatorTaskTool(options: {
                   repositoryWorkspaceDb: options.openWorkspace,
                   workspaceMutationAdmission: options.workspaceMutationAdmission,
                 })(
-                  { workspaceId: goal.workspaceId, query: input.request.objective },
+                  { workspaceId: goal.workspaceId, query: workerRequest.objective },
                   { actor, traceId: deriveEntityId('krt', requestId), threadId }
                 );
                 return {
-                  delegationRequest: input.request,
-                  contextPackageDigest: commandInputHash(input.request),
+                  delegationRequest: workerRequest,
+                  contextPackageDigest: commandInputHash(workerRequest),
                   knowledgeSelectionInput,
                 };
               },

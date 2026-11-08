@@ -1,5 +1,8 @@
 # nanocore
 
+Human-facing built-in prompts append shared role-specific reporting guidance within the unchanged 3000-code-point cap. New Task requests carry fixed `reporting-v1` text in their existing immutable `instructions.md`; the package manifest and logical trace verify its separate digest against original request bytes. Goal model Tools cannot supply that field. Retained packages without reporting metadata stay readable and unchanged. Delivery verification and per-adapter/model compliance sampling are separate proofs.
+
+
 `thread.item-body` admits one exact Workspace/Thread/Turn/Item selector and repeats the Item source permission check before returning the original current revision. File-backed immutable bodies have a separate 32 MiB bound, with at most 64 MiB prepared per native entry transition; control-envelope and queue limits stay unchanged. Ordinary SSE replaces Item payloads above 4 KiB with `item-preview` carrying an exact UTF-8 head or tail and the body selector. Large deltas project the current admitted Item. Turn update and terminal events contain headers with empty Items. Native records and event sequences remain unchanged; clients explicitly request complete bodies.
 
 

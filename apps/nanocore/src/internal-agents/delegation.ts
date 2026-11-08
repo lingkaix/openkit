@@ -6,6 +6,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { WORKER_REPORTING_GUIDANCE } from '../agent-reporting.js';
 
 import {
   TaskExpectedArtifactSchema,
@@ -96,6 +97,10 @@ export const StructuredWorkerDelegationRequestSchema = z
   .object({
     schemaVersion: z.literal(STRUCTURED_WORKER_DELEGATION_REQUEST_SCHEMA_VERSION),
     objective: z.string().min(1).max(2_000),
+    reporting: z
+      .object({ version: z.string().min(1).max(64), text: z.string().min(1).max(4096) })
+      .strict()
+      .optional(),
     acceptanceCriteria: z.array(z.string().min(1).max(1_000)).min(1).max(20),
     contextRefs: z.array(ContextRefSchema).min(1).max(50),
     resources: z.array(TaskResourceSchema).max(50),
@@ -228,6 +233,7 @@ export function createStructuredWorkerDelegationRequest(
   return StructuredWorkerDelegationRequestSchema.parse({
     schemaVersion: STRUCTURED_WORKER_DELEGATION_REQUEST_SCHEMA_VERSION,
     objective: input.objective,
+    reporting: WORKER_REPORTING_GUIDANCE,
     acceptanceCriteria: input.acceptanceCriteria,
     contextRefs: input.contextRefs,
     resources: input.resources,

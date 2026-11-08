@@ -36,6 +36,7 @@ import {
 } from '@openkit/storage';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import type { WorkerReportingMetadata } from '../agent-reporting.js';
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-review-follow-up.js';
 import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
@@ -209,6 +210,9 @@ const KnowledgeExclusionSchema = z.object({
 /** Known descriptive package facts with exact file-inventory admission. */
 export const WorkerContextPackageManifestSchema = z.object({
   contextBudgetTokens: z.number().int().positive().safe(),
+  reporting: z
+    .object({ version: z.string().min(1).max(64), contentDigest: Sha256Schema })
+    .optional(),
   contextPackageId: IdSchema,
   fileInventory: z.array(FileInventoryEntrySchema),
   sourceFiles: z.array(SourceFileSchema).max(100_000).optional(),
@@ -248,6 +252,7 @@ const traceManifestFields = [
   'materialSelections',
   'policyVersion',
   'sourceFiles',
+  'reporting',
   'workerRequestDigest',
   'workerRequestItemId',
 ] as const;
@@ -398,6 +403,8 @@ export interface WorkerContextPackageFile {
 
 /** Deterministic package files prepared before AEP resolution. */
 export interface WorkerContextPackageFiles {
+  /** Digest of advisory reporting text delivered inside the exact request, absent in retained earlier packages. */
+  readonly reporting?: WorkerReportingMetadata | undefined;
   /** Private stream suppliers retained through live materialization; never serialized. */
   readonly sourceFileInputs?: readonly WorkerContextPackageSourceFileInput[];
   /** Qualified exact original sources, separate from delivered representation files. */
@@ -430,6 +437,8 @@ export interface WorkerContextPackageFiles {
 
 /** Immutable accepted worker Context Package delivery trace. */
 export interface WorkerContextPackageTrace {
+  /** Descriptive reporting version and digest verified against original immutable instructions. */
+  readonly reporting?: WorkerReportingMetadata | undefined;
   /** Qualified exact original sources, separate from delivered representation files. */
   readonly sourceFiles?: readonly WorkerContextPackageSourceFile[] | undefined;
   /** Trace schema version. */
@@ -832,6 +841,20 @@ export function isChatSubordinateTaskTurn(input: {
   );
 }
 
+/** Derives advisory reporting identity from original request bytes without replacing retained absence. */
+function workerRequestReporting(text: string): WorkerReportingMetadata | undefined {
+  try {
+    const request = StructuredWorkerDelegationRequestSchema.safeParse(JSON.parse(text));
+    if (!request.success || !request.data.reporting) return undefined;
+    return {
+      version: request.data.reporting.version,
+      contentDigest: sha256(Buffer.from(request.data.reporting.text, 'utf8')),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Creates deterministic worker-visible Context Package files. */
 export function createWorkerContextPackageFiles(
   input: CreateWorkerContextPackageFilesInput
@@ -977,9 +1000,11 @@ export function createWorkerContextPackageFiles(
   );
   ordinaryFiles.sort((left, right) => compareCodeUnits(left.path, right.path));
   const ordinaryInventory = ordinaryFiles.map(inventoryEntry);
+  const reporting = workerRequestReporting(input.workerRequestBytes);
   const contextPackageId = `ctxpkg_${input.turnId}`;
   const manifest = {
     contextBudgetTokens: input.contextBudgetTokens,
+    ...(reporting ? { reporting } : {}),
     contextPackageId,
     fileInventory: ordinaryInventory,
     includedItemIds: [...input.includedItemIds],
@@ -1007,6 +1032,7 @@ export function createWorkerContextPackageFiles(
     compareCodeUnits(a.path, b.path)
   );
   return {
+    ...(reporting ? { reporting } : {}),
     contextPackageId,
     fileInventory,
     files,
@@ -1338,6 +1364,7 @@ export function createWorkerContextPackageTrace(
     throw new Error('Worker Context Package Knowledge requires structured delegation.');
   }
   const traceWithoutDigest = {
+    ...(packageFiles.reporting ? { reporting: packageFiles.reporting } : {}),
     agentSessionId: input.agentSessionId,
     contextPackageId: packageFiles.contextPackageId,
     excludedItems: [...input.excludedItems].sort((left, right) =>
@@ -1880,6 +1907,8 @@ function* verifyWorkerContextPackagePortableOwnersSteps(
   } catch {
     throw new Error('Worker Context Package request Item is not an accepted worker request.');
   }
+  if (!isDeepStrictEqual(workerRequestReporting(requestItem.text), trace.reporting))
+    throw new Error('Worker Context Package reporting guidance mismatch.');
   const isDirectTask =
     workerRequest.requestKind === 'structured-delegation' && trace.goalId === null;
   const isChatSubordinateTask =
@@ -2213,6 +2242,7 @@ function* verifyPackageFilesSteps(
       !isDeepStrictEqual(manifest.knowledgeSelections, trace.knowledgeSelections) ||
       !isDeepStrictEqual(manifest.materialSelections, trace.materialSelections) ||
       !isDeepStrictEqual(manifest.sourceFiles, trace.sourceFiles) ||
+      !isDeepStrictEqual(manifest.reporting, trace.reporting) ||
       !isDeepStrictEqual(
         manifest.fileInventory,
         trace.fileInventory.filter((entry) => entry.path !== 'package.json')

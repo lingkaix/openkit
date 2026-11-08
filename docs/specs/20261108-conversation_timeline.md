@@ -389,7 +389,7 @@ The registry is plain data plus about ten components. It deliberately has no plu
 Rule 1 removes the risk that a final message reads only "Done.". Rules 2 and 3 feed the notes, segments, Now, the header and fine-grained anchors. Approval cards are written by the system, so no rule covers them.
 
 - **Built-in agents.** One shared constant is appended to the fixed built-in prompts, within the test-enforced cap recorded in [Centralized Bounded Built-in Prompts](../decisions/20260924-centralized_bounded_builtin_prompts.md) and owned by [Internal Agent Runtime](20260813-internal_agent_runtime.md). The constant fits in about 180 code points or is tailored per role. The Goal Coordinator prompt is trimmed first; its cap is raised only if trimming fails. The Personal Assistant takes rules 1, 4 and 5; the Knowledge Manager takes rules 1 and 5.
-- **Workers.** One fixed, versioned reporting text is delivered in the [Worker Context Package](20260703-worker_context_package.md) and recorded by digest in the package trace. The Task Mode service delivers it with the structured delegation request. User Skills and AGENTS files still govern style.
+- **Workers.** One fixed, versioned reporting text is delivered in the existing exact `instructions.md` of the [Worker Context Package](20260703-worker_context_package.md) and recorded by its separate text digest in the manifest and joined logical trace. Retained instructions and packages keep their original text or absence. The Task Mode service delivers it with the structured delegation request. User Skills and AGENTS files still govern style.
 - **Compliance** is measured by evaluation, per adapter and model, not enforced. The timeline still renders agents that ignore the rules.
 
 ### Object References And Resolver
@@ -810,7 +810,6 @@ Implementation is In Progress: TW0 is underway; no other slice has landed. The f
 
 - [Non-blocking] Should plan-segment counts be computed by the server (exact) or the client (partial)? The recommendation is the server, in the Extended tier.
 - [Non-blocking] Does each adapter emit steps when they start? The Quiet rule depends on it; adapters that report steps only when they finish use the 30-minute "Working" threshold.
-- [Non-blocking] Can the Worker reporting text reuse an existing Worker Context Package entry, or does it need a new file?
 
 ## Deferred / Future Work
 

@@ -173,7 +173,8 @@ async function createPackage(
   turnId = 'tu_00000000-0000-71df-9e29-90f5b5578e47',
   threadId = 'th_00000000-0000-7ba9-ab4a-4397e62aa2e5',
   sourceFiles?: readonly WorkerContextPackageSourceFileInput[],
-  knowledgeOverview?: string
+  knowledgeOverview?: string,
+  workerRequestBytes = WORKER_REQUEST_BYTES
 ): Promise<WorkerContextPackageFiles> {
   const packageFiles = createWorkerContextPackageFiles({
     sourceFiles,
@@ -211,7 +212,7 @@ async function createPackage(
     ],
     threadId,
     turnId,
-    workerRequestBytes: WORKER_REQUEST_BYTES,
+    workerRequestBytes,
     workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
     workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
   });
@@ -251,7 +252,9 @@ async function createEnvironmentPackage(
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       owner: { kind: 'workspace', workspaceId: packageFiles.workspaceId },
     },
-    turnInput: WORKER_REQUEST_BYTES,
+    turnInput: Buffer.from(
+      packageFiles.files.find((file) => file.path === 'instructions.md')!.bytes
+    ).toString('utf8'),
     workspaceCwd: '/workspace',
     workspaceRoots: [],
   });
@@ -277,6 +280,7 @@ async function createEnvironmentPackage(
 async function createAcceptedFixture(
   workspaceRoot: string,
   options: {
+    readonly workerRequestBytes?: string;
     readonly requestId?: string;
     readonly turnId?: string;
     readonly threadId?: string;
@@ -302,7 +306,9 @@ async function createAcceptedFixture(
     !options.knowledge,
     turnId,
     threadId,
-    options.sourceFiles
+    options.sourceFiles,
+    undefined,
+    options.workerRequestBytes
   );
   if (options.knowledge) {
     packageFiles = createWorkerContextPackageFiles({
@@ -329,7 +335,7 @@ async function createAcceptedFixture(
       })),
       threadId,
       turnId,
-      workerRequestBytes: WORKER_REQUEST_BYTES,
+      workerRequestBytes: options.workerRequestBytes ?? WORKER_REQUEST_BYTES,
       workerRequestItemId: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
       workspaceId: 'ws_00000000-0000-7990-bde7-4411160ea0db',
     });
@@ -523,7 +529,7 @@ async function createAcceptedFixture(
       {
         id: 'it_00000000-0000-7a3c-ae74-d9d096838a5d',
         status: 'completed',
-        text: WORKER_REQUEST_BYTES,
+        text: options.workerRequestBytes ?? WORKER_REQUEST_BYTES,
         threadId,
         turnId,
         type: 'user-message',
@@ -3188,4 +3194,67 @@ describe('portable Context owner steps', () => {
     expect(readFileSync(manifestPath)).toEqual(retainedManifest);
     expect(fixture.runtimeAuthorityReads()).toBe(0);
   });
+});
+
+it('binds the delivered versioned Worker reporting text to its manifest and verified package trace', async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'worker-reporting-proof-'));
+  const fixture = await createAcceptedFixture(workspaceRoot);
+  const request = JSON.parse(WORKER_REQUEST_BYTES);
+  expect(request.reporting).toMatchObject({ version: 'reporting-v1' });
+  for (const rule of [
+    'outcome',
+    'criteria',
+    '15 minutes',
+    'three to seven',
+    'options',
+    'not checked',
+    'AGENTS',
+  ])
+    expect(request.reporting.text.toLowerCase()).toContain(rule.toLowerCase());
+  const expected = {
+    version: request.reporting.version,
+    contentDigest: sha256(request.reporting.text),
+  };
+  const manifest = JSON.parse(
+    Buffer.from(
+      fixture.packageFiles.files.find((file) => file.path === 'package.json')!.bytes
+    ).toString('utf8')
+  );
+  expect(manifest.reporting).toEqual(expected);
+  expect(fixture.trace.reporting).toEqual(expected);
+  expect(verifyWorkerContextPackageTrace({ ...fixture, workspaceRoot }).reporting).toEqual(
+    expected
+  );
+  const forged = rewriteTrace(fixture.trace, {
+    reporting: { ...expected, contentDigest: sha256('Different reporting text') },
+  });
+  expect(() =>
+    verifyWorkerContextPackageTrace({ ...fixture, trace: forged, workspaceRoot })
+  ).toThrow(/reporting|manifest/i);
+});
+
+it('verifies retained packages without reporting metadata and preserves their original request bytes', async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'worker-reporting-legacy-'));
+  const original = JSON.parse(WORKER_REQUEST_BYTES);
+  delete original.reporting;
+  const workerRequestBytes = JSON.stringify(original);
+  const fixture = await createAcceptedFixture(workspaceRoot, { workerRequestBytes });
+  expect(fixture.packageFiles.reporting).toBeUndefined();
+  expect(fixture.trace.reporting).toBeUndefined();
+  const verified = verifyWorkerContextPackageTrace({ ...fixture, workspaceRoot });
+  expect(verified.reporting).toBeUndefined();
+  const bytes = serializeWorkerContextPackageTrace(verified);
+  expect(
+    serializeWorkerContextPackageTrace(
+      parseWorkerContextPackageTrace(
+        JSON.parse(bytes),
+        fixture.packageFiles.files.find((file) => file.path === 'package.json')!.bytes
+      )
+    )
+  ).toBe(bytes);
+  expect(
+    Buffer.from(
+      fixture.packageFiles.files.find((file) => file.path === 'instructions.md')!.bytes
+    ).toString('utf8')
+  ).toBe(workerRequestBytes);
 });

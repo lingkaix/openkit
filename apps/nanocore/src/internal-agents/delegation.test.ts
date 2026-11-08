@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { WORKER_REPORTING_GUIDANCE } from '../agent-reporting.js';
 
 import {
   createStructuredWorkerDelegationRequest,
@@ -98,6 +99,7 @@ describe('structured worker delegation requests', () => {
 
     expect(request).toEqual({
       schemaVersion: 1,
+      reporting: WORKER_REPORTING_GUIDANCE,
       objective: 'Fix the failing projection test.',
       acceptanceCriteria: ['The focused test passes.', 'No unrelated files are changed.'],
       contextRefs: [

@@ -1,5 +1,8 @@
 # LLM Context Projection
 
+New structured Worker requests carry the fixed versioned reporting text in the existing `instructions.md`. Its optional `reporting` manifest fact contains the version and exact text digest; the joined logical trace repeats that fact and verifies it against the original request Item and manifest. Compact retained traces omit the manifest-owned fact. Earlier requests and packages keep absence and their original bytes. No new package file, durable record, receipt or execution authority is created.
+
+
 Retained Context Package manifests and traces admit descriptive annotations while verifying the original canonical representation and byte digests. A direct Task trace retains the complete scope-qualified retrieval trace reference that selected its Knowledge bytes. The trace reader returns known fields with its original immutable representation retained for same-identity serialization. Inventories and structured instructions remain exact. Same-identity serialization and historical inspection keep the original package bytes and digests. See [Worker Context Package](../../../../docs/specs/20260703-worker_context_package.md).
 
 This directory owns deterministic projection of durable OpenKit items into provider-visible LLM context.

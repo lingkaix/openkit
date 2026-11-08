@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { WORKER_REPORTING_GUIDANCE } from '../agent-reporting.js';
 
 import { createWorkerCoordinatorDecision } from './worker-coordinator.js';
 
@@ -96,6 +97,7 @@ describe('Worker Coordinator explicit selection', () => {
 
     expect(decision.workerRequest).toEqual({
       schemaVersion: 1,
+      reporting: WORKER_REPORTING_GUIDANCE,
       objective: 'Implement the release dashboard and run focused tests.',
       acceptanceCriteria: [
         'The bounded worker task satisfies the requested objective.',
@@ -152,6 +154,7 @@ describe('Worker Coordinator explicit selection', () => {
     expect(decision.decision).toBe('worker_turn');
     expect(decision.workerRequest).toEqual({
       schemaVersion: 1,
+      reporting: WORKER_REPORTING_GUIDANCE,
       objective: prompt,
       acceptanceCriteria: [
         'The bounded worker task satisfies the requested objective.',
