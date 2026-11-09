@@ -6,7 +6,6 @@ import {
   listServerAuditEvents,
   prepareAuditEvent,
   prepareServerAuditEvent,
-  recordServerAuditEvent,
 } from '../audit-events.js';
 import {
   authorizeWorkspace,
@@ -44,6 +43,7 @@ import {
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ControlStandaloneAuditInputSchema } from '../storage/standalone-audit-codecs.js';
 import { VAULT_SERVER_MCP_COMMANDS } from '../storage/vault-native-codecs.js';
+import type { SERVER_MCP_CORE_COMMAND_RECEIPTS } from '../storage/workspace-command-receipt-codecs.js';
 import {
   isCurrentServerMcpMaterial,
   isServerMcpGrant,
@@ -137,11 +137,9 @@ export function createServerMcpOperationImplementations(
       ...(workspaceId ? { workspaceId } : { coreId: 'server' }),
     };
     const nativeVault = VAULT_SERVER_MCP_COMMANDS.some((value) => value === name);
-    // The shared Workspace disable command retains its distinct original rollout stages.
-    const standaloneStage =
-      !nativeVault && name !== 'catalog.shared-mcp-set-disabled'
-        ? ControlStandaloneAuditInputSchema.shape.stage.parse(name)
-        : null;
+    const standaloneStage = !nativeVault
+      ? ControlStandaloneAuditInputSchema.shape.stage.parse(name)
+      : null;
     const marker = `mcp-command:${commandInputHash({ name, scope, requestId: input.requestId })}`;
     try {
       const result = await runIdempotentCommand({
@@ -190,10 +188,26 @@ export function createServerMcpOperationImplementations(
               event: prepareServerAuditEvent(started),
             });
             // Historical Audit cannot authorize a later physical catalog or session effect.
-            requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
+            if (!workspaceId)
+              requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
+            else if (
+              !authorizeWorkspace(coreDb!, actor, workspaceId, {
+                mutating: true,
+                policyOperation: 'workspace.configure',
+              })
+            )
+              throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
             await context.recheckAdmission?.();
-            requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
-          } else recordServerAuditEvent(started);
+            if (!workspaceId)
+              requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
+            else if (
+              !authorizeWorkspace(coreDb!, actor, workspaceId, {
+                mutating: true,
+                policyOperation: 'workspace.configure',
+              })
+            )
+              throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+          }
           const result = await execute();
           const succeeded = {
             coreDb: coreDb!,
@@ -223,7 +237,25 @@ export function createServerMcpOperationImplementations(
               stage: standaloneStage,
               event: prepareServerAuditEvent(succeeded),
             });
-          } else recordServerAuditEvent(succeeded);
+            if (store!.getDataRoot() !== null) {
+              const { responseKind, ...facts } = receipt;
+              await store!.publishWorkspaceCommandReceipt(
+                name === 'catalog.shared-mcp-set-disabled'
+                  ? {
+                      ...facts,
+                      command: name,
+                      scope: { actorId: actor.userId, workspaceId: workspaceId! },
+                      response: { kind: 'catalog_mcp', id: responseId(result) },
+                    }
+                  : {
+                      ...facts,
+                      command: name as (typeof SERVER_MCP_CORE_COMMAND_RECEIPTS)[number],
+                      scope: { actorId: actor.userId, coreId: 'server' },
+                      response: { kind: 'catalog_mcp', id: responseId(result) },
+                    }
+              );
+            }
+          }
           return result;
         },
       });

@@ -14,6 +14,7 @@ import {
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
+import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { openCoreDb } from './db.js';
@@ -37,13 +38,17 @@ vi.mock('node:worker_threads', async (load) => {
     Worker: class extends actual.Worker {
       override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
         const message: unknown = args[0];
-        if (
-          isControlWorkerRequest(message) &&
-          message.operation === 'standalone-audit' &&
-          message.input.stage === fault.stage
-        ) {
-          fault.requests.push({ id: message.id, input: structuredClone(message.input) });
-          fault.worker = this;
+        if (isControlWorkerRequest(message) && message.operation === 'standalone-audit') {
+          // Decode the actual transferred bytes before super.postMessage detaches them.
+          const input = ControlStandaloneAuditInputSchema.parse(
+            JSON.parse(
+              readControlScalarText(ControlScalarTextSchema.parse(message.input), message.content)
+            )
+          );
+          if (input.stage === fault.stage) {
+            fault.requests.push({ id: message.id, input: structuredClone(input) });
+            fault.worker = this;
+          }
         }
         return super.postMessage(...args);
       }

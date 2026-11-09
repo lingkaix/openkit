@@ -8,9 +8,17 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** The original creator receipt belongs to User; metadata, environment, Skill, Artifact and Light App receipts belong to Workspace. */
+/** Creator receipts belong to User; Server MCP to Core; metadata, environment and local catalog receipts to Workspace. */
 export const WORKSPACE_USER_COMMAND_RECEIPTS = ['workspace.create'] as const;
-/** Existing closed public metadata, Worker environment, Skill, Artifact and Light App commands share this physical Workspace receipt partition. */
+/** Five noncredential Server MCP commands retain their original Core receipt partition. */
+export const SERVER_MCP_CORE_COMMAND_RECEIPTS = [
+  'administration.server-mcp-create',
+  'administration.server-mcp-stage-version',
+  'administration.server-mcp-select-version',
+  'administration.server-mcp-update-binding',
+  'administration.server-mcp-remove',
+] as const;
+/** Existing closed metadata, environment and catalog commands share this physical Workspace receipt partition. */
 export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'workspace.update',
   'worker_environment.prepare',
@@ -29,6 +37,7 @@ export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'catalog.light-app-history-import',
   'catalog.light-app-select',
   'catalog.light-app-pin',
+  'catalog.shared-mcp-set-disabled',
 ] as const;
 
 const receiptBase = {
@@ -48,6 +57,20 @@ const updateReceipt = z.strictObject({
   ...receiptBase,
   command: z.literal('workspace.update'),
   scope: z.strictObject({ workspaceId: WorkspaceIdSchema }),
+});
+
+/** Catalog effects retain their original non-secret entry pointer and exact physical scope. */
+const serverMcpReceipt = z.strictObject({
+  ...receiptBase,
+  command: z.enum(SERVER_MCP_CORE_COMMAND_RECEIPTS),
+  scope: z.strictObject({ actorId: UserIdSchema, coreId: z.literal('server') }),
+  response: z.strictObject({ kind: z.literal('catalog_mcp'), id: z.string().min(1) }),
+});
+const sharedMcpReceipt = z.strictObject({
+  ...receiptBase,
+  command: z.literal('catalog.shared-mcp-set-disabled'),
+  scope: z.strictObject({ actorId: UserIdSchema, workspaceId: WorkspaceIdSchema }),
+  response: z.strictObject({ kind: z.literal('catalog_mcp'), id: z.string().min(1) }),
 });
 
 /** The three original environment commands keep their exact Thread or storage-reference provenance. */
@@ -175,8 +198,28 @@ const artifactReceipt = z.discriminatedUnion('command', [
   }),
 ]);
 
-/** Separate original record and expiry-maintenance commits, with two exact physical owners. */
+/** Separate original record and expiry-maintenance commits, bound to the exact Core, User or Workspace owner. */
 export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('action', [
+  z.strictObject({
+    action: z.literal('server-mcp-receipt'),
+    coreId: z.literal('server'),
+    receipt: serverMcpReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('server-mcp-maintenance'),
+    coreId: z.literal('server'),
+    referenceTime: z.string().datetime(),
+  }),
+  z.strictObject({
+    action: z.literal('shared-mcp-receipt'),
+    workspaceId: WorkspaceIdSchema,
+    receipt: sharedMcpReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('shared-mcp-maintenance'),
+    workspaceId: WorkspaceIdSchema,
+    referenceTime: z.string().datetime(),
+  }),
   z.strictObject({
     action: z.literal('create-receipt'),
     userId: UserIdSchema,
@@ -239,7 +282,7 @@ export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('a
   }),
 ]);
 
-/** Closed original Workspace command facts; no authored name, image, configuration or arbitrary receipt crosses. */
+/** Closed original command facts; no authored name, image, configuration or arbitrary receipt crosses. */
 export type ControlWorkspaceCommandReceiptInput = z.infer<
   typeof ControlWorkspaceCommandReceiptInputSchema
 >;

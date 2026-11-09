@@ -31,7 +31,10 @@ import {
   type prepareControlTaskSteerReceipt,
 } from './control-store-products.js';
 import { SCOPED_NOTEBOOK_SERVER_RECEIPTS } from './scoped-notebook-sql-codecs.js';
-import { WORKSPACE_LOCAL_COMMAND_RECEIPTS } from './workspace-command-receipt-codecs.js';
+import {
+  SERVER_MCP_CORE_COMMAND_RECEIPTS,
+  WORKSPACE_LOCAL_COMMAND_RECEIPTS,
+} from './workspace-command-receipt-codecs.js';
 
 /** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
 export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
@@ -90,6 +93,7 @@ export function pruneControlAdmissionReceipts(
           ...CONTROL_NATIVE_RECEIPT_COMMANDS,
           ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
           ...SCOPED_NOTEBOOK_SERVER_RECEIPTS,
+          ...SERVER_MCP_CORE_COMMAND_RECEIPTS,
         ];
   sqlite
     .prepare(

@@ -32,10 +32,16 @@ import {
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
-import { presentControlFacts } from './control-store-input.js';
+import {
+  ControlScalarTextSchema,
+  presentControlFacts,
+  readControlScalarText,
+} from './control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
+import { ControlStandaloneAuditInputSchema } from './standalone-audit-codecs.js';
 
 const fault = vi.hoisted(() => ({
   kind: '' as '' | 'revoke' | 'rotate',
@@ -58,12 +64,15 @@ vi.mock('node:worker_threads', async (load) => {
     Worker: class extends actual.Worker {
       override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
         const message: unknown = args[0];
+        if (isControlWorkerRequest(message) && message.operation === 'standalone-audit') {
+          const input = ControlStandaloneAuditInputSchema.parse(
+            JSON.parse(
+              readControlScalarText(ControlScalarTextSchema.parse(message.input), message.content)
+            )
+          );
+          if (input.stage === `auth.token.${fault.kind}`) fault.auditPosts += 1;
+        }
         if (isRecord(message) && isRecord(message.input)) {
-          if (
-            message.operation === 'standalone-audit' &&
-            message.input.stage === `auth.token.${fault.kind}`
-          )
-            fault.auditPosts += 1;
           if (
             message.operation === 'access-token-lifecycle' &&
             message.input.kind === fault.kind &&

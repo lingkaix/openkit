@@ -65,7 +65,10 @@ import type {
   ControlResolvedAgentSetupResult,
 } from './resolved-agent-setup-codecs.js';
 import type { ControlScopedNotebookSqlInput } from './scoped-notebook-sql-codecs.js';
-import type { ControlStandaloneAuditInput } from './standalone-audit-codecs.js';
+import {
+  type ControlStandaloneAuditInput,
+  ControlStandaloneAuditInputSchema,
+} from './standalone-audit-codecs.js';
 import type {
   ControlWorkspaceBackendHandoff,
   ControlWorkspaceBackendHandoffResult,
@@ -2518,7 +2521,18 @@ class ControlStoreWorkerClient {
       db.sqlite.name !== scope.path
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const parsed = ControlStandaloneAuditInputSchema.safeParse(input);
+    if (!parsed.success) throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    // The original shared-disable resource can exceed the structured envelope.
+    // Validate its closed stage first, then use the existing bounded scalar carrier.
+    const json = JSON.stringify(parsed.data);
     const database = `${db.scope}:${scope.path}`;
+    const command = {
+      operation: 'standalone-audit' as const,
+      database,
+      input: frameControlScalarText(json),
+      content: new ArrayBuffer(0),
+    };
     const admitted = this.openings.get(database);
     let reply: Success;
     if (!admitted) {
@@ -2533,7 +2547,7 @@ class ControlStoreWorkerClient {
             productOwner: scope.owner,
             contentMount: scope.contentMount,
           }),
-          this.request({ operation: 'standalone-audit', database, input }),
+          this.request(command, [json]),
         ])
       )[1];
     } else {
@@ -2543,7 +2557,7 @@ class ControlStoreWorkerClient {
         !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
       )
         throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'standalone-audit', database, input });
+      reply = await this.request(command, [json]);
     }
     if (reply.operation !== 'standalone-audit' || reply.result !== null)
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
@@ -2726,20 +2740,24 @@ class ControlStoreWorkerClient {
     const input = ControlWorkspaceCommandReceiptInputSchema.parse(
       receipt.command === 'workspace.create'
         ? { action: 'create-receipt', userId: receipt.scope.userId, receipt }
-        : {
-            action:
-              receipt.command === 'workspace.update'
-                ? 'update-receipt'
-                : receipt.command.startsWith('catalog.light-app-')
-                  ? 'light-app-receipt'
-                  : receipt.command.startsWith('catalog.skill-')
-                    ? 'skill-receipt'
-                    : receipt.command.startsWith('artifact.')
-                      ? 'artifact-receipt'
-                      : 'environment-receipt',
-            workspaceId: receipt.scope.workspaceId,
-            receipt,
-          }
+        : 'coreId' in receipt.scope
+          ? { action: 'server-mcp-receipt', coreId: 'server', receipt }
+          : {
+              action:
+                receipt.command === 'catalog.shared-mcp-set-disabled'
+                  ? 'shared-mcp-receipt'
+                  : receipt.command === 'workspace.update'
+                    ? 'update-receipt'
+                    : receipt.command.startsWith('catalog.light-app-')
+                      ? 'light-app-receipt'
+                      : receipt.command.startsWith('catalog.skill-')
+                        ? 'skill-receipt'
+                        : receipt.command.startsWith('artifact.')
+                          ? 'artifact-receipt'
+                          : 'environment-receipt',
+              workspaceId: receipt.scope.workspaceId,
+              receipt,
+            }
     );
     let database: string;
     if (input.action === 'create-receipt') {
@@ -2750,7 +2768,20 @@ class ControlStoreWorkerClient {
       const create =
         this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false });
       await this.open({ database, path, create, initialize: 'user' });
+    } else if (input.action === 'server-mcp-receipt') {
+      const scope = nativeProductScope(dataRoot, { kind: 'server' });
+      database = `core:${scope.path}`;
+      await this.open({
+        database,
+        path: scope.path,
+        dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
     } else if (
+      input.action === 'shared-mcp-receipt' ||
       input.action === 'update-receipt' ||
       input.action === 'environment-receipt' ||
       input.action === 'skill-receipt' ||
@@ -2790,20 +2821,24 @@ class ControlStoreWorkerClient {
     const maintenanceInput = ControlWorkspaceCommandReceiptInputSchema.parse(
       input.action === 'create-receipt'
         ? { action: 'create-maintenance', userId: input.userId, referenceTime }
-        : {
-            action:
-              input.action === 'update-receipt'
-                ? 'update-maintenance'
-                : input.action === 'light-app-receipt'
-                  ? 'light-app-maintenance'
-                  : input.action === 'skill-receipt'
-                    ? 'skill-maintenance'
-                    : input.action === 'artifact-receipt'
-                      ? 'artifact-maintenance'
-                      : 'environment-maintenance',
-            workspaceId: input.workspaceId,
-            referenceTime,
-          }
+        : input.action === 'server-mcp-receipt'
+          ? { action: 'server-mcp-maintenance', coreId: 'server', referenceTime }
+          : {
+              action:
+                input.action === 'shared-mcp-receipt'
+                  ? 'shared-mcp-maintenance'
+                  : input.action === 'update-receipt'
+                    ? 'update-maintenance'
+                    : input.action === 'light-app-receipt'
+                      ? 'light-app-maintenance'
+                      : input.action === 'skill-receipt'
+                        ? 'skill-maintenance'
+                        : input.action === 'artifact-receipt'
+                          ? 'artifact-maintenance'
+                          : 'environment-maintenance',
+              workspaceId: input.workspaceId,
+              referenceTime,
+            }
     );
     const maintenanceJson = JSON.stringify(maintenanceInput);
     const maintenance = await this.request(
@@ -4294,6 +4329,7 @@ class ControlStoreWorkerClient {
       command.operation === 'schema-application' ||
       command.operation === 'attention-enqueue' ||
       command.operation === 'workspace-command-receipt' ||
+      command.operation === 'standalone-audit' ||
       command.operation === 'thread-read-membership' ||
       command.operation === 'worker-control-final-status' ||
       command.operation === 'worker-control-heartbeat' ||
@@ -4314,6 +4350,7 @@ class ControlStoreWorkerClient {
                 command.operation === 'schema-application' ||
                 command.operation === 'attention-enqueue' ||
                 command.operation === 'workspace-command-receipt' ||
+                command.operation === 'standalone-audit' ||
                 command.operation === 'thread-read-membership' ||
                 command.operation === 'worker-control-final-status' ||
                 command.operation === 'worker-control-heartbeat' ||

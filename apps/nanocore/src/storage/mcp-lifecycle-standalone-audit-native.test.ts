@@ -24,8 +24,13 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { commandInputHash } from './control-store-input.js';
+import {
+  ControlScalarTextSchema,
+  commandInputHash,
+  readControlScalarText,
+} from './control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { ControlStandaloneAuditInputSchema } from './standalone-audit-codecs.js';
 
 // Node 24 supplies waitAsync; the package's standard library target is ES2023.
@@ -49,7 +54,7 @@ const instrument = vi.hoisted(() => ({
   target: new SharedArrayBuffer(4096),
   workers: [] as NativeWorker[],
   contacts: [] as number[],
-  sent: [] as Array<{ worker: number; value: unknown }>,
+  sent: [] as Array<{ worker: number; value: unknown; input: unknown }>,
   received: [] as Array<{ worker: number; value: unknown }>,
 }));
 
@@ -159,13 +164,13 @@ vi.mock('node:worker_threads', async (load) => {
       }
       override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
         const value: unknown = args[0];
-        if (
-          typeof value === 'object' &&
-          value !== null &&
-          'operation' in value &&
-          value.operation === 'standalone-audit'
-        )
-          instrument.sent.push({ worker: instrument.workers.indexOf(this), value });
+        if (isControlWorkerRequest(value) && value.operation === 'standalone-audit') {
+          // Keep the original wire header for correlation and decode before transfer detaches bytes.
+          const input: unknown = JSON.parse(
+            readControlScalarText(ControlScalarTextSchema.parse(value.input), value.content)
+          );
+          instrument.sent.push({ worker: instrument.workers.indexOf(this), value, input });
+        }
         return super.postMessage(...args);
       }
     },
@@ -259,11 +264,8 @@ function record(value: unknown): value is Record<string, unknown> {
 /** Binds an original committed row to the actual sender, receiver, request ID and covering ACK. */
 function nativeFor(eventId: string) {
   const sent = instrument.sent.find(
-    ({ value }) =>
-      record(value) &&
-      record(value.input) &&
-      record(value.input.event) &&
-      value.input.event.id === eventId
+    ({ value, input }) =>
+      record(value) && record(input) && record(input.event) && input.event.id === eventId
   );
   expect(
     sent,
@@ -273,6 +275,7 @@ function nativeFor(eventId: string) {
   const message = sent.value;
   return {
     message,
+    input: sent.input,
     worker: sent.worker,
     replies: () =>
       instrument.received.filter(
@@ -620,7 +623,7 @@ it.each(['ack', 'rollback', 'lost-ack'] as const)(
     if (mode === 'ack') {
       expect(done.value.status, await done.value.clone().text()).toBe(200);
       acknowledged(native);
-      const parsed = ControlStandaloneAuditInputSchema.parse(native.message.input);
+      const parsed = ControlStandaloneAuditInputSchema.parse(native.input);
       expect(
         ControlStandaloneAuditInputSchema.safeParse({
           ...parsed,

@@ -283,10 +283,6 @@ import {
   ControlServerAdminTokenDefaultSchema,
 } from './server-admin-token-default-codecs.js';
 import {
-  type ControlStandaloneAuditInput,
-  ControlStandaloneAuditInputSchema,
-} from './standalone-audit-codecs.js';
-import {
   type ControlThreadReadMembershipWire,
   ControlThreadReadMembershipWireSchema,
   THREAD_READ_RECEIPT_INVALID,
@@ -424,7 +420,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 93;
+export const CONTROL_WORKER_VERSION = 94;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -810,7 +806,11 @@ export type ControlWorkerCommand =
           readonly operation: 'workspace-recovery-decision';
           readonly input: ControlWorkspaceRecoveryDecision;
         }
-      | { readonly operation: 'standalone-audit'; readonly input: ControlStandaloneAuditInput }
+      | {
+          readonly operation: 'standalone-audit';
+          readonly input: ControlScalarText;
+          readonly content: ArrayBuffer;
+        }
       | {
           readonly operation: 'resolved-agent-setup';
           readonly input: ControlResolvedAgentSetupInput;
@@ -962,6 +962,7 @@ export function controlWorkerInputBytes(
               command.operation === 'schema-application' ||
               command.operation === 'attention-enqueue' ||
               command.operation === 'workspace-command-receipt' ||
+              command.operation === 'standalone-audit' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
               command.operation === 'worker-control-final-status' ||
@@ -2464,12 +2465,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlPrivateWorkspaceInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
-  if (value.operation === 'standalone-audit')
+  if (value.operation === 'standalone-audit') {
+    const parsed = ControlScalarTextSchema.safeParse(value.input);
     return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlStandaloneAuditInputSchema.safeParse(value.input).success &&
-      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
+  }
   if (value.operation === 'resolved-agent-setup')
     return (
       exactFields(value, [...scoped, 'input']) &&

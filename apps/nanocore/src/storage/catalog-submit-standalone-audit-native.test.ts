@@ -452,6 +452,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'catalog.mcp-select',
     'catalog.mcp-stage-version',
     'catalog.plugin-import',
+    'catalog.shared-mcp-set-disabled',
     'catalog.skill-candidate-decide',
     'catalog.skill-candidate-decide.admit',
     'catalog.skill-candidate-submit',

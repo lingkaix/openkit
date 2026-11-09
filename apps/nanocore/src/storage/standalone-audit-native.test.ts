@@ -285,6 +285,7 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'administration.server-mcp-select-version',
     'administration.server-mcp-update-binding',
     'administration.server-mcp-remove',
+    'catalog.shared-mcp-set-disabled',
     'catalog.mcp-create',
     'catalog.mcp-stage-version',
     'catalog.mcp-remove',

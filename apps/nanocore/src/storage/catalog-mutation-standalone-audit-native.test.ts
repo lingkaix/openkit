@@ -147,7 +147,8 @@ vi.mock('node:worker_threads', async (load) => {
         fault.workers.push(this);
       }
       override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
-        fault.messages.push(args[0]);
+        // Snapshot the actual header and material before the real post transfers its buffers.
+        fault.messages.push(structuredClone(args[0]));
         return super.postMessage(...args);
       }
     },

@@ -261,6 +261,10 @@ import {
 } from './scheduler-admission-codecs.js';
 import { applyControlSchedulerAdmission } from './scheduler-admission-native.js';
 import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
+import {
+  type ControlStandaloneAuditInput,
+  ControlStandaloneAuditInputSchema,
+} from './standalone-audit-codecs.js';
 import { applyStandaloneAuditInDb } from './standalone-audit-native.js';
 import {
   THREAD_READ_RECEIPT_INVALID,
@@ -442,6 +446,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
   readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
   readonly preparedWorkspaceCommandReceipt?: ControlWorkspaceCommandReceiptInput;
+  readonly preparedStandaloneAudit?: ControlStandaloneAuditInput;
   readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
@@ -2457,7 +2462,8 @@ function flush(owner: OwnedDatabase): void {
           } else if (request.operation === 'standalone-audit') {
             if (owner.scopeDb?.scope !== 'workspace' && owner.scopeDb?.scope !== 'core')
               throw new ControlProductPreconditionError();
-            applyStandaloneAuditInDb(owner.scopeDb, request.input);
+            if (!request.preparedStandaloneAudit) throw new ControlProductPreconditionError();
+            applyStandaloneAuditInDb(owner.scopeDb, request.preparedStandaloneAudit);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -2486,7 +2492,7 @@ function flush(owner: OwnedDatabase): void {
             const input = request.preparedWorkspaceCommandReceipt;
             if (!input) throw new ControlProductPreconditionError();
             const db = 'userId' in input ? nativeUserDb(owner, input.userId) : owner.scopeDb;
-            if (!db || db.scope === 'core') throw new ControlProductPreconditionError();
+            if (!db) throw new ControlProductPreconditionError();
             applyWorkspaceCommandReceiptInDb(db, input);
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -3886,6 +3892,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
           let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
           let preparedWorkspaceCommandReceipt: ControlWorkspaceCommandReceiptInput | undefined;
+          let preparedStandaloneAudit: ControlStandaloneAuditInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
@@ -3909,6 +3916,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           try {
             if (value.operation === 'attention-enqueue') {
               preparedAttentionEnqueue = AttentionEnqueueCommandSchema.parse(
+                JSON.parse(readControlScalarText(value.input, value.content))
+              );
+            }
+            if (value.operation === 'standalone-audit') {
+              preparedStandaloneAudit = ControlStandaloneAuditInputSchema.parse(
                 JSON.parse(readControlScalarText(value.input, value.content))
               );
             }
@@ -4261,6 +4273,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedSchedulerAdmission,
               preparedAttentionEnqueue,
               preparedWorkspaceCommandReceipt,
+              preparedStandaloneAudit,
               preparedThreadReadItemIds,
               preparedEntries,
               preparedGenerativePresentation,

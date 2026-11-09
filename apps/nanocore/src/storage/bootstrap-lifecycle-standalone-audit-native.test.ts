@@ -19,6 +19,7 @@ import {
 } from '../auth/bootstrap-token.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
+import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb } from './db.js';
@@ -165,12 +166,18 @@ vi.mock('node:worker_threads', async (load) => {
         const message: unknown = args[0];
         if (isRecord(message) && typeof message.operation === 'string')
           fault.operations.push(message.operation);
-        if (isControlWorkerRequest(message) && message.operation === 'standalone-audit')
+        if (isControlWorkerRequest(message) && message.operation === 'standalone-audit') {
+          const input = ControlStandaloneAuditInputSchema.parse(
+            JSON.parse(
+              readControlScalarText(ControlScalarTextSchema.parse(message.input), message.content)
+            )
+          );
           fault.sent.push({
             id: message.id,
-            stage: message.input.stage,
-            event: structuredClone(message.input.event),
+            stage: input.stage,
+            event: structuredClone(input.event),
           });
+        }
         return super.postMessage(...args);
       }
     },

@@ -341,7 +341,7 @@ describe('workspace-transaction idempotent commands', () => {
           response_json,
           created_at,
           expires_at
-        ) VALUES ('test-owner:' || ?, 'catalog.shared-mcp-set-disabled', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
+        ) VALUES ('test-owner:' || ?, 'workspace_sync.review.decide', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
       );
       const getOwner = workspaceDb.sqlite.prepare(
         `SELECT response_id AS id
@@ -351,10 +351,10 @@ describe('workspace-transaction idempotent commands', () => {
 
       const scope: CommandRequestScope = { workspaceId };
       const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-      // Exercise the generic Main receipt transaction with a currently Main-owned shared-MCP command.
-      // The isolated owner SQL below tests transaction completion, not MCP publication.
+      // Exercise the generic Main receipt transaction using the remaining Review command name.
+      // This isolated SQL owner tests transaction completion, not Review admission or Git effects.
       const common = {
-        command: 'catalog.shared-mcp-set-disabled' as const,
+        command: 'workspace_sync.review.decide' as const,
         inflightCommands,
         replay: () => {
           throw new Error('Unexpected command replay.');
@@ -400,7 +400,7 @@ describe('workspace-transaction idempotent commands', () => {
       expect(getOwner.get('owner_committed')).toEqual({ id: 'owner_committed' });
       expect(
         store.getCommandRequest(
-          'catalog.shared-mcp-set-disabled',
+          'workspace_sync.review.decide',
           'request_committed',
           scope,
           workspaceDb
@@ -431,7 +431,7 @@ describe('workspace-transaction idempotent commands', () => {
       expect
         .soft(
           store.getCommandRequest(
-            'catalog.shared-mcp-set-disabled',
+            'workspace_sync.review.decide',
             'request_rolled_back',
             scope,
             workspaceDb
@@ -463,7 +463,7 @@ describe('workspace-transaction idempotent commands', () => {
       expect
         .soft(
           store.getCommandRequest(
-            'catalog.shared-mcp-set-disabled',
+            'workspace_sync.review.decide',
             'request_async',
             scope,
             workspaceDb

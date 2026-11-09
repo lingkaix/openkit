@@ -652,7 +652,7 @@ it('preserves concurrent deduplication, current Catalog replay, mismatch, CAS an
 it('preserves exact receipt TTL and both real pruning partitions without making expiry replay authority', async () => {
   const f = await fixture();
   const past = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-  // A real still-Main public Workspace command supplies the ordinary partition.
+  // Keep the genuine shared-MCP producer as a moved native peer.
   // Its server definition is owner-created; no transport session or credential is fabricated.
   createMcpConfig({
     dataRoot: f.dataRoot,
@@ -688,6 +688,25 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   await createThread(threadInput, { store: f.store, inflightCommands: new WeakMap() }, f.userId);
   const nativeOther = f.records().find((row) => row.requestId === threadInput.requestId);
   expect(nativeOther).toBeDefined();
+  const nativeShared = f.records().find((row) => row.requestId === legacyInput.requestId);
+  expect(nativeShared).toBeDefined();
+
+  // The remaining Main partition is an explicitly stopped retained Review receipt.
+  // This installs historical receipt bytes, not a new Review decision or Git effect.
+  await shutdownControlStoreWorkerClient();
+  const mainScope = { workspaceId: f.workspaceId, reviewId: 'swr_retained-main-one' };
+  const mainRequestId = randomUUID();
+  recordCommandRequestRecordInDb(f.db, {
+    key: commandRequestKey('workspace_sync.review.decide', mainRequestId, mainScope),
+    command: 'workspace_sync.review.decide',
+    requestId: mainRequestId,
+    scope: mainScope,
+    inputHash: commandInputHash({ retainedFixture: 'Main receipt one', requestId: mainRequestId }),
+    response: { kind: 'workspace_sync_review', id: mainScope.reviewId },
+    createdAt: past.toISOString(),
+    expiresAt: new Date(past.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  expect(f.records().find((row) => row.requestId === mainRequestId)).toBeDefined();
   vi.useRealTimers();
   expect(record.expiresAt < new Date().toISOString()).toBe(true);
   const before = f.records();
@@ -695,15 +714,16 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   expect(getCommandRequestRecordFromDb(f.db, record.key, lastEligible)).toEqual(record);
   expect(getCommandRequestRecordFromDb(f.db, record.key, record.expiresAt)).toBeNull();
   expect(f.records()).toEqual(before);
-  // This existing legacy lookup really prunes Main's partition; it must not delete native rows.
+  // This real Main lookup prunes the retained partition; it must not delete native rows.
   expect(
-    f.store.getCommandRequest('catalog.shared-mcp-set-disabled', randomUUID(), f.scope)
+    f.store.getCommandRequest('workspace_sync.review.decide', randomUUID(), mainScope)
   ).toBeNull();
-  expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toBeUndefined();
+  expect(f.records().find((row) => row.requestId === mainRequestId)).toBeUndefined();
+  expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toEqual(nativeShared);
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toEqual(nativeOther);
   expect(f.record(), 'Main expiry maintenance deleted the moved Catalog receipt.').toEqual(record);
 
-  // Reach another expired Main receipt through its real owner, never by raw expiry SQL.
+  // Preserve the second genuine shared-MCP effect, now in the native partition.
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(past);
   const anotherLegacyInput = {
@@ -714,7 +734,27 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   };
   const anotherLegacy = await f.call(anotherLegacyInput, 'catalog.shared-mcp-set-disabled');
   expect(anotherLegacy.status, await anotherLegacy.clone().text()).toBe(200);
-  const mainOther = f.records().find((row) => row.requestId === anotherLegacyInput.requestId);
+  const nativeSharedOther = f
+    .records()
+    .find((row) => row.requestId === anotherLegacyInput.requestId);
+  expect(nativeSharedOther).toBeDefined();
+  await shutdownControlStoreWorkerClient();
+  const otherMainScope = { workspaceId: f.workspaceId, reviewId: 'swr_retained-main-two' };
+  const otherMainRequestId = randomUUID();
+  recordCommandRequestRecordInDb(f.db, {
+    key: commandRequestKey('workspace_sync.review.decide', otherMainRequestId, otherMainScope),
+    command: 'workspace_sync.review.decide',
+    requestId: otherMainRequestId,
+    scope: otherMainScope,
+    inputHash: commandInputHash({
+      retainedFixture: 'Main receipt two',
+      requestId: otherMainRequestId,
+    }),
+    response: { kind: 'workspace_sync_review', id: otherMainScope.reviewId },
+    createdAt: past.toISOString(),
+    expiresAt: new Date(past.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  const mainOther = f.records().find((row) => row.requestId === otherMainRequestId);
   expect(mainOther).toBeDefined();
   vi.useRealTimers();
   const currentThreadInput = {
@@ -732,9 +772,9 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
     f.record(),
     'Existing native maintenance did not prune its activated Catalog partition.'
   ).toBeUndefined();
-  expect(f.records().find((row) => row.requestId === anotherLegacyInput.requestId)).toEqual(
-    mainOther
-  );
+  expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toBeUndefined();
+  expect(f.records().find((row) => row.requestId === anotherLegacyInput.requestId)).toBeUndefined();
+  expect(f.records().find((row) => row.requestId === otherMainRequestId)).toEqual(mainOther);
   const retained = { bytes: f.bytes(), events: f.events(), records: f.records() };
   const replay = await f.call();
   expect(replay.status).toBe(409);

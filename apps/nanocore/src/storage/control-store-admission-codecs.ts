@@ -14,6 +14,7 @@ import {
   SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './scoped-notebook-sql-codecs.js';
 import {
+  SERVER_MCP_CORE_COMMAND_RECEIPTS,
   WORKSPACE_LOCAL_COMMAND_RECEIPTS,
   WORKSPACE_USER_COMMAND_RECEIPTS,
 } from './workspace-command-receipt-codecs.js';
@@ -119,7 +120,8 @@ export function isControlNativeReceiptCommand(
     CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
     (scope === 'core' &&
       (CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS.some((name) => name === command) ||
-        SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command))) ||
+        SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command) ||
+        SERVER_MCP_CORE_COMMAND_RECEIPTS.some((name) => name === command))) ||
     (scope === 'workspace' &&
       (CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command) ||
         CATALOG_COMMAND_RECEIPTS.some((name) => name === command) ||

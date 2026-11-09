@@ -32,6 +32,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'administration.server-mcp-select-version',
   'administration.server-mcp-update-binding',
   'administration.server-mcp-remove',
+  'catalog.shared-mcp-set-disabled',
   'catalog.mcp-create',
   'catalog.mcp-stage-version',
   'catalog.mcp-remove',
@@ -236,11 +237,14 @@ export const ControlStandaloneAuditInputSchema = z
       stage === 'administration.server-mcp-stage-version' ||
       stage === 'administration.server-mcp-select-version' ||
       stage === 'administration.server-mcp-update-binding' ||
-      stage === 'administration.server-mcp-remove'
+      stage === 'administration.server-mcp-remove' ||
+      stage === 'catalog.shared-mcp-set-disabled'
     )
       return (
         workspaceId === undefined &&
-        event.workspaceId === null &&
+        (stage === 'catalog.shared-mcp-set-disabled'
+          ? WorkspaceIdSchema.safeParse(event.workspaceId).success
+          : event.workspaceId === null) &&
         event.category === 'system' &&
         event.severity === 'info' &&
         typeof event.requestId === 'string' &&

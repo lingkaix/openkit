@@ -62,6 +62,7 @@ import {
 import {
   type ControlWorkspaceCommandReceiptInput,
   ControlWorkspaceCommandReceiptInputSchema,
+  SERVER_MCP_CORE_COMMAND_RECEIPTS,
   WORKSPACE_LOCAL_COMMAND_RECEIPTS,
 } from './workspace-command-receipt-codecs.js';
 
@@ -270,9 +271,9 @@ export function applyCatalogCommandReceiptInDb(
   writeCommandRequestRecordInDb(db, record);
 }
 
-/** Applies each closed User or Workspace command's original standalone receipt stages. */
+/** Applies each closed command's original standalone receipt stages on its exact physical database. */
 export function applyWorkspaceCommandReceiptInDb(
-  db: UserDb | WorkspaceDb,
+  db: CoreDb | UserDb | WorkspaceDb,
   value: ControlWorkspaceCommandReceiptInput
 ): void {
   assertControlProductWriter(db.sqlite);
@@ -281,7 +282,9 @@ export function applyWorkspaceCommandReceiptInDb(
     !db.sqlite.inTransaction ||
     ('userId' in input
       ? db.scope !== 'user' || db.userId !== input.userId
-      : db.scope !== 'workspace' || db.workspaceId !== input.workspaceId)
+      : 'coreId' in input
+        ? db.scope !== 'core'
+        : db.scope !== 'workspace' || db.workspaceId !== input.workspaceId)
   )
     throw new ControlProductPreconditionError();
   if ('receipt' in input) {
@@ -308,7 +311,9 @@ export function applyWorkspaceCommandReceiptInDb(
       db.sqlite,
       db.scope === 'user'
         ? { kind: 'user', userId: db.userId }
-        : { kind: 'workspace', workspaceId: db.workspaceId },
+        : db.scope === 'core'
+          ? { kind: 'server' }
+          : { kind: 'workspace', workspaceId: db.workspaceId },
       input.referenceTime
     );
   }
@@ -812,6 +817,7 @@ function pruneCommandRequestRecords(
             ...CONTROL_NATIVE_RECEIPT_COMMANDS,
             ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
             ...SCOPED_NOTEBOOK_SERVER_RECEIPTS,
+            ...SERVER_MCP_CORE_COMMAND_RECEIPTS,
           ];
 
   db.sqlite

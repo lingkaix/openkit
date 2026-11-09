@@ -424,6 +424,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'catalog.mcp-select',
     'catalog.mcp-stage-version',
     'catalog.plugin-import',
+    'catalog.shared-mcp-set-disabled',
     'catalog.skill-candidate-decide',
     'catalog.skill-candidate-decide.admit',
     'catalog.skill-candidate-submit',

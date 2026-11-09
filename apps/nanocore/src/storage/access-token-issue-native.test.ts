@@ -29,11 +29,14 @@ import {
   removeWorkspaceMember,
   resolveWorkspaceMembershipRelation,
 } from '../workspace-sharing.js';
+import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
+import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { openCoreDb } from './db.js';
+import { ControlStandaloneAuditInputSchema } from './standalone-audit-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
@@ -66,8 +69,14 @@ vi.mock('node:worker_threads', async (load) => {
           return;
         }
       }
-      if (request?.operation === 'standalone-audit' && request.input?.stage === 'auth.token.issue')
-        interception.audits += 1;
+      if (isControlWorkerRequest(value) && value.operation === 'standalone-audit') {
+        const input = ControlStandaloneAuditInputSchema.parse(
+          JSON.parse(
+            readControlScalarText(ControlScalarTextSchema.parse(value.input), value.content)
+          )
+        );
+        if (input.stage === 'auth.token.issue') interception.audits += 1;
+      }
       super.postMessage(value, transferList);
     }
   }

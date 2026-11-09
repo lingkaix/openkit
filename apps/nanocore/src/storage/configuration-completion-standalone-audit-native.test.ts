@@ -17,11 +17,13 @@ import { listServerPermissionDecisions } from '../policy/permission-decisions.js
 import { policyDigest } from '../policy/statements.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestCoreDb, createTestStore } from '../test-support/store.js';
+import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
+import { ControlStandaloneAuditInputSchema } from './standalone-audit-codecs.js';
 
 // L2, Core Storage/SQLite Layers and Core Evidence/Audit Invariants: real file owner,
 // Core INSERT/FULL/receiver, then the original immutable Artifact and separate receipt.
@@ -132,21 +134,27 @@ vi.mock('node:worker_threads', async (load) => {
             id?: number;
             database?: string;
             operation?: string;
+            content?: ArrayBuffer;
             input?: {
-              event?: { requestId?: string; action?: string };
               kind?: string;
               stage?: { decision?: { contextSummary?: { requestId?: string } } };
             };
           };
-          if (
-            value.operation === 'standalone-audit' &&
-            value.input?.event?.requestId === target.requestId &&
-            value.input?.event?.action === target.action
-          ) {
-            expect(value.database).toBe(`core:${target.corePath}`);
-            this.selected = value.id;
-            observation.worker = this;
-            Atomics.add(gate, 7, 1);
+          if (value.operation === 'standalone-audit') {
+            const input = ControlStandaloneAuditInputSchema.parse(
+              JSON.parse(
+                readControlScalarText(ControlScalarTextSchema.parse(value.input), value.content)
+              )
+            );
+            if (
+              input.event.requestId === target.requestId &&
+              input.event.action === target.action
+            ) {
+              expect(value.database).toBe(`core:${target.corePath}`);
+              this.selected = value.id;
+              observation.worker = this;
+              Atomics.add(gate, 7, 1);
+            }
           }
           if (
             value.operation === 'capability' &&
