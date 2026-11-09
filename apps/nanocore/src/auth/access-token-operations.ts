@@ -4,6 +4,7 @@ import { prepareServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { presentControlFacts } from '../storage/control-store-input.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
@@ -11,9 +12,10 @@ import {
   AccessTokenScopeError,
   createOpenKitAccessTokenSecret,
   hashOpenKitAccessTokenSecret,
+  normalizeOpenKitAccessTokenScope,
 } from './access-token.js';
+import type { ControlAccessTokenLifecycleResult } from './access-token-lifecycle-codecs.js';
 import {
-  createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
   listOwnedServerAdminAccessTokens,
   type OpenKitAccessTokenRecord,
@@ -88,6 +90,30 @@ async function recordAccessTokenLifecycleAuditEvent(
       summary,
     }),
   });
+}
+
+/** Preserves the existing public refusal codes after native current-fact revalidation. */
+function requireTokenLifecycleResult(
+  result: ControlAccessTokenLifecycleResult
+): Exclude<ControlAccessTokenLifecycleResult, { kind: 'denied' }> {
+  if (result.kind !== 'denied') return result;
+  const refusal = {
+    deployment_admin_required: {
+      message: 'Current deployment administrator authority is required.',
+      status: 403,
+    },
+    workspace_access_denied: { message: 'Workspace access denied.', status: 403 },
+    access_token_owner_invalid: {
+      message: 'Access token owner must be an exact active canonical user.',
+      status: 400,
+    },
+    'core.auth.scope_forbidden': {
+      message: 'Access token scope does not allow this request.',
+      status: 403,
+    },
+  } as const;
+  const denied = refusal[result.code];
+  throw new OperationError(result.code, denied.message, denied.status);
 }
 
 /** Joins the human credential family to the existing token, bootstrap, membership and audit owners. */
@@ -185,9 +211,26 @@ export function createAccessTokenOperationImplementations({
           'Access token scope does not allow this request.',
           403
         );
-      let issued: ReturnType<typeof createOpenKitAccessTokenRecord>;
+      let record: OpenKitAccessTokenRecord;
+      let secret: string;
       try {
-        issued = createOpenKitAccessTokenRecord(db, { ...input, ownerUserId });
+        const binding = normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
+        const tokenId = allocateEntityId('tok');
+        secret = createOpenKitAccessTokenSecret();
+        const mutation = requireTokenLifecycleResult(
+          await getControlStoreWorkerClient().accessTokenLifecycle(db, {
+            kind: 'issue',
+            actor: presentControlFacts(actor),
+            ownerUserId,
+            scope: binding.scope,
+            workspaceIds: binding.workspaceIds,
+            expiresAt: input.expiresAt,
+            token: { tokenId, tokenHash: hashOpenKitAccessTokenSecret(secret) },
+          })
+        );
+        if (mutation.kind !== 'issue')
+          throw new Error('Unexpected canonical token mutation result.');
+        record = mutation.record;
       } catch (error) {
         if (error instanceof AccessTokenScopeError)
           throw new OperationError('access_token_issue_failed', error.message, 400, {
@@ -195,40 +238,43 @@ export function createAccessTokenOperationImplementations({
           });
         throw error;
       }
-      await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.issue', issued.record, actor);
-      return { record: issued.record, token: issued.secret };
+      await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.issue', record, actor);
+      return { record, token: secret };
     },
     'token.revoke': async (input, context) => {
       const db = administratorStorage();
-      const mutation = await getControlStoreWorkerClient().accessTokenLifecycle(db, {
-        kind: 'revoke',
-        tokenId: input.tokenId,
-      });
+      const actor = publicOperationActor(context);
+      const mutation = requireTokenLifecycleResult(
+        await getControlStoreWorkerClient().accessTokenLifecycle(db, {
+          kind: 'revoke',
+          actor: presentControlFacts(actor),
+          tokenId: input.tokenId,
+        })
+      );
       if (mutation.kind !== 'revoke')
         throw new Error('Unexpected canonical token mutation result.');
       const record = mutation.record;
       if (!record)
         throw new OperationError('access_token_not_found', 'Access token not found.', 404);
-      await recordAccessTokenLifecycleAuditEvent(
-        db,
-        'auth.token.revoke',
-        record,
-        publicOperationActor(context)
-      );
+      await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.revoke', record, actor);
       return { record };
     },
     'token.rotate': async (input, context) => {
       const db = administratorStorage();
+      const actor = publicOperationActor(context);
       const secret = createOpenKitAccessTokenSecret();
-      const mutation = await getControlStoreWorkerClient().accessTokenLifecycle(db, {
-        kind: 'rotate',
-        tokenId: input.tokenId,
-        graceSeconds: input.graceSeconds,
-        successor: {
-          tokenId: allocateEntityId('tok'),
-          tokenHash: hashOpenKitAccessTokenSecret(secret),
-        },
-      });
+      const mutation = requireTokenLifecycleResult(
+        await getControlStoreWorkerClient().accessTokenLifecycle(db, {
+          kind: 'rotate',
+          actor: presentControlFacts(actor),
+          tokenId: input.tokenId,
+          graceSeconds: input.graceSeconds,
+          successor: {
+            tokenId: allocateEntityId('tok'),
+            tokenHash: hashOpenKitAccessTokenSecret(secret),
+          },
+        })
+      );
       if (mutation.kind !== 'rotate')
         throw new Error('Unexpected canonical token mutation result.');
       const rotated = mutation.value;
@@ -238,12 +284,7 @@ export function createAccessTokenOperationImplementations({
           'Access token not found or not rotatable.',
           404
         );
-      await recordAccessTokenLifecycleAuditEvent(
-        db,
-        'auth.token.rotate',
-        rotated.record,
-        publicOperationActor(context)
-      );
+      await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.rotate', rotated.record, actor);
       return {
         record: rotated.record,
         rotatedRecord: rotated.rotatedRecord,

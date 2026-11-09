@@ -2397,7 +2397,7 @@ class ControlStoreWorkerClient {
     return result.data;
   }
 
-  /** Performs only canonical revoke/rotation through the existing admitted Core FULL writer. */
+  /** Performs canonical issue/revoke/rotation through the existing admitted Core FULL writer. */
   async accessTokenLifecycle(
     db: CoreDb,
     input: ControlAccessTokenLifecycle
@@ -2435,11 +2435,17 @@ class ControlStoreWorkerClient {
     if (reply.operation !== 'access-token-lifecycle')
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     const result = ControlAccessTokenLifecycleResultSchema.safeParse(reply.result);
-    if (!result.success || result.data.kind !== input.kind)
+    if (!result.success || (result.data.kind !== input.kind && result.data.kind !== 'denied'))
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     const value = result.data;
     if (
-      (value.kind === 'revoke' && value.record && value.record.tokenId !== input.tokenId) ||
+      (value.kind === 'issue' &&
+        input.kind === 'issue' &&
+        value.record.tokenId !== input.token.tokenId) ||
+      (value.kind === 'revoke' &&
+        input.kind === 'revoke' &&
+        value.record &&
+        value.record.tokenId !== input.tokenId) ||
       (value.kind === 'rotate' &&
         input.kind === 'rotate' &&
         value.value &&

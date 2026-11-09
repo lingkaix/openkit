@@ -73,7 +73,7 @@ vi.mock('node:worker_threads', async (load) => {
 const stages = ['auth.token.issue', 'auth.token.revoke', 'auth.token.rotate'] as const;
 
 /** Bootstrap and canonical token setup use their public owners, never raw SQL. */
-async function fixture(stage: (typeof stages)[number]) {
+async function fixture(stage: (typeof stages)[number], refuseAuditSql = false) {
   await shutdownControlStoreWorkerClient();
   fault.stage = '';
   fault.requests.length = 0;
@@ -127,6 +127,12 @@ async function fixture(stage: (typeof stages)[number]) {
   const predecessor = stage === 'auth.token.issue' ? undefined : await create();
   const before = listOpenKitAccessTokenRecords(coreDb);
   const beforeHistory = listServerAuditEvents(coreDb).filter((row) => row.action === stage);
+  if (refuseAuditSql) {
+    // Refuse only the original later Audit INSERT after valid canonical setup.
+    coreDb.sqlite.exec(`CREATE TRIGGER reject_test_issue_audit BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'auth.token.issue'
+      BEGIN SELECT RAISE(ABORT, 'Synthetic issue Audit SQL refusal'); END`);
+  }
   const invoke = () =>
     stage === 'auth.token.issue'
       ? create()
@@ -262,6 +268,29 @@ it.each(stages)(
   },
   30_000
 );
+
+it('withholds the issue secret after real later Audit SQL refusal without undoing or replaying canonical issue', async () => {
+  const f = await fixture('auth.token.issue', true);
+  expect((await f.result).ok).toBe(false);
+  expect(f.published()).toBe(false);
+  expect(fault.requests.length).toBe(1);
+  expect(listOpenKitAccessTokenRecords(f.coreDb).length).toBe(f.before.length + 1);
+  expect(
+    listServerAuditEvents(f.coreDb).filter((row) => row.action === 'auth.token.issue').length
+  ).toBe(f.beforeHistory.length);
+  await shutdownControlStoreWorkerClient();
+  f.coreDb.sqlite.close();
+  const cold = openCoreDb(f.dataRoot);
+  try {
+    expect(listOpenKitAccessTokenRecords(cold).length).toBe(f.before.length + 1);
+    expect(
+      listServerAuditEvents(cold).filter((row) => row.action === 'auth.token.issue').length
+    ).toBe(f.beforeHistory.length);
+    expect(fault.requests.length).toBe(1);
+  } finally {
+    cold.sqlite.close();
+  }
+});
 
 it.each(stages)(
   '%s does not report success or repost when its real committed ACK is lost',

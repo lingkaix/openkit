@@ -75,6 +75,47 @@ function insertTokenOwnerUser(coreDb: ReturnType<typeof openCoreDb>): void {
 }
 
 describe('OpenKit access token store', () => {
+  it('preserves the original issue after a duplicate identity refusal and reopen', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-issue-collision-'));
+    const db = openCoreDb(dataRoot);
+    let cold: CoreDb | undefined;
+    try {
+      applyMigrations(db);
+      insertTokenOwnerUser(db);
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const input = {
+        ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+        scope: 'workspace-readonly' as const,
+        workspaceIds: [` ${workspaceId} `, workspaceId],
+        expiresAt: '2000-01-01T00:00:00.000Z',
+      };
+      const first = createOpenKitAccessTokenRecord(db, input);
+      const before = JSON.stringify(db.sqlite.prepare('SELECT * FROM openkit_access_tokens').all());
+      let refused = false;
+      try {
+        createOpenKitAccessTokenRecord(db, { ...input, tokenId: first.tokenId });
+      } catch {
+        refused = true;
+      }
+      expect(refused).toBe(true);
+      expect(first.record.workspaceIds).toEqual([workspaceId]);
+      expect(first.record.expiresAt === input.expiresAt).toBe(true);
+      expect(
+        JSON.stringify(db.sqlite.prepare('SELECT * FROM openkit_access_tokens').all()) === before
+      ).toBe(true);
+      db.sqlite.close();
+      cold = openCoreDb(dataRoot);
+      // The original exact row, including its hash and lifetime, is never overwritten.
+      expect(
+        JSON.stringify(cold.sqlite.prepare('SELECT * FROM openkit_access_tokens').all()) === before
+      ).toBe(true);
+    } finally {
+      if (db.sqlite.open) db.sqlite.close();
+      cold?.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('writes v1 workspace bindings and reads them through native verification', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bindings-v1-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));

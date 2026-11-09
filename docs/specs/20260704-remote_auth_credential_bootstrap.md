@@ -88,6 +88,7 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 - The human remote-access `Token` record MUST carry: token id (canonical tok UUIDv7, except the declared stopped-server recovery UUIDv5 producer), owner user id (the responsible human `User` in V1), scope, issued time, expiration time, revocation time, rotation lineage (predecessor token id and rotation grace expiry when rotated), status (`active`, `expired`, `revoked`, `rotated` per `docs/core/identity.md`), and a last-used summary (last-used time, channel, and coarse source summary; no full request logs). This human owner field does not apply to NanoHost transport tokens, whose owner is the configured NanoHost `IntegrationIdentity` under their owning specification.
 - Token read models MUST expose the token id and a short non-secret display fragment at most; they MUST NOT expose the hash or any recoverable secret material.
 - General Token issuance requires an explicit expiration time and has no global maximum lifetime. Verification rejects an expired Token. The bootstrap-secret window and stopped-server recovery bound remain separate controls under their respective ceremonies.
+- Public Token creation accepts at most 1,000 raw Workspace binding entries before normalization and at most 64 characters of ISO expiration text; over-limit input is refused with its field identified. These input bounds do not change expiration meaning, normalize its text or limit retained read models.
 
 ### Scopes
 

@@ -63,8 +63,14 @@ export const OpenKitAccessTokenRecordSchema = z
 export const CreateOpenKitAccessTokenRequestSchema = z
   .object({
     scope: OpenKitAccessTokenScopeSchema,
-    workspaceIds: z.array(WorkspaceIdSchema).default([]),
-    expiresAt: z.string().datetime(),
+    workspaceIds: z
+      .array(WorkspaceIdSchema)
+      .max(1000, 'Workspace bindings must contain at most 1,000 entries before normalization.')
+      .default([]),
+    expiresAt: z
+      .string()
+      .datetime()
+      .max(64, 'Token expiration must contain at most 64 ISO-text characters.'),
     ownerUserId: UserIdSchema.optional(),
   })
   .strict();

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS, operationMcpEligible } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
+import { listServerAuditEvents } from '../audit-events.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -11,7 +12,10 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestStore } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './access-token-verification.js';
 import { ensureServerBootstrapToken } from './bootstrap-token.js';
 import type { BetterAuthServer } from './middleware.js';
 
@@ -43,6 +47,102 @@ function fixture() {
     },
   };
 }
+
+describe('public Token issue input bounds', () => {
+  it.each([
+    { scenario: 'raw-binding-boundary', bindings: 1000, digits: 43, status: 201, field: '' },
+    {
+      scenario: 'raw-binding-overflow',
+      bindings: 1001,
+      digits: 43,
+      status: 400,
+      field: 'workspaceIds',
+    },
+    { scenario: 'exact-past-ISO-boundary', bindings: 1, digits: 43, status: 201, field: '' },
+    { scenario: 'ISO-overflow', bindings: 1, digits: 44, status: 400, field: 'expiresAt' },
+  ])(
+    'enforces the approved public issue contract: $scenario',
+    async ({ bindings, digits, status, field }) => {
+      const f = fixture();
+      try {
+        const userId = ensureLocalUser(f.coreDb);
+        const administrator = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: userId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        const workspace = await createTestStore({ dataRoot: f.dataRoot }).createWorkspace(
+          'Issue input'
+        );
+        recordWorkspaceOwnerMembership({
+          coreDb: f.coreDb,
+          ownerUserId: userId,
+          workspaceId: workspace.id,
+        });
+        const auth: BetterAuthServer = {
+          api: { getSession: async () => ({ user: { id: userId } }) },
+          handler: async () => new Response(null, { status: 404 }),
+        };
+        const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
+        // Ordinary issue has no future-expiry rule. Keep the exact lawful past ISO text.
+        const expiresAt = `2000-01-01T00:00:00.${'0'.repeat(digits)}Z`;
+        const count = () =>
+          f.coreDb.sqlite.prepare('SELECT COUNT(*) FROM openkit_access_tokens').pluck().get();
+        const before = count();
+        const beforeAudit = listServerAuditEvents(f.coreDb).filter(
+          (event) => event.action === 'auth.token.issue'
+        ).length;
+        const response = await app.request(
+          ...operationRequest(
+            'token.create',
+            {},
+            {
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                scope: 'workspace',
+                workspaceIds: Array(bindings).fill(workspace.id),
+                expiresAt,
+              }),
+            }
+          )
+        );
+        const text = await response.text();
+        // OLD over-limit acceptance can return a real one-time secret: report only safe facts.
+        expect.soft(response.status).toBe(status);
+        expect.soft(text.includes(administrator.secret)).toBe(false);
+        const body = JSON.parse(text);
+        if (status === 201) {
+          expect(count()).toBe(Number(before) + 1);
+          expect(body.record?.ownerUserId === userId).toBe(true);
+          expect(body.record?.expiresAt === expiresAt).toBe(true);
+          expect(
+            body.record?.workspaceIds?.length === 1 && body.record.workspaceIds[0] === workspace.id
+          ).toBe(true);
+          expect(typeof body.token === 'string').toBe(true);
+          expect((await verifyOpenKitAccessTokenRecord(f.coreDb, body.token)) === null).toBe(true);
+        } else {
+          expect.soft(count()).toBe(before);
+          expect
+            .soft(
+              listServerAuditEvents(f.coreDb).filter((event) => event.action === 'auth.token.issue')
+                .length
+            )
+            .toBe(beforeAudit);
+          expect.soft(body.code === 'invalid_request').toBe(true);
+          const fields: unknown = body.details?.fields;
+          expect
+            .soft(Array.isArray(fields) && fields.length === 1 && fields[0] === field)
+            .toBe(true);
+          expect.soft(/okt_[A-Za-z0-9_-]+/.test(text)).toBe(false);
+        }
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        f.close();
+      }
+    }
+  );
+});
 
 describe('B12 bootstrap credential admission', () => {
   it.each([
