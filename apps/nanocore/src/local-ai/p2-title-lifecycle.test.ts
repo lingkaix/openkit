@@ -363,6 +363,23 @@ describe('local title lifecycle', () => {
     if (pending?.type !== 'user-input-request' || pending.assistantHandoff?.kind !== 'task') {
       throw new Error(`Expected a task handoff, received ${JSON.stringify(pending)}`);
     }
+    const receivingTurnStarted =
+      Promise.withResolvers<Parameters<typeof installation.store.createTurn>>();
+    const allowReceivingTurn = Promise.withResolvers<void>();
+    const createTurn = installation.store.createTurn;
+    // Gate the real handoff writer before its Thread read, instead of adding another metadata writer
+    // that can itself lose a native race and abort the fixture before the title refusal is tested.
+    const receivingTurnWrite = vi
+      .spyOn(installation.store, 'createTurn')
+      .mockImplementation((...args) => {
+        if (args[5]?.executorKind !== 'worker') return createTurn.apply(installation.store, args);
+        receivingTurnStarted.resolve(args);
+        return allowReceivingTurn.promise.then(() => createTurn.apply(installation.store, args));
+      });
+    onTestFinished(() => {
+      allowReceivingTurn.resolve();
+      receivingTurnWrite.mockRestore();
+    });
     const answer = installation.app.request(
       ...operationRequest(
         'question.answer',
@@ -378,21 +395,25 @@ describe('local title lifecycle', () => {
       )
     );
     const held = await installation.peer.held;
-    const confirmed = await answer;
-    expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+    const turnArguments = await receivingTurnStarted.promise;
     const created = installation.store
       .listThreads(installation.workspaceId)
       .filter((thread) => !before.has(thread.id));
     expect(created).toHaveLength(1);
     const receiving = created[0]!;
     expect(receiving).toMatchObject({ parentThreadId: timeline.id });
+    expect(turnArguments.slice(0, 2)).toEqual([installation.workspaceId, receiving.id]);
+    expect(turnArguments[5]).toMatchObject({ status: 'pending', executorKind: 'worker' });
     const publications = holdTitlePublications(receiving.id, 'Schema repair', 1);
     held.release({ content: 'Schema repair' });
     await publications.entered[0]!.promise;
-    // Advance the actual native revision after the title read; preserve its exact automatic name.
-    await installation.store.updateThread(installation.workspaceId, receiving.id, {
-      name: 'Confirm the schema repair',
-    });
+    // The actual receiving-Turn publication advances the revision captured by the held title.
+    allowReceivingTurn.resolve();
+    const confirmed = await answer;
+    expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+    expect(
+      receivingTurnWrite.mock.calls.filter((args) => args[5]?.executorKind === 'worker')
+    ).toHaveLength(1);
     publications.release[0]!.resolve();
     await awaitTerminalTitles(installation);
     expect(await threadName(installation, receiving.id)).toBe('Schema repair');
@@ -419,7 +440,8 @@ describe('local title lifecycle', () => {
       value: { id: receiving.id, name: 'Schema repair' },
     });
     expect(publications.errors).toHaveLength(1);
-    expect(refusals).toEqual(publications.errors);
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toBe(publications.errors[0]);
     expect(refusals[0]).toBeInstanceOf(ControlStoreWorkerError);
     expect(refusals[0]).toMatchObject({ code: 'precondition', commit: 'not-committed' });
     expect(outcomes[0]).toMatchObject({ status: 'rejected', reason: refusals[0] });
