@@ -180,7 +180,7 @@ export function createWorkerEnvironmentActivation(
 
       const response = await runIdempotentCommand({
         command: 'worker_environment.activate',
-        execute: async () => {
+        execute: async (receipt) => {
           const turnIdentity = activationTurnIdentity(context.actor, home, request);
           requireNoPartialActivation(dependencies.store, home, turnIdentity, request);
           requireNoUnrelatedRunningTurn(dependencies.store, home, turnIdentity.turnId);
@@ -360,6 +360,19 @@ export function createWorkerEnvironmentActivation(
             completedAt: artifact.createdAt,
             status: 'completed',
           });
+          if (dependencies.store.getDataRoot() !== null) {
+            const { responseKind, ...originalReceipt } = receipt;
+            await dependencies.store.publishWorkspaceCommandReceipt({
+              ...originalReceipt,
+              command: 'worker_environment.activate',
+              scope: {
+                actorId: context.actor.userId,
+                threadId: home.threadId,
+                workspaceId: home.workspaceId,
+              },
+              response: { kind: 'artifact', id: artifact.id },
+            });
+          }
           return response;
         },
         inflightCommands,

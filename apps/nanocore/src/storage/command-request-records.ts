@@ -270,7 +270,7 @@ export function applyCatalogCommandReceiptInDb(
   writeCommandRequestRecordInDb(db, record);
 }
 
-/** Applies only the two public Workspace commands' original standalone receipt stages. */
+/** Applies the closed public Workspace and environment commands' original standalone receipt stages. */
 export function applyWorkspaceCommandReceiptInDb(
   db: UserDb | WorkspaceDb,
   value: ControlWorkspaceCommandReceiptInput
@@ -291,7 +291,9 @@ export function applyWorkspaceCommandReceiptInDb(
       record.key !== commandRequestKey(record.command, record.requestId, record.scope) ||
       record.expiresAt !== commandRequestExpiresAt(record.createdAt) ||
       (record.command === 'workspace.update' &&
-        (db.scope !== 'workspace' || record.response.id !== db.workspaceId))
+        (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
+      (record.command === 'worker_environment.purge' &&
+        record.response.id !== record.scope.storageRef)
     )
       throw new ControlProductPreconditionError();
     writeCommandRequestRecordInDb(db, record);

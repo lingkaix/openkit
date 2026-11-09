@@ -216,7 +216,7 @@ export function createWorkerEnvironmentOperations(
       requireOperationAuthority(dependencies.coreDb, context, true);
       const response = await runIdempotentCommand({
         command: 'worker_environment.purge',
-        execute: async () => {
+        execute: async (receipt) => {
           const binding = requireAuthorizedBinding(
             dependencies.coreDb,
             context.workspaceId,
@@ -245,7 +245,21 @@ export function createWorkerEnvironmentOperations(
             outcome,
             storageRef: pending.storageRef,
           });
-          return purgeResponse(input.requestId, settled, outcome);
+          const response = purgeResponse(input.requestId, settled, outcome);
+          if (dependencies.store.getDataRoot() !== null) {
+            const { responseKind, ...originalReceipt } = receipt;
+            await dependencies.store.publishWorkspaceCommandReceipt({
+              ...originalReceipt,
+              command: 'worker_environment.purge',
+              scope: {
+                actorId: context.actor.userId,
+                storageRef: input.storageRef,
+                workspaceId: context.workspaceId,
+              },
+              response: { kind: 'worker_environment', id: response.storageRef },
+            });
+          }
+          return response;
         },
         inflightCommands,
         input,

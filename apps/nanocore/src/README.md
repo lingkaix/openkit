@@ -232,3 +232,5 @@ Live quarantine retirement and source MOVE preparation/report stages now use the
 Live User Memory and Server Knowledge initialization, Source capture and pre-inference receipts now await the existing scoped native SQL stages. Their original Audit, Git, schema, receipt and expiry-maintenance commits remain separate; missing acknowledgement prevents continuation without repeating effects.
 
 Workspace command receipts now await the two original native stages after their unchanged product and membership effects. Create retains its User owner, update its Workspace owner; replay reads without Main pruning, and a lost acknowledgement never reposts the product.
+
+Worker environment preparation/recovery, activation and purge reuse the existing closed Workspace command receipt stage after acknowledged product and host work. Insertion and later expiry maintenance retain separate native FULL acknowledgements; neither stage repeats an external effect.

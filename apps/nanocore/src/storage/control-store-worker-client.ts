@@ -2718,7 +2718,7 @@ class ControlStoreWorkerClient {
     return this.open({ database, path, create: opening.command.create, initialize: 'user' });
   }
 
-  /** Retains the two original public Workspace commands' separate receipt and maintenance FULL stages. */
+  /** Retains the closed public Workspace and environment commands' separate receipt and maintenance FULL stages. */
   async recordWorkspaceCommandReceipt(
     dataRoot: string,
     receipt: WorkspaceCommandReceipt
@@ -2726,7 +2726,12 @@ class ControlStoreWorkerClient {
     const input = ControlWorkspaceCommandReceiptInputSchema.parse(
       receipt.command === 'workspace.create'
         ? { action: 'create-receipt', userId: receipt.scope.userId, receipt }
-        : { action: 'update-receipt', workspaceId: receipt.scope.workspaceId, receipt }
+        : {
+            action:
+              receipt.command === 'workspace.update' ? 'update-receipt' : 'environment-receipt',
+            workspaceId: receipt.scope.workspaceId,
+            receipt,
+          }
     );
     let database: string;
     if (input.action === 'create-receipt') {
@@ -2737,7 +2742,7 @@ class ControlStoreWorkerClient {
       const create =
         this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false });
       await this.open({ database, path, create, initialize: 'user' });
-    } else if (input.action === 'update-receipt') {
+    } else if (input.action === 'update-receipt' || input.action === 'environment-receipt') {
       const scope = nativeProductScope(dataRoot, {
         kind: 'workspace',
         workspaceId: input.workspaceId,
@@ -2763,7 +2768,14 @@ class ControlStoreWorkerClient {
       input:
         input.action === 'create-receipt'
           ? { action: 'create-maintenance', userId: input.userId, referenceTime }
-          : { action: 'update-maintenance', workspaceId: input.workspaceId, referenceTime },
+          : {
+              action:
+                input.action === 'update-receipt'
+                  ? 'update-maintenance'
+                  : 'environment-maintenance',
+              workspaceId: input.workspaceId,
+              referenceTime,
+            },
     });
     if (maintenance.operation !== 'workspace-command-receipt' || maintenance.result !== null)
       throw new ControlStoreWorkerError('invalid-request', 'unknown');

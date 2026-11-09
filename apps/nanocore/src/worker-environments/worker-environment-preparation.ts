@@ -260,11 +260,25 @@ export function createWorkerEnvironmentPreparation(
 
       const response = await runIdempotentCommand({
         command: 'worker_environment.prepare',
-        execute: async () => {
+        execute: async (receipt) => {
           dependencies.requireCurrentAdministrator(context.actor);
-          return request.mode === 'prepare'
+          const response = await (request.mode === 'prepare'
             ? executeInitialPreparation(context, request, workspaceId)
-            : executeRecovery(context, request, workspaceId);
+            : executeRecovery(context, request, workspaceId));
+          if (dependencies.store.getDataRoot() !== null) {
+            const { responseKind, ...originalReceipt } = receipt;
+            await dependencies.store.publishWorkspaceCommandReceipt({
+              ...originalReceipt,
+              command: 'worker_environment.prepare',
+              scope: {
+                actorId: context.actor.userId,
+                threadId: request.administrationThreadId,
+                workspaceId,
+              },
+              response: { kind: 'artifact', id: response.resolvedCandidate.artifactId },
+            });
+          }
+          return response;
         },
         inflightCommands,
         input: request,
