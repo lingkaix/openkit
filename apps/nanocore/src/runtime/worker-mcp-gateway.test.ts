@@ -17,6 +17,247 @@ import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
 import { createDefaultWorkerMcpGateway, MCP_RESULT_MAX_BYTES } from './worker-mcp-gateway.js';
 
 describe('worker MCP gateway', () => {
+  it('measures and reuses an authenticated 127KiB catalog without re-listing each effect', async () => {
+    const upstream = await createMcpHttpStub({
+      listChanged: true,
+      catalogDescription: 'x'.repeat(127 * 1024),
+      beforeList: async () => new Promise((resolve) => setTimeout(resolve, 25)),
+    });
+    const { coreDb, gateway } = await createAuditedGateway();
+    const input = {
+      credentials: { bearer: 'pool-benchmark-fixture' },
+      credentialGrantIds: ['pool-grant-fixture'],
+      recheckAdmission: vi.fn(),
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    const listMs: number[] = [];
+    try {
+      for (let index = 0; index < 20; index++) {
+        const start = performance.now();
+        await gateway.listTools(input);
+        listMs.push(performance.now() - start);
+        await gateway.callTool({
+          ...input,
+          arguments: { message: `effect-${index}` },
+          toolName: 'echo',
+        });
+      }
+      const sorted = [...listMs].sort((a, b) => a - b);
+      const counts = {
+        lists: upstream.observed.filter((request) => request.endsWith('|tools/list')).length,
+        initializes: upstream.observed.filter((request) => request.endsWith('|initialize')).length,
+        deletes: upstream.observed.filter((request) => request.endsWith('|DELETE|')).length,
+        effects: upstream.observed.filter((request) => request.endsWith('|tools/call')).length,
+      };
+      console.info(
+        'mcp-list-phase-loopback',
+        JSON.stringify({
+          samples: 20,
+          catalogBytes: 127 * 1024,
+          p50Ms: sorted[9],
+          p95Ms: sorted[18],
+          ...counts,
+        })
+      );
+      expect(counts).toEqual({ lists: 1, initializes: 1, deletes: 0, effects: 20 });
+      expect(input.recheckAdmission.mock.calls.length).toBeGreaterThanOrEqual(40);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([undefined, '2026-07-28'] as const)(
+    'invalidates its session catalog on real notifications in era %s',
+    async (protocolEra) => {
+      const upstream = await createMcpHttpStub({
+        listChanged: true,
+        catalogDescription: 'A',
+        catalogTtlMs: 10_000,
+        ...(protocolEra ? { protocolEra } : {}),
+      });
+      const { coreDb, gateway } = await createAuditedGateway();
+      const input = {
+        credentials: { bearer: 'notification-fixture' },
+        credentialGrantIds: ['notification-grant'],
+        server: httpTestServer(upstream.url, 2_000),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        recheckAdmission: vi.fn(),
+      };
+      try {
+        expect((await gateway.listTools(input)).tools[0]?.inputSchema.description).toBe('A');
+        const hit = await gateway.listTools(input);
+        expect(hit.tools[0]?.inputSchema.description).toBe('A');
+        expect(hit).toMatchObject({ credentialsMaterialized: false });
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
+          1
+        );
+        for (const description of ['B', 'A']) {
+          await upstream.setCatalogDescription(description);
+          await vi.waitFor(async () =>
+            expect((await gateway.listTools(input)).tools[0]?.inputSchema.description).toBe(
+              description
+            )
+          );
+        }
+        expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
+          3
+        );
+      } finally {
+        await gateway.close();
+        await upstream.close();
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it('honors an explicit zero TTL even when list notifications are supported', async () => {
+    const upstream = await createMcpHttpStub({
+      listChanged: true,
+      catalogTtlMs: 0,
+      catalogDescription: 'A',
+    });
+    const { coreDb, gateway } = await createAuditedGateway();
+    const input = {
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    try {
+      await gateway.listTools(input);
+      await upstream.setCatalogDescription('B', false);
+      expect((await gateway.listTools(input)).tools[0]?.inputSchema.description).toBe('B');
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
+        2
+      );
+    } finally {
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refreshes non-notifying catalogs on every invocation despite an upstream TTL hint', async () => {
+    const upstream = await createMcpHttpStub({ catalogTtlMs: 600_000, catalogDescription: 'A' });
+    const { coreDb, gateway } = await createAuditedGateway();
+    const input = {
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    try {
+      await gateway.listTools(input);
+      await upstream.setCatalogDescription('B', false);
+      expect((await gateway.listTools(input)).tools[0]?.inputSchema.description).toBe('B');
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
+        2
+      );
+    } finally {
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('bounds a notifying catalog age even when the server supplies a long TTL', async () => {
+    const upstream = await createMcpHttpStub({
+      listChanged: true,
+      catalogTtlMs: 600_000,
+      catalogDescription: 'A',
+    });
+    const { coreDb, gateway } = await createAuditedGateway();
+    const input = {
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    let now = Date.now();
+    const date = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      await gateway.listTools(input);
+      await upstream.setCatalogDescription('B', false);
+      expect((await gateway.listTools(input)).tools[0]?.inputSchema.description).toBe('A');
+      now += 10_001;
+      expect((await gateway.listTools(input)).tools[0]?.inputSchema.description).toBe('B');
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/list'))).toHaveLength(
+        2
+      );
+    } finally {
+      date.mockRestore();
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('reuses authenticated HTTP across idle ticks without background credential contact, then expires it', async () => {
+    const upstream = await createMcpHttpStub({ listChanged: true });
+    const { coreDb, gateway } = await createAuditedGateway();
+    const input = {
+      credentials: { bearer: 'idle-fixture' },
+      credentialGrantIds: ['idle-grant'],
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    vi.useFakeTimers({ toFake: ['clearTimeout', 'setTimeout'] });
+    try {
+      await gateway.listTools(input);
+      const contacted = [...upstream.observed];
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(upstream.observed).toEqual(contacted);
+      expect(gateway.getServerHealth(input)).toBe('ready');
+      await gateway.callTool({ ...input, arguments: { message: 'reuse' }, toolName: 'echo' });
+      expect(upstream.observed.filter((request) => request.endsWith('|initialize'))).toHaveLength(
+        1
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+      await vi.waitFor(() => expect(gateway.getServerHealth(input)).toBe('inactive'));
+      expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('rechecks admission before a catalog hit and partitions pooled material by exact grants', async () => {
+    const upstream = await createMcpHttpStub({ listChanged: true });
+    const { coreDb, gateway } = await createAuditedGateway();
+    const admission = vi.fn();
+    const input = {
+      credentials: { bearer: 'same-material-fixture' },
+      credentialGrantIds: ['grant-A'],
+      recheckAdmission: admission,
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    try {
+      await gateway.listTools(input);
+      await gateway.listTools({ ...input, credentialGrantIds: ['grant-B'] });
+      expect(upstream.observed.filter((request) => request.endsWith('|initialize'))).toHaveLength(
+        2
+      );
+      await gateway.closeCredentialGrants!(['grant-A']);
+      const before = upstream.observed.length;
+      admission.mockImplementationOnce(() => {
+        throw new Error('current admission revoked');
+      });
+      await expect(
+        gateway.listTools({ ...input, credentialGrantIds: ['grant-B'] })
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+      expect(
+        upstream.observed
+          .slice(before)
+          .some((request) => request.endsWith('|tools/list') || request.endsWith('|tools/call'))
+      ).toBe(false);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('preserves the real upstream HTTP status without retaining its body', async () => {
     const upstream = await createMcpHttpStub({
       httpFailure: { method: 'tools/call', status: 503 },
@@ -69,15 +310,16 @@ describe('worker MCP gateway', () => {
     const upstream = await createMcpHttpStub({
       httpFailure: { method: 'initialize', status: 429 },
     });
-    const gateway = createDefaultWorkerMcpGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await expect(
         gateway.listTools({
+          credentials: { bearer: 'rate-limit-fixture' },
           server: httpTestServer(upstream.url, 2_000),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
-      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable', upstreamHttpStatus: 429 });
       expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
         severityText: 'WARN',
         body: 'MCP upstream rate limit.',
@@ -92,6 +334,7 @@ describe('worker MCP gateway', () => {
       log.mockRestore();
       await gateway.close();
       await upstream.close();
+      coreDb.sqlite.close();
     }
   });
 
@@ -363,7 +606,7 @@ describe('worker MCP gateway', () => {
       ).toBe(true);
       expect(
         gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
-      ).toBe('inactive');
+      ).toBe('ready');
     } finally {
       await gateway.close();
       await shutdownControlStoreWorkerClient();
@@ -1026,7 +1269,7 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it('closes a bearer HTTP session instead of health-pinging it', async () => {
+  it('closes a pooled bearer HTTP session on explicit shutdown without health-pinging it', async () => {
     const upstream = await createMcpHttpStub();
     const { coreDb, gateway } = await createAuditedGateway();
     const input = {
@@ -1037,6 +1280,7 @@ describe('worker MCP gateway', () => {
 
     try {
       await gateway.listTools(input);
+      await gateway.closeServer(input);
       await vi.waitFor(() => expect(gateway.getServerHealth(input)).toBe('inactive'));
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
       const workspaceDb = openWorkspaceDb(
@@ -1078,11 +1322,9 @@ describe('worker MCP gateway', () => {
     try {
       await expect(
         gateway.callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
-      ).rejects.toMatchObject({
-        code: 'recovery_required',
-        credentialsMaterialized: true,
-        upstreamEffect: 'contacted',
-      });
+      ).resolves.toMatchObject({ content: [{ text: 'safe' }] });
+      // HTTP pooling moves cleanup to the explicit lifecycle boundary; its retry fence is unchanged.
+      await expect(gateway.closeServer(input)).rejects.toThrow('injected teardown failure');
       const toolCalls = upstream.observed.filter((request) => request.endsWith('|tools/call'));
       await expect(
         gateway.callTool({ ...input, arguments: { message: 'retry' }, toolName: 'echo' })
@@ -1129,6 +1371,7 @@ describe('worker MCP gateway', () => {
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const callOutcome = gateway
       .callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
+      .then(() => gateway.closeServer(input))
       .then(
         () => null,
         (error: unknown) => error
@@ -1146,7 +1389,7 @@ describe('worker MCP gateway', () => {
         }),
       ]);
       clearTimeout(deadlineTimer);
-      expect(outcome).toMatchObject({ code: 'recovery_required' });
+      expect(outcome).toMatchObject({ name: 'TimeoutError' });
       expect(upstreamOptions.hangDelete).toBe(true);
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
       const initializations = upstream.observed.filter((request) =>
@@ -1556,6 +1799,7 @@ describe('worker MCP gateway', () => {
       await gateway.closeServerIfIdle(input);
       expect(upstream.observed.some((request) => request.endsWith('|DELETE|'))).toBe(false);
       await expect(call).resolves.toMatchObject({ content: [{ text: 'delayed' }] });
+      await gateway.closeServerIfIdle(input);
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
     } finally {
       await gateway.close();
@@ -1855,7 +2099,7 @@ describe('worker MCP gateway', () => {
       ).resolves.toMatchObject({ content: [{ text: 'safe', type: 'text' }] });
       expect(
         gateway.getServerHealth({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
-      ).toBe('inactive');
+      ).toBe('ready');
       expect(
         upstream.observed.some((request) => request.startsWith(`${credential}|query-canary|`))
       ).toBe(true);

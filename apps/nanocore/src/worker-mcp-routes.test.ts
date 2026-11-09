@@ -923,10 +923,19 @@ describe('worker MCP routes', () => {
         const cleanupHold = new Promise<void>((resolve) => {
           releaseCleanup = resolve;
         });
-        vi.mocked(gateway.closeServerIfIdle).mockImplementationOnce(async () => {
-          enteredCleanup();
-          await cleanupHold;
-        });
+        const nativeWriter = getControlStoreWorkerClient();
+        const publishSchema = nativeWriter.workspaceCapability.bind(nativeWriter);
+        // Hold the real schema ACK: HTTP pooling has no per-discovery teardown await.
+        const schemaPublication = vi
+          .spyOn(nativeWriter, 'workspaceCapability')
+          .mockImplementation(async (db, command, options) => {
+            const result = await publishSchema(db, command, options);
+            if (command.kind === 'mcp-schema') {
+              enteredCleanup();
+              await cleanupHold;
+            }
+            return result;
+          });
         const firstApprovalDiscovery = approvalClient.listTools();
         try {
           await cleanupEntered;
@@ -936,6 +945,7 @@ describe('worker MCP routes', () => {
           expect.soft(currentDiscovery.tools).toEqual([]);
         } finally {
           releaseCleanup();
+          schemaPublication.mockRestore();
           conditions = [];
           await admit();
         }
@@ -5464,6 +5474,8 @@ describe('worker MCP routes', () => {
   it.each([
     ['raw', 'target'],
     ['bearer', 'target'],
+    ['raw', 'cached-pool'],
+    ['bearer', 'cached-pool'],
     ['raw', 'imported-history'],
     ['bearer', 'imported-history'],
     ['raw', 'vault-denied-call'],
@@ -5473,7 +5485,12 @@ describe('worker MCP routes', () => {
     'enforces HTTP %s grant issuance %s and explicit replacement binding',
     async (presentation, issuance) => {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
-      const upstreamOptions: { credentialListEcho?: string } = {};
+      const upstreamOptions: {
+        credentialListEcho?: string;
+        credentialEcho?: string;
+        listChanged?: boolean;
+        delayedResult?: Promise<void>;
+      } = { listChanged: issuance === 'cached-pool' };
       const upstream = await createMcpHttpStub(upstreamOptions);
       const coreDb = openCopiedMcpCore(dataRoot);
       ensureLocalUser(coreDb);
@@ -5760,6 +5777,82 @@ describe('worker MCP routes', () => {
         expect(
           coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get()
         ).toEqual({ count: 1 });
+        if (issuance === 'cached-pool') {
+          const held = Promise.withResolvers<void>();
+          upstreamOptions.delayedResult = held.promise;
+          const receiptCount = () =>
+            coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_receipts').get();
+          const next = client.callTool({ arguments: { message: 'delayed' }, name: 'echo' });
+          try {
+            await vi.waitFor(() =>
+              expect(
+                upstream.observed.filter((request) => request.endsWith('|tools/call'))
+              ).toHaveLength(toolCallsBeforeCall + 2)
+            );
+            // A catalog hit has sent no new credential bytes. The held Tool has not acknowledged delivery yet.
+            expect(receiptCount()).toEqual({ count: 1 });
+            expect(
+              coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
+            ).toEqual({ count: 2 });
+          } finally {
+            held.resolve();
+          }
+          await expect(next).resolves.toMatchObject({ content: [{ text: 'delayed' }] });
+          expect(receiptCount()).toEqual({ count: 2 });
+          expect(
+            upstream.observed.filter((request) => request.endsWith('|tools/list'))
+          ).toHaveLength(1);
+          expect(
+            upstream.observed.filter((request) => request.endsWith('|initialize'))
+          ).toHaveLength(1);
+          expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(
+            0
+          );
+          // A refused known response still proves delivery, while no result or credential is disclosed.
+          upstreamOptions.credentialEcho = vaultCanary;
+          await expect(
+            client.callTool({ arguments: { message: 'leak' }, name: 'echo' })
+          ).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
+          expect(receiptCount()).toEqual({ count: 3 });
+          await expect(
+            client.callTool({ arguments: { message: 'reconnect' }, name: 'echo' })
+          ).resolves.toMatchObject({ content: [{ text: 'reconnect' }] });
+          expect(receiptCount()).toEqual({ count: 4 });
+          // A cached call whose receipt fails must withhold the acknowledged remote result.
+          const effectsBeforeReceiptFailure = upstream.observed.filter((request) =>
+            request.endsWith('|tools/call')
+          ).length;
+          coreDb.sqlite.exec(
+            "CREATE TRIGGER reject_cached_mcp_receipt BEFORE INSERT ON vault_injection_receipts BEGIN SELECT RAISE(ABORT, 'injected cached receipt failure'); END"
+          );
+          try {
+            await expect(
+              client.callTool({ arguments: { message: 'receipt-failure' }, name: 'echo' })
+            ).rejects.toMatchObject({ data: { code: 'recovery_required' } });
+          } finally {
+            coreDb.sqlite.exec('DROP TRIGGER reject_cached_mcp_receipt');
+          }
+          expect(
+            upstream.observed.filter((request) => request.endsWith('|tools/call'))
+          ).toHaveLength(effectsBeforeReceiptFailure + 1);
+          expect(receiptCount()).toEqual({ count: 4 });
+          await expect(
+            client.callTool({ arguments: { message: 'current-pool' }, name: 'echo' })
+          ).resolves.toMatchObject({ content: [{ text: 'current-pool' }] });
+          // Every cached invocation still checks the original grant before any upstream exchange.
+          await revokeVaultGrant(coreDb, { grantId: grant.grantId });
+          const before = upstream.observed.length;
+          await expect(
+            client.callTool({ arguments: { message: 'revoked' }, name: 'echo' })
+          ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+          expect(
+            upstream.observed
+              .slice(before)
+              .some((request) => request.endsWith('|tools/call') || request.endsWith('|tools/list'))
+          ).toBe(false);
+          expect(receiptCount()).toEqual({ count: 5 });
+          return;
+        }
         const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
         try {
@@ -5885,7 +5978,7 @@ describe('worker MCP routes', () => {
             server: oldResolved,
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           })
-        ).toBe('inactive');
+        ).toBe('ready');
 
         const toolCallsBeforeMalformedExpiry = upstream.observed.filter((request) =>
           request.endsWith('|tools/call')
@@ -6071,7 +6164,13 @@ describe('worker MCP routes', () => {
             ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
             expect(disabled?.changed).toBe(true);
             expect(resolve).not.toHaveBeenCalled();
-            expect(upstream.observed).toEqual(upstreamBeforeHold);
+            expect(upstream.observed.slice(0, upstreamBeforeHold.length)).toEqual(
+              upstreamBeforeHold
+            );
+            // Revoked authority closes the existing pool; only that DELETE may follow the refusal.
+            expect(upstream.observed.slice(upstreamBeforeHold.length)).toEqual([
+              `${vaultCanary}||DELETE|`,
+            ]);
           } finally {
             resolve.mockRestore();
             publication.mockRestore();

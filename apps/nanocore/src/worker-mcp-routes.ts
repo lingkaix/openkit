@@ -950,7 +950,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 signal: cancellation.signal,
                 workspaceDb: workspaceDb,
               });
-              if (observed.credentials) {
+              if (observed.credentials && resolved.transport.kind === 'stdio') {
                 try {
                   await input.workerMcpGateway.closeServerIfIdle({
                     server: resolved,
@@ -1480,6 +1480,28 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     let publishTerminalItem = true;
     let terminalResult: Awaited<ReturnType<WorkerMcpGateway['callTool']>> | null = null;
     let observedCredentials: WorkerMcpGatewayCredentials | undefined;
+    let pendingInjections: readonly PendingMcpVaultInjection[] | null = null;
+    // A catalog hit proves no new delivery. Complete the original receipt only after a real exchange.
+    const completePendingInjections = async () => {
+      const injections = pendingInjections;
+      pendingInjections = null;
+      if (!injections?.length) return;
+      try {
+        await completeMcpVaultInjections(input.input.coreDb!, call, injections);
+      } catch {
+        await input.input.workerMcpGateway
+          .closeServer({
+            server: input.resolved,
+            workspaceId: input.environmentPackage.scope.workspaceId,
+          })
+          .catch(() => undefined);
+        throw new WorkerControlGatewayError(
+          'recovery_required',
+          'MCP credential receipt recovery is required.',
+          409
+        );
+      }
+    };
 
     /** Publishes once before successful disclosure or during the original failure closeout. */
     const publishTerminal = async (publishedCall: StartedCapabilityCall) => {
@@ -1704,6 +1726,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         workspaceDb: input.workspaceDb,
       });
       observedCredentials = observed.credentials;
+      pendingInjections = observed.injectionsCompleted ? null : observed.injections;
       assertValidMcpToolArguments(observed.snapshotTools, input.toolName, input.arguments);
       if (!hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true)) {
         await recordMcpToolUseDecision(input, call, 'deny', null);
@@ -1776,6 +1799,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       });
       observedCredentials = undefined;
       upstreamEffect = 'contacted';
+      await completePendingInjections();
       usageAttempted = true;
       try {
         await finishMcpToolCall(call, input.workspaceDb, { status: 'succeeded' });
@@ -1848,6 +1872,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         cancelled = error.cancelled;
       }
       let failure = error;
+      if (error instanceof WorkerMcpGatewayCallError && error.credentialsMaterialized) {
+        try {
+          await completePendingInjections();
+        } catch (receiptError) {
+          failure = receiptError;
+        }
+      }
       if (observedCredentials) {
         try {
           await input.input.workerMcpGateway.closeServerIfIdle({
@@ -2010,7 +2041,7 @@ async function currentMcpEscalationSnapshot(input: WorkerMcpToolCallInput) {
         input: input.input,
         operation: 'mcp.list-tools',
       });
-      if (observed.credentials)
+      if (observed.credentials && input.resolved.transport.kind === 'stdio')
         await input.input.workerMcpGateway.closeServerIfIdle({
           server: input.resolved,
           workspaceId: input.environmentPackage.scope.workspaceId,
@@ -2626,6 +2657,7 @@ async function observeWorkerMcpTools(input: {
 }): Promise<{
   credentials?: WorkerMcpGatewayCredentials;
   injections: readonly PendingMcpVaultInjection[];
+  injectionsCompleted: boolean;
   snapshotId: string;
   snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
 }> {
@@ -2735,7 +2767,8 @@ async function observeWorkerMcpTools(input: {
     }
     throw error;
   }
-  await completeInjections();
+  const injectionsCompleted = live.credentialsMaterialized !== false;
+  if (injectionsCompleted) await completeInjections();
   let snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
   try {
     snapshotTools = live.tools
@@ -2817,9 +2850,9 @@ async function observeWorkerMcpTools(input: {
   const snapshotId = captured.schemaSnapshotId;
   const fixed = bound ?? readTurnMcpToolSchemaSnapshot(input);
   snapshotTools = fixed?.tools ?? snapshotTools;
-  if (resolvedCredentials.credentials) {
+  if (resolvedCredentials.credentials && input.resolved.transport.kind === 'stdio') {
     try {
-      // Native schema publication can outlive the credential session's idle tick.
+      // Credential-bearing processes retain immediate cleanup after schema publication.
       await input.input.workerMcpGateway.closeServerIfIdle(gatewayInput);
     } catch {
       throw new WorkerControlGatewayError(
@@ -2832,6 +2865,7 @@ async function observeWorkerMcpTools(input: {
   return {
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
     injections: resolvedCredentials.injections,
+    injectionsCompleted,
     snapshotId,
     snapshotTools,
   };

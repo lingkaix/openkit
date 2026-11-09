@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   Client,
+  InMemoryResponseCacheStore,
   ProtocolError,
   SdkError,
   SdkErrorCode,
@@ -52,6 +53,7 @@ export const MCP_RESULT_TOO_LARGE_MESSAGE =
 const MCP_PROTOCOL_RESPONSE_MAX_BYTES = 2 * MCP_RESULT_MAX_BYTES;
 const MCP_HEALTH_CHECK_MS = 15_000;
 const MCP_SESSION_IDLE_MS = 60_000;
+const MCP_CATALOG_CACHE_MS = 10_000;
 /** Page cap for one auto-aggregated tools/list. Matches the SDK default and fails closed without a partial list. */
 const MCP_TOOL_LIST_MAX_PAGES = 64;
 const MCP_STDIO_SUPERVISOR =
@@ -118,6 +120,8 @@ export interface WorkerMcpGatewayCredentials {
 
 /** Product-safe live MCP tools captured from one initialized server. */
 export interface WorkerMcpLiveTools {
+  /** Whether this credentialed invocation exchanged upstream bytes, rather than serving a catalog hit. */
+  readonly credentialsMaterialized?: boolean;
   /** Product-safe server-reported version when present. */
   readonly serverVersion: string | null;
   /** Live MCP tool declarations. */
@@ -190,11 +194,27 @@ export function createDefaultWorkerMcpGateway(
   return new DefaultWorkerMcpGateway(coreDb, previewAudit);
 }
 
+/** Prevents an upstream TTL hint from pinning a stale catalog beyond the Gateway's age bound. */
+class BoundedMcpCatalogCache extends InMemoryResponseCacheStore {
+  public override set(
+    key: Parameters<InMemoryResponseCacheStore['set']>[0],
+    entry: Parameters<InMemoryResponseCacheStore['set']>[1]
+  ): number {
+    return super.set(key, {
+      ...entry,
+      expiresAt: Math.min(entry.expiresAt ?? 0, Date.now() + MCP_CATALOG_CACHE_MS),
+    });
+  }
+}
+
 /** Process-local MCP SDK client supervisor keyed by Workspace catalog identity. */
 class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   private closed = false;
   private readonly activeUses = new Map<string, number>();
-  private readonly toolRequests = new WeakMap<AbortSignal, { requestEntered: boolean }>();
+  private readonly requests = new WeakMap<
+    AbortSignal,
+    { method: 'tools/list' | 'tools/call'; requestEntered: boolean }
+  >();
   private readonly sessions = new Map<string, Promise<WorkerMcpSession>>();
   private readonly sessionInputs = new Map<string, WorkerMcpGatewayServerInput>();
   // The existing health owner keeps only its projection and one content-free publication tail.
@@ -234,6 +254,8 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     const operationInput = { ...input, signal: cancellation.signal };
     const key = workerMcpSessionKey(operationInput);
     const pending = this.session(operationInput);
+    const requestEvidence = { method: 'tools/list' as const, requestEntered: false };
+    this.requests.set(cancellation.signal, requestEvidence);
     let connected = false;
     try {
       const session = await pending;
@@ -257,7 +279,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       try {
         page = await session.client.listTools(undefined, {
           ...requestOptions(input.server.timeoutMs, cancellation.signal),
-          cacheMode: 'bypass',
+          cacheMode: session.client.getServerCapabilities()?.tools?.listChanged ? 'use' : 'refresh',
         });
       } catch (error) {
         if (error === cancellationReason) {
@@ -278,7 +300,8 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
               normalized.status,
               mcpUpstreamWasContacted(error) ? 'contacted' : 'unknown',
               false,
-              true
+              true,
+              normalized instanceof WorkerMcpGatewayCallError ? normalized : {}
             )
           : normalized;
       }
@@ -305,6 +328,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         );
       }
       const live = {
+        ...(hasCredentials(input)
+          ? { credentialsMaterialized: requestEvidence.requestEntered }
+          : {}),
         serverVersion: session.client.getServerVersion()?.version ?? null,
         tools: page.tools,
       };
@@ -331,6 +357,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       }
       throw normalizeMcpListError(error);
     } finally {
+      this.requests.delete(cancellation.signal);
       try {
         await this.release(key, pending);
       } finally {
@@ -378,8 +405,8 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       throw normalizeMcpCallError(error, 'not-contacted', error === cancellationReason);
     }
 
-    const requestEvidence = { requestEntered: false };
-    this.toolRequests.set(cancellation.signal, requestEvidence);
+    const requestEvidence = { method: 'tools/call' as const, requestEntered: false };
+    this.requests.set(cancellation.signal, requestEvidence);
     try {
       try {
         const admission = input.recheckAdmission?.();
@@ -428,22 +455,36 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
             : 'not-contacted',
           error === cancellationReason
         );
+        const delivered = hasCredentials(input) && normalized.upstreamEffect === 'contacted';
+        const failure = delivered
+          ? new WorkerMcpGatewayCallError(
+              normalized.code,
+              normalized.message,
+              normalized.status,
+              normalized.upstreamEffect,
+              normalized.cancelled,
+              true,
+              normalized
+            )
+          : normalized;
         if (this.sessions.get(key) === pending) {
           await this.transition(input, 'degraded');
           try {
             await this.discard(key, undefined, pending);
           } catch {
-            throw cleanupRecoveryError(normalized, normalized.upstreamEffect, input);
+            throw cleanupRecoveryError(failure, failure.upstreamEffect, input);
           }
         }
-        throw normalized;
+        throw failure;
       }
       if (this.sessions.get(key) !== pending || this.teardownRequired.has(key)) {
         throw new WorkerMcpGatewayCallError(
           'mcp-call-failed',
           'MCP tool call completed after its session closed.',
           502,
-          'contacted'
+          'contacted',
+          false,
+          hasCredentials(input)
         );
       }
       const resultBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
@@ -454,7 +495,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           413,
           'contacted',
           false,
-          false,
+          hasCredentials(input),
           { refusedResultBytes: resultBytes }
         );
       }
@@ -481,12 +522,14 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           'mcp-call-failed',
           'MCP tool call failed.',
           502,
-          'contacted'
+          'contacted',
+          false,
+          hasCredentials(input)
         );
       }
       return result;
     } finally {
-      this.toolRequests.delete(cancellation.signal);
+      this.requests.delete(cancellation.signal);
       try {
         await this.release(key, pending, true);
       } finally {
@@ -627,11 +670,11 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   }
 
   /**
-   * Proves no target contact when the SDK rejects a cached output schema before request entry.
-   * Entry alone preserves the existing contacted/unknown classification; it is not send proof.
+   * Separates cached catalog reads from actual list exchanges and proves pre-request Tool refusal.
+   * Entry alone preserves the existing Tool contacted/unknown classification; it is not send proof.
    */
-  private observeToolRequestEntry(client: Client): void {
-    const toolRequests = this.toolRequests;
+  private observeRequestEntry(client: Client): void {
+    const requests = this.requests;
     // A Proxy preserves both public overloads, the receiver and the original Promise/error.
     client.request = new Proxy(client.request, {
       apply(target, receiver, args: unknown[]) {
@@ -641,14 +684,14 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           typeof request === 'object' &&
           request !== null &&
           'method' in request &&
-          request.method === 'tools/call' &&
+          (request.method === 'tools/call' || request.method === 'tools/list') &&
           typeof options === 'object' &&
           options !== null &&
           'signal' in options &&
           options.signal instanceof AbortSignal
         ) {
-          const evidence = toolRequests.get(options.signal);
-          if (evidence) evidence.requestEntered = true;
+          const evidence = requests.get(options.signal);
+          if (evidence?.method === request.method) evidence.requestEntered = true;
         }
         return Reflect.apply(target, receiver, args);
       },
@@ -687,9 +730,15 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     }
     const client = new Client(
       { name: 'openkit-nanocore', version: '1.0.0' },
-      { listMaxPages: MCP_TOOL_LIST_MAX_PAGES, versionNegotiation: { mode: 'auto' } }
+      {
+        listMaxPages: MCP_TOOL_LIST_MAX_PAGES,
+        versionNegotiation: { mode: 'auto' },
+        defaultCacheTtlMs: MCP_CATALOG_CACHE_MS,
+        responseCacheStore: new BoundedMcpCatalogCache(),
+        listChanged: { tools: { autoRefresh: false, debounceMs: 0, onChanged: () => undefined } },
+      }
     );
-    this.observeToolRequestEntry(client);
+    this.observeRequestEntry(client);
     let transportClosed = false;
     client.onclose = () => {
       transportClosed = true;
@@ -807,7 +856,8 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           normalized.status,
           mcpUpstreamWasContacted(error) ? 'contacted' : 'unknown',
           cancelled,
-          true
+          true,
+          normalized instanceof WorkerMcpGatewayCallError ? normalized : {}
         );
       }
       throw error;
@@ -891,6 +941,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     pending: Promise<WorkerMcpSession>,
     client: Client
   ): void {
+    if (hasCredentials(input)) return;
     const previous = this.healthTimers.get(key);
     if (previous) clearTimeout(previous);
     const timer = setTimeout(() => {
@@ -902,7 +953,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     this.healthTimers.set(key, timer);
   }
 
-  /** Releases one active operation and bounds credential sessions to the current request tick. */
+  /** Reuses idle HTTP clients; credential-bearing stdio processes retain immediate cleanup. */
   private async release(
     key: string,
     pending: Promise<WorkerMcpSession>,
@@ -917,7 +968,12 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     this.activeUses.delete(key);
     if (this.teardownRequired.has(key)) return;
     const input = this.sessionInputs.get(key);
-    if (input && hasCredentials(input) && closeCredentialsNow) {
+    if (
+      input &&
+      hasCredentials(input) &&
+      input.server.transport.kind === 'stdio' &&
+      closeCredentialsNow
+    ) {
       try {
         await this.discard(key, 'inactive', pending);
       } catch (error) {
@@ -932,7 +988,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           if (input) await this.transition(input, 'failed');
         });
       },
-      input && hasCredentials(input) ? 0 : MCP_SESSION_IDLE_MS
+      input && hasCredentials(input) && input.server.transport.kind === 'stdio'
+        ? 0
+        : MCP_SESSION_IDLE_MS
     );
     timer.unref();
     this.idleTimers.set(key, timer);
@@ -1107,7 +1165,9 @@ function deliverMcpSignal(pid: number, signal: NodeJS.Signals | 0): McpSignalDel
 /** Builds the in-memory identity for one exact catalog and credential selection. */
 function workerMcpSessionKey(input: WorkerMcpGatewayServerInput): string {
   const credentialDigest = createHash('sha256')
-    .update(JSON.stringify(input.credentials ?? {}))
+    .update(
+      JSON.stringify([input.credentials ?? {}, [...new Set(input.credentialGrantIds ?? [])].sort()])
+    )
     .digest('hex');
   return `${workerMcpSessionPrefix(input)}${credentialDigest}`;
 }

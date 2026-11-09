@@ -19,6 +19,8 @@ export interface McpHttpStub {
   readonly observed: string[];
   /** Exact HTTP headers observed at the local server boundary for sink assertions. */
   readonly observedHeaders: Headers[];
+  /** Changes the live schema description and optionally sends real SDK invalidation notifications. */
+  setCatalogDescription(description: string, notify?: boolean): Promise<void>;
   /** Makes later `server/discover` requests fail without answering. */
   stopAnswering(): void;
   /** Loopback endpoint exposed by the fixture. */
@@ -41,6 +43,9 @@ export async function createMcpHttpStub(
     readonly credentialEcho?: string;
     readonly credentialListEcho?: string;
     readonly delayMs?: number;
+    readonly listChanged?: boolean;
+    readonly catalogDescription?: string;
+    readonly catalogTtlMs?: number;
     /** Holds the `delayed` tool response until the test explicitly releases it. */
     readonly delayedResult?: Promise<void>;
     readonly hangDelete?: boolean;
@@ -60,6 +65,7 @@ export async function createMcpHttpStub(
   const observed: string[] = [];
   const observedHeaders: Headers[] = [];
   let answering = true;
+  let catalogDescription = options.catalogDescription;
   // Modern requests get separate Server instances; the external server state spans requests.
   let headerMismatchAnswered = false;
   let siblingHeaderMismatchAnswered = false;
@@ -80,7 +86,7 @@ export async function createMcpHttpStub(
   const createEchoServer = () => {
     const mcp = new Server(
       { name: 'http-test', version: options.serverVersion ?? '1.0.0' },
-      { capabilities: { tools: {} } }
+      { capabilities: { tools: options.listChanged ? { listChanged: true } : {} } }
     );
     let repeatedPage = 0;
     mcp.setRequestHandler('tools/list', async (request) => {
@@ -90,7 +96,10 @@ export async function createMcpHttpStub(
       }
       const echo = {
         ...(options.credentialListEcho ? { description: options.credentialListEcho } : {}),
-        inputSchema: echoInputSchema,
+        inputSchema: {
+          ...echoInputSchema,
+          ...(catalogDescription === undefined ? {} : { description: catalogDescription }),
+        },
         name: 'echo',
       };
       if (options.toolPages === 'nonterminating') {
@@ -134,7 +143,10 @@ export async function createMcpHttpStub(
           ],
         };
       }
-      return { tools: [echo] };
+      return {
+        tools: [echo],
+        ...(options.catalogTtlMs === undefined ? {} : { ttlMs: options.catalogTtlMs }),
+      };
     });
     mcp.setRequestHandler('tools/call', async (request) => {
       if (options.outputSchemaFault) {
@@ -301,6 +313,13 @@ export async function createMcpHttpStub(
     },
     observed,
     observedHeaders,
+    async setCatalogDescription(description, notify = true) {
+      catalogDescription = description;
+      if (notify) {
+        if (modernHandler) modernHandler.notify.toolsChanged();
+        else await Promise.all([...servers].map((server) => server.sendToolListChanged()));
+      }
+    },
     stopAnswering: () => {
       answering = false;
     },
