@@ -829,7 +829,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       transport as Parameters<Client['connect']>[0],
       requestOptions(input.server.timeoutMs, input.signal)
     );
-    this.sessionTeardowns.set(key, () => closeMcpSession(client, transport, processGroupId));
+    this.sessionTeardowns.set(key, () =>
+      closeMcpSession(client, transport, processGroupId, this.previewAudit !== undefined)
+    );
     try {
       await connection;
       return { client };
@@ -1091,12 +1093,15 @@ interface WorkerMcpSession {
 async function closeMcpSession(
   client: Client,
   transport: StdioServerTransport | StreamableHTTPClientTransport,
-  processGroupId: number | null
+  processGroupId: number | null,
+  temporaryPreview: boolean
 ): Promise<void> {
   if (transport instanceof StreamableHTTPClientTransport) {
     try {
       await transport.terminateSession();
-    } catch {
+    } catch (error) {
+      // A one-off administrator preview must prove its temporary upstream session ended.
+      if (temporaryPreview) throw error;
       // Remote session deletion is best effort; local transport closure still owns cleanup proof.
       try {
         console.warn(
