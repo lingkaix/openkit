@@ -788,10 +788,10 @@ describe('Artifact definition projections', () => {
 
   it('does not invent an import receipt after the original was published without acknowledgement', async () => {
     const f = await fixture();
+    const writer = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      const record = vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('Fixture receipt write unavailable.');
-      });
+      writer.sqlite.exec(`CREATE TRIGGER interrupt_import_receipt BEFORE INSERT ON idempotency_requests
+        WHEN NEW.command_name='artifact.import' BEGIN SELECT json('not-json'); END`);
       const projectors = await projections(f, undefined, 'artifact.import');
       await expect(
         projectors.client('artifact.import', {
@@ -799,7 +799,8 @@ describe('Artifact definition projections', () => {
           ...inputs['artifact.import'],
         })
       ).rejects.toMatchObject({ status: 500 });
-      record.mockRestore();
+      writer.sqlite.exec('DROP TRIGGER interrupt_import_receipt');
+      writer.sqlite.close();
       const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
       const imported = artifacts.find(
         (artifact) => artifact.lastMutationRequestId === inputs['artifact.import'].requestId
@@ -824,6 +825,7 @@ describe('Artifact definition projections', () => {
         ).toMatchObject({ bytes: originalBytes, contentDigest: original.sha256 });
       }
     } finally {
+      if (writer.sqlite.open) writer.sqlite.close();
       vi.restoreAllMocks();
       await f.close();
     }

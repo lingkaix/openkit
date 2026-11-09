@@ -369,10 +369,6 @@ import {
   ControlWorkspaceCaptureSchema,
 } from './workspace-capture-codecs.js';
 import {
-  type ControlWorkspaceCommandReceiptInput,
-  ControlWorkspaceCommandReceiptInputSchema,
-} from './workspace-command-receipt-codecs.js';
-import {
   type ControlWorkspaceDeletionInput,
   ControlWorkspaceDeletionInputSchema,
   type ControlWorkspaceDeletionResult,
@@ -428,7 +424,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 91;
+export const CONTROL_WORKER_VERSION = 92;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -826,7 +822,8 @@ export type ControlWorkerCommand =
         }
       | {
           readonly operation: 'workspace-command-receipt';
-          readonly input: ControlWorkspaceCommandReceiptInput;
+          readonly input: ControlScalarText;
+          readonly content: ArrayBuffer;
         }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
@@ -964,6 +961,7 @@ export function controlWorkerInputBytes(
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
               command.operation === 'attention-enqueue' ||
+              command.operation === 'workspace-command-receipt' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
               command.operation === 'worker-control-final-status' ||
@@ -2478,12 +2476,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlResolvedAgentSetupInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
-  if (value.operation === 'workspace-command-receipt')
+  if (value.operation === 'workspace-command-receipt') {
+    const parsed = ControlScalarTextSchema.safeParse(value.input);
     return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlWorkspaceCommandReceiptInputSchema.safeParse(value.input).success &&
-      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
+  }
   if (value.operation === 'catalog-command-receipt')
     return (
       exactFields(value, [...scoped, 'input']) &&

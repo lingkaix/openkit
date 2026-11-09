@@ -29,6 +29,7 @@ import {
   stageArtifactPayload,
 } from './storage/artifacts/file-payload.js';
 import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
+import { ControlStoreWorkerError } from './storage/control-store-worker-error.js';
 import type { WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 
@@ -82,7 +83,7 @@ export async function importArtifactFile(input: {
         byteLength: metadata.byteLength,
       },
       responseKind: 'artifact',
-      execute: async () => {
+      execute: async (receipt) => {
         if (
           store.listArtifacts(metadata.workspaceId).some((artifact) => artifact.id === artifactId)
         ) {
@@ -149,6 +150,15 @@ export async function importArtifactFile(input: {
           )
         );
         artifactCreated = true;
+        if (store.getDataRoot() !== null) {
+          const { responseKind, ...originalReceipt } = receipt;
+          await store.publishWorkspaceCommandReceipt({
+            ...originalReceipt,
+            command: 'artifact.import',
+            scope: { actorId, workspaceId: metadata.workspaceId },
+            response: { kind: 'artifact', id: artifact.id },
+          });
+        }
         return ImportWorkspaceArtifactResponseSchema.parse({
           artifactId: artifact.id,
           artifactVersion: artifact.version,
@@ -171,8 +181,10 @@ export async function importArtifactFile(input: {
         // A later maintenance failure can follow a committed receipt. Unknown results retain authority.
         if (
           !receipt &&
-          error instanceof Database.SqliteError &&
-          error.code.startsWith('SQLITE_CONSTRAINT')
+          ((error instanceof Database.SqliteError && error.code.startsWith('SQLITE_CONSTRAINT')) ||
+            (error instanceof ControlStoreWorkerError &&
+              error.code === 'constraint' &&
+              error.commit === 'not-committed'))
         ) {
           withCanonicalFileWriteAdmission(input.admission, () =>
             store.rollbackArtifactCreation(artifactId)
@@ -289,7 +301,7 @@ export async function commitArtifactVersionCommand(
   let response: CommitArtifactVersionResponse | undefined;
   try {
     input.assertAuthorized();
-    response = await runIdempotentCommand({
+    response = await runIdempotentCommand<CommitArtifactVersionResponse>({
       store,
       workspaceDb,
       inflightCommands: input.inflightCommands,
@@ -310,7 +322,7 @@ export async function commitArtifactVersionCommand(
       },
       responseKind: 'artifact',
       responseId: (result) => result.artifact.id,
-      execute: async () => {
+      execute: async (receipt) => {
         // A complete tuple without its receipt is an unknown result, including after a later head advance.
         if (
           store
@@ -344,7 +356,7 @@ export async function commitArtifactVersionCommand(
         reservation?.assertAvailable();
         const admission =
           input.command === 'artifact.version-file-commit' ? input.file.admission : input.admission;
-        return await store.commitArtifactVersion(
+        const result = await store.commitArtifactVersion(
           {
             ...metadata,
             actor: context.actorRef,
@@ -365,6 +377,21 @@ export async function commitArtifactVersionCommand(
           staged,
           admission
         );
+        if (store.getDataRoot() !== null) {
+          const { responseKind, ...originalReceipt } = receipt;
+          await store.publishWorkspaceCommandReceipt({
+            ...originalReceipt,
+            command: input.command,
+            scope: {
+              actorId,
+              workspaceId: metadata.workspaceId,
+              threadId: metadata.threadId,
+              artifactId: metadata.artifactId,
+            },
+            response: { kind: 'artifact', id: result.artifact.id },
+          });
+        }
+        return result;
       },
       replay: (receipt) => {
         input.assertAuthorized();

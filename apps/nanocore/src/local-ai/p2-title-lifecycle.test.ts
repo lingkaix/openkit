@@ -336,17 +336,43 @@ describe('local title lifecycle', () => {
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ parentThreadId: timeline.id });
     expect(created[0]!.name).toBe('Schema repair');
-    expect(titleWrite.mock.calls.filter((args) => args[2].name === 'Schema repair')).toEqual([
-      [
+    expect(titleCalls(installation)).toHaveLength(1);
+    expect(titleHits(installation)).toHaveLength(1);
+    const writes = titleWrite.mock.calls.flatMap((args, index) =>
+      args[2].name === 'Schema repair' ? [{ args, result: titleWrite.mock.results[index]! }] : []
+    );
+    expect([1, 2]).toContain(writes.length);
+    for (const write of writes) {
+      expect(write.args).toEqual([
         installation.workspaceId,
         created[0]!.id,
         { name: 'Schema repair' },
         undefined,
         { status: 'active', name: 'Confirm the schema repair' },
-      ],
-    ]);
-    expect(titleCalls(installation)).toHaveLength(1);
-    expect(titleHits(installation)).toHaveLength(1);
+      ]);
+      expect(write.result.type).toBe('return');
+      expect(write.result.value).toBeInstanceOf(Promise);
+    }
+    // The spy calls through and retains the owner's exact original Promises.
+    // One guarded retry is admitted only after the actual first native CAS refusal.
+    const outcomes = await Promise.allSettled(writes.map((write) => write.result.value));
+    expect(outcomes.at(-1)).toMatchObject({
+      status: 'fulfilled',
+      value: { id: created[0]!.id, name: 'Schema repair' },
+    });
+    if (writes.length === 2) {
+      expect(outcomes[0]!.status).toBe('rejected');
+      if (outcomes[0]!.status !== 'rejected') throw new Error('Title retry has no native refusal.');
+      const cause: unknown = outcomes[0]!.reason;
+      expect(cause).toBeInstanceOf(ControlStoreWorkerError);
+      expect(cause).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      console.info('Handoff title retained exact native retry cause', {
+        attempts: writes.length,
+        code: (cause as ControlStoreWorkerError).code,
+        commit: (cause as ControlStoreWorkerError).commit,
+        finalWrite: outcomes.at(-1)!.status,
+      });
+    }
   }, 45_000);
 
   it('starts one title call for an admitted goal task', async () => {

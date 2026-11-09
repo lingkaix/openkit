@@ -295,7 +295,10 @@ export function applyWorkspaceCommandReceiptInDb(
       (record.command === 'worker_environment.purge' &&
         record.response.id !== record.scope.storageRef) ||
       (record.response.kind === 'skill_catalog' &&
-        (db.scope !== 'workspace' || record.response.id !== db.workspaceId))
+        (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
+      ((record.command === 'artifact.version-commit' ||
+        record.command === 'artifact.version-file-commit') &&
+        record.response.id !== record.scope.artifactId)
     )
       throw new ControlProductPreconditionError();
     writeCommandRequestRecordInDb(db, record);

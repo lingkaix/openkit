@@ -173,3 +173,7 @@ Public Workspace create and update preserve their separate native receipt and cu
 `FsStore.publishWorkspaceCommandReceipt` also carries the three existing Worker environment receipt variants through the same physical Workspace writer. Their original product and host stages precede the receipt; insertion and maintenance retain separate FULL acknowledgements.
 
 `FsStore.publishWorkspaceCommandReceipt` carries the existing five Skill management receipts after their completion Audit and runtime refresh. Its closed Skill variants preserve exact actor scope and import tuple or Workspace response, followed by the original separate maintenance stage.
+
+`FsStore.publishWorkspaceCommandReceipt` also accepts the four closed Artifact receipt projections after original file or native product publication. Imported file authority keeps its existing synchronous canonical owner. Receipt and maintenance acknowledgements remain separate, and unknown results do not authorize a second file or version effect.
+
+Imported Artifact compensation refuses while an exact native reference is preparing or awaiting settlement in the same physical Workspace, or when durable Item history already references it. A process-local count spans Store views from before reference preparation through native settlement; unknown results retain the guard. Imported-file publication, reference SQL and the late command receipt keep their separate original authority and recovery outcomes.

@@ -22,7 +22,10 @@ import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createTestStore } from './test-support/store.js';
@@ -40,6 +43,13 @@ describe('artifact file command contract', () => {
   /** Hashes caller bytes independently of the publication path. */
   function digest(bytes: Uint8Array): string {
     return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  }
+
+  /** The original SQL error and its safe native projection both prove a refused receipt INSERT. */
+  function receiptSqlFailed(error: unknown): boolean {
+    return error instanceof ControlStoreWorkerError
+      ? error.code === 'sql-failed' && error.commit === 'not-committed'
+      : error instanceof Error && 'code' in error && error.code === 'SQLITE_ERROR';
   }
 
   /** A retry source whose consumption is directly observable on the caller-owned stream. */
@@ -301,11 +311,12 @@ describe('artifact file command contract', () => {
 
   it('retains an unacknowledged import tuple and refuses recapture before and after reopen', async () => {
     const state = await contractFixture();
-    const failure = vi.spyOn(state.store, 'recordCommandRequest').mockImplementation(() => {
-      throw new Error('Synthetic receipt failure.');
-    });
-    await expect(state.submitImport()).rejects.toThrow('Synthetic receipt failure.');
-    failure.mockRestore();
+    // A non-constraint SQLite error retains the original unknown tuple; a definite
+    // constraint refusal has a separate rollback contract and is not this scenario.
+    state.db.sqlite.exec(`CREATE TRIGGER interrupt_import_receipt BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name='artifact.import' BEGIN SELECT json('not-json'); END`);
+    await expect(state.submitImport()).rejects.toSatisfy(receiptSqlFailed);
+    state.db.sqlite.exec('DROP TRIGGER interrupt_import_receipt');
     expect(state.store.listArtifacts(state.workspace.id)).toHaveLength(1);
     expect(state.store.listCommandRequests(state.workspace.id)).toHaveLength(0);
 
@@ -594,13 +605,13 @@ describe('artifact file command contract', () => {
     const state = await contractFixture();
     const imported = await state.submitImport();
     const commitRequestId = randomUUID();
-    const failure = vi.spyOn(state.store, 'recordCommandRequest').mockImplementation(() => {
-      throw new Error('Receipt publication failed.');
-    });
-    await expect(state.submitVersion(imported.artifactId, 1, commitRequestId)).rejects.toThrow(
-      'Receipt publication failed.'
+    state.db.sqlite.exec(`CREATE TRIGGER interrupt_version_receipt BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name='artifact.version-file-commit' AND NEW.request_id='${commitRequestId}'
+      BEGIN SELECT json('not-json'); END`);
+    await expect(state.submitVersion(imported.artifactId, 1, commitRequestId)).rejects.toSatisfy(
+      receiptSqlFailed
     );
-    failure.mockRestore();
+    state.db.sqlite.exec('DROP TRIGGER interrupt_version_receipt');
     expect(state.readVersion(imported.artifactId, 1)).toEqual(state.original);
     expect(state.readVersion(imported.artifactId, 2)).toEqual(state.next);
     const retry = observableSource(Buffer.from('changed retry bytes'));

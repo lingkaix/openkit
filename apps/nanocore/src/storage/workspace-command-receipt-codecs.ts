@@ -8,9 +8,9 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** The original creator receipt belongs to User; metadata, environment and Skill receipts belong to Workspace. */
+/** The original creator receipt belongs to User; metadata, environment, Skill and Artifact receipts belong to Workspace. */
 export const WORKSPACE_USER_COMMAND_RECEIPTS = ['workspace.create'] as const;
-/** Existing public metadata, Worker environment and Skill management commands share this physical Workspace receipt partition. */
+/** Existing closed public metadata, Worker environment, Skill and Artifact commands share this physical Workspace receipt partition. */
 export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'workspace.update',
   'worker_environment.prepare',
@@ -21,6 +21,10 @@ export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'catalog.skill-pin',
   'catalog.skill-remove',
   'catalog.skill-purge',
+  'artifact.import',
+  'artifact.version-commit',
+  'artifact.version-file-commit',
+  'artifact.introduce',
 ] as const;
 
 const receiptBase = {
@@ -111,6 +115,39 @@ const skillReceipt = z.discriminatedUnion('command', [
   }),
 ]);
 
+/** Four original Artifact receipt producers preserve their exact actor, Thread and target selectors. */
+const artifactReceipt = z.discriminatedUnion('command', [
+  z.strictObject({
+    ...receiptBase,
+    // App Artifact commands retain opaque public identities, including non-UUID values.
+    requestId: z.string().min(1),
+    command: z.literal('artifact.import'),
+    scope: z.strictObject({ actorId: UserIdSchema, workspaceId: WorkspaceIdSchema }),
+    response: z.strictObject({ kind: z.literal('artifact'), id: ArtifactIdSchema }),
+  }),
+  z.strictObject({
+    ...receiptBase,
+    // App Artifact commands retain opaque public identities, including non-UUID values.
+    requestId: z.string().min(1),
+    command: z.enum(['artifact.version-commit', 'artifact.version-file-commit']),
+    scope: z.strictObject({
+      actorId: UserIdSchema,
+      workspaceId: WorkspaceIdSchema,
+      threadId: ThreadIdSchema,
+      artifactId: ArtifactIdSchema,
+    }),
+    response: z.strictObject({ kind: z.literal('artifact'), id: ArtifactIdSchema }),
+  }),
+  z.strictObject({
+    ...receiptBase,
+    // App Artifact commands retain opaque public identities, including non-UUID values.
+    requestId: z.string().min(1),
+    command: z.literal('artifact.introduce'),
+    scope: z.strictObject({ workspaceId: WorkspaceIdSchema, threadId: ThreadIdSchema }),
+    response: z.strictObject({ kind: z.literal('artifact'), id: ArtifactIdSchema }),
+  }),
+]);
+
 /** Separate original record and expiry-maintenance commits, with two exact physical owners. */
 export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('action', [
   z.strictObject({
@@ -150,6 +187,16 @@ export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('a
   }),
   z.strictObject({
     action: z.literal('skill-maintenance'),
+    workspaceId: WorkspaceIdSchema,
+    referenceTime: z.string().datetime(),
+  }),
+  z.strictObject({
+    action: z.literal('artifact-receipt'),
+    workspaceId: WorkspaceIdSchema,
+    receipt: artifactReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('artifact-maintenance'),
     workspaceId: WorkspaceIdSchema,
     referenceTime: z.string().datetime(),
   }),

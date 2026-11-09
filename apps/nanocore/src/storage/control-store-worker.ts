@@ -296,6 +296,10 @@ import {
   WORKSPACE_CAPTURE_MESSAGES,
 } from './workspace-capture-codecs.js';
 import { applyWorkspaceCaptureInDb, prepareWorkspaceCapture } from './workspace-capture-native.js';
+import {
+  type ControlWorkspaceCommandReceiptInput,
+  ControlWorkspaceCommandReceiptInputSchema,
+} from './workspace-command-receipt-codecs.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
@@ -437,6 +441,7 @@ type WriteRequest = WriteCommand & {
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
   readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
+  readonly preparedWorkspaceCommandReceipt?: ControlWorkspaceCommandReceiptInput;
   readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
@@ -2478,10 +2483,11 @@ function flush(owner: OwnedDatabase): void {
               result,
             };
           } else if (request.operation === 'workspace-command-receipt') {
-            const db =
-              'userId' in request.input ? nativeUserDb(owner, request.input.userId) : owner.scopeDb;
+            const input = request.preparedWorkspaceCommandReceipt;
+            if (!input) throw new ControlProductPreconditionError();
+            const db = 'userId' in input ? nativeUserDb(owner, input.userId) : owner.scopeDb;
             if (!db || db.scope === 'core') throw new ControlProductPreconditionError();
-            applyWorkspaceCommandReceiptInDb(db, request.input);
+            applyWorkspaceCommandReceiptInDb(db, input);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -3879,6 +3885,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
           let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
+          let preparedWorkspaceCommandReceipt: ControlWorkspaceCommandReceiptInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
@@ -3902,6 +3909,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           try {
             if (value.operation === 'attention-enqueue') {
               preparedAttentionEnqueue = AttentionEnqueueCommandSchema.parse(
+                JSON.parse(readControlScalarText(value.input, value.content))
+              );
+            }
+            if (value.operation === 'workspace-command-receipt') {
+              preparedWorkspaceCommandReceipt = ControlWorkspaceCommandReceiptInputSchema.parse(
                 JSON.parse(readControlScalarText(value.input, value.content))
               );
             }
@@ -4248,6 +4260,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               appInput,
               preparedSchedulerAdmission,
               preparedAttentionEnqueue,
+              preparedWorkspaceCommandReceipt,
               preparedThreadReadItemIds,
               preparedEntries,
               preparedGenerativePresentation,

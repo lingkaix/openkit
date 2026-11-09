@@ -42,7 +42,7 @@ import {
 export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-request-records.js';
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   isDeepStrictEqual as alreadyDecidedPublicationBytesEqual,
@@ -1119,6 +1119,9 @@ export function assertThreadUpdatePrecondition(
     throw new ThreadUpdatePreconditionError();
   }
 }
+
+/** Live native references share their physical scope across Store views; failed imports cannot erase them. */
+const pendingArtifactReferences = new Map<string, number>();
 
 /**
  * Native product Store with immutable Storage history and independent file-owned resources.
@@ -5710,15 +5713,21 @@ export class FsStore {
    * @throws Error when lineage is invalid or a post-terminal write is not admitted.
    */
   public async createItem(...args: Parameters<FsStore['createItemPublication']>): Promise<Item> {
-    return this.publishTurn(
-      args[0].owner,
-      [args[0].turnId],
-      args,
-      (owned) => this.createItemPublication(...owned),
-      args[0].type === 'tool-call' && args[0].status !== 'in_progress'
-        ? (args[0].causationId ?? undefined)
-        : undefined
-    );
+    const publish = () =>
+      this.publishTurn(
+        args[0].owner,
+        [args[0].turnId],
+        args,
+        (owned) => this.createItemPublication(...owned),
+        args[0].type === 'tool-call' && args[0].status !== 'in_progress'
+          ? (args[0].causationId ?? undefined)
+          : undefined
+      );
+    return this.dataRoot &&
+      args[0].type === 'artifact-reference' &&
+      args[0].owner.kind === 'workspace'
+      ? this.protectArtifactReference(args[0].owner.workspaceId, args[0].artifactId, publish)
+      : publish();
   }
 
   /** Applies the original checks inside the admitted same-Turn boundary. */
@@ -6661,6 +6670,34 @@ export class FsStore {
     }
   }
 
+  /** Keeps file authority through native preparation and FULL settlement, across Store views of the same scope. */
+  private async protectArtifactReference<T>(
+    workspaceId: string,
+    artifactId: string,
+    publish: () => Promise<T>
+  ): Promise<T> {
+    const key = JSON.stringify([
+      realpathSync(this.nativeScope({ kind: 'workspace', workspaceId }).path),
+      artifactId,
+    ]);
+    pendingArtifactReferences.set(key, (pendingArtifactReferences.get(key) ?? 0) + 1);
+    let uncertain = false;
+    try {
+      return await publish();
+    } catch (error) {
+      uncertain = error instanceof ControlStoreWorkerError && error.commit === 'unknown';
+      throw error;
+    } finally {
+      // A channel refusal precedes Worker termination. Unknown reference SQL can still commit.
+      // Keep its file authority protected for this process; no automatic compensation proves absence.
+      if (!uncertain) {
+        const remaining = pendingArtifactReferences.get(key)! - 1;
+        if (remaining) pendingArtifactReferences.set(key, remaining);
+        else pendingArtifactReferences.delete(key);
+      }
+    }
+  }
+
   /** Rolls back only a newly created request-owned Artifact after handled publication failure. @param artifactId Initial Artifact identity, preflighted absent by the command. */
   public rollbackArtifactCreation(artifactId: string): void {
     const artifact = this.artifacts.get(artifactId);
@@ -6670,6 +6707,25 @@ export class FsStore {
       throw new ArtifactAuthorityError(
         'recovery_required',
         'Artifact rollback cannot remove a later version.'
+      );
+    if (
+      this.dataRoot &&
+      artifact.origin.kind === 'imported' &&
+      (pendingArtifactReferences.has(
+        JSON.stringify([
+          realpathSync(
+            this.nativeScope({ kind: 'workspace', workspaceId: artifact.workspaceId }).path
+          ),
+          artifactId,
+        ])
+      ) ||
+        this.listWorkspaceItemRevisions(artifact.workspaceId).some(
+          (item) => item.type === 'artifact-reference' && item.artifactId === artifactId
+        ))
+    )
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Artifact rollback cannot erase a pending or acknowledged native reference.'
       );
     if (this.dataRoot && artifact.origin.kind === 'turn-output') {
       const turn = this.getTurn(
@@ -6817,19 +6873,21 @@ export class FsStore {
       durationMs: 0,
     });
     if (this.dataRoot) {
-      const scope = this.nativeScope(thread.owner);
-      const entries = await this.prepareNativeItems(scope, [reference]);
-      try {
-        await this.createNativeTerminalTurn(scope, turn, this.liveCaptureCoverage, [], entries);
-      } catch (error) {
-        this.throwArtifactTerminalFailure(error, input.workspaceId, input.threadId);
-      }
-      return {
-        artifactId: artifact.id,
-        artifactVersion: artifact.version,
-        turnId: turn.id,
-        itemId: reference.id,
-      };
+      return this.protectArtifactReference(input.workspaceId, artifact.id, async () => {
+        const scope = this.nativeScope(thread.owner);
+        const entries = await this.prepareNativeItems(scope, [reference]);
+        try {
+          await this.createNativeTerminalTurn(scope, turn, this.liveCaptureCoverage, [], entries);
+        } catch (error) {
+          this.throwArtifactTerminalFailure(error, input.workspaceId, input.threadId);
+        }
+        return {
+          artifactId: artifact.id,
+          artifactVersion: artifact.version,
+          turnId: turn.id,
+          itemId: reference.id,
+        };
+      });
     }
     const itemRevisionCount = this.itemRevisions.length;
 
@@ -7128,51 +7186,53 @@ export class FsStore {
     });
     const versions = this.artifactVersions.get(current.id)!;
     if (this.dataRoot) {
-      const workspaceRoot = this.workspaceRootPath(input.workspaceId);
-      const scope = this.nativeScope(turn.owner);
-      const entries = await this.prepareNativeItems(scope, [item]);
-      const publishVersion = () =>
-        publishArtifactVersionRecord({
-          workspaceRoot,
-          record,
-          ...(payload ? { payloadPath: payload.path } : {}),
-        });
-      // File capacity is synchronous; no admission context spans native preparation or SQL.
-      if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, publishVersion);
-      else publishVersion();
-      try {
-        await this.createNativeTerminalTurn(scope, turn, this.liveCaptureCoverage, [], entries);
-      } catch (error) {
-        if (error instanceof ControlStoreWorkerError && error.commit === 'not-committed') {
-          try {
-            const compensate = () =>
-              rollbackArtifactVersionRecord(workspaceRoot, current.id, artifact.version);
-            if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, compensate);
-            else compensate();
-          } catch (cleanupError) {
+      return this.protectArtifactReference(input.workspaceId, current.id, async () => {
+        const workspaceRoot = this.workspaceRootPath(input.workspaceId);
+        const scope = this.nativeScope(turn.owner);
+        const entries = await this.prepareNativeItems(scope, [item]);
+        const publishVersion = () =>
+          publishArtifactVersionRecord({
+            workspaceRoot,
+            record,
+            ...(payload ? { payloadPath: payload.path } : {}),
+          });
+        // File capacity is synchronous; no admission context spans native preparation or SQL.
+        if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, publishVersion);
+        else publishVersion();
+        try {
+          await this.createNativeTerminalTurn(scope, turn, this.liveCaptureCoverage, [], entries);
+        } catch (error) {
+          if (error instanceof ControlStoreWorkerError && error.commit === 'not-committed') {
+            try {
+              const compensate = () =>
+                rollbackArtifactVersionRecord(workspaceRoot, current.id, artifact.version);
+              if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, compensate);
+              else compensate();
+            } catch (cleanupError) {
+              this.unacknowledgedWorkspaces.add(input.workspaceId);
+              throw new ArtifactPayloadCleanupError([error, cleanupError]);
+            }
+          } else {
+            // An uncertain native result retains the original version for ordinary recovery.
             this.unacknowledgedWorkspaces.add(input.workspaceId);
-            throw new ArtifactPayloadCleanupError([error, cleanupError]);
           }
-        } else {
-          // An uncertain native result retains the original version for ordinary recovery.
-          this.unacknowledgedWorkspaces.add(input.workspaceId);
+          this.throwArtifactTerminalFailure(error, input.workspaceId, input.threadId);
         }
-        this.throwArtifactTerminalFailure(error, input.workspaceId, input.threadId);
-      }
-      // A native ACK cannot be undone by a later file-head failure.
-      this.artifacts.set(current.id, artifact);
-      this.artifactVersions.set(current.id, [...versions, record]);
-      try {
-        const publishHead = () => this.persist(input.workspaceId);
-        if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, publishHead);
-        else publishHead();
-      } catch (error) {
-        this.unacknowledgedWorkspaces.add(input.workspaceId);
-        throw error;
-      }
-      return structuredClone({
-        artifact: record.artifact,
-        version: projectArtifactVersion(record),
+        // A native ACK cannot be undone by a later file-head failure.
+        this.artifacts.set(current.id, artifact);
+        this.artifactVersions.set(current.id, [...versions, record]);
+        try {
+          const publishHead = () => this.persist(input.workspaceId);
+          if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, publishHead);
+          else publishHead();
+        } catch (error) {
+          this.unacknowledgedWorkspaces.add(input.workspaceId);
+          throw error;
+        }
+        return structuredClone({
+          artifact: record.artifact,
+          version: projectArtifactVersion(record),
+        });
       });
     }
     const revisionCount = this.itemRevisions.length;

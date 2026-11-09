@@ -2732,7 +2732,9 @@ class ControlStoreWorkerClient {
                 ? 'update-receipt'
                 : receipt.command.startsWith('catalog.skill-')
                   ? 'skill-receipt'
-                  : 'environment-receipt',
+                  : receipt.command.startsWith('artifact.')
+                    ? 'artifact-receipt'
+                    : 'environment-receipt',
             workspaceId: receipt.scope.workspaceId,
             receipt,
           }
@@ -2749,7 +2751,8 @@ class ControlStoreWorkerClient {
     } else if (
       input.action === 'update-receipt' ||
       input.action === 'environment-receipt' ||
-      input.action === 'skill-receipt'
+      input.action === 'skill-receipt' ||
+      input.action === 'artifact-receipt'
     ) {
       const scope = nativeProductScope(dataRoot, {
         kind: 'workspace',
@@ -2766,27 +2769,47 @@ class ControlStoreWorkerClient {
         contentMount: scope.contentMount,
       });
     } else throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const record = await this.request({ operation: 'workspace-command-receipt', database, input });
+    // Opaque Artifact identities can exceed the structured envelope after JSON escaping.
+    // Reuse the admitted scalar carrier; the native owner decodes the same closed input.
+    const recordJson = JSON.stringify(input);
+    const record = await this.request(
+      {
+        operation: 'workspace-command-receipt',
+        database,
+        input: frameControlScalarText(recordJson),
+        content: new ArrayBuffer(0),
+      },
+      [recordJson]
+    );
     if (record.operation !== 'workspace-command-receipt' || record.result !== null)
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     const referenceTime = new Date().toISOString();
-    const maintenance = await this.request({
-      operation: 'workspace-command-receipt',
-      database,
-      input:
-        input.action === 'create-receipt'
-          ? { action: 'create-maintenance', userId: input.userId, referenceTime }
-          : {
-              action:
-                input.action === 'update-receipt'
-                  ? 'update-maintenance'
-                  : input.action === 'skill-receipt'
-                    ? 'skill-maintenance'
+    const maintenanceInput = ControlWorkspaceCommandReceiptInputSchema.parse(
+      input.action === 'create-receipt'
+        ? { action: 'create-maintenance', userId: input.userId, referenceTime }
+        : {
+            action:
+              input.action === 'update-receipt'
+                ? 'update-maintenance'
+                : input.action === 'skill-receipt'
+                  ? 'skill-maintenance'
+                  : input.action === 'artifact-receipt'
+                    ? 'artifact-maintenance'
                     : 'environment-maintenance',
-              workspaceId: input.workspaceId,
-              referenceTime,
-            },
-    });
+            workspaceId: input.workspaceId,
+            referenceTime,
+          }
+    );
+    const maintenanceJson = JSON.stringify(maintenanceInput);
+    const maintenance = await this.request(
+      {
+        operation: 'workspace-command-receipt',
+        database,
+        input: frameControlScalarText(maintenanceJson),
+        content: new ArrayBuffer(0),
+      },
+      [maintenanceJson]
+    );
     if (maintenance.operation !== 'workspace-command-receipt' || maintenance.result !== null)
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
@@ -4265,6 +4288,7 @@ class ControlStoreWorkerClient {
       command.operation === 'app-kernel' ||
       command.operation === 'schema-application' ||
       command.operation === 'attention-enqueue' ||
+      command.operation === 'workspace-command-receipt' ||
       command.operation === 'thread-read-membership' ||
       command.operation === 'worker-control-final-status' ||
       command.operation === 'worker-control-heartbeat' ||
@@ -4284,6 +4308,7 @@ class ControlStoreWorkerClient {
                 command.operation === 'app-kernel' ||
                 command.operation === 'schema-application' ||
                 command.operation === 'attention-enqueue' ||
+                command.operation === 'workspace-command-receipt' ||
                 command.operation === 'thread-read-membership' ||
                 command.operation === 'worker-control-final-status' ||
                 command.operation === 'worker-control-heartbeat' ||

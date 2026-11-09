@@ -236,3 +236,5 @@ Workspace command receipts now await the two original native stages after their 
 Worker environment preparation/recovery, activation and purge reuse the existing closed Workspace command receipt stage after acknowledged product and host work. Insertion and later expiry maintenance retain separate native FULL acknowledgements; neither stage repeats an external effect.
 
 Skill import, select, pin, remove and purge retain their original native Workspace admission/completion Audit stages and reuse the existing late Workspace receipt owner. File work, runtime refresh, receipt insertion and expiry maintenance remain separate acknowledged stages; current authority and deletion retention proofs repeat after admission waits.
+
+Artifact import, the two version commits and introduction retain their original file or native product stages before the closed Workspace receipt owner. Receipt insertion and current-time maintenance keep separate FULL acknowledgements. Only a known uncommitted SQLite constraint with no receipt permits the original import rollback; unknown outcomes and committed receipt prefixes retain authority.

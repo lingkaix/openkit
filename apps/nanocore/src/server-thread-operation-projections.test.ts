@@ -13,7 +13,7 @@ import {
   revokeOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from './auth/access-token-store.js';
-import { FsStore } from './lib/store.js';
+import { commandRequestKey, FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { executeGoalOperation, readGoalView } from './runtime/goal-owner.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
@@ -484,18 +484,36 @@ it('keeps product receipt insertion and pruning off the main writable connection
   const f = await productFixture();
   const priorInput = { ...f.input, requestId: randomUUID(), name: 'Prior receipt' };
   await createThread(priorInput, f.dependencies, f.userId);
+  // This is a retained Main-partition row, not a new MCP command admission.
+  // Stop the native writer before installing historical fixture bytes.
+  await getControlStoreWorkerClient().shutdown();
+  const retainedScope = { actorId: f.userId, workspaceId: f.workspace.id };
+  const retainedRequestId = randomUUID();
+  const retained = {
+    key: commandRequestKey('catalog.shared-mcp-set-disabled', retainedRequestId, retainedScope),
+    requestId: retainedRequestId,
+    scope: retainedScope,
+  };
+  f.db.sqlite
+    .prepare(`INSERT INTO idempotency_requests
+      (schema_version, request_key, command_name, request_id, scope_json, input_hash,
+       response_kind, response_id, response_json, created_at, expires_at)
+      VALUES (1, ?, 'catalog.shared-mcp-set-disabled', ?, ?, ?, 'catalog_mcp', ?, NULL, ?, ?)`)
+    .run(
+      retained.key,
+      retained.requestId,
+      JSON.stringify(retained.scope),
+      `sha256:${'b'.repeat(64)}`,
+      'retained-shared-mcp',
+      '2000-01-01T00:00:00.000Z',
+      '2001-01-01T00:00:00.000Z'
+    );
   const expired = [
     f.store.getCommandRequest('thread.create', priorInput.requestId, {
       actorId: f.userId,
       workspaceId: f.workspace.id,
     })!,
-    f.store.recordCommandRequest({
-      command: 'artifact.import',
-      requestId: randomUUID(),
-      scope: { actorId: f.userId, workspaceId: f.workspace.id },
-      inputHash: `sha256:${'b'.repeat(64)}`,
-      response: { kind: 'artifact', id: allocateEntityId('ar') },
-    }),
+    retained,
   ];
   for (const receipt of expired) {
     f.db.sqlite
@@ -552,7 +570,11 @@ it('keeps product receipt insertion and pruning off the main writable connection
   });
   vi.restoreAllMocks();
   expect(
-    f.store.getCommandRequest('artifact.import', expired[1]!.requestId, expired[1]!.scope)
+    f.store.getCommandRequest(
+      'catalog.shared-mcp-set-disabled',
+      expired[1]!.requestId,
+      expired[1]!.scope
+    )
   ).toBeNull();
   expect(
     f.db.sqlite

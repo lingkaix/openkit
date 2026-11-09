@@ -345,7 +345,7 @@ export function createArtifactOperationImplementations(
           },
           responseKind: 'artifact',
           workspaceDb,
-          execute: async () => {
+          execute: async (receipt) => {
             assertArtifactWorkspaceLineage(
               actorId,
               administratorEligible(context),
@@ -353,7 +353,7 @@ export function createArtifactOperationImplementations(
               workspaceId,
               artifactId
             );
-            return IntroduceWorkspaceArtifactResponseSchema.parse(
+            const result = IntroduceWorkspaceArtifactResponseSchema.parse(
               await store.introduceArtifact({
                 workspaceId,
                 threadId,
@@ -365,6 +365,16 @@ export function createArtifactOperationImplementations(
                 triggerActor: actor,
               })
             );
+            if (store.getDataRoot() !== null) {
+              const { responseKind, ...originalReceipt } = receipt;
+              await store.publishWorkspaceCommandReceipt({
+                ...originalReceipt,
+                command: 'artifact.introduce',
+                scope: { workspaceId, threadId },
+                response: { kind: 'artifact', id: result.artifactId },
+              });
+            }
+            return result;
           },
           replay: (record) =>
             replayArtifactIntroduction(store, {
