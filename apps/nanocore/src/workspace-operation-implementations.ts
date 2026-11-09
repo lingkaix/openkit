@@ -27,6 +27,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { publishWorkspaceOwnerMembership } from './workspace-membership.js';
 import {
@@ -105,6 +106,12 @@ async function createWorkspace(
 ) {
   const { store, coreDb, inflightCommands } = dependencies;
   try {
+    const dataRoot = store.getDataRoot();
+    const opening =
+      dataRoot === null
+        ? undefined
+        : getControlStoreWorkerClient().workspaceCreationReceiptOpening(dataRoot, actor.userId);
+    if (opening) await opening;
     const workspace = await runIdempotentCommand({
       store,
       inflightCommands,
@@ -113,7 +120,7 @@ async function createWorkspace(
       scope: { userId: actor.userId },
       input: input,
       responseKind: 'workspace',
-      execute: async () => {
+      execute: async (receipt) => {
         const workspace = WorkspaceRecordSchema.parse(
           await store.createWorkspace(input.name, {
             requestId: input.requestId,
@@ -129,6 +136,15 @@ async function createWorkspace(
           });
         }
 
+        if (store.getDataRoot() !== null) {
+          const { responseKind, ...originalReceipt } = receipt;
+          await store.publishWorkspaceCommandReceipt({
+            ...originalReceipt,
+            command: 'workspace.create',
+            scope: { userId: actor.userId },
+            response: { kind: 'workspace', id: workspace.id },
+          });
+        }
         return workspace;
       },
       replay: (record) => WorkspaceRecordSchema.parse(store.getWorkspace(record.response.id)),
@@ -166,7 +182,7 @@ async function updateWorkspace(
       scope: { workspaceId },
       input: { ...body, workspaceId },
       responseKind: 'workspace',
-      execute: async () => {
+      execute: async (receipt) => {
         if (
           store.getDataRoot() !== null &&
           (!coreDb ||
@@ -176,7 +192,19 @@ async function updateWorkspace(
             }))
         )
           throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
-        return WorkspaceRecordSchema.parse(await store.updateWorkspace(workspaceId, body));
+        const workspace = WorkspaceRecordSchema.parse(
+          await store.updateWorkspace(workspaceId, body)
+        );
+        if (store.getDataRoot() !== null) {
+          const { responseKind, ...originalReceipt } = receipt;
+          await store.publishWorkspaceCommandReceipt({
+            ...originalReceipt,
+            command: 'workspace.update',
+            scope: { workspaceId },
+            response: { kind: 'workspace', id: workspace.id },
+          });
+        }
+        return workspace;
       },
       replay: (record) => WorkspaceRecordSchema.parse(store.getWorkspace(record.response.id)),
       responseId: (result) => result.id,

@@ -75,6 +75,10 @@ import type {
   ControlWorkspaceCapture,
   ControlWorkspaceCaptureResult,
 } from './workspace-capture-codecs.js';
+import {
+  ControlWorkspaceCommandReceiptInputSchema,
+  type WorkspaceCommandReceipt,
+} from './workspace-command-receipt-codecs.js';
 import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
 import {
   type ControlRecoverySourceReactivationInput,
@@ -249,7 +253,7 @@ import type {
   ControlExecutionAttemptCommand,
   ControlExecutionAttemptResult,
 } from './execution-attempt-codecs.js';
-import { resolveDataRootPath } from './fs-layout.js';
+import { ensureUserLayout, resolveDataRootPath, userDbPath } from './fs-layout.js';
 import type {
   ControlHarnessLifecycleInput,
   ControlHarnessLifecycleResult,
@@ -1340,7 +1344,8 @@ class ControlStoreWorkerClient {
       if (
         !isDeepStrictEqual(existing.command, command) &&
         !(
-          command.physicalScope &&
+          // Acknowledged first-User creation may join later existing-User callers on the exact binding.
+          (command.physicalScope || command.initialize === 'user') &&
           existing.acknowledged &&
           existing.command.create &&
           !command.create &&
@@ -2700,6 +2705,68 @@ class ControlStoreWorkerClient {
     if (failed) throw failure;
     if (!result) throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return result;
+  }
+
+  /** Joins only pending User initialization before the original synchronous Workspace-create receipt lookup.
+   * Undefined preserves the original no-file lookup without yielding or creating a scope early.
+   */
+  workspaceCreationReceiptOpening(dataRoot: string, userId: string): Promise<void> | undefined {
+    const path = userDbPath(dataRoot, userId);
+    const database = `user:${path}`;
+    const opening = this.openings.get(database);
+    if (!opening || opening.acknowledged) return undefined;
+    return this.open({ database, path, create: opening.command.create, initialize: 'user' });
+  }
+
+  /** Retains the two original public Workspace commands' separate receipt and maintenance FULL stages. */
+  async recordWorkspaceCommandReceipt(
+    dataRoot: string,
+    receipt: WorkspaceCommandReceipt
+  ): Promise<void> {
+    const input = ControlWorkspaceCommandReceiptInputSchema.parse(
+      receipt.command === 'workspace.create'
+        ? { action: 'create-receipt', userId: receipt.scope.userId, receipt }
+        : { action: 'update-receipt', workspaceId: receipt.scope.workspaceId, receipt }
+    );
+    let database: string;
+    if (input.action === 'create-receipt') {
+      // First use originally created the User database here, after Workspace and membership effects.
+      ensureUserLayout(dataRoot, input.userId);
+      const path = userDbPath(dataRoot, input.userId);
+      database = `user:${path}`;
+      const create =
+        this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false });
+      await this.open({ database, path, create, initialize: 'user' });
+    } else if (input.action === 'update-receipt') {
+      const scope = nativeProductScope(dataRoot, {
+        kind: 'workspace',
+        workspaceId: input.workspaceId,
+      });
+      database = `workspace:${scope.path}`;
+      await this.open({
+        database,
+        path: scope.path,
+        dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+    } else throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const record = await this.request({ operation: 'workspace-command-receipt', database, input });
+    if (record.operation !== 'workspace-command-receipt' || record.result !== null)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const referenceTime = new Date().toISOString();
+    const maintenance = await this.request({
+      operation: 'workspace-command-receipt',
+      database,
+      input:
+        input.action === 'create-receipt'
+          ? { action: 'create-maintenance', userId: input.userId, referenceTime }
+          : { action: 'update-maintenance', workspaceId: input.workspaceId, referenceTime },
+    });
+    if (maintenance.operation !== 'workspace-command-receipt' || maintenance.result !== null)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
 
   /** Preserves the three Candidate commands' separate record and later expiry-maintenance FULL acknowledgements. */

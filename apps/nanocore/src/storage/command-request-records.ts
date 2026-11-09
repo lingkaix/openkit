@@ -33,6 +33,7 @@ import {
 import {
   CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
   CONTROL_NATIVE_RECEIPT_COMMANDS,
+  CONTROL_NATIVE_USER_RECEIPT_COMMANDS,
   CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
   isControlNativeReceiptCommand,
 } from './control-store-admission-codecs.js';
@@ -57,8 +58,12 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
   isSeparateScopedNotebookReceipt,
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
-  SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './scoped-notebook-sql-codecs.js';
+import {
+  type ControlWorkspaceCommandReceiptInput,
+  ControlWorkspaceCommandReceiptInputSchema,
+  WORKSPACE_LOCAL_COMMAND_RECEIPTS,
+} from './workspace-command-receipt-codecs.js';
 
 /** Raw SQLite row for one command idempotency request. */
 type CommandRequestRow = {
@@ -263,6 +268,43 @@ export function applyCatalogCommandReceiptInDb(
   )
     throw new ControlProductPreconditionError();
   writeCommandRequestRecordInDb(db, record);
+}
+
+/** Applies only the two public Workspace commands' original standalone receipt stages. */
+export function applyWorkspaceCommandReceiptInDb(
+  db: UserDb | WorkspaceDb,
+  value: ControlWorkspaceCommandReceiptInput
+): void {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlWorkspaceCommandReceiptInputSchema.parse(value);
+  if (
+    !db.sqlite.inTransaction ||
+    ('userId' in input
+      ? db.scope !== 'user' || db.userId !== input.userId
+      : db.scope !== 'workspace' || db.workspaceId !== input.workspaceId)
+  )
+    throw new ControlProductPreconditionError();
+  if ('receipt' in input) {
+    const record = input.receipt;
+    assertCommandRequestDbOwner(db, record.scope);
+    if (
+      record.key !== commandRequestKey(record.command, record.requestId, record.scope) ||
+      record.expiresAt !== commandRequestExpiresAt(record.createdAt) ||
+      (record.command === 'workspace.update' &&
+        (db.scope !== 'workspace' || record.response.id !== db.workspaceId))
+    )
+      throw new ControlProductPreconditionError();
+    writeCommandRequestRecordInDb(db, record);
+  } else {
+    // This is the original later commit, using the clock sampled after the receipt ACK.
+    pruneControlAdmissionReceipts(
+      db.sqlite,
+      db.scope === 'user'
+        ? { kind: 'user', userId: db.userId }
+        : { kind: 'workspace', workspaceId: db.workspaceId },
+      input.referenceTime
+    );
+  }
 }
 
 /** Preserves the existing complete row read/check/write body; public entry points own authority and disjoint pruning. */
@@ -754,10 +796,11 @@ function pruneCommandRequestRecords(
       ? [
           ...CONTROL_NATIVE_RECEIPT_COMMANDS,
           ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
+          ...WORKSPACE_LOCAL_COMMAND_RECEIPTS,
           ...(catalogMaintenance ? [] : CATALOG_COMMAND_RECEIPTS),
         ]
       : db.scope === 'user'
-        ? SCOPED_NOTEBOOK_USER_RECEIPTS
+        ? CONTROL_NATIVE_USER_RECEIPT_COMMANDS
         : [
             ...CONTROL_NATIVE_RECEIPT_COMMANDS,
             ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,

@@ -7,6 +7,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { isScopeAdmitted, refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -338,6 +339,7 @@ describe('workspace membership foundation', () => {
         workspace_id: workspace.id,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -408,6 +410,7 @@ describe('workspace membership foundation', () => {
       expect(secondResponse.status).toBe(201);
       expect(secondWorkspace.id).not.toBe(firstWorkspace.id);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

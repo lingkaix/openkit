@@ -11,6 +11,7 @@ import {
 import {
   CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
   CONTROL_NATIVE_RECEIPT_COMMANDS,
+  CONTROL_NATIVE_USER_RECEIPT_COMMANDS,
   CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
   type ControlAdmission,
   type ControlAdmissionResult,
@@ -29,10 +30,8 @@ import {
   type PreparedControlEntry,
   type prepareControlTaskSteerReceipt,
 } from './control-store-products.js';
-import {
-  SCOPED_NOTEBOOK_SERVER_RECEIPTS,
-  SCOPED_NOTEBOOK_USER_RECEIPTS,
-} from './scoped-notebook-sql-codecs.js';
+import { SCOPED_NOTEBOOK_SERVER_RECEIPTS } from './scoped-notebook-sql-codecs.js';
+import { WORKSPACE_LOCAL_COMMAND_RECEIPTS } from './workspace-command-receipt-codecs.js';
 
 /** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
 export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
@@ -70,9 +69,9 @@ export function pruneControlAdmissionReceipts(
   if (owner.kind === 'user') {
     sqlite
       .prepare(
-        `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${SCOPED_NOTEBOOK_USER_RECEIPTS.map(() => '?').join(',')}) AND json_extract(scope_json,'$.userId')=? AND json_extract(scope_json,'$.coreId') IS NULL AND json_extract(scope_json,'$.workspaceId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+        `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_NATIVE_USER_RECEIPT_COMMANDS.map(() => '?').join(',')}) AND json_extract(scope_json,'$.userId')=? AND json_extract(scope_json,'$.coreId') IS NULL AND json_extract(scope_json,'$.workspaceId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
       )
-      .run(referenceTime, ...SCOPED_NOTEBOOK_USER_RECEIPTS, owner.userId);
+      .run(referenceTime, ...CONTROL_NATIVE_USER_RECEIPT_COMMANDS, owner.userId);
     return;
   }
   const scope =
@@ -85,6 +84,7 @@ export function pruneControlAdmissionReceipts(
           ...CONTROL_NATIVE_RECEIPT_COMMANDS,
           ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
           ...CATALOG_COMMAND_RECEIPTS,
+          ...WORKSPACE_LOCAL_COMMAND_RECEIPTS,
         ]
       : [
           ...CONTROL_NATIVE_RECEIPT_COMMANDS,

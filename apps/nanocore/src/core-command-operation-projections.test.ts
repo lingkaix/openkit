@@ -443,16 +443,18 @@ it.each([0, 2])(
   async (index) => {
     const { app, rows, store } = await fixture();
     const [id, , , body] = rows[index]!;
-    let committed = false;
-    const recordCommandRequest = store.recordCommandRequest.bind(store);
-    vi.spyOn(store, 'recordCommandRequest').mockImplementation((...args) => {
-      const receipt = recordCommandRequest(...args);
-      committed = true;
-      return receipt;
-    });
+    // Observe the actual receipt boundary; a Main writer spy cannot reach a native receipt.
+    const committed = () =>
+      store.getCommandRequest(
+        id as 'workspace.create' | 'workspace.update',
+        String((body as { requestId: string }).requestId),
+        id === 'workspace.create'
+          ? { userId: 'usr_00000000-0000-7000-8000-000000000001' }
+          : { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+      ) !== null;
     const listThreads = store.listThreads.bind(store);
     vi.spyOn(store, 'listThreads').mockImplementation((workspaceId) => {
-      if (committed) throw new Error('Count projection unavailable.');
+      if (committed()) throw new Error('Count projection unavailable.');
       return listThreads(workspaceId);
     });
     const response = await app.request(

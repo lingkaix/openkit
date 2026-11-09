@@ -230,3 +230,5 @@ Light App mutations use one native App-scoped writer for business rows, Audit an
 Live quarantine retirement and source MOVE preparation/report stages now use their existing native Core owners, with current actor checks inside SQL and exact lifecycle checks at actual posting. The capture Worker passes private proof-file metadata through its existing control bridge; each original SQL, marker, seal and capture-terminal boundary remains separate. Stopped root-locked paths retain their original owners.
 
 Live User Memory and Server Knowledge initialization, Source capture and pre-inference receipts now await the existing scoped native SQL stages. Their original Audit, Git, schema, receipt and expiry-maintenance commits remain separate; missing acknowledgement prevents continuation without repeating effects.
+
+Workspace command receipts now await the two original native stages after their unchanged product and membership effects. Create retains its User owner, update its Workspace owner; replay reads without Main pruning, and a lost acknowledgement never reposts the product.

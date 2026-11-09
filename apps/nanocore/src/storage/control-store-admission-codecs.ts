@@ -13,6 +13,10 @@ import {
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
   SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './scoped-notebook-sql-codecs.js';
+import {
+  WORKSPACE_LOCAL_COMMAND_RECEIPTS,
+  WORKSPACE_USER_COMMAND_RECEIPTS,
+} from './workspace-command-receipt-codecs.js';
 
 /** Exact prepared operation families; B2 must exclude these from legacy receipt insert/prune paths before activation. */
 export const CONTROL_ADMISSION_COMMANDS = [
@@ -98,12 +102,19 @@ export const CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS = [
   'workspace.retire-quarantined',
 ] as const satisfies readonly CommandRequestName[];
 
-/** Selects each activated physical-scope partition; scoped Notebook names never activate other User commands. */
+/** Current native User receipt producers, without activating their names in other scopes. */
+export const CONTROL_NATIVE_USER_RECEIPT_COMMANDS = [
+  ...SCOPED_NOTEBOOK_USER_RECEIPTS,
+  ...WORKSPACE_USER_COMMAND_RECEIPTS,
+] as const;
+
+/** Selects each activated physical-scope partition without activating another scope. */
 export function isControlNativeReceiptCommand(
   command: string,
   scope: 'core' | 'workspace' | 'user'
 ): boolean {
-  if (scope === 'user') return SCOPED_NOTEBOOK_USER_RECEIPTS.some((name) => name === command);
+  if (scope === 'user')
+    return CONTROL_NATIVE_USER_RECEIPT_COMMANDS.some((name) => name === command);
   return (
     CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
     (scope === 'core' &&
@@ -111,7 +122,8 @@ export function isControlNativeReceiptCommand(
         SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command))) ||
     (scope === 'workspace' &&
       (CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command) ||
-        CATALOG_COMMAND_RECEIPTS.some((name) => name === command)))
+        CATALOG_COMMAND_RECEIPTS.some((name) => name === command) ||
+        WORKSPACE_LOCAL_COMMAND_RECEIPTS.some((name) => name === command)))
   );
 }
 

@@ -137,7 +137,10 @@ import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
 import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-native.js';
 import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
-import { applyCatalogCommandReceiptInDb } from './command-request-records.js';
+import {
+  applyCatalogCommandReceiptInDb,
+  applyWorkspaceCommandReceiptInDb,
+} from './command-request-records.js';
 import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
@@ -386,6 +389,7 @@ type WriteCommand = Extract<
       | 'resolved-agent-setup'
       | 'scoped-notebook-sql'
       | 'catalog-command-receipt'
+      | 'workspace-command-receipt'
       | 'admin-recovery'
       | 'better-auth'
       | 'vault'
@@ -2473,6 +2477,18 @@ function flush(owner: OwnedDatabase): void {
               operation: 'resolved-agent-setup',
               result,
             };
+          } else if (request.operation === 'workspace-command-receipt') {
+            const db =
+              'userId' in request.input ? nativeUserDb(owner, request.input.userId) : owner.scopeDb;
+            if (!db || db.scope === 'core') throw new ControlProductPreconditionError();
+            applyWorkspaceCommandReceiptInDb(db, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-command-receipt',
+              result: null,
+            };
           } else if (request.operation === 'catalog-command-receipt') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             applyCatalogCommandReceiptInDb(owner.scopeDb, request.input);
@@ -3767,6 +3783,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'resolved-agent-setup' ||
       value.operation === 'scoped-notebook-sql' ||
       value.operation === 'catalog-command-receipt' ||
+      value.operation === 'workspace-command-receipt' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'workspace-baseline' ||

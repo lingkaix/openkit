@@ -369,6 +369,10 @@ import {
   ControlWorkspaceCaptureSchema,
 } from './workspace-capture-codecs.js';
 import {
+  type ControlWorkspaceCommandReceiptInput,
+  ControlWorkspaceCommandReceiptInputSchema,
+} from './workspace-command-receipt-codecs.js';
+import {
   type ControlWorkspaceDeletionInput,
   ControlWorkspaceDeletionInputSchema,
   type ControlWorkspaceDeletionResult,
@@ -424,7 +428,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 88;
+export const CONTROL_WORKER_VERSION = 89;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -819,6 +823,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'catalog-command-receipt';
           readonly input: ControlCatalogCommandReceiptInput;
+        }
+      | {
+          readonly operation: 'workspace-command-receipt';
+          readonly input: ControlWorkspaceCommandReceiptInput;
         }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
@@ -1230,6 +1238,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'scoped-notebook-sql'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'catalog-command-receipt'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'workspace-command-receipt';
+      readonly result: null;
+    }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1867,6 +1880,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlResolvedAgentSetupResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
   if (reply.operation === 'catalog-command-receipt') return reply.result === null;
+  if (reply.operation === 'workspace-command-receipt') return reply.result === null;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
   if (reply.operation === 'workspace-recovery-decision')
@@ -2462,6 +2476,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlResolvedAgentSetupInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-command-receipt')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceCommandReceiptInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'catalog-command-receipt')

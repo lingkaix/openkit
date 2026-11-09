@@ -4,6 +4,7 @@ import {
   ControlScopedNotebookSqlInputSchema,
   isSeparateScopedNotebookReceipt,
 } from '../storage/scoped-notebook-sql-codecs.js';
+import type { WorkspaceCommandReceipt } from '../storage/workspace-command-receipt-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
@@ -1442,6 +1443,13 @@ export class FsStore {
     this.pruneExpiredCommandRequests();
 
     return this.commandRequests.get(key) ?? null;
+  }
+
+  /** Acknowledges the original post-product Workspace command receipt and its separate expiry maintenance. */
+  public async publishWorkspaceCommandReceipt(receipt: WorkspaceCommandReceipt): Promise<void> {
+    if (!this.dataRoot)
+      throw new Error('Workspace command receipts require persistent scope ownership.');
+    await getControlStoreWorkerClient().recordWorkspaceCommandReceipt(this.dataRoot, receipt);
   }
 
   /** Commits one completed steer receipt and Audit without changing live or terminal product content. */
