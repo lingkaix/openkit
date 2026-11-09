@@ -206,7 +206,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     description: 'Block future Skill selection while retaining historical bytes and lineage.',
     inputSchema: RemoveSkillRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
+      skillId: z.string().min(1).max(255),
     }).strict(),
     outputSchema: CatalogMutationResponseSchema,
     credentials,
@@ -222,7 +222,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     description: 'Purge exact Skill bytes only after complete current retention admission.',
     inputSchema: RemoveSkillRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
+      skillId: z.string().min(1).max(255),
       digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     }).strict(),
     outputSchema: CatalogMutationResponseSchema,
@@ -285,7 +285,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     inputSchema: SelectSkillVersionRequestSchema.safeExtend({
       digest: SelectSkillVersionRequestSchema.shape.digest.unwrap(),
       workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
+      skillId: z.string().min(1).max(255),
     }).strict(),
     outputSchema: CatalogMutationResponseSchema,
     credentials,
@@ -301,7 +301,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     description: 'Set or remove an immutable Skill pin.',
     inputSchema: SetSkillPinRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
-      skillId: z.string().min(1),
+      skillId: z.string().min(1).max(255),
     }).strict(),
     outputSchema: CatalogMutationResponseSchema,
     credentials,

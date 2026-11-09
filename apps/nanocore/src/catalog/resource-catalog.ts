@@ -740,56 +740,70 @@ export function removeWorkspaceSkill(input: {
 }
 
 /** Purges only after complete reference admission by the existing external retention owners. */
-export function purgeWorkspaceSkillVersion(input: {
+export async function purgeWorkspaceSkillVersion(input: {
   /** Persists required native deletion admission after reference checks and before any deletion. */
-  readonly admitDeletion?: () => void;
+  readonly admitDeletion?: () => void | Promise<void>;
   readonly dataRoot: string;
   readonly digest: string;
   readonly entryId: string;
   readonly expectedRevision: number;
-  readonly retainedReferences: readonly string[] | null;
+  readonly retainedReferences: readonly string[] | null | (() => readonly string[] | null);
   readonly workspaceId: string;
-}): ResourceCatalogDocument {
-  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
-  if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
-  if (
-    !current.skills.versions.some(
-      (version) => version.entryId === input.entryId && version.digest === input.digest
-    )
-  )
-    throw new CatalogNotFoundError(`Skill version not found: ${input.entryId}/${input.digest}`);
-  const references = [...(input.retainedReferences ?? ['retention_authority_unavailable'])];
-  if (
-    current.skills.entries.some(
-      (entry) => entry.id === input.entryId && entry.currentDigest === input.digest
-    )
-  )
-    references.push(`skill_default:${input.entryId}`);
-  if (
-    current.skills.pins.some((pin) => pin.entryId === input.entryId && pin.digest === input.digest)
-  )
-    references.push(`skill_pin:${input.entryId}`);
-  for (const candidate of current.skills.candidates) {
+}): Promise<ResourceCatalogDocument> {
+  // The original deletion admission now waits for FULL; repeat current catalog and retention proofs after that wait.
+  const inspect = () => {
+    const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+    if (current.revision !== input.expectedRevision) throw new CatalogConflictError();
     if (
-      candidate.entryId === input.entryId &&
-      candidate.disposition === 'proposed' &&
-      (candidate.baseDigest === input.digest || candidate.candidateDigest === input.digest)
-    )
-      references.push(`skill_candidate:${candidate.id}`);
-  }
-  for (const version of current.plugins.versions) {
-    if (
-      version.members.some(
-        (member) =>
-          member.kind === 'skill' &&
-          member.catalogId === input.entryId &&
-          member.versionDigest === input.digest
+      !current.skills.versions.some(
+        (version) => version.entryId === input.entryId && version.digest === input.digest
       )
     )
-      references.push(`plugin_version:${version.entryId}/${version.digest}`);
+      throw new CatalogNotFoundError(`Skill version not found: ${input.entryId}/${input.digest}`);
+    const retainedReferences =
+      typeof input.retainedReferences === 'function'
+        ? input.retainedReferences()
+        : input.retainedReferences;
+    const references = [...(retainedReferences ?? ['retention_authority_unavailable'])];
+    if (
+      current.skills.entries.some(
+        (entry) => entry.id === input.entryId && entry.currentDigest === input.digest
+      )
+    )
+      references.push(`skill_default:${input.entryId}`);
+    if (
+      current.skills.pins.some(
+        (pin) => pin.entryId === input.entryId && pin.digest === input.digest
+      )
+    )
+      references.push(`skill_pin:${input.entryId}`);
+    for (const candidate of current.skills.candidates) {
+      if (
+        candidate.entryId === input.entryId &&
+        candidate.disposition === 'proposed' &&
+        (candidate.baseDigest === input.digest || candidate.candidateDigest === input.digest)
+      )
+        references.push(`skill_candidate:${candidate.id}`);
+    }
+    for (const version of current.plugins.versions) {
+      if (
+        version.members.some(
+          (member) =>
+            member.kind === 'skill' &&
+            member.catalogId === input.entryId &&
+            member.versionDigest === input.digest
+        )
+      )
+        references.push(`plugin_version:${version.entryId}/${version.digest}`);
+    }
+    if (references.length > 0) throw new CatalogRetentionError(references);
+    return current;
+  };
+  let current = inspect();
+  if (input.admitDeletion) {
+    await input.admitDeletion();
+    current = inspect();
   }
-  if (references.length > 0) throw new CatalogRetentionError(references);
-  input.admitDeletion?.();
   const path = skillSnapshotPath(input.dataRoot, input.workspaceId, input.entryId, input.digest);
   try {
     removeCanonicalTreeSync(path);

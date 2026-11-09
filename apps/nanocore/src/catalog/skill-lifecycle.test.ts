@@ -707,7 +707,7 @@ describe('Skill catalog lifecycle', () => {
     }
   });
 
-  it('requires complete external retention admission before purging only unreferenced bytes', () => {
+  it('requires complete external retention admission before purging only unreferenced bytes', async () => {
     const f = fixture();
     try {
       let admitted = false;
@@ -731,10 +731,12 @@ describe('Skill catalog lifecycle', () => {
           admitted = true;
         },
       };
-      expect(() => purgeWorkspaceSkillVersion(input)).toThrow(CatalogRetentionError);
+      await expect(async () => purgeWorkspaceSkillVersion(input)).rejects.toThrow(
+        CatalogRetentionError
+      );
       expect(admitted).toBe(false);
       try {
-        purgeWorkspaceSkillVersion(input);
+        await purgeWorkspaceSkillVersion(input);
       } catch (error) {
         expect((error as CatalogRetentionError).references).toEqual([
           'retention_authority_unavailable',
@@ -749,15 +751,15 @@ describe('Skill catalog lifecycle', () => {
         expectedRevision: input.expectedRevision,
         tree: tree('# New current'),
       });
-      expect(() =>
+      await expect(async () =>
         purgeWorkspaceSkillVersion({
           ...input,
           expectedRevision: second.catalog.revision,
           retainedReferences: ['aep:fixture_retained'],
         })
-      ).toThrow(CatalogRetentionError);
+      ).rejects.toThrow(CatalogRetentionError);
       expect(admitted).toBe(false);
-      const purged = purgeWorkspaceSkillVersion({
+      const purged = await purgeWorkspaceSkillVersion({
         ...input,
         expectedRevision: second.catalog.revision,
         retainedReferences: [],
@@ -831,7 +833,7 @@ describe('Skill catalog lifecycle', () => {
     }
   });
 
-  it('refuses a linked snapshot parent before reading or deleting outside the owned root', () => {
+  it('refuses a linked snapshot parent before reading or deleting outside the owned root', async () => {
     const f = fixture();
     try {
       const second = importWorkspaceSkill({
@@ -862,7 +864,9 @@ describe('Skill catalog lifecycle', () => {
       expect(() => readWorkspaceSkillContent({ ...input, path: 'SKILL.md' })).toThrow(
         CatalogIntegrityError
       );
-      expect(() => purgeWorkspaceSkillVersion(input)).toThrow(CatalogIntegrityError);
+      await expect(async () => purgeWorkspaceSkillVersion(input)).rejects.toThrow(
+        CatalogIntegrityError
+      );
       const retained = join(outside, f.imported.version.digest.slice('sha256:'.length), 'SKILL.md');
       expect(existsSync(retained)).toBe(true);
       expect(readFileSync(retained).toString('base64')).toBe(tree('# Original')[0]!.contentBase64);

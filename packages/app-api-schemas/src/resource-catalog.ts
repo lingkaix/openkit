@@ -209,9 +209,16 @@ export const GetWorkspaceCatalogResponseSchema = WorkspaceCatalogSummarySchema;
 export const ImportSkillRequestSchema = z
   .object({
     activate: z.boolean().default(true),
-    displayName: z.string().min(1),
+    displayName: z
+      .string()
+      .min(1)
+      .refine(
+        (value) => [...value].length <= 256,
+        'Skill display names must be at most 256 Unicode characters.'
+      )
+      .meta({ maxLength: 256 }),
     expectedRevision: z.number().int().nonnegative(),
-    id: z.string().regex(CATALOG_ID).optional(),
+    id: z.string().max(255).regex(CATALOG_ID).optional(),
     requestId: RequestIdSchema,
     tree: z.array(CatalogTreeFileSchema).min(1).optional(),
     source: z.string().min(1).max(8192).optional(),

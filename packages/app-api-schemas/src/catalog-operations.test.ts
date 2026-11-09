@@ -11,6 +11,52 @@ import { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 
 describe('Agent, Worker and resource catalog definitions', () => {
+  it('bounds public Skill import IDs at 255 ASCII characters', () => {
+    const schema = CATALOG_OPERATION_DEFINITIONS['catalog.skill-import'].inputSchema;
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId: '00000000-0000-4000-8000-000000000001',
+      displayName: 'Proof',
+      expectedRevision: 1,
+      tree: [{ kind: 'file', path: 'SKILL.md', contentBase64: 'cHJvb2Y=' }],
+    };
+    expect(schema.safeParse({ ...input, id: 'a'.repeat(255) }).success).toBe(true);
+    expect(schema.safeParse({ ...input, id: 'a'.repeat(256) }).success).toBe(false);
+  });
+
+  it.each(['select', 'pin', 'remove', 'purge'] as const)(
+    'bounds public Skill %s pointers at 255 ASCII characters',
+    (command) => {
+      const digest = `sha256:${'a'.repeat(64)}`;
+      const input = {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        requestId: '00000000-0000-4000-8000-000000000001',
+        expectedRevision: 1,
+        ...(command === 'select' ? { digest, expectedCurrentDigest: null } : {}),
+        ...(command === 'pin' ? { digest: null, expectedPinDigest: null } : {}),
+        ...(command === 'purge' ? { digest } : {}),
+      };
+      const schema = CATALOG_OPERATION_DEFINITIONS[`catalog.skill-${command}`].inputSchema;
+      expect(schema.safeParse({ ...input, skillId: 'a'.repeat(255) }).success).toBe(true);
+      expect(schema.safeParse({ ...input, skillId: 'a'.repeat(256) }).success).toBe(false);
+    }
+  );
+
+  it.each([
+    ['BMP', 'é'],
+    ['astral', '🧪'],
+  ])('bounds public Skill import display names at 256 Unicode code points (%s)', (_, character) => {
+    const schema = CATALOG_OPERATION_DEFINITIONS['catalog.skill-import'].inputSchema;
+    const input = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      requestId: '00000000-0000-4000-8000-000000000001',
+      expectedRevision: 1,
+      tree: [{ kind: 'file', path: 'SKILL.md', contentBase64: 'cHJvb2Y=' }],
+    };
+    expect(schema.safeParse({ ...input, displayName: character.repeat(256) }).success).toBe(true);
+    expect(schema.safeParse({ ...input, displayName: character.repeat(257) }).success).toBe(false);
+  });
+
   it('rejects wrong-kind Server Vault identifiers at admission', () => {
     const requestId = '00000000-0000-4000-8000-000000000001';
     const referenceId = allocateEntityId('vault');

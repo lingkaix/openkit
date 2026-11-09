@@ -3,6 +3,17 @@ import { z } from 'zod';
 
 /** Originally standalone Catalog, Data Source, App-update, Server MCP, token and configuration outcomes; never arbitrary Audit actions. */
 export const STANDALONE_AUDIT_STAGES = [
+  'catalog.skill-import.admit',
+  'catalog.skill-import',
+  'catalog.skill-select.admit',
+  'catalog.skill-select',
+  'catalog.skill-pin.admit',
+  'catalog.skill-pin',
+  'catalog.skill-remove.admit',
+  'catalog.skill-remove',
+  'catalog.skill-purge.admit',
+  'catalog.skill-purge',
+
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
   'catalog.skill-candidate-submit.admit',
@@ -119,6 +130,28 @@ export const ControlStandaloneAuditInputSchema = z
         event.errorCode === (failed ? 'mcp-server-unavailable' : null)
       );
     }
+    if (
+      stage === 'catalog.skill-import' ||
+      stage === 'catalog.skill-import.admit' ||
+      stage === 'catalog.skill-select' ||
+      stage === 'catalog.skill-select.admit' ||
+      stage === 'catalog.skill-pin' ||
+      stage === 'catalog.skill-pin.admit' ||
+      stage === 'catalog.skill-remove' ||
+      stage === 'catalog.skill-remove.admit' ||
+      stage === 'catalog.skill-purge' ||
+      stage === 'catalog.skill-purge.admit'
+    )
+      return (
+        workspaceId !== undefined &&
+        event.workspaceId === workspaceId &&
+        event.actor !== null &&
+        typeof event.requestId === 'string' &&
+        event.category === 'system' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        event.resource?.startsWith('skill:') === true
+      );
     if (event.actor?.kind !== 'user') return false;
     if (
       stage === 'auth.token.issue' ||

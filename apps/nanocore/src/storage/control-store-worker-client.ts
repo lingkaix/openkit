@@ -2718,7 +2718,7 @@ class ControlStoreWorkerClient {
     return this.open({ database, path, create: opening.command.create, initialize: 'user' });
   }
 
-  /** Retains the closed public Workspace and environment commands' separate receipt and maintenance FULL stages. */
+  /** Retains each closed public command's original receipt and separate maintenance FULL stages. */
   async recordWorkspaceCommandReceipt(
     dataRoot: string,
     receipt: WorkspaceCommandReceipt
@@ -2728,7 +2728,11 @@ class ControlStoreWorkerClient {
         ? { action: 'create-receipt', userId: receipt.scope.userId, receipt }
         : {
             action:
-              receipt.command === 'workspace.update' ? 'update-receipt' : 'environment-receipt',
+              receipt.command === 'workspace.update'
+                ? 'update-receipt'
+                : receipt.command.startsWith('catalog.skill-')
+                  ? 'skill-receipt'
+                  : 'environment-receipt',
             workspaceId: receipt.scope.workspaceId,
             receipt,
           }
@@ -2742,7 +2746,11 @@ class ControlStoreWorkerClient {
       const create =
         this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false });
       await this.open({ database, path, create, initialize: 'user' });
-    } else if (input.action === 'update-receipt' || input.action === 'environment-receipt') {
+    } else if (
+      input.action === 'update-receipt' ||
+      input.action === 'environment-receipt' ||
+      input.action === 'skill-receipt'
+    ) {
       const scope = nativeProductScope(dataRoot, {
         kind: 'workspace',
         workspaceId: input.workspaceId,
@@ -2772,7 +2780,9 @@ class ControlStoreWorkerClient {
               action:
                 input.action === 'update-receipt'
                   ? 'update-maintenance'
-                  : 'environment-maintenance',
+                  : input.action === 'skill-receipt'
+                    ? 'skill-maintenance'
+                    : 'environment-maintenance',
               workspaceId: input.workspaceId,
               referenceTime,
             },

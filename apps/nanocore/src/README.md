@@ -234,3 +234,5 @@ Live User Memory and Server Knowledge initialization, Source capture and pre-inf
 Workspace command receipts now await the two original native stages after their unchanged product and membership effects. Create retains its User owner, update its Workspace owner; replay reads without Main pruning, and a lost acknowledgement never reposts the product.
 
 Worker environment preparation/recovery, activation and purge reuse the existing closed Workspace command receipt stage after acknowledged product and host work. Insertion and later expiry maintenance retain separate native FULL acknowledgements; neither stage repeats an external effect.
+
+Skill import, select, pin, remove and purge retain their original native Workspace admission/completion Audit stages and reuse the existing late Workspace receipt owner. File work, runtime refresh, receipt insertion and expiry maintenance remain separate acknowledged stages; current authority and deletion retention proofs repeat after admission waits.

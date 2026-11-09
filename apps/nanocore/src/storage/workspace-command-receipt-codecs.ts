@@ -8,14 +8,19 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** The original creator receipt belongs to User; metadata and environment receipts belong to Workspace. */
+/** The original creator receipt belongs to User; metadata, environment and Skill receipts belong to Workspace. */
 export const WORKSPACE_USER_COMMAND_RECEIPTS = ['workspace.create'] as const;
-/** Existing public metadata and Worker environment commands share this physical Workspace receipt partition. */
+/** Existing public metadata, Worker environment and Skill management commands share this physical Workspace receipt partition. */
 export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'workspace.update',
   'worker_environment.prepare',
   'worker_environment.activate',
   'worker_environment.purge',
+  'catalog.skill-import',
+  'catalog.skill-select',
+  'catalog.skill-pin',
+  'catalog.skill-remove',
+  'catalog.skill-purge',
 ] as const;
 
 const receiptBase = {
@@ -64,6 +69,48 @@ const environmentReceipt = z.discriminatedUnion('command', [
   }),
 ]);
 
+/** Existing Skill management receipts retain their original import tuple or Workspace pointer. */
+const skillReceipt = z.discriminatedUnion('command', [
+  z.strictObject({
+    ...receiptBase,
+    command: z.literal('catalog.skill-import'),
+    scope: z.strictObject({ workspaceId: WorkspaceIdSchema, actorId: UserIdSchema }),
+    response: z.strictObject({
+      kind: z.literal('skill_version'),
+      id: z
+        .string()
+        .min(1)
+        .refine((value) => {
+          try {
+            const tuple: unknown = JSON.parse(value);
+            return (
+              Array.isArray(tuple) &&
+              tuple.length === 2 &&
+              typeof tuple[0] === 'string' &&
+              tuple[0].length > 0 &&
+              typeof tuple[1] === 'string' &&
+              /^sha256:[a-f0-9]{64}$/.test(tuple[1]) &&
+              JSON.stringify(tuple) === value
+            );
+          } catch {
+            return false;
+          }
+        }),
+    }),
+  }),
+  z.strictObject({
+    ...receiptBase,
+    command: z.enum([
+      'catalog.skill-select',
+      'catalog.skill-pin',
+      'catalog.skill-remove',
+      'catalog.skill-purge',
+    ]),
+    scope: z.strictObject({ workspaceId: WorkspaceIdSchema, actorId: UserIdSchema }),
+    response: z.strictObject({ kind: z.literal('skill_catalog'), id: WorkspaceIdSchema }),
+  }),
+]);
+
 /** Separate original record and expiry-maintenance commits, with two exact physical owners. */
 export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('action', [
   z.strictObject({
@@ -93,6 +140,16 @@ export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('a
   }),
   z.strictObject({
     action: z.literal('environment-maintenance'),
+    workspaceId: WorkspaceIdSchema,
+    referenceTime: z.string().datetime(),
+  }),
+  z.strictObject({
+    action: z.literal('skill-receipt'),
+    workspaceId: WorkspaceIdSchema,
+    receipt: skillReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('skill-maintenance'),
     workspaceId: WorkspaceIdSchema,
     referenceTime: z.string().datetime(),
   }),

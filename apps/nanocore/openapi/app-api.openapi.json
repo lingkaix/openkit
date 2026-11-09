@@ -126872,7 +126872,8 @@
           },
           "displayName": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           },
           "expectedRevision": {
             "type": "integer",
@@ -126881,6 +126882,7 @@
           },
           "id": {
             "type": "string",
+            "maxLength": 255,
             "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
           },
           "tree": {
@@ -128014,7 +128016,8 @@
           },
           "skillId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 255
           }
         },
         "required": [
@@ -128054,7 +128057,8 @@
           },
           "skillId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 255
           },
           "digest": {
             "type": "string",
@@ -128487,7 +128491,8 @@
           },
           "skillId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 255
           }
         },
         "required": [
@@ -128551,7 +128556,8 @@
           },
           "skillId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 255
           }
         },
         "required": [
@@ -177260,5 +177266,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:605af3c9c45ec2c32759b021d015e06f186bbe25b0dd8148bf803158c8678969"
+  "x-openkit-source-digest": "sha256:fea9da7b9f18090a260ab7bf5dc19aa7c9278d0e2966c835be7bca0415718228"
 }

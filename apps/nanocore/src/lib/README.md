@@ -171,3 +171,5 @@ Scoped Notebook first-save, User/Server Source capture and User maintain/tell re
 Public Workspace create and update preserve their separate native receipt and current-time expiry-maintenance stages after their original Workspace, Core membership and authored configuration effects. Cold create initializes its actual User receipt database in the native owner at that same late stage; isolated in-memory commands keep the original single Main receipt path.
 
 `FsStore.publishWorkspaceCommandReceipt` also carries the three existing Worker environment receipt variants through the same physical Workspace writer. Their original product and host stages precede the receipt; insertion and maintenance retain separate FULL acknowledgements.
+
+`FsStore.publishWorkspaceCommandReceipt` carries the existing five Skill management receipts after their completion Audit and runtime refresh. Its closed Skill variants preserve exact actor scope and import tuple or Workspace response, followed by the original separate maintenance stage.

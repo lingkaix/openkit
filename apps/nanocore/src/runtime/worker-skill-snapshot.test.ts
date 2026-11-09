@@ -486,7 +486,7 @@ describe('exact retained Worker Skill delivery', () => {
 
   it('refuses purged content even if its exact residual bytes reappear', async () => {
     const next = advanceDefault();
-    const purged = purgeWorkspaceSkillVersion({
+    const purged = await purgeWorkspaceSkillVersion({
       dataRoot: coreDb.dataRoot,
       workspaceId: workspaceIdForOwner(turn.owner),
       entryId: 'repo-guidelines',
