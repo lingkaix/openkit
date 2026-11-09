@@ -815,8 +815,40 @@ it('reopens pending work with its attempt count, immutable payload, and original
   ).toHaveLength(2);
 });
 
+it('orders same-deadline schedules by code units without locale collation', async () => {
+  const { store } = fixture();
+  const userId = testEntityId('usr', 'user_creator');
+  const schedules = [
+    await store.createAutomation(userId, definition),
+    await store.createAutomation(userId, definition),
+  ];
+  for (const schedule of schedules.toReversed())
+    await store.updateAutomation(userId, schedule.id, {
+      expectedRevision: schedule.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+  // A machine-order path must not consult the host's ICU collation at all.
+  const locale = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(() => {
+    throw new Error('Schedule ordering consulted host locale.');
+  });
+  let candidates: Awaited<ReturnType<typeof store.collectScanCandidates>>;
+  try {
+    candidates = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  } finally {
+    locale.mockRestore();
+  }
+  expect(candidates.map((occurrence) => occurrence.scheduleId)).toEqual(
+    schedules.map((schedule) => schedule.id).sort()
+  );
+  expect(candidates.map((occurrence) => occurrence.scheduledAt)).toEqual([
+    '2026-10-16T00:00:00.000Z',
+    '2026-10-16T00:00:00.000Z',
+  ]);
+});
+
 it('caps live selection at 128 globally in nominal deadline order', async () => {
-  const { db, store, setTime } = fixture();
+  const { store, setTime } = fixture();
   // Each fixture definition uses the actual native publisher; Main holds no SQL transaction across its acknowledgement.
   const schedules = [];
   for (let index = 0; index < 140; index++) {
@@ -1005,7 +1037,7 @@ it('seals a monthly outage with an exact immutable range and cancels the live in
 });
 
 it('orders actual fixed and monthly live frontiers before the shared 128 schedule limit', async () => {
-  const { db, store, setTime } = fixture();
+  const { store, setTime } = fixture();
   setTime('2020-01-28T09:00:00.000Z');
   // Publish through the actual native owner without holding Main SQL across its acknowledgements.
   const fixed = await (async () => {
