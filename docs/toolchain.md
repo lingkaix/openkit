@@ -105,7 +105,10 @@ Root `AGENTS.md` routes setup, CI, dependency, generator, and toolchain work her
 - Do not handcraft new sub-project starter files unless the relevant cookbook explicitly permits it.
 - Keep setup instructions and automation in version-controlled files.
 - Add dependencies through the package manager.
-- Prefer maintained current versions unless the user requests otherwise.
+- Prefer maintained current versions unless the user requests otherwise. "Latest" means the newest version at least 3 days old, including Worker runtime CLIs. [Development Security](specs/20261109-development_security.md#supply-chain-controls) owns the age rule and security exemption.
+- A security fix MAY use an exact-version `minimumReleaseAgeExclude` entry only when the commit names its advisory id. The next routine upgrade removes the exemption. Other ecosystems record publication dates under the same rule.
+- Installs MUST enforce `minimumReleaseAge: 4320`, `strictDepBuilds: true` and `blockExoticSubdeps: true`. `allowBuilds` is the sole script allowlist; a new enabled entry needs a reason and independent review.
+- Every dependency change MUST update its lock file in the same commit. CI, local-gate and image installs MUST be frozen. Image-time installs, including global CLI supply, MUST use a committed lock file or integrity hash and disable scripts except for allowlisted packages. Downloads MUST verify against committed checksums.
 - When commits are authorized, commit the corresponding lockfile update with the dependency change.
 - If a dependency affects workflow or architecture, document why it exists: keep workflow rationale in the affected guide or this toolchain guide, and keep architecture rationale in the applicable accepted Core document or specification.
 
@@ -174,9 +177,9 @@ The mirrored-declaration agreement rule under Version Maintenance is enforced by
 
 The Command Links inventory is a hand-written derivable projection. Source: root `package.json` scripts, with `README.md` retaining the human quick-start projection. Owner: the Generated Projections rules in `docs/documentation-model.md`. Activation: when a generator slice is authorized, generate the command inventory with a `--check` mode.
 
-### Fork Pull Requests Cannot Publish The Test Execution Image
+### Pull-Request Test Image Isolation
 
-The `test-image` job needs `packages: write` to publish a digest tag that is not yet in the registry. A pull request from a fork receives a read-only token, so a fork that also changes `containers/test-env/Dockerfile` produces a tag nobody can publish and every gate job fails to start. Same-repository pull requests, which are how this repository is developed today, are unaffected. Activation: when a fork contribution is accepted, add a build-and-load fallback for that case rather than weakening the digest-tag rule, which is what keeps a tree from being tested against a foreign image.
+Pull-request jobs MUST hold no write permission and publish nothing. If a pull request changes test-image inputs, build and run the image within its job, or transfer it as a workflow artifact for `docker load`. Keep the digest-tag admission rule. [Development Security](specs/20261109-development_security.md#supply-chain-controls) owns this requirement; the existing registry-publishing pull-request path remains an implementation gap until its executable unit lands.
 
 ### Test Temporary Directories
 

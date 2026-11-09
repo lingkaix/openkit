@@ -313,6 +313,10 @@ Normalized measurements compare pinned internal strategy where applicable, compa
 
 The OpenKit prompt, tail policy, or implementation may be optimized behind the stable request and item contracts only after the fixed evaluation set shows no regression. A separate cheaper summary model, role-specific prompt, dynamic percentage threshold, user knob, or learned optimizer requires current evidence and a later accepted design; none exists in V1.
 
+### Influence Through Compaction
+
+Rolling context, retained summaries and compaction MUST preserve the sticky external-influence bit. This applies to sessionless Assistant, Coordinator and other internal-agent contexts as well as Workers. The receiving Turn or AgentSession inherits known influence before generation or effect checks; absent ancestry counts as influenced. Model output MUST NOT reset the bit. [Runtime Security](20261109-runtime_security.md) E9 owns the influence sources and risk points; [Protocol](../core/protocol.md) and [AgentSession](../core/agent-session.md) own its durable facts.
+
 ## Current Implementation Projection
 
 The pending implementation requires `packages/config-schema/src/gateway.ts` to admit one authored logical-model `contextManagement` entry and `apps/nanocore/src/llm/logical-models.ts` to validate its threshold against each route's effective context limit and known output reserve, and project the resolved policy without changing model identity. Missing policy must reject the configuration snapshot; shipped configuration must supply the required field. Existing deployments must update their configuration before that snapshot becomes eligible, under the existing last-known-good configuration owner.

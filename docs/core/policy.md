@@ -53,7 +53,7 @@ Memory, Skill instructions, recalled decisions and AI assessments cannot grant p
 
 ## Technical Administration
 
-System operations and technical configuration that change deployment or runtime behavior require the requesting user's current usable administrator authority. In server mode that authority derives from their valid admin Token, including the identity owner's selected-token session projection; neither Workspace membership nor ordinary-user confirmation supplies it. Assistant and Operator act for that user, receive no Token secret and hold no independent privileged service identity. Each management call rechecks current authority, and revocation prevents later application even after an earlier proposal or confirmation.
+System operations and technical configuration that change deployment or runtime behavior require the requesting user's current usable administrator authority. In server mode that authority derives from their valid admin Token, including the identity owner's selected-token session projection; neither Workspace membership nor ordinary-user confirmation supplies it. Ordinary Assistant and Operator administration acts for that user, receives no Token secret and holds no independent privileged service identity. A security investigation instead uses its own narrowed read-and-propose agent principal on behalf of that user, under [Security](security.md). Each management call rechecks current authority, and revocation prevents later application even after an earlier proposal or confirmation.
 
 The intended operator is the team's technical administrator or engineer. Ordinary members may request administrative help, but cannot approve system-level changes on that person's behalf. Technical administration covers host-code activation, deployment/runtime configuration, Provider setup, template authorship/publication, arbitrary image builds, runtime-policy changes and physical retained-storage purge; a Workspace-local target does not exempt these effects. Resource owners distinguish such effects from ordinary authored business content and selection of already admitted resources. This rule does not reclassify Skill content editing, catalog metadata, personal model preferences or ordinary Task/Goal resource selection as deployment administration. Their existing owners still govern admission, bindings and effects independently. A Coordinator selecting an eligible existing environment within an admitted workload does not edit the deployment's technical policy or acquire an admin credential. Workspace eligibility for that same administrator authority is Administrator Eligibility below, not a second permission model.
 
@@ -116,11 +116,13 @@ The policy kernel MUST be treated as an NGAC-standard-aligned subset implementat
 
 `Subject` identifies the principal whose authority is evaluated, the actual actor, the process when present, and an optional on-behalf-of principal. A principal may be a human User or an agent identity. A direct human call need not have a process; Core MUST NOT invent a Turn. Agent-executed work records its actual process.
 
-An agent principal has its own attributes and grants, records a responsible human, and derives authority only from grants traceable to a human-approved domain. It MUST NOT implicitly inherit that human's rights or satisfy a human-only decision. When an agent acts for a User, the principal is the User, the actor is the agent, and effective authority is the User's rights intersected with the agent's restrictions. Record both identities and the credential kind. NGAC user elements represent identified principals, including agents; they do not imply human identity.
+An agent principal has its own attributes and grants, records a responsible human, and derives authority only from grants traceable to a human-approved domain. It MUST NOT implicitly inherit that human's rights or satisfy a human-only decision. When an agent acts for a User, the agent is the principal, on behalf of that User. Effective authority MUST be the intersection of the agent's grant, the User's current authority, and the context envelope. Record principal, actual actor, on-behalf-of identity and credential kind truthfully ([Security Program Rulings](../decisions/20261109-security_program_rulings.md)). An agent presenting the User's own credential is attributed to that User; Core MUST NOT invent an agent identity. NGAC user elements represent identified principals, including agents; they do not imply human identity.
 
 Creating an agent principal or granting it a domain MUST use an administration operation that records its creator and responsible human. An agent creator passes on the terminal human from its own responsibility chain unless a human explicitly assigns another. Every responsibility chain MUST be finite, acyclic, and end at one specific human.
 
 At evaluation, the Kernel MUST check that the terminal human remains current and authorized over the domain. A broken chain, removed human, or lost domain authority suspends the agent's grants and fails closed until a human reassigns responsibility. This accountability condition supplies no inherited human rights. Decisions MUST retain the agent principal and responsible human resolved at decision time. Reassignment MUST NOT rewrite historical decisions.
+
+Self-initiated work MAY omit the on-behalf-of grant only inside an explicitly established agent-initiated trigger context. Its definition MUST record the agent, responsible human and targets. The agent grant and narrowest context envelope then apply. A missing initiator outside that context MUST refuse the operation; self-initiation MUST NOT be a fallback. The responsible-human and domain checks above still apply.
 
 Subject context may include:
 
@@ -195,6 +197,8 @@ Examples:
 - sensitivity label
 - automation source
 
+Context envelopes MUST use the existing Kernel attributes: surface (`app`, `channel-direct`, `channel-group`), conversation, initiative (`requested`, `self`), and resolved destination audience. The preset set is closed: owner direct message, Workspace members, agent-initiated, and external group. Owner direct messages use the owner's ordinary grant. Workspace-member contexts expose only Workspace-shared material and bound effects by the asker's grant. Agent-initiated contexts use only the definition's named targets, with outbound effects gated or approved. External-group contexts expose only conversation-shared material, use no credentials, and reply only there. External groups are after v0.1.0; the first three presets ship in v0.1.0. Credential restrictions remain mandatory ([Security](security.md)).
+
 ## Decision
 
 `PermissionDecision` is the closed product-level result of policy evaluation. Its result is exactly one of:
@@ -258,9 +262,13 @@ A binding MUST name its point selector, scope, lifetime, mode, participant, orde
 
 Supervising agents MAY author per-agent and per-action Policy only inside their current human-approved delegation. Narrowing by an authorized author may apply directly. Delegated widening inside the approved envelope may apply under that delegation. Widening outside it, changing the envelope or delegation, and activating an agent approver require the owning human. Adding observe or advise participation widens disclosure and follows the same review path. A Worker may suggest a change but MUST NOT apply it. No principal may approve a change that widens its own authority.
 
+Every mutation MUST require current `policy.write` in its scope. Classification MUST inspect the complete resulting diff, including deletions and changed conditions, bindings and lifetimes. Removing a prohibition or weakening a required gate counts as widening. Every widened element MUST lie within the author's current effective authority. Server administrators administer the Server scope; Goal Coordinators administer only their delegated Goal scope. Workspace-administrator Policy writing is after v0.1.0. Policy MUST ship editable working defaults, and every write MUST be audited.
+
 Every Policy change MUST retain the proposal diff, proposer, rationale, affected scope, lifetime, validation, widening classification, deciding authority, and activation revision. Validation and a saved proposal MUST remain distinct from committed active Policy. Missing, conflicting, stale, revoked, or unevaluable authority MUST block activation. Retry and restart MUST inspect current revision and recorded outcome rather than replay an approval or unknown write.
 
 An agent approver is a gate participant with its own read-only investigative grant. It MUST run in shadow before the owning human explicitly activates a bounded class after inspecting shadow evidence. Its output is allow, deny, or escalation to a human, with risk, authorization assessment, and rationale. It MUST NOT approve its own binding or envelope, increase its authority, recursively request approval, impersonate a human, or satisfy a human-only decision. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records the preceding agent-native direction.
+
+A restrict-only gate contributes no authorization and MUST NOT satisfy approval. It MAY activate without a shadow period because it only narrows the final result. Failures MUST block or escalate to a human, and an unresolved required gate MUST NOT release an effect. This gate is distinct from the agent approver above ([Security](security.md), [Security Program Rulings](../decisions/20261109-security_program_rulings.md)).
 
 ### Delegated Goal Domain And Statement Lifetime
 
@@ -303,6 +311,8 @@ Conformance is observable when low-consequence reversible effects can complete t
 `OutputAudience` is the exact destination and set of recipients authorized to receive the output. It is resolved independently of the requesting actor's read authority and before output-producing context is assembled. A requester who may read material privately does not thereby authorize that material, its protected metadata, or a derived summary to reach a shared Thread, Artifact, Knowledge record, Worker context, notification, or external destination.
 
 The permission owner is the unique durable authority for both decisions. Assistant role assembly may project the resulting scope and audience into a bounded Turn input, and publication may project the decision into a destination-specific Item or effect, but neither projection may widen the current permission decision or become an authorization cache.
+
+The `OutputAudience` rule MUST apply to every agent reply in shared Threads and channels. Every read for that Turn MUST be audience-bounded before generation. A mention MUST NOT transfer the mentioning person's private read authority into the conversation. Other participants' messages supply untrusted content, never authority; an unresolved audience MUST refuse delivery.
 
 ### Evaluation And Publication Lifecycle
 

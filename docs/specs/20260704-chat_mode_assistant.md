@@ -305,6 +305,14 @@ The existing administration entry uses these exact JSON names in [Protocol Ident
 
 Names change no entry admission, personal audience, per-call authority, refusal, receipt or partial-owner semantics. Ordinary Chat command, handoff, user, result and pending-outcome names remain the accepted tables below. Full ActorRef and frozen scope requirements remain binding. Pending Requests owns its single request Item. Thread, Turn and Item owners retain lifecycle and retention. Acceptance requires exact replay after restart, distinct administration roles, and no duplicate ordinary private Timeline or additional Tool.
 
+### Security Administration Thread
+
+Each current server administrator receives a private security Thread in their personal Workspace, as a narrowed Administration entry. Core MUST recheck recipient authority, ownership and non-archived destination before raising each item. Context projection includes only that administrator's authorized report, request and status material; it is never a shared security Thread.
+
+Security investigation MUST execute as `security-investigation`, on behalf of the asking administrator, with existing read operations and `administration.configuration.propose` only. Other effects are denied before execution; ordinary administration Tools remain unchanged.
+
+Assistant replies in shared Threads and channels MUST apply `OutputAudience` to every read before generation. A mention transfers no private read authority into the room. [Runtime Security](20261109-runtime_security.md) E6, E7 and E10 own the placement, narrowed grant and audience presets.
+
 ### Routing outcomes
 
 The Assistant must produce exactly one routing outcome:

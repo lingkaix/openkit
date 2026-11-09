@@ -372,6 +372,16 @@ The integration should not begin by migrating every permission check. It should 
 
 The first runtime-policy integration should map one OpenKit policy decision into one OpenShell materialization artifact without making OpenShell canonical. Good candidates are `network.egress` for additional OpenShell endpoint policy entries, `runtime.launch` for selecting a container placement or backend, or `vault.use` for deciding whether a credential injection may be included in the Agent Environment Package.
 
+### Security Principals And Context Envelopes
+
+Agent operations MUST evaluate the agent grant intersected with the on-behalf-of principal's current authority and context envelope. Only an explicitly established agent-initiated trigger context omits the on-behalf-of grant; missing initiators elsewhere refuse execution. Existing responsibility, domain and credential restrictions remain mandatory.
+
+The Kernel uses existing proposal attributes for surface, conversation, initiative and destination audience. The preset set is closed: owner direct message, Workspace members, agent-initiated, and external group. The first three ship in v0.1.0; external groups follow later. Every shared-Thread or channel reply MUST bound reads by its `OutputAudience` before generation.
+
+Editable defaults MUST include the investigation principal's read-and-propose grant, the review principal's input-disclosure-only grant, the trigger's delegated grant, and a separate fixed alarm grant. Restrict-only gates contribute no allow or approval and need no shadow period.
+
+Every `policy.write` MUST classify the full resulting diff, including deleted prohibitions and weakened gates. Every widened element MUST fit the author's current effective authority, and authors MUST NOT approve their own widening. Writes MUST retain scope and classification in Audit. [Runtime Security](20261109-runtime_security.md) E7, E9 and E10 define the statements, presets and gate behavior; [Policy](../core/policy.md) remains the semantic owner.
+
 ## Current Implementation Projection
 
 The current package implements the first standard-aligned subset in this spec. The native mediation pilot and human Policy candidate path use this subset without changing its evaluator. The bounded `mcp.call-tool@decide` agent gate checks current responsibility chains through `apps/nanocore/src/policy/statements.ts`. General agent grants and automatic Policy review remain Not Started. Inactive declarations and shape validation do not prove active authority.

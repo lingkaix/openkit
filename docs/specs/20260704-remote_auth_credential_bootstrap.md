@@ -16,11 +16,11 @@ updated: "2026-10-02"
 - Human remote-access token rotation, revocation, and the independence of human-owned `Token` and `AuthSession` revocation.
 - The actor-context resolution and audit-label binding for human remote-access token-authenticated requests.
 - The stopped-server local operator procedure for discovering active Users and recovering one new `server-admin` credential after every usable administrator credential is unavailable.
-- The remote MCP static bearer, which is an ordinary human remote-access Token, and the accepted browser OAuth design. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns endpoint admission.
+- The remote MCP static bearer, including User-owned MCP client principals, and the accepted browser OAuth design. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns endpoint admission.
 
 ## Does Not Own
 
-- Canonical identity concepts. `docs/core/identity.md` owns `User`, `AuthSession`, `Token`, `WorkspaceMember`, `AutomationIdentity`, and actor-context terminology; this spec realizes only the current human-`User`-owned remote-auth contract.
+- Canonical identity concepts. `docs/core/identity.md` owns `User`, `AuthSession`, `Token`, `WorkspaceMember`, `AutomationIdentity`, and actor-context terminology; this spec realizes User-owned remote authentication and its separately attributed MCP client principal binding.
 - Authorization policy evaluation, roles, or permission decisions. Those belong to `docs/specs/20260629-openkit_policy_model.md` and `docs/specs/20260703-policy_enforcement_mapping.md`.
 - Canonical Workspace membership and user lifecycle, which are owned by `docs/core/identity.md`. Multi-user invitation, fixed-role, and owner-transfer mechanics belong to `docs/specs/20260715-multi_user_workspace_system.md`.
 - User-owned external-service secrets and provider credentials. Those belong to the vault specs (`docs/specs/20260703-vault_secret_injection.md`).
@@ -125,7 +125,7 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 
 - The bundled CLI and any remote coordinator MUST authenticate to server-mode NanoCore with a scoped token presented as `Authorization: Bearer <token>`.
 - The bundled CLI MUST resolve the token from the client credential store or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override. The `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` raw passthrough variables remain removed with no compatibility alias.
-- Every authenticated request under this V1 contract MUST resolve to an actor context containing: the acting human `User`, the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/evidence.md`. `AutomationIdentity` token actors remain undefined until a separate specification owns their issuance and membership rules.
+- Every authenticated request under this V1 contract MUST resolve to an actor context containing: the evaluated principal, the actual actor, the responsible human `User`, the on-behalf-of User for a client principal, the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/evidence.md`. `AutomationIdentity` token actors remain undefined until a separate specification owns their issuance and membership rules.
 - Token verification failures MUST be indistinguishable between unknown, expired, revoked, and malformed tokens in the response body, and MUST NOT echo the presented value.
 - Tokens MUST NOT be accepted from query strings, request bodies, or cookies. The bearer header is the only token transport.
 - Better Auth session cookies remain a valid authentication path for browser product surfaces; this spec adds token authentication beside it, and both resolve to the same actor-context shape.
@@ -133,7 +133,7 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 
 ### Remote MCP static bearer
 
-The remote MCP static bearer is an ordinary human remote-access Token. It uses the existing kinds `server-admin`, `workspace`, and `workspace-readonly`, the existing administrator-only issuance, the existing expiration, and the existing revocation. No refresh token is issued. Listing and revocation stay with the administrator. The user places the Token in the client header configuration. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns admission of that header at the endpoint. The ruling is recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
+Issuing a Token for an MCP client MUST create a User-owned `IntegrationIdentity` and bind that Token to exactly that principal. It acts on behalf of the User under the current Policy intersection. New client Tokens use only `workspace` or `workspace-readonly`, never `server-admin`; their scope remains a mandatory restriction and supplies the default grant. Existing User Tokens retain their existing binding and admission. Existing issuance authority, expiration and revocation remain in force. No refresh token is issued. Users list and revoke their own client Tokens through the unified credential surface. The user places the Token in the client header configuration. [Runtime Security](20261109-runtime_security.md) E11 owns the v0.1.0 cut; [Security Program Rulings](../decisions/20261109-security_program_rulings.md) records the principal change. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns admission of that header at the endpoint. The ruling is recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
 
 ### Client credential storage
 
@@ -188,6 +188,12 @@ Recovery MUST open only the existing Core, without creating a database, initiali
 - A durable human access-token row whose scope is outside the closed set above is not a historical read-model variant and MUST NOT be projected, authenticated, rewritten into a current scope, or retained behind a compatibility filter. The one accepted retirement is a one-way Core migration that deletes an exact `workspace-readwrite` row only when its durable status is already `revoked` and no surviving Token row names it as `predecessorTokenId`. The same transaction MUST append one redacted server-owned system `AuditEvent` for each retired Token, preserve every pre-existing audit row, delete the candidate, prove no unsupported scope remains, and publish the migration ledger entry. Any unproved lineage, audit-publication failure, non-revoked `workspace-readwrite` row, or other unsupported scope MUST roll back Token deletion, new audit rows, and ledger publication and block product startup without deleting, reissuing, rotating, or repairing a Token. A later retry is a new boot after explicit operator correction through a separately accepted recovery owner; normal boot invents no recovery authority.
 
 The unsupported-Token retirement above governs a database that is carried forward. Before `v0.1.0`, an explicit deployment reset may replace carry-forward under [Release Management](20260829-release_management.md#pre-stable-deployment-reset-and-protected-accounts). It must preserve the required accounts and usable access. The reset permission does not reactivate a revoked Token, authorize implicit startup deletion, weaken the current scope set, or turn failed retirement proof into successful migration. The pre-`v0.1.0` scope follows the engineer's interpretation of NONNEG-001 and COMPAT-001 in [Pre-Stable Data Continuity](../decisions/20261014-pre_stable_data_continuity.md).
+
+### Credential Response And Passive Defense
+
+One API, CLI and Web list MUST project all inbound credential kinds over their existing stores, including own Tokens, MCP client Tokens, Web sessions, Discord pairings and run rows. Users MUST be able to revoke their own entries. Administrators also see NanoHost tokens and other users' Tokens within existing token-operation authority. Disabling a User MUST stop that User's sessions and MCP client Tokens. Child verification MUST check the current issuer chain; opaque durable secrets remain hashed and online-verified.
+
+Sign-in MUST use per-source and per-account limiting with backoff. The source is the transport peer unless an administrator configured trusted proxy hops. Bearer failures are counted without throttling. Counters MUST remain process-local and bounded, with one Audit record per threshold crossing. A revoked-credential signal MUST require the presented secret to verify against a stored revoked, expired or rotated Token; guessed identifiers emit no signal. [Runtime Security](20261109-runtime_security.md) E1 and E11 own the thresholds, credential cut and response behavior.
 
 ## Accepted Design
 
@@ -285,9 +291,9 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 
 This design is accepted and is not implemented. The first release authenticates a remote MCP client only with the static bearer defined above. The ruling is recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
 
-Both connection methods end in the same existing opaque `okt_` Token owned by the User, checked by the existing verifier and the existing central authorization. There is no second login, no new identity record, no JWT, and no external identity provider.
+Both connection methods use an opaque `okt_` Token owned by the User and bound to the MCP client's `IntegrationIdentity`, under the same verifier and central authorization. There is no second login, JWT or external identity provider. Browser OAuth is after v0.1.0 ([#667](https://github.com/lingkaix/openkit/issues/667)).
 
-Browser OAuth is the authorization code grant with PKCE S256. Client identity is a Client ID Metadata Document. The user adds the endpoint URL in the client. The browser opens the existing OpenKit login. A consent page names the client identity URL, the callback host, the exact User, the Workspace bindings, the capability kind, and the expiry. The capability kind is read-only or read-write, and administrator only for a current administrator. OpenKit then issues an ordinary Token whose audience is the MCP resource. No refresh token is issued. When that Token expires, the user authorizes again. Authorization codes are short-lived process state. A restart fails closed, and the user authorizes again. No durable workflow is added for them.
+Browser OAuth is the authorization code grant with PKCE S256. Client identity is a Client ID Metadata Document. The user adds the endpoint URL in the client. The browser opens the existing OpenKit login. A consent page names the client identity URL, the callback host, the exact User, the Workspace bindings, the capability kind, and the expiry. The capability kind is read-only or read-write; new MCP client Tokens never receive `server-admin`. OpenKit then issues an ordinary Token whose audience is the MCP resource. No refresh token is issued. When that Token expires, the user authorizes again. Authorization codes are short-lived process state. A restart fails closed, and the user authorizes again. No durable workflow is added for them.
 
 The static bearer remains the ordinary Token the user places in the client header configuration.
 
@@ -304,7 +310,7 @@ The following are not designed.
 - Browser OAuth above is accepted design and is not implemented. The cut list in that section is not deferred design.
 - Dedicated `AutomationIdentity` token issuance, administration, and independent Workspace-membership rules remain deferred. The bounded recurring responsible-user binding is owned separately by the recurring specification and grants none of those capabilities.
 - Fine-grained token scopes (per-capability, per-thread, time-boxed step tokens) beyond the closed v1 set.
-- Web UI token administration surfaces projecting the token read models.
+- Administrator controls over other users' Web sessions beyond User disabling ([#674](https://github.com/lingkaix/openkit/issues/674)); the User's own session list and revocation ship in v0.1.0.
 
 ## Links
 

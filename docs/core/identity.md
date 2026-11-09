@@ -55,11 +55,19 @@ An `AuthSession` may carry a non-secret derived-authority Token reference when a
 
 `AutomationIdentity` is a non-human actor that can trigger work under a declared owner or policy context. The concept alone does not define a token-issuance or Workspace-membership contract; any such contract requires a separate owning specification. A recurring instruction may realize that identity by binding to one responsible user and checking current Policy; derived trigger permissions and activity history do not create independent credentials or membership.
 
-`IntegrationIdentity` is an external system identity such as a webhook source, repository app, or provider integration.
+`IntegrationIdentity` is an external system identity such as a webhook source, repository app, provider integration or MCP client. It MAY be User-owned and span Workspaces. Current Token restrictions and Policy determine its authority ([Security Program Rulings](../decisions/20261109-security_program_rulings.md)).
 
 `ActorRef` is the stable, non-secret identity summary attached to shared history and governed actions. It is a closed tagged union: a human actor carries `kind=user` and its stable `id`, and that same ID is the responsible user by definition; an `agent`, `automation`, `integration`, or `system` actor additionally carries nullable `responsibleUserId`. This avoids duplicating a human identifier in two fields and keeps the complete invariant representable in the canonical protocol schema and its generated representations. Credential kind, credential ID, channel, display name, and email are request or audit projections rather than part of the stable actor reference.
 
 These are conceptual record families, not a complete field list.
+
+### Inbound Credentials
+
+Every inbound credential MUST select exactly one principal and MUST NOT add authority. A Token MUST bind to exactly one principal; scope and binding remain mandatory restrictions alongside [Policy](policy.md). A child credential's principal acts on behalf of its issuer under Policy's intersection. Verification MUST require every issuer in the chain to remain active, so revocation and disabling cascade.
+
+All inbound credential kinds MUST appear in one management list and surface for their supported issuance, listing, rotation, revocation and expiry operations, over their existing stores. This includes the User's own AuthSessions and run credentials. Durable credential secrets MUST remain opaque, hashed and verified online. Sandbox credentials MUST stay short-lived, run-bound and in memory; ending the run revokes them. Existing User Tokens retain their principal binding.
+
+Outbound secrets remain in [Vault](vault.md). Channel participants map through the verified sender identity and receive no Token. External-person principals have no default grant; their activation is after v0.1.0. The [Security](security.md) charter coordinates these rules.
 
 ### Implicit Local Human
 

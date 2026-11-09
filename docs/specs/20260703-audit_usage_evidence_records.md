@@ -252,6 +252,27 @@ Workspace MCP create, version selection, binding mutation and Plugin import reta
 The capability owner captures an available admitted actor, non-secret credential summary and known command request identity in the existing linked Audit family with action `capability.admit` before contacting the effect provider. Admission and call insertion use the same owning SQLite transaction. Admission outcome is `unknown`, not evidence that the effect succeeded. Terminal and restart-unknown Audit retain that paired attribution from the same admission; the call request ID takes precedence, then the retained command request ID, then an available trusted finish context. Audit-only command correlation never changes call or usage identity or idempotency; historical absence stays unknown and a later caller cannot replace it. Public inference without Workspace metadata uses the existing Server CapabilityCall and UsageRecord variants in Core; it does not create a synthetic Workspace. Workspace inference keeps its existing home. Usage records contain only measured consumption. Borrowed Core database ownership stays with the App.
 
 
+### Security Event Projection
+
+The following Server-scope event projection follows [Runtime Security](20261109-runtime_security.md) E5. Each producer MUST supply its listed fields; missing fields are reported as unsupported. Findings, notification text and sensitive report bodies do not enter these event summaries. Existing scope, actor and redaction rules remain mandatory.
+
+| Event | Producer | Required fields | Rule |
+| --- | --- | --- | --- |
+| `auth.token.issue` | Access-token operations | Token id, scope, owner, principal, actor, expiry | R1 if `server-admin`; else R1d |
+| `auth.token.revoke`, `auth.token.rotate` | Access-token operations | Token id, scope, actor | R1d |
+| `auth.admin-recovery.issue` | Administrator recovery | Target user, actor | R1 |
+| `auth.bootstrap.consume` | Bootstrap | Actor | R1 |
+| `administration.configuration.apply` | Configuration apply | Changed sections, actor | R1 for the security section; else R1d |
+| `server.config.update` | Server configuration | Changed keys, actor | R1d |
+| `policy.write` | Policy administration | Scope, full-diff classification, actor | R1d if widening |
+| `user.disable` | User administration | Target, actor | R1d |
+| `app.update.start` | App update | Target digest, actor | R1d |
+| `channel.pairing.bind`, `channel.pairing.unbind` (new) | Channel pairing | Channel kind, user, binding revision, actor | R1 if the user is a server administrator; else R1d |
+| `auth.failure-threshold` (new) | Limiter, bearer middleware | Kind, key kind, window, count | R2, R4 |
+| `auth.revoked-credential-presented` (new) | Bearer verifier | Token id, scope, status, source | R3 |
+
+Pairing and unpairing MUST retain the actual actor and binding revision. Threshold signals MUST retain bounded counts without credential values. `policy.write` MUST retain scope and full-diff classification, including deletions and weakened gates.
+
 ## UsageRecord
 
 `UsageRecord` should carry:

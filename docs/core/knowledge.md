@@ -174,6 +174,10 @@ Vault owns secret values; Knowledge Pages MUST NOT store them.
 
 External domain systems own their raw source-of-truth records; OpenKit may cite, summarize, and contextualize those records without replacing their authority.
 
+## Carried External Influence
+
+Knowledge and personal Memory written from an externally influenced agent context MUST carry its influence bit. Governed retrieval of that material MUST set the reading agent context's sticky bit before use. Summaries and derived representations MUST preserve it; absent or unknown ancestry counts as influenced. A Review MUST NOT erase influence or grant authority. [Protocol](protocol.md) and [AgentSession](agent-session.md) own the reading context's state; [Security](security.md) coordinates the rule ([Security Program Rulings](../decisions/20261109-security_program_rulings.md)).
+
 ## Invariants
 
 - User Memory, Workspace Knowledge and Server Knowledge MUST remain isolated by current owner and source authority; personal material MUST NOT silently enter shared work or another scope.

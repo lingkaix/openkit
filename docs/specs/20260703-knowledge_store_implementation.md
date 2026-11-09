@@ -249,6 +249,10 @@ The former Workspace `memory` vocabulary and aliases remain retired. Personal Us
 - Published concept paths remain stable; reorganization uses title/index edits, new pages and archive/supersede without a generalized identity-history family.
 - Migration MUST be one-way and complete: after migration, no retired Workspace `memory`-named route, schema, directory or capability remains; intentional User Memory is a scoped projection.
 
+### Influence Encoding And Retrieval
+
+Knowledge and Memory revisions MUST encode the conservative external-influence boolean alongside their existing content provenance. Publication from an influenced context MUST write `true`; derived representations and consolidation preserve it. Validation MUST reject malformed recorded values and treat absent or unknown ancestry as influenced. Governed retrieval MUST set the reading context's sticky bit before returning affected material. Human Review grants no clearing authority. [Runtime Security](20261109-runtime_security.md) E9 owns the influence rule, and [Knowledge](../core/knowledge.md) owns its reusable-data semantics.
+
 ## Current Implementation Projection
 
 Workspace SQLite is the current publication authority. `notebook-workspace-selection.ts` verifies the exact schema Storage reference and constructs a Notebook pinned to the selected commit. Page, Source, Proposal, history, index, retrieval and captured-state readers share that tuple. Missing authority fails as recovery-required; Git refs, authored schema YAML and predecessor Proposal/Review files supply no fallback. User Memory and Server Knowledge retain their existing scope writers.

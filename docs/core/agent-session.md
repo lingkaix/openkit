@@ -159,6 +159,10 @@ The AgentSession model is accepted only when observable evidence proves all of t
 - missing, stale, conflicting, duplicate-current, restart, and dependency-failure cases fail closed without inferred continuity
 - ordinary AgentSession close removes its local binding without requiring deletion of a compatible shared Sandbox
 
+## External Influence
+
+Core's durable AgentSession state MUST retain one conservative external-influence bit. Once set, it MUST remain set through later Turns, summarization, compaction, retention and reuse. A replacement or successor that continues the context MUST inherit it. Missing recorded influence MUST count as influenced. The bit supplies no authority and MUST NOT carry forward a prior Turn's grant. [Protocol](protocol.md) owns ingress and sessionless Turn facts; [Security](security.md) coordinates the influence rule ([Security Program Rulings](../decisions/20261109-security_program_rulings.md)).
+
 ## Invariants
 
 - AgentSession MUST mean the hidden Core execution-binding identity defined here.

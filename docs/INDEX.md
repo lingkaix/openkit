@@ -48,6 +48,7 @@ and are not listed here.
 - `docs/core/protocol.md` — This document defines stable OpenKit core protocol semantics.
 - `docs/core/runtime-model.md` — This document defines OpenKit runtime semantics.
 - `docs/core/sandbox.md` — This document defines OpenKit sandbox semantics.
+- `docs/core/security.md` — This document coordinates OpenKit security: the trust boundaries, the threat model, the security-specific principles, the finding concepts and the limits OpenK…
 - `docs/core/storage.md` — This document records the storage principles and key concepts for OpenKit across two explicit layers of one persistence module: Layer 1 (System State And Work…
 - `docs/core/vault.md` — This document defines OpenKit secret vault semantics.
 - `docs/core/work-model.md` — This document owns how OpenKit work appears to users and product surfaces and the Core workflow mechanisms used to coordinate worker-agent work.
@@ -156,6 +157,8 @@ and are not listed here.
 - `docs/specs/20261020-compute_neutrality_target.md` — Draft, Not Started — This Draft records the proposed placement and carriage mapping, migration order, retained-meaning dispositions and validation limits.
 - `docs/specs/20261021-protocol_identifiers_and_enums.md` — Accepted, Partial — Entity prefixes, fixed derivation namespaces, canonical name bytes, and kind-specific admission.
 - `docs/specs/20261108-conversation_timeline.md` — Accepted, In Progress — This specification owns the conversation timeline that every OpenKit agent kind presents to people: run entries, the entry-kind registry with its agent profile…
+- `docs/specs/20261109-development_security.md` — Accepted, Not Started — How OpenKit development and maintenance handle security:
+- `docs/specs/20261109-runtime_security.md` — Accepted, Not Started — The runtime values and workflows that the Security charter leaves to specifications, inside one instance: passive defense, inventory, feeds and matching; the s…
 
 ## Terminal Specifications
 

@@ -81,6 +81,11 @@ Core documents define canonical concepts once. Specs reference those concepts an
 
 Current specs live at the root of this directory. Read the relevant core document first, then the active spec that owns the concrete implementation contract.
 
+Security:
+
+- [Development Security](20261109-development_security.md): finding classes, disclosure, supply controls, release integrity and check placement.
+- [Runtime Security](20261109-runtime_security.md): instance detection, notices, response grants, review gates and credential management.
+
 Internal Agent runtime and resources:
 
 - [Internal Agent Runtime](20260813-internal_agent_runtime.md): one owned bounded loop, private ordered message/Tool contracts, fuses, cancellation and Gateway projection.

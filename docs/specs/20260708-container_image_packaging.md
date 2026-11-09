@@ -464,6 +464,10 @@ Codex, OpenCode, Pi, and DeepSeek templates select that same image and differ by
 
 Every authored `AgentManifest` selects an OpenShell-compatible image reference that the NanoHost may pass to stock sandbox creation after admission; NanoCore copies that resolved reference into the AEP but performs no OpenShell lifecycle effect. A global `OPENKIT_OPENSHELL_WORKER_IMAGE` selector is not part of the current contract. Release manifests should use GHCR references or digests, while repository-owned local templates may use cataloged development tags.
 
+### Supply Integrity
+
+Image builds MUST use frozen installs and committed lock files or integrity hashes, including global CLI installs. Scripts MUST be disabled except for independently reviewed allowlisted packages. Every download MUST verify against a committed checksum; streamed installer execution is forbidden. Release image-platform SBOMs MUST be generated from the built artifacts, attached under checksums, and the App image MUST embed its SBOM for offline inventory. [Development Security](20261109-development_security.md) owns these controls and provenance requirements.
+
 ## Proposed Design
 
 ### Directory Layout
@@ -851,8 +855,8 @@ CI acceptance:
 ## Deferred / Future Work
 
 - Signed images and signature verification policy.
-- SBOM generation and vulnerability scanning as release blockers.
-- Build provenance attestations as a required release artifact.
+- Additional consumer-side security gates beyond [Development Security](20261109-development_security.md); its SBOM generation, scanning and K/C release predicate are current requirements.
+- Worker image attestation verification after v0.1.0 ([#691](https://github.com/lingkaix/openkit/issues/691)); producing release provenance is already required.
 - Nightly or main-branch diagnostic image publishing.
 - Kubernetes, Helm, or Compose packaging.
 - Desktop app packaging with bundled or external NanoCore.

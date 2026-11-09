@@ -16,7 +16,7 @@ Cadence, trigger identity, overlap, missed occurrences, bounded admission-only r
 
 - Durable fixed-interval and bounded monthly UTC schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
 - Bounded external-event admission requested by a scheduled poll Worker through the existing Worker admission boundary.
-- The closed daily Knowledge Manager maintenance trigger below, through the same scan and existing work records.
+- The closed daily Knowledge Manager maintenance trigger and the closed Server security trigger below, through the same recurring interface and existing work records.
 - The one NanoCore-local five-second scan, bounded admission retry, ten-minute expiry, restart, overlap, clock, and missed-occurrence rules for those schedules.
 - The boundary between occurrence admission history and the existing scheduler, Turn, worker-runtime, permission, audit, storage, backup, and product-surface owners.
 
@@ -110,7 +110,7 @@ Acceptance proves one event admission after repeated source reads and a fresh Co
 
 ### Knowledge Manager daily maintenance
 
-The same recurring scan also triggers one closed internal operation: a bounded Knowledge Manager maintenance Turn for one Server, User or Workspace notebook scope. It is not an arbitrary operation target or Worker dispatch. Each scope has one independent on/off setting, default off. The cadence is fixed daily; explicit run requests remain available through the Knowledge Manager owner. There are no additional schedule knobs, a second timer, a new scheduler or a new occurrence family. Existing Worker schedule definitions and their admission rules remain unchanged.
+The same recurring interface admits a bounded Knowledge Manager maintenance Turn for one Server, User or Workspace notebook scope. The separate closed security trigger below admits deterministic Core-local work under its own grant. It is not an arbitrary operation target or Worker dispatch. Each scope has one independent on/off setting, default off. The cadence is fixed daily; explicit run requests remain available through the Knowledge Manager owner. There are no additional schedule knobs, a second timer, a new scheduler or a new occurrence family. Existing Worker schedule definitions and their admission rules remain unchanged.
 
 The [Knowledge Manager owner](20260704-knowledge_manager_internal_agent_runtime.md#query-and-maintenance-execution) owns fresh input assembly, single-writer admission, instructions and fixed-base publication. Existing scope configuration and maintenance Thread, Turn and Item records retain enablement, due-run lineage and visible outcomes; no Worker identity or Workspace membership is fabricated for User or Server scopes. The trigger checks current scope authority and delegation. Failed or skipped scheduled work records a visible outcome and reason through the existing work owners. It never authorizes publication, automatically retries a model run or silently claims that a source range was processed.
 
@@ -192,6 +192,18 @@ A forward wall-clock jump makes nominal instants due or expired under the same c
 For each definition, the same transaction that inserts individual due occurrences or one exact expired range advances `nextScheduledAt` and `greatestAccountedScheduledAt` across precisely those nominal instants. A rollback advances neither. After an unknown database commit result, restart reads the deterministic occurrence or exact range coverage and advances only from durable truth; it never guesses that a missing instant was recorded.
 
 The scan prioritizes unresolved occurrences and unmaterialized due instants whose deadlines have not passed. It processes at most 128 live admission candidates per scan in earliest-deadline order. A separate bound permits at most 128 expired ranges per scan, including prefixes recorded while materializing live candidates. Expired-only ranges use the remaining range budget, ordered globally by earliest nominal instant through the ordinary due index. Expiry of already materialized pending occurrences has its own bound of 128 per scan. These current default bounds limit per-scan processing and writes for each phase independently; they are not one combined write budget. This preserves every missed scheduled instant without attempting expired work, blocking current eligible work behind an arbitrarily long outage, keeping a second history frontier, or performing unbounded writes in one scan. Work beyond the bounded scanner may expire; the scanner does not widen deadlines or claim queue capacity.
+
+### Closed Security Trigger
+
+The Server security trigger is a closed Core-local workflow on this owner's interface. It is off by default, with a daily advisory run and a 300-second Audit watch, and makes no Provider call. It moves with this owner through the durable-engine cutover; it creates no second scheduler or executor.
+
+The state sequence is `off` → `on` → `stopping` → `off`. An authorized stop MUST durably insert its alarm before detection stops. Loss of the enabling administrator's authority enters `stopping` and records its alarm; recovery records discovered monitoring gaps. A separate fixed alarm grant raises fixed text to all current administrators independently of the suspended monitoring delegation.
+
+Trigger state MUST retain the switch, cursor, outbox, occurrence counters, per-recipient acknowledgements, triage revisions and deciding request, conflict flag, Thread generations, last report and feeds. Detection advances the cursor and inserts outbox rows atomically in Core SQLite. Raising request tuples and marking delivery are separate idempotent steps; partial tuples require inspection as `recovery_required`.
+
+Outstanding notices MUST drain at boot and every 300 seconds, independently of detection, including after `off`, delegation loss and restart. Alarm notices use the alarm grant; other notices retain the delegated grant and remain outstanding while it is suspended. Only the recipient's recorded answer acknowledges a notice. Other actors' answers or withdrawals never end it.
+
+[Runtime Security](20261109-runtime_security.md) E4 is this producer's complete identifier declaration: fixed JSON UUIDv5 request names, `deriveEntityId` for security Threads, raise/status Turns and Items, stored occurrence counters and Thread generations, and recomputation on retry. E6 owns serialized triage revisions, one conflict per revision, and stale-answer evidence without overwriting newer inventory-backed dispositions. Its busy, archived, revoked-recipient and recovery predicates remain mandatory.
 
 ## Current Implementation Projection
 

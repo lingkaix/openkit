@@ -100,9 +100,11 @@ Discord is the first external team channel under the [2026-10-15 ruling](../deci
 
 Direct decisions are limited to Pending Request kinds explicitly admitted by the common channel contract, with current responsible-user, source/audience, exact-request, and stale/duplicate checks. An unlisted kind links back to its authorized App decision surface. Email initially sends attention/digest links. Slack, Signal, and broader Email interaction remain separately admitted later work; success on Discord cannot close those outcomes. The channel owner must retain definite failure versus delivery-unknown and current-authority behavior across retry, restart, and account revocation. No message is sent by accepting this scope.
 
+The closed Pending Request requester set includes `automation`. A later Core-local Turn publishes its outcomes without executing an agent, as [Protocol](protocol.md#pending-request-semantics) requires.
+
 ## Notification Boundary
 
-An attention event identifies a current Core request and its responsible recipient. It carries no new approval, answer, grant, or execution authority. The request owner remains authoritative after notification delivery, failure, retry, or loss.
+An attention event identifies a current Core request and its responsible recipient, or a durable security notice and its recipient. A security notice remains eligible while outstanding, independently of its request state. Only that recipient's recorded answer acknowledges it; another actor's answer or withdrawal MUST NOT end it. It carries no new approval, answer, grant or execution authority. Request answer authority remains unchanged, and the request owner remains authoritative for request outcomes ([Security](security.md), [Security Program Rulings](../decisions/20261109-security_program_rulings.md)).
 
 A delivery attempt records an external transport observation. A definite rejection before sending differs from an unknown send result. An unknown result MUST NOT imply a Core outcome or permit an automatic duplicate send. Restart preserves uncertainty when an attempt lacks a definite result. An explicit retry after a proved no-send failure requires current account binding, actor authority, source access, and destination audience checks.
 

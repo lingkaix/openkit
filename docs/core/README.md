@@ -98,7 +98,7 @@ Descriptive text can explain intent, but stable protocol, model, ownership, and 
 
 ## Required Core Aspect Set
 
-The current required core aspect set contains 20 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
+The current required core aspect set contains 21 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
 
 ### Doctrine
 
@@ -125,6 +125,7 @@ The current required core aspect set contains 20 documents. Future merge or reti
 
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `policy.md` — Policy authority model: principals, statements, decisions, approval, administration, workspace and administrator eligibility, and disclosure authorization.
+- `security.md` — security charter, trust boundaries, threat model, findings, response classes and levels, advisory feeds, inventory, and accepted limits.
 - `mediation.md` — operation definition and invocation, `<operation>@<stage>` mediation points, Capability Mediation Boundary, `CapabilityCall`, gateway projection and routing, transformer/advice/gate ordering, invocation evidence, vault injection, capability-call usage production, and rate-limit boundary.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 
@@ -158,6 +159,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
 | Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization, AssistantReadScope, OutputAudience | `policy.md` |
+| SecurityFinding, ResponseClass, ResponseLevel, AdvisoryFeed, ComponentInventory | `security.md` |
 | Operation, mediation point, enforcement point, Capability Mediation Boundary, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Storage, Layer 1 (System State And Work Data: scope-owned transactional control authority, immutable content, item log persistence, retention and deletion classes, format markers, Workspace portability), Layer 2 (User Data And The Storage Service: shared file storage, `contentRef`, Policy access leases, Knowledge package byte layout) | `storage.md` |
@@ -183,12 +185,13 @@ Discuss and promote the core docs in this order:
 12. `agent-supply.md`
 13. `identity.md`
 14. `policy.md`
-15. `mediation.md`
-16. `vault.md`
-17. `storage.md`
-18. `evidence.md`
-19. `protocol.md`
-20. `communication.md`
+15. `security.md`
+16. `mediation.md`
+17. `vault.md`
+18. `storage.md`
+19. `evidence.md`
+20. `protocol.md`
+21. `communication.md`
 
 ## Promotion And Retirement Rules
 

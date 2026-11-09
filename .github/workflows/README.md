@@ -19,17 +19,23 @@ The current workflow policy is:
 - Candidate construction selects only catalog entries with `release: true`.
 - Same-tag reruns reuse a complete version, version-without-`v`, and source-revision identity, while partial or conflicting identities fail closed; each new release tag uses a commit that has not already been released.
 - Release tag workflows are serialized, third-party Actions are commit-pinned, and OCI creation time comes from the release commit.
-- The terminal job verifies GitHub Release state and all five attachments, every image tag and digest, stable or prerelease `latest` behavior, the bundled Skill under the supported Node runtime and its helper bytes against the reviewed release checkout, both downloaded NanoHost archives through the shared staging verifier, and the public worker base through a logged-out exact-digest inspection.
+- The terminal job verifies GitHub Release state and all required attachments, including the security SBOMs and provenance, every image tag and digest, stable or prerelease `latest` behavior, the bundled Skill under the supported Node runtime and its helper bytes against the reviewed release checkout, both downloaded NanoHost archives through the shared staging verifier, and the public worker base through a logged-out exact-digest inspection.
 
 The existing `github-release` and `verify-release` jobs generate, upload and independently compare the fifth release-manifest attachment. The exact release source must carry reviewed compatibility facts in `release-notes/<tag>.manifest.json`; the preflight refuses missing or unassessed facts rather than inventing a compatibility verdict. The manifest lists archive checksums and is itself covered by `SHA256SUMS`.
 
-`release-promotion.yml` handles only stable tag pushes and serializes with the prerelease workflow. Its first step refuses any repository other than `notrucked/openkit`; the script also requires a synthetic `v0.0.N` stable version. Under the bounded P15 exception it verifies one same-source published prerelease and its current successful publication/native-smoke attempt, copies its exact indexes and five attachments, and verifies the result again without construction. A complete same-tag rerun rewrites nothing. Production stable publication and its prerelease-only preflight default remain unchanged and reserved.
+`release-promotion.yml` handles only stable tag pushes and serializes with the prerelease workflow. Its first step refuses any repository other than `notrucked/openkit`; the script also requires a synthetic `v0.0.N` stable version. Under the bounded P15 exception it verifies one same-source published prerelease and its current successful publication/native-smoke attempt, copies its exact indexes and complete required attachments, and verifies the result again without construction. A complete same-tag rerun rewrites nothing. Production stable publication and its prerelease-only preflight default remain unchanged and reserved.
 
 The detailed testing strategy is documented in `docs/specs/20260529-test_strategy.md`.
 
 The release contract and operator sequence are documented in `docs/specs/20260829-release_management.md` and `docs/cookbooks/release.md`.
 
 The detailed L6 story acceptance design is documented in `docs/specs/20260529-l6_story_acceptance.md`.
+
+## Security Checks
+
+[Development Security](../../docs/specs/20261109-development_security.md#where-each-check-runs) owns check placement. The local gate scans staged secrets and checks changed lock files and workflows. Pull requests and main pushes scan the pushed range for secrets, changed lock files for new K/C/H matches, and changed workflows with `zizmor`. A daily job scans the latest release images; release admission scans candidates, checks K/C dispositions, and generates and verifies SBOMs and attestations.
+
+Every `pull_request` job MUST hold no write permission and publish nothing, for same-repository and fork requests alike. A changed test image is built and tested in its job, or carried as an artifact for `docker load`; pull-request jobs never publish it to a registry. Only tag-only release jobs receive `id-token: write` and `attestations: write`. These accepted requirements await their executable units; the current workflow description above does not waive them.
 
 ## Manual Gates
 

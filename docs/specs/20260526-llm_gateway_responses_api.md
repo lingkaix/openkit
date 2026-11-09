@@ -290,6 +290,12 @@ The previous `extensions.openkit.codexOAuth.accountSlotId` field is removed in t
 
 Pi-ai vendor-side fallback stays unset. This design adds no Provider-profile field that authors upstream model substitution.
 
+## Decision Request Category
+
+The Gateway MUST admit a third request category, `decision`, for Core gate participants. It carries a structured action and one closed question. Route capabilities MUST expose `decisions: native | bridged | unsupported`. The first native adapter uses OpenAI `POST /v1/decisions`, model `gpt-6-luna`, one `input_json` message and a `choice` question `verdict`: `allow`, `block` or `escalate`. It preserves returned probabilities, confidence or refusal.
+
+Any route with structured output MAY bridge the same question through a strict JSON schema. Missing support, refusal, malformed output, timeout and dependency failure MUST remain explicit and escalate under the calling gate. This is auxiliary model usage, counted as `decision`; the Turn's primary model does not select it. External client access is after v0.1.0. [Runtime Security](20261109-runtime_security.md) E9 owns the exact input, restrict-only mapping, cache, budget and qualification evaluation.
+
 ## Provider Endpoint Capabilities
 
 Provider metadata includes:
@@ -297,7 +303,8 @@ Provider metadata includes:
 ```ts
 {
   chatCompletions: "native" | "bridged" | "unsupported",
-  responses: "native" | "bridged" | "unsupported"
+  responses: "native" | "bridged" | "unsupported",
+  decisions: "native" | "bridged" | "unsupported"
 }
 ```
 

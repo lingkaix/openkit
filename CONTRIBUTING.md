@@ -4,11 +4,18 @@ Thank you for your interest in contributing. This document is the human-facing w
 
 ## Table of Contents
 
+- [Security Reports And Embargoes](#security-reports-and-embargoes)
 - [Development Philosophy](#development-philosophy)
 - [Engineering Standards (Source of Truth)](#engineering-standards-source-of-truth)
 - [Development Workflow](#development-workflow)
 - [Pull Request Process](#pull-request-process)
 - [Code Review Guidelines](#code-review-guidelines)
+
+## Security Reports And Embargoes
+
+Report suspected vulnerabilities through [GitHub private vulnerability reporting](https://github.com/lingkaix/openkit/security/advisories/new), as [SECURITY.md](SECURITY.md) requires. Never open a public issue for a suspected vulnerability or paste credentials into any contribution. Until disclosure, commits, pull requests, branch names, issues, release notes, CI logs and public agent channels MUST use neutral fix wording. They MUST NOT describe the vulnerability or attack path. [Development Security](docs/specs/20261109-development_security.md#disclosure-process) owns intake and disclosure.
+
+A pull request whose content was produced by an instance agent MUST receive one independent approving review before merge. The reviewer must be a maintainer, or an agent that did not contribute and runs outside the authoring instance. Bot approvals do not count. The reviewer reads the actual diff, including executed scripts, dependencies, build allowlists and publication-sensitive content. Maintainers MUST NOT bypass the ruleset to merge it. Managed instances hold Issues-only access in v0.1.0; later pull requests use a separate fork ([review gate](docs/specs/20261109-development_security.md#contributors-and-instance-pull-requests)).
 
 ## Development Philosophy
 

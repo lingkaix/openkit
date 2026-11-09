@@ -212,6 +212,10 @@ OpenKit may supply qualified native context settings and bounded file capabiliti
 
 Each adapter qualifies supported loading and precedence against its selected pin. Image defaults apply to fresh homes only where native setup is copy-on-init. Preserve authored existing homes and record effective configuration rather than silently reseeding them. Native truncation or spill is a second layer; OpenKit-supplied results must already meet [bounded projection rules](20260703-worker_context_package.md#bounded-model-projection).
 
+### Build Supply Integrity
+
+Every image-time install, including runtime CLI supply, MUST use a committed lock file or integrity hash. Installs MUST be frozen, with scripts disabled except for independently reviewed allowlisted packages. Downloads MUST verify against committed checksums. Worker image-platform SBOMs MUST accompany releases under `SHA256SUMS`; the App sibling embeds its own SBOM for offline inventory. [Development Security](20261109-development_security.md) owns the shared controls and release provenance.
+
 ## Current Implementation Projection
 
 The Dockerfile also creates writable `/openkit/instructions`, which the session-layout planner uses as its instruction root.

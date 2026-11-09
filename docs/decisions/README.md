@@ -46,3 +46,5 @@ Name the source change record as plain text, for example "Source: change record 
 ## Finding Records
 
 Records are not listed in `docs/INDEX.md`. Reach them from the owner that links them, or list this directory; file names start with the decision date.
+
+- [Security Program Rulings](20261109-security_program_rulings.md): shared development and runtime security decisions, scope and rejected alternatives.
