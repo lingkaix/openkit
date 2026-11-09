@@ -146,6 +146,8 @@ export class PiRuntimeHost {
   #state: HostState = 'unopened';
   #turn: ActiveTurn | null = null;
   #steering = false;
+  /** Prevents a successor prompt or model change from overlapping unfinished SDK cleanup. */
+  #promptPending = false;
 
   public constructor(io: PiRuntimeHostIo) {
     this.#io = io;
@@ -326,7 +328,7 @@ export class PiRuntimeHost {
 
   async #configure(id: number, model: PiModelDescriptor): Promise<void> {
     const binding = this.#binding;
-    if (this.#state === 'active' || this.#steering) {
+    if (this.#state === 'active' || this.#steering || this.#promptPending) {
       this.#fail(id, 'busy', 'A native operation is active.');
       return;
     }
@@ -342,6 +344,7 @@ export class PiRuntimeHost {
   /**
    * Accepts one Turn, answers `started`, then prepares and prompts. A preparation or native
    * selection failure, an interrupt, or a failed identity proof settles through `turn_settled`.
+   * Native loop settlement releases the result independently of prompt-return cleanup.
    */
   async #runTurn(
     id: number,
@@ -350,7 +353,7 @@ export class PiRuntimeHost {
     effort?: ReasoningEffort
   ): Promise<void> {
     const binding = this.#binding;
-    if (this.#state === 'active' || this.#steering) {
+    if (this.#state === 'active' || this.#steering || this.#promptPending) {
       this.#fail(id, 'busy', 'A native operation is active.');
       return;
     }
@@ -397,20 +400,36 @@ export class PiRuntimeHost {
       // Compaction appends its entry without an `entry_appended` event, so the identities this
       // prompt produced are the compaction entries that were not in the graph before it.
       earlierEntries = new Set(session.sessionManager.getEntries().map((entry) => entry.id));
+      let resolveLoopEnd!: () => void;
+      const loopEnded = new Promise<void>((resolve) => {
+        resolveLoopEnd = resolve;
+      });
       const unsubscribe = session.subscribe((event) => {
         tracker.observe(event as AgentSessionEvent & Record<string, unknown>);
         this.#forwardNative(turnId, event);
+        if (event.type === 'agent_settled') resolveLoopEnd();
       });
-      try {
-        await session.prompt(prompt, {
-          // Pi 1.4 owns its busy flag before this callback. Request native abort instead of
-          // throwing outside its settlement finally; the pending abort fences the first request.
-          preflightResult: () => {
-            if (cancelled(turn)) void session?.abort().catch(() => undefined);
-          },
+      this.#promptPending = true;
+      const prompting = Promise.resolve()
+        .then(() =>
+          session!.prompt(prompt, {
+            // Pi owns its busy flag before this callback; abort through its normal settlement.
+            preflightResult: () => {
+              if (cancelled(turn)) void session?.abort().catch(() => undefined);
+            },
+          })
+        )
+        .catch((error: unknown) => {
+          if (!(error instanceof TurnCancelledError)) promptFailed = true;
+        })
+        .finally(() => {
+          this.#promptPending = false;
+          unsubscribe();
         });
-      } catch (error) {
-        if (!(error instanceof TurnCancelledError)) promptFailed = true;
+      try {
+        // The correlated loop boundary owns the outcome. A late prompt return or rejection
+        // only releases cleanup; it must not withhold or rewrite the terminal handoff.
+        await Promise.race([loopEnded, prompting]);
       } finally {
         unsubscribe();
       }

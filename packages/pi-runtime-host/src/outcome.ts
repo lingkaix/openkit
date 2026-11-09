@@ -113,7 +113,7 @@ export class PiTurnOutcomeTracker {
   }
 
   /**
-   * Returns the outcome once the prompt call has returned.
+   * Returns the outcome after the native loop settles or the prompt call terminates early.
    *
    * @param input Whether an interrupt was requested, whether the prompt call rejected, and the
    *   admitted route of this Turn.

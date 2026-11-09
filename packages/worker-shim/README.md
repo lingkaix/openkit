@@ -1,5 +1,7 @@
 # Worker Shim
 
+Pi final-status publication follows the host's correlated model-loop settlement, even when SDK prompt cleanup stays pending. The native held-prompt regression in `src/adapters/pi.test.ts` also checks that periodic heartbeats stop after final publication.
+
 Artifact notices carry optional worker-announced `digest` and `collectionHint` through the control client, bounded HTTP reader, original sequence fingerprint and durable notice. Restart and exact replay preserve the supplied text; omitted fields stay omitted. These descriptive values neither prove collected bytes nor authorize collection or canonical Artifact publication.
 
 The Turn, Codex provenance, Codex inference metadata, Pi channel, Pi, Pi runtime capture, runtime capture and DeepSeek readers use Protocol `isRecord` for their shared non-null object check that excludes arrays. Their native field checks and array-specific traversal remain with each reader.

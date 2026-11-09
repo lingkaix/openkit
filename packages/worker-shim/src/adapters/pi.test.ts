@@ -28,9 +28,11 @@ import {
   PI_FAILED_REASONS as PI_HOST_FAILED_REASONS,
   PiTurnOutcomeTracker,
 } from '../../../pi-runtime-host/src/outcome.ts';
+import type { SandboxIntegrationClient } from '../integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
+import { runResidentTurn } from '../turn.js';
 
 const spawnCalls = vi.hoisted(
   () =>
@@ -395,6 +397,157 @@ function turnInput(
     workingDirectory: overrides.workingDirectory ?? dirs.workingDirectory,
   };
 }
+
+it(
+  'posts final status and stops heartbeats when the Pi loop ends but prompt cleanup hangs',
+  async () => {
+    const f = await fixture(() => ({ text: 'Loop completed.' }), []);
+    const extensionDir = join(piAgentDirectory(f.dirs.stateRoot), 'extensions');
+    const release = join(f.dirs.root, 'release-model');
+    const held = join(f.dirs.root, 'prompt-cleanup-held');
+    const sdk = new URL(
+      '../../../pi-runtime-host/node_modules/@earendil-works/pi-coding-agent/dist/index.js',
+      import.meta.url
+    ).href;
+    await mkdir(extensionDir, { recursive: true });
+    // The actual SDK emits its normal correlated loop events. Only its return to the host hangs.
+    await writeFile(
+      join(extensionDir, 'held-prompt.js'),
+      `
+import { existsSync, writeFileSync } from 'node:fs';
+import { AgentSession } from ${JSON.stringify(sdk)};
+const prompt = AgentSession.prototype.prompt;
+AgentSession.prototype.prompt = async function (...args) {
+  await prompt.apply(this, args);
+  writeFileSync(${JSON.stringify(held)}, 'held');
+  await new Promise(() => {});
+};
+export default function (pi) {
+  pi.on('before_agent_start', async () => {
+    while (!existsSync(${JSON.stringify(release)}))
+      await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+}
+`
+    );
+    const resident = await f.open();
+    const lineage = {
+      workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+      threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+      turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+      agentSessionId: 'as_00000000-0000-7cdd-bdd1-9b4637990c65',
+      packageSnapshotId: 'package-1',
+    };
+    const packagePath = join(f.dirs.root, 'package.json');
+    await writeFile(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'pi' },
+          mode: 'sandbox-integration',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+        },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'logical-a',
+          routes: turnInput(f.dirs).allowedLlmRoutes,
+        },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        extensions: { openkit: { turnInput: 'Complete this Turn.' } },
+        runtime: {
+          command: { argv: ['openkit-worker-shim'], workingDirectory: f.dirs.workingDirectory },
+        },
+        workspace: { root: f.dirs.workingDirectory, inputs: [] },
+        supply: { mcpServers: [] },
+        scope: lineage,
+      })
+    );
+    const requests: Array<{ url: string; body: { body?: { status?: string } } }> = [];
+    const running = runResidentTurn({
+      adapterId: 'pi',
+      packagePath,
+      lineage,
+      resident,
+      sessionDir: join(f.dirs.root, 'capture'),
+      turnDirectory: f.dirs.turnDirectory,
+      credentialValues: [],
+      environment: {},
+      nativeEnvironment: null,
+      runtimeEnvironmentNames: new Set(),
+      signal: new AbortController().signal,
+      tokens: {
+        capabilityToken: 'capability-value',
+        controlToken: 'control-value',
+        inferenceToken: 'inference-value',
+      },
+      onStarted() {},
+      onTurnBarrier() {},
+      integration: {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        async drainTurn() {
+          return 0;
+        },
+      } as unknown as SandboxIntegrationClient,
+      fetch: async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+        };
+      },
+    });
+    void running.catch(() => undefined);
+    const heartbeats = () => requests.filter((r) => r.url.endsWith('/heartbeat'));
+    const finals = () => requests.filter((r) => r.url.endsWith('/final-status'));
+    try {
+      await expect.poll(() => heartbeats().length, { timeout: 10_000 }).toBeGreaterThan(1);
+      await writeFile(release, 'continue');
+      await expect.poll(() => existsSync(held), { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => finals().length, { timeout: 5_000 }).toBe(1);
+      expect(finals()[0]?.body.body).toMatchObject({ status: 'completed' });
+      await expect(running).resolves.toMatchObject({ status: 'completed' });
+      const count = heartbeats().length;
+      await new Promise((resolve) =>
+        setTimeout(resolve, 2 * LIFECYCLE_DEFAULTS.workerHeartbeatIntervalMs + 100)
+      );
+      expect(heartbeats()).toHaveLength(count);
+      await expect(
+        resident.startTurn({
+          ...turnInput(f.dirs, {
+            mcpServerIds: [],
+            modelId: 'logical-b',
+            turnId: allocateEntityId('tu'),
+          }),
+          skillTargetPaths: [],
+        })
+      ).rejects.toThrow('Pi host did not accept the model.');
+      await expect(
+        resident.startTurn({
+          ...turnInput(f.dirs, { mcpServerIds: [], turnId: allocateEntityId('tu') }),
+          skillTargetPaths: [],
+        })
+      ).rejects.toThrow('Pi host did not accept the Turn.');
+      expect(f.inference.requests).toHaveLength(1);
+    } finally {
+      resident.kill();
+      await running.catch(() => undefined);
+    }
+  },
+  TIMEOUT
+);
 
 function digestOf(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');

@@ -17,6 +17,8 @@ Relative imports carry the `.ts` extension, which the build rewrites to `.js`, s
 
 ## Private Control Channel
 
+The correlated SDK `agent_settled` event releases `turn_settled` without waiting for `prompt()` to return. Prompt return is cleanup only; while it remains pending, `configure` and a successor `turn` return `busy` to prevent overlapping native work. A late cleanup rejection does not rewrite the settled outcome.
+
 The Harness spawns the host with no arguments and passes a private socket pair as file descriptor 3. Frames are UTF-8 JSON objects, one per line. User Extensions may write anything to stdout or stderr, and neither stream carries a frame. Every request is `{id,op,...fields}`. A successful response is `{id,ok:true,result}`; `configure` returns `{}`. Every unsolicited event is `{event:<name>,...fields}`. Responses and events can interleave and are correlated by request id and Turn id, not arrival position. Each request with a usable `id` gets exactly one response. Requests are not queued behind one another: an `interrupt`, `inspect`, or `close` is served while a Turn prepares or runs. An inbound line is limited to 8 MiB; an outbound frame is limited to six times the 16 MiB result bound plus 64 KiB. Every outbound frame has both loopback credentials replaced by `[redacted]` before it is written. This channel is not a product protocol and carries no Pi RPC shape; `src/channel.ts` is its executable shape.
 
 Requests, validated exactly with unknown fields rejected:
