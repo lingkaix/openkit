@@ -30,8 +30,8 @@ function fixture() {
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
   onTestFinished(async () => {
-    coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { coreDb, actor, store, inflightCommands: new WeakMap(), dataRoot };

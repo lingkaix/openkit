@@ -55,6 +55,7 @@ import {
 import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
+  isSeparateScopedNotebookReceipt,
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
   SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './scoped-notebook-sql-codecs.js';
@@ -205,6 +206,34 @@ export function recordControlCommandRequestRecordInDb(
         ? { kind: 'user', userId: db.userId }
         : { kind: 'workspace', workspaceId: db.workspaceId },
     record.createdAt
+  );
+}
+
+/** Commits only the original standalone scoped receipt; later maintenance cannot roll it back. */
+export function recordControlScopedNotebookReceiptInDb(
+  db: CoreDb | UserDb,
+  record: CommandRequestRecord
+): void {
+  assertControlProductWriter(db.sqlite);
+  assertCommandRequestDbOwner(db, record.scope);
+  if (!isSeparateScopedNotebookReceipt(db.scope, record.command))
+    throw new ControlProductPreconditionError();
+  writeCommandRequestRecordInDb(db, record);
+}
+
+/** Retains the original post-receipt maintenance commit and its current reference-time owner. */
+export function pruneControlScopedNotebookReceiptsInDb(
+  db: CoreDb | UserDb,
+  command: CommandRequestName,
+  referenceTime: string
+): void {
+  assertControlProductWriter(db.sqlite);
+  if (!isSeparateScopedNotebookReceipt(db.scope, command))
+    throw new ControlProductPreconditionError();
+  pruneControlAdmissionReceipts(
+    db.sqlite,
+    db.scope === 'user' ? { kind: 'user', userId: db.userId } : { kind: 'server' },
+    referenceTime
   );
 }
 

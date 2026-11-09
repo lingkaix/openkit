@@ -211,7 +211,7 @@ export async function registerUserKnowledgeSource(
         if (!retained) unavailable();
         return retained;
       },
-      execute: async () => {
+      execute: async (receipt) => {
         pointers(input);
         const now = new Date().toISOString();
         const pointer = await publishCapturedSource(
@@ -220,6 +220,7 @@ export async function registerUserKnowledgeSource(
             database: { kind: 'user', userDb: input.userDb },
             access: {
               coreDb: input.coreDb,
+              store: input.store,
               actor: { kind: 'user', id: input.actor!.userId },
               requestActor: input.actor,
             },
@@ -246,7 +247,14 @@ export async function registerUserKnowledgeSource(
           },
           Buffer.from(command.content)
         );
-        return { ...pointer.source, ownerScope: scope.ownerScope };
+        const result = { ...pointer.source, ownerScope: scope.ownerScope };
+        const { responseKind, ...originalReceipt } = receipt;
+        await input.store.commitScopedNotebookStage(input.userDb, {
+          kind: 'receipt',
+          receipt: { ...originalReceipt, response: { kind: responseKind, id: pointer.source.id } },
+        });
+        owner(input);
+        return result;
       },
     });
   } catch (error) {

@@ -53,7 +53,7 @@ import {
   readUserKnowledgeSourceMetadata,
   registerUserKnowledgeSource,
 } from './scoped-knowledge-sources.js';
-import { initializeScopedNotebook } from './scoped-notebook-owner.js';
+import { initializeScopedNotebookNative } from './scoped-notebook-owner.js';
 import { createUserMemoryProposal } from './user-memory-proposals.js';
 
 /** Trusted self invocation; instructions cannot select an owner, audience or publication authority. */
@@ -231,14 +231,19 @@ export async function prepareUserMemoryMaintenance(
         .get()
     )
       throw new NotebookError('recovery_required');
-    initializeScopedNotebook({
-      ...context,
-      target: { kind: 'user' },
-      initialization: {
-        requestId: input.requestId,
-        instructionReference: `memory-maintenance:${input.requestId}`,
+    await initializeScopedNotebookNative(
+      {
+        ...context,
+        target: { kind: 'user' },
+        initialization: {
+          requestId: input.requestId,
+          instructionReference: `memory-maintenance:${input.requestId}`,
+        },
       },
-    });
+      store
+    );
+    admitMemoryContext(context, 'knowledge.write');
+    input.signal.throwIfAborted();
   }
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
@@ -990,13 +995,13 @@ export async function runUserMemoryMaintenanceCommand(
       const prepared = await prepareUserMemoryMaintenance(dependencies, input);
       // User authority and receipts are a separate effect domain from acknowledged personal-Workspace work.
       admitMemoryContext(context, 'knowledge.write');
-      await dependencies.store.recordCommandRequest(
-        {
-          ...receipt,
-          response: { kind: 'turn', id: prepared.turnId },
-        },
-        dependencies.userDb
-      );
+      const { responseKind, ...originalReceipt } = receipt;
+      await dependencies.store.commitScopedNotebookStage(dependencies.userDb, {
+        kind: 'receipt',
+        receipt: { ...originalReceipt, response: { kind: responseKind, id: prepared.turnId } },
+      });
+      admitMemoryContext(context, 'knowledge.write');
+      input.signal.throwIfAborted();
       return prepared.execute();
     },
     replay: (receipt) => {

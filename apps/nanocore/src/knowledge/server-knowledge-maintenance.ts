@@ -47,7 +47,7 @@ import {
   stringListFrontmatterField,
   validateScopeKnowledgeSchema,
 } from './okf.js';
-import { initializeScopedNotebook, pinScopedNotebook } from './scoped-notebook-owner.js';
+import { initializeScopedNotebookNative, pinScopedNotebook } from './scoped-notebook-owner.js';
 import {
   listServerKnowledgeSources,
   readServerKnowledgeSource,
@@ -360,13 +360,18 @@ export async function prepareServerKnowledgeMaintenance(
         requireAdministratorOperation(coreDb, actor, 'knowledge.write', undefined, 'knowledge');
         const context = { coreDb, actor: actor!, target: { kind: 'server' as const } };
         if (!existsSync(join(coreDb.dataRoot, 'server', 'knowledge')))
-          initializeScopedNotebook({
-            ...context,
-            initialization: {
-              requestId: input.requestId,
-              instructionReference: `knowledge.server.maintain:${input.requestId}`,
+          await initializeScopedNotebookNative(
+            {
+              ...context,
+              initialization: {
+                requestId: input.requestId,
+                instructionReference: `knowledge.server.maintain:${input.requestId}`,
+              },
             },
-          });
+            store
+          );
+        requireAdministratorOperation(coreDb, actor, 'knowledge.write', undefined, 'knowledge');
+        input.signal.throwIfAborted();
         baseRevision = git.publishedRevision();
         const canonicalFiles = pinScopedNotebook(context).read().files;
         const paths = input.pageIds

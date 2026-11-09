@@ -13,7 +13,7 @@ import {
 import type { CoreDb, UserDb } from '../storage/db.js';
 import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
 import { KnowledgeNotebook, NotebookError, type NotebookRevision } from './notebook.js';
-import { initializeNotebook } from './notebook-initialization.js';
+import { initializeNotebook, initializeNotebookNative } from './notebook-initialization.js';
 import {
   createDefaultScopeKnowledgeSchemaText,
   parseOkfDocument,
@@ -158,7 +158,7 @@ export function pinScopedNotebook(input: ScopedNotebookContext): PinnedScopedNot
   };
 }
 
-/** Explicit native fresh-scope initialization; it accepts no authored files, administrative User target or caller-supplied producer. */
+/** Isolated synchronous setup; live fresh-scope initialization uses the same selection through initializeScopedNotebookNative. */
 export function initializeScopedNotebook(
   input: Omit<ScopedNotebookContext, 'target'> & {
     readonly initialization: { readonly requestId: string; readonly instructionReference: string };
@@ -167,6 +167,21 @@ export function initializeScopedNotebook(
       | { readonly target: { readonly kind: 'server' } }
     )
 ): string {
+  return initializeNotebook(prepareScopedNotebookInitialization(input));
+}
+
+/** Uses the same fresh scope selection while awaiting the existing native Audit stages. */
+export async function initializeScopedNotebookNative(
+  input: Parameters<typeof initializeScopedNotebook>[0],
+  store: Parameters<typeof initializeNotebookNative>[1]
+): Promise<string> {
+  return initializeNotebookNative(prepareScopedNotebookInitialization(input), store);
+}
+
+/** One owner selects freshness, default base, schema and current admission for raw setup and live publication. */
+function prepareScopedNotebookInitialization(
+  input: Parameters<typeof initializeScopedNotebook>[0]
+): Parameters<typeof initializeNotebook>[0] {
   const owner = resolveScopedNotebookOwner({ ...input, operation: 'knowledge.write' });
   if (lstatSync(owner.notebookRoot, { throwIfNoEntry: false }))
     throw new NotebookError('recovery_required');
@@ -183,7 +198,7 @@ export function initializeScopedNotebook(
     scope: owner.ownerScope,
   });
   const scopeSchemaText = createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
-  return initializeNotebook({
+  return {
     notebookRoot: owner.notebookRoot,
     owner: userDb ? { kind: 'user', userDb } : { kind: 'server', coreDb: input.coreDb },
     initialization: {
@@ -204,5 +219,5 @@ export function initializeScopedNotebook(
         resolvedReferences: new Map(),
       };
     },
-  });
+  };
 }

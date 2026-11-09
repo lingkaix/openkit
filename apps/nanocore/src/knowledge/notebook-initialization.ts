@@ -24,7 +24,10 @@ import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
-import type { NotebookPublicationAdmission } from './notebook-publication.js';
+import type {
+  NotebookPublicationAdmission,
+  NotebookPublicationDependencies,
+} from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument } from './okf.js';
 import { decodeSourcePointer } from './source-pointers.js';
@@ -143,7 +146,7 @@ export async function initializeWorkspaceNotebook(input: {
   return prepared.revision;
 }
 
-/** Reuses one validation/Git/Audit boundary for native fresh-scope creation; callers own staging and current admission. */
+/** Retains synchronous isolated or stopped setup; live User/Server publication uses initializeNotebookNative. */
 export function initializeNotebook(
   input: Parameters<typeof prepareNotebookInitialization>[0]
 ): string {
@@ -169,6 +172,34 @@ export function initializeNotebook(
   audit(prepared.audits[0]!);
   prepared.notebook.publishInitialRevision(prepared.revision);
   audit(prepared.audits[1]!);
+  writeFileAtomic(
+    join(input.notebookRoot, 'schema', 'scope-schema.yaml'),
+    prepared.admission.scopeSchemaText
+  );
+  return prepared.revision;
+}
+
+/** Publishes the two original User/Core Audit stages through their existing native scope owner. */
+export async function initializeNotebookNative(
+  input: Parameters<typeof prepareNotebookInitialization>[0],
+  store: Pick<NotebookPublicationDependencies['store'], 'commitScopedNotebookStage'>
+): Promise<string> {
+  if (input.owner.kind === 'workspace') throw new NotebookError('invalid_request');
+  const db = input.owner.kind === 'user' ? input.owner.userDb : input.owner.coreDb;
+  const prepared = prepareNotebookInitialization(input);
+  const revalidate = () => {
+    prepared.revalidate();
+  };
+  await store.commitScopedNotebookStage(
+    db,
+    { kind: 'audit', event: prepared.audits[0]! },
+    revalidate
+  );
+  // The admission ACK can cross a current scope, Source or schema change before the first ref.
+  revalidate();
+  prepared.notebook.publishInitialRevision(prepared.revision);
+  await store.commitScopedNotebookStage(db, { kind: 'audit', event: prepared.audits[1]! });
+  revalidate();
   writeFileAtomic(
     join(input.notebookRoot, 'schema', 'scope-schema.yaml'),
     prepared.admission.scopeSchemaText
@@ -275,8 +306,7 @@ function prepareNotebookInitialization(input: {
       sourceReferences: [...validation.sourceReferences],
     },
   });
-  {
-    const candidateRevision = revision;
+  const revalidate = () => {
     const current = input.revalidate();
     const checked = validateNotebookCandidate({
       ...current,
@@ -290,6 +320,11 @@ function prepareNotebookInitialization(input: {
       JSON.stringify(checked.sourceReferences) !== JSON.stringify(validation.sourceReferences)
     )
       throw new NotebookError('invalid_request');
+    return checked;
+  };
+  {
+    const candidateRevision = revision;
+    const checked = revalidate();
     evidence = {
       ownerScope,
       requestId: input.initialization.requestId,
@@ -303,5 +338,5 @@ function prepareNotebookInitialization(input: {
     audit('knowledge.notebook.admit');
   }
   audit('knowledge.notebook.initialize');
-  return { notebook, revision, audits, admission };
+  return { notebook, revision, audits, admission, revalidate };
 }

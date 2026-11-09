@@ -16,11 +16,7 @@ import {
   type StorageResult,
 } from '@openkit/storage';
 import type { z } from 'zod';
-import {
-  prepareAuditEvent,
-  recordServerAuditEvent,
-  recordUserAuditEvent,
-} from '../audit-events.js';
+import { prepareAuditEvent } from '../audit-events.js';
 import {
   initializeDefaultKnowledgeBaseId,
   readDefaultKnowledgeBaseId,
@@ -34,7 +30,7 @@ import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-kno
 
 import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
-import { initializeNotebook } from './notebook-initialization.js';
+import { initializeNotebookNative } from './notebook-initialization.js';
 import type { NotebookPublicationOwner } from './notebook-publication.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { createDefaultScopeKnowledgeSchemaText } from './okf.js';
@@ -159,6 +155,8 @@ export async function publishCapturedSource(
   try {
     admit(true);
     validateDatabase(input);
+    const store = input.access.store;
+    if (!store) throw new NotebookError('recovery_required');
     readPublishedSourcePointers(input.owner, input.database);
     const database =
       input.database.kind === 'workspace'
@@ -255,26 +253,30 @@ export async function publishCapturedSource(
     if (!selection && !existsSync(join(notebookRoot, 'notebook.git'))) {
       if (existsSync(notebookRoot)) throw new NotebookError('recovery_required');
       const scopeSchemaText = createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
-      initializeNotebook({
-        notebookRoot,
-        owner: input.database,
-        initialization: {
-          requestId: input.requestId,
-          producer: input.access.requestActor
-            ? { kind: 'user', id: input.access.requestActor.userId }
-            : { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
-          instructionReference: `${input.captureChannel}:${input.requestId}`,
+      await initializeNotebookNative(
+        {
+          notebookRoot,
+          owner: input.database,
+          initialization: {
+            requestId: input.requestId,
+            producer: input.access.requestActor
+              ? { kind: 'user', id: input.access.requestActor.userId }
+              : { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
+            instructionReference: `${input.captureChannel}:${input.requestId}`,
+          },
+          revalidate: () => {
+            admit();
+            return {
+              scopeSchemaText,
+              reviewRequiredPageIds: [],
+              registeredSources: new Map(),
+              resolvedReferences: new Map(),
+            };
+          },
         },
-        revalidate: () => {
-          admit();
-          return {
-            scopeSchemaText,
-            reviewRequiredPageIds: [],
-            registeredSources: new Map(),
-            resolvedReferences: new Map(),
-          };
-        },
-      });
+        store
+      );
+      admit();
     }
     const baseRevision = notebook.publishedRevision();
     if (readSourcePointers(input.owner, baseRevision, selection).has(source.id))
@@ -376,7 +378,7 @@ export async function publishCapturedSource(
         authority: metadata.authority,
         sourceReferences: [],
       };
-      const audit = (action: string) => {
+      const audit = async (action: string): Promise<void> => {
         const event = {
           requestId: input.requestId,
           actor: input.producer,
@@ -387,10 +389,17 @@ export async function publishCapturedSource(
           summary: 'Source captured under current Knowledge authority.',
           notebookAdmission: evidence,
         };
-        if (input.database.kind === 'user')
-          recordUserAuditEvent({ ...event, userDb: input.database.userDb });
-        else if (input.database.kind === 'server')
-          recordServerAuditEvent({ ...event, coreDb: input.database.coreDb });
+        if (input.database.kind === 'workspace') throw new NotebookError('invalid_request');
+        const db = input.database.kind === 'user' ? input.database.userDb : input.database.coreDb;
+        await store.commitScopedNotebookStage(
+          db,
+          { kind: 'audit', event: prepareAuditEvent({ ...event, workspaceId: null }) },
+          action === 'knowledge.notebook.admit'
+            ? () => {
+                admit();
+              }
+            : undefined
+        );
       };
       const workspaceDb =
         input.database.kind === 'workspace' ? input.database.workspaceDb : undefined;
@@ -467,10 +476,10 @@ export async function publishCapturedSource(
       }
       ensureCanonicalDirectory(dirname(destination));
       writeFileAtomic(destination, Buffer.concat(chunks));
-      audit('knowledge.notebook.admit');
+      await audit('knowledge.notebook.admit');
       admit();
       notebook.publish({ baseRevision, candidateRevision });
-      audit(input.captureChannel);
+      await audit(input.captureChannel);
       return readSourcePointers(input.owner).get(source.id)!;
     } finally {
       await storage.close();

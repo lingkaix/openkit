@@ -25,6 +25,7 @@ import {
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -61,8 +62,9 @@ function fixture() {
     store,
     inflightCommands: new WeakMap(),
   }));
-  onTestFinished(() => {
+  onTestFinished(async () => {
     vi.restoreAllMocks();
+    await shutdownControlStoreWorkerClient();
     for (const db of databases) if (db.sqlite.open) db.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -204,6 +206,7 @@ describe('explicit native User Source intake', () => {
     const request = f.request();
     const original = await registerUserKnowledgeSource(f.alice, request);
     const saved = f.retained(original.id);
+    await shutdownControlStoreWorkerClient();
     f.alice.userDb.sqlite.close();
     const reopenedDb = openUserDb(f.dataRoot, aliceId);
     f.databases.push(reopenedDb);
@@ -464,14 +467,16 @@ describe('explicit native User Source intake', () => {
   it('does not allocate another Source after a missing completion receipt', async () => {
     const f = fixture();
     const request = f.request();
-    vi.spyOn(f.alice.store, 'recordCommandRequest').mockImplementationOnce(() => {
-      throw new Error('Receipt unavailable.');
-    });
+    // Fault the actual User receipt owner; a Main writer spy cannot reach the native stage.
+    f.alice.userDb.sqlite.exec(
+      "CREATE TRIGGER refuse_source_receipt BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = 'knowledge.source.register' BEGIN SELECT RAISE(ABORT, 'Receipt unavailable.'); END"
+    );
     await expect.soft(registerUserKnowledgeSource(f.alice, request)).rejects.toMatchObject({
       code: 'recovery_required',
     });
     const retained = Object.keys(f.notebook().readSourcePointers(f.notebook().publishedRevision()));
     expect(retained).toHaveLength(1);
+    f.alice.userDb.sqlite.exec('DROP TRIGGER refuse_source_receipt');
     await expect.soft(registerUserKnowledgeSource(f.alice, request)).rejects.toMatchObject({
       code: 'recovery_required',
     });

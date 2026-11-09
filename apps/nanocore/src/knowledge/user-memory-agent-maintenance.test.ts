@@ -1150,3 +1150,103 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
     expect(f.notebook().retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
   }
 );
+
+it.each(['maintain', 'tell'] as const)(
+  'retains the original %s User receipt before inference and never rewrites it after role failure',
+  async (kind) => {
+    const f = fixture();
+    const { tellContent: _tellContent, ...maintenanceInput } = f.input;
+    const input = kind === 'tell' ? f.input : maintenanceInput;
+    const command = kind === 'tell' ? 'knowledge.tell' : 'knowledge.maintain';
+    let before: unknown;
+    f.run.mockImplementationOnce(async (run) => {
+      const receipt = f.store.getCommandRequest(
+        command,
+        input.requestId,
+        { userId, actorId: userId },
+        f.userDb
+      )!;
+      expect(receipt).toMatchObject({
+        command,
+        requestId: input.requestId,
+        response: { kind: 'turn', id: run.turn.id },
+      });
+      expect(f.store.getTurnById(run.turn.id).triggerActor).toEqual({ kind: 'user', id: userId });
+      expect(
+        f.store.getThread(workspaceIdForOwner(run.turn.owner), run.turn.threadId)
+      ).toMatchObject({ visibility: 'private', privateOwnerUserId: userId });
+      before = f.userDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+        .get(input.requestId);
+      throw new Error('External role failed after receipt acknowledgement.');
+    });
+    const result = await runUserMemoryMaintenanceCommand(f.dependencies, input);
+    expect(result.outcome).toBe('failed');
+    expect(f.run).toHaveBeenCalledTimes(1);
+    expect(before).toBeDefined();
+    expect(
+      f.userDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+        .get(input.requestId)
+    ).toEqual(before);
+    await shutdownControlStoreWorkerClient();
+    const cold = openUserDb(f.coreDb.dataRoot, userId);
+    try {
+      expect(
+        cold.sqlite
+          .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+          .get(input.requestId)
+      ).toEqual(before);
+      const reopened = new FsStore({ dataRoot: f.coreDb.dataRoot });
+      expect(reopened.getTurnById(result.turnId)).toEqual(f.store.getTurnById(result.turnId));
+    } finally {
+      cold.sqlite.close();
+    }
+    expect(await runUserMemoryMaintenanceCommand(f.dependencies, input)).toEqual(result);
+    expect(f.run).toHaveBeenCalledTimes(1);
+  }
+);
+
+it.each(['maintain', 'tell'] as const)(
+  'keeps acknowledged personal Workspace preparation without inference after a real %s User receipt INSERT fault',
+  async (kind) => {
+    const f = fixture();
+    const { tellContent: _tellContent, ...maintenanceInput } = f.input;
+    const input = kind === 'tell' ? f.input : maintenanceInput;
+    const command = kind === 'tell' ? 'knowledge.tell' : 'knowledge.maintain';
+    f.userDb.sqlite.exec(
+      `CREATE TRIGGER refuse_memory_receipt BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = '${command}' BEGIN SELECT RAISE(ABORT, 'memory receipt fault'); END`
+    );
+    await expect(runUserMemoryMaintenanceCommand(f.dependencies, input)).rejects.toThrow();
+    expect(f.run).not.toHaveBeenCalled();
+    expect(
+      f.userDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+        .all(input.requestId)
+    ).toEqual([]);
+    const workspaces = f.store.listWorkspaces();
+    expect(workspaces).toHaveLength(1);
+    const threads = f.store.listThreads(workspaces[0]!.id);
+    expect(threads).toHaveLength(1);
+    expect(threads[0]).toMatchObject({ visibility: 'private', privateOwnerUserId: userId });
+    const turns = f.store.listThreadTurns(workspaces[0]!.id, threads[0]!.id);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({
+      agentId: 'knowledge-manager',
+      triggerActor: { kind: 'user', id: userId },
+    });
+    await shutdownControlStoreWorkerClient();
+    const cold = openUserDb(f.coreDb.dataRoot, userId);
+    try {
+      expect(
+        cold.sqlite
+          .prepare('SELECT * FROM idempotency_requests WHERE request_id=?')
+          .all(input.requestId)
+      ).toEqual([]);
+      const reopened = new FsStore({ dataRoot: f.coreDb.dataRoot });
+      expect(reopened.getTurnById(turns[0]!.id)).toEqual(turns[0]);
+    } finally {
+      cold.sqlite.close();
+    }
+  }
+);

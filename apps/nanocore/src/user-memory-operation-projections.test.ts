@@ -18,6 +18,7 @@ import {
 } from './knowledge/scoped-notebook-owner.js';
 import { runUserMemoryMaintenanceCommand } from './knowledge/user-memory-agent-maintenance.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -136,6 +137,7 @@ async function fixture() {
     queryContext: { threadId: timeline.id, turnId: turn.id },
   };
   onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     userDb.sqlite.close();
     coreDb.sqlite.close();

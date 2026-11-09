@@ -35,7 +35,7 @@ import {
   MemoryPageUnavailableError,
 } from './knowledge/memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
-import { initializeNotebook } from './knowledge/notebook-initialization.js';
+import { initializeNotebookNative } from './knowledge/notebook-initialization.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
 import {
   admitUserMemorySources,
@@ -44,7 +44,7 @@ import {
   registerUserKnowledgeSource,
 } from './knowledge/scoped-knowledge-sources.js';
 import {
-  initializeScopedNotebook,
+  initializeScopedNotebookNative,
   pinScopedNotebook,
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
@@ -103,7 +103,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
       },
     };
   };
-  return runIdempotentCommand({
+  return runIdempotentCommand<ReturnType<typeof project>>({
     store: writer.store,
     receiptDb: writer.userDb,
     inflightCommands: writer.inflightCommands,
@@ -114,7 +114,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
     responseKind: 'knowledge_notebook_revision',
     responseId: (result) => result.notebookRevision,
     replay: (receipt) => project(receipt.response.id),
-    execute: () => {
+    execute: async (receipt) => {
       if (lstatSync(owner.notebookRoot, { throwIfNoEntry: false }))
         throw new NotebookError('conflict');
       if (
@@ -147,8 +147,8 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
           resolvedReferences: new Map<string, ReadonlySet<string>>(),
         };
       };
-      return project(
-        initializeNotebook({
+      const revision = await initializeNotebookNative(
+        {
           notebookRoot: owner.notebookRoot,
           owner: { kind: 'user', userDb: writer.userDb },
           files: { [path]: input.content },
@@ -158,8 +158,16 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
             producer: { kind: 'user', id: writer.userDb.userId },
             instructionReference: `memory.create:${input.requestId}`,
           },
-        })
+        },
+        writer.store
       );
+      project(revision);
+      const { responseKind, ...originalReceipt } = receipt;
+      await writer.store.commitScopedNotebookStage(writer.userDb, {
+        kind: 'receipt',
+        receipt: { ...originalReceipt, response: { kind: responseKind, id: revision } },
+      });
+      return project(revision);
     },
   });
 }
@@ -240,14 +248,17 @@ export function createMemoryOperationImplementations(
               .get()
           )
             throw new NotebookError('recovery_required');
-          initializeScopedNotebook({
-            ...writer,
-            target: { kind: 'user' },
-            initialization: {
-              requestId: randomUUID(),
-              instructionReference: 'memory-query:first-use',
+          await initializeScopedNotebookNative(
+            {
+              ...writer,
+              target: { kind: 'user' },
+              initialization: {
+                requestId: randomUUID(),
+                instructionReference: 'memory-query:first-use',
+              },
             },
-          });
+            store
+          );
         }
         // Detect incomplete established storage before the KM query owner wraps its errors.
         pinScopedNotebook({ coreDb, actor, target: { kind: 'user' } }).read([]);

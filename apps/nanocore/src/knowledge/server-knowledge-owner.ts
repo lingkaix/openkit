@@ -161,7 +161,7 @@ export async function registerServerKnowledgeSource(
         );
       return source;
     },
-    execute: async () => {
+    execute: async (receipt) => {
       const now = new Date().toISOString();
       const pointer = await publishCapturedSource(
         {
@@ -169,6 +169,7 @@ export async function registerServerKnowledgeSource(
           database: { kind: 'server', coreDb: input.coreDb },
           access: {
             coreDb: input.coreDb,
+            store: input.store,
             actor: { kind: 'user', id: input.actor!.userId },
             requestActor: input.actor,
           },
@@ -195,7 +196,14 @@ export async function registerServerKnowledgeSource(
         },
         Buffer.from(command.content)
       );
-      return { ...pointer.source, ownerScope: scope.ownerScope };
+      const result = { ...pointer.source, ownerScope: scope.ownerScope };
+      const { responseKind, ...originalReceipt } = receipt;
+      await input.store.commitScopedNotebookStage(input.coreDb, {
+        kind: 'receipt',
+        receipt: { ...originalReceipt, response: { kind: responseKind, id: pointer.source.id } },
+      });
+      owner(input);
+      return result;
     },
   });
 }

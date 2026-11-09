@@ -2485,7 +2485,8 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'scoped-notebook-sql') {
             const db =
-              request.input.action === 'user-receipt'
+              request.input.action === 'user-receipt' ||
+              request.input.action === 'user-receipt-maintenance'
                 ? nativeUserDb(owner, request.input.userId)
                 : owner.scopeDb;
             if (!db || db.scope === 'workspace') throw new ControlProductPreconditionError();

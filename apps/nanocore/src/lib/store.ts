@@ -1,6 +1,9 @@
 import type { TaskSteerReceiptMetadata } from '../runtime/task-steer-receipt.js';
 import { prepareControlReadMetadata } from '../storage/control-store-read-metadata.js';
-import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
+import {
+  ControlScopedNotebookSqlInputSchema,
+  isSeparateScopedNotebookReceipt,
+} from '../storage/scoped-notebook-sql-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
@@ -3310,6 +3313,7 @@ export class FsStore {
    * Commits one original scoped Notebook SQL stage on the existing Core or User physical owner.
    * The optional admission recheck is the caller's existing synchronous semantic check after opening;
    * it never travels to the worker or authorizes SQL. Completion facts and receipts settle the original effect.
+   * Newly moved standalone receipts retain their separate acknowledged expiry-maintenance stage.
    */
   public async commitScopedNotebookStage(
     db: CoreDb | UserDb,
@@ -3375,6 +3379,29 @@ export class FsStore {
             ? { action: 'user-receipt', userId: db.userId, receipt: stage.receipt }
             : { action: 'server-receipt', receipt: stage.receipt };
       await client.scopedNotebookSql(database, ControlScopedNotebookSqlInputSchema.parse(input));
+      if (
+        stage.kind === 'receipt' &&
+        isSeparateScopedNotebookReceipt(db.scope, stage.receipt.command)
+      ) {
+        // The original receipt has already committed; expiry maintenance is a separate FULL stage.
+        const maintenance =
+          db.scope === 'user'
+            ? {
+                action: 'user-receipt-maintenance',
+                userId: db.userId,
+                command: stage.receipt.command,
+                referenceTime: now(),
+              }
+            : {
+                action: 'server-receipt-maintenance',
+                command: stage.receipt.command,
+                referenceTime: now(),
+              };
+        await client.scopedNotebookSql(
+          database,
+          ControlScopedNotebookSqlInputSchema.parse(maintenance)
+        );
+      }
     }
   }
 
