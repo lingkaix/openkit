@@ -218,6 +218,9 @@ export async function markWorkerStoragePurgePending(
       'authorization_denied',
       'Worker storage purge is not authorized.'
     );
+  // Bind the native comparison to the state observed before the caller's absence check.
+  // A Scheduler admission committed during that check must invalidate purge.
+  const schedulerRows = workerStorageSchedulerRows(coreDb, snapshot.storageRef);
   if (snapshot.hasSurvivingReferences())
     throw new WorkerStorageBindingError(
       'purge_blocked',
@@ -227,7 +230,7 @@ export async function markWorkerStoragePurgePending(
   return client.workerStorageBinding(database, {
     ...facts,
     kind: 'purge-pending',
-    schedulerRows: workerStorageSchedulerRows(coreDb, snapshot.storageRef),
+    schedulerRows,
   });
 }
 

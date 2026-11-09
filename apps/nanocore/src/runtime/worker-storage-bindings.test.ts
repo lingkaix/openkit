@@ -2,10 +2,24 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import type { Worker as NativeWorker, WorkerOptions } from 'node:worker_threads';
+import { isRecord } from '@openkit/protocol';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import {
+  isWorkspaceOperationAuthorized,
+  requireCurrentDeploymentAdmin,
+} from '../auth/operation-authorizer.js';
+import {
+  listSchedulerAdmissionEntriesForWorkspace,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { workerStorageWorkSlotRef } from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
@@ -25,6 +39,75 @@ import {
   workerStorageLayoutDigest,
   workerStorageScopeDigest,
 } from './worker-storage-bindings.js';
+
+const purgeRace = vi.hoisted(() => ({
+  signal: undefined as SharedArrayBuffer | undefined,
+  posted: undefined as (() => void) | undefined,
+  queueEntryId: 'queue-purge-reference-race',
+  posts: 0,
+}));
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: WorkerOptions) {
+        if (!purgeRace.signal) {
+          super(filename, options);
+        } else {
+          // Observe the real successful reply after its covering FULL COMMIT.
+          // No early message listener starts the port before native entry import.
+          const prelude = `
+            const { parentPort, workerData } = require('node:worker_threads');
+            const post = parentPort.postMessage;
+            const signal = new Int32Array(workerData.purgeRaceSignal);
+            parentPort.postMessage = function(value, ...args) {
+              if (value?.operation === 'scheduler-admission' && value.status === 'ok' &&
+                  value.result?.kind === 'queue' &&
+                  value.result.entry.queueEntryId === workerData.purgeRaceQueueEntryId) {
+                Atomics.store(signal, 0, 1);
+                Atomics.notify(signal, 0);
+              }
+              return post.call(this, value, ...args);
+            };
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              purgeRaceSignal: purgeRace.signal,
+              purgeRaceQueueEntryId: purgeRace.queueEntryId,
+            },
+          });
+        }
+      }
+      override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
+        const message: unknown = args[0];
+        let selected = false;
+        if (
+          isRecord(message) &&
+          message.operation === 'scheduler-admission' &&
+          message.content instanceof ArrayBuffer
+        ) {
+          const input: unknown = JSON.parse(new TextDecoder().decode(message.content));
+          selected =
+            isRecord(input) &&
+            isRecord(input.entry) &&
+            input.entry.queueEntryId === purgeRace.queueEntryId;
+        }
+        super.postMessage(...args);
+        if (selected) {
+          purgeRace.posts += 1;
+          purgeRace.posted?.();
+        }
+      }
+    },
+  };
+});
 
 const NOW = '2026-09-10T00:00:00.000Z';
 const LAYOUT: WorkerStorageLayout = {
@@ -119,6 +202,148 @@ function selection(binding: Awaited<ReturnType<typeof createBinding>>) {
 }
 
 describe('Worker storage bindings', () => {
+  it('refuses purge when a native Scheduler reference commits after the authentic absence callback', async () => {
+    await shutdownControlStoreWorkerClient();
+    const coreDb = createCoreDb();
+    const userId = ensureLocalUser(coreDb);
+    const workspaceId = testEntityId('ws', 'purge-reference-race');
+    const threadId = testEntityId('th', 'purge-reference-race');
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+    purgeRace.signal = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+    purgeRace.posts = 0;
+    const signal = new Int32Array(purgeRace.signal);
+    let blocker: CoreDb | undefined;
+    let admission: ReturnType<typeof publishSchedulerAdmission> | undefined;
+    try {
+      const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
+        agentSessionId: testEntityId('as', 'purge-reference-race'),
+        authorizeContributor: allowContributor,
+        deploymentId: 'deployment_1',
+        layout: LAYOUT,
+        now: NOW,
+        purpose: 'work',
+        responsibleUserId: userId,
+        runtimeTargetId: 'target_1',
+        threadId,
+        workspaceId,
+      });
+      const idle = await releaseWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: reserved.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: reserved.revision,
+        now: NOW,
+        storageRef: reserved.storageRef,
+      });
+      blocker = openCoreDb(coreDb.dataRoot);
+      blocker.sqlite.exec('BEGIN IMMEDIATE');
+      const posted = new Promise<void>((resolve) => {
+        purgeRace.posted = resolve;
+      });
+      admission = publishSchedulerAdmission(coreDb, {
+        mode: 'create',
+        entry: {
+          backendId: 'nanohost',
+          queueEntryId: purgeRace.queueEntryId,
+          requestId: 'request-purge-reference-race',
+          requestedAgentId: 'agent_worker',
+          timestamp: NOW,
+          triggerActor: { kind: 'user', id: userId },
+          workspaceId,
+          threadId,
+          turnId: testEntityId('tu', 'purge-reference-race'),
+          turnInput: 'Preserve the selected Worker storage.',
+          workerStorageChoice: {
+            kind: 'selected',
+            storageRef: idle.storageRef,
+            expectedRevision: idle.revision,
+            purpose: 'work',
+            goalId: null,
+            taskId: null,
+          },
+        },
+      });
+      void admission.catch(() => undefined);
+      await Promise.race([
+        posted,
+        admission.then(() => {
+          throw new Error('Scheduler admission completed before its post was observed.');
+        }),
+      ]);
+      let referenceChecks = 0;
+      const actor = { kind: 'local' as const, userId };
+      const disposition = await markWorkerStoragePurgePending(coreDb, {
+        authorizePurge: () => {
+          requireCurrentDeploymentAdmin(coreDb, actor);
+          return isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+            authentication: 'deployment-admin',
+            mutating: true,
+            policyOperation: 'workspace.configure',
+          });
+        },
+        expectedRevision: idle.revision,
+        hasSurvivingReferences: () => {
+          referenceChecks += 1;
+          const hasReference = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+            workspaceId,
+            statuses: ['queued', 'denied', 'admitted'],
+          }).some(
+            (entry) =>
+              entry.workerStorageChoice?.kind === 'selected' &&
+              entry.workerStorageChoice.storageRef === idle.storageRef
+          );
+          expect(hasReference).toBe(false);
+          blocker!.sqlite.exec('COMMIT');
+          // Main must wait synchronously here so the callback returns its genuine
+          // earlier observation only after the actual native admission commits.
+          const waited = Atomics.wait(signal, 0, 0, 10_000);
+          if (waited === 'timed-out')
+            throw new Error('The genuine Scheduler FULL reply was not observed.');
+          expect(Atomics.load(signal, 0)).toBe(1);
+          return hasReference;
+        },
+        storageRef: idle.storageRef,
+      }).then(
+        (binding) => ({ kind: 'fulfilled' as const, binding }),
+        (error: unknown) => ({ kind: 'rejected' as const, error })
+      );
+      expect(
+        referenceChecks,
+        disposition.kind === 'rejected' ? String(disposition.error) : disposition.kind
+      ).toBe(1);
+      const queued = await admission;
+      if (queued.kind !== 'queue')
+        throw new Error('The real Scheduler did not retain its queue entry.');
+      expect(purgeRace.posts).toBe(1);
+      // Persistent Worker Volumes forbids purge while future work references it.
+      // Soft assertions retain the OLD counterexample and its cold durable state.
+      expect.soft(disposition.kind).toBe('rejected');
+      if (disposition.kind === 'rejected')
+        expect(disposition.error).toMatchObject({ code: 'purge_blocked' });
+      expect.soft(getWorkerStorageBinding(coreDb, { storageRef: idle.storageRef })).toEqual(idle);
+      expect(requireSchedulerAdmissionEntry(coreDb, purgeRace.queueEntryId)).toEqual(queued.entry);
+      await closeCoreDb(coreDb);
+      const reopened = openCoreDb(coreDb.dataRoot);
+      try {
+        expect
+          .soft(getWorkerStorageBinding(reopened, { storageRef: idle.storageRef }))
+          .toEqual(idle);
+        expect(requireSchedulerAdmissionEntry(reopened, purgeRace.queueEntryId)).toEqual(
+          queued.entry
+        );
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      if (blocker?.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
+      if (blocker?.sqlite.open) blocker.sqlite.close();
+      await admission?.catch(() => undefined);
+      await closeCoreDb(coreDb);
+      purgeRace.signal = undefined;
+      purgeRace.posted = undefined;
+      purgeRace.posts = 0;
+    }
+  });
+
   it('creates and reserves one association atomically through the native owner', async () => {
     let coreDb = createCoreDb();
     const dataRoot = coreDb.dataRoot;
