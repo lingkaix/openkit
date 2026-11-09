@@ -64,6 +64,8 @@ RUN pnpm --filter @openkit/nanocore deploy --prod --legacy /deploy/nanocore
 
 FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime
 
+ARG TARGETARCH
+
 LABEL org.openkit.image="app"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-app-smoke"
 
@@ -82,7 +84,6 @@ WORKDIR /app/nanocore
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
-    caddy \
     ca-certificates \
     curl \
     ffmpeg \
@@ -91,6 +92,21 @@ RUN apt-get update \
     openssh-client \
     tini \
   && rm -rf /var/lib/apt/lists/*
+
+# Keep Caddy independent of the older Bookworm package; verify each target's release archive.
+RUN case "${TARGETARCH}" in \
+      amd64) caddy_sha256=5b8cb7faf8726a2028ad96a66e54e6e81e8f361bc6175e5d22bbd997cc5177fb ;; \
+      arm64) caddy_sha256=5e377cff994fc9362a6fcf695c53f226cfca3a3ef85bd3a3687cf252d6310165 ;; \
+      *) echo "Unsupported Caddy architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+  && curl --proto '=https' --tlsv1.2 -fsSL \
+    "https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_${TARGETARCH}.tar.gz" \
+    -o /tmp/caddy.tar.gz \
+  && echo "${caddy_sha256}  /tmp/caddy.tar.gz" | sha256sum -c - \
+  && tar -xzf /tmp/caddy.tar.gz -C /usr/bin caddy \
+  && mkdir -p /usr/share/licenses/caddy \
+  && tar -xzf /tmp/caddy.tar.gz -C /usr/share/licenses/caddy LICENSE \
+  && rm /tmp/caddy.tar.gz
 
 RUN npm install -g corepack@0.36.0 \
   && corepack enable \

@@ -4,6 +4,8 @@ This image packages NanoCore, Web UI assets, Caddy, migrations, and data templat
 
 All build and runtime stages use the exact digest-pinned Node base declared for `app` in `containers/images.json`.
 
+The runtime installs the official Caddy 2.11.9 release binary for amd64 or arm64, verified against a committed SHA-256 for each archive. The Bookworm package index still supplies Caddy 2.6.2, so Caddy follows its upstream release independently of that package. Other architectures fail the build.
+
 Release and candidate builds pass `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMMIT`; an untagged App image build passes only its exact source commit. The runtime stage writes `/usr/local/lib/openkit/release-identity.json`, with a null release tag for an untagged source build. The local image script supplies a clean checkout commit or an explicit source input. An unlabelled dirty build or direct dev run without build inputs has unknown identity and never guesses from the package version or runtime environment. A build without either argument omits the file. The identity is not an image `ENV`: the App-update helper replays the previous container's `Config.Env`, which would otherwise keep the old identity after an update. NanoCore reads the file at startup. See [Container Image Packaging](../../docs/specs/20260708-container_image_packaging.md).
 
 The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-token compaction threshold for its default logical model. This is a context-management policy, not model capacity metadata; normal provider model/context admission still applies, and existing configuration files are preserved.
