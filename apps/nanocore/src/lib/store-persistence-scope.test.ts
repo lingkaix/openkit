@@ -9,6 +9,7 @@ import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-no
 import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -31,6 +32,7 @@ import {
   openCoreDb,
 } from '../storage/db.js';
 import { applyMigrations, listAppliedNativeMigrationIds } from '../storage/migrate.js';
+import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -397,6 +399,24 @@ describe('FsStore workspace persistence scope', () => {
   });
 });
 
+// Observe real Main constructors only; the native Worker keeps its actual independent module.
+const stagingConnections = vi.hoisted(() => ({
+  handles: new Set<{ name: string; open: boolean; readonly: boolean }>(),
+}));
+vi.mock('better-sqlite3', async (load) => {
+  const actual = await load<typeof import('better-sqlite3')>();
+  return {
+    ...actual,
+    default: new Proxy(actual.default, {
+      construct(target, args, newTarget) {
+        const sqlite = Reflect.construct(target, args, newTarget);
+        stagingConnections.handles.add(sqlite);
+        return sqlite;
+      },
+    }),
+  };
+});
+
 const trace = vi.hoisted(() => ({
   beforeRename: undefined as ((from: string, to: string) => void) | undefined,
   descriptors: new Map<number, string>(),
@@ -453,6 +473,7 @@ afterEach(async () => {
   trace.beforeRename = undefined;
   trace.fail = undefined;
   await shutdownControlStoreWorkerClient();
+  stagingConnections.handles.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -709,6 +730,132 @@ describe('fresh Workspace database publication', () => {
     }
   );
 });
+
+/** Keep live creation and stopped retained import as distinct callers of the private publisher. */
+async function unpublishedWorkspaceFixture(kind: 'general' | 'personal' | 'stopped-import') {
+  if (kind !== 'stopped-import') return freshWorkspaceDatabaseFixture(kind);
+  const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-stopped-staging-source-'));
+  roots.push(sourceRoot);
+  const source = createTestStore({ dataRoot: sourceRoot });
+  const workspace = await source.createWorkspace('Stopped retained history');
+  const thread = await source.createThread(workspace.id, 'Retained Thread');
+  const turn = await source.createTurn(workspace.id, thread.id, 'Retained input', {
+    kind: 'user',
+    id: FIXTURE_LOCAL_USER_ID,
+  });
+  const retained = {
+    workspace: source.getWorkspace(workspace.id),
+    threads: source.listThreads(workspace.id),
+    turns: source.listThreadTurns(workspace.id, thread.id),
+    itemRevisions: source.listWorkspaceItemRevisions(workspace.id),
+    turnEvents: [[turn.id, source.getTurnEventsForExport(turn.id)]] as const,
+  };
+  expect(retained.turns).toHaveLength(1);
+  await shutdownControlStoreWorkerClient();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-stopped-staging-target-'));
+  roots.push(dataRoot);
+  const store = createTestStore({ dataRoot });
+  const create = () =>
+    store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [] }),
+      ...retained,
+      knowledge: [],
+      artifacts: [],
+      agentSessions: [],
+    });
+  return { dataRoot, store, create };
+}
+
+// Core Storage / accepted F unpublished-staging ruling: no Main handle survives publication.
+it.each(['general', 'personal', 'stopped-import'] as const)(
+  'closes every Main %s staging connection before rename and final native opening',
+  async (kind) => {
+    const f = await unpublishedWorkspaceFixture(kind);
+    let stagedRoot = '';
+    let finalRoot = '';
+    let renameCount = 0;
+    let finalOpenCount = 0;
+    const privateHandles = () =>
+      [...stagingConnections.handles].filter((db) => db.name.startsWith(`${stagedRoot}/`));
+    trace.beforeRename = (from, to) => {
+      if (
+        dirname(from) !== join(f.dataRoot, 'workspaces', '.staging') ||
+        dirname(to) !== join(f.dataRoot, 'workspaces')
+      )
+        return;
+      renameCount += 1;
+      stagedRoot = from;
+      finalRoot = to;
+      expect(lstatSync(from).mode & 0o777).toBe(0o700);
+      expect(existsSync(to)).toBe(false);
+      expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([]);
+      expect(f.store.listWorkspaces()).toEqual([]);
+      expect(() => f.store.getWorkspace(basename(to))).toThrow();
+      const handles = privateHandles();
+      expect(handles.length).toBeGreaterThan(0);
+      if (kind === 'stopped-import') expect(handles.some((db) => db.readonly)).toBe(true);
+      expect(handles.map((db) => db.open)).toEqual(handles.map(() => false));
+    };
+    const writer = getControlStoreWorkerClient();
+    const open = writer.open.bind(writer);
+    const opening = vi.spyOn(writer, 'open').mockImplementation((...args) => {
+      if (args[0].path === join(finalRoot, 'db', 'workspace.sqlite')) {
+        finalOpenCount += 1;
+        expect(renameCount).toBe(1);
+        expect(existsSync(stagedRoot)).toBe(false);
+        const handles = privateHandles();
+        expect(handles.map((db) => db.open)).toEqual(handles.map(() => false));
+      }
+      return open(...args);
+    });
+    try {
+      const workspace = await f.create();
+      expect(renameCount).toBe(1);
+      expect(finalOpenCount).toBe(1);
+      expect(new FsStore({ dataRoot: f.dataRoot }).getWorkspace(workspace.id)).toEqual(workspace);
+    } finally {
+      opening.mockRestore();
+    }
+  }
+);
+
+// A frozen copy precedes the catch, so restart cannot benefit from caught-failure cleanup.
+it.each(['general', 'personal', 'stopped-import'] as const)(
+  'ignores and removes the actual %s Workspace staging frozen before rename',
+  async (kind) => {
+    const f = await unpublishedWorkspaceFixture(kind);
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-staging-crash-copy-'));
+    roots.push(parent);
+    const snapshot = join(parent, 'root');
+    let frozenStage = '';
+    let workspaceId = '';
+    let captures = 0;
+    trace.beforeRename = (from, to) => {
+      if (
+        dirname(from) !== join(f.dataRoot, 'workspaces', '.staging') ||
+        dirname(to) !== join(f.dataRoot, 'workspaces')
+      )
+        return;
+      captures += 1;
+      frozenStage = basename(from);
+      workspaceId = basename(to);
+      cpSync(f.dataRoot, snapshot, { recursive: true });
+      throw new Error('Interrupted before Workspace rename.');
+    };
+    await expect(f.create()).rejects.toThrow('Interrupted before Workspace rename.');
+    expect(captures).toBe(1);
+    const staged = join(snapshot, 'workspaces', '.staging', frozenStage);
+    expect(existsSync(join(staged, 'db', 'workspace.sqlite'))).toBe(true);
+    expect(existsSync(join(snapshot, 'workspaces', workspaceId))).toBe(false);
+    expect(listExistingWorkspaceDatabaseScopes(snapshot)).toEqual([]);
+    expect(new FsStore({ dataRoot: snapshot }).listWorkspaces()).toEqual([]);
+    expect(existsSync(staged)).toBe(true);
+    await shutdownControlStoreWorkerClient();
+    discardAbandonedWorkspaceStaging(snapshot);
+    expect(existsSync(join(snapshot, 'workspaces', '.staging'))).toBe(false);
+    expect(new FsStore({ dataRoot: snapshot }).listWorkspaces()).toEqual([]);
+  }
+);
 
 /** Opens a separate existing fixture connection and always closes it; no schema or authority is synthesized. */
 function workspaceSql<T>(
