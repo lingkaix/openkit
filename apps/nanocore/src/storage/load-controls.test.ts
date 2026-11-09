@@ -257,90 +257,91 @@ describe('r2 envelope identity controls', () => {
     const row: Outcome = { ...schedule('one', 1)[0]!, status: 'scheduled' };
     expect(() => account([row, row], 20000, 300000, 1)).toThrow('Duplicate scheduled identity');
   });
-  for (const early of [false, true])
-    it(`actual observer detects reply-before-BEGIN=${early}`, () => {
-      for (const selected of ['one', 'rep1-one', 'rep2-one', 'ISO']) {
-        let channel: any,
-          saved: any,
-          clock = 0n;
-        class Channel {
-          constructor() {
-            channel = this;
+  for (const operation of ['products', 'transition', 'item', 'event', 'publication'])
+    for (const early of [false, true])
+      it(`actual observer ${operation} detects reply-before-BEGIN=${early}`, () => {
+        for (const selected of ['one', 'rep1-one', 'rep2-one', 'ISO']) {
+          let channel: any,
+            saved: any,
+            clock = 0n;
+          class Channel {
+            constructor() {
+              channel = this;
+            }
+            unref() {}
+            postMessage() {}
+            close() {}
+            onmessage: any;
           }
-          unref() {}
-          postMessage() {}
-          close() {}
-          onmessage: any;
-        }
-        class Database {
-          name = '/workspaces/synthetic/db/workspace.sqlite';
-          exec() {
-            return this;
+          class Database {
+            name = '/workspaces/synthetic/db/workspace.sqlite';
+            exec() {
+              return this;
+            }
           }
-        }
-        const port = Object.assign(new EventEmitter(), { postMessage() {} });
-        const fakeFs = {
-          statSync: () => ({ size: 1 }),
-          openSync: () => 1,
-          writeFileSync: (_fd: number, text: string) => {
-            saved = JSON.parse(text);
-          },
-          fsyncSync() {},
-          closeSync() {},
-        };
-        const source = readFileSync(
-          new URL('../test-support/load-native-observer.cjs', import.meta.url),
-          'utf8'
-        );
-        runInNewContext(source, {
-          require: (name: string) =>
-            name === 'node:worker_threads'
-              ? { isMainThread: false, threadId: 1, BroadcastChannel: Channel, parentPort: port }
-              : name === 'node:fs'
-                ? fakeFs
-                : name === 'node:path'
-                  ? path
-                  : { createRequire: () => () => Database },
-          __dirname: '/test-only/src/test-support',
-          process: {
-            env: {
-              R2_CLOSE_CHANNEL: 'synthetic',
-              OPENKIT_R2_ATTR_OUTPUT_DIR: '/test-only/out',
-              ...(selected === 'one'
-                ? { R2_CLOSE_PROFILE: 'one' }
-                : {
-                    R2_LOAD_PROFILE: selected,
-                    R2_CLOSE_PROFILE: selected === 'ISO' ? 'one' : 'iso',
-                  }),
+          const port = Object.assign(new EventEmitter(), { postMessage() {} });
+          const fakeFs = {
+            statSync: () => ({ size: 1 }),
+            openSync: () => 1,
+            writeFileSync: (_fd: number, text: string) => {
+              saved = JSON.parse(text);
             },
-            hrtime: {
-              bigint: () => {
-                clock += 1000000n;
-                return clock;
+            fsyncSync() {},
+            closeSync() {},
+          };
+          const source = readFileSync(
+            new URL('../test-support/load-native-observer.cjs', import.meta.url),
+            'utf8'
+          );
+          runInNewContext(source, {
+            require: (name: string) =>
+              name === 'node:worker_threads'
+                ? { isMainThread: false, threadId: 1, BroadcastChannel: Channel, parentPort: port }
+                : name === 'node:fs'
+                  ? fakeFs
+                  : name === 'node:path'
+                    ? path
+                    : { createRequire: () => () => Database },
+            __dirname: '/test-only/src/test-support',
+            process: {
+              env: {
+                R2_CLOSE_CHANNEL: 'synthetic',
+                OPENKIT_R2_ATTR_OUTPUT_DIR: '/test-only/out',
+                ...(selected === 'one'
+                  ? { R2_CLOSE_PROFILE: 'one' }
+                  : {
+                      R2_LOAD_PROFILE: selected,
+                      R2_CLOSE_PROFILE: selected === 'ISO' ? 'one' : 'iso',
+                    }),
+              },
+              hrtime: {
+                bigint: () => {
+                  clock += 1000000n;
+                  return clock;
+                },
               },
             },
-          },
-        });
-        channel.onmessage({ data: { kind: 'window', lower: 0, upper: 1e15 } });
-        port.emit('message', { id: 1, operation: 'products' });
-        if (early) (port.postMessage as any)({ id: 1, operation: 'products', status: 'ok' });
-        const db = new Database();
-        for (const sql of [
-          'BEGIN IMMEDIATE',
-          'SAVEPOINT control_transition',
-          'RELEASE SAVEPOINT control_transition',
-          'COMMIT',
-        ])
-          (db.exec as any)(sql);
-        if (!early) (port.postMessage as any)({ id: 1, operation: 'products', status: 'ok' });
-        channel.onmessage({ data: { kind: 'finish' } });
-        expect(saved.records).toHaveLength(1);
-        expect(saved.successfulProductReplies).toBe(1);
-        expect(saved.oneReplyWithoutPriorCommit).toBe(early && selected !== 'ISO' ? 1 : 0);
-        expect(saved.oneUnclassifiedTransactions).toBe(early && selected !== 'ISO' ? 1 : 0);
-        expect(saved.oneRequestToCommitProof.startsWith('NOT CLAIMED')).toBe(selected === 'ISO');
-      }
-    });
+          });
+          channel.onmessage({ data: { kind: 'window', lower: 0, upper: 1e15 } });
+          port.emit('message', { id: 1, operation });
+          if (early) (port.postMessage as any)({ id: 1, operation, status: 'ok' });
+          const db = new Database();
+          for (const sql of [
+            'BEGIN IMMEDIATE',
+            'SAVEPOINT control_transition',
+            'RELEASE SAVEPOINT control_transition',
+            'COMMIT',
+          ])
+            (db.exec as any)(sql);
+          if (!early) (port.postMessage as any)({ id: 1, operation, status: 'ok' });
+          channel.onmessage({ data: { kind: 'finish' } });
+          expect(saved.records).toHaveLength(1);
+          expect(saved.successfulProductReplies).toBe(1);
+          expect(saved.oneReplyWithoutPriorCommit).toBe(early && selected !== 'ISO' ? 1 : 0);
+          expect(saved.oneUnclassifiedTransactions).toBe(early && selected !== 'ISO' ? 1 : 0);
+          expect(saved.oneRequestToCommitProof.startsWith('NOT CLAIMED')).toBe(selected === 'ISO');
+        }
+      });
 });
 it('distinguishes count, bytes, proven failed predecessor and ambiguous native precondition', () => {
   expect(

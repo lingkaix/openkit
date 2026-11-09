@@ -35,14 +35,15 @@ if (!isMainThread && process.env.R2_CLOSE_CHANNEL && process.env.OPENKIT_R2_ATTR
       observerErrors++;
     }
   };
+  // Typed Item/event/publication requests now carry product writes as well as the original tuples.
+  const productOperations = ['products', 'transition', 'item', 'event', 'publication'];
   const incomingProducts = new Set(),
     committedProducts = new Set();
   parentPort.on('message', (value) =>
     observe(() => {
       if (!enabled || !one) return;
       for (const request of Array.isArray(value?.requests) ? value.requests : [value])
-        if (['products', 'transition'].includes(request?.operation))
-          incomingProducts.add(request.id);
+        if (productOperations.includes(request?.operation)) incomingProducts.add(request.id);
     })
   );
   prototype.exec = function (...args) {
@@ -124,11 +125,7 @@ if (!isMainThread && process.env.R2_CLOSE_CHANNEL && process.env.OPENKIT_R2_ATTR
   parentPort.postMessage = function (...args) {
     const value = args[0];
     observe(() => {
-      if (
-        enabled &&
-        value?.status === 'ok' &&
-        ['products', 'transition'].includes(value.operation)
-      ) {
+      if (enabled && value?.status === 'ok' && productOperations.includes(value.operation)) {
         successfulProductReplies++;
         if (active) earlyAck++;
         if (one && !committedProducts.has(value.id)) oneReplyWithoutPriorCommit++;
