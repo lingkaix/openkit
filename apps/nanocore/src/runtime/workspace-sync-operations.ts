@@ -177,11 +177,12 @@ export function createWorkspaceSyncOperationImplementations({
           scope: { workspaceId, reviewId },
           input,
           responseKind: 'workspace_sync_review',
-          execute: async () => {
+          execute: async (receipt) => {
             const decidedAt = new Date().toISOString();
             const workspaceDb = repositoryWorkspaceDb(workspaceId);
+            let result: Awaited<ReturnType<typeof decideWorkspaceSyncReview>>;
             try {
-              return await decideWorkspaceSyncReview({
+              result = await decideWorkspaceSyncReview({
                 authorityActor,
                 requestActor: context.actor as Actor,
                 coreDb,
@@ -196,6 +197,16 @@ export function createWorkspaceSyncOperationImplementations({
             } finally {
               workspaceDb.sqlite.close();
             }
+            if (store.getDataRoot() !== null) {
+              const { responseKind, ...facts } = receipt;
+              await store.publishWorkspaceCommandReceipt({
+                ...facts,
+                command: 'workspace_sync.review.decide',
+                scope: { workspaceId, reviewId },
+                response: { kind: 'workspace_sync_review', id: result.review.id },
+              });
+            }
+            return result;
           },
           replay: (record) => {
             const workspaceDb = repositoryWorkspaceDb(workspaceId);

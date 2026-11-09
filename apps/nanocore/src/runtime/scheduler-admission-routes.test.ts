@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -19,6 +20,47 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+
+const receiptFault = vi.hoisted(() => ({
+  gate: new SharedArrayBuffer(4),
+  message: 'Scheduler fixture Audit INSERT',
+}));
+const FAULT_MESSAGE = 'Scheduler fixture Audit INSERT';
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  class ReceiptObservedWorker extends actual.Worker {
+    constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+      const prelude = String.raw`
+        const {workerData}=require('node:worker_threads');
+        const Database=require(workerData.receiptFaultSqlite),prepare=Database.prototype.prepare;
+        Database.prototype.prepare=function(sql){
+          const statement=prepare.call(this,sql),run=statement.run;
+          statement.run=function(...args){try{return run.apply(this,args);}catch(error){
+            if(error.code?.startsWith('SQLITE_CONSTRAINT')&&error.message===workerData.receiptFaultMessage)Atomics.store(workerData.receiptFaultGate,0,1);
+            throw error;
+          }};return statement;
+        };
+      `;
+      super(
+        prelude +
+          (options?.eval ? String(filename) : `import(${JSON.stringify(String(filename))});`),
+        {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            receiptFaultSqlite: require.resolve('better-sqlite3'),
+            receiptFaultGate: new Int32Array(receiptFault.gate),
+            receiptFaultMessage: receiptFault.message,
+          },
+        }
+      );
+    }
+  }
+  return { ...actual, Worker: ReceiptObservedWorker };
+});
 
 describe('scheduler admission routes', () => {
   it('closes workspace databases after scheduler admission audit attempts', async () => {
@@ -62,6 +104,27 @@ describe('scheduler admission routes', () => {
     }
 
     let failAudit = false;
+    Atomics.store(new Int32Array(receiptFault.gate), 0, 0);
+    const originalPrepare = Database.prototype.prepare;
+    const auditObserver = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+      this: Database.Database,
+      sql: string
+    ) {
+      const statement = originalPrepare.call(this, sql),
+        run = statement.run;
+      statement.run = function (...args: unknown[]) {
+        try {
+          return Reflect.apply(run, this, args);
+        } catch (error) {
+          const e = error as { code?: string; message?: string };
+          if (e.code?.startsWith('SQLITE_CONSTRAINT') && e.message === FAULT_MESSAGE)
+            Atomics.store(new Int32Array(receiptFault.gate), 0, 1);
+          throw error;
+        }
+      };
+      return statement;
+    });
+    onTestFinished(() => auditObserver.mockRestore());
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
@@ -84,9 +147,9 @@ describe('scheduler admission routes', () => {
         applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
         if (failAudit) {
-          vi.spyOn(workspaceDb.sqlite, 'prepare').mockImplementation(() => {
-            throw new Error('Injected audit failure.');
-          });
+          workspaceDb.sqlite.exec(
+            `CREATE TRIGGER refuse_scheduler_audit BEFORE INSERT ON audit_events WHEN NEW.action='scheduler.admission.retry' AND NEW.resource='scheduler-admission:queue_retry_audit_failure' BEGIN SELECT RAISE(ABORT,'${FAULT_MESSAGE}'); END`
+          );
         }
 
         workspaceDbs.push(workspaceDb);
@@ -130,6 +193,10 @@ describe('scheduler admission routes', () => {
     expect(cancelled.status).toBe(200);
     expect(auditFailed.status).toBe(500);
     expect(await auditFailed.text()).toBe('Internal Server Error');
+    expect(
+      Atomics.load(new Int32Array(receiptFault.gate), 0),
+      'The real late Audit SQLite failure was not reached.'
+    ).toBe(1);
     expect(workspaceDbs).toHaveLength(3);
     for (const workspaceDb of workspaceDbs) {
       expect(workspaceDb.sqlite.open).toBe(false);

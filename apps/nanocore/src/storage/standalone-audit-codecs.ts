@@ -33,6 +33,8 @@ export const STANDALONE_AUDIT_STAGES = [
   'administration.server-mcp-update-binding',
   'administration.server-mcp-remove',
   'catalog.shared-mcp-set-disabled',
+  'scheduler.admission.retry',
+  'scheduler.admission.cancel',
   'catalog.mcp-create',
   'catalog.mcp-stage-version',
   'catalog.mcp-remove',
@@ -152,6 +154,32 @@ export const ControlStandaloneAuditInputSchema = z
         event.outcome === 'succeeded' &&
         event.severity === 'info' &&
         event.resource?.startsWith('skill:') === true
+      );
+    // The original Scheduler stages have no attributed actor and grant no fresh authority.
+    if (stage === 'scheduler.admission.retry' || stage === 'scheduler.admission.cancel')
+      return (
+        workspaceId !== undefined &&
+        event.workspaceId === workspaceId &&
+        event.actor === null &&
+        event.category === 'system' &&
+        event.severity === 'info' &&
+        event.threadId !== null &&
+        (stage === 'scheduler.admission.cancel' || event.turnId !== null) &&
+        event.itemId === null &&
+        event.capabilityCallId === null &&
+        event.permissionDecisionId === null &&
+        event.vaultGrantId === null &&
+        event.subject === null &&
+        event.agentId === null &&
+        event.agentSessionId === null &&
+        event.resourceRevision === null &&
+        event.errorCode === null &&
+        event.authentication === undefined &&
+        event.policyInvocation === undefined &&
+        event.policyWriteOutcome === undefined &&
+        event.resource?.startsWith('scheduler-admission:') === true &&
+        event.resource.length > 'scheduler-admission:'.length &&
+        event.outcome === (stage === 'scheduler.admission.retry' ? 'succeeded' : 'cancelled')
       );
     if (event.actor?.kind !== 'user') return false;
     if (

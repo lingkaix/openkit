@@ -38,6 +38,8 @@ export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'catalog.light-app-select',
   'catalog.light-app-pin',
   'catalog.shared-mcp-set-disabled',
+  'administration.configuration.apply',
+  'workspace_sync.review.decide',
 ] as const;
 
 const receiptBase = {
@@ -71,6 +73,26 @@ const sharedMcpReceipt = z.strictObject({
   command: z.literal('catalog.shared-mcp-set-disabled'),
   scope: z.strictObject({ actorId: UserIdSchema, workspaceId: WorkspaceIdSchema }),
   response: z.strictObject({ kind: z.literal('catalog_mcp'), id: z.string().min(1) }),
+});
+
+/** Original outcome Artifacts and synchronization Reviews keep their exact distinct scopes and pointers. */
+const configurationReceipt = z.strictObject({
+  ...receiptBase,
+  command: z.literal('administration.configuration.apply'),
+  scope: z.strictObject({
+    actorId: UserIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+  }),
+  response: z.strictObject({ kind: z.literal('artifact'), id: ArtifactIdSchema }),
+});
+const syncReviewReceipt = z.strictObject({
+  ...receiptBase,
+  command: z.literal('workspace_sync.review.decide'),
+  // Synchronization retains its original opaque request and Review identities.
+  requestId: z.string().min(1),
+  scope: z.strictObject({ workspaceId: WorkspaceIdSchema, reviewId: z.string().min(1) }),
+  response: z.strictObject({ kind: z.literal('workspace_sync_review'), id: z.string().min(1) }),
 });
 
 /** The three original environment commands keep their exact Thread or storage-reference provenance. */
@@ -200,6 +222,26 @@ const artifactReceipt = z.discriminatedUnion('command', [
 
 /** Separate original record and expiry-maintenance commits, bound to the exact Core, User or Workspace owner. */
 export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('action', [
+  z.strictObject({
+    action: z.literal('configuration-receipt'),
+    workspaceId: WorkspaceIdSchema,
+    receipt: configurationReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('configuration-maintenance'),
+    workspaceId: WorkspaceIdSchema,
+    referenceTime: z.string().datetime(),
+  }),
+  z.strictObject({
+    action: z.literal('sync-review-receipt'),
+    workspaceId: WorkspaceIdSchema,
+    receipt: syncReviewReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('sync-review-maintenance'),
+    workspaceId: WorkspaceIdSchema,
+    referenceTime: z.string().datetime(),
+  }),
   z.strictObject({
     action: z.literal('server-mcp-receipt'),
     coreId: z.literal('server'),

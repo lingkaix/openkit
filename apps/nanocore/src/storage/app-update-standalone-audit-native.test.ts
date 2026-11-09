@@ -448,6 +448,8 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'mcp.server.lifecycle.ready',
     'mcp.server.lifecycle.starting',
     'policy.write',
+    'scheduler.admission.cancel',
+    'scheduler.admission.retry',
   ]);
 });
 

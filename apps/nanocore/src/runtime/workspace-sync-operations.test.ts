@@ -31,7 +31,7 @@ import {
   ensureServerBootstrapToken,
 } from '../auth/bootstrap-token.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -47,7 +47,7 @@ import {
   createFilesystemSnapshotManifest,
   stageFilesystemWorkspaceChanges,
 } from './filesystem-workspace-sync.js';
-import { runIdempotentCommand } from './idempotent-command.js';
+import { commandInputHash } from './idempotent-command.js';
 import { listWorkspaceApplyPlans } from './workspace-apply-plans.js';
 import {
   listWorkspaceApplyResults,
@@ -1202,16 +1202,23 @@ describe('Workspace synchronization native projections', () => {
     expect(before.review?.review.status).toBe('pending');
     const writer = getControlStoreWorkerClient();
     const database = `workspace:${f.db.sqlite.name}`;
-    const resume = await writer.pauseForDataRootBackup(database);
-    const pause = writer.pauseForDataRootBackup.bind(writer);
+    const opened = writer.open.bind(writer);
     const entered = Promise.withResolvers<void>();
-    const observation = vi
-      .spyOn(writer, 'pauseForDataRootBackup')
-      .mockImplementation((requestedDatabase) => {
-        const pending = pause(requestedDatabase);
-        if (requestedDatabase === database) entered.resolve();
-        return pending;
-      });
+    const released = Promise.withResolvers<void>();
+    const resume = () => released.resolve();
+    const observation = vi.spyOn(writer, 'open').mockImplementation(async (...args) => {
+      // Finish the real Workspace open/ACK, then hold before the owner's current-authority recheck.
+      await opened(...args);
+      const [command] = args;
+      if (
+        command.database === database &&
+        command.path === f.db.sqlite.name &&
+        command.initialize === 'workspace'
+      ) {
+        entered.resolve();
+        await released.promise;
+      }
+    });
     let delivered = false;
     const response = f
       .http('sync.review-decide', {
@@ -1223,8 +1230,13 @@ describe('Workspace synchronization native projections', () => {
         return result;
       });
     try {
-      // Observe the command's real queued hold after initial admission; no ACK is fabricated.
-      await entered.promise;
+      // The non-accepted decision must reach its real native-open boundary after admission.
+      await Promise.race([
+        entered.promise,
+        response.then(() => {
+          throw new Error('Review decision settled before its native-open hold.');
+        }),
+      ]);
       expect(delivered).toBe(false);
       expect(f.observed()).toEqual(before);
       revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
@@ -1358,31 +1370,36 @@ describe('Workspace synchronization native projections', () => {
       decision: 'rejected' as const,
       message: 'Keep captured intent.',
     };
-    await runIdempotentCommand({
-      store: f.store,
-      inflightCommands: new WeakMap(),
-      command: 'workspace_sync.review.decide',
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const decided = await decideWorkspaceSyncReview({
+      authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      coreDb: f.coreDb,
+      decidedAt: f.item.review.createdAt,
+      decision: input.decision,
       requestId: input.requestId,
-      scope: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', reviewId: f.item.review.id },
-      input,
-      responseKind: 'workspace_sync_review',
-      execute: () =>
-        decideWorkspaceSyncReview({
-          authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          coreDb: f.coreDb,
-          decidedAt: f.item.review.createdAt,
-          decision: input.decision,
-          requestId: input.requestId,
-          reviewId: f.item.review.id,
-          store: f.store,
-          workspaceDb: f.db,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        }),
-      replay: () => {
-        throw new Error('Unexpected seed replay');
-      },
-      responseId: (result) => result.review.id,
+      reviewId: f.item.review.id,
+      store: f.store,
+      workspaceDb: f.db,
+      workspaceId,
     });
+    // Preserve an actual pre-cutover receipt fixture, not a new native receipt.
+    // Its business decision is genuine; stop the writer before historical SQL installation.
+    await shutdownControlStoreWorkerClient();
+    const scope = { workspaceId, reviewId: f.item.review.id },
+      createdAt = new Date().toISOString();
+    f.db.sqlite
+      .prepare(`INSERT INTO idempotency_requests
+      (schema_version,request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at)
+      VALUES (1,?,'workspace_sync.review.decide',?,?,?,'workspace_sync_review',?,NULL,?,?)`)
+      .run(
+        commandRequestKey('workspace_sync.review.decide', input.requestId, scope),
+        input.requestId,
+        JSON.stringify(scope),
+        commandInputHash(input),
+        decided.review.id,
+        createdAt,
+        commandRequestExpiresAt(createdAt)
+      );
     const before = f.observed();
     const response = await f.http('sync.review-decide', {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

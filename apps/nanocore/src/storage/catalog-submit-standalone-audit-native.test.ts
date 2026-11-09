@@ -476,6 +476,8 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'mcp.server.lifecycle.ready',
     'mcp.server.lifecycle.starting',
     'policy.write',
+    'scheduler.admission.cancel',
+    'scheduler.admission.retry',
   ]);
 });
 

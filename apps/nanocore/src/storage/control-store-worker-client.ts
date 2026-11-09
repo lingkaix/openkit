@@ -2744,17 +2744,21 @@ class ControlStoreWorkerClient {
           ? { action: 'server-mcp-receipt', coreId: 'server', receipt }
           : {
               action:
-                receipt.command === 'catalog.shared-mcp-set-disabled'
-                  ? 'shared-mcp-receipt'
-                  : receipt.command === 'workspace.update'
-                    ? 'update-receipt'
-                    : receipt.command.startsWith('catalog.light-app-')
-                      ? 'light-app-receipt'
-                      : receipt.command.startsWith('catalog.skill-')
-                        ? 'skill-receipt'
-                        : receipt.command.startsWith('artifact.')
-                          ? 'artifact-receipt'
-                          : 'environment-receipt',
+                receipt.command === 'administration.configuration.apply'
+                  ? 'configuration-receipt'
+                  : receipt.command === 'workspace_sync.review.decide'
+                    ? 'sync-review-receipt'
+                    : receipt.command === 'catalog.shared-mcp-set-disabled'
+                      ? 'shared-mcp-receipt'
+                      : receipt.command === 'workspace.update'
+                        ? 'update-receipt'
+                        : receipt.command.startsWith('catalog.light-app-')
+                          ? 'light-app-receipt'
+                          : receipt.command.startsWith('catalog.skill-')
+                            ? 'skill-receipt'
+                            : receipt.command.startsWith('artifact.')
+                              ? 'artifact-receipt'
+                              : 'environment-receipt',
               workspaceId: receipt.scope.workspaceId,
               receipt,
             }
@@ -2781,6 +2785,8 @@ class ControlStoreWorkerClient {
         contentMount: scope.contentMount,
       });
     } else if (
+      input.action === 'configuration-receipt' ||
+      input.action === 'sync-review-receipt' ||
       input.action === 'shared-mcp-receipt' ||
       input.action === 'update-receipt' ||
       input.action === 'environment-receipt' ||
@@ -2825,17 +2831,21 @@ class ControlStoreWorkerClient {
           ? { action: 'server-mcp-maintenance', coreId: 'server', referenceTime }
           : {
               action:
-                input.action === 'shared-mcp-receipt'
-                  ? 'shared-mcp-maintenance'
-                  : input.action === 'update-receipt'
-                    ? 'update-maintenance'
-                    : input.action === 'light-app-receipt'
-                      ? 'light-app-maintenance'
-                      : input.action === 'skill-receipt'
-                        ? 'skill-maintenance'
-                        : input.action === 'artifact-receipt'
-                          ? 'artifact-maintenance'
-                          : 'environment-maintenance',
+                input.action === 'configuration-receipt'
+                  ? 'configuration-maintenance'
+                  : input.action === 'sync-review-receipt'
+                    ? 'sync-review-maintenance'
+                    : input.action === 'shared-mcp-receipt'
+                      ? 'shared-mcp-maintenance'
+                      : input.action === 'update-receipt'
+                        ? 'update-maintenance'
+                        : input.action === 'light-app-receipt'
+                          ? 'light-app-maintenance'
+                          : input.action === 'skill-receipt'
+                            ? 'skill-maintenance'
+                            : input.action === 'artifact-receipt'
+                              ? 'artifact-maintenance'
+                              : 'environment-maintenance',
               workspaceId: input.workspaceId,
               referenceTime,
             }

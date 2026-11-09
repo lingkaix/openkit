@@ -685,24 +685,29 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
     name: 'Existing native partition',
     visibility: 'workspace' as const,
   };
-  await createThread(threadInput, { store: f.store, inflightCommands: new WeakMap() }, f.userId);
+  const nativeThread = await createThread(
+    threadInput,
+    { store: f.store, inflightCommands: new WeakMap() },
+    f.userId
+  );
   const nativeOther = f.records().find((row) => row.requestId === threadInput.requestId);
   expect(nativeOther).toBeDefined();
   const nativeShared = f.records().find((row) => row.requestId === legacyInput.requestId);
   expect(nativeShared).toBeDefined();
 
-  // The remaining Main partition is an explicitly stopped retained Review receipt.
-  // This installs historical receipt bytes, not a new Review decision or Git effect.
+  // Goal removal preserves historical command receipts (20261002-goal, Retained Data Removal).
+  // Stop the writer to install exact predecessor goal.start receipt bytes only.
+  // No live Goal admission, Goal recreation or replay is claimed.
   await shutdownControlStoreWorkerClient();
-  const mainScope = { workspaceId: f.workspaceId, reviewId: 'swr_retained-main-one' };
+  const mainScope = { actorId: f.userId, workspaceId: f.workspaceId, threadId: nativeThread.id };
   const mainRequestId = randomUUID();
   recordCommandRequestRecordInDb(f.db, {
-    key: commandRequestKey('workspace_sync.review.decide', mainRequestId, mainScope),
-    command: 'workspace_sync.review.decide',
+    key: commandRequestKey('goal.start', mainRequestId, mainScope),
+    command: 'goal.start',
     requestId: mainRequestId,
     scope: mainScope,
-    inputHash: commandInputHash({ retainedFixture: 'Main receipt one', requestId: mainRequestId }),
-    response: { kind: 'workspace_sync_review', id: mainScope.reviewId },
+    inputHash: commandInputHash({ objective: 'Historical retained Goal one' }),
+    response: { kind: 'goal', id: 'goal_retained-main-one' },
     createdAt: past.toISOString(),
     expiresAt: new Date(past.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   });
@@ -715,9 +720,7 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   expect(getCommandRequestRecordFromDb(f.db, record.key, record.expiresAt)).toBeNull();
   expect(f.records()).toEqual(before);
   // This real Main lookup prunes the retained partition; it must not delete native rows.
-  expect(
-    f.store.getCommandRequest('workspace_sync.review.decide', randomUUID(), mainScope)
-  ).toBeNull();
+  expect(f.store.getCommandRequest('goal.start', randomUUID(), mainScope)).toBeNull();
   expect(f.records().find((row) => row.requestId === mainRequestId)).toBeUndefined();
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toEqual(nativeShared);
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toEqual(nativeOther);
@@ -739,18 +742,19 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
     .find((row) => row.requestId === anotherLegacyInput.requestId);
   expect(nativeSharedOther).toBeDefined();
   await shutdownControlStoreWorkerClient();
-  const otherMainScope = { workspaceId: f.workspaceId, reviewId: 'swr_retained-main-two' };
+  const otherMainScope = {
+    actorId: f.userId,
+    workspaceId: f.workspaceId,
+    threadId: nativeThread.id,
+  };
   const otherMainRequestId = randomUUID();
   recordCommandRequestRecordInDb(f.db, {
-    key: commandRequestKey('workspace_sync.review.decide', otherMainRequestId, otherMainScope),
-    command: 'workspace_sync.review.decide',
+    key: commandRequestKey('goal.start', otherMainRequestId, otherMainScope),
+    command: 'goal.start',
     requestId: otherMainRequestId,
     scope: otherMainScope,
-    inputHash: commandInputHash({
-      retainedFixture: 'Main receipt two',
-      requestId: otherMainRequestId,
-    }),
-    response: { kind: 'workspace_sync_review', id: otherMainScope.reviewId },
+    inputHash: commandInputHash({ objective: 'Historical retained Goal two' }),
+    response: { kind: 'goal', id: 'goal_retained-main-two' },
     createdAt: past.toISOString(),
     expiresAt: new Date(past.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
   });

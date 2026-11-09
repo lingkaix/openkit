@@ -341,7 +341,7 @@ describe('workspace-transaction idempotent commands', () => {
           response_json,
           created_at,
           expires_at
-        ) VALUES ('test-owner:' || ?, 'workspace_sync.review.decide', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
+        ) VALUES ('test-owner:' || ?, 'goal.start', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
       );
       const getOwner = workspaceDb.sqlite.prepare(
         `SELECT response_id AS id
@@ -351,10 +351,11 @@ describe('workspace-transaction idempotent commands', () => {
 
       const scope: CommandRequestScope = { workspaceId };
       const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-      // Exercise the generic Main receipt transaction using the remaining Review command name.
-      // This isolated SQL owner tests transaction completion, not Review admission or Git effects.
+      // This legacy SQL helper has no live workspaceTransaction caller. Keep its unit
+      // completion/rollback/noasync contract using an explicitly retained predecessor name.
+      // The SQL surrogate below is not a historical Goal receipt or new Goal admission.
       const common = {
-        command: 'workspace_sync.review.decide' as const,
+        command: 'goal.start' as const,
         inflightCommands,
         replay: () => {
           throw new Error('Unexpected command replay.');
@@ -399,12 +400,7 @@ describe('workspace-transaction idempotent commands', () => {
       ).resolves.toEqual({ id: 'owner_committed' });
       expect(getOwner.get('owner_committed')).toEqual({ id: 'owner_committed' });
       expect(
-        store.getCommandRequest(
-          'workspace_sync.review.decide',
-          'request_committed',
-          scope,
-          workspaceDb
-        )
+        store.getCommandRequest('goal.start', 'request_committed', scope, workspaceDb)
       ).toMatchObject({ response: { id: 'owner_committed', kind: 'knowledge' } });
 
       const receiptWriter = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
@@ -429,14 +425,7 @@ describe('workspace-transaction idempotent commands', () => {
 
       expect.soft(getOwner.get('owner_rolled_back')).toBeUndefined();
       expect
-        .soft(
-          store.getCommandRequest(
-            'workspace_sync.review.decide',
-            'request_rolled_back',
-            scope,
-            workspaceDb
-          )
-        )
+        .soft(store.getCommandRequest('goal.start', 'request_rolled_back', scope, workspaceDb))
         .toBeNull();
 
       let asynchronousExecuteInvoked = false;
@@ -461,14 +450,7 @@ describe('workspace-transaction idempotent commands', () => {
       await Promise.resolve();
       expect.soft(getOwner.get('owner_async')).toBeUndefined();
       expect
-        .soft(
-          store.getCommandRequest(
-            'workspace_sync.review.decide',
-            'request_async',
-            scope,
-            workspaceDb
-          )
-        )
+        .soft(store.getCommandRequest('goal.start', 'request_async', scope, workspaceDb))
         .toBeNull();
     } finally {
       await shutdownControlStoreWorkerClient();

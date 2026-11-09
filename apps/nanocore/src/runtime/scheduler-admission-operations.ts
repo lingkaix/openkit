@@ -2,7 +2,7 @@ import type { SCHEDULER_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { ListSchedulerAdmissionsResponseSchema } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { prepareWorkspaceAuditEvent } from '../audit-events.js';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
@@ -19,6 +19,7 @@ import {
   requireSchedulerAdmissionEntry,
   SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
@@ -140,7 +141,7 @@ export function createSchedulerAdmissionOperationImplementations(
         const retried = published.entry;
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
         try {
-          recordWorkspaceAuditEvent({
+          const event = prepareWorkspaceAuditEvent({
             workspaceDb,
             workspaceId,
             threadId: retried.threadId,
@@ -150,6 +151,11 @@ export function createSchedulerAdmissionOperationImplementations(
             resource: `scheduler-admission:${retried.queueEntryId}`,
             outcome: 'succeeded',
             summary: 'Scheduler admission retried.',
+          });
+          await getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
+            workspaceId,
+            stage: 'scheduler.admission.retry',
+            event,
           });
         } finally {
           workspaceDb.sqlite.close();
@@ -233,7 +239,7 @@ export function createSchedulerAdmissionOperationImplementations(
           });
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
         try {
-          recordWorkspaceAuditEvent({
+          const event = prepareWorkspaceAuditEvent({
             workspaceDb,
             workspaceId,
             threadId: cancelled.threadId,
@@ -243,6 +249,11 @@ export function createSchedulerAdmissionOperationImplementations(
             resource: `scheduler-admission:${cancelled.queueEntryId}`,
             outcome: 'cancelled',
             summary: 'Scheduler admission cancelled.',
+          });
+          await getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
+            workspaceId,
+            stage: 'scheduler.admission.cancel',
+            event,
           });
         } finally {
           workspaceDb.sqlite.close();

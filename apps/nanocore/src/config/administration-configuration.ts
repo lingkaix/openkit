@@ -304,7 +304,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           fail('configuration_recovery_required');
         return result;
       },
-      execute: async () => {
+      execute: async (receipt) => {
         requireHome(threadId, turnId);
         const markerId = deriveEntityId('it', [
           'configuration_apply',
@@ -544,6 +544,15 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           outcomeId,
           CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
         );
+        if (store.getDataRoot() !== null) {
+          const { responseKind, ...facts } = receipt;
+          await store.publishWorkspaceCommandReceipt({
+            ...facts,
+            command: 'administration.configuration.apply',
+            scope: { actorId: actor.userId, workspaceId, threadId },
+            response: { kind: 'artifact', id: outcomeId },
+          });
+        }
         return result;
       },
     });

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
 import {
@@ -35,11 +36,50 @@ import { createAdministrationConfiguration } from './administration-configuratio
 import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
+const receiptFault = vi.hoisted(() => ({
+  gate: new SharedArrayBuffer(4),
+  message: 'Injected receipt publication interruption.',
+}));
+const FAULT_MESSAGE = 'Injected receipt publication interruption.';
+
 // Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
 vi.mock('node:worker_threads', async (load) => {
   const actual = await load<typeof import('node:worker_threads')>();
   const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
-  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  class ReceiptObservedWorker extends actual.Worker {
+    constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+      const prelude = String.raw`
+        (() => {
+        const {workerData}=require('node:worker_threads');
+        const Database=require(workerData.receiptFaultSqlite),prepare=Database.prototype.prepare;
+        Database.prototype.prepare=function(sql){
+          const statement=prepare.call(this,sql),run=statement.run;
+          statement.run=function(...args){try{return run.apply(this,args);}catch(error){
+            if(error.code?.startsWith('SQLITE_CONSTRAINT')&&error.message===workerData.receiptFaultMessage)Atomics.store(workerData.receiptFaultGate,0,1);
+            throw error;
+          }};return statement;
+        };
+        })();
+      `;
+      super(
+        prelude +
+          (options?.eval ? String(filename) : `import(${JSON.stringify(String(filename))});`),
+        {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            receiptFaultSqlite: require.resolve('better-sqlite3'),
+            receiptFaultGate: new Int32Array(receiptFault.gate),
+            receiptFaultMessage: receiptFault.message,
+          },
+        }
+      );
+    }
+  }
+  return { ...actual, Worker: nativeCommitWorker(ReceiptObservedWorker) };
 });
 
 const cleanup: (() => void)[] = [];
@@ -347,6 +387,57 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
   };
 }
 
+/** Fault only the exact real late receipt INSERT, on Main or its native physical writer. */
+function blockOriginalReceipt(f: Awaited<ReturnType<typeof fixture>>, requestId: string) {
+  Atomics.store(new Int32Array(receiptFault.gate), 0, 0);
+  const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
+  db.sqlite.exec(
+    `CREATE TRIGGER refuse_delegated_receipt BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='administration.configuration.apply' AND NEW.request_id='${requestId}' BEGIN SELECT RAISE(ABORT,'${FAULT_MESSAGE}'); END`
+  );
+  const prepare = Database.prototype.prepare;
+  const observer = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+    this: Database.Database,
+    sql: string
+  ) {
+    const statement = prepare.call(this, sql),
+      run = statement.run;
+    statement.run = function (...args: unknown[]) {
+      try {
+        return Reflect.apply(run, this, args);
+      } catch (error) {
+        const e = error as { code?: string; message?: string };
+        if (e.code?.startsWith('SQLITE_CONSTRAINT') && e.message === FAULT_MESSAGE)
+          Atomics.store(new Int32Array(receiptFault.gate), 0, 1);
+        throw error;
+      }
+    };
+    return statement;
+  });
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    observer.mockRestore();
+    if (db.sqlite.open) {
+      db.sqlite.exec('DROP TRIGGER IF EXISTS refuse_delegated_receipt');
+      db.sqlite.close();
+    }
+  };
+  cleanup.push(restore);
+  return {
+    mockRestore() {
+      try {
+        expect(
+          Atomics.load(new Int32Array(receiptFault.gate), 0),
+          'The original receipt SQL fault was not reached.'
+        ).toBe(1);
+      } finally {
+        restore();
+      }
+    },
+  };
+}
+
 describe('finite delegated Worker Git-read application', () => {
   it('binds a real failed Turn to an immutable candidate and writes once across receipt replay and reopen', async () => {
     const f = await fixture();
@@ -529,7 +620,7 @@ describe('finite delegated Worker Git-read application', () => {
       const publication =
         stage === 'outcome'
           ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
-          : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
+          : blockOriginalReceipt(f, request.requestId);
       const context = {
         callId: randomUUID(),
         toolOccurrence: 1,
@@ -564,11 +655,24 @@ describe('finite delegated Worker Git-read application', () => {
       const publication =
         stage === 'outcome'
           ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
-          : vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(interrupt);
+          : blockOriginalReceipt(f, request.requestId);
 
-      await expect(f.service.applyDelegated(request, f.home)).rejects.toThrow(
-        `Injected ${stage} publication interruption.`
-      );
+      if (stage === 'outcome')
+        await expect(f.service.applyDelegated(request, f.home)).rejects.toThrow(
+          `Injected ${stage} publication interruption.`
+        );
+      else {
+        const error = await f.service
+          .applyDelegated(request, f.home)
+          .catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(Error);
+        // Original Main and native transport expose different private error classes;
+        // the actual exact SQLite fault bit and retained effect predicates decide this seam.
+        expect((error as { code?: string }).code).toMatch(
+          /^(?:SQLITE_CONSTRAINT(?:_[A-Z]+)?|constraint)$/
+        );
+        if ('commit' in (error as object)) expect(error).toMatchObject({ commit: 'not-committed' });
+      }
       publication.mockRestore();
       const persisted = readFileSync(f.agentPath, 'utf8');
       expect(JSON.parse(persisted).sandbox.network[0].rules).toEqual(correctedRules);

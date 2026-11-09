@@ -483,14 +483,19 @@ it('reads public committed products synchronously through a separate readonly qu
 it('keeps product receipt insertion and pruning off the main writable connection', async () => {
   const f = await productFixture();
   const priorInput = { ...f.input, requestId: randomUUID(), name: 'Prior receipt' };
-  await createThread(priorInput, f.dependencies, f.userId);
-  // This is a retained Main-partition row, not a new Review decision or Git effect.
+  const priorThread = await createThread(priorInput, f.dependencies, f.userId);
+  // Goal removal keeps predecessor command receipts readable without recreating Goals.
+  // This stopped Main-partition fixture uses exact old goal.start scope/pointer only.
   // Stop the native writer before installing historical fixture bytes.
   await getControlStoreWorkerClient().shutdown();
-  const retainedScope = { workspaceId: f.workspace.id, reviewId: 'swr_retained-main-partition' };
+  const retainedScope = {
+    actorId: f.userId,
+    workspaceId: f.workspace.id,
+    threadId: priorThread.id,
+  };
   const retainedRequestId = randomUUID();
   const retained = {
-    key: commandRequestKey('workspace_sync.review.decide', retainedRequestId, retainedScope),
+    key: commandRequestKey('goal.start', retainedRequestId, retainedScope),
     requestId: retainedRequestId,
     scope: retainedScope,
   };
@@ -498,13 +503,13 @@ it('keeps product receipt insertion and pruning off the main writable connection
     .prepare(`INSERT INTO idempotency_requests
       (schema_version, request_key, command_name, request_id, scope_json, input_hash,
        response_kind, response_id, response_json, created_at, expires_at)
-      VALUES (1, ?, 'workspace_sync.review.decide', ?, ?, ?, 'workspace_sync_review', ?, NULL, ?, ?)`)
+      VALUES (1, ?, 'goal.start', ?, ?, ?, 'goal', ?, NULL, ?, ?)`)
     .run(
       retained.key,
       retained.requestId,
       JSON.stringify(retained.scope),
       `sha256:${'b'.repeat(64)}`,
-      retainedScope.reviewId,
+      'goal_retained-main-partition',
       '2000-01-01T00:00:00.000Z',
       '2001-01-01T00:00:00.000Z'
     );
@@ -570,11 +575,7 @@ it('keeps product receipt insertion and pruning off the main writable connection
   });
   vi.restoreAllMocks();
   expect(
-    f.store.getCommandRequest(
-      'workspace_sync.review.decide',
-      expired[1]!.requestId,
-      expired[1]!.scope
-    )
+    f.store.getCommandRequest('goal.start', expired[1]!.requestId, expired[1]!.scope)
   ).toBeNull();
   expect(
     f.db.sqlite
