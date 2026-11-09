@@ -15,7 +15,7 @@ decider: Engineer
    The maintainers' instances run part 3 as dogfood.
 2. **Classes.** K is known exploited, or a malicious-package record (OSV `MAL-`), whatever its reachability: 24 h. C is critical: 72 h. H is high: 7 days. N is fixed at the next routine upgrade. All three parts use them.
 3. **Release age.** npm packages must be at least 3 days old. A security fix is exempt through an exact-version exclusion that names the advisory id. Other ecosystems follow the rule by procedure.
-4. **Part 3 v0.1.0 core.** Scheduled audit, advisory match for the instance's own components, passive defense basics, anomaly warnings, and agent response at propose-then-approve only. The work runs alongside acceptance. Passive defense lands before the authentication acceptance evidence is taken. The trigger lands after the durable engine cutover. Channel notification is response level L1.
+4. **Part 3 v0.1.0 core.** Scheduled audit, advisory match for the instance's own components, passive defense basics, anomaly warnings, and agent response at propose-then-approve only. The work runs alongside acceptance. Passive defense lands before the authentication acceptance evidence is taken. The trigger lands after the durable engine cutover. Channel notification is response level L1. Item 21 amends the propose-only response cut.
 5. **Requester.** Pending Requests gain the closed requester value `automation`, reusing the existing actor kind name. Like a person's, its outcomes are published by a Core-local Turn.
 6. **Urgent reminder.** Each recipient's copy of a class K item still unanswered after 12 hours gets one durable reminder occurrence for that recipient. The reminder is a new request, not a transport retry. A restart never creates a second reminder.
 7. **OpenKit OSV records.** `GIT` ranges on the repository URL, with the release tags listed in `versions`. No invented ecosystem.
@@ -71,7 +71,8 @@ decider: Engineer
     - the review gate (item 15);
     - the item 17 core;
     - the item 18 ceiling;
-    - the item 19 cut.
+    - the item 19 cut;
+    - the item 21 suspect-only A1 cut, item 22 route-group switches and item 23 hourly signal enrichment.
 
     Everything else, including administrator two-factor and step-up authentication, comes after v0.1.0 as a named deferral.
 17. **Context-dependent permissions.** When an agent acts for a User, the agent is the principal, on behalf of the User (replaces `policy.md:119`; the responsible-human and domain checks stay; `mediation.md:60` keeps distinct roles and truthful attribution without inventing identities). For each agent operation, the existing Kernel evaluates the intersection of:
@@ -109,6 +110,13 @@ decider: Engineer
     - **Later.** Per-token principals for existing tokens, and administrator controls over other users' sessions.
 20. **Security identifiers.** Request ids are UUIDv5 over a fixed JSON name (kind, item key, recipient, occurrence kind and number); Thread, Turn and Item ids use `deriveEntityId` over the request id or the recipient's Thread generation. The trigger is the only producer and its state owns every counter. Part 3 E4 is the producer declaration under the [identifier owner decision](20261015-identifier_owner_declarations.md).
 
+21. **Agent-native containment cut.** Extend the original propose-only response cut with inert MCP canary Tools and Vault-delivered honey credentials. Only exact trusted boundary recognition may invoke a separately bounded deterministic A1 principal. Readers retain no effect grants. Disable authority through Policy, never `user.disable`; recover through fresh admission. Shared Sandbox/epoch impact is A2. Evidence and existing private administrator notices record actual outcomes; models never unfreeze.
+22. **Every exposure has a switch.** Reuse source-authored operation/route descriptors with an accountable owner and exact Policy deny selector. Deployed state remains Server Policy. New external route groups without owner/switch coverage fail the repository check. Shared route-group switches are A2 and human-operated in v0.1.0. Narrow A1 applies only when the entire affected surface is proved suspect.
+23. **Hourly exploitation signals.** Add one retained E3 kind, `rss`, for raise-only enrichment. Extract CVE/advisory identifiers from item text and match inventory-backed findings. A match raises to at least C, never to K by itself. K stays limited to KEV, `MAL-`, or vendor-confirmed exploitation recorded by a person. Code decides classes from these facts; free text never decides K. Zero Wire is an optional operator-chosen endpoint, not a default. Healthy enabled sources poll at most one hour apart through the existing trigger.
+24. **Charter and deferred scope.** Merge reversibility, deception, self-attack, defense budgets, exposure switches and reviewed deterministic rules into existing principles. State the authorized-system boundary for active measures. Except for items 21–23 and their items 25–26 prerequisites, the framework's implementation remains after v0.1.0. Existing contained-response, off-host-audit, gate-expansion and static-analysis issues absorb overlapping work; canary credentials move into the v0.1.0 cut.
+25. **A1 prerequisites after independent review.** Sensors first observe representative legitimate work; a current administrator reviews false trips before enabling the fixed template. Static limits bound input/verification, work, distinct pending targets, evidence/notices, customer impact, execution time and cumulative newly restricted runs per Workspace/Server/window. Human identities, shared service principals and recovery resources are excluded. Reserve administrator auth, revocation, recovery and critical-alarm capacity. Over-cap observations yield bounded counts/alerts and human review, never broader containment or automatic shared-route closure. Each restriction has a review deadline that never restores credentials or resumes execution. These are v0.1.0 prerequisites, not the deferred budget engine or A2 registry.
+26. **Quarantine lifetime and admitted consumer.** Applied Policy quarantine survives delegation loss, monitoring off, restart and review deadline until a current authorized human releases it through full-diff widening. Admit only `quarantine` in the existing lifetime anchor field and `containment` in the existing Server journal definition field. Protocol, the port consumer, recurring trigger and control-store owners admit deterministic effects outside publication-only notification Turns. Existing references link the sensor event to exact intent, Policy commit and native receipts. Recovery inspects originals, never blindly replays unknown effects. Quarantine MUST omit `notAfter` and `uses`; Policy rejects either field. Its mandatory review deadline lives in existing `control.deadlineUnixNano` on the consumer's non-effect `human-wait` step. Missing/late handling may delay reminders but never release the deny. Action deadlines remain separate. No new record, table, field, queue or step kind is approved.
+
 ## Reason
 
 - **Items 1–4 and 16: engineer direction.** A known exploited vulnerability can be weaponized within hours, and a published malicious package is hostile by definition. Three days outlasts most malicious npm releases, and the exemption keeps fixes fast. A small, safe core fits v0.1.0.
@@ -136,8 +144,17 @@ decider: Engineer
 - **Item 18, full diff.** Checking only added grants misses a deleted prohibition or a deactivated gate, each of which widens effective authority.
 - **Item 20.** The identifier owner decision requires complete derivation inputs, trigger and recovery for every UUIDv5 producer.
 
+- **Items 21–24: engineer-approved agent-native additions and coordinator clarification.** Exact-target containment reduces response delay without giving untrusted readers authority. Policy and existing lifecycle owners bound the effect. Shared-resource actions remain human in this cut. Catalog switches provide mitigation without a release. Hourly signals shorten detection delay, while an RSS class floor avoids turning source prose into structured proof of exploitation. Source-only descriptors and existing records avoid new stores and daemons.
+
+- **Items 25–26: coordinator-accepted independent review findings.** Exact attribution alone cannot bound induced customer outage. Author-bound expiry can erase a deny while stopping remains unknown. Publication-only notification workflows do not admit Sandbox control. Observation, static aggregate caps, persistent restrict-only quarantine and an explicitly admitted journal consumer address those failures without a general budget or workflow engine.
+
+- **A quarantine review deadline in Policy `notAfter`.** Generic expiry paths could silently release the restriction if they missed the exception. Omit expiry/use fields and keep review timing in the existing non-effect journal deadline.
+
 ## Rejected Alternatives
 
+- **A model on the A1 path, `user.disable` as reversible freeze, or automatic shared-Sandbox shutdown.** These violate deterministic separation, current recovery limits or suspect-only scope.
+- **A separate kill-switch store or new scheduler.** Existing Policy, descriptors and recurring work own the needed behavior.
+- **RSS prose setting K or mandatory operator-specific endpoints.** Untrusted text is not a structured exploitation fact; operators choose their sources.
 - **One App with advisory permission, for automatic private reports.** It exposes embargoed advisories.
 - **Same-repository Contents write limited by rulesets.** Release assets stay writable.
 - **A personal or machine-user token per instance.**
@@ -159,7 +176,7 @@ decider: Engineer
 
 - Instance security reports become frequent. Then consider a private intake repository with issues-only access.
 - GitHub adds branch-scoped contents permission or report-only advisory permission.
-- L3 containment is designed. The stop control and the evidence-first rule apply then.
+- Broader L3/L4 containment is designed. The E12 stop control, evidence and suspect-only boundary remain binding.
 - Workspace-scoped signals or the Workspace-administrator Policy scope are designed (deferred list).
 - Gate costs from the sticky bit become material. Then consider per-Item lineage.
 
@@ -169,4 +186,6 @@ decider: Engineer
 - docs/toolchain.md; docs/specs/20260829-release_management.md; docs/specs/20260708-container_image_packaging.md; docs/specs/20260721-worker_execution_environment_images.md; docs/specs/20260910-app_update_delivery.md.
 - docs/core/identity.md; docs/specs/20260704-remote_auth_credential_bootstrap.md; docs/specs/20260526-llm_gateway_responses_api.md; docs/core/mediation.md.
 - docs/core/protocol.md; docs/core/agent-session.md; docs/specs/20260704-agent_session_continuity.md; docs/specs/20260902-agent_runtime_context_compaction.md; docs/core/knowledge.md; docs/specs/20260703-knowledge_store_implementation.md; docs/specs/20260909-personal_memory_and_knowledge_learning.md; docs/specs/20260704-chat_mode_assistant.md; docs/core/policy.md; docs/specs/20260629-openkit_policy_model.md; docs/specs/20260930-pending_requests.md; docs/core/communication.md; docs/specs/20260711-scheduler_recurring_event_triggers.md; docs/specs/20260703-audit_usage_evidence_records.md; docs/specs/20261017-retained_format_register.md; docs/specs/20260704-nanocore_bootstrap_readiness.md; docs/specs/20260704-worker_mcp_tool_supply.md.
+- docs/core/protocol.md; docs/specs/20260629-worker_runtime_communication_model.md; docs/specs/20260703-durable_scheduler_design.md; docs/specs/20261019-durable_execution_and_control_store.md for the admitted consumer and crash recovery.
+- docs/specs/20261002-operation_definition.md; docs/specs/20260703-vault_secret_injection.md; the existing Policy, MCP supply, Audit, recurring-trigger and retained-format owners for items 21–23.
 - `SECURITY.md`, `CONTRIBUTING.md`, `.github/workflows/README.md`; the docs/specs and docs/decisions README indexes. Root `AGENTS.md` is not edited; any root contract change is a protected-owner action outside lane scope.

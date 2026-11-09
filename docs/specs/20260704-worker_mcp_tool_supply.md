@@ -90,6 +90,10 @@ The decision and its reason are recorded in [a decision record](../decisions/202
 
 ## Contract / Expected Behavior
 
+### Inert Canary Tools
+
+[Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) owns the enabled canary set and exact-trip contract. Supply uses the existing selected Tool definitions and Turn-boundary snapshots. Names/descriptions identify unrelated inert administration decoys; ordinary discovery/hiding and current Policy remain mandatory. Listing or inspection never trips a sensor. A verified call to an exact configured identity is refused before upstream contact or credential resolution and supplies only trusted, redacted sensor-event references to the explicitly admitted Core containment consumer outside notification Turns. Observation-first qualification, static/aggregate limits and reserved recovery capacity in E12 are prerequisites for active containment. Caller-provided target identities cannot select containment. This adds no real administrative capability, Tool authorization path or retained schema family.
+
 ### MCP server catalog
 
 An `McpServerCatalogEntry` is the resolved Workspace-scoped projection of one exact current `McpConfigVersion` and its authorized scope-owned binding projected into the consuming Workspace. Source versions and bindings have one canonical catalog owner; this effective entry is not a separately editable copy. Its deterministic `catalogDigest` binds the effective configuration, binding, and selected package-root digest, while configuration digest, tool-schema snapshot digest, and server-reported software version remain distinct. It MUST carry:

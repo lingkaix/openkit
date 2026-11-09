@@ -54,6 +54,7 @@ Security is not a separate subsystem. It is a set of properties that Identity, P
    - A human surface and an agent tool surface are projections of one operation ([Doctrine](doctrine.md)). Security adds no agent-only authorization path, Tool allowlist or prompt rule that duplicates Policy.
    - One operation may still need several current checks: admission, dispatch, returned-content ingress, disclosure and post-approval execution ([Mediation](mediation.md)).
    - What an agent may do is Policy configuration.
+   - Every external exposure has an accountable owner and a deterministic switch at admission.
 
 4. **Govern inputs by eligibility and effects by boundary, not reasoning.**
    - An agent may reason freely over inputs that are currently authorized for it and eligible for the destination's audience. Ineligible material is excluded before generation, not redacted afterwards ([Policy](policy.md)).
@@ -68,6 +69,7 @@ Security is not a separate subsystem. It is a set of properties that Identity, P
    - Deterministic Policy and Core code decide authority, finding classes, deadlines, recipients and alert text.
    - A model-based participant may advise, or as a gate may block or escalate. It never produces authorization ([Mediation](mediation.md)).
    - An unresolved required gate never releases the effect. Timeouts, malformed results, unavailability and a missing route remain explicit failures that block or escalate to a person.
+   - Agents may draft rules, invariants and patches. Independent review and replay tests precede their admission as deterministic enforcement.
    - Text that a participant examines, such as an outbound payload or a tool definition, stays untrusted even when it is wrapped in a structured request.
 
 7. **Agents gate at decision points.** Checks attach to operations and decision points, not hooks on every agent step. This keeps agents fast and the checks explainable.
@@ -76,6 +78,7 @@ Security is not a separate subsystem. It is a set of properties that Identity, P
    - OpenKit's own agents may investigate findings, explain them and propose fixes. They are injection targets like any other agent.
    - A principal that reads untrusted security material holds only read and propose authority for that work. Containment and repair need a person's decision or a separately bounded grant.
    - Detection and notification never depend on a model.
+   - Autonomy follows reversibility and affected scope. Deterministic containment may restrict only the suspect under a separately bounded grant. Broader recoverable actions need a person or an explicitly approved, expiring preset. Irreversible decisions remain human.
 
 9. **Humans hold intent and reserved decisions.**
    - People state intent, provide information and approve.
@@ -95,14 +98,18 @@ Security is not a separate subsystem. It is a set of properties that Identity, P
     - A mechanism earns its place by what breaks without it.
     - Defenses reuse existing owners before adding new engines.
     - Model participation is limited to selected risk points, with bounded cost.
+    - Every defense has a budget. Exhaustion stays visible and tightens optional exposure within current authority instead of silently disabling required checks.
 
 13. **Visible and recoverable.**
     - Security decisions and findings are durable and audited where a durable owner is available.
     - An authorized stop of monitoring records its alarm first. A loss of monitoring that is discovered later records a gap outcome.
     - Acknowledging a finding does not resolve the exposure. An exception keeps its review obligation and its expiry.
     - Authority checks fail closed, and required gates fail to block or escalation.
+    - Inert deception assets make otherwise unexplained use detectable. Continuous self-attack finds failures before adversaries. Confirmed findings become replay tests and reviewed deterministic defenses.
 
 14. **Editable defaults, scoped administration.** Security Policy ships as working defaults that administrators may change within their own scope. No author can widen authority beyond their own ([Policy](policy.md)).
+
+15. **Active measures stay within authorized systems.** Deception and testing stay inside systems the operator owns or is explicitly authorized to test. They must not induce unauthorized access, damage or disclosure in another system.
 
 ## Trust Boundaries
 
@@ -165,11 +172,12 @@ Each step is owned by an existing aspect. This list only shows how they connect.
 3. **Detect.**
    - Scheduled, deterministic Core tasks match the component inventory against advisory feeds.
    - The same tasks watch audit evidence for anomalies.
+   - Trusted boundaries recognize inert deception assets and invoke bounded deterministic containment.
 4. **Notify.** Core turns findings into pending requests and attention for the responsible administrators. External channels carry no finding details.
 5. **Respond.**
    - L0 and L1 are deterministic Core work.
    - L2 runs an investigating agent under a read-and-propose grant, as existing governed agent work.
-   - L3 and L4 need separately bounded grants.
+   - L3 and L4 need separately bounded grants. Suspect-only recoverable containment may run deterministically; broader actions retain their human or approved-preset boundary.
 6. **Close and learn.**
    - A finding ends with a recorded disposition and its evidence.
    - The release gate refuses to ship open urgent findings that have no accepted disposition.
@@ -229,7 +237,8 @@ OpenKit does not claim absolute security. It aims to bound the harm from any sin
 | A tool-definition hold catches changed interfaces, not changed behavior behind the same interface. | Behavior cannot be verified statically. | Extension identity, digests and review of new versions. |
 | Audience bounds make agents say less in shared conversations. | Leaking one member's data into a room is worse. | People can ask in a private conversation. |
 | Matching is only as good as the feeds and the inventory. Counting unknown reachability as reachable adds noise. | Missing a known exploited flaw is worse than noise. | Stated coverage gaps; reasoned `not affected` dispositions. |
-| Detection is periodic. | Continuous scanning costs too much for most deployments. | Urgent classes have short targets and durable reminders. |
+| Advisory and audit scans are periodic. | Continuous scanning costs too much for most deployments. | Exploitation signals run more often; exact decoy trips invoke bounded containment immediately. |
+| A decoy can be touched by legitimate work. | Deception provides a cheap signal but does not prove compromise. | Qualify ordinary-work fixtures; recover service through reviewed fresh admission; record false positives. |
 | A sudden crash, a storage failure or a credential expiring naturally can stop monitoring before it raises an alarm. | No process can raise an alarm about its own sudden loss. | Gap outcomes on recovery; alarm-first only for authorized stops. |
 | A single-administrator deployment has no separation of duties. | Small teams are a primary audience. | Audit and alarm-first stop still apply. |
 | A malicious administrator, a compromised host or a compromised Provider is not prevented. | They sit outside the product boundary. | Audit; operator hardening; per-route Provider choice. |
@@ -248,6 +257,10 @@ Deliberate trade-offs:
 - A model-based participant MUST NOT produce authorization, and an unresolved required gate MUST NOT release the effect.
 - Finding classes, deadlines, recipients and alert text MUST be decided by code.
 - A principal that reads untrusted security material MUST NOT hold effect or egress grants for that work.
+- Autonomous containment MUST remain recoverable and confined to the suspect under a separately bounded grant.
+- Every external exposure MUST have an owner and an admission-enforced switch.
+- Exhausted required defenses MUST fail closed with a visible outcome.
+- Active measures MUST stay within explicitly authorized systems and MUST NOT induce unauthorized access, damage or disclosure.
 - An authorized stop of monitoring MUST record its alarm before detection stops.
 - An advisory feed MUST NOT close, lower or silence a finding.
 - Exploitable finding details MUST NOT be sent to a public destination.

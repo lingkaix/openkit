@@ -84,7 +84,7 @@ Current specs live at the root of this directory. Read the relevant core documen
 Security:
 
 - [Development Security](20261109-development_security.md): finding classes, disclosure, supply controls, release integrity and check placement.
-- [Runtime Security](20261109-runtime_security.md): instance detection, notices, response grants, review gates and credential management.
+- [Runtime Security](20261109-runtime_security.md): instance detection, hourly signals, notices, bounded containment, exposure switches, review gates and credentials.
 
 Internal Agent runtime and resources:
 

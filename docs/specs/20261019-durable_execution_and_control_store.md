@@ -223,6 +223,20 @@ Claims and outcomes condition on the unchanged execution and selected current st
 
 Worker/network/user waits occur outside SQL.
 
+### Containment Consumer
+
+The accepted [port consumer contract](20260629-worker_runtime_communication_model.md#containment-consumer) admits the deterministic Core `containment` consumer. It uses the existing Server journal and reconciler outside publication Turns. It creates no Worker admission, fake AgentSession, public run, executor, queue, table or field. The existing execution-definition field gains exactly `containment`; reuse existing `fence`, `cancel`, `inspect-cleanup`, `collect`, `release` and `consume-receipt` kinds for their owned operations, plus the existing non-effect `human-wait` kind for review.
+
+The existing root work/input references identify the trusted sensor AuditEvent and exact immutable target/scope. Authority and permitting-decision references identify the current approved template and decision. Each step retains its existing operation/invocation identity, bounded deadline, target/attempt/binding references, input fingerprint and output references to the owning Policy/native operation receipt. Audit and EvidenceBundle references stay with their owners. The definition admits only exact quarantine installation, suspect credential revocation, Turn interruption and exclusively suspect Sandbox control; it grants no effects by itself.
+
+The mandatory quarantine review/escalation deadline is the existing `control.deadlineUnixNano` on a non-effect `human-wait` step linked through existing work/input/authority references to the same sensor/quarantine. Record that deadline with consumer intent before applying the deny. It schedules human review/reminders only. Action steps retain their separate execution caps; this review deadline supplies or extends no effect authority. Missing, late or elapsed review handling may delay a reminder but cannot release quarantine. Policy rejects a quarantine lifetime carrying `notAfter` or `uses`; no Policy expiry field is used for review.
+
+Commit bounded intent before any effect. Atomically admit distinct-target/window capacity from existing committed/pending journal and Policy facts; repeated incidents and human releases do not reset cumulative counts. No new budget counter owner is created. Policy owns the committed deny; operation receivers own each later receipt; this journal owns consumer progress and immutable links. Persisting a journal outcome cannot manufacture a missing receiver receipt or cross-domain atomicity.
+
+Recovery compares current Policy and original receipts: before deny, establish whether one committed; after deny/before stop, retain quarantine and inspect the original step before any currently authorized continuation; after stop/incomplete acknowledgement, inspect exact original acceptance/result and never blindly repeat an unknown effect. Action expiry, delegation loss and monitoring off stop new effects while the Policy quarantine remains. Review deadlines only escalate. Record unknown/failed/partial outcomes truthfully, and keep the existing independently draining notice lifecycle.
+
+Qualification covers these three crash boundaries, repeated sensor events, authority/cap changes between intent and effect, missing/conflicting receipts and static-bound floods with reserved recovery and critical-alarm progress. Unknown required definitions fail closed; no step gains retry authority from this consumer name.
+
 ### Worker-Turn Transitions
 
 W is Workspace SQL, S is server SQL; these closed transitions apply normally and after restart.

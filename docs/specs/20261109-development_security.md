@@ -91,12 +91,13 @@ Non-goals:
 
 | Class | Condition | Fix or mitigate within |
 | --- | --- | --- |
-| K | Known exploited (CISA KEV or vendor-confirmed), or a malicious-package record (OSV `MAL-`), whatever its reachability | 24 hours |
-| C | CVSS ≥ 9.0, or rated critical, and not judged unreachable | 72 hours |
+| K | CISA KEV match, OSV `MAL-` record, or vendor-confirmed exploitation recorded by a person, whatever its reachability | 24 hours |
+| C | RSS exploitation-signal match; or (CVSS ≥ 9.0 or rated critical) and not judged unreachable | 72 hours |
 | H | CVSS ≥ 7.0, rated high, or unrated; not judged unreachable | 7 days |
 | N | Everything else, including findings judged unreachable | Next routine upgrade |
 
 - Reachability is unknown until someone records a judgment with evidence. Unknown counts as reachable.
+- An RSS identifier match to an inventory-backed finding raises it to at least C. It never sets K, lowers an existing class, resets the original clock or closes a finding. Free text is not a structured exploitation fact. K remains limited to the three sources above; a person records vendor confirmation as an attributable assessment. [Runtime Security](20261109-runtime_security.md#advisory-feeds-e3) owns source parsing and cadence.
 - A class rises automatically. A C or H class falls only by a recorded judgment. K never falls: an unreachable K finding is closed as `not_affected` with reviewed evidence (charter: known exploitation and malicious packages are always the most urgent class).
 - The clock starts at the first match or at report intake, whichever is earlier. "Fixed" means merged on `main` and, for shipped artifacts, released. "Mitigated" means a recorded control removes the exposure, for example a feature disabled by default.
 
@@ -141,6 +142,14 @@ The OSV location exists before the v0.1.0 tag, even if its list is still empty.
 - **Release gate.** Every K or C finding in the candidate needs one of these records: a current `mitigated` record; a reviewed `not_affected` record; or an unexpired `accepted` record that the engineer decided. This applies whether or not a fix exists. A finding that is `open`, or whose acceptance has expired, fails the gate. A `fixed` finding is no longer in the candidate. In v0.1.0 findings gate only the release; App update admission on instances does not read findings.
 - **Between changes.** The repository's private dependency alerts watch the lock files. A daily job rescans the latest release images.
 - Public logs may show advisory ids and package names, because anyone can derive them from public artifacts. Reachability analysis never appears in a public log.
+
+### Exposure Switch Coverage
+
+Every new externally reachable route group, feature or integration MUST declare an accountable owner and an admission-enforced switch. [Runtime Security](20261109-runtime_security.md#route-group-switches-e13) owns switch behavior and response authority. [Operation Definition](20261002-operation_definition.md#exposure-switch-descriptors) owns the source-authored catalog mapping. Existing Server Policy owns the deployed deny; this rule adds no registry store.
+
+The repository check compares actual mounted routes and public projections with their operation/route descriptors, including non-JSON routes. Missing owner, missing switch or an unresolved operation selector fails the check. A newly mounted surface cannot pass by remaining outside the catalog. Behavioral acceptance proves that current denies block alternate, queued and approval-held projections before effects while authorized recovery remains available.
+
+*Ablation:* without this check a new surface can ship without a fast mitigation path. A catalog-only count cannot prove that mounted routes are covered.
 
 ### Supply-Chain Controls
 
@@ -199,6 +208,7 @@ These rules apply to people and agents alike:
 | Check | Local gate | Pull request | `main` push | Scheduled | Release gate |
 | --- | --- | --- | --- | --- | --- |
 | Secret pattern | Pre-commit (staged) | Range | Range | — | Release diff |
+| Exposure owner/switch coverage | `check:repo` | All mounted projections | All mounted projections | — | Repository gate |
 | Lock-file scan | Lock file changed | Lock file changed | Lock file changed | Dependency alerts | All lock files |
 | Workflow lint | Workflow changed | Workflow changed | Workflow changed | — | Yes |
 | pnpm rules | Every install | Every install | Every install | — | Every install |
@@ -238,6 +248,7 @@ Security tools are supply-chain targets too. The March 2026 Trivy compromise ill
   - the release candidate and release jobs gain the image scan, SBOMs and attestations;
   - one new scheduled workflow does the daily rescan.
 - `lefthook.yml` pre-commit and `check:repo` call a new `check:security` script. The tools are pinned in `containers/test-env/Dockerfile`.
+- The existing operation/route descriptors gain source-only owner/switch metadata. `check:repo` gains mounted-route/projection coverage; runtime Policy retains enforcement. This is an acceptance-phase implementation requirement, not a current check claim.
 - `scripts/release-safety.mjs`: `SECRET` moves to a shared module.
 - `pnpm-workspace.yaml` gains `minimumReleaseAge`, `strictDepBuilds` and `blockExoticSubdeps: true`.
 - Image builds:
@@ -279,6 +290,9 @@ There is no data migration.
 
 ## Testing Strategy / Acceptance Criteria
 
+- **Exploitation sources.** RSS raises H/N to C and preserves K; free text never sets K. KEV, `MAL-` and person-recorded vendor confirmation remain the only K sources. A source change never lowers/clears a finding or restarts its clock.
+- **Exposure switches.** A new mounted external route group without an owner/switch fails, including alternate transports and non-JSON routes. Valid descriptors pass; E13 behavioral checks prove common enforcement and available human recovery.
+
 - **Secrets.** The secret check fails on each credential kind, prints no value and passes on the current tree.
 - **Lock files and workflows.**
   - A lock file with a known K advisory fails the check. The current lock files pass or list only recorded findings.
@@ -314,7 +328,7 @@ There is no data migration.
 - [SLSA build level 3](https://github.com/lingkaix/openkit/issues/693) (#693).
 - [OpenSSF Scorecard](https://github.com/lingkaix/openkit/issues/694) (#694).
 - [Age rules for Cargo and uv](https://github.com/lingkaix/openkit/issues/695) (#695).
-- [Static analysis, fuzzing and external audit](https://github.com/lingkaix/openkit/issues/696) (#696).
+- [Static analysis, fuzzing and external audit](https://github.com/lingkaix/openkit/issues/696) (#696), including authorized merge/nightly/weekly self-attack lanes, reproducible evidence and replay regressions.
 - [OSV.dev ingestion](https://github.com/lingkaix/openkit/issues/697) (#697).
 
 ## Links

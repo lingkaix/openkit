@@ -79,6 +79,10 @@ Only the attempt holds execution outcome and fence facts. Admission does not dup
 
 Delete worker pools, placement plans, capacity records, target health and probation, orphan-capacity accounting, unused supply-refresh scheduling gates, and lease-renewal scheduling and its cap machinery. Use the existing configured backend id throughout; local versus remote describes deployment and never creates another target identity. Core-mediated routes check the exact attempt, its credentials, current policy, explicit revocation, and its absolute deadline. The current default submit-to-expiry budget is the existing 7200-second total cap. The NanoHost adapter additionally applies its unchanged heartbeat, startup, stale-classification, and exact reconnect rules in [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md#nanohost-adapter-liveness). The current scheduling profile is owned by [Runtime Scheduling And Scale](20260703-runtime_scheduling_scale.md).
 
+## Containment Control Admission
+
+The [Execution Backend Port](20260629-worker_runtime_communication_model.md#containment-consumer) explicitly admits the deterministic Core `containment` consumer outside notification Turns. Its existing Server journal owns bounded intent and progress; Policy/native operation owners retain effect truth. It receives no Worker queue slot, fabricated launch package, Turn or AgentSession. It may inspect/cancel/release only the exact suspect's existing backend attempt under current authority and E12 caps; it cannot submit new execution. Commit intent before effects and inspect original Policy/receipts after loss. The Worker admission and single-flight rules below remain unchanged.
+
 ## Admission And Launch
 
 - Admission resolves the immutable Turn/AEP `triggerActor` through the existing product lineage and applies the shared `runtime.launch` current-authority predicate before writing a new admission. Scheduler rows link the Turn, AgentSession, and package snapshot and must not copy another runtime `ActorRef` or use the derived responsible user as storage or capacity scope.

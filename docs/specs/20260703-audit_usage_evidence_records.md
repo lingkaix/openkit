@@ -539,6 +539,12 @@ NanoCore should emit or import audit and usage records at these boundaries:
 - execution-substrate epoch invalidation
 - execution-substrate readiness that returns fenced capacity
 
+### Deception And Containment Evidence
+
+[Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) requires redacted sensor, restriction and stop evidence through existing AuditEvent, PermissionDecision, CapabilityCall, Vault-use and EvidenceBundle records. Trusted sensor boundaries emit Server control-plane safety facts with opaque execution/evidence references. Original Workspace call evidence keeps its existing home and audience. This does not grant the Server trigger Workspace membership, content access or a copy of the Workspace log.
+
+Record verified sensor identity, exact admitted execution and delivery lineage, Policy/grant revision and actual operation outcomes through the existing fields. Caller-supplied target identity, raw source bodies, honey values and runtime memory are excluded. Missing evidence and failed/unknown stop remain explicit; no successful containment or credential recall is inferred. Repeated trips reuse the exact restriction and existing notice lifecycle. Static cardinality/rate bounds and reserved recovery/critical-alarm capacity apply before A1 activation. Excess observations become bounded durable counts in existing reports/Audit summaries with explicit gaps; missing work never counts as contained. Existing journal work/input references link the trusted sensor event, exact target and template; operation/invocation/output references link original Policy and native operation receipts. Recovery reads those originals; no notification Turn gains effect authority. Existing family allocation, retention and redaction apply; this adds no event store, action queue or retained sensor shape.
+
 ### Execution-Substrate Epoch Boundaries
 
 The two epoch boundaries above are `AuditEvent` records in the same family as the existing restart-recovery and capacity-release rows: runtime and scheduler control-plane events. They introduce no new record family, no new storage scope, and no new retention class.

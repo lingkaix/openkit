@@ -262,6 +262,8 @@ Injection paths must declare visibility:
 
 The preferred path is `gateway-only`. Worker-visible paths require stronger policy and audit.
 
+Honey credentials in [Runtime Security](20261109-runtime_security.md#deception-and-a1-containment-e12) use these existing visibility paths and ordinary plans/receipts. Vault provisions a unique inert value; Identity retains the hash of its zero-grant, run-bound inbound credential. Existing request/execution lineage links provisioning and delivery. The value grants no useful permission and never reaches a model, ordinary workspace record or log. Reading injected material alone is not a trip; exact cryptographic presentation at an owned verifier is. Expiry and revocation use existing credential/grant owners. Already injected material remains subject to ordinary stale-session and runtime closure rules; no new credential kind, honey store or recall guarantee is created.
+
 ## Vault Injection Plan
 
 An injection plan should carry:
