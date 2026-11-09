@@ -668,7 +668,7 @@ Supported Vault request/review uses the existing Pending Request command-intent 
 
 ## Discord And Notification Delivery
 
-`src/channel-services.ts` composes the Discord adapter and shared notification lifecycle with the existing Pending Request owners. The private signed entry is `/api/channels/discord/interactions`; account settings and delivery observations use the definition-driven channel family. Startup reads optional `channels.discord` configuration. Pairing retains no credential privilege, sends carry App links only, and grants return to the App. Core migration `0005_channel_notifications` adds deployment-local transport records without changing existing records. Focused checks cover `src/channels`, `src/notifications`, and the channel-to-Pending Request seam. No real vendor operation is part of deterministic tests.
+`src/channel-services.ts` composes the Discord adapter and shared notification lifecycle with the existing Pending Request owners. The private signed entry is `/api/channels/discord/interactions`; account settings and delivery observations use the definition-driven channel family. Startup reads optional `channels.discord` configuration. The boot migration phase awaits native Attention reconciliation before recovery enumeration and channel admission; App and channel constructors do not reconcile sends. Pairing retains no credential privilege, sends carry App links only, and grants return to the App. Core migration `0005_channel_notifications` adds deployment-local transport records without changing existing records. Focused checks cover `src/channels`, `src/notifications`, and the channel-to-Pending Request seam. No real vendor operation is part of deterministic tests.
 
 ## Identifier Boundaries
 

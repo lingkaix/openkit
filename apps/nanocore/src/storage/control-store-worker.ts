@@ -64,6 +64,12 @@ import {
   type PreparedNativeSchemaApplication,
   prepareNativeSchemaApplication,
 } from '../knowledge/schema-application.js';
+import { reconcileIncompleteAttentionAttemptsInDb } from '../notifications/attention.js';
+import {
+  type AttentionReconciliationResult,
+  AttentionReconciliationResultSchema,
+} from '../notifications/attention-codecs.js';
+import { AttentionError } from '../notifications/attention-error.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   applyControlExecutionJournal,
@@ -155,6 +161,7 @@ import {
   applyControlProducts,
   applyControlPublication,
   applyControlTerminal,
+  assertControlProductWriter,
   ControlItemAppendError,
   type ControlPublicationInput,
   type ControlTerminalTransition,
@@ -344,6 +351,7 @@ type WriteCommand = Extract<
       | 'runtime-target'
       | 'backend-session'
       | 'remote-mcp-audit'
+      | 'attention-reconcile-incomplete-attempts'
       | 'attention-attempt-claim'
       | 'attention-attempt-completion'
       | 'bootstrap-ensure'
@@ -2221,6 +2229,32 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'attention-reconcile-incomplete-attempts') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            assertControlProductWriter(owner.sqlite);
+            let result: AttentionReconciliationResult;
+            try {
+              const changes = reconcileIncompleteAttentionAttemptsInDb(owner.sqlite, () => {
+                if (request.input.finishedAt === null)
+                  throw new AttentionError('invalid_attention_input');
+                return request.input.finishedAt;
+              });
+              result = { status: 'reconciled', changes };
+            } catch (error) {
+              // The original nested transaction has rolled back before returning a safe refusal.
+              if (!(error instanceof AttentionError)) throw error;
+              result = AttentionReconciliationResultSchema.parse({
+                status: 'refused',
+                code: error.code,
+              });
+            }
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'attention-reconcile-incomplete-attempts',
+              result,
+            };
           } else if (request.operation === 'attention-attempt-claim') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlAttentionAttemptClaim(owner.scopeDb, request.input);
@@ -3660,6 +3694,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'runtime-target' ||
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
+      value.operation === 'attention-reconcile-incomplete-attempts' ||
       value.operation === 'attention-attempt-claim' ||
       value.operation === 'attention-attempt-completion' ||
       value.operation === 'bootstrap-ensure' ||

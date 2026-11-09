@@ -94,3 +94,22 @@ export {
   RowSchema,
   SourceSchema,
 };
+
+/** Prepared startup clock, consumed only after all affected retained rows validate. */
+export const AttentionReconciliationSchema = z
+  .object({ finishedAt: z.string().datetime().nullable() })
+  .strict();
+
+/** Original count or safe refusal after the complete reconciliation transaction rolls back. */
+export const AttentionReconciliationResultSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('reconciled'), changes: z.number().int().nonnegative() }).strict(),
+  z
+    .object({
+      status: z.literal('refused'),
+      code: z.enum(['invalid_attention_input', 'attention_recovery_required']),
+    })
+    .strict(),
+]);
+
+export type AttentionReconciliation = z.infer<typeof AttentionReconciliationSchema>;
+export type AttentionReconciliationResult = z.infer<typeof AttentionReconciliationResultSchema>;

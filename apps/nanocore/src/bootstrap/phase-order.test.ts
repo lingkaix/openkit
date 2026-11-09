@@ -97,6 +97,7 @@ function evaluateEntrypointShutdown(effects: {
   audit: Promise<void>;
   coreMigrationsComplete: boolean;
   coreMigrationFailure?: Error;
+  attentionReconciliation?: Promise<number>;
 }) {
   const source = readEntrypointSource();
   const sourceFile = createSourceFile('index.ts', source, ScriptTarget.Latest, true);
@@ -176,10 +177,27 @@ function evaluateEntrypointShutdown(effects: {
     events.push(`exit:${code}`);
   });
   const processShutdownAbort = new AbortController();
-  const coreDb = { sqlite: { open: true, close: () => events.push('core.closed') } };
+  const coreDb = {
+    sqlite: {
+      open: true,
+      close: () => events.push('core.closed'),
+      prepare: () => ({ all: () => [] }),
+    },
+  };
   const openCoreDbWithIntegrityCheck = vi.fn(() => coreDb);
   const applyMigrations = vi.fn(() => {
+    if (effects.attentionReconciliation) {
+      events.push('core.migrated');
+      return;
+    }
     throw effects.coreMigrationFailure ?? new Error('Unexpected migration invocation.');
+  });
+  const reconcileIncompleteAttempts = vi.fn(() => {
+    events.push('attention.started');
+    return effects.attentionReconciliation;
+  });
+  const recoverRunningCapabilityCalls = vi.fn(async () => {
+    events.push('recovery.started');
   });
   const bindings = {
     closeWithDeadline,
@@ -192,6 +210,25 @@ function evaluateEntrypointShutdown(effects: {
     coreMigrationsComplete: effects.coreMigrationsComplete,
     openCoreDbWithIntegrityCheck,
     applyMigrations,
+    AttentionNotifications: class {
+      reconcileIncompleteAttempts = reconcileIncompleteAttempts;
+    },
+    workspaceMutationAdmission: {},
+    restoreWorkspaceRetirementAdmission: vi.fn(),
+    restoreWorkspaceRecoveryAdmission: vi.fn(),
+    recoverRunningCapabilityCalls,
+    admitServerKnowledgeBoot: vi.fn(),
+    NotebookError: class extends Error {},
+    verifyAndMigrateExistingScopedDatabases: async (_root: string, validate: () => void) =>
+      validate(),
+    FsStore: class {
+      static validateFileAuthority() {}
+      setWorkspaceMutationAdmission() {}
+    },
+    sharedStore: undefined,
+    rebuildInvalidExistingWorkspaceDerivedIndexes: () => [],
+    readDataRootLayoutMarker: () => ({ layoutVersion: 1 }),
+    listAppliedMigrationIds: () => [],
     recordBootAuditEvent,
     recordBootStartAuditEvent,
     withScopeAdmissionReadiness,
@@ -262,6 +299,8 @@ function evaluateEntrypointShutdown(effects: {
     recordBootStartAuditEvent,
     openCoreDbWithIntegrityCheck,
     applyMigrations,
+    reconcileIncompleteAttempts,
+    recoverRunningCapabilityCalls,
     shutdownControlStoreWorkerClient,
     getControlStoreWorkerClient,
     exit,
@@ -270,6 +309,62 @@ function evaluateEntrypointShutdown(effects: {
 }
 
 describe('NanoCore boot phase order', () => {
+  it('joins Attention reconciliation before recovery or completion of critical migrations', async () => {
+    const ack = pendingShutdownEffect();
+    const lifecycle = evaluateEntrypointShutdown({
+      maintenance: Promise.resolve(),
+      executions: Promise.resolve(),
+      listeners: Promise.resolve(),
+      audit: Promise.resolve(),
+      coreMigrationsComplete: false,
+      attentionReconciliation: ack.promise.then(() => 2),
+    });
+    let completed = false;
+    const boot = lifecycle.runMigrationPhase().then((result) => {
+      completed = true;
+      return result;
+    });
+
+    // Core Storage requires the covering FULL ACK before startup admission.
+    expect(lifecycle.events).toEqual(['core.migrated', 'attention.started']);
+    expect(lifecycle.reconcileIncompleteAttempts).toHaveBeenCalledTimes(1);
+    expect(lifecycle.recoverRunningCapabilityCalls).not.toHaveBeenCalled();
+    expect(lifecycle.recordBootStartAuditEvent).not.toHaveBeenCalled();
+    expect(completed).toBe(false);
+
+    ack.resolve();
+    const result = await boot;
+    expect(result.outcomes[0]?.outcome.status).toBe('ok');
+    expect(lifecycle.recoverRunningCapabilityCalls).toHaveBeenCalledTimes(1);
+    expect(lifecycle.recordBootStartAuditEvent).toHaveBeenCalledTimes(1);
+    expect(completed).toBe(true);
+  });
+
+  it('keeps startup closed when Attention reconciliation refuses retained corruption', async () => {
+    const lifecycle = evaluateEntrypointShutdown({
+      maintenance: Promise.resolve(),
+      executions: Promise.resolve(),
+      listeners: Promise.resolve(),
+      audit: Promise.resolve(),
+      coreMigrationsComplete: false,
+      attentionReconciliation: Promise.reject(new Error('attention_recovery_required')),
+    });
+    const result = await lifecycle.runMigrationPhase();
+    expect(result.readiness.acceptingProductWork).toBe(false);
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({
+        name: 'migrations',
+        critical: true,
+        outcome: expect.objectContaining({
+          status: 'failed',
+          reason: expect.objectContaining({ message: 'attention_recovery_required' }),
+        }),
+      }),
+    ]);
+    expect(lifecycle.recoverRunningCapabilityCalls).not.toHaveBeenCalled();
+    expect(lifecycle.recordBootStartAuditEvent).not.toHaveBeenCalled();
+  });
+
   it('settles listener shutdown when boot has not created optional process owners', async () => {
     const onClosed = vi.fn();
     const closeNanoCoreListeners = evaluateCloseNanoCoreListeners({

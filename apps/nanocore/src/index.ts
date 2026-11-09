@@ -68,6 +68,7 @@ import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { closeActiveLocalAiSupervisor } from './local-ai/supervisor.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
+import { AttentionNotifications } from './notifications/attention.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
 import {
@@ -294,6 +295,10 @@ const bootResult = await runBootPhases({
         });
         applyMigrations(coreDb);
         coreMigrationsComplete = true;
+        // Classify interrupted sends durably before any recovery enumeration or channel admission.
+        await new AttentionNotifications(coreDb.sqlite, {
+          nativeCoreDb: coreDb,
+        }).reconcileIncompleteAttempts();
         restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
         restoreWorkspaceRecoveryAdmission(coreDb, workspaceMutationAdmission);
         await recoverRunningCapabilityCalls({ workspaceDb: coreDb });

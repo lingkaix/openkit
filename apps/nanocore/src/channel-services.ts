@@ -144,7 +144,6 @@ export function createChannelServices(input: {
     buildAppPath: attentionPath,
     nativeCoreDb: coreDb,
   });
-  notifications.reconcileIncompleteAttempts();
   if (input.discordConfig && !input.publicBaseUrl)
     throw new OperationError(
       'channel_configuration_invalid',

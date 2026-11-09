@@ -74,6 +74,12 @@ import {
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
 import {
+  type AttentionReconciliation,
+  type AttentionReconciliationResult,
+  AttentionReconciliationResultSchema,
+  AttentionReconciliationSchema,
+} from '../notifications/attention-codecs.js';
+import {
   type ControlExecutionJournalInput,
   ControlExecutionJournalInputSchema,
 } from '../runtime/execution-journal.js';
@@ -395,7 +401,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 80;
+export const CONTROL_WORKER_VERSION = 81;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -800,6 +806,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
+          readonly operation: 'attention-reconcile-incomplete-attempts';
+          readonly input: AttentionReconciliation;
         }
       | {
           readonly operation: 'attention-attempt-claim';
@@ -1250,6 +1260,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'attention-reconcile-incomplete-attempts';
+      readonly result: AttentionReconciliationResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'attention-attempt-claim';
@@ -1761,6 +1776,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'attention-reconcile-incomplete-attempts')
+    return AttentionReconciliationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-attempt-claim')
     return ControlAttentionAttemptClaimResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-attempt-completion')
@@ -2279,6 +2296,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'attention-reconcile-incomplete-attempts')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      AttentionReconciliationSchema.safeParse(value.input).success
     );
   if (value.operation === 'attention-attempt-claim')
     return (

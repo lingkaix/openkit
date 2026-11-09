@@ -414,7 +414,7 @@ describe('native Attention attempt completion', () => {
     const f = fixture();
     await expect(
       send(f, async () => {
-        expect(f.notifications.reconcileIncompleteAttempts()).toBe(1);
+        expect(await f.notifications.reconcileIncompleteAttempts()).toBe(1);
         f.coreDb.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })

@@ -198,6 +198,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     });
   }
   let services = compose();
+  await services.notifications.reconcileIncompleteAttempts();
   let event = 100000000000000000n;
   const envelope = (command: string, values: Record<string, string>) => ({
     id: String(++event),
@@ -275,8 +276,9 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       expect(disclosure).toBeTruthy();
       return disclosure!;
     },
-    withoutAdapter() {
+    async withoutAdapter() {
       const unconfigured = compose(false);
+      await unconfigured.notifications.reconcileIncompleteAttempts();
       const invoke = createOperationInvocation({
         coreDb,
         store,
@@ -324,13 +326,14 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       mkdirSync(directory, { recursive: true });
       writeFileSync(join(directory, 'workspace.jsonc'), JSON.stringify(config));
     },
-    restart() {
+    async restart() {
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       databases.push(coreDb);
       applyMigrations(coreDb);
       store = new FsStore({ dataRoot });
       services = compose();
+      await services.notifications.reconcileIncompleteAttempts();
     },
   };
 }
@@ -360,6 +363,7 @@ describe('Discord to native Pending Request seam', () => {
       openWorkspace,
       invokePending,
     });
+    await services.notifications.reconcileIncompleteAttempts();
     expect(
       services.discord!.beginPairing({ userId: FIXTURE_LOCAL_USER_ID, kind: 'local' })
     ).toEqual({ challenge: expect.any(String), expiresAt: expect.any(Number) });
@@ -412,7 +416,7 @@ describe('Discord to native Pending Request seam', () => {
         .get(actor.userId)
     ).toEqual({ count: 1 });
     const pending = f.record();
-    const invoke = f.withoutAdapter();
+    const invoke = await f.withoutAdapter();
     expect(await invoke('channel.discord.status')).toEqual({
       configured: false,
       sendingAvailable: false,
@@ -622,7 +626,7 @@ describe('Discord to native Pending Request seam', () => {
     const delivery = f.services.notifications.listForActor(actor.userId, {}, () => true)[0]!;
     expect(f.record()).toEqual(pending);
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
-    f.restart();
+    await f.restart();
     f.services.recoverAttention();
     await expect(f.services.send(actor, delivery.id, delivery.attempt!.id)).rejects.toThrow();
     expect(f.services.notifications.get(delivery.id)?.status).toBe('delivery-unknown');
@@ -675,7 +679,7 @@ describe('Discord to native Pending Request seam', () => {
     expect(f.store.getApproval(f.target.request).status).toBe('denied');
     expect(f.nativeCalls).toHaveLength(1);
     f.coreDb.sqlite.exec('DROP TRIGGER refuse_channel_receipt');
-    f.restart();
+    await f.restart();
     expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain(
       'outcome is unknown'
     );

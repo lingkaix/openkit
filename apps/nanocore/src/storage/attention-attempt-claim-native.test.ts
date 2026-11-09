@@ -382,7 +382,7 @@ it('makes no route, eligibility, contact, fallback or repost after a genuine com
   expect(f.counters.sends).toBe(0);
   // Startup reconciliation remains the separate original Main owner, not a fallback.
   f.coreDb.sqlite.pragma('query_only = OFF');
-  expect(f.notifications.reconcileIncompleteAttempts()).toBe(1);
+  expect(await f.notifications.reconcileIncompleteAttempts()).toBe(1);
   expect(f.notifications.get(f.delivery.id)).toMatchObject({
     status: 'delivery-unknown',
     attempt: { failureCode: 'restart' },

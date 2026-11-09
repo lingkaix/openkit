@@ -10,6 +10,11 @@ import {
   ControlBootstrapEnsureResultSchema,
 } from '../auth/bootstrap-ensure-codecs.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
+import {
+  type AttentionReconciliation,
+  AttentionReconciliationResultSchema,
+  AttentionReconciliationSchema,
+} from '../notifications/attention-codecs.js';
 import { AttentionError } from '../notifications/attention-error.js';
 import type { ControlGoalCommandResult, ControlGoalInput } from '../runtime/goal-codecs.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
@@ -1967,6 +1972,54 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Joins the complete original startup reconciliation under the native Core FULL boundary. */
+  async attentionReconcileIncompleteAttempts(
+    db: CoreDb,
+    value: AttentionReconciliation
+  ): Promise<number> {
+    const input = AttentionReconciliationSchema.parse(value);
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'attention-reconcile-incomplete-attempts', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({
+        operation: 'attention-reconcile-incomplete-attempts',
+        database,
+        input,
+      });
+    }
+    if (reply.operation !== 'attention-reconcile-incomplete-attempts')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = AttentionReconciliationResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    if (result.data.status === 'refused') throw new AttentionError(result.data.code);
+    return result.data.changes;
   }
 
   /** Returns only the original transaction's durable claim snapshot, never a later re-read. */

@@ -1,12 +1,15 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ChannelServices,
   createChannelOperationImplementations,
 } from '../channel-services.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb } from '../storage/db.js';
 import { applyNativeScopeMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
@@ -14,6 +17,38 @@ import {
   type AttentionSource,
   type AttentionTransport,
 } from './attention.js';
+
+// Hold only a genuine native post-commit ACK. SQLite and its Worker stay real.
+const reconciliationAck = vi.hoisted(() => ({
+  hold: false,
+  arrived: undefined as (() => void) | undefined,
+  release: undefined as (() => void) | undefined,
+}));
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        const reply = args[0];
+        if (
+          reconciliationAck.hold &&
+          event === 'message' &&
+          isRecord(reply) &&
+          reply.status === 'ok' &&
+          reply.operation === 'attention-reconcile-incomplete-attempts' &&
+          isRecord(reply.result) &&
+          reply.result.status === 'reconciled'
+        ) {
+          reconciliationAck.release = () => super.emit(event, ...args);
+          reconciliationAck.arrived?.();
+          return true;
+        }
+        return super.emit(event, ...args);
+      }
+    },
+  };
+});
 
 const aliceId = testEntityId('usr', 'attention-alice');
 const bobId = testEntityId('usr', 'attention-bob');
@@ -37,7 +72,12 @@ function fixture(path = ':memory:') {
   return { sqlite, notifications, delivery };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  reconciliationAck.hold = false;
+  reconciliationAck.release?.();
+  reconciliationAck.release = undefined;
+  reconciliationAck.arrived = undefined;
+  await shutdownControlStoreWorkerClient();
   for (const db of dbs.splice(0)) if (db.open) db.close();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
@@ -364,6 +404,29 @@ describe('attention delivery owner', () => {
     directories.push(directory);
     const path = join(directory, 'core.sqlite');
     const { sqlite, notifications, delivery } = fixture(path);
+    const terminal = [];
+    for (const status of ['sent', 'failed-no-send', 'delivery-unknown'] as const) {
+      const reference = notifications.enqueue({
+        source: { ...source, requestId: `apr_terminal_${status}` },
+        recipientUserId: aliceId,
+      });
+      terminal.push(
+        await notifications.deliver(
+          {
+            deliveryId: reference.id,
+            expectedAttemptId: null,
+            recipientUserId: aliceId,
+            channel: 'discord',
+          },
+          { isEligible: () => true, transport: async () => ({ status }) }
+        )
+      );
+    }
+    const queued = notifications.enqueue({
+      source: { ...source, requestId: 'apr_still_queued' },
+      recipientUserId: aliceId,
+    });
+    const second = notifications.enqueue({ source, recipientUserId: bobId });
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
@@ -376,14 +439,36 @@ describe('attention delivery owner', () => {
     await expect(
       notifications.deliver(input, { isEligible: () => true, transport })
     ).rejects.toThrow('simulated lost settlement');
+    await expect(
+      notifications.deliver(
+        { ...input, deliveryId: second.id, recipientUserId: bobId },
+        { isEligible: () => true, transport }
+      )
+    ).rejects.toThrow('simulated lost settlement');
     expect(notifications.get(delivery.id)?.status).toBe('sending');
+    const sending = [notifications.get(delivery.id)!, notifications.get(second.id)!];
     sqlite.exec('DROP TRIGGER refuse_attempt_settlement');
     sqlite.close();
     const reopened = new Database(path);
     dbs.push(reopened);
-    const restarted = new AttentionNotifications(reopened, { now });
-    expect(restarted.reconcileIncompleteAttempts()).toBe(1);
-    expect(restarted.reconcileIncompleteAttempts()).toBe(0);
+    const restartTime = '2026-10-17T06:00:00.000Z';
+    const restarted = new AttentionNotifications(reopened, { now: () => restartTime });
+    expect(await restarted.reconcileIncompleteAttempts()).toBe(2);
+    expect(await restarted.reconcileIncompleteAttempts()).toBe(0);
+    for (const original of sending) {
+      expect(restarted.get(original.id)).toEqual({
+        ...original,
+        status: 'delivery-unknown',
+        attempt: {
+          ...original.attempt!,
+          status: 'delivery-unknown',
+          failureCode: 'restart',
+          finishedAt: restartTime,
+        },
+      });
+    }
+    for (const original of [...terminal, queued])
+      expect(restarted.get(original.id)).toEqual(original);
     expect(restarted.get(delivery.id)).toMatchObject({
       status: 'delivery-unknown',
       attempt: { failureCode: 'restart' },
@@ -398,7 +483,179 @@ describe('attention delivery owner', () => {
         { isEligible: () => true, transport }
       )
     ).rejects.toThrow('attention_not_sendable');
-    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledTimes(2);
+    const settled = [...sending, ...terminal, queued].map((row) => restarted.get(row.id));
+    reopened.close();
+    const durableDb = new Database(path);
+    dbs.push(durableDb);
+    const durable = new AttentionNotifications(durableDb, { now });
+    expect([...sending, ...terminal, queued].map((row) => durable.get(row.id))).toEqual(settled);
+    expect(await durable.reconcileIncompleteAttempts()).toBe(0);
+  });
+
+  it('refuses a corrupt affected row without reconciling any unfinished attempt', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'attention-restart-corrupt-'));
+    directories.push(directory);
+    const path = join(directory, 'core.sqlite');
+    const { sqlite, notifications, delivery } = fixture(path);
+    const second = notifications.enqueue({ source, recipientUserId: bobId });
+    sqlite.exec(`CREATE TRIGGER refuse_attempt_settlement BEFORE UPDATE ON notification_delivery_attempts
+      BEGIN SELECT RAISE(ABORT, 'simulated lost settlement'); END`);
+    for (const reference of [delivery, second]) {
+      await expect(
+        notifications.deliver(
+          {
+            deliveryId: reference.id,
+            recipientUserId: reference.recipientUserId,
+            channel: 'discord',
+            expectedAttemptId: null,
+          },
+          { isEligible: () => true, transport: async () => ({ status: 'sent' }) }
+        )
+      ).rejects.toThrow('simulated lost settlement');
+    }
+    sqlite.exec('DROP TRIGGER refuse_attempt_settlement');
+    // Pending Requests requires unsupported core values to fail closed. Corrupt
+    // the second valid claim only after both owner-created sends are unfinished.
+    sqlite.pragma('ignore_check_constraints = ON');
+    sqlite
+      .prepare('UPDATE notification_attention SET channel = ? WHERE id = ?')
+      .run('slack', second.id);
+    const attempts = sqlite
+      .prepare('SELECT * FROM notification_delivery_attempts ORDER BY id')
+      .all();
+    sqlite.close();
+
+    const reopened = new Database(path);
+    dbs.push(reopened);
+    const restarted = new AttentionNotifications(reopened, { now });
+    await expect(
+      Promise.resolve().then(() => restarted.reconcileIncompleteAttempts())
+    ).rejects.toThrow('attention_recovery_required');
+    expect(restarted.get(delivery.id)?.status).toBe('sending');
+    expect(
+      reopened.prepare('SELECT * FROM notification_delivery_attempts ORDER BY id').all()
+    ).toEqual(attempts);
+    reopened.close();
+
+    const durable = new Database(path);
+    dbs.push(durable);
+    expect(
+      durable.prepare('SELECT * FROM notification_delivery_attempts ORDER BY id').all()
+    ).toEqual(attempts);
+  });
+
+  it('reconciles through native Core with Main query-only and resolves only after the durable ACK', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'attention-native-restart-'));
+    directories.push(directory);
+    const coreDb = openCoreDb(directory);
+    dbs.push(coreDb.sqlite);
+    applyNativeScopeMigrations(coreDb.sqlite, 'core');
+    const original = new AttentionNotifications(coreDb.sqlite, { now });
+    const references = [
+      original.enqueue({ source, recipientUserId: aliceId }),
+      original.enqueue({ source, recipientUserId: bobId }),
+    ];
+    coreDb.sqlite.exec(`CREATE TRIGGER refuse_attempt_settlement BEFORE UPDATE ON notification_delivery_attempts
+      BEGIN SELECT RAISE(ABORT, 'simulated lost settlement'); END`);
+    const transport = vi.fn<AttentionTransport>().mockResolvedValue({ status: 'sent' });
+    for (const reference of references) {
+      await expect(
+        original.deliver(
+          {
+            deliveryId: reference.id,
+            recipientUserId: reference.recipientUserId,
+            channel: 'discord',
+            expectedAttemptId: null,
+          },
+          { isEligible: () => true, transport }
+        )
+      ).rejects.toThrow('simulated lost settlement');
+    }
+    coreDb.sqlite.exec('DROP TRIGGER refuse_attempt_settlement');
+    const attempts = coreDb.sqlite
+      .prepare('SELECT * FROM notification_delivery_attempts ORDER BY id')
+      .all();
+    // Inject one unsupported core value after valid owner setup. The native
+    // operation must refuse the complete affected set, with no Main fallback.
+    coreDb.sqlite.pragma('ignore_check_constraints = ON');
+    coreDb.sqlite
+      .prepare('UPDATE notification_attention SET channel = ? WHERE id = ?')
+      .run('slack', references[1]!.id);
+    coreDb.sqlite.pragma('query_only = ON');
+    const restartTime = '2026-10-18T09:00:00.000Z';
+    const restartClock = vi.fn(() => restartTime);
+    const restarted = new AttentionNotifications(coreDb.sqlite, {
+      nativeCoreDb: coreDb,
+      now: restartClock,
+    });
+    await expect(restarted.reconcileIncompleteAttempts()).rejects.toThrow(
+      'attention_recovery_required'
+    );
+    expect(
+      coreDb.sqlite.prepare('SELECT * FROM notification_delivery_attempts ORDER BY id').all()
+    ).toEqual(attempts);
+    const clockFailure = new Error('simulated unavailable startup clock');
+    const invalidClock = new AttentionNotifications(coreDb.sqlite, {
+      nativeCoreDb: coreDb,
+      now: () => {
+        throw clockFailure;
+      },
+    });
+    await expect(invalidClock.reconcileIncompleteAttempts()).rejects.toThrow(
+      'attention_recovery_required'
+    );
+
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite
+      .prepare('UPDATE notification_attention SET channel = ? WHERE id = ?')
+      .run('discord', references[1]!.id);
+    coreDb.sqlite.pragma('query_only = ON');
+    await expect(invalidClock.reconcileIncompleteAttempts()).rejects.toBe(clockFailure);
+    expect(
+      coreDb.sqlite.prepare('SELECT * FROM notification_delivery_attempts ORDER BY id').all()
+    ).toEqual(attempts);
+    restartClock.mockClear();
+    reconciliationAck.hold = true;
+    const committed = new Promise<void>((resolve) => {
+      reconciliationAck.arrived = resolve;
+    });
+    let resolved = false;
+    const reconciliation = restarted.reconcileIncompleteAttempts().then((count) => {
+      resolved = true;
+      return count;
+    });
+    try {
+      await Promise.race([
+        committed,
+        reconciliation.then(() => {
+          throw new Error('Reconciliation resolved before its native ACK was observed.');
+        }),
+      ]);
+      const cold = new Database(coreDb.sqlite.name, { readonly: true });
+      dbs.push(cold);
+      const observer = new AttentionNotifications(cold);
+      for (const reference of references) {
+        expect(observer.get(reference.id)).toMatchObject({
+          status: 'delivery-unknown',
+          attempt: { failureCode: 'restart', finishedAt: restartTime, startedAt: now() },
+        });
+      }
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      expect(restartClock).toHaveBeenCalledTimes(1);
+      expect(resolved).toBe(false);
+      expect(transport).toHaveBeenCalledTimes(2);
+      reconciliationAck.hold = false;
+      reconciliationAck.release!();
+      reconciliationAck.release = undefined;
+      await expect(reconciliation).resolves.toBe(2);
+      expect(await restarted.reconcileIncompleteAttempts()).toBe(0);
+    } finally {
+      reconciliationAck.hold = false;
+      reconciliationAck.release?.();
+      reconciliationAck.release = undefined;
+      await reconciliation;
+    }
   });
 
   it('uses the injected App route and refuses an external link before contact', async () => {

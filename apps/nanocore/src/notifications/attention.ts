@@ -167,6 +167,25 @@ export function completeAttentionAttemptInDb(
     .run(input.status, input.failureCode, input.finishedAt, input.attemptId, input.deliveryId);
 }
 
+/** Original whole startup transaction: validate every affected projection before changing any attempt. */
+export function reconcileIncompleteAttentionAttemptsInDb(
+  sqlite: Database.Database,
+  now: () => string
+): number {
+  return sqlite.transaction(() => {
+    for (const row of sqlite
+      .prepare(`${SELECT} WHERE EXISTS (SELECT 1 FROM notification_delivery_attempts pending
+        WHERE pending.attention_id = a.id AND pending.status = 'sending')`)
+      .iterate()) {
+      decodeRow(row);
+    }
+    return sqlite
+      .prepare(`UPDATE notification_delivery_attempts SET status = 'delivery-unknown',
+          failure_code = 'restart', finished_at = ? WHERE status = 'sending'`)
+      .run(now()).changes;
+  })();
+}
+
 /** Owns attention delivery only; the injected Core database must already be migrated. */
 export class AttentionNotifications {
   constructor(
@@ -174,7 +193,7 @@ export class AttentionNotifications {
     private readonly options: {
       now?: () => string;
       buildAppPath?: (source: AttentionSource) => string;
-      /** Canonical runtime binding for the original claim and completion commits. */
+      /** Canonical runtime binding for startup reconciliation, claim and completion commits. */
       nativeCoreDb?: CoreDb;
     } = {}
   ) {}
@@ -351,19 +370,35 @@ export class AttentionNotifications {
   }
 
   /** At startup before serving, makes every unfinished send unknown without contacting a transport. */
-  reconcileIncompleteAttempts(): number {
-    return this.sqlite.transaction(() => {
-      for (const row of this.sqlite
-        .prepare(`${SELECT} WHERE EXISTS (SELECT 1 FROM notification_delivery_attempts pending
-        WHERE pending.attention_id = a.id AND pending.status = 'sending')`)
-        .iterate()) {
-        decodeRow(row);
-      }
-      return this.sqlite
-        .prepare(`UPDATE notification_delivery_attempts SET status = 'delivery-unknown',
-          failure_code = 'restart', finished_at = ? WHERE status = 'sending'`)
-        .run(this.now()).changes;
-    })();
+  async reconcileIncompleteAttempts(): Promise<number> {
+    const coreDb = this.options.nativeCoreDb;
+    if (!coreDb) return reconcileIncompleteAttentionAttemptsInDb(this.sqlite, () => this.now());
+    const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
+      '../storage/control-store-worker-client.js'
+    );
+    if (coreDb.sqlite !== this.sqlite)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    let finishedAt: string | null = null;
+    let clockError: unknown;
+    try {
+      finishedAt = this.now();
+    } catch (error) {
+      clockError = error;
+    }
+    try {
+      return await getControlStoreWorkerClient().attentionReconcileIncompleteAttempts(coreDb, {
+        finishedAt,
+      });
+    } catch (error) {
+      // Keep the original corruption-before-clock refusal inside whole-operation rollback.
+      if (
+        finishedAt === null &&
+        error instanceof AttentionError &&
+        error.code === 'invalid_attention_input'
+      )
+        throw clockError;
+      throw error;
+    }
   }
 
   /** Only a durable original claim snapshot may reach routing, fresh eligibility or transport. */
