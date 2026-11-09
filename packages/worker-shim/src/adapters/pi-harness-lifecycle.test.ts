@@ -278,6 +278,7 @@ async function fixture(
   const capability = await startSyntheticCapability(credential('synthetic-plane'), [
     'openkit-work',
     'openkit-extra',
+    '_discovery',
   ]);
   capability.bound = true;
   const bridge = createH2Server();
@@ -479,8 +480,8 @@ describe('Pi real Integration lifecycle', () => {
         (await f.send('session.inspect', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
           .body.nativeHandleDigest
       ).toBe(first.body.nativeHandleDigest);
-      expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(1);
-      expect(f.capability.log.filter((r) => r.method === 'tools/list')).toHaveLength(1);
+      expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(2);
+      expect(f.capability.log.filter((r) => r.method === 'tools/list')).toHaveLength(2);
       const requestAt = f.events.findIndex((e) => e.startsWith('request:/inference/'));
       expect(f.events.indexOf('bind:as_00000000-0000-7f03-8682-76a52604a84a')).toBeLessThan(
         requestAt
@@ -512,7 +513,7 @@ describe('Pi real Integration lifecycle', () => {
         (await f.send('session.close', f.selector('as_00000000-0000-7f03-8682-76a52604a84a')))
           .disposition
       ).toBe('succeeded');
-      expect(observations.getResponses).toEqual([405]);
+      expect(observations.getResponses).toEqual([405, 405]);
       expect(f.capability.log.some((r) => r.httpMethod === 'GET')).toBe(false);
     },
     TIMEOUT
@@ -909,12 +910,15 @@ describe('Pi real Integration lifecycle', () => {
       await waitIdle(f, 'as_00000000-0000-7ccb-a600-607d092dffc8');
       expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('answer-1');
       expect(f.inference.requests[1]!.body.tools?.map((t) => t.function.name)).toContain(
+        'mcp___discovery__mcp_list_servers'
+      );
+      expect(f.inference.requests[1]!.body.tools?.map((t) => t.function.name)).not.toContain(
         'mcp__openkit_extra__echo'
       );
       expect(f.inference.requests[1]!.body.tools?.map((t) => t.function.name)).not.toContain(
         'mcp__openkit_work__echo'
       );
-      expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(2);
+      expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(3);
       expect(
         readFileSync(
           join(

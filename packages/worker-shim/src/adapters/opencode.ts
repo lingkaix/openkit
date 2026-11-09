@@ -61,7 +61,7 @@ const RESULT_BYTE_LIMIT = 16 * 1024 * 1024;
 const DIAGNOSTIC_BYTE_LIMIT = 16 * 1024;
 const HANDLE_PREFIX = 'v1:';
 const SETTLED_ASSISTANT_FINISH = new Set(['stop', 'length']);
-const SERVER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const SERVER_ID_PATTERN = /^(?:_discovery|[A-Za-z0-9][A-Za-z0-9_-]{0,63})$/;
 
 /** Disables autonomous update and model-catalog traffic while preserving native discovery. */
 const ISOLATION_ENV: Readonly<Record<string, string>> = {

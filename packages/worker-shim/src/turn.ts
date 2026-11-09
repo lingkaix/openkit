@@ -1147,7 +1147,8 @@ function resolveWorkerMcpServerIds(packageManifest: WorkerShimPackageManifest): 
   if (new Set(ids).size !== ids.length) {
     throw new Error('Worker MCP server supply contains duplicate ids.');
   }
-  return ids;
+  // All selected schemas remain in AEP admission; this fixed native surface never changes with vendor selection.
+  return [...(ids.includes('openkit-work') ? ['openkit-work'] : []), '_discovery'];
 }
 
 /**

@@ -44,7 +44,7 @@ export interface SyntheticCapability {
 /**
  * Starts a hand-rolled Streamable HTTP MCP endpoint behind a bearer check.
  *
- * Each server exposes one `echo` tool. Requests with another bearer, or any request while no
+ * Each ordinary server exposes one `echo` tool; `_discovery` exposes the three fixed fallback names. Requests with another bearer, or any request while no
  * Turn is bound, are refused with 401 or 403 and still logged.
  *
  * @param credential Capability loopback credential the plane accepts.
@@ -125,17 +125,24 @@ export async function startSyntheticCapability(
         });
       case 'tools/list':
         return reply({
-          tools: [
-            {
-              description: 'Echo text back.',
-              inputSchema: {
-                properties: { text: { type: 'string' } },
-                required: ['text'],
-                type: 'object',
-              },
-              name: 'echo',
-            },
-          ],
+          tools:
+            serverId === '_discovery'
+              ? ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'].map((name) => ({
+                  name,
+                  description: 'Synthetic discovery fallback.',
+                  inputSchema: { type: 'object', properties: {} },
+                }))
+              : [
+                  {
+                    description: 'Echo text back.',
+                    inputSchema: {
+                      properties: { text: { type: 'string' } },
+                      required: ['text'],
+                      type: 'object',
+                    },
+                    name: 'echo',
+                  },
+                ],
         });
       case 'tools/call':
         if (plane.holdToolCall) return hold('tools/call');

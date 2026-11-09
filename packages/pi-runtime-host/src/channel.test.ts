@@ -34,6 +34,13 @@ const open = {
 };
 
 describe('HostRequestSchema', () => {
+  it('accepts the fixed private discovery mount without admitting arbitrary private names', () => {
+    expect(
+      HostRequestSchema.safeParse({ ...open, mcpServers: ['openkit-work', '_discovery'] }).success
+    ).toBe(true);
+    expect(HostRequestSchema.safeParse({ ...open, mcpServers: ['_other'] }).success).toBe(false);
+  });
+
   it('accepts an exact open request', () => {
     expect(HostRequestSchema.safeParse(open).success).toBe(true);
   });

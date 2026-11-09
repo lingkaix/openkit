@@ -472,6 +472,7 @@ function harnessFixture(
     extra: {
       allowedModels?: readonly string[];
       runtimeEnvNames?: readonly string[];
+      mcpIds?: readonly string[];
       threadId?: string;
     } = {}
   ) => {
@@ -570,7 +571,7 @@ function harnessFixture(
             : {}),
         },
         snapshotId: `package-${turnId}`,
-        supply: { mcpServers: [{ id: 'echo' }] },
+        supply: { mcpServers: (extra.mcpIds ?? ['echo']).map((id) => ({ id })) },
       })
     );
   };
@@ -1961,6 +1962,25 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(f.fake.residents[0]?.turns).toHaveLength(1);
   });
 
+  it('keeps the initial MCP definitions stable while selected deferred servers change', async () => {
+    const f = harnessFixture();
+    const session = 'as_00000000-0000-75b0-a387-3019b80ed6d1';
+    await f.open(session);
+    for (const [turnId, vendor] of [
+      ['tu_00000000-0000-7e49-8268-e35715b55d0c', 'alpha'],
+      ['tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4', 'beta'],
+    ]) {
+      expect(
+        await f.start(session, turnId!, { mcpIds: ['openkit-work', 'openkit-generative', vendor!] })
+      ).toMatchObject({ disposition: 'succeeded' });
+      await f.settle(session);
+    }
+    expect(f.fake.residents[0]?.turns.map((turn) => turn.mcpServerIds)).toEqual([
+      ['openkit-work', '_discovery'],
+      ['openkit-work', '_discovery'],
+    ]);
+  });
+
   it('runs two Turns on one resident binding and stores the first ready reference', async () => {
     const f = harnessFixture({
       environment: { GITHUB_TOKEN: 'harness-only', HOME: '/home/worker', NO_PROXY: 'internal' },
@@ -2014,7 +2034,7 @@ describe('Worker Harness resident AgentSessions', () => {
     });
     await f.settle('as_00000000-0000-75b0-a387-3019b80ed6d1');
     expect(resident?.turns[0]).toMatchObject({
-      mcpServerIds: ['echo'],
+      mcpServerIds: ['_discovery'],
       llmRoute: { id: 'worker-inference-0', model: 'model-a' },
       turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
       turnInput: 'input for tu_00000000-0000-7e49-8268-e35715b55d0c',

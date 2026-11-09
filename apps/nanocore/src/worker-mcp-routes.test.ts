@@ -6890,6 +6890,9 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
     gateway,
     observations,
     runtimeConfig,
+    fetch(request: Request) {
+      return app.fetch(request);
+    },
     contacts() {
       return toolContacts;
     },
@@ -6974,7 +6977,10 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
 }
 
 /** Checks the three durable tuples whose physical commit grouping is the accepted warm/cold target. */
-function expectMcpCommittedTuples(fixture: Awaited<ReturnType<typeof createMcpCommitFixture>>) {
+function expectMcpCommittedTuples(
+  fixture: Awaited<ReturnType<typeof createMcpCommitFixture>>,
+  expectedTools = [mcpEchoTool()]
+) {
   const calls = listWorkspaceCapabilityCalls(fixture.db, fixture.workspaceId);
   const call = calls.at(-1)!;
   expect(call.status).toBe('succeeded');
@@ -7000,7 +7006,7 @@ function expectMcpCommittedTuples(fixture: Awaited<ReturnType<typeof createMcpCo
       catalogEntryId: 'echo',
       schemaSnapshotId: call.schemaSnapshotId!,
     })?.tools
-  ).toEqual([mcpEchoTool()]);
+  ).toEqual(expectedTools);
   expect(fixture.store.listAllItems().filter((item) => item.id === call.itemId)).toHaveLength(1);
 }
 
@@ -7172,6 +7178,172 @@ describe('MCP retained tool-call bodies', () => {
       await f.close();
     }
   });
+});
+
+describe('Worker progressive MCP fallback', () => {
+  it('cancels the original in-flight Tool after the same Actor loses authority', async () => {
+    const f = await createMcpCommitFixture();
+    const entered = Promise.withResolvers<AbortSignal>();
+    const interrupted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<{ content: Array<{ type: 'text'; text: string }> }>();
+    f.gateway.callTool.mockImplementationOnce(async (request) => {
+      entered.resolve(request.signal!);
+      request.signal!.addEventListener(
+        'abort',
+        () => {
+          interrupted.resolve();
+          release.reject(
+            new WorkerMcpGatewayCallError(
+              'mcp-call-failed',
+              'MCP call cancelled.',
+              499,
+              'unknown',
+              true
+            )
+          );
+        },
+        { once: true }
+      );
+      return release.promise;
+    });
+    const request = (body: unknown) =>
+      f.fetch(
+        new Request('http://nanocore.test/api/worker-capabilities/mcp/_discovery', {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer fixture-package',
+            accept: 'application/json, text/event-stream',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+      );
+    const pending = request({
+      jsonrpc: '2.0',
+      id: 777,
+      method: 'tools/call',
+      params: {
+        name: 'mcp.call-tool',
+        arguments: { serverId: 'echo', toolName: 'echo', arguments: { message: 'held' } },
+      },
+    });
+    let target: AbortSignal | undefined;
+    try {
+      target = await entered.promise;
+      f.coreDb.sqlite.transaction(() =>
+        disableCanonicalUser(f.coreDb, f.environmentPackage.scope.triggerActor.id)
+      )();
+      expect(
+        (
+          await request({
+            jsonrpc: '2.0',
+            method: 'notifications/cancelled',
+            params: { requestId: 777 },
+          })
+        ).status
+      ).toBe(202);
+      await vi.waitFor(() => expect(target?.aborted).toBe(true));
+      await interrupted.promise;
+      const result = await pending;
+      expect(await result.json()).toMatchObject({ error: { data: { code: 'mcp-call-failed' } } });
+      expect(f.gateway.callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      // Failure cleanup never waits on the cancellation behavior being tested.
+      release.resolve({ content: [{ type: 'text', text: 'fixture cleanup' }] });
+      await pending;
+      await f.close();
+    }
+  });
+
+  it.each([undefined, '2026-07-28'] as const)(
+    'keeps a small fixed surface and dispatches exact original calls in era %s',
+    async (protocolEra) => {
+      const f = await createMcpCommitFixture();
+      const client = new Client(
+        { name: 'progressive-worker', version: '1.0.0' },
+        { versionNegotiation: protocolEra ? { mode: { pin: protocolEra } } : { mode: 'legacy' } }
+      );
+      try {
+        const tool = mcpEchoTool();
+        const expectedTools = [
+          {
+            ...tool,
+            inputSchema: { ...tool.inputSchema, description: 'catalog detail '.repeat(10_000) },
+          },
+        ];
+        f.tools(expectedTools);
+        await client.connect(
+          new StreamableHTTPClientTransport(
+            new URL('http://nanocore.test/api/worker-capabilities/mcp/_discovery'),
+            {
+              fetch: (request, init) => f.fetch(new Request(request, init)),
+              requestInit: { headers: { authorization: 'Bearer fixture-package' } },
+            }
+          )
+        );
+        const initial = await client.listTools();
+        expect(initial.tools.map((entry) => entry.name)).toEqual([
+          'mcp.list-servers',
+          'mcp.list-tools',
+          'mcp.call-tool',
+        ]);
+        expect(Buffer.byteLength(JSON.stringify(initial.tools))).toBeLessThan(8_192);
+        expect(f.gateway.listTools).not.toHaveBeenCalled();
+        const servers = await client.callTool({ name: 'mcp.list-servers', arguments: {} });
+        expect(JSON.stringify(servers)).toContain('echo');
+        expect(JSON.stringify(servers)).not.toContain(process.execPath);
+        const listed = await client.callTool({
+          name: 'mcp.list-tools',
+          arguments: { serverId: 'echo' },
+        });
+        expect(JSON.stringify(listed)).toContain('catalog detail');
+        const generative = await client.callTool({
+          name: 'mcp.list-tools',
+          arguments: { serverId: 'openkit-generative' },
+        });
+        expect(JSON.stringify(generative)).toContain(operationToolName('vault.grant-request'));
+        expect(await client.listTools()).toEqual(initial);
+        for (const message of ['first', 'second']) {
+          await expect(
+            client.callTool({
+              name: 'mcp.call-tool',
+              arguments: { serverId: 'echo', toolName: 'echo', arguments: { message } },
+            })
+          ).resolves.toMatchObject({ content: [{ text: 'called' }] });
+        }
+        expect(f.contacts()).toBe(2);
+        expect(f.gateway.callTool.mock.calls.map(([request]) => request.arguments)).toEqual([
+          { message: 'first' },
+          { message: 'second' },
+        ]);
+        expectMcpCommittedTuples(f, expectedTools);
+        await expect(
+          client.callTool({
+            name: 'mcp.call-tool',
+            arguments: {
+              serverId: 'echo',
+              toolName: 'echo',
+              arguments: { unknown: 'wrong schema' },
+            },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-invalid-arguments' } });
+        await expect(
+          client.callTool({
+            name: 'mcp.call-tool',
+            arguments: {
+              serverId: 'not-selected',
+              toolName: 'echo',
+              arguments: { message: 'denied' },
+            },
+          })
+        ).rejects.toMatchObject({ data: { code: 'mcp-server-unavailable' } });
+        expect(f.contacts()).toBe(2);
+      } finally {
+        await client.close();
+        await f.close();
+      }
+    }
+  );
 });
 
 describe('MCP physical commit contract', () => {

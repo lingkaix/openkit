@@ -255,6 +255,57 @@ const toolThenText = (n: number): InferenceReply =>
     : { text: `answer-${n}` };
 
 describe('Pi runtime host', () => {
+  it(
+    'holds the fixed discovery prefix and prior tool history across native Turns',
+    async () => {
+      const f = await fixture((n, request) => {
+        if (n === 1) {
+          const name = request.body.tools?.find(
+            (tool) =>
+              tool.function.name.includes('discovery') && /list.?tools/.test(tool.function.name)
+          )?.function.name;
+          if (!name) throw new Error('The native discovery read tool is missing.');
+          return { toolCall: { name, arguments: { serverId: 'vendor' } } };
+        }
+        return { text: `answer-${n}` };
+      });
+      const plane = await startSyntheticCapability(f.capabilityCredential, ['_discovery'], {
+        tools: ['mcp.list-servers', 'mcp.list-tools', 'mcp.call-tool'].map((name) => ({
+          name,
+          description: 'Discover and call selected vendor operations.',
+          inputSchema: { type: 'object', properties: { serverId: { type: 'string' } } },
+        })),
+        targetSentinel: true,
+      });
+      plane.bound = true;
+      cleanups.push(() => plane.close());
+      const host = f.start();
+      expect(
+        await f.open(host, { capabilityBaseUrl: plane.base, mcpServers: ['_discovery'] })
+      ).toMatchObject({ ok: true });
+      expect((await turn(host, 'discovery-first', 'Read the vendor tools.')).outcome.status).toBe(
+        'completed'
+      );
+      expect(
+        (await turn(host, 'discovery-second', 'Continue without changing the initial tools.'))
+          .outcome.status
+      ).toBe('completed');
+      expect(f.inference.requests).toHaveLength(3);
+      const [first, afterRead, next] = f.inference.requests;
+      expect(
+        first!.body.tools?.filter((tool) => tool.function.name.includes('discovery'))
+      ).toHaveLength(3);
+      expect(JSON.stringify(afterRead!.body.tools)).toBe(JSON.stringify(first!.body.tools));
+      expect(JSON.stringify(next!.body.tools)).toBe(JSON.stringify(first!.body.tools));
+      expect(next!.body.messages.slice(0, afterRead!.body.messages.length)).toEqual(
+        afterRead!.body.messages
+      );
+      expect(plane.log.filter((request) => request.method === 'tools/list')).toHaveLength(1);
+      expect(plane.log.filter((request) => request.method === 'tools/call')).toHaveLength(1);
+    },
+    TIMEOUT
+  );
+
   it.each(['terminal', 'interrupt'] as const)(
     'fences a steer hook that returns after %s and prevents late input from reaching exact resume',
     async (ending) => {

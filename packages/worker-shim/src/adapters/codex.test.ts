@@ -1009,8 +1009,11 @@ describe('Codex App Server adapter', () => {
         ]);
         expect(inference.bodies.length).toBeGreaterThan(0);
         expect(JSON.parse(inference.bodies[0]!).model).toBe('model-delta');
-        for (const id of ['openkit-generative', 'openkit-work'])
+        for (const id of ['_discovery', 'openkit-work'])
           expect(mcp.requests.some((request) => request.path?.includes(id))).toBe(true);
+        expect(mcp.requests.some((request) => request.path?.includes('openkit-generative'))).toBe(
+          false
+        );
       }
       expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
     },
@@ -1289,7 +1292,7 @@ describe('Codex App Server adapter', () => {
       const inference = await responsesServer();
       const gateway = await mcpServer();
       const authored =
-        '[mcp_servers.alpha]\nenabled = false\nurl = "http://127.0.0.1:9/authored"\n';
+        '[mcp_servers.openkit-work]\nenabled = false\nurl = "http://127.0.0.1:9/authored"\n';
       await writeFile(join(roots.state, 'config.toml'), authored);
       const session = await testAdapter.openSession(
         openInput(roots, {
@@ -1336,7 +1339,7 @@ describe('Codex App Server adapter', () => {
           observability: { captureCoverage: { scope: 'server', value: 'off' } },
           runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: roots.work } },
           extensions: { openkit: { turnInput: 'invoke alpha tool' } },
-          supply: { skills: [], mcpServers: [{ id: 'alpha' }] },
+          supply: { skills: [], mcpServers: [{ id: 'openkit-work' }] },
         })
       );
       const finalStatuses: Array<{
@@ -1406,7 +1409,8 @@ describe('Codex App Server adapter', () => {
         status: delivery === 'drain-failed' ? 'failed' : 'completed',
         stopReason: delivery === 'drain-failed' ? 'error' : 'completed',
         diagnostics: {
-          nativeConfiguration: 'Warning: managed MCP entry "alpha" overrides authored HTTP entry.',
+          nativeConfiguration:
+            'Warning: managed MCP entry "openkit-work" overrides authored HTTP entry.',
         },
       });
       const records = (

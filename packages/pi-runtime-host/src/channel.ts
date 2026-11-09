@@ -72,7 +72,7 @@ export const HostRequestSchema = z.discriminatedUnion('op', [
     inferenceBaseUrl: loopbackUrl,
     inferenceCredential: loopbackCredential,
     mcpServers: z
-      .array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/))
+      .array(z.string().regex(/^(?:_discovery|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/))
       .max(64)
       .refine((value) => new Set(value).size === value.length, 'unique server ids'),
     model: PiModelDescriptorSchema,

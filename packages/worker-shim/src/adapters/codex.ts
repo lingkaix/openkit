@@ -72,7 +72,7 @@ export const CODEX_PROVIDER_ID = 'openkit-worker-inference';
 export const CODEX_RESULT_MAX_BYTES = 16 * 1024 * 1024;
 
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const MCP_SERVER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const MCP_SERVER_ID = /^(?:_discovery|[A-Za-z0-9][A-Za-z0-9_-]{0,127})$/;
 /** Image-owned immutable binary, installed by the worker-runtimes Codex slice. */
 export const CODEX_PRODUCTION_BINARY = '/usr/local/lib/codex/bin/codex';
 

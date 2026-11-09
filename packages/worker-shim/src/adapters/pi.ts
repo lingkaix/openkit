@@ -49,7 +49,7 @@ import { PiRuntimeCapture } from './pi-runtime-capture.js';
 export const PI_RUNTIME_HOST_EXECUTABLE = '/usr/local/bin/openkit-pi-runtime-host';
 
 const LOOPBACK_CREDENTIAL = /^[A-Za-z0-9_-]{43}$/;
-const MCP_SERVER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MCP_SERVER_ID = /^(?:_discovery|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
 const HANDLE_DIGEST = /^[0-9a-f]{64}$/;
 const HEADER_MAX_BYTES = 64 * 1024;
 const FAILED_REASONS = new Set<string>(PI_FAILED_REASONS);

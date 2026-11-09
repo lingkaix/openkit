@@ -746,6 +746,58 @@ describe('agent environment package resolver', () => {
     }
   });
 
+  it.each(['codex', 'pi', 'opencode', 'deepseek'])(
+    'keeps deferred MCP selections out of the %s native Session key while retaining exact AEP supply',
+    async (adapter) => {
+      const turn = await createTurnFixture('Progressive MCP continuity');
+      const input = {
+        agentSessionId: 'as_00000000-0000-7bdf-9f78-5d5577660e04',
+        backend: { kind: 'openshell' as const },
+        turn,
+        triggerActor: USER_TRIGGER_ACTOR,
+        workspaceCwd: '/workspace/repo',
+        workspaceRoots: [],
+        workspaceMcpServerCatalog: {
+          schemaVersion: 1 as const,
+          servers: ['alpha', 'beta'].map((id) => ({
+            id,
+            allowedTools: ['echo'],
+            credentialBindings: [],
+            enabled: true,
+            pinnedSchemaSnapshotId: null,
+            schemaPolicy: 'tracking' as const,
+            timeoutMs: 60_000,
+            transport: {
+              kind: 'stdio' as const,
+              command: 'node',
+              args: ['fixtures/echo.mjs'],
+              environment: {},
+            },
+          })),
+        },
+      };
+      const first = {
+        ...input,
+        agentSetup: createTestSetup({ adapter, mcpIds: ['alpha'], skillIds: [] }),
+      };
+      const next = {
+        ...input,
+        agentSetup: createTestSetup({ adapter, mcpIds: ['beta'], skillIds: [] }),
+      };
+      expect(resolveAgentSessionCompatibilityKey(next)).toBe(
+        resolveAgentSessionCompatibilityKey(first)
+      );
+      expect(
+        resolveAgentEnvironmentPackageMetadata(first).supply.mcpServers.map((server) => server.id)
+      ).toContain('alpha');
+      const changed = resolveAgentEnvironmentPackageMetadata(next).supply.mcpServers.map(
+        (server) => server.id
+      );
+      expect(changed).toContain('beta');
+      expect(changed).not.toContain('alpha');
+    }
+  );
+
   it('keeps Turn capture addresses out of AgentSession compatibility', async () => {
     const input = {
       agentSetup: createTestSetup(),

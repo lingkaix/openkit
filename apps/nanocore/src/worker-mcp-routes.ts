@@ -128,6 +128,10 @@ import {
   decidedMcpPublicationItem,
 } from './runtime/worker-mcp-decision.js';
 import {
+  dispatchWorkerMcpDiscovery,
+  WORKER_MCP_DISCOVERY_TOOLS,
+} from './runtime/worker-mcp-discovery.js';
+import {
   assertCurrentMcpVaultAuthority,
   assertCurrentSharedMcpBinding,
   completeMcpVaultInjections,
@@ -441,6 +445,65 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         { tokenFamily: 'capability' }
       );
       const serverId = context.req.param('serverId');
+      if (serverId === '_discovery') {
+        const protocolMessage = await context.req.raw
+          .clone()
+          .json()
+          .catch(() => null);
+        const cancellation = CancelledNotificationSchema.safeParse(protocolMessage);
+        if (cancellation.success) {
+          if (cancellation.data.params.requestId !== undefined)
+            activeRequests
+              .get(
+                mcpActiveRequestKey(
+                  environmentPackage,
+                  serverId,
+                  cancellation.data.params.requestId
+                )
+              )
+              ?.abort(new DOMException('MCP caller cancelled request.', 'AbortError'));
+          return new Response(null, { status: 202 });
+        }
+        requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+        requireCurrentMcpWorkspaceAuthority(input.coreDb, environmentPackage);
+        if (environmentPackage.capabilities.mode !== 'enabled') throw unavailableServer();
+        const mcp = new Server(
+          { name: 'openkit-discovery', version: '1.0.0' },
+          { capabilities: { tools: {} } }
+        );
+        server = mcp;
+        mcp.setRequestHandler('tools/list', async () => {
+          requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+          requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+          return { tools: WORKER_MCP_DISCOVERY_TOOLS } as ListToolsResult;
+        });
+        mcp.setRequestHandler('tools/call', async (request, ctx) => {
+          const cancellation = registerMcpActiveRequest(
+            activeRequests,
+            environmentPackage,
+            serverId,
+            ctx.mcpReq.id,
+            AbortSignal.any([ctx.mcpReq.signal, context.req.raw.signal])
+          );
+          try {
+            return mcp.projectCallToolResult(
+              await dispatchWorkerMcpDiscovery({
+                name: request.params.name,
+                arguments: request.params.arguments ?? {},
+                protocolRequestId: ctx.mcpReq.id,
+                metadata: ctx.mcpReq.envelope,
+                request: context.req.raw,
+                signal: cancellation.signal,
+                forward: (request) => input.app.fetch(request),
+              }),
+              undefined
+            );
+          } finally {
+            cancellation.release();
+          }
+        });
+        return await serveStatelessMcp(context.req.raw, protocolMessage, () => mcp);
+      }
       const selected = requireSelectedMcpServer(environmentPackage, serverId);
       const builtin = builtinWorkerMcpServer(serverId);
       if (builtin) {
@@ -515,7 +578,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               environmentPackage,
               serverId,
               ctx.mcpReq.id,
-              ctx.mcpReq.signal
+              AbortSignal.any([ctx.mcpReq.signal, context.req.raw.signal])
             );
             const releaseMutation = input.workspaceMutationAdmission.enter(
               environmentPackage.scope.workspaceId
@@ -858,7 +921,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           environmentPackage,
           serverId,
           ctx.mcpReq.id,
-          ctx.mcpReq.signal
+          AbortSignal.any([ctx.mcpReq.signal, context.req.raw.signal])
         );
         const releaseMutation = input.workspaceMutationAdmission.enter(
           environmentPackage.scope.workspaceId
@@ -1004,7 +1067,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           environmentPackage,
           serverId,
           ctx.mcpReq.id,
-          ctx.mcpReq.signal
+          AbortSignal.any([ctx.mcpReq.signal, context.req.raw.signal])
         );
         try {
           const call = async () => {
