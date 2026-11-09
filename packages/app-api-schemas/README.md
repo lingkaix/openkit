@@ -79,7 +79,7 @@ Workspace export response schemas reuse the format version owned by `@openkit/co
 
 Workspace export manifests include optional `knowledgeNotebookRevision` provenance for the exact published source Notebook commit. Ordinary import does not create a target Notebook from this source value, and the value grants no access.
 
-Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.
+Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes. `src/auth.ts` shares upper-bound-only Human field schemas with NanoCore's configured SDK hooks; each entry retains its own minimum and grammar. Bootstrap proof/expiry and new password inputs have declared limits, while sign-in and retained response schemas remain uncapped by these creation limits.
 
 This package no longer projects an AgentSession backend-summary schema. Gateway endpoints, Gateway names, native Sandbox names, retired control transports, and hidden AgentSession continuity are not ordinary public read-model states; protected evidence and operator projections may retain only their separately authorized redacted lineage.
 

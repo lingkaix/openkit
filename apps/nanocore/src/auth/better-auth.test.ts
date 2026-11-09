@@ -19,6 +19,103 @@ import {
 } from './bootstrap-token.js';
 
 describe('createBetterAuth', () => {
+  it.each([
+    'boundary',
+    'name-overflow',
+    'email-overflow',
+    'password-minimum',
+    'password-maximum',
+    'password-underflow',
+    'password-overflow',
+  ] as const)(
+    'enforces common Human creation bounds through actual server signup after bootstrap: %s',
+    async (scenario) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-signup-boundary-'));
+      const coreDb = openCoreDb(dataRoot);
+      try {
+        applyMigrations(coreDb);
+        const issue = ensureServerBootstrapToken(coreDb)!;
+        const owner = await consumeServerBootstrapToken(coreDb, {
+          token: issue.token,
+          ownerUserId: allocateEntityId('usr'),
+          displayName: 'Initial owner',
+          email: 'initial-owner@example.test',
+          password: 'synthetic-owner-password',
+          tokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        });
+        expect(owner.status).toBe('consumed');
+        const auth = createBetterAuth(coreDb, {
+          mode: 'server',
+          env: {
+            BETTER_AUTH_SECRET: randomBytes(32).toString('hex'),
+            BETTER_AUTH_URL: 'http://127.0.0.1:3000',
+          },
+          openKitConfig: { auth: { signup: { enabled: true } } },
+        });
+        const context = await auth.$context;
+        vi.spyOn(context.logger, 'error').mockImplementation(() => {});
+        vi.spyOn(context.logger, 'warn').mockImplementation(() => {});
+        const name = '😀'.repeat(scenario === 'name-overflow' ? 257 : 256);
+        const email = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(scenario === 'email-overflow' ? 62 : 61)}`;
+        // SDK creation limits count UTF-16 units: four astral scalars are eight units.
+        const password =
+          scenario === 'password-minimum'
+            ? '🧪'.repeat(4)
+            : scenario === 'password-maximum'
+              ? '🧪'.repeat(64)
+              : scenario === 'password-underflow'
+                ? `${'🧪'.repeat(3)}x`
+                : scenario === 'password-overflow'
+                  ? `${'🧪'.repeat(64)}x`
+                  : 'synthetic-signup-password';
+        const response = await auth.handler(
+          new Request('http://127.0.0.1:3000/api/auth/sign-up/email', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ email, name, password }),
+          })
+        );
+        const text = await response.text();
+        const admitted = ['boundary', 'password-minimum', 'password-maximum'].includes(scenario);
+        expect.soft(response.status).toBe(admitted ? 200 : 400);
+        expect.soft(text.includes(password)).toBe(false);
+        expect.soft(text.includes(issue.token)).toBe(false);
+        if (!admitted) {
+          expect.soft(response.headers.getSetCookie().length).toBe(0);
+          expect.soft(text.includes(email)).toBe(false);
+          expect
+            .soft(
+              text
+                .toLowerCase()
+                .includes(
+                  scenario === 'name-overflow'
+                    ? 'name'
+                    : scenario === 'email-overflow'
+                      ? 'email'
+                      : 'password'
+                )
+            )
+            .toBe(true);
+        }
+        const counts = ['users', 'account', 'session'].map((table) =>
+          coreDb.sqlite.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get()
+        );
+        expect.soft(counts).toEqual(admitted ? [2, 2, 1] : [1, 1, 0]);
+        if (admitted) {
+          const stored = coreDb.sqlite
+            .prepare('SELECT display_name FROM users WHERE email = ?')
+            .pluck()
+            .get(email);
+          expect(stored === name).toBe(true);
+        }
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('keeps real browser auth admission on configured origins despite environment overrides', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-better-auth-origin-'));
     const coreDb = openCoreDb(dataRoot);

@@ -755,18 +755,75 @@ describe('configured BetterAuth native writer', () => {
     }
   );
 
-  it('preserves configured SDK profile input above one MiB within the existing pending budget', async () => {
+  it.each(['boundary', 'one-over', 'former-unbounded'] as const)(
+    'enforces the common public Human name bound on actual profile updates: %s',
+    async (scenario) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const before = f.db.sqlite
+        .prepare('SELECT display_name FROM users WHERE id = ?')
+        .pluck()
+        .get(user.id);
+      const name =
+        scenario === 'former-unbounded'
+          ? 'x'.repeat(1024 * 1024 + 1)
+          : '😀'.repeat(scenario === 'boundary' ? 256 : 257);
+      const commits = f.commits();
+      const response = await f.request('/update-user', { name }, user.cookie);
+      const admitted = scenario === 'boundary';
+      expect.soft(response.status).toBe(admitted ? 200 : 400);
+      expect.soft(f.commits() > commits).toBe(admitted);
+      const stored = f.db.sqlite
+        .prepare('SELECT display_name FROM users WHERE id = ?')
+        .pluck()
+        .get(user.id);
+      expect(stored === (admitted ? name : before)).toBe(true);
+    }
+  );
+
+  it('signs in with a retained password above the current creation limit', async () => {
+    const f = await fixture();
+    const user = await f.signUp();
+    const retainedPassword = 'p'.repeat(129);
+    const hash = await f.context.password.hash(retainedPassword);
+    // Retained credential fixture after genuine signup; no new public creation authority.
+    f.fixtureSql(
+      "UPDATE account SET password = ? WHERE user_id = ? AND provider_id = 'credential'"
+    ).run(hash, user.id);
+    const response = await f.request('/sign-in/email', {
+      email: user.email,
+      password: retainedPassword,
+    });
+    expect(response.status).toBe(200);
+    const value = await response.json();
+    expect(value.user?.id === user.id).toBe(true);
+  });
+
+  it('reads retained Human names above one MiB without applying current public input limits', async () => {
     const f = await fixture();
     const user = await f.signUp();
     const length = 1024 * 1024 + 1;
-    const response = await f.request('/update-user', { name: 'x'.repeat(length) }, user.cookie);
-    expect.soft(response.status).toBe(200);
-    expect(
-      f.db.sqlite
-        .prepare('SELECT length(display_name) FROM users WHERE id = ?')
-        .pluck()
-        .get(user.id)
-    ).toBe(length);
+    const name = 'x'.repeat(length);
+    // Retained storage fixture only: current public-input limits must not reject old response data.
+    f.fixtureSql('UPDATE users SET display_name = ? WHERE id = ?').run(name, user.id);
+    // A legal unrelated edit must preserve that name through the native full-row result.
+    const commits = f.commits();
+    const updated = await f.request('/update-user', { image: 42 }, user.cookie);
+    expect(updated.status).toBe(200);
+    expect(f.commits()).toBeGreaterThan(commits);
+    const retained = f.db.sqlite
+      .prepare('SELECT display_name, image FROM users WHERE id = ?')
+      .get(user.id) as { display_name: string; image: string } | undefined;
+    expect(retained?.display_name === name).toBe(true);
+    // Preserve the configured SDK/SQLite numeric-to-TEXT policy already covered above.
+    expect(retained?.image).toBe('42.0');
+    const response = await f.request('/get-session', undefined, user.cookie);
+    expect(response.status).toBe(200);
+    const value = await response.json();
+    expect(typeof value.user?.name === 'string').toBe(true);
+    expect(value.user?.name?.length).toBe(length);
+    expect(value.user?.name === name).toBe(true);
+    expect(value.user?.image === '42.0').toBe(true);
   });
 
   it('keeps exact selected SDK fields and missing-row results on the configured adapter', async () => {

@@ -2,6 +2,31 @@ import { AccessTokenIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/p
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
 
+/** Public Human name upper bound only; each entry retains its existing minimum and type policy. */
+export const HumanDisplayNameInputLimitSchema = z
+  .string()
+  .max(256, 'Display name must contain at most 256 Unicode code points.')
+  .describe('Human display name: at most 256 Unicode code points.');
+
+/** Public Human email byte bound only; each entry retains its existing email grammar. */
+export const HumanEmailInputLimitSchema = z
+  .string()
+  .max(254, 'Email must contain at most 254 UTF-8 bytes.')
+  .refine(
+    (value) => value.length <= 254 && new TextEncoder().encode(value).byteLength <= 254,
+    'Email must contain at most 254 UTF-8 bytes.'
+  )
+  .describe('Human email: at most 254 UTF-8 bytes.');
+
+/** New password upper bound only; verification and retained credentials remain uncapped. */
+export const HumanCreationPasswordInputLimitSchema = z
+  .string()
+  .refine(
+    (value) => value.length <= 128,
+    'New password must contain at most 128 UTF-16 code units.'
+  )
+  .meta({ maxLength: 128, description: 'New password: at most 128 UTF-16 code units.' });
+
 /** OpenKit access-token scope. */
 export const OpenKitAccessTokenScopeSchema = z.enum([
   'server-admin',
@@ -116,12 +141,15 @@ export const SetMyAdminAccessTokenDefaultResponseSchema = ListMyAdminAccessToken
 /** OpenKit server bootstrap token consumption request. */
 export const ConsumeOpenKitBootstrapTokenRequestSchema = z
   .object({
-    token: z.string().regex(/^okt_[A-Za-z0-9_-]+$/),
+    token: z
+      .string()
+      .regex(/^okt_[A-Za-z0-9_-]+$/)
+      .max(256),
     ownerUserId: UserIdSchema,
-    displayName: z.string().min(1),
-    email: z.string().email(),
-    password: z.string().min(8),
-    tokenExpiresAt: z.string().datetime(),
+    displayName: HumanDisplayNameInputLimitSchema.min(1),
+    email: HumanEmailInputLimitSchema.email(),
+    password: HumanCreationPasswordInputLimitSchema.min(8),
+    tokenExpiresAt: z.string().datetime().max(64),
   })
   .strict();
 
@@ -136,7 +164,9 @@ export const AuthEmailRequestSchema = z.object({
 
 /** Email/password sign-up request body. */
 export const AuthSignUpEmailRequestSchema = AuthEmailRequestSchema.extend({
-  name: z.string().min(1),
+  email: HumanEmailInputLimitSchema.email(),
+  name: HumanDisplayNameInputLimitSchema.min(1),
+  password: HumanCreationPasswordInputLimitSchema.min(1),
 });
 
 /** Better Auth user payload returned to the browser. */

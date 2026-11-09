@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { hashPassword } from 'better-auth/crypto';
 import { z } from 'zod';
+import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import {
@@ -11,10 +12,14 @@ import {
   verifyOpenKitAccessTokenSecret,
 } from './access-token.js';
 import {
-  createOpenKitAccessTokenRecord,
+  insertOpenKitAccessTokenRecord,
   isAccessTokenExpiryStrictlyFuture,
   type OpenKitAccessTokenIssueResult,
 } from './access-token-store.js';
+import type {
+  ControlBootstrapConsume,
+  ControlBootstrapConsumeResult,
+} from './bootstrap-consume-codecs.js';
 
 const BOOTSTRAP_SETTING_KEY = 'auth.bootstrap_token';
 const BOOTSTRAP_TTL_MS = 86_400_000;
@@ -199,32 +204,54 @@ export async function consumeServerBootstrapToken(
   }
 
   const passwordHash = await hashPassword(input.password);
-  const consume = coreDb.sqlite.transaction((): ConsumeServerBootstrapTokenResult => {
-    const current = readBootstrapSetting(coreDb);
-    if (countUsers(coreDb) > 0) {
-      return { status: 'unavailable' };
-    }
-    const consumeNow = input.now ?? new Date();
-    if (
-      !current ||
-      current.consumedAt ||
-      Date.parse(current.expiresAt) <= consumeNow.getTime() ||
-      !verifyOpenKitAccessTokenSecret(input.token, current.tokenHash)
-    ) {
-      return { status: 'invalid' };
-    }
-    if (!isAccessTokenExpiryStrictlyFuture(input.tokenExpiresAt, consumeNow)) {
-      return { status: 'admin_expiry' };
-    }
-    // Clear delivery material before database writes so cleanup failure cannot discard an issued credential.
-    try {
-      writeServerBootstrapTokenFile(coreDb.dataRoot, '');
-    } catch {
-      return { status: 'unavailable' };
-    }
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO users (
+  const tokenId = allocateEntityId('tok');
+  const secret = createOpenKitAccessTokenSecret();
+  const { getControlStoreWorkerClient } = await import('../storage/control-store-worker-client.js');
+  const result = await getControlStoreWorkerClient().bootstrapConsume(coreDb, {
+    bootstrapHash: hashOpenKitAccessTokenSecret(input.token),
+    ownerUserId: input.ownerUserId,
+    displayName: input.displayName,
+    email: input.email,
+    passwordHash,
+    tokenExpiresAt: input.tokenExpiresAt,
+    administrator: { tokenId, tokenHash: hashOpenKitAccessTokenSecret(secret) },
+    ...(input.now ? { now: input.now.toISOString() } : {}),
+  });
+  return result.status === 'consumed' ? { ...result, secret, tokenId } : result;
+}
+
+/** Runs the original complete file/SQL consume closure synchronously in the native Core savepoint. */
+export function applyControlBootstrapConsume(
+  coreDb: CoreDb,
+  input: ControlBootstrapConsume
+): ControlBootstrapConsumeResult {
+  if (coreDb.scope !== 'core' || !coreDb.sqlite.inTransaction)
+    throw new ControlProductPreconditionError();
+  const current = readBootstrapSetting(coreDb);
+  if (countUsers(coreDb) > 0) {
+    return { status: 'unavailable' };
+  }
+  const consumeNow = input.now ? new Date(input.now) : new Date();
+  if (
+    !current ||
+    current.consumedAt ||
+    Date.parse(current.expiresAt) <= consumeNow.getTime() ||
+    current.tokenHash !== input.bootstrapHash
+  ) {
+    return { status: 'invalid' };
+  }
+  if (!isAccessTokenExpiryStrictlyFuture(input.tokenExpiresAt, consumeNow)) {
+    return { status: 'admin_expiry' };
+  }
+  // Clear delivery material before database writes so cleanup failure cannot discard an issued credential.
+  try {
+    writeServerBootstrapTokenFile(coreDb.dataRoot, '');
+  } catch {
+    return { status: 'unavailable' };
+  }
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO users (
           id,
           display_name,
           email,
@@ -236,18 +263,18 @@ export async function consumeServerBootstrapToken(
           last_seen_at
         )
          VALUES (?, ?, ?, false, NULL, ?, ?, 'human', ?)`
-      )
-      .run(
-        input.ownerUserId,
-        input.displayName,
-        input.email.toLowerCase(),
-        consumeNow.getTime(),
-        consumeNow.getTime(),
-        null
-      );
-    coreDb.sqlite
-      .prepare(
-        `INSERT INTO account (
+    )
+    .run(
+      input.ownerUserId,
+      input.displayName,
+      input.email.toLowerCase(),
+      consumeNow.getTime(),
+      consumeNow.getTime(),
+      null
+    );
+  coreDb.sqlite
+    .prepare(
+      `INSERT INTO account (
           id,
           account_id,
           provider_id,
@@ -257,30 +284,28 @@ export async function consumeServerBootstrapToken(
           updated_at
         )
          VALUES (?, ?, 'credential', ?, ?, ?, ?)`
-      )
-      .run(
-        allocateEntityId('acct'),
-        input.ownerUserId,
-        input.ownerUserId,
-        passwordHash,
-        consumeNow.getTime(),
-        consumeNow.getTime()
-      );
-    writeBootstrapSetting(coreDb, { ...current, consumedAt: consumeNow.toISOString() });
+    )
+    .run(
+      allocateEntityId('acct'),
+      input.ownerUserId,
+      input.ownerUserId,
+      input.passwordHash,
+      consumeNow.getTime(),
+      consumeNow.getTime()
+    );
+  writeBootstrapSetting(coreDb, { ...current, consumedAt: consumeNow.toISOString() });
 
-    return {
-      ...createOpenKitAccessTokenRecord(coreDb, {
-        expiresAt: input.tokenExpiresAt,
-        now: consumeNow,
-        ownerUserId: input.ownerUserId,
-        scope: 'server-admin',
-        workspaceIds: [],
-      }),
-      status: 'consumed' as const,
-    };
-  });
-
-  return consume();
+  return {
+    record: insertOpenKitAccessTokenRecord(coreDb, {
+      ...input.administrator,
+      expiresAt: input.tokenExpiresAt,
+      issuedAt: consumeNow.toISOString(),
+      ownerUserId: input.ownerUserId,
+      scope: 'server-admin',
+      workspaceIds: [],
+    }),
+    status: 'consumed',
+  };
 }
 
 /**

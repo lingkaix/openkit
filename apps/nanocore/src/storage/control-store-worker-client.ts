@@ -5,6 +5,11 @@ import {
   ControlAccessTokenLifecycleResultSchema,
 } from '../auth/access-token-lifecycle-codecs.js';
 import {
+  type ControlBootstrapConsume,
+  type ControlBootstrapConsumeResult,
+  ControlBootstrapConsumeResultSchema,
+} from '../auth/bootstrap-consume-codecs.js';
+import {
   type ControlBootstrapEnsure,
   type ControlBootstrapEnsureResult,
   ControlBootstrapEnsureResultSchema,
@@ -2258,6 +2263,48 @@ class ControlStoreWorkerClient {
     if (reply.operation !== 'local-identity')
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     const result = ControlLocalIdentityResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result.data;
+  }
+
+  /** Consumes exactly the original first-owner tuple through the admitted Core FULL writer. */
+  async bootstrapConsume(
+    db: CoreDb,
+    input: ControlBootstrapConsume
+  ): Promise<ControlBootstrapConsumeResult> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'bootstrap-consume', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'bootstrap-consume', database, input });
+    }
+    if (reply.operation !== 'bootstrap-consume')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlBootstrapConsumeResultSchema.safeParse(reply.result);
     if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return result.data;
   }

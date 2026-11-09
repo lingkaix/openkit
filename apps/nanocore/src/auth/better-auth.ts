@@ -1,3 +1,7 @@
+import {
+  HumanDisplayNameInputLimitSchema,
+  HumanEmailInputLimitSchema,
+} from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
@@ -14,6 +18,21 @@ const LOCAL_DEVELOPMENT_SECRET = 'openkit-local-development-secret-at-least-32-c
 /** Today's refusal while server bootstrap has not been consumed. */
 function refuseIncompleteServerBootstrap(): never {
   throw new APIError('FORBIDDEN', { message: 'Server bootstrap is incomplete.' });
+}
+
+/** Refuses oversized public fields before SDK native writes without changing its scalar/type policy. */
+function enforceHumanInputLimits(input: { name?: unknown; email?: unknown }): void {
+  for (const [value, schema] of [
+    [input.name, HumanDisplayNameInputLimitSchema],
+    [input.email, HumanEmailInputLimitSchema],
+  ] as const) {
+    if (typeof value !== 'string') continue;
+    const result = schema.safeParse(value);
+    if (!result.success)
+      throw new APIError('BAD_REQUEST', {
+        message: result.error.issues[0]?.message ?? 'Human input exceeds its declared limit.',
+      });
+  }
 }
 
 /**
@@ -126,10 +145,17 @@ export function createBetterAuth(
       },
       user: {
         create: {
-          before: async () => {
+          before: async (user) => {
             if (mode === 'server' && !isServerBootstrapComplete(coreDb)) {
               refuseIncompleteServerBootstrap();
             }
+            enforceHumanInputLimits(user);
+          },
+        },
+        update: {
+          before: async (user) => {
+            // Keep SDK session admission first and do not revalidate retained email on a profile edit.
+            enforceHumanInputLimits({ name: user.name });
           },
         },
       },

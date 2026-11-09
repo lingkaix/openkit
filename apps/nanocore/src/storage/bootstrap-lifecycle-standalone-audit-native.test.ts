@@ -375,8 +375,13 @@ function historical(event: AuditEvent | undefined, f: Fixture, tokenId: string) 
     expect(Date.parse(timestamp)).toBeGreaterThanOrEqual(Date.parse(setting.consumedAt));
     expect(Date.parse(timestamp)).toBeLessThanOrEqual(Date.now());
   }
+  // The native consume tuple precedes its separate original lifecycle Audit.
+  // Ignore only physical opening, which this observer already allowed.
   expect(
-    fault.operations.every((operation) => operation === 'open' || operation === 'standalone-audit')
+    isDeepStrictEqual(
+      fault.operations.filter((operation) => operation !== 'open'),
+      ['bootstrap-consume', 'standalone-audit']
+    )
   ).toBe(true);
   return original;
 }
@@ -569,13 +574,17 @@ it.each(['invalid', 'delivery-unavailable', 'sql-failure'] as const)(
       rmSync(f.emission.path);
       mkdirSync(f.emission.path);
     }
-    if (scenario === 'sql-failure') f.coreDb.sqlite.pragma('query_only = ON');
+    if (scenario === 'sql-failure')
+      // Fault the real late SQL owner on either thread; Main read-only must succeed after migration.
+      f.coreDb.sqlite.exec(`CREATE TRIGGER reject_bootstrap_audit_fixture_token
+        BEFORE INSERT ON openkit_access_tokens
+        WHEN (SELECT COUNT(*) FROM users) = 1 AND (SELECT COUNT(*) FROM account) = 1
+          AND json_extract((SELECT value FROM server_settings WHERE key='auth.bootstrap_token'), '$.consumedAt') IS NOT NULL
+        BEGIN SELECT RAISE(ABORT, 'Synthetic bootstrap Token SQL refusal'); END`);
     const result = await observed(f.consume());
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      if (scenario === 'sql-failure')
-        expect(result.error).toMatchObject({ code: 'SQLITE_READONLY' });
-      else
+      if (scenario !== 'sql-failure')
         expect(result.error).toMatchObject({
           status: scenario === 'invalid' ? 401 : 409,
           code: scenario === 'invalid' ? 'bootstrap_invalid' : 'bootstrap_unavailable',
@@ -592,7 +601,6 @@ it.each(['invalid', 'delivery-unavailable', 'sql-failure'] as const)(
     expect(fault.sent.length).toBe(0);
     if (scenario === 'sql-failure') {
       expect(readFileSync(f.emission.path, 'utf8').length).toBe(0);
-      f.coreDb.sqlite.pragma('query_only = OFF');
     }
   }
 );

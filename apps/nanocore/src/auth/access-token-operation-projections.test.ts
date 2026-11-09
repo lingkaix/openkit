@@ -5,6 +5,7 @@ import { OPERATION_DEFINITIONS, operationMcpEligible } from '@openkit/app-api-sc
 import { describe, expect, it } from 'vitest';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
@@ -44,6 +45,133 @@ function fixture() {
 }
 
 describe('B12 bootstrap credential admission', () => {
+  it.each([
+    { scenario: 'boundary', patch: {}, status: 201, field: undefined },
+    { scenario: 'name-overflow', patch: {}, status: 400, field: 'displayName' },
+    { scenario: 'email-overflow', patch: {}, status: 400, field: 'email' },
+    {
+      scenario: 'password-minimum',
+      patch: { password: '🧪'.repeat(8) },
+      status: 201,
+      field: undefined,
+    },
+    {
+      // Bootstrap retains its existing eight-code-point minimum; SDK's unit floor is separate.
+      scenario: 'password-unit-floor-only',
+      patch: { password: '🧪'.repeat(4) },
+      status: 400,
+      field: 'password',
+    },
+    {
+      scenario: 'password-maximum',
+      patch: { password: '🧪'.repeat(64) },
+      status: 201,
+      field: undefined,
+    },
+    {
+      scenario: 'password-underflow',
+      patch: { password: '🧪'.repeat(7) },
+      status: 400,
+      field: 'password',
+    },
+    {
+      scenario: 'password-overflow',
+      patch: { password: `${'🧪'.repeat(64)}x` },
+      status: 400,
+      field: 'password',
+    },
+    {
+      scenario: 'expiry-boundary',
+      patch: { tokenExpiresAt: `2999-01-01T00:00:00.${'0'.repeat(43)}Z` },
+      status: 201,
+      field: undefined,
+    },
+    {
+      scenario: 'expiry-overflow',
+      patch: { tokenExpiresAt: `2999-01-01T00:00:00.${'0'.repeat(44)}Z` },
+      status: 400,
+      field: 'tokenExpiresAt',
+    },
+    // A real pending owner cannot issue a 256-character proof. A wrong canonical-prefix
+    // proof distinguishes admitted credential refusal (401) from bound refusal (400).
+    {
+      scenario: 'token-boundary',
+      patch: { token: `okt_${'a'.repeat(252)}` },
+      status: 401,
+      field: undefined,
+    },
+    {
+      scenario: 'token-overflow',
+      patch: { token: `okt_${'a'.repeat(253)}` },
+      status: 400,
+      field: 'token',
+    },
+  ])(
+    'enforces approved public bootstrap creation inputs: $scenario',
+    async ({ scenario, patch, status, field }) => {
+      const f = fixture();
+      // Coordinator's common Human bound counts Unicode scalars, not UTF-16 units.
+      f.input.displayName = '😀'.repeat(scenario === 'name-overflow' ? 257 : 256);
+      f.input.email = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(scenario === 'email-overflow' ? 62 : 61)}`;
+      Object.assign(f.input, patch);
+      const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server' });
+      try {
+        const response = await app.request('/api/app/operations/bootstrap.consume', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(f.input),
+        });
+        // A failing OLD bound may mint a real one-time secret: never assert the response object.
+        const text = await response.text();
+        const admitted = status === 201;
+        expect.soft(response.status).toBe(status);
+        expect.soft(text.includes(f.input.token)).toBe(false);
+        expect.soft(text.includes(f.input.password)).toBe(false);
+        if (!admitted) {
+          expect.soft(/okt_[A-Za-z0-9_-]+/.test(text)).toBe(false);
+          expect.soft(text.includes(f.input.email)).toBe(false);
+          const refusal = JSON.parse(text);
+          expect
+            .soft(refusal.code === (status === 400 ? 'invalid_request' : 'bootstrap_invalid'))
+            .toBe(true);
+          if (field) {
+            // The existing parser publishes declared field names, never arbitrary Zod text.
+            const fields: unknown = refusal.details?.fields;
+            expect
+              .soft(Array.isArray(fields) && fields.length === 1 && fields[0] === field)
+              .toBe(true);
+          }
+        }
+        const counts = ['users', 'account', 'openkit_access_tokens'].map((table) =>
+          f.coreDb.sqlite.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get()
+        );
+        expect.soft(counts).toEqual(admitted ? [1, 1, 1] : [0, 0, 0]);
+        const value = f.coreDb.sqlite
+          .prepare("SELECT value FROM server_settings WHERE key='auth.bootstrap_token'")
+          .pluck()
+          .get() as string;
+        expect.soft(JSON.parse(value).consumedAt !== null).toBe(admitted);
+        if (admitted) {
+          const row = f.coreDb.sqlite.prepare('SELECT display_name, email FROM users').get() as
+            | { display_name: string; email: string }
+            | undefined;
+          expect(row?.display_name === f.input.displayName).toBe(true);
+          expect(row?.email === f.input.email).toBe(true);
+          if (scenario === 'expiry-boundary') {
+            const expiry = f.coreDb.sqlite
+              .prepare('SELECT expires_at FROM openkit_access_tokens')
+              .pluck()
+              .get();
+            expect(expiry === f.input.tokenExpiresAt).toBe(true);
+          }
+        }
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        f.close();
+      }
+    }
+  );
+
   it.each(['bearer', 'session'] as const)(
     'refuses an ordinary %s before any bootstrap row is written',
     async (credential) => {
