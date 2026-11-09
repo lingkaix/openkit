@@ -5,6 +5,7 @@ import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-l
 import { admitModelRequest } from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { trackLocalTitleAbort } from '../local-ai/title-abort.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
 import { recordInternalLlmGatewayUsage } from './gateway-usage.js';
@@ -117,7 +118,7 @@ export function sanitizeTitle(raw: string): string | null {
 /**
  * Starts one title call after a fresh create has committed.
  * No configured title model, and no bound runtime, does not call.
- * Failures keep the initial title.
+ * A definite native revision refusal permits one guarded re-read/write; other failures keep the current title.
  */
 export function scheduleThreadTitle(input: FreshThreadTitle): void {
   const runtime = input.runtime ?? bound;
@@ -240,8 +241,35 @@ export async function generateThreadTitle(input: FreshThreadTitle): Promise<void
           undefined,
           { status: 'active', name: input.initialName }
         );
-      } catch {
-        // A mismatch, a missing thread, or a revision conflict keeps the initial title.
+      } catch (error) {
+        if (
+          error instanceof ControlStoreWorkerError &&
+          error.code === 'precondition' &&
+          error.commit === 'not-committed'
+        ) {
+          try {
+            // Handoff publication can advance the revision after the fast model's first read.
+            // Only the exact captured automatic name remains eligible; the write repeats this guard.
+            const current = input.store.getThread(input.workspaceId, input.threadId);
+            if (current.status === 'active' && current.name === input.initialName) {
+              await input.store.updateThread(
+                input.workspaceId,
+                input.threadId,
+                { name: title },
+                undefined,
+                { status: 'active', name: input.initialName }
+              );
+            }
+          } catch {
+            try {
+              console.warn(
+                JSON.stringify({ event: 'thread.title.update-refused', threadId: input.threadId })
+              );
+            } catch {
+              // A diagnostic sink failure cannot fail the completed model call.
+            }
+          }
+        }
       }
     }
     await finish('succeeded');
