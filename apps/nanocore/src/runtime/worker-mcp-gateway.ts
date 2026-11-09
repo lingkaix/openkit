@@ -1094,7 +1094,22 @@ async function closeMcpSession(
   processGroupId: number | null
 ): Promise<void> {
   if (transport instanceof StreamableHTTPClientTransport) {
-    await transport.terminateSession();
+    try {
+      await transport.terminateSession();
+    } catch {
+      // Remote session deletion is best effort; local transport closure still owns cleanup proof.
+      try {
+        console.warn(
+          JSON.stringify({
+            event: 'worker.mcp.session-termination-failed',
+            method: 'DELETE',
+            cleanup: 'best-effort',
+          })
+        );
+      } catch {
+        // A diagnostic sink failure cannot turn cleanup into a Tool or Turn failure.
+      }
+    }
     await client.close();
     return;
   }

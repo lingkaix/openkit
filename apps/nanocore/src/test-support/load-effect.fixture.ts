@@ -25,10 +25,10 @@ import { readImmutableProductJson } from '../storage/immutable-content.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
-import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { createLoadMcpPeer } from './load-mcp-peer.js';
 import { diagnosticContext, diagnosticStage } from './load-observe.js';
 
 function fixtureStage(stage: string) {
@@ -57,7 +57,7 @@ export async function createMeasurementEffectFixture(input: {
     dependency('hono'),
     dependency('@openkit/protocol'),
   ]);
-  const upstream = await createMcpHttpStub();
+  const upstream = await createLoadMcpPeer();
   const gateway = createDefaultWorkerMcpGateway(input.coreDb);
   const measurementOn = process.env.LOPS_R2_OBSERVER === 'on';
   const context = new AsyncLocalStorage<{ turnId: string; cold: boolean; issuedAt: number }>();
@@ -278,7 +278,6 @@ export async function createMeasurementEffectFixture(input: {
   return {
     phaseMetrics: () => phaseMetrics,
     firstEffectCount: () => firstEffects.size,
-    peerCalls: () => upstream.observed.filter((x) => x.endsWith('|tools/call')).length,
     turns: rows.map(({ workspaceId, threadId, turnId }) => ({ workspaceId, threadId, turnId })),
     /** One scheduled lifecycle; the real normal MCP route accepts overlap without a private fixture queue. */
     async call(workspaceId: string, ordinal: number) {

@@ -1307,44 +1307,69 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it('retains a failed credential HTTP teardown for exact retry', async () => {
-    const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = await createAuditedGateway();
-    const input = {
-      credentials: { headers: { authorization: 'retry-private-value' } },
-      server: httpTestServer(upstream.url, 2_000),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    };
-    const terminate = vi
-      .spyOn(StreamableHTTPClientTransport.prototype, 'terminateSession')
-      .mockRejectedValueOnce(new Error('injected teardown failure'));
-
-    try {
-      await expect(
-        gateway.callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
-      ).resolves.toMatchObject({ content: [{ text: 'safe' }] });
-      // HTTP pooling moves cleanup to the explicit lifecycle boundary; its retry fence is unchanged.
-      await expect(gateway.closeServer(input)).rejects.toThrow('injected teardown failure');
-      const toolCalls = upstream.observed.filter((request) => request.endsWith('|tools/call'));
-      await expect(
-        gateway.callTool({ ...input, arguments: { message: 'retry' }, toolName: 'echo' })
-      ).rejects.toMatchObject({ code: 'recovery_required' });
-      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toEqual(
-        toolCalls
-      );
-      terminate.mockRestore();
-      await gateway.closeServer(input);
-      expect(gateway.getServerHealth(input)).toBe('inactive');
-      expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
-    } finally {
-      terminate.mockRestore();
-      await gateway.close();
-      await upstream.close();
-      coreDb.sqlite.close();
+  it.each(['ECONNRESET', 'ECONNREFUSED'])(
+    'completes HTTP cleanup after DELETE fails with %s without changing the tool result',
+    async (code) => {
+      const upstream = await createMcpHttpStub();
+      const { coreDb, gateway } = await createAuditedGateway();
+      const input = {
+        credentials: { headers: { authorization: 'cleanup-private-canary' } },
+        server: httpTestServer(upstream.url, 2_000),
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const nativeFetch = globalThis.fetch;
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation((request, init) => {
+        if (init?.method === 'DELETE')
+          return Promise.reject(
+            new TypeError('cleanup-private-canary', {
+              cause: Object.assign(new Error('cleanup-private-canary'), { code }),
+            })
+          );
+        return nativeFetch(request, init);
+      });
+      const close = vi.spyOn(Client.prototype, 'close');
+      try {
+        const result = await gateway.callTool({
+          ...input,
+          arguments: { message: 'safe' },
+          toolName: 'echo',
+        });
+        expect(result).toMatchObject({ content: [{ text: 'safe' }] });
+        await expect(gateway.closeServer(input)).resolves.toBeUndefined();
+        await expect(gateway.close()).resolves.toBeUndefined();
+        expect(close).toHaveBeenCalled();
+        expect(gateway.getServerHealth(input)).toBe('inactive');
+        expect(result).toMatchObject({ content: [{ text: 'safe' }] });
+        expect(warn).toHaveBeenCalledTimes(1);
+        const diagnostic = JSON.parse(warn.mock.calls[0]![0]);
+        expect(diagnostic).toMatchObject({ event: 'worker.mcp.session-termination-failed' });
+        expect(JSON.stringify(diagnostic)).not.toContain('cleanup-private-canary');
+        expect(JSON.stringify(diagnostic).length).toBeLessThan(256);
+        const db = openWorkspaceDb(coreDb.dataRoot, input.workspaceId);
+        try {
+          expect(
+            db.sqlite
+              .prepare(
+                "SELECT action FROM audit_events WHERE action IN ('mcp.server.lifecycle.failed','mcp.server.lifecycle.degraded')"
+              )
+              .all()
+          ).toEqual([]);
+        } finally {
+          db.sqlite.close();
+        }
+      } finally {
+        fetch.mockRestore();
+        close.mockRestore();
+        warn.mockRestore();
+        await gateway.close();
+        await upstream.close();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
-  it('bounds a hanging credential HTTP teardown and retains its retry fence', async () => {
+  it('bounds a hanging HTTP DELETE and completes local cleanup', async () => {
     const upstreamOptions = { hangDelete: true };
     const upstream = await createMcpHttpStub(upstreamOptions);
     const { coreDb, gateway } = await createAuditedGateway();
@@ -1389,18 +1414,10 @@ describe('worker MCP gateway', () => {
         }),
       ]);
       clearTimeout(deadlineTimer);
-      expect(outcome).toMatchObject({ name: 'TimeoutError' });
+      expect(outcome).toBeNull();
       expect(upstreamOptions.hangDelete).toBe(true);
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(1);
-      const initializations = upstream.observed.filter((request) =>
-        request.endsWith('|initialize')
-      );
-      await expect(gateway.listTools(input)).rejects.toMatchObject({
-        code: 'recovery_required',
-      });
-      expect(upstream.observed.filter((request) => request.endsWith('|initialize'))).toEqual(
-        initializations
-      );
+      expect(gateway.getServerHealth(input)).toBe('inactive');
       upstreamOptions.hangDelete = false;
       await gateway.closeServer(input);
       expect(gateway.getServerHealth(input)).toBe('inactive');
@@ -1426,7 +1443,7 @@ describe('worker MCP gateway', () => {
     };
     const connect = vi.spyOn(Client.prototype, 'connect').mockRejectedValueOnce(new Error('init'));
     const terminate = vi
-      .spyOn(StreamableHTTPClientTransport.prototype, 'terminateSession')
+      .spyOn(Client.prototype, 'close')
       .mockRejectedValueOnce(new Error('cleanup'));
 
     try {
