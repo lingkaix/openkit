@@ -38,14 +38,17 @@ import type { ControlRecoverySourceReactivationInput } from './workspace-reactiv
 import { readWorkspaceReactivationSource } from './workspace-reactivation-native.js';
 import {
   bindWorkspaceCaptureNativeOwner,
+  captureRecoveryOrigin,
   endRecoveryAdmission,
   openRecoveryDatabase,
   prepareRecoveryAdmission,
   type RecoveryAdmission,
+  type RecoveryProof,
   readRecoveryAdmission,
   recoveryReport,
   refuseRecovery,
   withRecoveryRoot,
+  withSourceRecoveryProofFile,
 } from './workspace-recovery-admissions.js';
 import type {
   WorkspaceRecoveryCliArgs,
@@ -53,6 +56,7 @@ import type {
   WorkspaceRecoverySelection,
 } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import type { ControlRecoverySourcePreparationInput } from './workspace-recovery-target-codecs.js';
 
 /** Exact process-crash boundaries; internal dependencies only, never operator input. */
 export type WorkspaceRecoveryBoundary =
@@ -557,6 +561,14 @@ function sourceCaptureOwner(
   let proof = readRecoveryAdmission(policy.coreDb, captureId);
   const current = () => {
     policy.currentAuthority();
+    if (
+      !policy.mutationAdmission.ownsRecoveryOrigin(
+        input.workspaceId,
+        freeze,
+        captureRecoveryOrigin(policy.coreDb, input.workspaceId, captureId)
+      )
+    )
+      refuseRecovery('recovery-required');
     if (!policy.mutationAdmission.isRecoveryBinding(input.workspaceId, freeze, call.binding))
       refuseRecovery('recovery-required');
     const facts = readWorkspaceCaptureRecoveryAtCore(policy.coreDb, input);
@@ -567,15 +579,66 @@ function sourceCaptureOwner(
       refuseRecovery('recovery-required');
     return facts;
   };
+  const client = getControlStoreWorkerClient(policy.mutationAdmission);
+  /** Keeps the four original Core stages separate from source SQL and intervening durable file effects. */
+  const publishCore = async (
+    kind: ControlRecoverySourcePreparationInput['kind'],
+    stageProof: RecoveryProof
+  ): Promise<void> => {
+    current();
+    const scope = nativeProductScope(policy.dataRoot, { kind: 'server' });
+    if (policy.coreDb.scope !== 'core' || policy.coreDb.sqlite.name !== scope.path)
+      refuseRecovery('recovery-required');
+    const database = `core:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: policy.dataRoot,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    current();
+    const common = {
+      admissionId: captureId,
+      workspaceId: input.workspaceId,
+      authority: { mode: 'source' as const, actor: policy.actor },
+    };
+    const selection =
+      kind === 'source-prepare'
+        ? { ...common, kind }
+        : proof
+          ? {
+              ...common,
+              kind,
+              expectedRevision: proof.revision,
+              proofHash: commandInputHash(proof.proof),
+            }
+          : refuseRecovery('recovery-required');
+    await withSourceRecoveryProofFile(
+      policy.dataRoot,
+      captureId,
+      stageProof,
+      policy.verification.admission,
+      async (file) => {
+        current();
+        await client.recoveryTargetPreparation(database, { ...selection, file }, freeze, () => {
+          current();
+        });
+        // Refresh only after the covering ACK; unknown outcomes retain the original proof projection.
+        proof = readRecoveryAdmission(policy.coreDb, captureId);
+      }
+    );
+    current();
+  };
   return {
     captureId,
     generation,
     call,
     current,
-    client: getControlStoreWorkerClient(policy.mutationAdmission),
-    updateProof: () => {
-      proof = readRecoveryAdmission(policy.coreDb, captureId);
-    },
+    publishCore,
+    client,
   };
 }
 
@@ -601,7 +664,7 @@ export async function finishWorkspaceCaptureAtCore(
     // The full inspector compared this manifested, still-fenced source with its cut before
     // cleanup. Retain the same original source admission used by the stopped path.
     if (facts.movedOut || facts.capture.state !== 'active') refuseRecovery('recovery-required');
-    prepareRecoveryAdmission(policy.coreDb, owner.captureId, owner.generation, {
+    await owner.publishCore('source-prepare', {
       input: {
         command: 'move-out',
         dataRoot: input.dataRoot,
@@ -614,7 +677,6 @@ export async function finishWorkspaceCaptureAtCore(
       capture: verified.report,
       result: recoveryReport('capture', 'prepared', verified.report),
     });
-    owner.updateProof();
     facts = owner.current();
   }
   if (
@@ -729,9 +791,7 @@ export async function finishWorkspaceCaptureAtCore(
     nextAction: move ? 'reactivate' : 'none',
   };
   if (facts.owned)
-    policy.coreDb.sqlite
-      .transaction(() => endRecoveryAdmission(policy.coreDb, owner.captureId, 'finished', report))
-      .immediate();
+    await owner.publishCore('source-finish', { ...facts.owned.proof, result: report });
   return report;
 }
 
@@ -772,16 +832,10 @@ export async function abandonWorkspaceCaptureAtCore(
     nextAction: 'none',
   };
   if (facts.owned) {
-    policy.coreDb.sqlite
-      .transaction(() =>
-        endRecoveryAdmission(policy.coreDb, owner.captureId, 'abandoned', {
-          ...report,
-          disposition: 'quarantined',
-          nextAction: 'abandon',
-        })
-      )
-      .immediate();
-    owner.updateProof();
+    await owner.publishCore('source-abandon-preseal', {
+      ...facts.owned.proof,
+      result: { ...report, disposition: 'quarantined', nextAction: 'abandon' },
+    });
   }
   if (existsSync(owner.generation)) {
     assertCanonicalDirectory(owner.generation);
@@ -790,8 +844,6 @@ export async function abandonWorkspaceCaptureAtCore(
   facts = owner.current();
   if (facts.capture.state !== 'abandoned' || facts.movedOut) refuseRecovery('recovery-required');
   if (facts.owned)
-    policy.coreDb.sqlite
-      .transaction(() => endRecoveryAdmission(policy.coreDb, owner.captureId, 'abandoned', report))
-      .immediate();
+    await owner.publishCore('source-abandon-final', { ...facts.owned.proof, result: report });
   return report;
 }

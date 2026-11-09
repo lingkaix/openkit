@@ -34,6 +34,7 @@ import {
   type RecoveryProof,
   readRecoveryAdmission,
   refuseRecovery,
+  sourceRecoveryProofRoot,
   validateRecoveryProof,
 } from './workspace-recovery-admissions.js';
 import type {
@@ -42,8 +43,10 @@ import type {
 } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import {
+  type ControlRecoverySourcePreparationInput,
   type ControlRecoveryTargetPreparationInput,
   ControlRecoveryTargetPreparationInputSchema,
+  type ControlRecoveryTargetProofFile,
   type ControlRecoveryTargetRegistrationInput,
   ControlRecoveryTargetRegistrationInputSchema,
   ControlRecoveryTargetRegistrationResultSchema,
@@ -242,6 +245,7 @@ export function prepareControlRecoveryTargetPreparation(
   input: ControlRecoveryTargetPreparationInput
 ): RecoveryProof | undefined {
   if (core.scope !== 'core') throw new ControlProductPreconditionError();
+  if (isSourcePreparation(input)) return prepareSourceProof(core, input);
   if (input.kind === 'abandon') return undefined;
   const root = `${resolve(core.dataRoot)}.workspace-recovery-${input.admissionId}`;
   // Retained descriptor paths remain historical after a data-root move; they do not choose the file root.
@@ -257,19 +261,7 @@ export function prepareControlRecoveryTargetPreparation(
     refuseRecovery('recovery-required');
   const candidate = owned?.candidate_ref ?? join(root, 'workspaces', input.workspaceId);
   try {
-    assertCanonicalDirectory(root);
-    if (realpathSync(root) !== root || input.file.byteLength > WORKSPACE_BACKUP_MAX_FILE_BYTES)
-      refuseRecovery('recovery-required');
-    const path = join(root, input.file.name);
-    const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)
-      refuseRecovery('recovery-required');
-    const bytes = readCanonicalFile(path, input.file.byteLength);
-    if (realpathSync(root) !== root) refuseRecovery('recovery-required');
-    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== input.file.digest)
-      refuseRecovery('recovery-required');
-    const proof = JSON.parse(bytes.toString('utf8')) as RecoveryProof;
-    validateRecoveryProof(input.admissionId, candidate, proof);
+    const proof = readRecoveryStageProof(input.admissionId, input.file, root, candidate);
     if (
       proof.manifest.workspaceId !== input.workspaceId ||
       (proof.input.command !== 'restore' && proof.input.command !== 'move-in')
@@ -282,10 +274,151 @@ export function prepareControlRecoveryTargetPreparation(
       refuseRecovery('deployment-mismatch');
     return proof;
   } catch (error) {
-    // Bad private input never authorizes a native effect or exposes a selected path.
     if (error instanceof WorkspaceRecoveryError) throw error;
     return refuseRecovery('recovery-required');
   }
+}
+
+/** Reads the original bounded immutable proof file for either existing Core lifecycle owner. */
+function readRecoveryStageProof(
+  admissionId: string,
+  file: ControlRecoveryTargetProofFile,
+  root: string,
+  candidate: string
+): RecoveryProof {
+  try {
+    assertCanonicalDirectory(root);
+    if (realpathSync(root) !== root || file.byteLength > WORKSPACE_BACKUP_MAX_FILE_BYTES)
+      refuseRecovery('recovery-required');
+    const path = join(root, file.name);
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)
+      refuseRecovery('recovery-required');
+    const bytes = readCanonicalFile(path, file.byteLength);
+    if (realpathSync(root) !== root) refuseRecovery('recovery-required');
+    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== file.digest)
+      refuseRecovery('recovery-required');
+    const proof = JSON.parse(bytes.toString('utf8')) as RecoveryProof;
+    validateRecoveryProof(admissionId, candidate, proof);
+    return proof;
+  } catch (error) {
+    if (error instanceof WorkspaceRecoveryError) throw error;
+    return refuseRecovery('recovery-required');
+  }
+}
+
+/** Distinguishes the four original source stages from the existing target stages. */
+function isSourcePreparation(
+  input: ControlRecoveryTargetPreparationInput
+): input is ControlRecoverySourcePreparationInput {
+  return (
+    input.kind === 'source-prepare' ||
+    input.kind === 'source-finish' ||
+    input.kind === 'source-abandon-preseal' ||
+    input.kind === 'source-abandon-final'
+  );
+}
+
+/** Native preparation reads the complete source proof off Main without adding a message-size restriction. */
+function prepareSourceProof(
+  core: CoreDb,
+  input: ControlRecoverySourcePreparationInput
+): RecoveryProof {
+  const root = sourceRecoveryProofRoot(core.dataRoot, input.workspaceId, input.admissionId);
+  const candidate = join(root, input.admissionId);
+  const owned =
+    input.kind === 'source-prepare' ? undefined : readRecoveryAdmission(core, input.admissionId);
+  if (
+    input.kind !== 'source-prepare' &&
+    (!owned ||
+      owned.workspace_id !== input.workspaceId ||
+      owned.candidate_ref !== candidate ||
+      owned.revision !== input.expectedRevision ||
+      commandInputHash(owned.proof) !== input.proofHash)
+  )
+    refuseRecovery('recovery-required');
+  const proof = readRecoveryStageProof(input.admissionId, input.file, root, candidate);
+  if (
+    proof.manifest.workspaceId !== input.workspaceId ||
+    proof.manifest.purpose !== 'move' ||
+    (proof.input.command !== 'capture' && proof.input.command !== 'move-out')
+  )
+    refuseRecovery('request-conflict');
+  if (proof.manifest.sourceDeploymentId !== readDataRootLayoutMarker(core.dataRoot).deploymentId)
+    refuseRecovery('deployment-mismatch');
+  return proof;
+}
+
+/** Applies one original source proof/report stage; the caller's actual-post closure retains its live freeze. */
+function applySourcePreparation(
+  core: CoreDb,
+  input: ControlRecoverySourcePreparationInput,
+  proof: RecoveryProof | undefined
+): void {
+  if (!proof) refuseRecovery('recovery-required');
+  // A native authority change can commit ahead of this queued source stage after Main's last check.
+  assertTargetAuthority(core, {
+    workspaceId: input.workspaceId,
+    authority: { mode: 'live', actor: input.authority.actor },
+    deletedRecovery: undefined,
+  });
+  const candidate = join(
+    sourceRecoveryProofRoot(core.dataRoot, input.workspaceId, input.admissionId),
+    input.admissionId
+  );
+  validateRecoveryProof(input.admissionId, candidate, proof);
+  if (
+    proof.manifest.workspaceId !== input.workspaceId ||
+    proof.manifest.purpose !== 'move' ||
+    (proof.input.command !== 'capture' && proof.input.command !== 'move-out')
+  )
+    refuseRecovery('request-conflict');
+  if (proof.manifest.sourceDeploymentId !== readDataRootLayoutMarker(core.dataRoot).deploymentId)
+    refuseRecovery('deployment-mismatch');
+  if (input.kind === 'source-prepare') {
+    if (proof.result.command !== 'capture' || proof.result.disposition !== 'prepared')
+      refuseRecovery('request-conflict');
+    prepareRecoveryAdmission(core, input.admissionId, candidate, proof);
+    return;
+  }
+  const owned = readRecoveryAdmission(core, input.admissionId);
+  if (
+    !owned ||
+    owned.workspace_id !== input.workspaceId ||
+    owned.candidate_ref !== candidate ||
+    owned.revision !== input.expectedRevision ||
+    commandInputHash(owned.proof) !== input.proofHash ||
+    !equalExcept(proof, owned.proof, ['result'])
+  )
+    refuseRecovery('recovery-required');
+  const report = proof.result;
+  if (
+    report.selection?.kind !== 'capture' ||
+    report.selection.backupId !== input.admissionId ||
+    report.workspaceId !== input.workspaceId
+  )
+    refuseRecovery('request-conflict');
+  if (input.kind === 'source-finish') {
+    if (
+      report.command !== 'finish' ||
+      report.disposition !== 'moved-out' ||
+      report.nextAction !== 'reactivate'
+    )
+      refuseRecovery('request-conflict');
+  } else if (
+    report.command !== 'abandon' ||
+    (input.kind === 'source-abandon-preseal'
+      ? report.disposition !== 'quarantined' || report.nextAction !== 'abandon'
+      : report.disposition !== 'abandoned' || report.nextAction !== 'none')
+  )
+    refuseRecovery('request-conflict');
+  ControlRecoveryTargetRegistrationResultSchema.parse(report);
+  endRecoveryAdmission(
+    core,
+    input.admissionId,
+    input.kind === 'source-finish' ? 'finished' : 'abandoned',
+    report
+  );
 }
 
 /** Compares original facts while allowing only the fields changed by one existing lifecycle stage. */
@@ -304,6 +437,10 @@ export function applyControlRecoveryTargetPreparation(
   assertControlProductWriter(core.sqlite);
   if (core.scope !== 'core') throw new ControlProductPreconditionError();
   const input = ControlRecoveryTargetPreparationInputSchema.parse(raw);
+  if (isSourcePreparation(input)) {
+    applySourcePreparation(core, input, proof);
+    return;
+  }
   assertTargetAuthority(core, input);
   if (input.kind === 'prepare') {
     if (!proof || proof.candidateDigest || proof.result.disposition !== 'quarantined')

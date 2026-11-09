@@ -16,6 +16,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import {
@@ -35,7 +36,10 @@ import {
 } from './runtime/worker-storage-bindings.js';
 import { recordWorkspaceQuarantineRecord } from './runtime/workspace-quarantine-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import * as databases from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -354,6 +358,244 @@ async function expectRetired(f: Fixture, response: Response) {
 }
 
 describe('retained-only quarantine retirement: native operation and Core authority', () => {
+  it('natively retires the original whole Core tuple with Main query-only and exact cold readback', async () => {
+    const f = await fixture();
+    const retained = retainedTree(f.workspaceRoot);
+    const ordinaryCoreRefusals: string[] = [];
+    const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
+    vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (/UPDATE workspace_registry SET status = 'retired'/.test(sql)) {
+        const run = statement.run.bind(statement);
+        vi.spyOn(statement, 'run').mockImplementation((...args) => {
+          try {
+            return run(...args);
+          } catch (error) {
+            ordinaryCoreRefusals.push((error as { code: string }).code);
+            throw error;
+          }
+        });
+      }
+      return statement;
+    });
+    f.coreDb.sqlite.pragma('query_only = ON');
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    const response = await f.call(OPERATION, f.request);
+    expect(ordinaryCoreRefusals).toEqual([]);
+    await expectRetired(f, response);
+    const frames = post.mock.calls
+      .map(([frame]) => frame)
+      .filter((frame) => frame?.operation === 'core-sharing' && frame.input?.command === OPERATION);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.database).toBe(`core:${f.coreDb.sqlite.name}`);
+    const committed = {
+      registry: registry(f),
+      audit: rows(f, 'audit_events'),
+      receipts: rows(f, 'idempotency_requests'),
+    };
+    expect(committed.registry).toMatchObject({ status: 'retired', revision: 2 });
+    expect(
+      committed.audit.filter((row) => (row as { action: string }).action === OPERATION)
+    ).toHaveLength(1);
+    expect(
+      committed.receipts.filter(
+        (row) => (row as { command_name: string }).command_name === OPERATION
+      )
+    ).toHaveLength(1);
+    expect(retainedTree(f.workspaceRoot)).toEqual(retained);
+    expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const reopened = databases.openCoreDb(f.dataRoot);
+    try {
+      expect(
+        reopened.sqlite
+          .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
+          .get(f.workspaceId)
+      ).toEqual(committed.registry);
+      expect(reopened.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all()).toEqual(
+        committed.audit
+      );
+      expect(
+        reopened.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY rowid').all()
+      ).toEqual(committed.receipts);
+    } finally {
+      reopened.sqlite.close();
+    }
+  });
+
+  it.each(['quarantine', 'administrator'] as const)(
+    'refuses a genuinely held retirement after losing current %s before its protected write',
+    async (loss) => {
+      const f = await fixture();
+      const before = {
+        registry: registry(f),
+        audit: rows(f, 'audit_events'),
+        receipts: rows(f, 'idempotency_requests'),
+      };
+      const retained = retainedTree(f.workspaceRoot);
+      const client = getControlStoreWorkerClient(f.admission);
+      const original = client.coreSharing.bind(client);
+      let release = () => {};
+      let entered!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(client, 'coreSharing').mockImplementation(async (...args) => {
+        if (args[1].command !== OPERATION) return original(...args);
+        release = await client.pauseForDataRootBackup(args[0]);
+        const result = original(...args);
+        entered();
+        return result;
+      });
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      const pending = f.call(OPERATION, f.request);
+      try {
+        await Promise.race([
+          admitted,
+          pending.then(() => {
+            throw new Error('Retirement did not enter the real Core posting hold.');
+          }),
+        ]);
+        expect(
+          post.mock.calls.filter(
+            ([frame]) => frame?.operation === 'core-sharing' && frame.input?.command === OPERATION
+          )
+        ).toHaveLength(0);
+        if (loss === 'quarantine') {
+          refuseScope(f.dataRoot, { scope: 'workspace', id: f.workspaceId, check: 'retired' });
+          expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual({
+            scope: 'workspace',
+            id: f.workspaceId,
+            check: 'retired',
+          });
+        } else
+          expect(revokeOpenKitAccessTokenRecord(f.coreDb, f.admin.tokenId)?.status).toBe('revoked');
+        release();
+        await expectRefused(
+          await pending,
+          loss === 'quarantine' ? 409 : 403,
+          loss === 'quarantine' ? 'recovery_required' : 'deployment_admin_required'
+        );
+        expect(registry(f)).toEqual(before.registry);
+        expect(rows(f, 'audit_events')).toEqual(before.audit);
+        expect(rows(f, 'idempotency_requests')).toEqual(before.receipts);
+        expect(retainedTree(f.workspaceRoot)).toEqual(retained);
+        expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+        expect(
+          post.mock.calls.filter(
+            ([frame]) => frame?.operation === 'core-sharing' && frame.input?.command === OPERATION
+          )
+        ).toHaveLength(loss === 'quarantine' ? 0 : 1);
+      } finally {
+        release();
+        await pending;
+      }
+    }
+  );
+
+  it('keeps retirement unknown after its genuine committed ACK is held then lost without reposting', async () => {
+    const f = await fixture();
+    const retained = retainedTree(f.workspaceRoot);
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    let selectedWorker: Worker | undefined;
+    let arrived!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    const emit = Worker.prototype.emit;
+    const crossing = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event: string | symbol,
+      ...args: unknown[]
+    ) {
+      const reply = args[0] as { id?: number; status?: string; operation?: string } | undefined;
+      const request = post.mock.calls.find(
+        ([frame]) =>
+          frame?.operation === 'core-sharing' &&
+          frame.input?.command === OPERATION &&
+          frame.input?.request?.requestId === f.request.requestId
+      )?.[0];
+      if (
+        event === 'message' &&
+        reply?.status === 'ok' &&
+        reply.operation === 'core-sharing' &&
+        request?.id === reply.id &&
+        !selectedWorker
+      ) {
+        selectedWorker = this;
+        arrived();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    let continued = false;
+    const pending = f.call(OPERATION, f.request).then((response) => {
+      continued = true;
+      return response;
+    });
+    try {
+      await Promise.race([
+        committed,
+        pending.then(() => {
+          throw new Error('Retirement returned before its genuine native ACK.');
+        }),
+      ]);
+      expect(continued).toBe(false);
+      const tuple = {
+        registry: registry(f),
+        audit: rows(f, 'audit_events'),
+        receipts: rows(f, 'idempotency_requests'),
+      };
+      expect(tuple.registry).toMatchObject({ status: 'retired', revision: 2 });
+      expect(
+        tuple.audit.filter((row) => (row as { action: string }).action === OPERATION)
+      ).toHaveLength(1);
+      expect(
+        tuple.receipts.filter((row) => (row as { command_name: string }).command_name === OPERATION)
+      ).toHaveLength(1);
+      expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+      expect(retainedTree(f.workspaceRoot)).toEqual(retained);
+      await selectedWorker!.terminate();
+      await expectRefused(await pending, 409, 'recovery_required');
+      expect(
+        post.mock.calls.filter(
+          ([frame]) =>
+            frame?.operation === 'core-sharing' &&
+            frame.input?.command === OPERATION &&
+            frame.input?.request?.requestId === f.request.requestId
+        )
+      ).toHaveLength(1);
+      expect(registry(f)).toEqual(tuple.registry);
+      expect(rows(f, 'audit_events')).toEqual(tuple.audit);
+      expect(rows(f, 'idempotency_requests')).toEqual(tuple.receipts);
+      expect(retainedTree(f.workspaceRoot)).toEqual(retained);
+      expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      const reopened = databases.openCoreDb(f.dataRoot);
+      try {
+        expect(
+          reopened.sqlite
+            .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
+            .get(f.workspaceId)
+        ).toEqual(tuple.registry);
+        expect(reopened.sqlite.prepare('SELECT * FROM audit_events ORDER BY rowid').all()).toEqual(
+          tuple.audit
+        );
+        expect(
+          reopened.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY rowid').all()
+        ).toEqual(tuple.receipts);
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      crossing.mockRestore();
+      if (selectedWorker && selectedWorker.threadId !== -1) await selectedWorker.terminate();
+      await pending;
+    }
+  });
+
   it('CONTROL: current administrator and member reach baseline authority and the healthy sibling makes progress', async () => {
     const f = await fixture();
     const response = await f.call('workspace.access-recovery-read', { workspaceId: f.siblingId });
@@ -602,8 +844,10 @@ describe('retained-only quarantine retirement: native operation and Core authori
       const before = registry(f);
       const audit = rows(f, 'audit_events');
       const receipts = rows(f, 'idempotency_requests');
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      const exactCommand = table === 'audit_events' ? 'action' : 'command_name';
       f.coreDb.sqlite.exec(
-        `CREATE TEMP TRIGGER refuse_retirement_insert BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'retirement fault injection'); END`
+        `CREATE TRIGGER refuse_retirement_insert BEFORE INSERT ON ${table} WHEN NEW.${exactCommand}='workspace.retire-quarantined' BEGIN SELECT RAISE(ABORT, 'retirement fault injection'); END`
       );
       const response = await f.call(OPERATION, f.request);
       // A missing route does not prove transaction rollback. The retry below must reach success too.
@@ -611,8 +855,18 @@ describe('retained-only quarantine retirement: native operation and Core authori
       expect(registry(f)).toEqual(before);
       expect(rows(f, 'audit_events')).toEqual(audit);
       expect(rows(f, 'idempotency_requests')).toEqual(receipts);
+      expect(
+        post.mock.calls.filter(
+          ([frame]) => frame?.operation === 'core-sharing' && frame.input?.command === OPERATION
+        )
+      ).toHaveLength(1);
       f.coreDb.sqlite.exec('DROP TRIGGER refuse_retirement_insert');
       await expectRetired(f, await f.call(OPERATION, f.request));
+      expect(
+        post.mock.calls.filter(
+          ([frame]) => frame?.operation === 'core-sharing' && frame.input?.command === OPERATION
+        )
+      ).toHaveLength(2);
     }
   );
 

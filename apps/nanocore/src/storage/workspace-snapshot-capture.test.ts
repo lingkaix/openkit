@@ -518,7 +518,14 @@ async function fixture() {
     expectedRelease: release,
     supportedDatabaseFormats: formats,
   };
-  const source = { kind: 'live-workspace' as const, dataRoot, coreDb, store, mutationAdmission };
+  const source = {
+    kind: 'live-workspace' as const,
+    dataRoot,
+    coreDb,
+    store,
+    mutationAdmission,
+    actor: { kind: 'local' as const, userId: ownerId },
+  };
   const deploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
   const input = (backupId = allocateEntityId('wsbak')) => ({
     ...policy,
@@ -3148,6 +3155,181 @@ describe('C-b original-byte acquisition protection', () => {
 });
 
 describe('C-a independent sealed generations', () => {
+  it('natively prepares MOVE through the parent bridge while Main and capture Worker Core connections are query-only', async () => {
+    const f = await fixture();
+    const input = { ...f.input(), purpose: 'move' as const };
+    const sourceFile = join(f.workspaceRoot, 'files', 'native-core-bridge.txt');
+    const sourceBytes = Buffer.from('Exact retained MOVE source bytes for the Core bridge.');
+    mkdirSync(dirname(sourceFile), { recursive: true });
+    writeFileSync(sourceFile, sourceBytes);
+    const ordinaryCoreRefusals: string[] = [];
+    captureWorkerProbe.observe = (message) => {
+      if (message.kind === 'ordinary-core-readonly')
+        ordinaryCoreRefusals.push((message as typeof message & { code: string }).code);
+    };
+    captureWorkerProbe.script = `
+      const selectedCore = ${JSON.stringify(f.coreDb.sqlite.name)};
+      const prepareCore = Database.prototype.prepare;
+      Database.prototype.prepare = function(sql, ...args) {
+        if (this.name === selectedCore) this.pragma('query_only = ON');
+        const statement = prepareCore.call(this, sql, ...args);
+        if (this.name === selectedCore && /INSERT INTO workspace_recovery_admissions/.test(sql)) {
+          const run = statement.run.bind(statement);
+          statement.run = function(...values) {
+            try { return run(...values); }
+            catch (error) { observe('ordinary-core-readonly', { code: error.code }); throw error; }
+          };
+        }
+        return statement;
+      };
+    `;
+    f.coreDb.sqlite.pragma('query_only = ON');
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    const outcome = await createWorkspaceBackup(input).then(
+      (result) => ({ result }),
+      (error: unknown) => ({ error })
+    );
+    // OLD executes its actual Core INSERT in the capture Worker and reports SQLite's refusal.
+    expect(ordinaryCoreRefusals).toEqual([]);
+    if ('error' in outcome) throw outcome.error;
+    expect(outcome.result.disposition).toBe('prepared');
+    const frames = post.mock.calls
+      .map(([frame]) => frame)
+      .filter(
+        (frame) =>
+          frame?.operation === 'recovery-target-preparation' &&
+          frame.input?.kind === 'source-prepare'
+      );
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.database).toBe(`core:${f.coreDb.sqlite.name}`);
+    expect(frames[0]!.input).toMatchObject({
+      admissionId: input.backupId,
+      workspaceId,
+      authority: { mode: 'source' },
+      file: {
+        name: expect.stringMatching(/^\.proof-[0-9a-f-]+\.json$/),
+        byteLength: expect.any(Number),
+        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      },
+    });
+    expect(JSON.stringify(frames)).not.toContain('"manifest":');
+    expect(JSON.stringify(frames)).not.toContain(sourceBytes.toString());
+    const retained = readRecoveryAdmission(f.coreDb, input.backupId);
+    expect(retained).toMatchObject({
+      admission_id: input.backupId,
+      workspace_id: workspaceId,
+      state: 'prepared',
+      revision: 1,
+      proof: { input: { command: 'capture', source: { kind: 'live-workspace' } } },
+    });
+    expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+    expect(readFileSync(sourceFile)).toEqual(sourceBytes);
+    expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    const reopened = openCoreDb(f.dataRoot);
+    databaseHandles.push(reopened);
+    expect(readRecoveryAdmission(reopened, input.backupId)).toEqual(retained);
+  }, 120_000);
+
+  it('keeps the real capture Worker waiting for source preparation ACK and preserves its committed proof after ACK loss', async () => {
+    const f = await fixture();
+    const input = { ...f.input(), purpose: 'move' as const };
+    const sourceFile = join(f.workspaceRoot, 'files', 'held-core-bridge.txt');
+    const sourceBytes = Buffer.from('Exact source bytes survive the capture bridge ACK loss.');
+    mkdirSync(dirname(sourceFile), { recursive: true });
+    writeFileSync(sourceFile, sourceBytes);
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    let selectedWorker: Worker | undefined;
+    let arrived!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    captureWorkerProbe.onNativeMessage = (worker, value) => {
+      const reply = value as { id?: number; status?: string; operation?: string } | undefined;
+      const request = post.mock.calls.find(
+        ([frame]) =>
+          frame?.operation === 'recovery-target-preparation' &&
+          frame.input?.kind === 'source-prepare' &&
+          frame.input?.admissionId === input.backupId
+      )?.[0];
+      if (
+        reply?.status !== 'ok' ||
+        reply.operation !== 'recovery-target-preparation' ||
+        !request ||
+        reply.id !== request.id ||
+        selectedWorker
+      )
+        return false;
+      selectedWorker = worker;
+      arrived();
+      return true;
+    };
+    let continued = false;
+    const pending = createWorkspaceBackup(input).then(
+      (result) => {
+        continued = true;
+        return { result };
+      },
+      (error: unknown) => {
+        continued = true;
+        return { error };
+      }
+    );
+    try {
+      await Promise.race([
+        committed,
+        pending.then(() => {
+          throw new Error('The real capture Worker completed before its native Core ACK.');
+        }),
+      ]);
+      expect(continued).toBe(false);
+      const retained = readRecoveryAdmission(f.coreDb, input.backupId);
+      expect(retained).toMatchObject({
+        state: 'prepared',
+        revision: 1,
+        proof: { input: { command: 'capture', source: { kind: 'live-workspace' } } },
+      });
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      try {
+        expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({ state: 'active' });
+      } finally {
+        db.sqlite.close();
+      }
+      expect(existsSync(join(input.bundleRoot, 'manifest.json'))).toBe(true);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+      expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+      await selectedWorker!.terminate();
+      const outcome = await pending;
+      expect(outcome).toMatchObject({ error: expect.any(Error) });
+      expect(
+        post.mock.calls.filter(
+          ([frame]) =>
+            frame?.operation === 'recovery-target-preparation' &&
+            frame.input?.kind === 'source-prepare' &&
+            frame.input?.admissionId === input.backupId
+        )
+      ).toHaveLength(1);
+      expect(readRecoveryAdmission(f.coreDb, input.backupId)).toEqual(retained);
+      expect(existsSync(join(input.bundleRoot, 'manifest.json'))).toBe(true);
+      expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
+      expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+      await shutdownControlStoreWorkerClient();
+      f.coreDb.sqlite.close();
+      const reopened = openCoreDb(f.dataRoot);
+      databaseHandles.push(reopened);
+      expect(readRecoveryAdmission(reopened, input.backupId)).toEqual(retained);
+      expect(readFileSync(sourceFile)).toEqual(sourceBytes);
+      const coldAdmission = new WorkspaceMutationAdmission();
+      restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
+      expect(coldAdmission.enter(workspaceId)).toBeNull();
+    } finally {
+      captureWorkerProbe.onNativeMessage = undefined;
+      if (selectedWorker && selectedWorker.threadId !== -1) await selectedWorker.terminate();
+      await pending;
+    }
+  }, 120_000);
+
   it.each(['closed-writer', 'restart'] as const)(
     'creates a brand-new capture after %s without a warming mutation',
     async (kind) => {

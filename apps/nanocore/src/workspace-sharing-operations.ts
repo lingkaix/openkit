@@ -62,8 +62,9 @@ import {
 } from './runtime/idempotent-command.js';
 import {
   getCommandRequestRecordFromDb,
-  recordCommandRequestRecordInDb,
+  recordControlCommandRequestRecordInDb,
 } from './storage/command-request-records.js';
+import { assertControlProductWriter } from './storage/control-store-products.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -536,47 +537,34 @@ export function createWorkspaceSharingOperationImplementations(
           }
           requireRetirableRegistry(coreDb, request);
           await admission.close(request.workspaceId);
-          const result = coreDb.sqlite.transaction(() => {
-            requireRetirementAdministrator(coreDb, actor);
+          const nativeScope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+          if (coreDb.scope !== 'core' || coreDb.sqlite.name !== nativeScope.path)
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          const client = getControlStoreWorkerClient(admission);
+          const database = `core:${nativeScope.path}`;
+          await client.open({
+            database,
+            path: nativeScope.path,
+            dataRoot: coreDb.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: nativeScope.owner,
+            contentMount: nativeScope.contentMount,
+          });
+          const recheck = () => {
+            if (!admission.isClosed(request.workspaceId)) throw recoveryRequired();
             requireRetirableRegistry(coreDb, request);
-            requireNoLifecycleAudit(coreDb, {
-              action: 'workspace.retire-quarantined',
-              actorId: actor.userId,
-              requestId: request.requestId,
-              workspaceId: request.workspaceId,
-            });
-            const registry = retireQuarantinedWorkspaceRegistry({
-              coreDb,
-              workspaceId: request.workspaceId,
-              expectedRegistryRevision: request.expectedRegistryRevision,
-            });
-            const result = WorkspaceRetirementResponseSchema.parse({
-              retirement: { ...registry, dataRetained: true, storageReclaimed: false },
-            });
-            recordLifecycleAudit(coreDb, {
-              action: 'workspace.retire-quarantined',
-              actorId: actor.userId,
-              requestId: request.requestId,
-              resource: `workspace:${request.workspaceId}`,
-              resourceRevision: registry.registryRevision,
-              subjectId: registry.ownerUserId,
-              workspaceId: request.workspaceId,
-              summary: 'Quarantined Workspace retired. Data retained; no storage reclaimed.',
-            });
-            const scope = { ...CORE_RECEIPT_OWNER, actorId: actor.userId };
-            const createdAt = new Date().toISOString();
-            recordCommandRequestRecordInDb(coreDb, {
-              key: commandRequestKey('workspace.retire-quarantined', request.requestId, scope),
-              command: 'workspace.retire-quarantined',
-              requestId: request.requestId,
-              scope,
-              inputHash: commandInputHash(request),
-              response: { kind: 'workspace', id: request.workspaceId },
-              createdAt,
-              expiresAt: commandRequestExpiresAt(createdAt),
-            });
-            return result;
-          })();
+          };
+          recheck();
+          const prepared = ControlCoreSharingSchema.parse({
+            command: 'workspace.retire-quarantined',
+            actor,
+            request,
+          });
+          const published = await client.coreSharing(database, prepared, recheck);
+          if (published.kind !== 'retirement')
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          const result = published.value;
           // This projection cannot release anything; the gate already drained before Core committed.
           refuseScope(coreDb.dataRoot, {
             scope: 'workspace',
@@ -713,6 +701,55 @@ export function createWorkspaceSharingOperationImplementations(
   >;
 }
 
+/** Applies the original whole retirement tuple after actual-post quarantine and target closure admission. */
+export function applyControlWorkspaceRetirement(
+  coreDb: CoreDb,
+  actor: Actor,
+  request: RetireQuarantinedWorkspaceRequest
+): WorkspaceRetirementResponse {
+  assertControlProductWriter(coreDb.sqlite);
+  requireRetirementAdministrator(coreDb, actor);
+  requireRetirableRegistryVersion(coreDb, request);
+  requireNoRetirementDeletion(coreDb, request);
+  requireNoLifecycleAudit(coreDb, {
+    action: 'workspace.retire-quarantined',
+    actorId: actor.userId,
+    requestId: request.requestId,
+    workspaceId: request.workspaceId,
+  });
+  const registry = retireQuarantinedWorkspaceRegistry({
+    coreDb,
+    workspaceId: request.workspaceId,
+    expectedRegistryRevision: request.expectedRegistryRevision,
+  });
+  const result = WorkspaceRetirementResponseSchema.parse({
+    retirement: { ...registry, dataRetained: true, storageReclaimed: false },
+  });
+  recordLifecycleAudit(coreDb, {
+    action: 'workspace.retire-quarantined',
+    actorId: actor.userId,
+    requestId: request.requestId,
+    resource: `workspace:${request.workspaceId}`,
+    resourceRevision: registry.registryRevision,
+    subjectId: registry.ownerUserId,
+    workspaceId: request.workspaceId,
+    summary: 'Quarantined Workspace retired. Data retained; no storage reclaimed.',
+  });
+  const scope = { ...CORE_RECEIPT_OWNER, actorId: actor.userId };
+  const createdAt = new Date().toISOString();
+  recordControlCommandRequestRecordInDb(coreDb, {
+    key: commandRequestKey('workspace.retire-quarantined', request.requestId, scope),
+    command: 'workspace.retire-quarantined',
+    requestId: request.requestId,
+    scope,
+    inputHash: commandInputHash(request),
+    response: { kind: 'workspace', id: request.workspaceId },
+    createdAt,
+    expiresAt: commandRequestExpiresAt(createdAt),
+  });
+  return result;
+}
+
 /** Rechecks current administrator authority without consulting Workspace content. */
 function requireRetirementAdministrator(coreDb: CoreDb, actor: Actor): void {
   try {
@@ -733,11 +770,7 @@ function requireRetirableRegistry(
   coreDb: CoreDb,
   request: RetireQuarantinedWorkspaceRequest
 ): void {
-  const registry = getWorkspaceRegistryLifecycleFact(coreDb, request.workspaceId);
-  if (!registry || registry.status !== 'active') throw recoveryRequired();
-  if (registry.registryRevision !== request.expectedRegistryRevision) {
-    throw new OperationError('revision_conflict', 'Workspace registry revision changed.', 409);
-  }
+  requireRetirableRegistryVersion(coreDb, request);
   const quarantined = scopeAdmissionFailures(coreDb.dataRoot).some(
     (failure) =>
       failure.scope === 'workspace' &&
@@ -746,6 +779,26 @@ function requireRetirableRegistry(
       failure.check !== 'retired'
   );
   if (!quarantined) throw recoveryRequired();
+  requireNoRetirementDeletion(coreDb, request);
+}
+
+/** Repeats only current native Core registry facts; process-local quarantine stays with actual posting. */
+function requireRetirableRegistryVersion(
+  coreDb: CoreDb,
+  request: RetireQuarantinedWorkspaceRequest
+): void {
+  const registry = getWorkspaceRegistryLifecycleFact(coreDb, request.workspaceId);
+  if (!registry || registry.status !== 'active') throw recoveryRequired();
+  if (registry.registryRevision !== request.expectedRegistryRevision) {
+    throw new OperationError('revision_conflict', 'Workspace registry revision changed.', 409);
+  }
+}
+
+/** A deletion descriptor remains a separate owner even after the target has drained. */
+function requireNoRetirementDeletion(
+  coreDb: CoreDb,
+  request: RetireQuarantinedWorkspaceRequest
+): void {
   if (
     listWorkspaceDeletionRequests(coreDb.dataRoot, request.workspaceId).some(
       (record) => !isTerminalWorkspaceDeletionRequest(record)

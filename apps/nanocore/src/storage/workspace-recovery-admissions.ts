@@ -3,7 +3,7 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isEntityId, RequestIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
-import { assertCanonicalDirectory } from '@openkit/storage';
+import { assertCanonicalDirectory, publishDurableFile, removeDurableFile } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
@@ -22,13 +22,14 @@ import type {
 } from './control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck, openWorkspaceReadDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
-import type { WorkspaceBackupReport } from './workspace-backup.js';
+import type { WorkspaceBackupCreateInput, WorkspaceBackupReport } from './workspace-backup.js';
 import {
   parseWorkspaceBackupManifest,
+  WORKSPACE_BACKUP_MAX_FILE_BYTES,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
 import { inspectCapture } from './workspace-capture-protection.js';
-import { nativeProductScope } from './workspace-file-records.js';
+import { ensureCanonicalDirectory, nativeProductScope } from './workspace-file-records.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
@@ -37,6 +38,7 @@ import {
   WorkspaceRecoveryError,
   type WorkspaceRecoveryErrorCode,
 } from './workspace-recovery-error.js';
+import type { ControlRecoveryTargetProofFile } from './workspace-recovery-target-codecs.js';
 
 /** Closed proof retained by the offline admission owner, not the command receipt ledger. */
 export interface RecoveryProof {
@@ -315,7 +317,7 @@ function bindRecoveryDatabase(
 }
 
 /** Validates the selected source capture and any exact retained source-side Core proof. */
-function captureRecoveryOrigin(
+export function captureRecoveryOrigin(
   core: CoreDb,
   workspaceId: string,
   captureId: string
@@ -692,4 +694,65 @@ export function recoveryReport(
     restrictedRecovery: false,
     nextAction: disposition === 'prepared' ? 'finish' : 'none',
   };
+}
+
+/** Source capture owns this temporary sibling of its generation, on the same admitted filesystem. */
+export function sourceRecoveryProofRoot(
+  dataRoot: string,
+  workspaceId: string,
+  captureId: string
+): string {
+  if (!isEntityId('ws', workspaceId) || !isEntityId('wsbak', captureId))
+    refuseRecovery('recovery-required');
+  return join(resolve(dataRoot), 'server/backups/workspaces', workspaceId);
+}
+
+/** Reuses the native proof-file stage without cloning a potentially large retained proof into a message. */
+export async function withSourceRecoveryProofFile<T>(
+  dataRoot: string,
+  captureId: string,
+  proof: RecoveryProof,
+  admission: Pick<WorkspaceBackupCreateInput['admission'], 'reserve'>,
+  submit: (file: ControlRecoveryTargetProofFile) => Promise<T> | T
+): Promise<T> {
+  const workspaceId = proof.manifest.workspaceId;
+  const candidate = join(resolve(dataRoot), 'server/backups/workspaces', workspaceId, captureId);
+  validateRecoveryProof(captureId, candidate, proof);
+  const root = sourceRecoveryProofRoot(dataRoot, workspaceId, captureId);
+  ensureCanonicalDirectory(root);
+  const bytes = Buffer.from(JSON.stringify(proof), 'utf8');
+  if (bytes.length > WORKSPACE_BACKUP_MAX_FILE_BYTES) refuseRecovery('invalid-bundle');
+  const destinationPath = join(root, `.proof-${randomUUID()}.json`);
+  const reservation = admission.reserve({
+    stagingBytes: BigInt(bytes.length),
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 0n,
+  });
+  let result: { ok: true; value: T } | { ok: false; error: unknown };
+  try {
+    reservation.assertAvailable();
+    const file = await publishDurableFile({ destinationPath, bytes });
+    reservation.recordWritten(file.bytes);
+    result = {
+      ok: true,
+      value: await submit({
+        name: destinationPath.slice(root.length + 1),
+        byteLength: file.bytes,
+        digest: file.sha256,
+      }),
+    };
+  } catch (error) {
+    result = { ok: false, error };
+  }
+  try {
+    // A create-only publisher can link this private UUID before its directory-sync acknowledgement fails.
+    await removeDurableFile({ destinationPath });
+  } catch (error) {
+    if (result.ok) result = { ok: false, error };
+  } finally {
+    reservation.release();
+  }
+  if (!result.ok) throw result.error;
+  return result.value;
 }

@@ -7,11 +7,13 @@ import {
   LeaveWorkspaceRequestSchema,
   RecoverWorkspaceAccessRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
+  RetireQuarantinedWorkspaceRequestSchema,
   RevokeWorkspaceInvitationRequestSchema,
   TransferWorkspaceOwnershipRequestSchema,
   WorkspaceAccessRecoveryStateSchema,
   WorkspaceInvitationSchema,
   WorkspaceMemberSchema,
+  WorkspaceRetirementResponseSchema,
 } from '@openkit/app-api-schemas';
 import { UserIdSchema, WorkspaceIdSchema, WorkspaceRecordSchema } from '@openkit/protocol';
 import { z } from 'zod';
@@ -62,6 +64,11 @@ const receipt = z
 const common = { actor, receipt };
 /** Complete existing Core command tuple, including only the authenticated actor and exact domain request. */
 export const ControlCoreSharingSchema = z.discriminatedUnion('command', [
+  z.strictObject({
+    command: z.literal('workspace.retire-quarantined'),
+    actor,
+    request: RetireQuarantinedWorkspaceRequestSchema,
+  }),
   z
     .object({
       ...common,
@@ -144,11 +151,14 @@ export type ControlCoreSharing = z.infer<typeof ControlCoreSharingSchema>;
 /** Main adds the original receipt and the existing non-authority Workspace projection after native preparation. */
 export type CoreSharingDraft = ControlCoreSharing extends infer T
   ? T extends ControlCoreSharing
-    ? Omit<T, 'receipt' | 'workspace'>
+    ? T extends { command: 'workspace.retire-quarantined' }
+      ? never
+      : Omit<T, 'receipt' | 'workspace'>
     : never
   : never;
 /** Complete current domain responses, never truncated or reread after acknowledgement. */
 export const ControlCoreSharingResultSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('retirement'), value: WorkspaceRetirementResponseSchema }),
   z.object({ kind: z.literal('invitation'), value: WorkspaceInvitationSchema }).strict(),
   z.object({ kind: z.literal('member'), value: WorkspaceMemberSchema }).strict(),
   z.object({ kind: z.literal('workspace'), value: AuthorizedWorkspaceSummarySchema }).strict(),
@@ -168,6 +178,18 @@ export type ControlCoreSharingResult = z.infer<typeof ControlCoreSharingResultSc
 const refusalBase = { operation: z.literal('core-sharing') };
 /** Exact original public refusals; mixed status, message or current-record families fail closed. */
 export const ControlCoreSharingRefusalSchema = z.union([
+  z.strictObject({
+    ...refusalBase,
+    code: z.literal('revision_conflict'),
+    message: z.literal('Workspace registry revision changed.'),
+    status: z.literal(409),
+  }),
+  z.strictObject({
+    ...refusalBase,
+    code: z.literal('workspace_deletion_in_progress'),
+    message: z.literal('Another deletion request owns this Workspace.'),
+    status: z.literal(409),
+  }),
   z
     .object({
       ...refusalBase,

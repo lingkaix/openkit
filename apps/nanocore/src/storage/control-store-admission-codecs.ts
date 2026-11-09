@@ -95,6 +95,7 @@ export const CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS = [
 /** Complete lifecycle receipts owned only by the canonical Core tuple, never Workspace or User stores. */
 export const CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS = [
   'user.disable',
+  'workspace.retire-quarantined',
 ] as const satisfies readonly CommandRequestName[];
 
 /** Selects each activated physical-scope partition; scoped Notebook names never activate other User commands. */

@@ -27,7 +27,7 @@ import {
   revokeWorkspaceInvitation,
   transferWorkspaceOwnership,
 } from '../workspace-sharing.js';
-import { accessDenied } from '../workspace-sharing-operations.js';
+import { accessDenied, applyControlWorkspaceRetirement } from '../workspace-sharing-operations.js';
 import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
@@ -186,7 +186,7 @@ function audit(
 /** Selects a retained original result without producing another effect or Audit. */
 function replay(
   db: CoreDb,
-  input: Exclude<ControlCoreSharing, { command: 'user.disable' }>,
+  input: Exclude<ControlCoreSharing, { command: 'user.disable' | 'workspace.retire-quarantined' }>,
   id: string
 ): ControlCoreSharingResult {
   switch (input.command) {
@@ -229,6 +229,11 @@ export function applyControlCoreSharing(
   assertControlProductWriter(db.sqlite);
   const input = ControlCoreSharingSchema.parse(value);
   if (input.command === 'user.disable') return applyControlUserDisable(db, input);
+  if (input.command === 'workspace.retire-quarantined')
+    return {
+      kind: 'retirement',
+      value: applyControlWorkspaceRetirement(db, presentControlFacts(input.actor), input.request),
+    };
   const { receipt, request, command } = input;
   const actor = presentControlFacts(input.actor);
   const actorId = actor.userId;
@@ -344,7 +349,7 @@ export function applyControlCoreSharing(
       'membership.manage',
       true
     );
-  let result: Exclude<ControlCoreSharingResult, { kind: 'user' }>;
+  let result: Exclude<ControlCoreSharingResult, { kind: 'user' | 'retirement' }>;
   switch (command) {
     case 'workspace.invitation.create': {
       requireNoAudit(db, command, actorId, request.requestId, undefined, input.workspaceId);

@@ -49,8 +49,27 @@ const targetSelection = {
   expectedRevision: ControlRecoveryTargetRegistrationInputSchema.shape.expectedRevision,
   proofHash: ControlRecoveryTargetRegistrationInputSchema.shape.proofHash,
 };
+const sourceAuthority = {
+  admissionId: WorkspaceBackupIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  authority: z.strictObject({ mode: z.literal('source'), actor: ControlCoreSharingActorSchema }),
+};
+const sourceSelection = {
+  ...sourceAuthority,
+  expectedRevision: targetSelection.expectedRevision,
+  proofHash: targetSelection.proofHash,
+  file: ControlRecoveryTargetProofFileSchema,
+};
 /** Original Core effects remain separate around candidate preparation and durable retirement. */
 export const ControlRecoveryTargetPreparationInputSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    ...sourceAuthority,
+    kind: z.literal('source-prepare'),
+    file: ControlRecoveryTargetProofFileSchema,
+  }),
+  z.strictObject({ ...sourceSelection, kind: z.literal('source-finish') }),
+  z.strictObject({ ...sourceSelection, kind: z.literal('source-abandon-preseal') }),
+  z.strictObject({ ...sourceSelection, kind: z.literal('source-abandon-final') }),
   z.strictObject({
     ...targetAuthority,
     kind: z.literal('prepare'),
@@ -72,6 +91,13 @@ export const ControlRecoveryTargetPreparationInputSchema = z.discriminatedUnion(
 export type ControlRecoveryTargetPreparationInput = z.infer<
   typeof ControlRecoveryTargetPreparationInputSchema
 >;
+/** Source proof metadata shares the original bounded file carrier, never the complete proof on the wire. */
+export type ControlRecoverySourcePreparationInput = Extract<
+  ControlRecoveryTargetPreparationInput,
+  { authority: { mode: 'source' } }
+>;
+/** One original request-private proof file. */
+export type ControlRecoveryTargetProofFile = z.infer<typeof ControlRecoveryTargetProofFileSchema>;
 // Descriptive retained additions survive the native handoff; closed core values still refuse.
 const capture = WorkspaceSnapshotReportSchema.shape.capture.unwrap();
 const coverage = capture.shape.coverage;

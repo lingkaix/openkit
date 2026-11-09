@@ -116,7 +116,10 @@ import {
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import {
   DATA_ROOT_BACKUP_MANIFEST_FILE,
   inventoryRegularFiles,
@@ -150,25 +153,25 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './workspace-backup-bundle.js';
 import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
+import { loadWorkspace, nativeProductScope, readNativeProduct } from './workspace-file-records.js';
 import {
-  loadWorkspaceFileRecords,
-  nativeProductScope,
-  readNativeProduct,
-} from './workspace-file-records.js';
-import {
+  captureRecoveryOrigin,
   prepareRecoveryAdmission,
   type RecoveryAdmission,
+  type RecoveryProof,
   readRecoveryAdmission,
   recoveryReport,
   refuseRecovery as refuse,
   resumeWorkspaceCaptureOwner,
   unresolvedRecoveryAdmissions,
+  withSourceRecoveryProofFile,
   workspaceRecoveryPredecessorRoot,
 } from './workspace-recovery-admissions.js';
 import {
   WorkspaceRecoveryError,
   type WorkspaceRecoveryErrorCode,
 } from './workspace-recovery-error.js';
+import type { ControlRecoveryTargetProofFile } from './workspace-recovery-target-codecs.js';
 
 /** The backup-directory branch requires verification by the implementation, not the caller. */
 export type WorkspaceBackupSource =
@@ -181,6 +184,8 @@ export type WorkspaceBackupSource =
       /** Borrows the caller's exact current fence for a fresh manual backup; capture never releases it. */
       readonly freezeOwner?: WorkspaceFrozenAdmission;
       readonly deletionRequest?: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord;
+      /** Existing administrator facts for live MOVE's native source Core stage; backups carry no new grant. */
+      readonly actor?: import('../auth/identity.js').Actor;
       readonly currentAuthority?: () => void;
       readonly canReadThread?: (threadId: string) => boolean;
     }
@@ -1157,8 +1162,7 @@ function graph(
   }
   try {
     const formats = databaseFormats(dataRoot, workspaceId, root);
-    const records = loadWorkspaceFileRecords(dataRoot, workspaceId)[0];
-    if (!records) refuse('incomplete-closure');
+    const records = loadWorkspace(root, workspaceId);
     const references = {
       workspaceId,
       threadIds: new Set(records.threads.map((t) => t.id)),
@@ -1422,6 +1426,7 @@ export type WorkspaceCapturePhase =
   | 'cleanup-end';
 /** Closed, request-private worker control; it carries no product body or authorization grant. */
 export type WorkspaceCaptureControl =
+  | { kind: 'source-proof'; file: ControlRecoveryTargetProofFile }
   | { kind: 'candidate'; workspaceId: string }
   | { kind: 'phase'; phase: WorkspaceCapturePhase; at: number }
   | { kind: 'capacity'; action: 'reserve'; writes: FileWriteCapacity }
@@ -1632,7 +1637,11 @@ export async function runWorkspaceCaptureWorker(
     },
     (phase) => {
       control({ kind: 'phase', phase, at: performance.timeOrigin + performance.now() });
-    }
+    },
+    (proof, admission) =>
+      withSourceRecoveryProofFile(dataRoot, selected.backupId, proof, admission, (file) => {
+        control({ kind: 'source-proof', file });
+      })
   );
   if (automatic) {
     // Reuse the same exclusion and posted-ACK drain; never collect over a new publisher.
@@ -1827,6 +1836,46 @@ async function runWorkspaceCapture(
                     reply = 1;
                   }
                 }
+              } else if (value.kind === 'source-proof') {
+                const assertCurrent = () => {
+                  live.currentAuthority?.();
+                  if (
+                    input.purpose !== 'move' ||
+                    !live.actor ||
+                    !captureFreeze ||
+                    !live.mutationAdmission.ownsFreeze(targetWorkspaceId, captureFreeze)
+                  )
+                    refuse('recovery-required');
+                };
+                assertCurrent();
+                const scope = nativeProductScope(live.dataRoot, { kind: 'server' });
+                if (live.coreDb.scope !== 'core' || live.coreDb.sqlite.name !== scope.path)
+                  refuse('recovery-required');
+                const client = getControlStoreWorkerClient(live.mutationAdmission);
+                const database = `core:${scope.path}`;
+                await client.open({
+                  database,
+                  path: scope.path,
+                  dataRoot: live.dataRoot,
+                  create: false,
+                  initialize: 'core',
+                  productOwner: scope.owner,
+                  contentMount: scope.contentMount,
+                });
+                assertCurrent();
+                await client.recoveryTargetPreparation(
+                  database,
+                  {
+                    kind: 'source-prepare',
+                    admissionId: input.backupId,
+                    workspaceId: targetWorkspaceId,
+                    authority: { mode: 'source', actor: live.actor! },
+                    file: value.file,
+                  },
+                  captureFreeze,
+                  assertCurrent
+                );
+                assertCurrent();
               } else if (value.kind === 'capacity') {
                 if (value.action === 'reserve') {
                   reply = reservations.size;
@@ -2041,7 +2090,8 @@ async function runWorkspaceCapture(
  */
 async function captureWorkspaceBackup(
   input: CaptureInput,
-  phase?: (phase: WorkspaceCapturePhase) => void
+  phase?: (phase: WorkspaceCapturePhase) => void,
+  prepareSource?: (proof: RecoveryProof, admission: CaptureInput['admission']) => Promise<void>
 ): Promise<WorkspaceBackupCreateResult> {
   let lock: DataRootLock | undefined;
   let staging: ReturnType<typeof privateRoot> | undefined;
@@ -2568,24 +2618,30 @@ async function captureWorkspaceBackup(
       report: { ...report(manifest, manifestDigest, facts), source },
     };
     if (input.purpose === 'move' && !verifiedParent) {
-      const core = openExistingCoreDbWithIntegrityCheck(sourceRoot);
-      try {
-        prepareRecoveryAdmission(core, input.backupId, output, {
-          input: {
-            command: 'capture',
-            source: live ? { kind: 'live-workspace' } : input.source,
-            workspaceId: input.workspaceId,
-            expectedSourceDeploymentId: deploymentId,
-            bundleRoot: output,
-            backupId: input.backupId,
-            purpose: 'move',
-          },
-          manifest,
-          capture: common.report,
-          result: recoveryReport('capture', 'prepared', common.report),
-        });
-      } finally {
-        core.sqlite.close();
+      const proof: RecoveryProof = {
+        input: {
+          command: 'capture',
+          source: live ? { kind: 'live-workspace' } : input.source,
+          workspaceId: input.workspaceId,
+          expectedSourceDeploymentId: deploymentId,
+          bundleRoot: output,
+          backupId: input.backupId,
+          purpose: 'move',
+        },
+        manifest,
+        capture: common.report,
+        result: recoveryReport('capture', 'prepared', common.report),
+      };
+      if (live) {
+        if (!prepareSource) refuse('recovery-required');
+        await prepareSource(proof, input.admission);
+      } else {
+        const core = openExistingCoreDbWithIntegrityCheck(sourceRoot);
+        try {
+          prepareRecoveryAdmission(core, input.backupId, output, proof);
+        } finally {
+          core.sqlite.close();
+        }
       }
     }
     return input.purpose === 'backup'
@@ -2787,6 +2843,13 @@ export async function invokeWorkspaceRecoveryOperation<T>(operation: () => Promi
   } catch (error) {
     if (error instanceof WorkspaceRecoveryError || error instanceof WorkspaceBackupBundleError)
       throw new OperationError(error.code, error.message, 409, { cause: error });
+    if (
+      error instanceof ControlStoreWorkerError &&
+      error.domain?.operation === 'recovery-target-preparation'
+    )
+      throw new OperationError(error.domain.code, error.domain.message, error.domain.status, {
+        cause: error,
+      });
     throw error;
   }
 }
@@ -2842,6 +2905,7 @@ export function workspaceSnapshotOperationPolicy(
     dataRoot,
     store,
     mutationAdmission: workspaceMutationAdmission,
+    actor: publicOperationActor(context),
     currentAuthority,
     verification: {
       stagingParent,
@@ -2943,9 +3007,11 @@ export async function inspectWorkspaceSnapshot(
     owned.currentAuthority();
     if (
       freeze &&
-      !owned.mutationAdmission.ownsRecoveryOrigin(input.workspaceId, freeze, {
-        captureId: input.backupId,
-      })
+      !owned.mutationAdmission.ownsRecoveryOrigin(
+        input.workspaceId,
+        freeze,
+        captureRecoveryOrigin(owned.coreDb, input.workspaceId, input.backupId)
+      )
     )
       refuse('recovery-required');
   };

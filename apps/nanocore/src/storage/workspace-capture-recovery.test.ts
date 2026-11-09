@@ -97,11 +97,19 @@ describe('retained capture exclusion rejoin', () => {
     const coreDb = createTestCoreDb(dataRoot);
     handles.push(coreDb);
     const workspaceId = DEMO_WORKSPACE_ID;
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ensureLocalUser(coreDb) });
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     const db = openWorkspaceDb(dataRoot, workspaceId);
     handles.push(db);
     const mutationAdmission = new WorkspaceMutationAdmission();
-    const source = { kind: 'live-workspace' as const, dataRoot, coreDb, store, mutationAdmission };
+    const source = {
+      kind: 'live-workspace' as const,
+      dataRoot,
+      coreDb,
+      store,
+      mutationAdmission,
+      actor: { kind: 'local' as const, userId },
+    };
     const stagingParent = join(root, 'staging');
     mkdirSync(stagingParent);
     const verification = {
