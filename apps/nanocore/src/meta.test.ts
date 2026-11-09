@@ -5,6 +5,7 @@ import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { createApp as createNanoCoreApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import type { RuntimeCapabilities, RuntimeEventFamily, TurnExecutor } from './runtime/types.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -56,6 +57,7 @@ describe('nanocore metadata', () => {
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
 
     try {
+      await ensureLocalUser(coreDb);
       const store = createTestStore({ dataRoot });
       const app = createNanoCoreApp({ coreDb, store });
       const res = await app.request('/api/meta');
