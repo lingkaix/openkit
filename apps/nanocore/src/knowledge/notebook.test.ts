@@ -966,9 +966,15 @@ describe('KnowledgeNotebook history immutable inspection work', () => {
         // Engineer's performance criterion: validate each required immutable record once per call.
         // Notebook spec, Content, Revisions And History: exact metadata and tree validation remain required.
         expect(
-          commands
-            .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
-            .map((args) => args[2])
+          reads.mock.calls
+            .filter(
+              ([file, args]) =>
+                file === 'git' &&
+                Array.isArray(args) &&
+                args.includes(repositoryArgument) &&
+                args.includes('--batch')
+            )
+            .map(([, , options]) => String(options!.input).trimEnd())
             .sort()
         ).toEqual(requiredRevisions);
         expect(
@@ -1026,6 +1032,7 @@ describe('KnowledgeNotebook synchronous Page and Source inspection work', () => 
       syncBuiltinESMExports();
       let result: string | Readonly<Record<string, string>> | undefined;
       let commands: string[][] = [];
+      let batchObjects: string[] = [];
       try {
         switch (operation) {
           case 'readSourcePointers':
@@ -1056,6 +1063,16 @@ describe('KnowledgeNotebook synchronous Page and Source inspection work', () => 
             ? [args.slice(args.indexOf(repositoryArgument) + 1)]
             : []
         );
+        // Count requested object identities on the real child's stdin; batching changes process shape only.
+        batchObjects = processes.mock.calls
+          .filter(
+            ([file, args]) =>
+              file === 'git' &&
+              Array.isArray(args) &&
+              args.includes(`--git-dir=${repositoryPath}`) &&
+              args.includes('--batch')
+          )
+          .flatMap(([, , options]) => String(options!.input).trimEnd().split('\n'));
         processes.mockRestore();
         syncBuiltinESMExports();
       }
@@ -1124,14 +1141,10 @@ describe('KnowledgeNotebook synchronous Page and Source inspection work', () => 
         }
       }
       // Omitted Page bodies are not loaded by Source reads or either preparation operation.
-      expect(commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')).toHaveLength(
+      expect(batchObjects.filter((object) => object !== baseRevision)).toHaveLength(
         operation === 'readContent' ? 4 : operation === 'readSourcePointers' ? 1 : 0
       );
-      expect(
-        commands
-          .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
-          .map((args) => args[2])
-      ).toEqual([baseRevision]);
+      expect(batchObjects.filter((object) => object === baseRevision)).toEqual([baseRevision]);
       // Expected RED on the baseline: all four operations perform two real ls-tree processes.
       const trees = commands.filter((args) => args[0] === 'ls-tree');
       expect(trees).toHaveLength(1);

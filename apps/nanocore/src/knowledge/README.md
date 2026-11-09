@@ -14,6 +14,8 @@ Knowledge Manager runs have a 300-second default budget. Workspace, Server and U
 
 This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-profile validation and the immutable notebook content boundary.
 
+Synchronous Notebook inspections read one recursive tree and batch the exact commit and selected Page/Source objects through one Git child. Strict framing checks every requested identity, type, per-object byte bound and complete response count before returning content; extra or truncated output requires recovery. Omitted bodies stay unread, and batching adds no whole-Notebook limit or retained cache. This bounds child-process count independently of the selected object count (#704); the synchronous caller and final native admission contracts remain unchanged.
+
 `notebook-workspace-selection.ts` receives the actual Workspace database, private root and retained Knowledge Base from its admitted caller. It verifies immutable schema bytes and constructs a Notebook pinned to the SQL commit. Current reads, history, Source pointers, Proposal preview, indexes, retrieval and capture use that selection. Missing or unsupported SQL authority returns recovery-required; no read reseeds it. `okf.ts` also owns pure Page attribution; the maintenance wire schemas live in the lower `storage/control-store-maintenance-codecs.ts` module.
 
 ## Boundaries

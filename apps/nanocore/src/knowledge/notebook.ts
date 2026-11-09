@@ -19,6 +19,7 @@ const execFileAsync = promisify(execFile);
 const PUBLISHED_REF = 'refs/heads/published';
 const FILE_BYTES = 2 * 1024 * 1024;
 const EDITING_BYTES = 32 * 1024 * 1024;
+const GIT_OUTPUT_BYTES = EDITING_BYTES + 1024 * 1024;
 /** Exact initial reserved navigation bytes used by fresh notebooks. */
 export const DEFAULT_NOTEBOOK_INDEX = '---\nokf_version: "0.2"\n---\n# Notebook\n';
 /** The shared typed commit facts also supply the existing Audit owner's pre-publication projection. */
@@ -134,7 +135,7 @@ export class KnowledgeNotebook {
         options: {
           encoding: 'buffer' as const,
           input: input === undefined ? undefined : Buffer.from(input),
-          maxBuffer: EDITING_BYTES + 1024 * 1024,
+          maxBuffer: GIT_OUTPUT_BYTES,
           stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
           env: {
             PATH: process.env.PATH,
@@ -156,10 +157,15 @@ export class KnowledgeNotebook {
   }
 
   /** Runs synchronous publication plumbing with the shared fixed policy. */
-  private gitBytes(args: readonly string[], input?: string, author = 'OpenKit'): Buffer {
+  private gitBytes(
+    args: readonly string[],
+    input?: string,
+    author = 'OpenKit',
+    maxBuffer = GIT_OUTPUT_BYTES
+  ): Buffer {
     try {
       const command = this.gitInvocation(args, input, author);
-      return execFileSync('git', command.args, command.options);
+      return execFileSync('git', command.args, { ...command.options, maxBuffer });
     } catch {
       throw new NotebookError('recovery_required');
     }
@@ -194,12 +200,49 @@ export class KnowledgeNotebook {
     }
   }
 
-  /** Verifies selected blob identity and preserves exact UTF-8 bytes without loading unrelated pages. */
+  /** Verifies an original Source blob before applying its captured-field edit constraints. */
   private readBlob(object: string): string {
-    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
+    return this.decodeBlob(object, this.readObjectsBatch([{ id: object, type: 'blob' }])[0]!);
+  }
+
+  /** Reads exactly the requested identities in one child, with the original per-object byte bound. */
+  private readObjectsBatch(
+    objects: readonly { readonly id: string; readonly type: 'commit' | 'blob' }[]
+  ): Buffer[] {
+    if (objects.some(({ id }) => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id)))
       throw new NotebookError('recovery_required');
-    const bytes = this.gitBytes(['cat-file', 'blob', object]);
-    return this.decodeBlob(object, bytes);
+    // A batch must not turn the old per-object bound into a smaller whole-notebook limit.
+    // The extra 128 bytes cover each strict header and its terminating newline.
+    const bytes = this.gitBytes(
+      ['cat-file', '--batch'],
+      objects.map(({ id }) => `${id}\n`).join(''),
+      'OpenKit',
+      objects.length * (GIT_OUTPUT_BYTES + 128)
+    );
+    let offset = 0;
+    const result: Buffer[] = [];
+    for (const object of objects) {
+      const lineEnd = bytes.indexOf(10, offset);
+      if (lineEnd < offset || lineEnd - offset > 127) throw new NotebookError('recovery_required');
+      const header = /^([a-f0-9]{40}|[a-f0-9]{64}) (commit|blob) (0|[1-9][0-9]*)$/.exec(
+        bytes.toString('latin1', offset, lineEnd)
+      );
+      const size = header ? Number(header[3]) : NaN;
+      if (
+        header?.[1] !== object.id ||
+        header[2] !== object.type ||
+        !Number.isSafeInteger(size) ||
+        size > GIT_OUTPUT_BYTES
+      )
+        throw new NotebookError('recovery_required');
+      const start = lineEnd + 1;
+      const end = start + size;
+      if (end >= bytes.length || bytes[end] !== 10) throw new NotebookError('recovery_required');
+      result.push(bytes.subarray(start, end));
+      offset = end + 1;
+    }
+    if (offset !== bytes.length) throw new NotebookError('recovery_required');
+    return result;
   }
 
   /** Shares exact Git blob identity and strict content decoding across both read paths. */
@@ -287,21 +330,54 @@ export class KnowledgeNotebook {
   }
 
   /** Keeps one strict immutable tree within this operation; Source decoding stays at its original boundary. */
-  private inspectRevisionTree(revision: string) {
+  private inspectRevisionTree(
+    revision: string,
+    select?: (
+      entries: Readonly<Record<string, string>>,
+      tree: string
+    ) => {
+      readonly objects: readonly string[];
+      readonly missing?: boolean;
+    }
+  ) {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
-    const commit = this.git(['cat-file', 'commit', revision]);
-    const record = this.decodeCommit(revision, commit);
     const tree = this.git(['ls-tree', '-r', '-z', '--full-tree', revision]);
+    const entries = this.decodeTree(tree);
+    const selected = select?.(entries, tree) ?? { objects: [] };
+    const [commit, ...objects] = this.readObjectsBatch([
+      { id: revision, type: 'commit' },
+      ...selected.objects.map((id) => ({ id, type: 'blob' as const })),
+    ]);
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(commit);
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+    const record = this.decodeCommit(revision, text);
+    const blobs = objects.map((bytes, index) => this.decodeBlob(selected.objects[index]!, bytes));
+    if (selected.missing) throw new NotebookError('invalid_request');
     return {
       record: {
         revision,
         parentRevision: record.parentRevision,
-        entries: this.decodeTree(tree),
+        entries,
         metadata: record.metadata,
       },
       tree,
+      blobs,
     };
+  }
+
+  /** Stops at the same first absent path as the sequential reader; omitted objects are never loaded. */
+  private selectObjects(entries: Readonly<Record<string, string>>, paths: readonly string[]) {
+    const objects: string[] = [];
+    for (const path of paths) {
+      if (!entries[path]) return { objects, missing: true };
+      objects.push(entries[path]!);
+    }
+    return { objects };
   }
 
   /** Decodes the same canonical service commit metadata for both read paths. */
@@ -351,25 +427,30 @@ export class KnowledgeNotebook {
 
   /** Reads selected exact immutable page bytes; no omitted page enters the editing workspace. */
   readRevision(revision: string, paths?: readonly string[]): NotebookRevision {
-    const { entries, ...record } = this.inspectRevision(revision);
+    let selected: readonly string[] = [];
+    const {
+      record: { entries: _entries, ...record },
+      blobs,
+    } = this.inspectRevisionTree(revision, (entries) => {
+      selected = paths ?? Object.keys(entries);
+      return this.selectObjects(entries, selected);
+    });
     const files: Record<string, string> = Object.create(null);
-    for (const path of paths ?? Object.keys(entries)) {
-      const object = entries[path];
-      if (!object) throw new NotebookError('invalid_request');
-      files[path] = this.readBlob(object);
-    }
+    selected.forEach((path, index) => {
+      files[path] = blobs[index]!;
+    });
     return { ...record, files };
   }
 
   /** Reads only native Source pointer blobs from the same immutable Git tree as the pages. */
   readSourcePointers(revision: string): Readonly<Record<string, string>> {
-    const inspected = this.inspectRevisionTree(revision);
-    return Object.fromEntries(
-      Object.entries(this.sourceObjects(revision, inspected.tree)).map(([id, object]) => [
-        id,
-        this.readBlob(object),
-      ])
-    );
+    let selected: string[] = [];
+    const { blobs } = this.inspectRevisionTree(revision, (_entries, tree) => {
+      const sources = this.sourceObjects(revision, tree);
+      selected = Object.keys(sources);
+      return { objects: Object.values(sources) };
+    });
+    return Object.fromEntries(selected.map((id, index) => [id, blobs[index]!]));
   }
 
   /** Pins current validated metadata without blocking on Git subprocesses. */
@@ -474,17 +555,15 @@ export class KnowledgeNotebook {
 
   /** Reads exact path-qualified content for edit and Proposal deltas; Page projections stay separate. */
   readContent(revision: string, paths?: readonly string[]): Readonly<Record<string, string>> {
-    const inspected = this.inspectRevisionTree(revision);
-    const entries = { ...inspected.record.entries };
-    for (const [id, object] of Object.entries(this.sourceObjects(revision, inspected.tree)))
-      entries[`@sources/${id}.md`] = object;
-    return Object.fromEntries(
-      (paths ?? Object.keys(entries)).map((path) => {
-        const object = entries[path];
-        if (!object) throw new NotebookError('invalid_request');
-        return [path, this.readBlob(object)];
-      })
-    );
+    let selected: readonly string[] = [];
+    const { blobs } = this.inspectRevisionTree(revision, (pages, tree) => {
+      const entries = { ...pages };
+      for (const [id, object] of Object.entries(this.sourceObjects(revision, tree)))
+        entries[`@sources/${id}.md`] = object;
+      selected = paths ?? Object.keys(entries);
+      return this.selectObjects(entries, selected);
+    });
+    return Object.fromEntries(selected.map((path, index) => [path, blobs[index]!]));
   }
 
   /** Creates a Source-only candidate; native Source admission owns captured facts and publication. */
