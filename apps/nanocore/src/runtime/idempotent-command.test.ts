@@ -341,7 +341,7 @@ describe('workspace-transaction idempotent commands', () => {
           response_json,
           created_at,
           expires_at
-        ) VALUES ('test-owner:' || ?, 'catalog.skill-import', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
+        ) VALUES ('test-owner:' || ?, 'catalog.light-app-import', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
       );
       const getOwner = workspaceDb.sqlite.prepare(
         `SELECT response_id AS id
@@ -351,9 +351,10 @@ describe('workspace-transaction idempotent commands', () => {
 
       const scope: CommandRequestScope = { workspaceId };
       const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-      // Exercise the generic legacy receipt transaction, not the native Knowledge tuple owner.
+      // Exercise the generic Main receipt transaction with a currently Main-owned definition command.
+      // The isolated owner SQL below tests transaction completion, not definition publication.
       const common = {
-        command: 'catalog.skill-import' as const,
+        command: 'catalog.light-app-import' as const,
         inflightCommands,
         replay: () => {
           throw new Error('Unexpected command replay.');
@@ -365,6 +366,26 @@ describe('workspace-transaction idempotent commands', () => {
         workspaceDb,
         workspaceTransaction: true as const,
       };
+      const nativeExecute = vi.fn(() => ({ id: 'native_must_not_execute' }));
+      const beforeNativeRefusal = workspaceDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+        .all();
+      await expect(
+        runIdempotentCommand({
+          ...common,
+          command: 'catalog.skill-import',
+          requestId: 'native_skill_transaction_refused',
+          input: { id: 'native_must_not_execute' },
+          execute: nativeExecute,
+        })
+      ).rejects.toThrow(
+        'Native product commands must commit their whole tuple in the database worker.'
+      );
+      expect(nativeExecute).not.toHaveBeenCalled();
+      expect(
+        workspaceDb.sqlite.prepare('SELECT * FROM idempotency_requests ORDER BY request_key').all()
+      ).toEqual(beforeNativeRefusal);
+
       await expect(
         runIdempotentCommand({
           ...common,
@@ -378,7 +399,7 @@ describe('workspace-transaction idempotent commands', () => {
       ).resolves.toEqual({ id: 'owner_committed' });
       expect(getOwner.get('owner_committed')).toEqual({ id: 'owner_committed' });
       expect(
-        store.getCommandRequest('catalog.skill-import', 'request_committed', scope, workspaceDb)
+        store.getCommandRequest('catalog.light-app-import', 'request_committed', scope, workspaceDb)
       ).toMatchObject({ response: { id: 'owner_committed', kind: 'knowledge' } });
 
       const receiptWriter = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
@@ -404,7 +425,12 @@ describe('workspace-transaction idempotent commands', () => {
       expect.soft(getOwner.get('owner_rolled_back')).toBeUndefined();
       expect
         .soft(
-          store.getCommandRequest('catalog.skill-import', 'request_rolled_back', scope, workspaceDb)
+          store.getCommandRequest(
+            'catalog.light-app-import',
+            'request_rolled_back',
+            scope,
+            workspaceDb
+          )
         )
         .toBeNull();
 
@@ -430,7 +456,9 @@ describe('workspace-transaction idempotent commands', () => {
       await Promise.resolve();
       expect.soft(getOwner.get('owner_async')).toBeUndefined();
       expect
-        .soft(store.getCommandRequest('catalog.skill-import', 'request_async', scope, workspaceDb))
+        .soft(
+          store.getCommandRequest('catalog.light-app-import', 'request_async', scope, workspaceDb)
+        )
         .toBeNull();
     } finally {
       await shutdownControlStoreWorkerClient();

@@ -654,15 +654,30 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   const legacyInput = {
     workspaceId: f.workspaceId,
     requestId: randomUUID(),
-    id: 'legacy-one',
+    entryId: 'legacy-one',
     displayName: 'Unrelated Main receipt',
-    activate: false,
-    tree: tree('Unrelated Main owner'),
+    selectDefault: false,
+    definition: {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Main receipt peer',
+      purpose: 'Preserve the ordinary receipt pruning partition.',
+      references: [],
+      collections: [
+        {
+          name: 'records',
+          type: 'base',
+          description: 'Main receipt fixture.',
+          fields: [{ name: 'value', type: 'text', required: false, description: 'Exact value.' }],
+          indexes: [],
+        },
+      ],
+    },
     expectedRevision: 0,
   };
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(past);
-  const legacy = await f.call(legacyInput, 'catalog.skill-import');
+  const legacy = await f.call(legacyInput, 'catalog.light-app-import');
   expect(legacy.status, await legacy.clone().text()).toBe(201);
   f.input.expectedRevision = 1;
   const response = await f.call();
@@ -685,7 +700,7 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   expect(getCommandRequestRecordFromDb(f.db, record.key, record.expiresAt)).toBeNull();
   expect(f.records()).toEqual(before);
   // This existing legacy lookup really prunes Main's partition; it must not delete native rows.
-  expect(f.store.getCommandRequest('catalog.skill-import', randomUUID(), f.scope)).toBeNull();
+  expect(f.store.getCommandRequest('catalog.light-app-import', randomUUID(), f.scope)).toBeNull();
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toBeUndefined();
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toEqual(nativeOther);
   expect(f.record(), 'Main expiry maintenance deleted the moved Catalog receipt.').toEqual(record);
@@ -695,11 +710,11 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   vi.setSystemTime(past);
   const anotherLegacyInput = {
     ...legacyInput,
-    id: 'legacy-two',
+    entryId: 'legacy-two',
     requestId: randomUUID(),
     expectedRevision: 2,
   };
-  const anotherLegacy = await f.call(anotherLegacyInput, 'catalog.skill-import');
+  const anotherLegacy = await f.call(anotherLegacyInput, 'catalog.light-app-import');
   expect(anotherLegacy.status, await anotherLegacy.clone().text()).toBe(201);
   const mainOther = f.records().find((row) => row.requestId === anotherLegacyInput.requestId);
   expect(mainOther).toBeDefined();

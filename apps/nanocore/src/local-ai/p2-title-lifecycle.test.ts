@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import {
   createStructuredWorkerDelegationRequest,
@@ -11,6 +11,7 @@ import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { executeGoalOperation } from '../runtime/goal-owner.js';
 import { createCoordinatorTaskTool } from '../runtime/task-admission.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   abortTitleOracleThreadUpdates,
@@ -192,6 +193,35 @@ describe('local title lifecycle', () => {
       decide: () => ({ kind: 'hold' }),
     });
     open.push(installation);
+    type TitleWriteOutcome =
+      | { status: 'fulfilled'; name: string }
+      | { status: 'rejected'; error: unknown };
+    const titleWrites: {
+      args: Parameters<typeof installation.store.updateThread>;
+      sameStore: boolean;
+      outcomes: TitleWriteOutcome[];
+    }[] = [];
+    const updateThread = installation.store.updateThread;
+    const titleWrite = vi.spyOn(installation.store, 'updateThread').mockImplementation(function (
+      this: typeof installation.store,
+      ...args
+    ) {
+      const result = updateThread.apply(this, args);
+      if (args[2].name === 'Schema repair') {
+        const observed = {
+          args,
+          sameStore: this === installation.store,
+          outcomes: [] as TitleWriteOutcome[],
+        };
+        titleWrites.push(observed);
+        void result.then(
+          (thread) => observed.outcomes.push({ status: 'fulfilled', name: thread.name }),
+          (error: unknown) => observed.outcomes.push({ status: 'rejected', error })
+        );
+      }
+      return result;
+    });
+    onTestFinished(() => titleWrite.mockRestore());
     const timeline = await installation.store.createThread(
       installation.workspaceId,
       'Task proposal',
@@ -244,7 +274,29 @@ describe('local title lifecycle', () => {
       .listThreads(installation.workspaceId)
       .filter((thread) => !before.has(thread.id));
     expect(created).toHaveLength(1);
-    expect(created[0]).toMatchObject({ name: 'Schema repair', parentThreadId: timeline.id });
+    expect(created[0]).toMatchObject({ parentThreadId: timeline.id });
+    expect(titleWrites).toHaveLength(1);
+    const write = titleWrites[0]!;
+    expect(write.sameStore).toBe(true);
+    expect(write.args).toEqual([
+      installation.workspaceId,
+      created[0]!.id,
+      { name: 'Schema repair' },
+      undefined,
+      { status: 'active', name: 'Confirm the schema repair' },
+    ]);
+    expect(write.outcomes).toHaveLength(1);
+    const outcome = write.outcomes[0]!;
+    if (outcome.status === 'fulfilled') {
+      expect(outcome.name).toBe('Schema repair');
+      expect(created[0]!.name).toBe('Schema repair');
+    } else {
+      // The title owner preserves the initial name after an actual native CAS refusal.
+      expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+      expect(outcome.error).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      expect(created[0]!.name).toBe('Confirm the schema repair');
+    }
+    expect(titleCalls(installation)).toHaveLength(1);
     expect(titleHits(installation)).toHaveLength(1);
   }, 45_000);
 

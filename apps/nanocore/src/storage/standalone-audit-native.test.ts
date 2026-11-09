@@ -257,6 +257,16 @@ it.each(cases)(
 
 it('publishes the original Audit identity and timestamps without adding a receipt', async () => {
   expect(STANDALONE_AUDIT_STAGES).toEqual([
+    'catalog.skill-import.admit',
+    'catalog.skill-import',
+    'catalog.skill-select.admit',
+    'catalog.skill-select',
+    'catalog.skill-pin.admit',
+    'catalog.skill-pin',
+    'catalog.skill-remove.admit',
+    'catalog.skill-remove',
+    'catalog.skill-purge.admit',
+    'catalog.skill-purge',
     'catalog.skill-candidate-decide.admit',
     'catalog.skill-candidate-withdraw.admit',
     'catalog.skill-candidate-submit.admit',
