@@ -16,6 +16,7 @@ import {
   type ControlAdmissionResult,
   ControlAdmissionSchema,
 } from './control-store-admission-codecs.js';
+import { commandInputHash } from './control-store-input.js';
 import {
   type ControlProductOwner,
   ControlProductPreconditionError,
@@ -26,6 +27,7 @@ import {
   applyControlProducts,
   assertControlProductWriter,
   type PreparedControlEntry,
+  type prepareControlTaskSteerReceipt,
 } from './control-store-products.js';
 import {
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
@@ -101,7 +103,8 @@ export function applyControlAdmission(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   value: ControlAdmission,
-  entries: readonly PreparedControlEntry[]
+  entries: readonly PreparedControlEntry[],
+  preparedSteer?: Awaited<ReturnType<typeof prepareControlTaskSteerReceipt>>
 ): ControlAdmissionResult {
   assertControlProductWriter(sqlite);
   const input = ControlAdmissionSchema.parse(value);
@@ -132,6 +135,47 @@ export function applyControlAdmission(
     )
       throw new ControlProductPreconditionError();
     return { replayed: true, response: retained.response };
+  }
+  if (receipt.command === 'task.steer') {
+    const metadata = response.steerMetadata;
+    const item = preparedSteer?.item;
+    const row = preparedSteer?.row;
+    const current = row
+      ? (sqlite
+          .prepare(
+            "SELECT content_json AS contentJson FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+          )
+          .get(row.id) as { contentJson: string } | undefined)
+      : undefined;
+    if (
+      owner.kind !== 'workspace' ||
+      !metadata ||
+      !item ||
+      item.type !== 'user-message' ||
+      item.actor.kind !== 'user' ||
+      response.kind !== 'turn' ||
+      response.id !== metadata.turnId ||
+      item.turnId !== metadata.turnId ||
+      item.id !== metadata.inputItemId ||
+      item.threadId !== receipt.scope.threadId ||
+      item.actor.id !== receipt.scope.actorId ||
+      item.causationId !== `task.steer:${receipt.requestId}` ||
+      metadata.inputHash !== receipt.inputHash ||
+      receipt.inputHash !==
+        commandInputHash({
+          workspaceId: owner.workspaceId,
+          threadId: item.threadId,
+          turnId: item.turnId,
+          input: item.text,
+        }) ||
+      current?.contentJson !== row?.content_json ||
+      input.audit.threadId !== item.threadId ||
+      input.audit.turnId !== item.turnId ||
+      input.audit.itemId !== item.id ||
+      input.audit.actor?.kind !== 'user' ||
+      input.audit.actor.id !== item.actor.id
+    )
+      throw new ControlProductPreconditionError();
   }
   let products = input.products;
   let event = input.audit;
@@ -171,7 +215,10 @@ export function applyControlAdmission(
     event.action !== receipt.command ||
     event.requestId !== receipt.requestId ||
     event.workspaceId !== (owner.kind === 'workspace' ? owner.workspaceId : null) ||
-    event.outcome !== 'succeeded'
+    event.outcome !==
+      (receipt.command === 'task.steer' && response.steerMetadata?.disposition !== 'accepted'
+        ? 'failed'
+        : 'succeeded')
   )
     throw new ControlProductPreconditionError();
   pruneControlAdmissionReceipts(sqlite, owner, receipt.createdAt);
@@ -199,9 +246,9 @@ export function applyControlAdmission(
       receipt.inputHash,
       response.kind,
       response.id,
-      response.conversationMetadata === undefined
+      response.conversationMetadata === undefined && response.steerMetadata === undefined
         ? null
-        : JSON.stringify(response.conversationMetadata),
+        : JSON.stringify(response.conversationMetadata ?? response.steerMetadata),
       receipt.createdAt,
       receipt.expiresAt
     );

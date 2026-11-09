@@ -29,6 +29,7 @@ import { ControlPendingCommandInputSchema } from '../runtime/pending-request-cod
 import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
 import { applyControlPendingCommand } from '../runtime/pending-requests.js';
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
+import type { ControlAdmission } from './control-store-admission-codecs.js';
 import { prepareControlPendingCommands } from './control-store-pending.js';
 import {
   assertControlProductOwner,
@@ -1081,6 +1082,35 @@ function readControlItemHead(db: WorkspaceDb, item: { id: string }) {
       "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
     )
     .get(item.id) as Parameters<typeof readControlItemHistory>[3][number] | undefined;
+}
+
+/** Resolves the original admitted Item without changing a live or terminal Turn. SQL rechecks its exact head. */
+export async function prepareControlTaskSteerReceipt(
+  db: WorkspaceDb,
+  input: ControlAdmission,
+  mount: ControlProductContentMount | undefined
+) {
+  if (isMainThread || db.sqlite.inTransaction || input.receipt.command !== 'task.steer')
+    throw new ControlProductPreconditionError();
+  const metadata = input.receipt.response.steerMetadata;
+  if (!metadata) throw new ControlProductPreconditionError();
+  const head = readProduct(
+    db.sqlite,
+    { kind: 'workspace', workspaceId: db.workspaceId },
+    'turn',
+    metadata.turnId
+  );
+  const row = readControlItemHead(db, { id: metadata.inputItemId });
+  if (!head || !row || row.turn_id !== metadata.turnId) throw new ControlProductPreconditionError();
+  const [item] = await readControlItemHistory(
+    db,
+    mount,
+    StoredTurnV1Schema.parse(head.record),
+    [row],
+    false
+  );
+  if (!item) throw new ControlProductPreconditionError();
+  return { item, row };
 }
 
 /** Resolves current native heads and original Item bytes before preparation, without a Main read round trip. */

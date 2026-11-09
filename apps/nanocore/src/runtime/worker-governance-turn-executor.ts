@@ -163,6 +163,7 @@ import type {
   ExecutionStepControl,
   ExecutionStepRef,
 } from './execution-step-journal.js';
+import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -181,6 +182,8 @@ import type {
   RuntimeCapabilities,
   RuntimeEventFamily,
   RuntimeItemType,
+  TaskSteerControl,
+  TaskSteerTarget,
   TurnCommandRuntimeContext,
   TurnExecutor,
   TurnStartRuntimeContext,
@@ -3856,6 +3859,90 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     throw new Error('Attempt release remains incomplete.');
   }
 
+  /** Rechecks the exact Task worker and current Goal bounds without changing its execution authority. */
+  public async steerTurn(
+    store: FsStore,
+    target: TaskSteerTarget,
+    control: TaskSteerControl
+  ): Promise<void> {
+    if (!this.coreDb || !this.workerControlGateway || !this.backend.steerTurn)
+      throw new OperationError(
+        'steer_unsupported',
+        'The runtime has no qualified live-steer boundary.',
+        409
+      );
+    const turn = store.getTurnMetadata(target.workspaceId, target.threadId, target.turnId);
+    const session = turn.agentSessionId ? store.getAgentSession(turn.agentSessionId) : null;
+    const packageSnapshotId = session?.environmentPackageSnapshotId;
+    const snapshot = packageSnapshotId
+      ? this.workerControlGateway.getSessionSnapshot(packageSnapshotId)
+      : null;
+    const stale = () =>
+      new OperationError(
+        'steer_target_stale',
+        'The addressed Task has no exact live worker binding.',
+        409
+      );
+    if (
+      !session ||
+      !snapshot ||
+      !packageSnapshotId ||
+      turn.status !== 'running' ||
+      turn.agentId === 'goal-coordinator' ||
+      session.stale ||
+      session.status !== 'busy' ||
+      session.workspaceId !== target.workspaceId ||
+      session.threadId !== target.threadId ||
+      snapshot.workspaceId !== target.workspaceId ||
+      snapshot.threadId !== target.threadId ||
+      snapshot.turnId !== target.turnId ||
+      snapshot.agentSessionId !== turn.agentSessionId
+    )
+      throw stale();
+    const lineage = {
+      workspaceId: target.workspaceId,
+      threadId: target.threadId,
+      turnId: target.turnId,
+      agentSessionId: session.id,
+      packageSnapshotId,
+    };
+    const recheck = async () => {
+      await control.recheck();
+      const current = store.getTurnMetadata(target.workspaceId, target.threadId, target.turnId);
+      const binding = store.getAgentSession(session.id);
+      const attempt = listSchedulerExecutionAttemptsForTurn(this.coreDb!, target).filter(
+        (value) => value.phase !== 'closed'
+      );
+      if (
+        current.status !== 'running' ||
+        current.agentSessionId !== session.id ||
+        binding.stale ||
+        binding.status !== 'busy' ||
+        binding.environmentPackageSnapshotId !== packageSnapshotId ||
+        attempt.length !== 1 ||
+        attempt[0]!.phase !== 'open' ||
+        attempt[0]!.agentSessionId !== session.id ||
+        attempt[0]!.inputRef !== packageSnapshotId
+      )
+        throw stale();
+      const db = openWorkspaceDb(this.coreDb!.dataRoot, target.workspaceId);
+      try {
+        readGoalTaskPolicyContext({ coreDb: this.coreDb!, store, db, lineage });
+      } catch (cause) {
+        throw new OperationError(
+          'steer_target_stale',
+          'Current Goal Task authority is unavailable.',
+          409,
+          { cause }
+        );
+      } finally {
+        db.sqlite.close();
+      }
+    };
+    await recheck();
+    await this.backend.steerTurn(packageSnapshotId, target, { ...control, recheck });
+  }
+
   /**
    * Interrupts the exact live worker attempt through the backend's private Harness channel
    * without terminalizing it; the Turn settles through its normal closeout.
@@ -5572,6 +5659,7 @@ export async function beginWorkerTurnJournalStep(
     | 'open-session'
     | 'inspect-session'
     | 'deliver-start'
+    | 'deliver-steer'
     | 'collect'
     | 'cancel'
     | 'inspect-cleanup'

@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
 import {
   isProtectedNativeEnvironmentName,
@@ -362,6 +363,7 @@ class CodexResidentSession implements WorkerResidentSession {
   private stopInFlight: Promise<boolean> | null = null;
   private unusable = false;
   private active = false;
+  private steering = false;
   /** Reset at admission and sampled only when this Turn's native terminal is correlated. */
   private interruptRequested = false;
   /** Shared observer for native facts unavailable to the Harness. */
@@ -699,7 +701,7 @@ class CodexResidentSession implements WorkerResidentSession {
       throw new Error('Codex rejected a changed admitted route set.');
     if (input.runtimeProvenance)
       throw new Error('Codex App Server provenance is not implemented for this pin.');
-    if (this.unusable || this.phase !== 'running' || this.active) {
+    if (this.unusable || this.phase !== 'running' || this.active || this.steering) {
       throw new Error('Codex binding cannot accept a Turn.');
     }
     this.reasoningEffortDelivery =
@@ -788,6 +790,62 @@ class CodexResidentSession implements WorkerResidentSession {
       const settled = this.finishTurn(turnId, status, started.turn, capture, input);
       return {
         settled,
+        steer: async (
+          instruction,
+          deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeRequestMs)
+        ) => {
+          if (
+            this.currentTurnId !== turnId ||
+            !this.active ||
+            this.terminalSeen ||
+            this.interruptRequested ||
+            this.closing ||
+            this.unusable ||
+            this.phase !== 'running'
+          )
+            return { disposition: 'refused', reasonCode: 'stale' };
+          if (this.steering) return { disposition: 'refused', reasonCode: 'busy' };
+          if (
+            !instruction.input.trim() ||
+            Buffer.byteLength(instruction.input) > 16 * 1024 ||
+            createHash('sha256').update(instruction.input).digest('hex') !== instruction.inputDigest
+          )
+            return { disposition: 'refused', reasonCode: 'unsupported' };
+          this.steering = true;
+          try {
+            // expectedTurnId is the native compare-and-admit guard, not a lookup hint. Never resend this call.
+            const response = await this.rpc.request(
+              'turn/steer',
+              {
+                threadId,
+                expectedTurnId: turnId,
+                clientUserMessageId: instruction.inputItemId,
+                input: [{ type: 'text', text: instruction.input }],
+              },
+              deadline.workRemainingMs(
+                this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
+              )
+            );
+            if (
+              !response ||
+              typeof response !== 'object' ||
+              Array.isArray(response) ||
+              (response as { turnId?: unknown }).turnId !== turnId
+            )
+              throw new Error('Unproved native steer response.');
+            return {
+              disposition: 'accepted',
+              inputItemId: instruction.inputItemId,
+              inputDigest: instruction.inputDigest,
+            };
+          } catch {
+            // The native effect may exist. Fence this binding so no new input can inherit uncertainty.
+            this.unusable = true;
+            return { disposition: 'unknown', reasonCode: 'outcome_unknown' };
+          } finally {
+            this.steering = false;
+          }
+        },
         interrupt: async (
           deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs, this.stopGraceMs * 2)
         ) => {

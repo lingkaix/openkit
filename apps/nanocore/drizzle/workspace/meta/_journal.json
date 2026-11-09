@@ -162,6 +162,13 @@
       "when": 1794161400000,
       "tag": "0022_thread_dashboard",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1794165000000,
+      "tag": "0023_task_steer",
+      "breakpoints": true
     }
   ]
 }

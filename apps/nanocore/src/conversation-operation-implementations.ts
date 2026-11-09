@@ -11,6 +11,7 @@ import { type FamilyImplementations, publicOperationActor } from './operation-co
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
+import { steerTask } from './runtime/task-steer.js';
 /** Joins conversation, Task and attention definitions to their existing owners without transport context. */
 export function createTaskConversationOperationImplementations(
   dependencies: Pick<
@@ -21,6 +22,8 @@ export function createTaskConversationOperationImplementations(
     | 'runtimeConfigManager'
     | 'repositoryWorkspaceDb'
     | 'taskStart'
+    | 'turnExecutor'
+    | 'inflightCommands'
   >
 ) {
   const store = dependencies.store!;
@@ -85,6 +88,23 @@ export function createTaskConversationOperationImplementations(
           error instanceof TurnStartValidationError ||
           error instanceof IdempotencyKeyConflictError
         )
+          throw new OperationError(error.code, error.message, error.status, { cause: error });
+        throw error;
+      }
+    },
+    'task.steer': async (input, context) => {
+      try {
+        return await steerTask(
+          {
+            store,
+            turnExecutor: dependencies.turnExecutor,
+            inflightCommands: dependencies.inflightCommands!,
+          },
+          input,
+          context
+        );
+      } catch (error) {
+        if (error instanceof IdempotencyKeyConflictError)
           throw new OperationError(error.code, error.message, error.status, { cause: error });
         throw error;
       }

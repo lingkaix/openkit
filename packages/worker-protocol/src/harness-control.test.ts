@@ -68,11 +68,12 @@ describe('private Harness command bodies', () => {
     ).toBe(false);
   });
 
-  it('has exactly the six fixed operations', () => {
+  it('has exactly the seven fixed operations', () => {
     expect(HarnessOperationSchema.options).toEqual([
       'session.open',
       'session.inspect',
       'turn.start',
+      'turn.steer',
       'turn.interrupt',
       'session.close',
       'harness.drain',
@@ -575,5 +576,41 @@ describe('Harness descriptive diagnostics', () => {
         explanation: { ...core.explanation, httpStatus: null },
       }).success
     ).toBe(false);
+  });
+});
+
+describe('private live-steer carriage', () => {
+  it('queues references only and materializes bounded exact user text on the live exchange', () => {
+    expect(HarnessOperationSchema.safeParse('turn.steer').success).toBe(true);
+    const queued = {
+      agentSessionId: turnStart.agentSessionId,
+      agentSessionRuntimeBindingId: turnStart.agentSessionRuntimeBindingId,
+      workspaceId: turnStart.workspaceId,
+      threadId: turnStart.threadId,
+      turnId: turnStart.turnId,
+      leaseId: turnStart.leaseId,
+      packageSnapshotId: turnStart.packageSnapshotId,
+      turnSequence: turnStart.turnSequence,
+      inputItemId: 'it_00000000-0000-7000-8000-000000000801',
+      inputDigest: digest,
+    };
+    const queuedSchema = (
+      HarnessQueuedCommandBodySchemas as Record<string, import('zod').z.ZodType>
+    )['turn.steer']!;
+    const wireSchema = (HarnessCommandBodySchemas as Record<string, import('zod').z.ZodType>)[
+      'turn.steer'
+    ]!;
+    expect(queuedSchema.parse(queued)).toEqual(queued);
+    expect(queuedSchema.safeParse({ ...queued, input: 'private text' }).success).toBe(false);
+    expect(wireSchema.safeParse(queued).success).toBe(false);
+    expect(wireSchema.parse({ ...queued, input: '  exact text\n' })).toEqual({
+      ...queued,
+      input: '  exact text\n',
+    });
+    expect(wireSchema.safeParse({ ...queued, input: 'é'.repeat(8193) }).success).toBe(false);
+    expect(wireSchema.safeParse({ ...queued, input: '  ' }).success).toBe(false);
+    expect(wireSchema.safeParse({ ...queued, input: 'text', modelId: 'authority' }).success).toBe(
+      false
+    );
   });
 });

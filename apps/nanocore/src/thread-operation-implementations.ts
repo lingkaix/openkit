@@ -107,6 +107,7 @@ export function createThreadOperationImplementations(
         return readThreadTimeline({
           input,
           store: dependencies.store!,
+          inflightCommands: dependencies.inflightCommands,
           coreDb: dependencies.coreDb,
           repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb,
           actor: publicOperationActor(context),

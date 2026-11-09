@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { rmdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
@@ -144,6 +145,7 @@ export class PiRuntimeHost {
   #session: AgentSession | null = null;
   #state: HostState = 'unopened';
   #turn: ActiveTurn | null = null;
+  #steering = false;
 
   public constructor(io: PiRuntimeHostIo) {
     this.#io = io;
@@ -210,6 +212,8 @@ export class PiRuntimeHost {
         return this.#configure(request.id, request.model);
       case 'turn':
         return this.#runTurn(request.id, request.turnId, request.prompt, request.reasoningEffort);
+      case 'steer':
+        return this.#steer(request);
       case 'interrupt':
         return this.#interrupt(request.id, request.turnId);
       case 'close':
@@ -322,8 +326,8 @@ export class PiRuntimeHost {
 
   async #configure(id: number, model: PiModelDescriptor): Promise<void> {
     const binding = this.#binding;
-    if (this.#state === 'active') {
-      this.#fail(id, 'busy', 'A Turn is active.');
+    if (this.#state === 'active' || this.#steering) {
+      this.#fail(id, 'busy', 'A native operation is active.');
       return;
     }
     if (!binding || this.#state !== 'open') {
@@ -346,8 +350,8 @@ export class PiRuntimeHost {
     effort?: ReasoningEffort
   ): Promise<void> {
     const binding = this.#binding;
-    if (this.#state === 'active') {
-      this.#fail(id, 'busy', 'A Turn is active.');
+    if (this.#state === 'active' || this.#steering) {
+      this.#fail(id, 'busy', 'A native operation is active.');
       return;
     }
     if (!binding || this.#state !== 'open') {
@@ -442,6 +446,9 @@ export class PiRuntimeHost {
       outcome = { reason: 'pi-identity-failed', status: 'failed' };
       turn.failure = 'pi-identity-failed';
     }
+    // Native abort does not clear Pi 1.4's input queues. They belong to this exact work,
+    // and must never become executable by a successor prompt or retained-handle resume.
+    session?.clearQueue();
     this.#turn = null;
     // A new conversation is reusable only after one completed Turn proved its handle. Any other
     // first result, and any identity or setup failure, fences the binding for exact close.
@@ -460,6 +467,78 @@ export class PiRuntimeHost {
       turnId,
     });
     turn.resolve(outcome);
+  }
+
+  /** Maps one exact active-work command to the resident SDK, without a host input queue. */
+  async #steer(request: Extract<HostRequest, { op: 'steer' }>): Promise<void> {
+    const { id, turnId, inputItemId, inputDigest, input } = request;
+    const respond = (disposition: 'accepted' | 'refused' | 'unknown', reasonCode?: string) =>
+      this.#respond(id, {
+        disposition,
+        inputItemId,
+        inputDigest,
+        turnId,
+        ...(reasonCode ? { reasonCode } : {}),
+      });
+    const turn = this.#turn;
+    const session = this.#session;
+    if (
+      !turn ||
+      turn.turnId !== turnId ||
+      this.#state !== 'active' ||
+      turn.interrupted ||
+      turn.failure ||
+      turn.settingUp ||
+      !session?.isStreaming
+    ) {
+      respond('refused', 'stale');
+      return;
+    }
+    if (this.#steering) {
+      respond('refused', 'busy');
+      return;
+    }
+    if (createHash('sha256').update(input, 'utf8').digest('hex') !== inputDigest) {
+      respond('refused', 'unsupported');
+      return;
+    }
+    this.#steering = true;
+    try {
+      const admission = await session.steer(input);
+      if (admission === 'handled') {
+        respond('refused', 'unsupported');
+      } else if (
+        this.#turn === turn &&
+        this.#state === 'active' &&
+        !turn.interrupted &&
+        !turn.failure &&
+        session.isStreaming
+      ) {
+        // Pi's native queue was admitted while the same prompt invocation still owns work.
+        // Qualification exercises its real processing boundary, not just this acknowledgement.
+        respond('accepted');
+      } else {
+        // An asynchronous Extension can return after abort or natural settlement. The queue
+        // cannot be attributed to live work then. Clear through Pi's native API and fence.
+        this.#fenceSteer();
+        session.clearQueue();
+        respond('unknown', 'native-outcome-unknown');
+      }
+    } catch {
+      session.clearQueue();
+      this.#fenceSteer();
+      respond('unknown', 'native-outcome-unknown');
+    } finally {
+      // Also removes a late hook's enqueue after the terminal path already cleared the queue.
+      // New Turns are refused while this one bounded native control call remains unsettled.
+      if (this.#turn !== turn || turn.interrupted || turn.failure) session.clearQueue();
+      this.#steering = false;
+    }
+  }
+
+  /** Reads state after an asynchronous native hook, preserving a concurrent close. */
+  #fenceSteer(): void {
+    if (this.#state !== 'closing' && this.#state !== 'closed') this.#state = 'failed';
   }
 
   async #interrupt(id: number, turnId: string): Promise<void> {
@@ -498,6 +577,7 @@ export class PiRuntimeHost {
       return;
     }
     await this.#session?.abort().catch(() => undefined);
+    this.#session?.clearQueue();
   }
 
   /** Interrupts any Turn, closes MCP, and disposes the SDK session. */

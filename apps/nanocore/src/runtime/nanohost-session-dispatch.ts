@@ -503,7 +503,7 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   readonly harnessCommandDispatched?:
     | ((
         command: NanoHostHarnessCommand
-      ) => NanoHostHarnessCommand | Promise<NanoHostHarnessCommand>)
+      ) => NanoHostHarnessCommand | null | Promise<NanoHostHarnessCommand | null>)
     | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
   readonly harnessResultSettled?:
@@ -2144,7 +2144,13 @@ export function registerNanoHostSessionSemanticRoutes(
             if (!input.harnessCommandDispatched)
               throw new Error('NanoHost Harness native delivery admission is unavailable.');
             // Repeated carriage uses the same exact invocation and cannot renew its allowance.
-            command = await input.harnessCommandDispatched(command);
+            const selectedCommand = command;
+            try {
+              command = await input.harnessCommandDispatched(selectedCommand);
+            } catch (error) {
+              if (selectedCommand.operation === 'turn.steer') await failDelivery(selectedCommand);
+              throw error;
+            }
           }
           const boundAt = performance.now();
           if (!command) return context.body(null, 204);

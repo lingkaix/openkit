@@ -7,6 +7,7 @@ const operation = z.enum([
   'session.open',
   'session.inspect',
   'turn.start',
+  'turn.steer',
   'turn.interrupt',
   'session.close',
   'harness.drain',

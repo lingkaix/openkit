@@ -11388,6 +11388,66 @@
         }
       }
     },
+    "/api/app/operations/task.steer": {
+      "post": {
+        "operationId": "task.steer",
+        "tags": [
+          "task"
+        ],
+        "summary": "Submit text for native processing during one exact running Task Turn.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/task.steer.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Submit text for native processing during one exact running Task Turn.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/task.steer.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/task.start": {
       "post": {
         "operationId": "task.start",
@@ -120766,6 +120826,68 @@
         ],
         "additionalProperties": false
       },
+      "task.steer.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "input": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "turnId",
+          "input"
+        ],
+        "additionalProperties": false
+      },
+      "task.steer.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "inputItemId": {
+            "type": "string",
+            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "delivery": {
+            "type": "string",
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "turnId",
+          "inputItemId",
+          "delivery"
+        ],
+        "additionalProperties": false
+      },
       "task.start.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -177128,5 +177250,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8f7656338d454d9f07620231d6178adeb7c6d136abde5e6e2be6d972e1dbb2b4"
+  "x-openkit-source-digest": "sha256:c7c1c9410751fb220a28bf8d6da91a375d04caee727fca3d96a794ad796a12c1"
 }

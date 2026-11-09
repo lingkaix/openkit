@@ -2177,6 +2177,175 @@ it(
 
 describe('Pi resident host', () => {
   it(
+    'live steer: a lost real accepted response stays unknown, is never resent, and preserves interrupt delivery',
+    async () => {
+      const f = await fixture((_request, n) =>
+        n === 2 ? { hang: true } : { text: `answer-${n}` }
+      );
+      f.capability.bound = true;
+      const session = await f.open();
+      await (await session.startTurn(turnInput(f.dirs))).settled;
+      const active = await session.startTurn(
+        turnInput(f.dirs, { turnId: allocateEntityId('tu'), prompt: 'held work' })
+      );
+      await waitFor(() => f.inference.requests.length === 2);
+      const channel = spawnControl.children[0]!.stdio[3] as Duplex;
+      const emit = channel.emit.bind(channel);
+      let nativeAcceptances = 0;
+      const reader = createPiLineReader(
+        (line) => {
+          const frame = JSON.parse(line);
+          if (frame.ok === true && frame.result?.disposition === 'accepted') {
+            nativeAcceptances += 1;
+            return;
+          }
+          emit('data', Buffer.from(`${line}\n`));
+        },
+        () => {
+          throw new Error('Native channel frame must be valid.');
+        }
+      );
+      vi.spyOn(channel, 'emit').mockImplementation((event, ...args) => {
+        if (event === 'data') {
+          reader(Buffer.from(args[0]));
+          return true;
+        }
+        return emit(event, ...args);
+      });
+      const writes = vi.spyOn(channel, 'write');
+      const instruction = {
+        input: 'lost accepted input',
+        inputItemId: allocateEntityId('it'),
+        inputDigest: digestOf('lost accepted input'),
+      };
+      expect(await active.steer!(instruction, new LifecycleDeadline(150))).toEqual({
+        disposition: 'unknown',
+        reasonCode: 'outcome_unknown',
+      });
+      expect(nativeAcceptances).toBe(1);
+      expect(await active.steer!(instruction)).toEqual({
+        disposition: 'refused',
+        reasonCode: 'stale',
+      });
+      await expect(
+        session.startTurn(turnInput(f.dirs, { turnId: allocateEntityId('tu') }))
+      ).rejects.toThrow();
+      expect(
+        writes.mock.calls.filter(([line]) => JSON.parse(String(line)).op === 'steer')
+      ).toHaveLength(1);
+      await active.interrupt(new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs));
+      expect((await active.settled).status).toBe('interrupted');
+      await session.close();
+      expect(session.nativeEvidence?.().processExited).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'live steer: a stopped real host settles within the control deadline and native interrupt still stops work',
+    async () => {
+      const f = await fixture((_request, n) =>
+        n === 2 ? { hang: true } : { text: `answer-${n}` }
+      );
+      f.capability.bound = true;
+      const session = await f.open();
+      await (await session.startTurn(turnInput(f.dirs))).settled;
+      const active = await session.startTurn(
+        turnInput(f.dirs, { turnId: allocateEntityId('tu'), prompt: 'held work' })
+      );
+      await waitFor(() => f.inference.requests.length === 2);
+      const child = spawnControl.children[0]!;
+      const instruction = {
+        input: 'slow native input',
+        inputItemId: allocateEntityId('it'),
+        inputDigest: digestOf('slow native input'),
+      };
+      child.kill('SIGSTOP');
+      try {
+        const before = performance.now();
+        expect(await active.steer!(instruction, new LifecycleDeadline(150))).toEqual({
+          disposition: 'unknown',
+          reasonCode: 'outcome_unknown',
+        });
+        expect(performance.now() - before).toBeLessThan(2_000);
+        await expect(
+          session.startTurn(turnInput(f.dirs, { turnId: allocateEntityId('tu') }))
+        ).rejects.toThrow();
+      } finally {
+        child.kill('SIGCONT');
+      }
+      const stopping = performance.now();
+      await active.interrupt(new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs));
+      expect(performance.now() - stopping).toBeLessThan(LIFECYCLE_DEFAULTS.nativeStopMs);
+      expect((await active.settled).status).toBe('interrupted');
+      await session.close();
+      expect(session.nativeEvidence?.().processExited).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'live steer: correlates the real host response and refuses old work before successor and exact resume',
+    async () => {
+      const f = await fixture((_request, n) =>
+        n === 2 ? { hang: true } : { text: `answer-${n}` }
+      );
+      f.capability.bound = true;
+      const session = await f.open();
+      await (await session.startTurn(turnInput(f.dirs))).settled;
+      const active = await session.startTurn(
+        turnInput(f.dirs, { turnId: allocateEntityId('tu'), prompt: 'held work' })
+      );
+      await waitFor(() => f.inference.requests.length === 2);
+      const instruction = {
+        input: 'bounded live instruction',
+        inputItemId: allocateEntityId('it'),
+        inputDigest: digestOf('bounded live instruction'),
+      };
+      expect(active.steer).toBeTypeOf('function');
+      expect(await active.steer!(instruction)).toEqual({
+        disposition: 'accepted',
+        inputItemId: instruction.inputItemId,
+        inputDigest: instruction.inputDigest,
+      });
+      await active.interrupt();
+      expect((await active.settled).status).toBe('interrupted');
+      expect(await active.steer!(instruction)).toEqual({
+        disposition: 'refused',
+        reasonCode: 'stale',
+      });
+      expect(
+        (
+          await (
+            await session.startTurn(
+              turnInput(f.dirs, { turnId: allocateEntityId('tu'), prompt: 'fresh successor' })
+            )
+          ).settled
+        ).status
+      ).toBe('completed');
+      expect(f.inference.requests).toHaveLength(3);
+      expect(requestTexts(f.inference.requests[2]!).join('\n')).not.toContain(instruction.input);
+      const handle = await session.nativeHandle();
+      expect(handle.state).toBe('ready');
+      if (handle.state !== 'ready') throw new Error('Expected exact native handle.');
+      await session.close();
+      const resumed = await f.open(handle.reference);
+      expect(
+        (
+          await (
+            await resumed.startTurn(
+              turnInput(f.dirs, { turnId: allocateEntityId('tu'), prompt: 'fresh resume' })
+            )
+          ).settled
+        ).status
+      ).toBe('completed');
+      expect(f.inference.requests).toHaveLength(4);
+      expect(requestTexts(f.inference.requests[3]!).join('\n')).not.toContain(instruction.input);
+    },
+    TIMEOUT
+  );
+
+  it(
     'keeps bounded redacted log pipes within each addressed resident Turn',
     async () => {
       const f = await fixture((_request, n) => ({ text: `answer-${n}` }));

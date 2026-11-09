@@ -101,6 +101,21 @@ export const HostRequestSchema = z.discriminatedUnion('op', [
       .refine((value) => Buffer.byteLength(value, 'utf8') <= PI_PROMPT_MAX_BYTES),
     turnId,
   }),
+  z.strictObject({
+    id: requestId,
+    op: z.literal('steer'),
+    turnId,
+    inputItemId: z.string().min(1).max(256),
+    inputDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    input: z
+      .string()
+      .refine(
+        (value) =>
+          value.trim().length > 0 &&
+          Buffer.byteLength(value, 'utf8') <= 16 * 1024 &&
+          Buffer.from(value, 'utf8').toString('utf8') === value
+      ),
+  }),
   z.strictObject({ id: requestId, op: z.literal('interrupt'), turnId }),
   z.strictObject({ id: requestId, op: z.literal('close') }),
 ]);

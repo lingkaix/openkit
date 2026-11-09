@@ -2,6 +2,7 @@ import {
   AgentSessionIdSchema,
   GitFailureExplanationReaderSchema,
   GitFailureExplanationSchema,
+  ItemIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
@@ -67,11 +68,12 @@ export const WorkerStartupFailureSchema = z
 /** Closed startup failure metadata; arbitrary exception text is never transport data. */
 export type WorkerStartupFailure = z.infer<typeof WorkerStartupFailureSchema>;
 
-/** The six fixed private Harness operation literals. */
+/** The seven fixed private Harness operation literals. */
 export const HarnessOperationSchema = z.enum([
   'session.open',
   'session.inspect',
   'turn.start',
+  'turn.steer',
   'turn.interrupt',
   'session.close',
   'harness.drain',
@@ -177,6 +179,36 @@ const HarnessTurnStartBodyCoreSchema = HarnessTurnStartQueuedBodyCoreSchema.exte
     { message: 'Turn route tokens must be distinct.' }
   );
 
+/** Reference-only retained instruction; text is materialized from the original Item at dispatch. */
+export const HarnessTurnSteerQueuedBodySchema = z
+  .object({
+    ...AgentSessionSelectorShape,
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    leaseId: HarnessIdentitySchema,
+    packageSnapshotId: HarnessIdentitySchema,
+    turnSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    inputItemId: ItemIdSchema,
+    inputDigest: HarnessSha256HexSchema,
+  })
+  .strict();
+
+/** Bounded typed user text for the authenticated downward exchange. */
+export const HarnessTurnSteerBodySchema = HarnessTurnSteerQueuedBodySchema.extend({
+  input: z
+    .string()
+    .refine(
+      (value) =>
+        value.trim().length > 0 &&
+        Buffer.byteLength(value, 'utf8') <= 16 * 1024 &&
+        Buffer.from(value, 'utf8').toString('utf8') === value
+    ),
+}).strict();
+
+/** Exact private live-steer wire body. */
+export type HarnessTurnSteerBody = z.infer<typeof HarnessTurnSteerBodySchema>;
+
 /** Exact `session.inspect` and `session.close` body. */
 const HarnessSessionSelectorBodyCoreSchema = z.object(AgentSessionSelectorShape).strict();
 
@@ -225,6 +257,7 @@ export const HarnessCommandBodySchemas = {
   'session.open': HarnessSessionOpenBodySchema,
   'turn.interrupt': HarnessTurnInterruptBodySchema,
   'turn.start': HarnessTurnStartBodySchema,
+  'turn.steer': HarnessTurnSteerBodySchema,
 } as const satisfies Record<HarnessOperation, z.ZodType>;
 
 /** Closed queued command-body schema for each operation; secrets are absent until dispatch. */
@@ -232,6 +265,7 @@ export const HarnessQueuedCommandBodySchemas = {
   ...HarnessCommandBodySchemas,
   'session.open': HarnessSessionOpenQueuedBodySchema,
   'turn.start': HarnessTurnStartQueuedBodySchema,
+  'turn.steer': HarnessTurnSteerQueuedBodySchema,
 } as const satisfies Record<HarnessOperation, z.ZodType>;
 
 /** Exact private command envelope returned by the pull route. */
@@ -313,6 +347,14 @@ export const WorkspaceGitBaselineSchema = z
 
 /** Closed success-body schema for each operation. */
 export const HarnessSuccessBodySchemas = {
+  'turn.steer': z
+    .object({
+      state: z.literal('accepted'),
+      turnId: TurnIdSchema,
+      inputItemId: ItemIdSchema,
+      inputDigest: HarnessSha256HexSchema,
+    })
+    .strict(),
   'harness.drain': z
     .object({
       activeTurns: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -426,6 +468,7 @@ const HarnessSuccessBodyReaderSchemas = {
     .strip(),
   'turn.interrupt': HarnessSuccessBodySchemas['turn.interrupt'].strip(),
   'turn.start': HarnessSuccessBodySchemas['turn.start'].strip(),
+  'turn.steer': HarnessSuccessBodySchemas['turn.steer'].strip(),
 } as const;
 
 /**

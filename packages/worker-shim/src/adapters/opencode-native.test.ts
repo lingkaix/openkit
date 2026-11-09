@@ -147,6 +147,43 @@ async function fixture(
   return { session, inference, capability, turn };
 }
 
+it('live steer qualification: native idle steering can start new work and therefore stays unsupported', async () => {
+  type Client = import('@opencode/client').OpenCodeClient;
+  let client!: Client;
+  const adapter = createOpenCodeAdapter({
+    async loadClient() {
+      const actual = await import('@opencode/client');
+      return {
+        OpenCode: {
+          make(options) {
+            client = actual.OpenCode.make(options);
+            return client;
+          },
+        },
+      };
+    },
+  });
+  const f = await fixture(adapter);
+  const original = await f.session.startTurn(f.turn());
+  expect((await original.settled).status).toBe('completed');
+  expect(original.steer).toBeUndefined();
+  const rows = await client.session.list({});
+  expect(rows.data).toHaveLength(1);
+  const sessionID = rows.data[0]!.id;
+  expect((await client.session.active())[sessionID]).toBeUndefined();
+  // This is a native-pin probe, not a product dispatch. There is no expected execution field
+  // in 2.2.5's SessionPromptInput. Delivery=steer must not be mistaken for a running-work guard.
+  const input = 'idle steering must not become another OpenKit Turn';
+  const before = f.inference.requests.length;
+  const accepted = await client.session.prompt({ sessionID, text: input, delivery: 'steer' });
+  expect(accepted).toMatchObject({ type: 'user', delivery: 'steer', sessionID });
+  expect(accepted.id).not.toBe('');
+  await vi.waitFor(() => expect(f.inference.requests.length).toBeGreaterThan(before), {
+    timeout: 15_000,
+  });
+  expect(requestTexts(f.inference.requests[before]!).join('\n')).toContain(input);
+}, 30_000);
+
 it.each([false, true])(
   'loads native home and Workspace resources beside managed supply=%s',
   async (managed) => {

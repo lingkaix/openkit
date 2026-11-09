@@ -17,9 +17,11 @@ import {
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import { createTaskConversationOperationImplementations } from '../conversation-operation-implementations.js';
 import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import { createOperationEngine } from '../operation-invocation.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
@@ -168,6 +170,7 @@ it.each([
             ? { requiredCapabilities: ['trusted-worker-inference-relay'] }
             : {}
         ).manifest;
+        if (outcome === 'interrupted') manifest.runtime.version = '0.166.0';
         admitTestNativeEnvironment(coreDb, manifest);
         await recordTestNativeRuntimeTarget(coreDb);
         const snapshot = createInMemoryRuntimeConfigSnapshot({
@@ -428,6 +431,84 @@ it.each([
             })
           ).toContainEqual(expect.objectContaining({ phase: 'open', disposition: 'accepted' }));
         });
+        // The same real Goal-linked Task and admission owners compose public live input.
+        const native = interruptedNative!;
+        const admission = new WorkspaceMutationAdmission();
+        const steerDependencies = {
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          inflightCommands: new WeakMap(),
+          workspaceMutationAdmission: admission,
+          repositoryWorkspaceDb: () => db,
+        };
+        const operations = createTaskConversationOperationImplementations(steerDependencies);
+        const invoke = createOperationEngine(
+          { 'task.steer': operations['task.steer'] },
+          steerDependencies
+        );
+        await executeGoalOperation(
+          'goal.card.edit',
+          {
+            ...scope,
+            cardId: card.cardId,
+            requestId: randomUUID(),
+            expectedRevision: card.revision,
+            description: 'Review the schema with clearer notes',
+            priority: card.priority,
+          },
+          human,
+          store,
+          db,
+          services
+        );
+        expect(native.steerCalls).toHaveLength(0);
+        const beforeSteer = readGoalView(store, db, goal.goalId);
+        const steer = {
+          workspaceId: worker.workspaceId,
+          threadId: worker.threadId,
+          turnId: worker.reservedTurnId,
+          requestId: randomUUID(),
+          input: 'Keep the current approved review scope.',
+        };
+        expect(await invoke('task.steer', steer, { kind: 'public', actor })).toMatchObject({
+          turnId: worker.reservedTurnId,
+          delivery: 'accepted',
+        });
+        expect(native.steerCalls).toHaveLength(1);
+        expect(readGoalView(store, db, goal.goalId)).toEqual(beforeSteer);
+        await expect(
+          invoke(
+            'task.steer',
+            { ...steer, threadId: goal.threadId, turnId: coordinator.id, requestId: randomUUID() },
+            { kind: 'public', actor }
+          )
+        ).rejects.toMatchObject({ code: 'steer_target_stale' });
+        const currentCard = readGoalView(store, db, goal.goalId).cards[0]!;
+        await executeGoalOperation(
+          'goal.card.cancel',
+          {
+            ...scope,
+            cardId: card.cardId,
+            requestId: randomUUID(),
+            expectedRevision: currentCard.revision,
+            reason: 'Cancel the exact linked work',
+          },
+          human,
+          store,
+          db,
+          services
+        );
+        expect(store.getTurnById(worker.reservedTurnId).status).toBe('running');
+        await expect(
+          invoke('task.steer', { ...steer, requestId: randomUUID() }, { kind: 'public', actor })
+        ).rejects.toMatchObject({ code: 'steer_target_stale' });
+        expect(native.steerCalls).toHaveLength(1);
+        expect(
+          store
+            .getTurnById(worker.reservedTurnId)
+            .items.filter((item) => item.causationId?.startsWith('task.steer:'))
+        ).toHaveLength(1);
         await interruptedNative!.executor.interruptTurn(store, worker.reservedTurnId, {
           requestId: worker.requestId,
         });

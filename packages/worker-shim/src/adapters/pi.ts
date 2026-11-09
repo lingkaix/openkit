@@ -13,6 +13,8 @@ import type {
   WorkerResidentAdapter,
   WorkerResidentOpenInput,
   WorkerResidentSession,
+  WorkerResidentSteerInput,
+  WorkerResidentSteerResult,
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
@@ -296,6 +298,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   readonly #agentDir: string;
   #boundCwd: string | null = null;
   #busy = false;
+  #steering = false;
   #cachedHandle: string | null = null;
   #channel: Duplex;
   #child: ChildProcess;
@@ -618,7 +621,8 @@ export class PiResidentBinding implements WorkerResidentSession {
     if (this.#fenced) {
       throw new PiAdapterError('Pi conversation is not reusable until a completed first Turn.');
     }
-    if (this.#busy) throw new PiAdapterError('A Pi Turn is already active.');
+    if (this.#busy || this.#steering)
+      throw new PiAdapterError('A Pi native operation is already active.');
     this.#busy = true;
     this.#stdoutChunks.length = 0;
     this.#stdoutBytes = 0;
@@ -699,6 +703,7 @@ export class PiResidentBinding implements WorkerResidentSession {
         );
       }
       return {
+        steer: (instruction, deadline) => this.#steer(active, instruction, deadline),
         interrupt: (deadline) => this.#interrupt(active, deadline),
         settled: active.settled,
       };
@@ -1053,6 +1058,68 @@ export class PiResidentBinding implements WorkerResidentSession {
   async #inspectionFailed(): Promise<void> {
     this.#fenced = true;
     if (this.#turn) await this.#stopActive('pi-identity-failed');
+  }
+
+  /** Calls the qualified resident host once; uncertain delivery fences reuse, not native interrupt. */
+  async #steer(
+    active: ActiveTurn,
+    instruction: WorkerResidentSteerInput,
+    deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeRequestMs)
+  ): Promise<WorkerResidentSteerResult> {
+    if (
+      this.#turn !== active ||
+      active.done ||
+      active.violated ||
+      active.nativeSettlementProved ||
+      active.interruptPromise ||
+      this.#closing ||
+      this.#fenced ||
+      this.#lost ||
+      this.#exitSeen
+    )
+      return { disposition: 'refused', reasonCode: 'stale' };
+    if (this.#steering) return { disposition: 'refused', reasonCode: 'busy' };
+    if (
+      !instruction.input.trim() ||
+      Buffer.byteLength(instruction.input, 'utf8') > 16 * 1024 ||
+      createHash('sha256').update(instruction.input, 'utf8').digest('hex') !==
+        instruction.inputDigest
+    )
+      return { disposition: 'refused', reasonCode: 'unsupported' };
+    this.#steering = true;
+    try {
+      const response = await this.#request(
+        { op: 'steer', turnId: active.turnId, ...instruction },
+        deadline.workRemainingMs(this.#requestTimeoutMs)
+      );
+      if (!response.ok) throw new PiAdapterError('Unproved Pi steer response.');
+      const result = response.result;
+      if (
+        result.turnId !== active.turnId ||
+        result.inputItemId !== instruction.inputItemId ||
+        result.inputDigest !== instruction.inputDigest
+      )
+        throw new PiAdapterError('Uncorrelated Pi steer response.');
+      if (result.disposition === 'accepted')
+        return {
+          disposition: 'accepted',
+          inputItemId: instruction.inputItemId,
+          inputDigest: instruction.inputDigest,
+        };
+      if (
+        result.disposition === 'refused' &&
+        (result.reasonCode === 'stale' ||
+          result.reasonCode === 'unsupported' ||
+          result.reasonCode === 'busy')
+      )
+        return { disposition: 'refused', reasonCode: result.reasonCode };
+    } catch {
+      /* Native effect remains possible. Never resend or infer non-delivery. */
+    } finally {
+      this.#steering = false;
+    }
+    this.#fenced = true;
+    return { disposition: 'unknown', reasonCode: 'outcome_unknown' };
   }
 
   #interrupt(active: ActiveTurn, deadline = stopDeadline()): Promise<void> {

@@ -97,10 +97,39 @@ export type RuntimeItemDeltaKind =
  */
 export type ApprovalDecision = 'granted' | 'denied';
 
+/** Existing public Item and receipt producer callbacks inside one exact private operation. */
+export interface TaskSteerControl {
+  /** Current caller and Task authority; called again before authenticated native dispatch. */
+  readonly recheck: () => Promise<void>;
+  /** FULL Item commit before private enqueue, using its original operation and execution identities. */
+  readonly admit: (correlation: {
+    readonly operationId: string;
+    readonly executionId: string;
+  }) => Promise<void>;
+  /** FULL immutable receipt commit before the existing private result consumption acknowledgement. */
+  readonly complete: (
+    result: Pick<
+      import('./task-steer-receipt.js').TaskSteerReceiptMetadata,
+      'disposition' | 'reason' | 'refusal'
+    >
+  ) => Promise<void>;
+}
+
+/** Reference-only exact work selected by the public Item producer; never caller-selected native authority. */
+export interface TaskSteerTarget {
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly inputItemId: string;
+  readonly inputDigest: string;
+}
+
 /**
  * Abstraction used by the HTTP layer to execute and interrupt turns.
  */
 export interface TurnExecutor {
+  /** Uses the existing private slot for qualified native same-Turn input; absence is unsupported. */
+  steerTurn?(store: FsStore, target: TaskSteerTarget, control: TaskSteerControl): Promise<void>;
   /** Existing Vault operations are the sole caller of reference-only binding lifecycle effects. */
   credentialBindingOperation?(
     store: FsStore,

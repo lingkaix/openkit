@@ -22,8 +22,9 @@ import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { boundedJsonText, previewUtf8 } from './bounded-read-text.js';
 import { admitGenerativePresentationRead } from './generative-ui/commands.js';
-import type { FsStore } from './lib/store.js';
+import { commandRequestKey, type FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
+import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { readTaskSteerState } from './runtime/task-steer-receipt.js';
 import type {
   ControlThreadTurnSnapshot,
@@ -66,6 +67,7 @@ const narrativeTypes = types.filter((type) => THREAD_TIMELINE_PLACEMENT[type] ==
 export interface ThreadTimelineReadInput {
   readonly store: FsStore;
   readonly coreDb?: CoreDb | undefined;
+  readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>> | undefined;
   readonly repositoryWorkspaceDb?: ((workspaceId: string) => WorkspaceDb) | undefined;
   readonly actor: Actor;
   readonly administratorEligible: boolean;
@@ -136,7 +138,21 @@ export function projectTimelineItem(
     createdAt: item.createdAt,
     completedAt: item.completedAt,
     actor: 'actor' in item ? item.actor : null,
-    steer: readTaskSteerState(owner.store, owner.input.workspaceId, owner.input.threadId, item),
+    steer: readTaskSteerState(owner.store, owner.input.workspaceId, owner.input.threadId, item, {
+      coreDb: owner.coreDb,
+      inputHash:
+        item.type === 'user-message' &&
+        item.actor.kind === 'user' &&
+        item.causationId?.startsWith('task.steer:')
+          ? owner.inflightCommands?.get(owner.store)?.get(
+              commandRequestKey('task.steer', item.causationId.slice('task.steer:'.length), {
+                workspaceId: owner.input.workspaceId,
+                threadId: owner.input.threadId,
+                actorId: item.actor.id,
+              })
+            )?.inputHash
+          : undefined,
+    }),
   };
   const complete = { ...base, detail: { kind: 'complete' as const, value: item } };
   if (bytes(item) <= 4096 && bytes(complete) <= budget) return complete;

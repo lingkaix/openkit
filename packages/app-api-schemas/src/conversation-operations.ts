@@ -8,7 +8,12 @@ import {
 } from './chat-mode.js';
 import { ConversationNavigationResponseSchema } from './dashboard.js';
 import type { OperationDefinition } from './operation-contract.js';
-import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
+import {
+  StartTaskModeRequestSchema,
+  StartTaskModeResponseSchema,
+  SteerTaskRequestSchema,
+  SteerTaskResponseSchema,
+} from './task-mode.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
 const publicCredentials = [
@@ -79,6 +84,19 @@ export const CONVERSATION_OPERATION_DEFINITIONS = {
 
 /** Ordinary bounded Task admission and replay, without a new Task lifecycle. */
 export const TASK_OPERATION_DEFINITIONS = {
+  'task.steer': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    description: 'Submit text for native processing during one exact running Task Turn.',
+    inputSchema: SteerTaskRequestSchema,
+    outputSchema: SteerTaskResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId' },
+    policyOperation: 'turn.run',
+    mutating: true,
+    successStatus: 200,
+  },
   'task.start': {
     binding: 'json',
     returnsOneTimeSecret: false,

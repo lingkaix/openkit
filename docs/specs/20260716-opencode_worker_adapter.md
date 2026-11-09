@@ -214,7 +214,7 @@ Use supported V2 `tool_output.max_lines` and `max_bytes` controls and `media.ima
 
 ## Implementation Evidence And Limit
 
-The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
+Live steer remains unsupported at `2.2.5`. The real native probe in `packages/worker-shim/src/adapters/opencode-native.test.ts` submits `delivery: steer` to an idle session and observes a new model request containing that input. `SessionPromptInput` has no expected-execution guard. A local active-work check cannot close the remote idle race, so the adapter exposes no steer hook and NanoCore refuses before input admission. A future pin must pass the complete qualification above before support can be enabled.
 
 The [2026-10-31 runtime upgrade decision](../decisions/20261031-worker_runtimes_upgrade_to_latest.md) selects CLI/client npm latest `2.2.5`. Its canonical client methods are `experimental.session.wait` and `experimental.mcp.add/connect`; the adapter does not retain the deprecated aliases. Native system configuration now includes `/etc/opencode` after inline configuration, so the existing image-path-absence obligation remains required. Native effort and complete-file qualification are recorded with that decision; earlier observations do not prove the new pin.
 

@@ -162,6 +162,7 @@ import {
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
   restoreNanoHostSandboxAdmissionIfSafe,
+  settleNanoHostHarnessOperation,
 } from './nanohost-harness.js';
 import {
   NanoHostCleanupFencePendingError,
@@ -173,7 +174,8 @@ import {
   type NanoHostSessionDispatch,
 } from './nanohost-session-dispatch.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
-import type { TurnExecutor } from './types.js';
+import { taskSteerRefusal } from './task-steer-receipt.js';
+import type { TaskSteerControl, TaskSteerTarget, TurnExecutor } from './types.js';
 import {
   getWorkerBackendSession,
   type WorkerBackendSessionRecord,
@@ -330,7 +332,7 @@ export interface ConfiguredWorkerLifecycleRuntime {
   /** Binds private Turn route tokens and returns `session.open` with its ephemeral Vault values. */
   readonly acceptNanoHostHarnessCommand: (
     command: NanoHostHarnessCommand
-  ) => Promise<NanoHostHarnessCommand>;
+  ) => Promise<NanoHostHarnessCommand | null>;
   /** Advances one exact live producer after its durable Harness result settles. */
   readonly acceptNanoHostHarnessResult: (result: NanoHostHarnessResult) => Promise<void>;
   /** Rejects the exact live waiter after its dispatched response is durably fenced as incomplete. */
@@ -668,6 +670,8 @@ interface PendingNanoHostHarnessOperation {
   readonly admittedUnixMs: number;
   deadlineUnixMs: number;
   deadlineMonotonicMs: number;
+  /** Existing public receipt producer; no prompt or extra durable state is retained here. */
+  steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl };
   /** Positive Core idle binding owner; it does not authorize active or closing Turn cleanup. */
   coreIdleClose?: { readonly consumerReceipt: string; prepared?: PreparedNanoHostHarnessOperation };
   /** Original native descriptors and raw carriage stay with this existing live waiter. */
@@ -882,7 +886,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Binds dispatched Turn route tokens and adds Vault values only to private wire bytes. */
   public async acceptHarnessCommand(
     command: NanoHostHarnessCommand
-  ): Promise<NanoHostHarnessCommand> {
+  ): Promise<NanoHostHarnessCommand | null> {
     const bindingId = command.body.agentSessionRuntimeBindingId;
     const session = [...this.sessions.values()].find(
       (candidate) =>
@@ -951,14 +955,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const runtimeEnvironment = session?.runtimeCredentialValues
       ? nanoHostProcessEnvironment(session.runtimeCredentialValues)
       : undefined;
+    const carriedSteer =
+      command.operation === 'turn.steer' && typeof command.body.input === 'string'
+        ? command.body.input
+        : undefined;
+    if (
+      carriedSteer !== undefined &&
+      createHash('sha256').update(carriedSteer).digest('hex') !== pending.steer?.target.inputDigest
+    )
+      throw new Error('Repeated steer carriage conflicts with its admitted input digest.');
     const expectedWire = {
       ...journal.prepared.command,
       body:
-        command.operation === 'session.open' &&
-        runtimeEnvironment &&
-        Object.keys(runtimeEnvironment).length > 0
-          ? { ...journal.prepared.wireBody, runtimeEnvironment }
-          : journal.prepared.wireBody,
+        carriedSteer !== undefined
+          ? { ...journal.prepared.wireBody, input: carriedSteer }
+          : command.operation === 'session.open' &&
+              runtimeEnvironment &&
+              Object.keys(runtimeEnvironment).length > 0
+            ? { ...journal.prepared.wireBody, runtimeEnvironment }
+            : journal.prepared.wireBody,
     };
     if (
       !isDeepStrictEqual(journal.prepared.command, command) &&
@@ -967,6 +982,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost dispatched command conflicts with its exact prepared carriage.');
     // Core has already committed its redacted dispatch. Retain that fact even if proof fails.
     pending.operationId = command.operationId;
+    if (pending.steer) {
+      try {
+        await pending.steer.control.recheck();
+      } catch (error) {
+        if (!session) throw error;
+        return await this.refuseUnsentSteer(
+          command,
+          session,
+          pending,
+          error,
+          carriedSteer === undefined
+        );
+      }
+    }
     const started = performance.now();
     const invocation = await journal.store.writeWorkspaceExecutionJournalIntent(
       journal.workspaceDb.workspaceId,
@@ -1123,6 +1152,55 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost dispatched operation has no exact Harness binding.');
     }
     pending.operationId = command.operationId;
+    if (command.operation === 'turn.steer') {
+      if (!session || !pending.steer)
+        throw new Error('Steer dispatch has no exact live public producer.');
+      try {
+        await pending.steer.control.recheck();
+        const attempt = requireNanoHostExecutionAttempt(this.coreDb, session.attemptId);
+        if (
+          session.turnStopSettlement ||
+          attempt.phase !== 'open' ||
+          attempt.recoveryState !== null
+        )
+          throw new OperationError(
+            'steer_target_stale',
+            'The original Task stopped before steer dispatch.',
+            409
+          );
+        assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+        const target = pending.steer.target;
+        const item = journal.store.readThreadTimelineSnapshot(
+          target.workspaceId,
+          target.threadId,
+          (snapshot) =>
+            snapshot.position(target.inputItemId)?.turnId === target.turnId
+              ? snapshot.item(target.inputItemId)
+              : null
+        );
+        if (
+          !item ||
+          item.type !== 'user-message' ||
+          item.turnId !== target.turnId ||
+          item.actor.kind !== 'user' ||
+          createHash('sha256').update(item.text).digest('hex') !== target.inputDigest
+        )
+          throw new OperationError(
+            'steer_target_stale',
+            'The original steer input is unavailable.',
+            409
+          );
+        return { ...command, body: { ...command.body, input: item.text } };
+      } catch (error) {
+        return await this.refuseUnsentSteer(
+          command,
+          session,
+          pending,
+          error,
+          carriedSteer === undefined
+        );
+      }
+    }
     if (command.operation === 'session.open' && session) {
       const runtimeEnvironment = nanoHostProcessEnvironment(session.runtimeCredentialValues!);
       return Object.keys(runtimeEnvironment).length === 0
@@ -1130,6 +1208,32 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : { ...command, body: { ...command.body, runtimeEnvironment } };
     }
     return command;
+  }
+
+  /** Settles a known unsent refusal through the existing result and consumption owners; earlier carriage stays unknown. */
+  private async refuseUnsentSteer(
+    command: NanoHostHarnessCommand,
+    session: NanoHostBackendTurnSession,
+    pending: PendingNanoHostHarnessOperation,
+    error: unknown,
+    unsent: boolean
+  ): Promise<null> {
+    const result: NanoHostHarnessResult = {
+      schemaVersion: 2,
+      harnessInstanceId: command.harnessInstanceId,
+      operationId: command.operationId,
+      sequence: command.sequence,
+      disposition: unsent ? 'refused' : 'unknown',
+      body: { reasonCode: unsent ? 'stale' : 'outcome_unknown' },
+    };
+    await settleNanoHostHarnessOperation(this.coreDb, {
+      result,
+      sandboxIntegrationBindingRef: session.sharedHarness.sandbox.sandboxIntegrationBindingRef,
+      timestamp: new Date().toISOString(),
+    });
+    if (unsent) await pending.steer!.control.complete(taskSteerRefusal(error));
+    await this.acceptHarnessResult(result);
+    return null;
   }
 
   /** Releases an exact durably fenced delivery into ordinary failure cleanup, never replay. */
@@ -1356,6 +1460,31 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         !isDeepStrictEqual(retained.control.outputRefs, [fingerprint])
       )
         throw new Error('NanoHost Harness retained consumption replay conflicts.');
+    }
+    if (pending.steer) {
+      const target = pending.steer.target;
+      if (
+        result.disposition === 'succeeded' &&
+        (result.body.state !== 'accepted' ||
+          result.body.turnId !== target.turnId ||
+          result.body.inputItemId !== target.inputItemId ||
+          result.body.inputDigest !== target.inputDigest)
+      )
+        throw new Error('Native steer acceptance does not identify its original input.');
+      await pending.steer.control.complete({
+        disposition:
+          result.disposition === 'succeeded'
+            ? 'accepted'
+            : result.disposition === 'refused'
+              ? 'refused'
+              : 'unknown',
+        reason:
+          result.disposition === 'succeeded'
+            ? null
+            : typeof result.body.reasonCode === 'string'
+              ? result.body.reasonCode
+              : 'outcome_unknown',
+      });
     }
     const receipt = JSON.stringify({
       workspaceId: journal.workspaceDb.workspaceId,
@@ -4951,6 +5080,118 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  /** Uses the existing slot without backlog, preparing exact correlation before admitting its ordinary Item. */
+  public async steerTurn(
+    packageSnapshotId: string,
+    target: TaskSteerTarget,
+    control: TaskSteerControl
+  ): Promise<void> {
+    const session = this.sessions.get(packageSnapshotId);
+    if (!session)
+      throw new OperationError(
+        'steer_target_stale',
+        'The exact live worker has not been adopted by this runtime owner.',
+        409
+      );
+    if (
+      !(
+        (session.sharedHarness.adapterId === 'codex' &&
+          session.sharedHarness.adapterVersion === '0.166.0') ||
+        (session.sharedHarness.adapterId === 'pi' &&
+          session.sharedHarness.adapterVersion === '1.4.0')
+      )
+    )
+      throw new OperationError(
+        'steer_unsupported',
+        'This runtime pin has no qualified live-steer boundary.',
+        409
+      );
+    const assertCurrent = async () => {
+      await control.recheck();
+      const native = requireNanoHostExecutionAttempt(this.coreDb, session.attemptId);
+      const deadline =
+        native.lastAcceptedHeartbeatAt === null ? native.startupDeadline : native.heartbeatDeadline;
+      if (
+        !session.turnStarted ||
+        session.turnStopSettlement ||
+        native.phase !== 'open' ||
+        native.recoveryState !== null ||
+        !deadline ||
+        deadline <= new Date().toISOString() ||
+        session.environmentPackage.scope.workspaceId !== target.workspaceId ||
+        session.environmentPackage.scope.threadId !== target.threadId ||
+        session.environmentPackage.scope.turnId !== target.turnId
+      )
+        throw new OperationError(
+          'steer_target_stale',
+          'The exact worker attempt is no longer live.',
+          409
+        );
+      const binding = this.coreDb.sqlite
+        .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+        WHERE agent_session_runtime_binding_id=? AND harness_instance_id=? AND agent_session_id=?
+          AND workspace_id=? AND thread_id=? AND current_turn_id=? AND current_attempt_id=? AND lifecycle_state='active'`)
+        .get(
+          session.agentSessionRuntimeBindingId,
+          session.harnessInstanceId,
+          session.environmentPackage.scope.agentSessionId,
+          target.workspaceId,
+          target.threadId,
+          target.turnId,
+          session.attemptId
+        );
+      if (!binding || this.sessions.get(packageSnapshotId) !== session)
+        throw new OperationError(
+          'steer_target_stale',
+          'The exact native work binding is unavailable.',
+          409
+        );
+      assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+    };
+    if (
+      session.pendingHarnessOperation ||
+      this.harnessOperationSettlements.has(session.harnessInstanceId)
+    )
+      throw new OperationError('steer_busy', 'The worker Harness operation slot is occupied.', 409);
+    await this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
+      await assertCurrent();
+      const binding = session.sharedHarness.bindings.get(
+        session.environmentPackage.scope.agentSessionId
+      );
+      if (!binding || binding.nextTurnSequence < 1)
+        throw new OperationError(
+          'steer_target_stale',
+          'The exact native Turn sequence is unavailable.',
+          409
+        );
+      const body = {
+        ...target,
+        agentSessionId: session.environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        leaseId: session.attemptId,
+        packageSnapshotId,
+        turnSequence: binding.nextTurnSequence - 1,
+      };
+      // This native-owner read rejects an occupied or unconsumed cell before Item admission.
+      try {
+        prepareNanoHostHarnessOperation(this.coreDb, {
+          harnessInstanceId: session.harnessInstanceId,
+          operation: 'turn.steer',
+          body,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (cause) {
+        throw new OperationError('steer_busy', 'The exact Harness slot is unavailable.', 409, {
+          cause,
+        });
+      }
+      await this.queueAndWaitForHarnessOperation(session, 'turn.steer', body, {
+        target,
+        control: { ...control, recheck: assertCurrent },
+      });
+    });
+  }
+
   /**
    * Delivers one interrupt through private `turn.interrupt`, the sole interrupt owner. The
    * cancelled Turn leaves the resident binding open; host liveness is not the cancel proof.
@@ -7295,8 +7536,23 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private async queueAndWaitForHarnessOperation(
     session: NanoHostBackendTurnSession,
     operation: NanoHostHarnessOperation,
-    body: Readonly<Record<string, unknown>>
+    body: Readonly<Record<string, unknown>>,
+    steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl }
   ): Promise<Readonly<Record<string, unknown>>> {
+    const admittedUnixMs = Date.now();
+    const admittedMonotonicMs = performance.now();
+    // Original cancellation and terminal cleanup join only their predecessor steer in the
+    // existing cell; its public receipt and result consumption must finish before cell reuse.
+    // Keep the caller's original allowance across this wait, without replacing that owner.
+    if (
+      (operation === 'turn.interrupt' ||
+        operation === 'session.inspect' ||
+        operation === 'session.close') &&
+      session.pendingHarnessOperation?.operation === 'turn.steer'
+    ) {
+      const predecessor = this.harnessOperationSettlements.get(session.harnessInstanceId);
+      if (predecessor) await predecessor;
+    }
     if (session.pendingHarnessOperation)
       throw new Error('NanoHost Harness producer already has an unsettled operation.');
     const recorded =
@@ -7307,7 +7563,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           })
         : null;
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
-    const admittedUnixMs = Date.now();
     const deadlineUnixMs = Math.min(
       admittedUnixMs + NANO_HOST_HARNESS_RESULT_BUDGET_MS,
       (operation === 'session.open' || operation === 'turn.start') && attempt.deadline !== null
@@ -7324,6 +7579,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     void result.catch(() => {});
     const pending: PendingNanoHostHarnessOperation = {
       operation,
+      ...(steer ? { steer } : {}),
       sequence: null,
       operationId: null,
       reject: rejectResult,
@@ -7331,7 +7587,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       timeout: null,
       admittedUnixMs,
       deadlineUnixMs,
-      deadlineMonotonicMs: performance.now() + Math.max(0, deadlineUnixMs - admittedUnixMs),
+      deadlineMonotonicMs: admittedMonotonicMs + Math.max(0, deadlineUnixMs - admittedUnixMs),
     };
     const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
     if (operation === 'session.close' && attempt.phase === 'closed') {
@@ -7402,11 +7658,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         ? 'open-session'
         : operation === 'session.inspect'
           ? 'inspect-session'
-          : operation === 'turn.start'
-            ? 'deliver-start'
-            : operation === 'session.close'
-              ? 'inspect-cleanup'
-              : 'cancel';
+          : operation === 'turn.steer'
+            ? 'deliver-steer'
+            : operation === 'turn.start'
+              ? 'deliver-start'
+              : operation === 'session.close'
+                ? 'inspect-cleanup'
+                : 'cancel';
     let parent: ExecutionJournalIntent | undefined;
     try {
       parent = await beginWorkerTurnJournalStep(
@@ -7443,63 +7701,85 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           if (closeOwner) closeOwner.pending = null;
         }
       );
-      const observation = await this.withHarnessOperationSlot(
-        session.harnessInstanceId,
-        async () => {
-          if (
-            session.pendingHarnessOperation !== pending ||
-            Date.now() < admittedUnixMs ||
-            Date.now() >= pending.deadlineUnixMs ||
-            performance.now() >= pending.deadlineMonotonicMs
-          )
-            throw new Error('NanoHost original Harness allowance ended before queue admission.');
-          const prepared = prepareNanoHostHarnessOperation(this.coreDb, {
-            body,
-            harnessInstanceId: session.harnessInstanceId,
+      const withSlot = steer
+        ? async <T>(action: () => Promise<T>) => action()
+        : <T>(action: () => Promise<T>) =>
+            this.withHarnessOperationSlot(session.harnessInstanceId, action);
+      const observation = await withSlot(async () => {
+        if (
+          session.pendingHarnessOperation !== pending ||
+          Date.now() < admittedUnixMs ||
+          Date.now() >= pending.deadlineUnixMs ||
+          performance.now() >= pending.deadlineMonotonicMs
+        )
+          throw new Error('NanoHost original Harness allowance ended before queue admission.');
+        const prepared = prepareNanoHostHarnessOperation(this.coreDb, {
+          body,
+          harnessInstanceId: session.harnessInstanceId,
+          operation,
+          timestamp: new Date().toISOString(),
+        });
+        pending.journal!.prepared = prepared;
+        const command = prepared.command;
+        const child = await beginWorkerTurnJournalStep(
+          store,
+          workspaceDb,
+          session.environmentPackage.scope.turnId,
+          kind,
+          {
             operation,
-            timestamp: new Date().toISOString(),
+            requestId: command.operationId,
+            sequence: command.sequence,
+            bindingRef: session.harnessBindingRef,
+          },
+          {
+            operationId: command.operationId,
+            deadline: new Date(pending.deadlineUnixMs).toISOString(),
+            parent: pending.journal!.parent,
+          }
+        );
+        pending.journal!.child = child;
+        pending.journal!.reader = createExecutionStepJournalReader(
+          workspaceDb,
+          child.execution.ref.owner
+        );
+        if (steer) {
+          await steer.control.admit({
+            operationId: command.operationId,
+            executionId: child.execution.ref.executionId,
           });
-          pending.journal!.prepared = prepared;
-          const command = prepared.command;
-          const child = await beginWorkerTurnJournalStep(
-            store,
-            workspaceDb,
-            session.environmentPackage.scope.turnId,
-            kind,
-            {
-              operation,
-              requestId: command.operationId,
-              sequence: command.sequence,
-              bindingRef: session.harnessBindingRef,
-            },
-            {
-              operationId: command.operationId,
-              deadline: new Date(pending.deadlineUnixMs).toISOString(),
-              parent: pending.journal!.parent,
-            }
-          );
-          pending.journal!.child = child;
-          pending.journal!.reader = createExecutionStepJournalReader(
-            workspaceDb,
-            child.execution.ref.owner
-          );
-          if (
-            session.pendingHarnessOperation !== pending ||
-            Date.now() < admittedUnixMs ||
-            Date.now() >= pending.deadlineUnixMs ||
-            performance.now() >= pending.deadlineMonotonicMs
-          )
-            throw new Error('NanoHost original Harness allowance ended before queue publication.');
-          pending.sequence = await queueNanoHostHarnessOperation(this.coreDb, {
-            prepared,
-            body,
-            harnessInstanceId: session.harnessInstanceId,
-            operation,
-            timestamp: new Date().toISOString(),
-          });
-          return await result;
+          try {
+            await steer.control.recheck();
+            if (
+              session.turnStopSettlement ||
+              requireNanoHostExecutionAttempt(this.coreDb, session.attemptId).phase !== 'open'
+            )
+              throw new OperationError(
+                'steer_target_stale',
+                'Interrupt or terminal won before steer enqueue.',
+                409
+              );
+          } catch (error) {
+            await steer.control.complete(taskSteerRefusal(error));
+            throw error;
+          }
         }
-      );
+        if (
+          session.pendingHarnessOperation !== pending ||
+          Date.now() < admittedUnixMs ||
+          Date.now() >= pending.deadlineUnixMs ||
+          performance.now() >= pending.deadlineMonotonicMs
+        )
+          throw new Error('NanoHost original Harness allowance ended before queue publication.');
+        pending.sequence = await queueNanoHostHarnessOperation(this.coreDb, {
+          prepared,
+          body,
+          harnessInstanceId: session.harnessInstanceId,
+          operation,
+          timestamp: new Date().toISOString(),
+        });
+        return await result;
+      });
       await endWorkerTurnJournalStep(
         store,
         workspaceDb,

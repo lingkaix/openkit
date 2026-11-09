@@ -217,7 +217,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - MCP through Pi's native MCP, once per resident session, with OpenKit tools declared directly when the server offers them and with an empty catalog accepted: supported
 - Live native token streaming into product Items: not supported
 - Native approval or extension UI round trips: not supported
-- Live steer: unqualified; not advertised or enabled until [native qualification](#live-steer-mapping-and-qualification) passes
+- Live steer: qualified at `1.4.0` through the [native checks](#live-steer-mapping-and-qualification); other pins remain unsupported
 - Follow-up: not supported
 - Built-in Pi MCP for admitted OpenKit servers and for agent-directory user servers: supported
 - Native search discovery and direct invocation of user MCP tools with default `codemode`, `codemode-deferred` and `deferred` exposure, with hidden tools excluded: supported by the search-only host contract; qualification required before claiming the route usable.
@@ -272,7 +272,7 @@ Preserve supported native head-read, tail-shell, spill retrieval, and image resi
 
 ## Implementation Evidence And Limit
 
-The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
+The live-steer mapping is enabled only at `1.4.0`. Native qualification uses the real pinned runtime with local synthetic inference; it proves the delivery boundary and does not qualify model compliance. `packages/pi-runtime-host/src/host.test.ts` and `packages/worker-shim/src/adapters/pi.test.ts` cover same-prompt model-boundary delivery, extension-handled refusal, late terminal and interrupt hooks, lost accepted responses, slow host calls, host loss, retaining close and exact successor resume without input spill. Native `clearQueue` disposes only pending input; retained conversation bytes are preserved.
 
 The paragraphs below record the JSON-mode implementation and the image observations through 2026-09-29. They are historical evidence of those bytes. The accepted design replaces this path with the official SDK host. A successor's different absent path in those probes is evidence of the old contract, not the new requirement. The `0.85.1` two-process file probe proves process replacement on that pin. It does not prove the SDK host, `pi-mcp-adapter`, or the shared image.
 

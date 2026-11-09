@@ -49,7 +49,7 @@ export const controlExecutions = sqliteTable(
   ]
 );
 
-/** Original intent/outcome with independent parent and inspection links; Workspace SQL admits only its twelve producer-backed kinds. */
+/** Original intent/outcome with independent parent and inspection links; Workspace SQL admits only its thirteen producer-backed kinds, including live-steer delivery. */
 export const controlExecutionSteps = sqliteTable(
   'control_execution_steps',
   {

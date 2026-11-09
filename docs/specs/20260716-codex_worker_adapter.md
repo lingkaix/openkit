@@ -247,7 +247,7 @@ The authored manifest is the sole launch-time capability declaration. Adapter co
 - Interrupt that reports the actual outcome and does not close the session: supported
 - Live native token streaming into product Items: not supported
 - Native approval or question round trips: not supported
-- Live steer: unqualified; not advertised or enabled until [native qualification](#live-steer-mapping-and-qualification) passes
+- Live steer: qualified at `0.166.0` through the [native checks](#live-steer-mapping-and-qualification); other pins remain unsupported
 - Follow-up: not supported
 - Optional runtime provenance: supported only through the provenance owner and the accepted AEP feature
 
@@ -304,7 +304,7 @@ Supply finite native `tool_output_token_limit` and per-MCP-tool `output_token_li
 
 The adapter maps validated native request metadata to the existing ephemeral inference hint under [Native Compaction Phase Hint](../decisions/20261016-native_compaction_phase_hint.md). It cross-checks `x-codex-turn-metadata` against its native projections and carries request kind and native lineage to the Gateway. The hint remains ephemeral under those owners.
 
-The live-steer mapping above is accepted design, not qualification by the implementation evidence below. Live-steer support remains unqualified and disabled until its declared-pin checks pass.
+The live-steer mapping is enabled only at `0.166.0`. Native qualification uses the real pinned runtime with local synthetic inference; it proves the delivery boundary and does not qualify model compliance. `packages/worker-shim/src/adapters/codex.test.ts` covers exact native acceptance, stale work, terminal races, lost accepted responses, slow native calls, interrupt and exact successor resume without input spill. Unproved native RPC errors remain Unknown and fence reuse.
 
 The [2026-10-31 Codex runtime upgrade decision](../decisions/20261031-worker_runtimes_upgrade_to_latest.md) selects npm latest `0.166.0`. Regeneration by that installed vendor binary yields 321 JSON schemas: seven added, none removed, and 48 changed from the preceding `0.160.0` snapshot selected by the [2026-10-05 runtime upgrade decision](../decisions/20261005-worker_runtimes_upgrade_to_latest.md). The consumed request fields, item discriminants, Turn statuses and permission responses remain compatible. The adapter excludes the new `partial_answer` phase from final candidates and selects the same fixed provider at process launch and on the thread to satisfy native provider-mismatch enforcement. Endpoint and bearer delivery keep their existing in-memory boundary. Native metadata validation compares the complete parsed header projection against canonical body metadata after removing only body-only `tool_namespaces_info`; both encoded inputs retain the 16 KiB bound, all identity and phase projections remain strict, and tool inventory is not retained in the normalized hint. Native additional-tools prefix identity follows the [Gateway backend owner](20260708-pi_ai_unified_llm_backend.md#codex-turn-state-continuity), including both canonical UUIDv5 and UUIDv7 paths emitted by this pin. Additive item metadata and notifications require no compatibility path. The snapshot includes host-managed `chatgptAuthTokens` login, token-refresh requests and account rate-limit reads and updates; their credential-delivery implementation has a separate owner. Prior-pin observations below retain their original version attribution.
 

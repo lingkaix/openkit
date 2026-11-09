@@ -18,6 +18,7 @@ import {
   type HarnessSessionSelectorBody,
   type HarnessTurnInterruptBody,
   type HarnessTurnStartBody,
+  type HarnessTurnSteerBody,
   isHarnessResultBodyValid,
   isProtectedNativeEnvironmentName,
   type WorkerStartupFailure,
@@ -31,6 +32,7 @@ import {
   type WorkerNativeHandle,
   type WorkerResidentAdapter,
   type WorkerResidentSession,
+  type WorkerResidentTurn,
 } from './adapter-registry.js';
 import { isRetryableHttpStatus } from './control-client.js';
 import {
@@ -86,6 +88,9 @@ const SAFE_RESIDENT_ENVIRONMENT_KEYS = [
   'no_proxy',
 ] as const;
 interface ActiveTurn {
+  readonly packageSnapshotId: string;
+  readonly turnSequence: number;
+  nativeTurn?: WorkerResidentTurn;
   readonly abort: AbortController;
   barrierReached: boolean;
   readonly leaseId: string;
@@ -154,7 +159,7 @@ export interface WorkerHarnessOptions {
 }
 
 /**
- * One Harness instance: executes the six private operations for the resident AgentSession
+ * One Harness instance: executes the seven private operations for the resident AgentSession
  * bindings of one adapter. The adapter is fixed by the first `session.open`, which names it.
  */
 export class WorkerHarness {
@@ -205,6 +210,10 @@ export class WorkerHarness {
         case 'turn.start':
           resultBody = await this.startTurn(body as HarnessTurnStartBody);
           break;
+        case 'turn.steer': {
+          const outcome = await this.steerTurn(body as HarnessTurnSteerBody);
+          return result(command, outcome.disposition, outcome.body);
+        }
         case 'turn.interrupt':
           resultBody = await this.interruptTurn(body as HarnessTurnInterruptBody);
           break;
@@ -525,7 +534,11 @@ export class WorkerHarness {
           turnId: body.turnId,
           workspaceId: session.workspaceId,
         },
-        onStarted: markStarted,
+        onStarted: (nativeTurn) => {
+          if (session.activeTurn?.turnId === body.turnId)
+            session.activeTurn.nativeTurn = nativeTurn;
+          markStarted();
+        },
         onStartupFailure: (failure) => {
           startupFailure = failure;
         },
@@ -576,6 +589,8 @@ export class WorkerHarness {
         }
       });
     session.activeTurn = {
+      packageSnapshotId: body.packageSnapshotId,
+      turnSequence: body.turnSequence,
       abort,
       barrierReached: false,
       leaseId: body.leaseId,
@@ -598,6 +613,58 @@ export class WorkerHarness {
       nativeHandleState: session.handleDigest ? ('ready' as const) : ('pending' as const),
       state: 'started',
     };
+  }
+
+  /** Admits typed user text once through the exact active native work, without a queue or fallback. */
+  private async steerTurn(body: HarnessTurnSteerBody): Promise<{
+    disposition: 'succeeded' | 'refused' | 'unknown';
+    body: Readonly<Record<string, unknown>>;
+  }> {
+    const session = this.requireSession(body);
+    const active = session.activeTurn;
+    if (
+      !active ||
+      active.barrierReached ||
+      active.abort.signal.aborted ||
+      session.failed ||
+      session.closing ||
+      body.turnId !== active.turnId ||
+      body.leaseId !== active.leaseId ||
+      body.packageSnapshotId !== active.packageSnapshotId ||
+      body.turnSequence !== active.turnSequence ||
+      body.workspaceId !== session.workspaceId ||
+      body.threadId !== session.threadId
+    )
+      throw harnessError('stale');
+    if (createHash('sha256').update(body.input).digest('hex') !== body.inputDigest)
+      throw harnessError('conflict');
+    if (!active.nativeTurn?.steer) throw harnessError('unsupported');
+    try {
+      const outcome = await active.nativeTurn.steer(
+        { inputItemId: body.inputItemId, inputDigest: body.inputDigest, input: body.input },
+        new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeRequestMs)
+      );
+      if (outcome.disposition === 'refused')
+        return { disposition: 'refused', body: { reasonCode: outcome.reasonCode } };
+      if (
+        outcome.disposition === 'accepted' &&
+        outcome.inputItemId === body.inputItemId &&
+        outcome.inputDigest === body.inputDigest
+      )
+        return {
+          disposition: 'succeeded',
+          body: {
+            state: 'accepted',
+            turnId: body.turnId,
+            inputItemId: body.inputItemId,
+            inputDigest: body.inputDigest,
+          },
+        };
+    } catch {
+      /* A native invocation may have happened; no failure after contact proves refusal. */
+    }
+    this.fenceSession(session);
+    return { disposition: 'unknown', body: { reasonCode: 'outcome_unknown' } };
   }
 
   /** Interrupts only the exact active Turn and answers after it settled. */
@@ -960,7 +1027,7 @@ function residentEnvironment(
 /** Builds one exact result envelope. */
 function result(
   command: HarnessCommandEnvelope,
-  disposition: 'succeeded' | 'refused',
+  disposition: HarnessResultEnvelope['disposition'],
   body: Readonly<Record<string, unknown>>
 ): HarnessResultEnvelope {
   return {

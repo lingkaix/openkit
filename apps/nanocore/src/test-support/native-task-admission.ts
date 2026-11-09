@@ -75,6 +75,7 @@ export async function createNativeTaskAdmissionFixture(
   const startup = observeNativeTaskStartup(store);
   const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
+  const steerCalls: import('../runtime/nanohost-harness.js').NanoHostHarnessCommand[] = [];
   const completion = Promise.withResolvers<void>();
   const launched = Promise.withResolvers<void>();
   const observedExecution = Promise.withResolvers<void>();
@@ -414,6 +415,10 @@ export async function createNativeTaskAdmissionFixture(
           let turn: ReturnType<typeof executionFor> | undefined;
           try {
             const wire = await runtime.acceptNanoHostHarnessCommand(command);
+            if (!wire) {
+              commandSettled = true;
+              continue;
+            }
             const agentSessionId = command.body.agentSessionId;
             if (typeof agentSessionId !== 'string')
               throw new Error('Native command lacks Session.');
@@ -444,6 +449,16 @@ export async function createNativeTaskAdmissionFixture(
                 },
               ],
               'turn.start': [['open', 'completed'], 'running', { state: 'started', ...ready }],
+              'turn.steer': [
+                ['running'],
+                'running',
+                {
+                  state: 'accepted',
+                  turnId: command.body.turnId,
+                  inputItemId: command.body.inputItemId,
+                  inputDigest: command.body.inputDigest,
+                },
+              ],
               'session.inspect': [
                 ['open', 'completed'],
                 binding.state,
@@ -459,6 +474,17 @@ export async function createNativeTaskAdmissionFixture(
             const [required, next, body] = operations[command.operation] ?? [];
             if (!body || !required!.includes(binding.state))
               throw new Error(`Native peer state does not admit ${command.operation}.`);
+            if (command.operation === 'turn.steer') {
+              if (
+                !turn?.lineage ||
+                binding.turnId !== command.body.turnId ||
+                typeof wire.body.input !== 'string' ||
+                createHash('sha256').update(wire.body.input).digest('hex') !==
+                  command.body.inputDigest
+              )
+                throw new Error('Native steer lacks exact active work and original text.');
+              steerCalls.push(wire);
+            }
             if (command.operation === 'turn.start') {
               const turnId = command.body.turnId;
               if (turn?.acceptedStart || transcripts.has(String(turnId)))
@@ -610,6 +636,7 @@ export async function createNativeTaskAdmissionFixture(
   });
   return {
     outside,
+    steerCalls,
     executor,
     effects: effects as readonly NanoHostSessionEffectRequest[],
     fileAdmission,

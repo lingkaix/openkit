@@ -71,7 +71,7 @@ export interface ResidentTurnOptions {
   /** Lineage of the admitted `turn.start`; the request id comes from the AEP. */
   readonly lineage: Omit<WorkerLineage, 'requestId'>;
   /** Called after the resident runtime accepted the Turn and its routes are bound. */
-  readonly onStarted: () => void;
+  readonly onStarted: (turn: WorkerResidentTurn) => void;
   /** Receives closed pre-start failure metadata without changing the original rejection. */
   readonly onStartupFailure?: ((failure: WorkerStartupFailure) => void) | undefined;
   /** Called after the native Turn settled, the loopback drained, and output was published. */
@@ -443,7 +443,7 @@ async function runResidentTurnImplementation(
     if (interrupted) {
       onInterrupt();
     }
-    options.onStarted();
+    options.onStarted(startedTurn);
     session.enablePostLaunchRecovery();
     let adapterResult: Awaited<WorkerResidentTurn['settled']>;
     // A resident host that ends on its own fails the Turn; it is not an interrupt, and the ended

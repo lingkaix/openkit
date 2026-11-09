@@ -1441,6 +1441,34 @@ export class FsStore {
     return this.commandRequests.get(key) ?? null;
   }
 
+  /** Commits one completed steer receipt and Audit without changing live or terminal product content. */
+  public async publishTaskSteerReceipt(
+    admission: Pick<ControlAdmission, 'receipt' | 'audit'>
+  ): Promise<void> {
+    if (admission.receipt.command !== 'task.steer' || !admission.receipt.scope.workspaceId)
+      throw new Error('Task steer requires its original Workspace receipt scope.');
+    if (this.dataRoot) {
+      await this.writeNativeProducts(
+        this.nativeScope({ kind: 'workspace', workspaceId: admission.receipt.scope.workspaceId }),
+        [],
+        [],
+        admission
+      );
+    } else {
+      if (admission.receipt.response.kind !== 'turn' || !admission.receipt.response.steerMetadata)
+        throw new Error('Task steer requires its completed Turn disposition.');
+      this.recordCommandRequest({
+        ...admission.receipt,
+        command: 'task.steer',
+        response: {
+          kind: 'turn',
+          id: admission.receipt.response.id,
+          steerMetadata: admission.receipt.response.steerMetadata,
+        },
+      });
+    }
+  }
+
   /**
    * Records the resource pointer for a completed idempotent command.
    *

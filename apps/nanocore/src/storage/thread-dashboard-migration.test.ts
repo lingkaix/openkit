@@ -111,7 +111,11 @@ it.each(['core', 'workspace'] as const)(
       const journal = JSON.parse(
         readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8')
       ) as { entries: { tag: string }[] };
-      const entries = journal.entries.slice(0, -1);
+      // Later migrations must not move this fixture past the read-index admission boundary.
+      const migrationTag = kind === 'core' ? '0024_thread_dashboard' : '0022_thread_dashboard';
+      const migrationIndex = journal.entries.findIndex((entry) => entry.tag === migrationTag);
+      expect(migrationIndex).toBeGreaterThan(0);
+      const entries = journal.entries.slice(0, migrationIndex);
       const predecessor = join(targetRoot, 'predecessor-journal');
       mkdirSync(join(predecessor, 'meta'), { recursive: true });
       for (const entry of entries)

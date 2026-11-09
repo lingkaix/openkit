@@ -43,7 +43,7 @@ export interface SyntheticInference {
  * @returns The running server and its captured requests.
  */
 export async function startSyntheticInference(
-  reply: (request: CapturedInference, n: number) => InferenceReply
+  reply: (request: CapturedInference, n: number) => InferenceReply | Promise<InferenceReply>
 ): Promise<SyntheticInference> {
   const requests: CapturedInference[] = [];
   const open = new Set<ServerResponse>();
@@ -57,7 +57,7 @@ export async function startSyntheticInference(
       path: req.url ?? '',
     };
     requests.push(captured);
-    const script = reply(captured, requests.length);
+    const script = await reply(captured, requests.length);
     if ('status' in script) {
       res.writeHead(script.status, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'synthetic failure' } }));

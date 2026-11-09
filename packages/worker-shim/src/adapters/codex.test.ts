@@ -2819,6 +2819,224 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     expect(session.childState()).toBe('running');
   }, 180_000);
 
+  it('qualifies exact native live steer and prevents pending input from reaching a successor', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const mcp = await mcpServer();
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+      })
+    );
+    sessions.push(session);
+    inference.hang = true;
+    const first = await session.startTurn(turnInput(roots, ['alpha'], 'hang please'));
+    await inference.untilHung();
+    const steer = (first as typeof first & { steer?: (input: unknown) => Promise<unknown> }).steer;
+    expect(steer, 'the pinned native Turn must expose qualified steer').toBeTypeOf('function');
+    const input = {
+      inputItemId: 'it_00000000-0000-7000-8000-000000000801',
+      input: '  exact live-steer instruction\n',
+      inputDigest: createHash('sha256').update('  exact live-steer instruction\n').digest('hex'),
+    };
+    expect(await steer!(input)).toEqual({
+      disposition: 'accepted',
+      inputItemId: input.inputItemId,
+      inputDigest: input.inputDigest,
+    });
+    await first.interrupt();
+    expect((await first.settled).status).toBe('interrupted');
+    expect(await steer!(input)).toMatchObject({ disposition: 'refused', reasonCode: 'stale' });
+    inference.hang = false;
+    const beforeSuccessor = inference.bodies.length;
+    const second = await session.startTurn(turnInput(roots, ['alpha'], 'Say other.'));
+    expect((await second.settled).status).toBe('completed');
+    const successorBodies = inference.bodies.slice(beforeSuccessor).map((body) => JSON.parse(body));
+    // Retained history may describe old input, but no pending message may execute as a new request.
+    expect(successorBodies).toHaveLength(1);
+    const messages = successorBodies[0].input.filter(
+      (message: { role?: string }) => message.role === 'user'
+    );
+    expect(JSON.stringify(messages.at(-1))).toContain('Say other.');
+    expect(await steer!(input)).toMatchObject({ disposition: 'refused', reasonCode: 'stale' });
+    const handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+    if (handle.state !== 'ready') throw new Error('Steer successor has no native resume proof.');
+    await session.close();
+    expect(session.childState()).toBe('absent');
+    const resumed = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: `http://127.0.0.1:${mcp.port}/capabilities`,
+        resumeReference: handle.reference,
+      })
+    );
+    sessions.push(resumed);
+    const beforeResume = inference.bodies.length;
+    expect(
+      (await (await resumed.startTurn(turnInput(roots, ['alpha'], 'Say other.'))).settled).status
+    ).toBe('completed');
+    const resumedBodies = inference.bodies.slice(beforeResume).map((body) => JSON.parse(body));
+    expect(resumedBodies).toHaveLength(1);
+    expect(
+      JSON.stringify(
+        resumedBodies[0].input
+          .filter((message: { role?: string }) => message.role === 'user')
+          .at(-1)
+      )
+    ).toContain('Say other.');
+  }, 180_000);
+
+  it('qualifies native completion racing steer without rebinding it to another Turn', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inferenceEntered = Promise.withResolvers<void>();
+    const releaseInference = Promise.withResolvers<void>();
+    let firstResponse = true;
+    const inference = await responsesServer(async () => {
+      if (firstResponse) {
+        firstResponse = false;
+        inferenceEntered.resolve();
+        await releaseInference.promise;
+      }
+      return false;
+    });
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+      })
+    );
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(roots, [], 'Say other.'));
+    await inferenceEntered.promise;
+    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+    const request = rpc.request.bind(rpc);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let nativeCalls = 0;
+    vi.spyOn(rpc, 'request').mockImplementation(async (method, params, timeout) => {
+      if (method === 'turn/steer') {
+        nativeCalls++;
+        entered.resolve();
+        await release.promise;
+      }
+      return await request(method, params, timeout);
+    });
+    const input = {
+      inputItemId: 'it_00000000-0000-7000-8000-000000000802',
+      input: 'Exact late instruction',
+      inputDigest: createHash('sha256').update('Exact late instruction').digest('hex'),
+    };
+    const pending = turn.steer!(input);
+    try {
+      await entered.promise;
+      releaseInference.resolve();
+      expect((await turn.settled).status).toBe('completed');
+      release.resolve();
+      // An unclassified native rejection retains uncertainty; it is never success or a new prompt.
+      expect(await pending).toMatchObject({ disposition: 'unknown' });
+      expect(await turn.steer!(input)).toMatchObject({
+        disposition: 'refused',
+        reasonCode: 'stale',
+      });
+      await expect(session.startTurn(turnInput(roots, [], 'Say other.'))).rejects.toThrow();
+      expect(nativeCalls).toBe(1);
+      expect(inference.bodies).toHaveLength(1);
+    } finally {
+      releaseInference.resolve();
+      release.resolve();
+      await pending.catch(() => undefined);
+    }
+  }, 60_000);
+
+  it('qualifies a lost real native steer response as unknown without native resend', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+      })
+    );
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(roots, [], 'hang please'));
+    await inference.untilHung();
+    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+    const request = rpc.request.bind(rpc);
+    let nativeCalls = 0;
+    let nativeAccepted: unknown;
+    vi.spyOn(rpc, 'request').mockImplementation(async (method, params, timeout) => {
+      const response = await request(method, params, timeout);
+      if (method === 'turn/steer') {
+        nativeCalls++;
+        nativeAccepted = response;
+        throw new Error('Injected lost native response.');
+      }
+      return response;
+    });
+    const input = {
+      inputItemId: 'it_00000000-0000-7000-8000-000000000803',
+      input: 'Exact uncertain instruction',
+      inputDigest: createHash('sha256').update('Exact uncertain instruction').digest('hex'),
+    };
+    expect(await turn.steer!(input)).toMatchObject({ disposition: 'unknown' });
+    expect(nativeAccepted).toMatchObject({ turnId: expect.any(String) });
+    expect(await turn.steer!(input)).toMatchObject({ disposition: 'refused', reasonCode: 'stale' });
+    await expect(session.startTurn(turnInput(roots, [], 'Say other.'))).rejects.toThrow();
+    await turn.interrupt();
+    await turn.settled;
+    expect(session.childState()).toBe('absent');
+    expect(nativeCalls).toBe(1);
+  }, 60_000);
+
+  it('qualifies bounded slow native steer and retains interrupt cleanup through the existing owner', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    let child: ChildProcessWithoutNullStreams | undefined;
+    const session = await openCodexResidentSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+      }),
+      {
+        binaryPath: vendorBinary,
+        spawnProcess: (binary, args, options) => {
+          child = spawn(binary, [...args], {
+            ...options,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }) as ChildProcessWithoutNullStreams;
+          return child;
+        },
+      }
+    );
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(roots, [], 'hang please'));
+    await inference.untilHung();
+    const input = {
+      inputItemId: 'it_00000000-0000-7000-8000-000000000804',
+      input: 'Exact slow instruction',
+      inputDigest: createHash('sha256').update('Exact slow instruction').digest('hex'),
+    };
+    process.kill(child!.pid!, 'SIGSTOP');
+    try {
+      const start = performance.now();
+      expect(await turn.steer!(input, new LifecycleDeadline(150))).toMatchObject({
+        disposition: 'unknown',
+      });
+      expect(performance.now() - start).toBeLessThan(2_000);
+    } finally {
+      process.kill(child!.pid!, 'SIGCONT');
+    }
+    const stop = performance.now();
+    await turn.interrupt();
+    await turn.settled;
+    expect(performance.now() - stop).toBeLessThan(LIFECYCLE_DEFAULTS.nativeStopMs);
+    expect(session.childState()).toBe('absent');
+    await expect(session.startTurn(turnInput(roots, [], 'Say other.'))).rejects.toThrow();
+  }, 60_000);
+
   it('reports ready when an interrupted first Turn has written the rollout', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));

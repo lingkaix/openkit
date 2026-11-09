@@ -2,6 +2,7 @@ import { AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
+import { TaskSteerReceiptMetadataSchema } from '../runtime/task-steer-receipt.js';
 import { CATALOG_COMMAND_RECEIPTS } from './catalog-command-receipt-codecs.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -20,6 +21,7 @@ export const CONTROL_ADMISSION_COMMANDS = [
   'thread.archive',
   'turn.start',
   'task.start',
+  'task.steer',
   'turn.input.submit',
   'conversation.submit',
   'turn.interrupt',
@@ -28,7 +30,6 @@ export const CONTROL_ADMISSION_COMMANDS = [
 /** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
 export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   ...CONTROL_ADMISSION_COMMANDS,
-  'task.steer',
   'vault.server-mcp-secret-create',
   'vault.server-mcp-secret-rotate',
   'vault.server-mcp-secret-revoke',
@@ -126,6 +127,7 @@ const ReceiptSchema = z
         kind: z.string().min(1),
         id: z.string().min(1),
         conversationMetadata: z.unknown().optional(),
+        steerMetadata: TaskSteerReceiptMetadataSchema.optional(),
       })
       .strict(),
     createdAt: z.string().datetime(),
@@ -138,7 +140,7 @@ export const ControlAdmissionSchema = z
   .object({
     receipt: ReceiptSchema,
     products: z.lazy(() =>
-      z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries)
+      z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries)
     ),
     entries: z.lazy(() => z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries)),
     pending: z
@@ -149,7 +151,23 @@ export const ControlAdmissionSchema = z
       occurredAt: z.string().datetime(),
     }),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    const steer = input.receipt.command === 'task.steer';
+    if (
+      steer
+        ? input.products.length !== 0 ||
+          input.entries.length !== 0 ||
+          (input.pending?.length ?? 0) !== 0 ||
+          !input.receipt.response.steerMetadata ||
+          input.receipt.response.conversationMetadata !== undefined
+        : input.products.length === 0 || input.receipt.response.steerMetadata !== undefined
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Only task.steer publishes a receipt without a product mutation.',
+      });
+  });
 
 export type ControlAdmission = z.infer<typeof ControlAdmissionSchema>;
 

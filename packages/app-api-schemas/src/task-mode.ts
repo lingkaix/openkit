@@ -4,6 +4,7 @@ import {
   ProductTurnSchema,
   RequestIdSchema,
   ThreadIdSchema,
+  TurnIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -104,3 +105,43 @@ export type TaskModeGoalEscalation = z.infer<typeof TaskModeGoalEscalationSchema
 export type TaskModeCompletion = z.infer<typeof TaskModeCompletionSchema>;
 /** Existing thread and artifact records that evidence a Task Mode attempt. */
 export type TaskModeEvidence = z.infer<typeof TaskModeEvidenceSchema>;
+
+/** Original UTF-8 text ceiling for the bounded private live-steer exchange. */
+export const TASK_STEER_INPUT_MAX_BYTES = 16 * 1024;
+
+/** Exact same-Turn text instruction; caller-controlled authority and configuration are excluded. */
+export const SteerTaskRequestSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    requestId: RequestIdSchema,
+    input: z.string().refine(
+      (value) => {
+        const bytes = new TextEncoder().encode(value);
+        return (
+          value.trim().length > 0 &&
+          bytes.byteLength <= TASK_STEER_INPUT_MAX_BYTES &&
+          new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) === value
+        );
+      },
+      { message: 'Steer input must contain text and fit within 16 KiB of UTF-8.' }
+    ),
+  })
+  .strict();
+
+/** Native acceptance during the addressed Turn; this does not claim model consumption. */
+export const SteerTaskResponseSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    inputItemId: ItemIdSchema,
+    delivery: z.literal('accepted'),
+  })
+  .strict();
+
+/** Exact public live-steer request. */
+export type SteerTaskRequest = z.infer<typeof SteerTaskRequestSchema>;
+/** Accepted native same-Turn delivery. */
+export type SteerTaskResponse = z.infer<typeof SteerTaskResponseSchema>;

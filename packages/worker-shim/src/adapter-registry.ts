@@ -164,8 +164,26 @@ export interface WorkerResidentTurnInput {
   readonly workingDirectory: string;
 }
 
+/** Bounded user text correlated with the product Item; native identifiers stay private. */
+export interface WorkerResidentSteerInput {
+  readonly inputItemId: string;
+  readonly inputDigest: string;
+  readonly input: string;
+}
+
+/** Native admission only; a possible write with no exact response remains unknown. */
+export type WorkerResidentSteerResult =
+  | { readonly disposition: 'accepted'; readonly inputItemId: string; readonly inputDigest: string }
+  | { readonly disposition: 'refused'; readonly reasonCode: 'stale' | 'unsupported' | 'busy' }
+  | { readonly disposition: 'unknown'; readonly reasonCode: 'outcome_unknown' };
+
 /** One accepted native Turn, or an unproved native attempt retained for Harness cleanup. */
 export interface WorkerResidentTurn {
+  /** Qualified exact-work native admission; absence means unsupported and permits no native contact. */
+  steer?(
+    input: WorkerResidentSteerInput,
+    deadline?: LifecycleDeadline
+  ): Promise<WorkerResidentSteerResult>;
   /** Resolves with a normalized result only after native settlement is proved; rejects when settlement cannot be proved, requiring bounded Harness stop confirmation or fencing. */
   readonly settled: Promise<WorkerAdapterResult>;
   /** Requests interruption and resolves only after the addressed native work is proved stopped; rejection or non-resolution does not prove settlement. */

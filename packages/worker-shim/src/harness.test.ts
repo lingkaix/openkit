@@ -38,7 +38,7 @@ import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
 
 const fixtureEntityIds = new Map<string, string>();
 /** Allocates a logical fixture once; labels remain test correlation and never become native identity. */
-function fixtureId(kind: 'as' | 'th' | 'tu', key: string): string {
+function fixtureId(kind: 'as' | 'th' | 'tu' | 'it', key: string): string {
   const owner = `${kind}:${key}`;
   let id = fixtureEntityIds.get(owner);
   if (!id) {
@@ -181,6 +181,7 @@ interface FakeResident {
  */
 function fakeAdapter(
   options: {
+    steer?: import('./adapter-registry.js').WorkerResidentTurn['steer'];
     closeFails?: boolean;
     initialHandle?: WorkerNativeHandle;
     openFails?: boolean;
@@ -301,6 +302,7 @@ function fakeAdapter(
             if (result.status === 'completed') resident.completedTurns += 1;
           });
           return {
+            ...(options.steer ? { steer: options.steer } : {}),
             async interrupt() {
               resident.interrupts += 1;
               interrupt();
@@ -5408,3 +5410,130 @@ it.each(['turn', 'route'])(
     expect(f.fake.residents[0]?.turns).toHaveLength(0);
   }
 );
+
+describe('Harness same-Turn live steer', () => {
+  it('rechecks the exact active lineage and digest before one native admission', async () => {
+    const native = vi.fn(
+      async (input: import('./adapter-registry.js').WorkerResidentSteerInput) => ({
+        disposition: 'accepted' as const,
+        inputItemId: input.inputItemId,
+        inputDigest: input.inputDigest,
+      })
+    );
+    const fake = fakeAdapter({ steer: native });
+    fake.script.push({ kind: 'hold' });
+    const f = harnessFixture({ adapter: fake });
+    const agentSessionId = fixtureId('as', 'steer');
+    const turnId = fixtureId('tu', 'steer');
+    await f.open(agentSessionId);
+    expect((await f.start(agentSessionId, turnId)).disposition).toBe('succeeded');
+    const start = f.startBody(agentSessionId, turnId);
+    const input = '  exact text\n';
+    const body = {
+      ...f.selector(agentSessionId),
+      workspaceId: start.workspaceId,
+      threadId: start.threadId,
+      turnId,
+      leaseId: start.leaseId,
+      packageSnapshotId: start.packageSnapshotId,
+      turnSequence: start.turnSequence,
+      inputItemId: 'it_00000000-0000-7000-8000-000000000801',
+      input,
+      inputDigest: sha256(input),
+    };
+    for (const patch of [
+      { turnId: fixtureId('tu', 'other-steer') },
+      { leaseId: 'wrong' },
+      { packageSnapshotId: 'wrong' },
+      { turnSequence: 9 },
+      { threadId: fixtureId('th', 'wrong-steer') },
+      { inputDigest: 'f'.repeat(64) },
+    ]) {
+      expect((await f.send('turn.steer', { ...body, ...patch })).disposition).toBe('refused');
+    }
+    expect(native).not.toHaveBeenCalled();
+    expect(await f.send('turn.steer', body)).toMatchObject({
+      disposition: 'succeeded',
+      body: {
+        state: 'accepted',
+        turnId,
+        inputItemId: body.inputItemId,
+        inputDigest: body.inputDigest,
+      },
+    });
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(native.mock.calls[0]![0]).toEqual({
+      inputItemId: body.inputItemId,
+      inputDigest: body.inputDigest,
+      input,
+    });
+    await f.send('turn.interrupt', {
+      ...f.selector(agentSessionId),
+      turnId,
+      leaseId: start.leaseId,
+      purpose: 'interrupt',
+    });
+    expect(await f.send('turn.steer', body)).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'stale' },
+    });
+    expect(native).toHaveBeenCalledTimes(1);
+  });
+  it.each(['unknown', 'lost-response', 'wrong-input'] as const)(
+    'fences native uncertainty without another steer or successor work: %s',
+    async (fault) => {
+      const native = vi.fn(
+        async (input: import('./adapter-registry.js').WorkerResidentSteerInput) => {
+          if (fault === 'lost-response') throw new Error('Injected native response loss.');
+          if (fault === 'unknown')
+            return { disposition: 'unknown' as const, reasonCode: 'outcome_unknown' as const };
+          return {
+            disposition: 'accepted' as const,
+            inputItemId: fixtureId('it', 'wrong-native-steer'),
+            inputDigest: input.inputDigest,
+          };
+        }
+      );
+      const fake = fakeAdapter({ steer: native });
+      fake.script.push({ kind: 'hold' });
+      const f = harnessFixture({ adapter: fake });
+      const agentSessionId = fixtureId('as', `uncertain-steer-${fault}`);
+      const turnId = fixtureId('tu', `uncertain-steer-${fault}`);
+      await f.open(agentSessionId);
+      expect((await f.start(agentSessionId, turnId)).disposition).toBe('succeeded');
+      const start = f.startBody(agentSessionId, turnId);
+      const input = 'Exact original instruction';
+      const body = {
+        ...f.selector(agentSessionId),
+        workspaceId: start.workspaceId,
+        threadId: start.threadId,
+        turnId,
+        leaseId: start.leaseId,
+        packageSnapshotId: start.packageSnapshotId,
+        turnSequence: start.turnSequence,
+        inputItemId: fixtureId('it', `uncertain-steer-${fault}`),
+        input,
+        inputDigest: sha256(input),
+      };
+      try {
+        expect(await f.send('turn.steer', body)).toMatchObject({
+          disposition: 'unknown',
+          body: { reasonCode: 'outcome_unknown' },
+        });
+        expect((await f.send('turn.steer', body)).disposition).toBe('refused');
+        expect(
+          (await f.start(agentSessionId, fixtureId('tu', `successor-after-${fault}`))).disposition
+        ).toBe('refused');
+        expect(native).toHaveBeenCalledTimes(1);
+        expect(fake.residents[0]!.turns).toHaveLength(1);
+      } finally {
+        await f.send('turn.interrupt', {
+          ...f.selector(agentSessionId),
+          turnId,
+          leaseId: start.leaseId,
+          purpose: 'interrupt',
+        });
+      }
+    }
+  );
+});

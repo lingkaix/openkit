@@ -23,6 +23,7 @@ export const NANO_HOST_HARNESS_OPERATIONS = [
   'session.open',
   'session.inspect',
   'turn.start',
+  'turn.steer',
   'turn.interrupt',
   'session.close',
   'harness.drain',
@@ -921,6 +922,11 @@ export function prepareNanoHostHarnessOperation(
 ): PreparedNanoHostHarnessOperation {
   const body = requireHarnessOperationBody(input.operation, input.body);
   const harness = requireHarness(coreDb, input.harnessInstanceId);
+  if (input.operation === 'turn.steer') {
+    if (!['idle', 'settled'].includes(harness.operation_state))
+      throw new Error('NanoHost Harness steer slot is busy.');
+    requireConsumedHarnessResult(harness);
+  }
   requireOperationLineage(coreDb, harness, input.operation, body);
   let wireBody = body;
   if (input.operation === 'turn.start') {
@@ -969,6 +975,7 @@ export function queueNanoHostHarnessOperation(
     if (!['idle', 'settled'].includes(harness.operation_state)) {
       throw new Error('NanoHost Harness already has an unsettled operation.');
     }
+    if (input.operation === 'turn.steer') requireConsumedHarnessResult(harness);
     // Queueing retains the predecessor receipt; only physical dispatch may retire it.
     if (
       (input.operation === 'session.open' || input.operation === 'turn.start') &&
@@ -1075,7 +1082,11 @@ export function dispatchNanoHostHarnessOperation(
     const body = requireDurableHarnessBody(harness.operation, durableBody);
     // The committed command tuple owns native correlation; a current encoder cannot rename it.
     requireSha256(harness.operation_id, 'recorded operation identity');
-    requireOperationLineage(coreDb, harness, harness.operation, body);
+    // Steer's original queue admission is exact. The existing live producer rechecks current authority
+    // before materializing user text; it must also observe a stale queued target and retain refusal.
+    // Marking this reference dispatched grants no native contact without that authenticated producer.
+    if (harness.operation !== 'turn.steer')
+      requireOperationLineage(coreDb, harness, harness.operation, body);
     if (harness.operation === 'turn.start') {
       const attemptId = body.leaseId as string;
       const lease = coreDb.sqlite
@@ -1397,6 +1408,17 @@ function projectSuccessfulResult(
   timestamp: string
 ): void {
   const command = readJsonObject(harness.command_body_json ?? '{}');
+  if (harness.operation === 'turn.steer') {
+    if (
+      body.state !== 'accepted' ||
+      body.turnId !== command.turnId ||
+      body.inputItemId !== command.inputItemId ||
+      body.inputDigest !== command.inputDigest
+    )
+      throw new Error('NanoHost steer acceptance conflicts with its exact original command.');
+    // A late acknowledgement describes the original work. It changes no binding, Turn or terminal state.
+    return;
+  }
   const bindingId = command.agentSessionRuntimeBindingId;
   if (typeof bindingId !== 'string') {
     if (harness.operation === 'harness.drain') {
@@ -1585,7 +1607,7 @@ function requireOperationLineage(
     )
       throw new Error('NanoHost public native environment conflicts with the exact binding.');
   }
-  if (operation === 'turn.interrupt') {
+  if (operation === 'turn.interrupt' || operation === 'turn.steer') {
     if (
       harness.active_turn_count < 1 ||
       binding.lifecycleState !== 'active' ||
@@ -1639,13 +1661,20 @@ function requireOperationLineage(
       | undefined;
     if (
       !lease ||
-      !['open', 'closing'].includes(lease.phase) ||
+      !(operation === 'turn.steer'
+        ? lease.phase === 'open'
+        : ['open', 'closing'].includes(lease.phase)) ||
       lease.workspaceId !== binding.workspaceId ||
       lease.threadId !== binding.threadId ||
       lease.turnId !== body.turnId ||
       lease.agentSessionId !== body.agentSessionId ||
       launch?.packageSnapshotId !== lease.inputRef ||
-      acceptedFinal
+      acceptedFinal ||
+      (operation === 'turn.steer' &&
+        (body.workspaceId !== binding.workspaceId ||
+          body.threadId !== binding.threadId ||
+          body.packageSnapshotId !== lease.inputRef ||
+          body.turnSequence !== binding.nextTurnSequence - 1))
     ) {
       throw new Error('NanoHost Harness interrupt conflicts with the live lease lineage.');
     }
@@ -1742,7 +1771,11 @@ function redactHarnessWireBody(
   operation: NanoHostHarnessOperation,
   value: Readonly<Record<string, unknown>>
 ): Readonly<Record<string, unknown>> {
-  const parsed = HarnessCommandBodySchemas[operation].safeParse(value);
+  const parsed = (
+    operation === 'turn.steer'
+      ? HarnessQueuedCommandBodySchemas[operation]
+      : HarnessCommandBodySchemas[operation]
+  ).safeParse(value);
   if (!parsed.success) throw new Error(`NanoHost ${operation} prepared wire body is invalid.`);
   const body: Record<string, unknown> = { ...parsed.data };
   if (operation === 'turn.start') {

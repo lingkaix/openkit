@@ -3695,6 +3695,62 @@ test('the bundled CLI stages one local Skill in the caller and uploads only its 
   }
 });
 
+test('bundled task.steer preserves exact text and target and never retries an uncertain effect', async () => {
+  const input = {
+    workspaceId: protocol.allocateEntityId('ws'),
+    threadId: protocol.allocateEntityId('th'),
+    turnId: protocol.allocateEntityId('tu'),
+    requestId: randomUUID(),
+    input: '  Exact live input\n',
+  };
+  const data = {
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    inputItemId: protocol.allocateEntityId('it'),
+    delivery: 'accepted',
+  };
+  for (const code of [
+    null,
+    'steer_outcome_unknown',
+    'steer_unsupported',
+    'steer_busy',
+    'steer_target_stale',
+  ]) {
+    const { requestId } = input;
+    const fetchStub = commandModule(`
+      import { isDeepStrictEqual } from 'node:util';
+      let calls = 0;
+      globalThis.fetch = async (url, options) => {
+        if (++calls !== 1) throw new Error('Steer must never be automatically resent.');
+        if (url !== 'http://nanocore.example/api/app/operations/task.steer' || options.method !== 'POST') throw new Error('unexpected transport');
+        const body = JSON.parse(options.body);
+        if (!isDeepStrictEqual(body, ${JSON.stringify({ workspaceId: input.workspaceId, threadId: input.threadId, turnId: input.turnId, input: input.input })})) throw new Error('changed exact instruction or target');
+        if (new Headers(options.headers).get('x-openkit-request-id') !== ${JSON.stringify(requestId)}) throw new Error('changed exact request identity');
+        return new Response(JSON.stringify(${JSON.stringify(code ? { code, message: 'Delivery requires inspection.', details: data, protocolVersion: protocol.PROTOCOL_VERSION } : data)}),
+          { status: ${code ? 409 : 200}, headers: { 'content-type': 'application/json' } });
+      };
+    `);
+    const result = await runCli(
+      ['ops', 'call', 'task.steer', '--input', '-'],
+      {
+        OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+        OPENKIT_NANOCORE_TOKEN: '',
+      },
+      JSON.stringify(input),
+      [fetchStub]
+    );
+    const output = JSON.parse(result.stdout);
+    if (code) {
+      assert.notEqual(result.code, 0);
+      assert.equal(output.error.code, code);
+    } else {
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.deepEqual(output.data, data);
+    }
+  }
+});
+
 test('the bundled CLI performs one typed call with fixed audit headers', async () => {
   const fetchStub = commandModule(`
     globalThis.fetch = async (url, options) => {

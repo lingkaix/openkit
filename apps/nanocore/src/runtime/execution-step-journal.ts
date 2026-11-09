@@ -23,6 +23,7 @@ export type ExecutionStepKind =
   | 'open-session'
   | 'inspect-session'
   | 'deliver-start'
+  | 'deliver-steer'
   | 'observe'
   | 'collect'
   | 'terminal-publication'

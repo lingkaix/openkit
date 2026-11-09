@@ -48,7 +48,7 @@ interface Fixture {
 
 /** Starts synthetic inference and capability endpoints and fresh binding directories. */
 async function fixture(
-  reply: (n: number, request: CapturedInference) => InferenceReply
+  reply: (n: number, request: CapturedInference) => InferenceReply | Promise<InferenceReply>
 ): Promise<Fixture> {
   const directories = await createHostDirectories();
   const inferenceCredential = mintLoopbackCredential();
@@ -255,6 +255,255 @@ const toolThenText = (n: number): InferenceReply =>
     : { text: `answer-${n}` };
 
 describe('Pi runtime host', () => {
+  it.each(['terminal', 'interrupt'] as const)(
+    'fences a steer hook that returns after %s and prevents late input from reaching exact resume',
+    async (ending) => {
+      let release!: (reply: InferenceReply) => void;
+      const held = new Promise<InferenceReply>((resolve) => {
+        release = resolve;
+      });
+      const f = await fixture((n) => (n === 2 ? held : { text: `answer-${n}` }));
+      const entered = join(f.directories.root, 'steer-entered');
+      const released = join(f.directories.root, 'steer-released');
+      const input = 'late extension input';
+      await installExtension(
+        f.directories,
+        `import { writeFile, access } from 'node:fs/promises';
+        export default function(pi) { pi.on('input', async (event) => {
+          if (event.text !== ${JSON.stringify(input)}) return;
+          await writeFile(${JSON.stringify(entered)}, 'entered');
+          for (;;) { try { await access(${JSON.stringify(released)}); break; }
+            catch { await new Promise(resolve => setTimeout(resolve, 10)); } }
+          return { action: 'continue' };
+        }); }
+      `
+      );
+      const host = f.start();
+      await f.open(host);
+      f.capability.bound = true;
+      const warm = await turn(host, 'warm', 'warm prompt');
+      const handle = warm.nativeHandle as { handle: string };
+      await host.request({ op: 'turn', turnId: 'active', prompt: 'held prompt' });
+      await waitFor(() => f.inference.requests.length === 2);
+      const pending = host.request({
+        op: 'steer',
+        turnId: 'active',
+        inputItemId: 'item-late',
+        inputDigest: createHash('sha256').update(input).digest('hex'),
+        input,
+      });
+      await waitFor(() => existsSync(entered));
+      try {
+        if (ending === 'terminal') release({ text: 'finished original work' });
+        else await host.request({ op: 'interrupt', turnId: 'active' });
+        expect((await host.settled('active')).outcome.status).toBe(
+          ending === 'terminal' ? 'completed' : 'interrupted'
+        );
+        expect(
+          await host.request({ op: 'turn', turnId: 'too-early', prompt: 'must not start' })
+        ).toMatchObject({
+          ok: false,
+          error: { code: 'busy' },
+        });
+        await writeFile(released, 'released');
+        expect(await pending).toMatchObject({ ok: true, result: { disposition: 'unknown' } });
+        expect(
+          await host.request({ op: 'turn', turnId: 'fenced', prompt: 'must not start' })
+        ).toMatchObject({
+          ok: false,
+          error: { code: 'invalid_state' },
+        });
+        await host.request({ op: 'close' });
+        await host.exited;
+        const resumed = f.start();
+        expect(await f.open(resumed, { resume: { handle: handle.handle } })).toMatchObject({
+          ok: true,
+        });
+        expect((await turn(resumed, 'resumed', 'fresh resume')).outcome.status).toBe('completed');
+        expect(f.inference.requests).toHaveLength(3);
+        expect(requestTexts(f.inference.requests[2]!).join('\n')).not.toContain(input);
+      } finally {
+        release({ text: 'released' });
+        await writeFile(released, 'released');
+      }
+    },
+    TIMEOUT
+  );
+
+  it.each(['loss', 'close'] as const)(
+    'drops only the native input queue on host %s and resumes the exact retained conversation',
+    async (ending) => {
+      const f = await fixture((n) => (n === 2 ? { hang: true } : { text: `answer-${n}` }));
+      const host = f.start();
+      await f.open(host);
+      f.capability.bound = true;
+      const warm = await turn(host, 'warm', 'warm prompt');
+      const handle = warm.nativeHandle as { handle: string };
+      await host.request({ op: 'turn', turnId: 'active', prompt: 'held prompt' });
+      await host.waitUntil(() => f.inference.requests.length === 2);
+      const input = 'queued before host loss';
+      expect(
+        await host.request({
+          op: 'steer',
+          turnId: 'active',
+          inputItemId: 'item-lost',
+          inputDigest: createHash('sha256').update(input).digest('hex'),
+          input,
+        })
+      ).toMatchObject({
+        ok: true,
+        result: { disposition: 'accepted' },
+      });
+      if (ending === 'loss') await host.kill();
+      else {
+        await host.request({ op: 'close' });
+        await host.exited;
+      }
+      const resumed = f.start();
+      expect(await f.open(resumed, { resume: { handle: handle.handle } })).toMatchObject({
+        ok: true,
+      });
+      expect((await turn(resumed, 'resumed', 'fresh after host loss')).outcome.status).toBe(
+        'completed'
+      );
+      expect(f.inference.requests).toHaveLength(3);
+      expect(requestTexts(f.inference.requests[2]!).join('\n')).not.toContain(input);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'processes admitted steer at the real native boundary within the same addressed Turn',
+    async () => {
+      let release!: (reply: InferenceReply) => void;
+      const held = new Promise<InferenceReply>((resolve) => {
+        release = resolve;
+      });
+      const f = await fixture((n) => (n === 2 ? held : { text: `answer-${n}` }));
+      const host = f.start();
+      await f.open(host);
+      f.capability.bound = true;
+      await turn(host, 'warm', 'warm prompt');
+      await host.request({ op: 'turn', turnId: 'active', prompt: 'held prompt' });
+      await waitFor(() => f.inference.requests.length === 2);
+      const input = 'consume this in the same work';
+      try {
+        expect(
+          await host.request({
+            op: 'steer',
+            turnId: 'active',
+            inputItemId: 'item-consumed',
+            inputDigest: createHash('sha256').update(input).digest('hex'),
+            input,
+          })
+        ).toMatchObject({
+          ok: true,
+          result: { disposition: 'accepted' },
+        });
+      } finally {
+        release({ text: 'original response' });
+      }
+      const settled = await host.settled('active');
+      expect(settled.outcome).toMatchObject({ status: 'completed', assistantText: 'answer-3' });
+      expect(f.inference.requests).toHaveLength(3);
+      expect(requestTexts(f.inference.requests[2]!).at(-1)).toBe(input);
+      expect(
+        host.events.filter((event) => event.event === 'turn_settled' && event.turnId === 'active')
+      ).toHaveLength(1);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'admits steer only during the exact native work and clears it before successor and exact resume',
+    async () => {
+      const f = await fixture((n) => (n === 2 ? { hang: true } : { text: `answer-${n}` }));
+      const host = f.start();
+      await f.open(host);
+      f.capability.bound = true;
+      await turn(host, 'warm', 'warm prompt');
+      await host.request({ op: 'turn', turnId: 'active', prompt: 'held prompt' });
+      await host.waitUntil(() => f.inference.requests.length === 2);
+      const input = 'exact live instruction';
+      const command = {
+        op: 'steer',
+        turnId: 'active',
+        inputItemId: 'item-live',
+        inputDigest: createHash('sha256').update(input).digest('hex'),
+        input,
+      };
+      expect(await host.request(command)).toMatchObject({
+        ok: true,
+        result: {
+          disposition: 'accepted',
+          inputItemId: command.inputItemId,
+          inputDigest: command.inputDigest,
+          turnId: 'active',
+        },
+      });
+      await host.request({ op: 'interrupt', turnId: 'active' });
+      expect((await host.settled('active')).outcome.status).toBe('interrupted');
+      expect(await host.request(command)).toMatchObject({
+        ok: true,
+        result: { disposition: 'refused', reasonCode: 'stale' },
+      });
+      const next = await turn(host, 'successor', 'fresh successor');
+      expect(next.outcome.status).toBe('completed');
+      expect(f.inference.requests).toHaveLength(3);
+      expect(requestTexts(f.inference.requests[2]!).join('\n')).not.toContain(input);
+      const nativeHandle = next.nativeHandle as { digest: string; handle: string; state: string };
+      expect(nativeHandle.state).toBe('ready');
+      await host.request({ op: 'close' });
+      await host.exited;
+      const resumed = f.start();
+      expect(await f.open(resumed, { resume: { handle: nativeHandle.handle } })).toMatchObject({
+        ok: true,
+      });
+      expect((await turn(resumed, 'resumed', 'fresh resumed')).outcome.status).toBe('completed');
+      expect(f.inference.requests).toHaveLength(4);
+      expect(requestTexts(f.inference.requests[3]!).join('\n')).not.toContain(input);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'reports extension-handled steer as definite non-delivery without native successor spill',
+    async () => {
+      const input = 'extension handles this input';
+      const f = await fixture((n) => (n === 2 ? { hang: true } : { text: `answer-${n}` }));
+      await installExtension(
+        f.directories,
+        `export default function(pi) {
+        pi.on('input', (event) => event.text === ${JSON.stringify(input)} ? { action: 'handled' } : undefined);
+      }`
+      );
+      const host = f.start();
+      await f.open(host);
+      f.capability.bound = true;
+      await turn(host, 'warm', 'warm prompt');
+      await host.request({ op: 'turn', turnId: 'active', prompt: 'held prompt' });
+      await host.waitUntil(() => f.inference.requests.length === 2);
+      expect(
+        await host.request({
+          op: 'steer',
+          turnId: 'active',
+          inputItemId: 'item-handled',
+          inputDigest: createHash('sha256').update(input).digest('hex'),
+          input,
+        })
+      ).toMatchObject({
+        ok: true,
+        result: { disposition: 'refused', reasonCode: 'unsupported' },
+      });
+      expect(f.inference.requests).toHaveLength(2);
+      await host.request({ op: 'interrupt', turnId: 'active' });
+      expect((await turn(host, 'successor', 'fresh successor')).outcome.status).toBe('completed');
+      expect(f.inference.requests).toHaveLength(3);
+      expect(requestTexts(f.inference.requests[2]!).join('\n')).not.toContain(input);
+    },
+    TIMEOUT
+  );
+
   it(
     'runs two Turns on one conversation and connects OpenKit MCP once, after the first Turn is bound',
     async () => {

@@ -42,6 +42,7 @@ import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 import { canonicalPublicNetworkHost } from './public-network-grants.js';
+import type { TaskSteerControl, TaskSteerTarget } from './types.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 
 /** Canonical absolute filesystem paths in Core's bounded authorization intent. */
@@ -1127,6 +1128,12 @@ export interface WorkerGovernanceWorkspaceChangeRecord {
  * Worker governance backend boundary from NanoCore resolved package to runtime materialization.
  */
 export interface WorkerGovernanceBackend extends ExecutionBackend {
+  /** Exact live input through the existing private Harness operation and consumer acknowledgement. */
+  steerTurn?(
+    packageSnapshotId: string,
+    target: TaskSteerTarget,
+    control: TaskSteerControl
+  ): Promise<void>;
   /** Realizes admitted file supply during submit preparation; no material enters the operation surface. */
   deliverCredentialBinding?(
     packageSnapshotId: string,
