@@ -113,6 +113,7 @@ describe('workspace-transaction idempotent commands', () => {
     const store = new FsStore({ dataRoot });
     const userId = testEntityId('usr', 'original-user-receipt');
     const turnId = testEntityId('tu', 'original-user-receipt');
+    const requestId = randomUUID();
     const userDb = openUserDb(dataRoot, userId);
     try {
       applyScopedMigrations(userDb);
@@ -123,7 +124,7 @@ describe('workspace-transaction idempotent commands', () => {
         receiptDb: userDb,
         inflightCommands: new WeakMap(),
         command: 'knowledge.maintain',
-        requestId: 'original-user-receipt',
+        requestId,
         scope: { userId, actorId: userId },
         input: { instructions: 'Keep this original receipt.' },
         responseKind: 'turn',
@@ -132,10 +133,11 @@ describe('workspace-transaction idempotent commands', () => {
           throw new Error('Fresh work must not replay.');
         },
         execute: async (receipt) => {
-          await store.recordCommandRequest(
-            { ...receipt, response: { kind: 'turn', id: turnId } },
-            userDb
-          );
+          const { responseKind, ...originalReceipt } = receipt;
+          await store.commitScopedNotebookStage(userDb, {
+            kind: 'receipt',
+            receipt: { ...originalReceipt, response: { kind: responseKind, id: turnId } },
+          });
           original = read();
           userDb.sqlite.exec(
             "CREATE TRIGGER refuse_receipt_rewrite BEFORE UPDATE ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'original receipt must not be rewritten'); END"
