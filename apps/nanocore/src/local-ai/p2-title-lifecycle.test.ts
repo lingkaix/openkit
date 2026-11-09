@@ -6,6 +6,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
+import { generateThreadTitle } from '../llm/title-generation.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
@@ -271,7 +272,38 @@ describe('local title lifecycle', () => {
     ).toHaveLength(1);
   }, 45_000);
 
-  it('starts one title call when an assistant task handoff is confirmed', async () => {
+  it('writes an uncontended generated title exactly once after Thread creation is acknowledged', async () => {
+    const installation = await openHeld();
+    const write = vi.spyOn(installation.store, 'updateThread');
+    onTestFinished(() => write.mockRestore());
+    // This Thread has no Turn producer: its creation ACK is the exact uncontended fixture boundary.
+    const generation = generateThreadTitle({
+      store: installation.store,
+      workspaceId: installation.workspaceId,
+      threadId: installation.threadId,
+      initialName: 'Voice note',
+      sourceText: 'Repair the schema',
+      actor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+    });
+    const held = await installation.peer.held;
+    held.release({ content: 'Schema repair' });
+    await generation;
+    expect(write.mock.calls).toEqual([
+      [
+        installation.workspaceId,
+        installation.threadId,
+        { name: 'Schema repair' },
+        undefined,
+        { status: 'active', name: 'Voice note' },
+      ],
+    ]);
+    await expect(write.mock.results[0]!.value).resolves.toMatchObject({ name: 'Schema repair' });
+    expect(await threadName(installation, installation.threadId)).toBe('Schema repair');
+    expect(titleCalls(installation)).toHaveLength(1);
+    expect(titleHits(installation)).toHaveLength(1);
+  });
+
+  it('retries a confirmed assistant handoff title only after its first real native revision refusal', async () => {
     const installation = await openTitleInstallation({
       withDefaultAgent: true,
       wideAssistant: true,
@@ -279,7 +311,28 @@ describe('local title lifecycle', () => {
       decide: () => ({ kind: 'hold' }),
     });
     open.push(installation);
-    const titleWrite = vi.spyOn(installation.store, 'updateThread');
+    const events: string[] = [];
+    const refusals: unknown[] = [];
+    let attempts = 0;
+    const updateThread = installation.store.updateThread;
+    const titleWrite = vi
+      .spyOn(installation.store, 'updateThread')
+      .mockImplementation((...args) => {
+        const result = updateThread.apply(installation.store, args);
+        if (args[2].name === 'Schema repair') {
+          const attempt = ++attempts;
+          events.push(`write:${attempt}`);
+          // Observe the original Promise before the producer can resume; never replace its outcome.
+          void result.then(
+            () => events.push(`acked:${attempt}`),
+            (error: unknown) => {
+              refusals.push(error);
+              events.push(`refused:${attempt}`);
+            }
+          );
+        }
+        return result;
+      });
     onTestFinished(() => titleWrite.mockRestore());
     const timeline = await installation.store.createThread(
       installation.workspaceId,
@@ -327,25 +380,32 @@ describe('local title lifecycle', () => {
     const held = await installation.peer.held;
     const confirmed = await answer;
     expect(confirmed.status, await confirmed.clone().text()).toBe(200);
-    // Release the fast model only after the handoff's receiving-Thread publication has ACKed.
-    held.release({ content: 'Schema repair' });
-    await awaitTerminalTitles(installation);
     const created = installation.store
       .listThreads(installation.workspaceId)
       .filter((thread) => !before.has(thread.id));
     expect(created).toHaveLength(1);
-    expect(created[0]).toMatchObject({ parentThreadId: timeline.id });
-    expect(created[0]!.name).toBe('Schema repair');
+    const receiving = created[0]!;
+    expect(receiving).toMatchObject({ parentThreadId: timeline.id });
+    const publications = holdTitlePublications(receiving.id, 'Schema repair', 1);
+    held.release({ content: 'Schema repair' });
+    await publications.entered[0]!.promise;
+    // Advance the actual native revision after the title read; preserve its exact automatic name.
+    await installation.store.updateThread(installation.workspaceId, receiving.id, {
+      name: 'Confirm the schema repair',
+    });
+    publications.release[0]!.resolve();
+    await awaitTerminalTitles(installation);
+    expect(await threadName(installation, receiving.id)).toBe('Schema repair');
     expect(titleCalls(installation)).toHaveLength(1);
     expect(titleHits(installation)).toHaveLength(1);
     const writes = titleWrite.mock.calls.flatMap((args, index) =>
       args[2].name === 'Schema repair' ? [{ args, result: titleWrite.mock.results[index]! }] : []
     );
-    expect([1, 2]).toContain(writes.length);
+    expect(writes).toHaveLength(2);
     for (const write of writes) {
       expect(write.args).toEqual([
         installation.workspaceId,
-        created[0]!.id,
+        receiving.id,
         { name: 'Schema repair' },
         undefined,
         { status: 'active', name: 'Confirm the schema repair' },
@@ -353,26 +413,17 @@ describe('local title lifecycle', () => {
       expect(write.result.type).toBe('return');
       expect(write.result.value).toBeInstanceOf(Promise);
     }
-    // The spy calls through and retains the owner's exact original Promises.
-    // One guarded retry is admitted only after the actual first native CAS refusal.
     const outcomes = await Promise.allSettled(writes.map((write) => write.result.value));
     expect(outcomes.at(-1)).toMatchObject({
       status: 'fulfilled',
-      value: { id: created[0]!.id, name: 'Schema repair' },
+      value: { id: receiving.id, name: 'Schema repair' },
     });
-    if (writes.length === 2) {
-      expect(outcomes[0]!.status).toBe('rejected');
-      if (outcomes[0]!.status !== 'rejected') throw new Error('Title retry has no native refusal.');
-      const cause: unknown = outcomes[0]!.reason;
-      expect(cause).toBeInstanceOf(ControlStoreWorkerError);
-      expect(cause).toMatchObject({ code: 'precondition', commit: 'not-committed' });
-      console.info('Handoff title retained exact native retry cause', {
-        attempts: writes.length,
-        code: (cause as ControlStoreWorkerError).code,
-        commit: (cause as ControlStoreWorkerError).commit,
-        finalWrite: outcomes.at(-1)!.status,
-      });
-    }
+    expect(publications.errors).toHaveLength(1);
+    expect(refusals).toEqual(publications.errors);
+    expect(refusals[0]).toBeInstanceOf(ControlStoreWorkerError);
+    expect(refusals[0]).toMatchObject({ code: 'precondition', commit: 'not-committed' });
+    expect(outcomes[0]).toMatchObject({ status: 'rejected', reason: refusals[0] });
+    expect(events).toEqual(['write:1', 'refused:1', 'write:2', 'acked:2']);
   }, 45_000);
 
   it('starts one title call for an admitted goal task', async () => {
