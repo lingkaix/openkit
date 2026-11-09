@@ -4,6 +4,7 @@ This directory owns authored agent definitions and the resolution path from conf
 
 ## Boundaries
 
+- The shipped Pi manifest has no static readiness blocker. Task selection still requires current Gateway supply, and Worker preparation retains its activation checks; an operator-authored disabled status still blocks launch.
 - Keep manifest shape, selection, readiness, setup resolution, transport selection, resolved setup evidence, catalog projection, and catalog routes here.
 - Workspace-visible Agent catalog entries are a live read of current `runtimeConfig().agentManifests`. Missing authored role is `kind: null`. Missing authored readiness stays `health.unknown` with `checkedAt: null` and does not hide supply. Launch `computeReadiness` defaults stay launch-only.
 - Reusable conversation targets separately use Workspace Agent bindings or the Workspace default. An eligible unpinned Agent remains selectable by an exact Task request. A pin grants no readiness or authority; the supported configuration path is in the [operator guide](../../../../skills/openkit-ops/references/nanocore-operations.en.md#pin-a-reusable-worker-in-a-workspace) and the [conversation target owner](../../../../docs/specs/20260831-unified_conversation_composer.md#workspace-pin-prerequisite).

@@ -3,10 +3,6 @@
   "requiredFeatures": [],
   "id": "agent_pi",
   "displayName": "Pi Agent",
-  "readiness": {
-    "status": "disabled",
-    "message": "Pi 1.4.0 remains disabled until a live bounded inference Turn proves its Gateway route."
-  },
   "runtime": {
     "kind": "pi",
     "adapter": "pi",

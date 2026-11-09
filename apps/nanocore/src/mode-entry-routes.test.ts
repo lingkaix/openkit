@@ -14,6 +14,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
+  loadRuntimeConfig,
 } from './config/runtime-config.js';
 import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -65,6 +66,7 @@ import {
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { ensureConfigTemplateSurface } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
@@ -2020,6 +2022,50 @@ describe('exact Task Agent selection', () => {
       },
     };
   }
+
+  it('admits the freshly shipped Pi Agent with current Gateway supply', async () => {
+    const f = await fixture();
+    try {
+      ensureConfigTemplateSurface(f.dataRoot);
+      const pi = loadRuntimeConfig(f.dataRoot).agentManifests.find(
+        (agent) => agent.id === 'agent_pi'
+      );
+      expect(pi).toBeDefined();
+      const gateway = createTestGatewayConfig();
+      const app = createAppWithWorkspaceAuthority({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        turnExecutor: f.executor,
+        agentManifests: [pi!],
+        gatewayConfig: {
+          ...gateway,
+          logicalModels: [{ ...gateway.logicalModels[0]!, id: 'smart' }],
+        },
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Available Gateway Provider',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+      const response = await f.post(app, { agentId: 'agent_pi' });
+      expect(response.status, await response.clone().text()).toBe(202);
+      const { turn } = StartTaskModeResponseSchema.parse(await response.json());
+      expect(turn).toMatchObject({ agentId: 'agent_pi', status: 'pending' });
+      await f.settlePreparation();
+      expect(f.prepare).toHaveBeenCalled();
+      expect(f.effects().admissions).toEqual([
+        expect.objectContaining({ turnId: turn.id, requestedAgentId: 'agent_pi' }),
+      ]);
+      // Readiness selects a candidate; the existing activation/capacity owner still gates launch.
+      expect(f.executor.launches).toBe(0);
+    } finally {
+      await f.cleanup();
+    }
+  });
 
   it.each(['omitted', 'supplied'] as const)(
     'keeps %s selection and replay identity through duplicate admission and changed readiness',
