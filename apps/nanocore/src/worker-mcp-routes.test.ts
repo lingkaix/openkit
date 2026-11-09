@@ -4399,7 +4399,10 @@ describe('worker MCP routes', () => {
           'mcp-call-failed',
           'MCP tool call failed.',
           503,
-          'unknown'
+          'unknown',
+          false,
+          false,
+          { upstreamHttpStatus: 503 }
         );
       }
       if (message === 'oversize') {
@@ -4407,7 +4410,10 @@ describe('worker MCP routes', () => {
           'mcp-result-too-large',
           MCP_RESULT_TOO_LARGE_MESSAGE,
           413,
-          'contacted'
+          'contacted',
+          false,
+          false,
+          { refusedResultBytes: 600_043 }
         );
       }
       if (message === 'tool-error') {
@@ -4643,6 +4649,26 @@ describe('worker MCP routes', () => {
         expect(callTool.mock.calls.length - before).toBe(
           ['mcp-timeout', 'mcp-call-failed', 'mcp-result-too-large'].includes(failure.code) ? 1 : 0
         );
+      }
+      const diagnosticDb = openWorkspaceDb(dataRoot, environmentPackage.scope.workspaceId);
+      try {
+        const audits = listWorkspaceAuditEvents(diagnosticDb, environmentPackage.scope.workspaceId);
+        expect(audits).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              action: 'capability.finish',
+              errorCode: 'mcp-call-failed',
+              summary: expect.stringContaining(' Upstream HTTP status: 503.'),
+            }),
+            expect.objectContaining({
+              action: 'capability.finish',
+              errorCode: 'mcp-result-too-large',
+              summary: expect.stringContaining(' Refused result size: 600043 bytes.'),
+            }),
+          ])
+        );
+      } finally {
+        diagnosticDb.sqlite.close();
       }
       const cancellation = new AbortController();
       const callsBeforeCancellation = callTool.mock.calls.length;

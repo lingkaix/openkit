@@ -219,6 +219,7 @@ The first active Tool-condition subset is human-authored ordinary `prohibit` and
 
 ### Usage and audit
 
+- Failure Audit summaries retain the observed upstream HTTP status and the exact serialized byte size of a complete semantic result refused by the result bound, when known; upstream HTTP 429 also emits an application warning during discovery before a Tool Call exists. These diagnostics contain no upstream body or tool content.
 - Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/mediation.md`.
 - `mcp.list-servers` and `mcp.list-tools` are capability calls for audit purposes but do not emit usage rows.
 - Server lifecycle transitions, schema snapshot captures, and credential-bearing spawns emit audit events.

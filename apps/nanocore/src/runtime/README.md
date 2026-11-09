@@ -1,5 +1,7 @@
 # Runtime
 
+The MCP gateway preserves typed upstream HTTP status and exact refused semantic-result bytes for the original terminal Audit. Upstream 429 emits a structured application warning even during pre-call discovery; no upstream body enters that log or the Audit.
+
 The worker protocol and native dispatcher import the unchanged backend cleanup request and reply schemas from `worker-backend-cleanup-codecs.ts`. Types, SQL, cleanup projection and native transaction bodies remain in `worker-backend-cleanup-projection.ts`; the codec links to its input type through an erased import.
 
 Pending publication and flow, execution-attempt records and Goal Task context import receipt input hashing directly from `../storage/control-store-input.ts`. Their existing decisions and retained input encodings stay with the same owners.

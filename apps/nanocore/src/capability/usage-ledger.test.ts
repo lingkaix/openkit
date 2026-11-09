@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId, UsageRecordSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -50,6 +51,56 @@ function createWorkspaceLedgerActor(workspaceDb: ReturnType<typeof openWorkspace
 }
 
 describe('capability usage ledger', () => {
+  it.each([
+    {
+      diagnostics: { upstreamHttpStatus: 503 },
+      code: 'mcp-call-failed',
+      suffix: ' Upstream HTTP status: 503.',
+    },
+    {
+      diagnostics: { refusedResultBytes: 600_043 },
+      code: 'mcp-result-too-large',
+      suffix: ' Refused result size: 600043 bytes.',
+    },
+  ])(
+    'retains MCP failure diagnostics in the original terminal Audit ($code)',
+    async ({ diagnostics, code, suffix }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'mcp-failure-audit-'));
+      const db = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+      try {
+        applyScopedMigrations(db, undefined, 'pre-knowledge');
+        const actor = createWorkspaceLedgerActor(db);
+        await openTestNativeWorkspace(db);
+        const call = await startCapabilityCall({
+          workspaceDb: db,
+          workspaceId: db.workspaceId,
+          authorityActor: actor,
+          family: 'mcp',
+          operation: 'mcp.call-tool',
+          capabilityId: 'mcp.call-tool',
+          redactionClass: 'metadata-only',
+          summary: 'MCP echo.echo',
+        });
+        await finishMcpToolCall(call, db, { status: 'failed', errorCode: code, ...diagnostics });
+        expect(listWorkspaceCapabilityCalls(db, db.workspaceId)).toEqual([
+          expect.objectContaining({ id: call.id, status: 'failed', errorCode: code }),
+        ]);
+        const audits = listWorkspaceAuditEvents(db, db.workspaceId).filter(
+          (event) => event.action === 'capability.finish' && event.capabilityCallId === call.id
+        );
+        expect(audits).toHaveLength(1);
+        expect(audits[0]?.summary).toBe(`Capability call failed: ${code}${suffix}`);
+        const usage = listWorkspaceUsageRecords(db, db.workspaceId);
+        expect(usage).toHaveLength(1);
+        expect(usage[0]).toMatchObject({ quantity: 1, unit: 'tool_calls' });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
   it.each([
     ['native', 'llm'],
     ['native', 'mcp'],

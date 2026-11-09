@@ -14,9 +14,87 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
-import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
+import { createDefaultWorkerMcpGateway, MCP_RESULT_MAX_BYTES } from './worker-mcp-gateway.js';
 
 describe('worker MCP gateway', () => {
+  it('preserves the real upstream HTTP status without retaining its body', async () => {
+    const upstream = await createMcpHttpStub({
+      httpFailure: { method: 'tools/call', status: 503 },
+    });
+    const gateway = createDefaultWorkerMcpGateway();
+    try {
+      const error = await gateway
+        .callTool({
+          server: httpTestServer(upstream.url, 2_000),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          toolName: 'echo',
+          arguments: { message: 'safe' },
+        })
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ code: 'mcp-call-failed', upstreamHttpStatus: 503 });
+      expect(String(error)).not.toContain('UPSTREAM_PRIVATE_BODY_CANARY');
+      expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(true);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it('preserves the exact refused semantic-result byte size', async () => {
+    const upstream = await createMcpHttpStub();
+    const gateway = createDefaultWorkerMcpGateway();
+    const message = 'x'.repeat(MCP_RESULT_MAX_BYTES);
+    try {
+      await expect(
+        gateway.callTool({
+          server: httpTestServer(upstream.url, 2_000),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          toolName: 'echo',
+          arguments: { message },
+        })
+      ).rejects.toMatchObject({
+        code: 'mcp-result-too-large',
+        refusedResultBytes: Buffer.byteLength(
+          JSON.stringify({ content: [{ text: message, type: 'text' }] }),
+          'utf8'
+        ),
+      });
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it('logs upstream HTTP 429 during discovery before a tool call exists', async () => {
+    const upstream = await createMcpHttpStub({
+      httpFailure: { method: 'initialize', status: 429 },
+    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(
+        gateway.listTools({
+          server: httpTestServer(upstream.url, 2_000),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
+        severityText: 'WARN',
+        body: 'MCP upstream rate limit.',
+        attributes: {
+          'openkit.error.code': 'mcp.upstream_rate_limited',
+          'http.response.status_code': 429,
+        },
+      });
+      expect(upstream.observed.some((request) => request.endsWith('|tools/call'))).toBe(false);
+      expect(JSON.stringify(log.mock.calls)).not.toContain('UPSTREAM_PRIVATE_BODY_CANARY');
+    } finally {
+      log.mockRestore();
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
   it.each(['$id', '$ref'] as const)(
     'refuses invalid output %s before target contact and keeps a valid sibling usable',
     async (outputSchemaFault) => {

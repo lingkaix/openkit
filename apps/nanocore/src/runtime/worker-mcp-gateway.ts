@@ -63,6 +63,12 @@ export type WorkerMcpServerHealth = 'inactive' | 'starting' | 'ready' | 'degrade
 /** Upstream effect certainty attached to a failed MCP tool call. */
 export type WorkerMcpUpstreamEffect = 'not-contacted' | 'contacted' | 'unknown';
 
+/** Numeric failure facts only; upstream bodies and tool content never enter Audit or logs. */
+interface WorkerMcpFailureDiagnostics {
+  readonly upstreamHttpStatus?: number;
+  readonly refusedResultBytes?: number;
+}
+
 /** Typed MCP tool failure carrying the upstream effect boundary result. */
 export class WorkerMcpGatewayCallError extends WorkerControlGatewayError {
   /** Whether caller cancellation caused this failure. */
@@ -71,6 +77,10 @@ export class WorkerMcpGatewayCallError extends WorkerControlGatewayError {
   public readonly credentialsMaterialized: boolean;
   /** Whether the tool request crossed the upstream effect boundary. */
   public readonly upstreamEffect: WorkerMcpUpstreamEffect;
+  /** Actual upstream HTTP response status, when the SDK observed one. */
+  public readonly upstreamHttpStatus?: number;
+  /** Exact UTF-8 size of a complete semantic result refused by the result bound. */
+  public readonly refusedResultBytes?: number;
 
   /** Creates one bounded gateway call failure. */
   public constructor(
@@ -79,13 +89,18 @@ export class WorkerMcpGatewayCallError extends WorkerControlGatewayError {
     status: number,
     upstreamEffect: WorkerMcpUpstreamEffect,
     cancelled = false,
-    credentialsMaterialized = false
+    credentialsMaterialized = false,
+    diagnostics: WorkerMcpFailureDiagnostics = {}
   ) {
     super(code, message, status);
     this.name = 'WorkerMcpGatewayCallError';
     this.cancelled = cancelled;
     this.credentialsMaterialized = credentialsMaterialized;
     this.upstreamEffect = upstreamEffect;
+    if (diagnostics.upstreamHttpStatus !== undefined)
+      this.upstreamHttpStatus = diagnostics.upstreamHttpStatus;
+    if (diagnostics.refusedResultBytes !== undefined)
+      this.refusedResultBytes = diagnostics.refusedResultBytes;
   }
 }
 
@@ -277,14 +292,16 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           hasCredentials(input)
         );
       }
-      if (Buffer.byteLength(JSON.stringify(page.tools), 'utf8') > MCP_RESULT_MAX_BYTES) {
+      const resultBytes = Buffer.byteLength(JSON.stringify(page.tools), 'utf8');
+      if (resultBytes > MCP_RESULT_MAX_BYTES) {
         throw new WorkerMcpGatewayCallError(
           'mcp-result-too-large',
           MCP_RESULT_TOO_LARGE_MESSAGE,
           413,
           'contacted',
           false,
-          hasCredentials(input)
+          hasCredentials(input),
+          { refusedResultBytes: resultBytes }
         );
       }
       const live = {
@@ -429,12 +446,16 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           'contacted'
         );
       }
-      if (Buffer.byteLength(JSON.stringify(result), 'utf8') > MCP_RESULT_MAX_BYTES) {
+      const resultBytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+      if (resultBytes > MCP_RESULT_MAX_BYTES) {
         throw new WorkerMcpGatewayCallError(
           'mcp-result-too-large',
           MCP_RESULT_TOO_LARGE_MESSAGE,
           413,
-          'contacted'
+          'contacted',
+          false,
+          false,
+          { refusedResultBytes: resultBytes }
         );
       }
       if (containsCredential(result, input.credentials)) {
@@ -1372,7 +1393,47 @@ function normalizeMcpListError(
   if (isMcpTimeout(error)) {
     return new WorkerControlGatewayError('mcp-timeout', 'MCP request timed out.', 504);
   }
+  const diagnostics = mcpHttpFailureDiagnostics(error);
+  if (diagnostics.upstreamHttpStatus !== undefined)
+    return new WorkerMcpGatewayCallError(
+      'mcp-server-unavailable',
+      'MCP server is unavailable.',
+      503,
+      'not-contacted',
+      false,
+      false,
+      diagnostics
+    );
   return new WorkerControlGatewayError('mcp-server-unavailable', 'MCP server is unavailable.', 503);
+}
+
+/** Captures the SDK's typed status and logs rate limits even before a Tool Call exists. */
+function mcpHttpFailureDiagnostics(error: unknown): WorkerMcpFailureDiagnostics {
+  if (error instanceof WorkerMcpGatewayCallError) return error;
+  if (
+    !(error instanceof SdkHttpError) ||
+    !Number.isInteger(error.status) ||
+    error.status < 100 ||
+    error.status > 599
+  )
+    return {};
+  if (error.status === 429) {
+    try {
+      console.warn(
+        JSON.stringify({
+          severityText: 'WARN',
+          body: 'MCP upstream rate limit.',
+          attributes: {
+            'openkit.error.code': 'mcp.upstream_rate_limited',
+            'http.response.status_code': 429,
+          },
+        })
+      );
+    } catch {
+      // A diagnostic sink failure cannot change contact certainty or cause an upstream retry.
+    }
+  }
+  return { upstreamHttpStatus: error.status };
 }
 
 /** Maps one failed tool request while retaining its upstream effect certainty. */
@@ -1381,13 +1442,16 @@ function normalizeMcpCallError(
   upstreamEffect: WorkerMcpUpstreamEffect,
   cancelled = false
 ): WorkerMcpGatewayCallError {
+  const diagnostics = mcpHttpFailureDiagnostics(error);
   if (cancelled) {
     return new WorkerMcpGatewayCallError(
       'mcp-call-failed',
       'MCP tool call failed.',
       503,
       upstreamEffect,
-      true
+      true,
+      false,
+      diagnostics
     );
   }
   if (error instanceof McpHttpResponseTooLargeError) {
@@ -1434,7 +1498,9 @@ function normalizeMcpCallError(
     upstreamEffect === 'not-contacted' ? 'MCP server is unavailable.' : 'MCP tool call failed.',
     503,
     upstreamEffect,
-    cancelled
+    cancelled,
+    false,
+    diagnostics
   );
 }
 
@@ -1452,7 +1518,8 @@ function cleanupRecoveryError(
     false,
     error instanceof WorkerMcpGatewayCallError
       ? error.credentialsMaterialized
-      : hasCredentials(input) && fallbackEffect !== 'not-contacted'
+      : hasCredentials(input) && fallbackEffect !== 'not-contacted',
+    error instanceof WorkerMcpGatewayCallError ? error : {}
   );
 }
 

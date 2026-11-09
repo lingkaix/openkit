@@ -158,7 +158,7 @@ export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void
         requestId: auditRequestId,
         resource: `capability:${call.capability_id}`,
         severity: capabilityAuditSeverity(input.status),
-        summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null),
+        summary: capabilityAuditSummary(input.status, call, input.errorCode ?? null, input),
         threadId: call.thread_id,
         turnId: call.turn_id,
       };
@@ -308,18 +308,28 @@ function capabilityAuditOutcome(
  * @param status Terminal capability status.
  * @param call Stored capability call row.
  * @param errorCode Stable error code when present.
+ * @param diagnostics Numeric failure facts, without upstream payloads.
  * @returns Redacted audit summary.
  */
 function capabilityAuditSummary(
   status: FinishCapabilityCallInput['status'],
   call: CapabilityCallRow,
-  errorCode: string | null
+  errorCode: string | null,
+  diagnostics: Pick<FinishCapabilityCallInput, 'upstreamHttpStatus' | 'refusedResultBytes'>
 ): string {
   if (status === 'succeeded') {
     return `Capability call succeeded: ${call.summary ?? call.capability_id}`;
   }
 
-  return `Capability call ${status}: ${errorCode ?? call.capability_id}`;
+  return (
+    `Capability call ${status}: ${errorCode ?? call.capability_id}` +
+    (diagnostics.upstreamHttpStatus === undefined
+      ? ''
+      : ` Upstream HTTP status: ${diagnostics.upstreamHttpStatus}.`) +
+    (diagnostics.refusedResultBytes === undefined
+      ? ''
+      : ` Refused result size: ${diagnostics.refusedResultBytes} bytes.`)
+  );
 }
 
 /** Binds one running call to exactly one schema snapshot before its effect. */

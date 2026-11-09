@@ -182,6 +182,8 @@ const finish = z
       'unknown',
     ]),
     errorCode: callFields.errorCode.optional(),
+    upstreamHttpStatus: z.number().int().min(100).max(599).optional(),
+    refusedResultBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     deliveredKnowledgeAnswer: z.string().min(1).optional(),
     clearItem: z.literal(true).optional(),
     goalEscalationId: z.string().min(1).optional(),

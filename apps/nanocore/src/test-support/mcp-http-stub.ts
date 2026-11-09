@@ -34,6 +34,8 @@ const echoInputSchema = {
 /** Starts one isolated official-SDK Streamable HTTP MCP server. */
 export async function createMcpHttpStub(
   options: {
+    /** Refuses one native HTTP method before an MCP handler can run. */
+    readonly httpFailure?: { readonly method: string; readonly status: number };
     readonly chunkedCallResultBytes?: number;
     readonly chunkedInitializeResultBytes?: number;
     readonly credentialEcho?: string;
@@ -215,6 +217,9 @@ export async function createMcpHttpStub(
     observed.push(
       `${context.req.header('authorization') ?? ''}|${url.searchParams.get('token') ?? ''}|${context.req.method}|${method}`
     );
+    if (method === options.httpFailure?.method) {
+      return new Response('UPSTREAM_PRIVATE_BODY_CANARY', { status: options.httpFailure.status });
+    }
     if (!answering && method === 'server/discover') {
       return new Response('MCP server stopped answering.', { status: 503 });
     }

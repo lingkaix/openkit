@@ -37,6 +37,7 @@ import {
 import { isThreadVisible } from './auth/thread-visibility.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import {
+  type FinishCapabilityCallInput,
   finishCapabilityCall,
   finishMcpToolCall,
   type StartCapabilityCallInput,
@@ -1883,6 +1884,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           {
             status: terminalStatus,
             errorCode: normalized.code,
+            ...mcpFailureAuditFacts(error),
             ...(!publishTerminalItem ? { clearItem: true } : {}),
           },
           contacted
@@ -2716,7 +2718,8 @@ async function observeWorkerMcpTools(input: {
         error.status,
         'not-contacted',
         error.cancelled,
-        error.credentialsMaterialized
+        error.credentialsMaterialized,
+        error
       );
     }
     throw error;
@@ -2882,6 +2885,21 @@ async function finishMcpHandlerFailure(
   );
 }
 
+/** Selects only numeric diagnostics; no upstream payload can enter the terminal Audit. */
+function mcpFailureAuditFacts(
+  error: unknown
+): Pick<FinishCapabilityCallInput, 'upstreamHttpStatus' | 'refusedResultBytes'> {
+  if (!(error instanceof WorkerMcpGatewayCallError)) return {};
+  return {
+    ...(error.upstreamHttpStatus === undefined
+      ? {}
+      : { upstreamHttpStatus: error.upstreamHttpStatus }),
+    ...(error.refusedResultBytes === undefined
+      ? {}
+      : { refusedResultBytes: error.refusedResultBytes }),
+  };
+}
+
 /** Safely terminalizes one MCP handler failure or returns a recovery-required result. */
 async function finishMcpCallFailure(
   error: unknown,
@@ -2899,6 +2917,7 @@ async function finishMcpCallFailure(
     await finishCapabilityCall({
       callId: call.id,
       errorCode: normalized.code,
+      ...mcpFailureAuditFacts(error),
       status:
         error instanceof WorkerMcpGatewayCallError && error.cancelled
           ? 'aborted'

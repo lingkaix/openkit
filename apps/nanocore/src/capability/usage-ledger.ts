@@ -184,6 +184,10 @@ export interface RecordUsageInput {
 
 /** Input for finishing one capability call. */
 export interface FinishCapabilityCallInput {
+  /** Actual upstream HTTP status, retained as numeric context in the terminal Audit summary. */
+  upstreamHttpStatus?: number;
+  /** Exact serialized byte size of a complete semantic result refused by its bound. */
+  refusedResultBytes?: number;
   /** Existing call retains the exact delivered Knowledge answer; no parallel delivery record. */
   deliveredKnowledgeAnswer?: string;
   /** Database handle for the immutable call owner. */
@@ -320,13 +324,16 @@ export function startCapabilityCall(
  * A definite usage refusal needs a separate best-effort diagnostic because its savepoint rolled back.
  * @param call Original admitted call and immutable attribution.
  * @param workspaceDb Existing Workspace owner.
- * @param finish Original terminal outcome, optional Item clear, Goal escalation and no-contact decision.
+ * @param finish Original terminal outcome, numeric failure diagnostics, optional Item clear, Goal escalation and no-contact decision.
  * @param contacted Whether contact is not disproved and this invocation still needs usage accounting.
  */
 export async function finishMcpToolCall(
   call: StartedCapabilityCall,
   workspaceDb: WorkspaceDb,
-  finish: Pick<FinishCapabilityCallInput, 'status' | 'errorCode'> & {
+  finish: Pick<
+    FinishCapabilityCallInput,
+    'status' | 'errorCode' | 'upstreamHttpStatus' | 'refusedResultBytes'
+  > & {
     readonly clearItem?: boolean;
     readonly goalEscalationId?: string;
     readonly decision?: Extract<
