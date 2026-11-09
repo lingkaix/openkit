@@ -491,7 +491,7 @@ it('passive observer fails open without replacing original arguments or results'
       if (entryUnavailable) throw new TypeError('observer unavailable');
       return new Map<string, number>();
     },
-    inputBytes: 0,
+    backing: new Map(),
     nextId: 0,
     pending: new Map(),
     runTurnPublication(...args: unknown[]) {

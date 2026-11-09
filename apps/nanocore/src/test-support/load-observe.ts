@@ -9,84 +9,104 @@ import { CONTROL_WORKER_LIMITS } from '../storage/control-store-worker-protocol.
 import { classifyOutcomeError } from './load-plan.js';
 export async function observeNative(lower: number, upper: number) {
   const client = getControlStoreWorkerClient() as any;
-  const expected: number[] = client.hosts
-    .filter((h: any) => h.worker)
-    .map((h: any) => h.worker.threadId);
-  const channel = new BroadcastChannel(process.env.R2_CLOSE_CHANNEL!);
-  channel.unref();
+  const expected: number[] = [];
   const ready = new Set<number>(),
     finished = new Set<number>();
-  channel.onmessage = ({ data }: any) => {
-    if (data.kind === 'ready') ready.add(data.threadId);
-    if (data.kind === 'finished') finished.add(data.threadId);
-  };
   const hr = () => Number(process.hrtime.bigint()) / 1000;
   const all = {
     maxInputBytes: 0,
+    maxTotalInputBytes: 0,
     maxOutstandingPerDatabase: 0,
     maxOutstandingTotal: 0,
     maxPendingNativeRequests: 0,
   };
   const steady = { ...all };
   let observerErrors = 0;
-  function sample() {
+  function observe<T>(read: () => T): T | undefined {
     try {
+      return read();
+    } catch {
+      observerErrors++;
+    }
+  }
+  const channel = observe(() => {
+    const value = new BroadcastChannel(process.env.R2_CLOSE_CHANNEL!);
+    value.unref();
+    value.onmessage = ({ data }: any) => {
+      if (data.kind === 'ready') ready.add(data.threadId);
+      if (data.kind === 'finished') finished.add(data.threadId);
+    };
+    return value;
+  });
+  function sample() {
+    observe(() => {
       const total = [...client.outstanding.values()].reduce(
         (a: number, b: any) => a + Number(b),
         0
       ) as number;
       const maximum = Math.max(0, ...[...client.outstanding.values()].map(Number));
+      // Admission is bounded per database, not by the removed client-wide scalar (44450f033).
+      const bytes = [...client.backing.values()].map((entry: any) => Number(entry.inputBytes));
       for (const row of [all, ...(hr() >= lower && hr() < upper ? [steady] : [])]) {
-        row.maxInputBytes = Math.max(row.maxInputBytes, client.inputBytes);
+        row.maxInputBytes = Math.max(row.maxInputBytes, 0, ...bytes);
+        row.maxTotalInputBytes = Math.max(
+          row.maxTotalInputBytes,
+          bytes.reduce((a: number, b: number) => a + b, 0)
+        );
         row.maxOutstandingPerDatabase = Math.max(row.maxOutstandingPerDatabase, maximum);
         row.maxOutstandingTotal = Math.max(row.maxOutstandingTotal, total);
         row.maxPendingNativeRequests = Math.max(row.maxPendingNativeRequests, client.pending.size);
       }
-    } catch {
-      observerErrors++;
-    }
+    });
   }
   const restore: Array<() => void> = [];
-  for (const map of [client.outstanding, client.pending])
-    for (const method of ['set', 'delete', 'clear']) {
-      const original = map[method];
-      map[method] = function (...args: any[]) {
-        const value = Reflect.apply(original, this, args);
-        sample();
-        return value;
-      };
-      restore.push(() => {
-        delete map[method];
-      });
-    }
-  const descriptor = Object.getOwnPropertyDescriptor(client, 'inputBytes')!;
-  let bytes = client.inputBytes;
-  Object.defineProperty(client, 'inputBytes', {
-    configurable: true,
-    enumerable: descriptor.enumerable ?? false,
-    get: () => bytes,
-    set: (value) => {
-      bytes = value;
-      sample();
-    },
-  });
-  restore.push(() => Object.defineProperty(client, 'inputBytes', { ...descriptor, value: bytes }));
-  channel.postMessage({ kind: 'window', lower, upper });
-  for (let i = 0; !expected.every((x) => ready.has(x)) && i < 500; i++) await sleep(10);
-  if (!expected.length || !expected.every((x) => ready.has(x)))
-    throw Error('Native observer handshake missing; no inferred telemetry');
+  for (const name of ['outstanding', 'pending', 'backing'])
+    observe(() => {
+      const map = client[name];
+      for (const method of ['set', 'delete', 'clear']) {
+        const descriptor = Object.getOwnPropertyDescriptor(map, method);
+        const original = map[method];
+        map[method] = function (...args: any[]) {
+          const value = Reflect.apply(original, this, args);
+          sample();
+          return value;
+        };
+        restore.push(() => {
+          if (descriptor) Object.defineProperty(map, method, descriptor);
+          else delete map[method];
+        });
+      }
+    });
+  const refresh = () =>
+    observe(() => {
+      for (const host of client.hosts)
+        if (host.worker && !expected.includes(host.worker.threadId))
+          expected.push(host.worker.threadId);
+      if (!expected.every((id) => ready.has(id)))
+        channel?.postMessage({ kind: 'window', lower, upper });
+    });
+  refresh();
+  // Workspace hosts can start lazily after observation begins; their custody must stay explicit.
+  const refreshTimer = setInterval(refresh, 100);
+  refreshTimer.unref();
+  for (let i = 0; channel && !expected.every((x) => ready.has(x)) && i < 500; i++) await sleep(10);
+  if (!expected.length || !expected.every((x) => ready.has(x))) observerErrors++;
   return {
     async finish() {
-      channel.postMessage({ kind: 'finish' });
-      for (let i = 0; !expected.every((x) => finished.has(x)) && i < 500; i++) await sleep(10);
-      const complete = expected.every((x) => finished.has(x));
-      for (const fn of restore.reverse()) fn();
-      channel.close();
-      if (!complete) throw Error('Native observer final custody missing');
+      clearInterval(refreshTimer);
+      refresh();
+      observe(() => channel?.postMessage({ kind: 'finish' }));
+      for (let i = 0; channel && !expected.every((x) => finished.has(x)) && i < 500; i++)
+        await sleep(10);
+      const complete = expected.length > 0 && expected.every((x) => finished.has(x));
+      for (const fn of restore.reverse()) observe(fn);
+      observe(() => channel?.close());
+      if (!complete) observerErrors++;
       return {
         all,
         steady,
         expectedNativeNodeIds: expected,
+        nativeComplete: complete,
         limits: CONTROL_WORKER_LIMITS,
         exactClientMutationBoundaryPeaks: observerErrors === 0,
         observerErrors,
@@ -167,7 +187,7 @@ export function installDiagnosticTrace(client = getControlStoreWorkerClient() as
         turnIds: args[1],
         startHrUsec: hr(),
         countAtEntry: client.outstanding.get(args[0]) ?? 0,
-        bytesAtEntry: client.inputBytes,
+        bytesAtEntry: client.backing.get(args[0])?.inputBytes ?? 0,
       };
       publications.push(value);
       diagnosticStage('producer FIFO await');
@@ -212,7 +232,7 @@ export function installDiagnosticTrace(client = getControlStoreWorkerClient() as
         startHrUsec: hr(),
         nextIdAtEntry: client.nextId,
         countAtEntry: client.outstanding.get(command.database) ?? 0,
-        inputBytesAtEntry: client.inputBytes,
+        inputBytesAtEntry: client.backing.get(command.database)?.inputBytes ?? 0,
         transportPendingAtEntry: client.pending.size,
       };
       requests.push(value);
@@ -239,7 +259,10 @@ export function installDiagnosticTrace(client = getControlStoreWorkerClient() as
       observe(() =>
         samples.push({
           hrUsec: hr(),
-          inputBytes: client.inputBytes,
+          inputBytes: Math.max(
+            0,
+            ...[...client.backing.values()].map((entry: any) => Number(entry.inputBytes))
+          ),
           outstanding: [...client.outstanding.entries()],
           transportPending: client.pending.size,
           publicationOperations: client.operations.size,
