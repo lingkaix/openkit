@@ -473,6 +473,87 @@ it('accepts preserved source larger than one MiB with exact bytes, replay and co
   expect(retained?.result).toMatchObject({ byteLength: bytes.length, sha256: digest });
 });
 
+it('retains the exact large source through native admission BUSY and discovers recovery after cold reopen', async () => {
+  const bytes = Buffer.alloc(1024 * 1024 + 1, 0xa7);
+  const f = await fixture(bytes);
+  const before = rows(f.db);
+  const raw = rawBytes(f);
+  deepStrictEqual(raw[0], bytes);
+  await openNative(f);
+  const blocker = openWorkspaceDb(f.root, f.db.workspaceId);
+  handles.push(blocker);
+  const posted = vi.spyOn(Worker.prototype, 'postMessage');
+  try {
+    // The physical owner begins with IMMEDIATE. This real competing writer
+    // therefore proves admission BUSY before the capture SQL body, not INSERT BUSY.
+    blocker.sqlite.exec('BEGIN IMMEDIATE');
+    const refused = acceptWorkspaceCapture(
+      f.db,
+      f.identity,
+      f.source.result,
+      f.source.candidate,
+      f.source
+    );
+    await expect(refused).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
+    await expect(refused).rejects.not.toBeInstanceOf(PreservedWorkspaceCaptureRefusal);
+    expect(
+      posted.mock.calls.filter(
+        ([request]) =>
+          request.operation === 'workspace-capture' && request.input.action === 'accept'
+      )
+    ).toHaveLength(1);
+    expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    deepStrictEqual(rows(f.db), before);
+    deepStrictEqual(await readRawWorkspaceCapture(f.root, f.identity), f.source);
+    deepStrictEqual(rawBytes(f), raw);
+  } finally {
+    if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
+    blocker.sqlite.close();
+    posted.mockRestore();
+  }
+
+  const reader = await cold(f);
+  deepStrictEqual(rows(reader), before);
+  expect(readWorkspaceCollection(reader, f.identity)).toBeNull();
+  expect(readWorkspaceSnapshotCursor(reader, f.identity)).toEqual({
+    acceptedBase: base,
+    head: base,
+    acceptedCommit: null,
+  });
+  deepStrictEqual(await readRawWorkspaceCapture(f.root, f.identity), f.source);
+  deepStrictEqual(rawBytes(f), raw);
+
+  // Workspace Synchronization recovers the preserved original source. It does
+  // not recollect bytes, accept the failed publication or advance its cursor.
+  expect(await hasPendingWorkspaceCapture(f.coreDb, reader, f.anchor)).toBe(true);
+  const records = listWorkspaceReconciliationRecords(reader, reader.workspaceId);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    stateAfter: 'requires-human',
+    retentionDecision: 'retain-backend',
+    backendHandleSummary: { identity: f.identity, candidateDigest: f.source.result.sha256 },
+  });
+  const bundles = listStoredWorkspaceEvidenceBundles(reader, reader.workspaceId);
+  expect(bundles).toHaveLength(1);
+  expect(records[0]!.evidenceBundleIds).toEqual([bundles[0]!.id]);
+  expect(bundles[0]).toMatchObject({ contentDigests: [f.source.result.sha256] });
+  expect(readWorkspaceCollection(reader, f.identity)).toBeNull();
+  expect(readWorkspaceSnapshotCursor(reader, f.identity)).toEqual({
+    acceptedBase: base,
+    head: base,
+    acceptedCommit: null,
+  });
+  deepStrictEqual(await readRawWorkspaceCapture(f.root, f.identity), f.source);
+  deepStrictEqual(rawBytes(f), raw);
+  await shutdownControlStoreWorkerClient();
+  reader.sqlite.close();
+  const recovered = openWorkspaceReadDb(f.root, reader.workspaceId);
+  handles.push(recovered);
+  expect(listWorkspaceReconciliationRecords(recovered, recovered.workspaceId)).toEqual(records);
+  expect(listStoredWorkspaceEvidenceBundles(recovered, recovered.workspaceId)).toEqual(bundles);
+  expect(readWorkspaceCollection(recovered, f.identity)).toBeNull();
+});
+
 it('retains unknown delivery after actual capture FULL commit loses its real Worker reply', async () => {
   const f = await fixture();
   const raw = rawBytes(f);
