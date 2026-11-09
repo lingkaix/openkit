@@ -184,12 +184,15 @@ export interface PendingAdmissionDependencies extends PendingRequestDatabase {
   goalTerminal?: (turn: ReturnType<FsStore['getTurnById']>) => void | Promise<void>;
 }
 
-const attentionObservers = new WeakMap<FsStore, (record: PendingRequestRecord) => void>();
+const attentionObservers = new WeakMap<
+  FsStore,
+  (record: PendingRequestRecord) => void | Promise<void>
+>();
 
 /** Installs the optional external attention projection after Core request ownership is composed. */
 export function setPendingRequestAttentionObserver(
   store: FsStore,
-  observer: (record: PendingRequestRecord) => void
+  observer: (record: PendingRequestRecord) => void | Promise<void>
 ): void {
   attentionObservers.set(store, observer);
 }
@@ -486,7 +489,7 @@ export async function raiseRecordedPendingRequest(
   if (!record) throw associationGap();
   syncApproval(store, record);
   try {
-    attentionObservers.get(store)?.(record);
+    await attentionObservers.get(store)?.(record);
   } catch {
     /* Attention is a separate effect. */
   }

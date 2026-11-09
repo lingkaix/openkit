@@ -34,9 +34,9 @@ export function registerDiscordInteractionRoutes(input: {
           publicKey: input.config.publicKey,
         });
         const work = discord.handleVerified(verified).then((reply) => {
-          queueMicrotask(() => {
+          queueMicrotask(async () => {
             try {
-              input.services()?.recoverAttention();
+              await input.services()?.recoverAttention();
             } catch {
               /* A transport projection never decides a Core request. */
             }

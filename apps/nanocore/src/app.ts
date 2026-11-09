@@ -2510,7 +2510,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })(id, value, { kind: 'public', actor, delivery: 'human' }),
     });
     setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
-    channelServices.recoverAttention();
+    void channelServices.recoverAttention().catch(() => undefined);
   }
 
   registerKnowledgePackageRoutes({

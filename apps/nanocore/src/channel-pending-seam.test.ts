@@ -2,7 +2,10 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Worker as NativeWorker } from 'node:worker_threads';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
+import { isRecord } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
@@ -10,8 +13,13 @@ import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
 import type { DiscordReply } from './channels/discord.js';
 import { FsStore } from './lib/store.js';
+import { type AttentionDelivery, AttentionNotifications } from './notifications/attention.js';
 import { createOperationInvocation } from './operation-composition.js';
-import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import {
+  raiseRecordedPendingRequest,
+  requireUsableRecord,
+  setPendingRequestAttentionObserver,
+} from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -26,6 +34,53 @@ import {
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { removeWorkspaceMember } from './workspace-sharing.js';
+
+// Intercept the real Worker's genuine post-commit enqueue ACK only. The
+// Pending producer, Attention owner, SQLite, claim and transport caller stay real.
+const enqueueAck = vi.hoisted(() => ({
+  hold: false,
+  arrived: undefined as (() => void) | undefined,
+  release: undefined as (() => void) | undefined,
+  worker: undefined as NativeWorker | undefined,
+  enqueues: 0,
+  claims: 0,
+}));
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
+        const message: unknown = args[0];
+        if (isRecord(message)) {
+          if (message.operation === 'attention-enqueue') {
+            enqueueAck.enqueues += 1;
+            enqueueAck.worker = this;
+          }
+          if (message.operation === 'attention-attempt-claim') enqueueAck.claims += 1;
+        }
+        return super.postMessage(...args);
+      }
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        const reply = args[0];
+        if (
+          enqueueAck.hold &&
+          event === 'message' &&
+          isRecord(reply) &&
+          reply.status === 'ok' &&
+          reply.operation === 'attention-enqueue' &&
+          isRecord(reply.result) &&
+          reply.result.status === 'enqueued'
+        ) {
+          enqueueAck.release = () => super.emit(event, ...args);
+          enqueueAck.arrived?.();
+          return true;
+        }
+        return super.emit(event, ...args);
+      }
+    },
+  };
+});
 
 const actor: Actor = { userId: testEntityId('usr', 'channel-member'), kind: 'session' };
 const applicationId = '123456789012345678';
@@ -339,13 +394,170 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
 }
 
 afterEach(async () => {
+  enqueueAck.hold = false;
+  enqueueAck.release?.();
+  enqueueAck.release = undefined;
+  enqueueAck.arrived = undefined;
+  enqueueAck.worker = undefined;
   await shutdownControlStoreWorkerClient();
+  enqueueAck.enqueues = 0;
+  enqueueAck.claims = 0;
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
 });
 
 describe('Discord to native Pending Request seam', () => {
+  it('does not enqueue or send after the responsible recipient loses current membership', async () => {
+    const f = await fixture();
+    await f.pair();
+    const pending = f.record();
+    f.removeMembership();
+    await f.services.attentionRaised(pending);
+    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+    expect(enqueueAck.enqueues).toBe(0);
+    expect(f.sendAttention).not.toHaveBeenCalled();
+    expect(f.record()).toEqual(pending);
+  });
+
+  it('retains a raised Pending Request when its real asynchronous Attention observer refuses', async () => {
+    const f = await fixture();
+    const original = f.record();
+    setPendingRequestAttentionObserver(f.store, f.services.attentionRaised);
+    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_attention_enqueue BEFORE INSERT ON notification_attention
+      BEGIN SELECT RAISE(ABORT, 'simulated attention projection refusal'); END`);
+    const workspaceDb = openWorkspaceDb(f.coreDb.dataRoot, f.target.workspace);
+    try {
+      const raised = await raiseRecordedPendingRequest(f.store, workspaceDb.sqlite, {
+        workspaceId: f.target.workspace,
+        threadId: f.target.thread,
+        raisingTurnId: original.raisingTurnId,
+        responsibleUserId: actor.userId,
+        now: original.createdAt,
+        requestId: 'ap_channel_observer_refusal',
+        requestItemId: testEntityId('it', 'channel-observer-refusal'),
+        requesterKind: 'person',
+        kind: 'approval',
+        governedIntent: { action: 'review.apply', page: 'page_observer_refusal' },
+        approval: {
+          kind: 'permission',
+          title: 'Review exact publication',
+          description: 'Publish the chosen page.',
+        },
+      });
+      expect(raised).toMatchObject({
+        requestId: 'ap_channel_observer_refusal',
+        state: 'pending',
+        claim: 'unclaimed',
+      });
+      expect(readPendingRequest(workspaceDb.sqlite, raised.requestId)).toEqual(raised);
+      expect(
+        requireUsableRecord(
+          f.store,
+          workspaceDb.sqlite,
+          raised.requestId,
+          f.target.workspace,
+          f.target.thread
+        )
+      ).toEqual(raised);
+      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+      expect(enqueueAck.enqueues).toBe(1);
+      expect(f.sendAttention).not.toHaveBeenCalled();
+      expect(f.nativeCalls).toEqual([]);
+      expect(f.record()).toEqual(original);
+    } finally {
+      workspaceDb.sqlite.close();
+      f.coreDb.sqlite.exec('DROP TRIGGER refuse_attention_enqueue');
+    }
+  });
+
+  it.each(['acknowledged', 'membership-loss', 'source-unavailable', 'lost-ack'] as const)(
+    'joins native enqueue before sending and preserves current authority after %s',
+    async (outcome) => {
+      const f = await fixture();
+      await f.pair();
+      const pending = f.record();
+      enqueueAck.hold = true;
+      const committed = new Promise<void>((resolve) => {
+        enqueueAck.arrived = resolve;
+      });
+      let completed = false;
+      const publication = f.services.attentionRaised(pending).then(() => {
+        completed = true;
+      });
+      // Retain the original rejection for assertions while holding its ACK.
+      void publication.catch(() => undefined);
+      try {
+        await Promise.race([
+          committed,
+          publication.then(() => {
+            throw new Error('Attention publication completed before its native enqueue ACK.');
+          }),
+        ]);
+        const coldDb = new Database(f.coreDb.sqlite.name, { readonly: true });
+        let retained: AttentionDelivery;
+        try {
+          const cold = new AttentionNotifications(coldDb);
+          const rows = cold.listForActor(actor.userId, {}, () => true);
+          expect(rows).toHaveLength(1);
+          retained = rows[0]!;
+          expect(retained).toMatchObject({
+            source: {
+              workspaceId: f.target.workspace,
+              threadId: f.target.thread,
+              requestId: f.target.request,
+              kind: 'approval-request',
+            },
+            recipientUserId: actor.userId,
+            status: 'queued',
+            channel: null,
+            attempt: null,
+          });
+        } finally {
+          coldDb.close();
+        }
+        expect(completed).toBe(false);
+        expect(enqueueAck.enqueues).toBe(1);
+        expect(enqueueAck.claims).toBe(0);
+        expect(f.sendAttention).not.toHaveBeenCalled();
+        expect(f.record()).toEqual(pending);
+
+        if (outcome === 'membership-loss') f.removeMembership();
+        if (outcome === 'source-unavailable') f.setWorkspaceAvailable(false);
+        enqueueAck.hold = false;
+        if (outcome === 'lost-ack') {
+          await enqueueAck.worker!.terminate();
+          enqueueAck.release = undefined;
+          await expect(publication).rejects.toMatchObject({ commit: 'unknown' });
+        } else {
+          enqueueAck.release!();
+          enqueueAck.release = undefined;
+          await publication;
+        }
+        if (outcome === 'acknowledged') {
+          await vi.waitFor(
+            () => expect(f.services.notifications.get(retained.id)?.status).toBe('sent'),
+            { timeout: 15_000 }
+          );
+          expect(f.sendAttention).toHaveBeenCalledTimes(1);
+          expect(enqueueAck.claims).toBe(1);
+        } else {
+          expect(f.services.notifications.get(retained.id)).toEqual(retained);
+          expect(f.sendAttention).not.toHaveBeenCalled();
+          expect(enqueueAck.claims).toBe(0);
+        }
+        expect(enqueueAck.enqueues).toBe(1);
+        expect(f.nativeCalls).toEqual([]);
+        expect(f.record()).toEqual(pending);
+      } finally {
+        enqueueAck.hold = false;
+        enqueueAck.release?.();
+        enqueueAck.release = undefined;
+        await publication.catch(() => undefined);
+      }
+    }
+  );
+
   it('admits only the recorded local User to pairing in local mode', async () => {
     const f = await fixture();
     const openWorkspace = vi.fn(() => {
@@ -378,13 +590,19 @@ describe('Discord to native Pending Request seam', () => {
     const f = await fixture();
     const pending = f.record();
     f.setWorkspaceAvailable(false);
-    expect(() => f.services.recoverAttention()).not.toThrow();
+    await expect(f.services.recoverAttention()).resolves.toBeUndefined();
     expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
     expect(f.sendAttention).not.toHaveBeenCalled();
     expect(f.record()).toEqual(pending);
 
     f.setWorkspaceAvailable(true);
-    f.services.recoverAttention();
+    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_attention_enqueue BEFORE INSERT ON notification_attention
+      BEGIN SELECT RAISE(ABORT, 'simulated attention projection refusal'); END`);
+    await expect(f.services.recoverAttention()).resolves.toBeUndefined();
+    expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
+    expect(f.record()).toEqual(pending);
+    f.coreDb.sqlite.exec('DROP TRIGGER refuse_attention_enqueue');
+    await f.services.recoverAttention();
     expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([
       expect.objectContaining({
         source: {
@@ -588,7 +806,7 @@ describe('Discord to native Pending Request seam', () => {
         return { status: 'sent', externalMessageId: '523456789012345678' };
       });
       const pending = f.record();
-      f.services.attentionRaised(pending);
+      await f.services.attentionRaised(pending);
       await preparing;
       try {
         if (loss === 'membership') f.removeMembership();
@@ -615,7 +833,7 @@ describe('Discord to native Pending Request seam', () => {
     await f.pair();
     f.sendAttention.mockRejectedValue(new Error('simulated lost message acknowledgement'));
     const pending = f.record();
-    f.services.attentionRaised(pending);
+    await f.services.attentionRaised(pending);
     await vi.waitFor(
       () =>
         expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
@@ -627,7 +845,7 @@ describe('Discord to native Pending Request seam', () => {
     expect(f.record()).toEqual(pending);
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
     await f.restart();
-    f.services.recoverAttention();
+    await f.services.recoverAttention();
     await expect(f.services.send(actor, delivery.id, delivery.attempt!.id)).rejects.toThrow();
     expect(f.services.notifications.get(delivery.id)?.status).toBe('delivery-unknown');
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
@@ -643,7 +861,7 @@ describe('Discord to native Pending Request seam', () => {
       code: 'simulated-message-refusal',
     });
     const pending = f.record();
-    f.services.attentionRaised(pending);
+    await f.services.attentionRaised(pending);
     await vi.waitFor(
       () =>
         expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(

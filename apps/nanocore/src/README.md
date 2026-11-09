@@ -30,6 +30,8 @@ Preparation for the control-store switch reuses synchronous deciding bodies on s
 
 This directory contains NanoCore's composition root and feature owners. `app.ts` mounts middleware and concrete feature registrars; complete product behavior belongs in the nearest cohesive route, runtime, storage, provider, policy, or workspace owner.
 
+App composes Attention recovery as an explicitly caught asynchronous projection. Pending Request publication awaits its isolated Attention observer only after the original request and Item commit. Enqueue acknowledgement precedes any send, and current source, recipient and channel admission repeats before transport. Boot joins the separate native incomplete-attempt reconciliation before recovery or listeners.
+
 ## Boundaries
 
 `operation-invocation.ts` shares handler execution and logical output validation between public definitions and release-authored internal-only definitions. Private command bindings use the canonical `AssistantOperationInvocationContext`, current primary admission and a static exact-key retained handler join in `operation-composition.ts`. `skill.read` is omitted from every public table and projection. Its resource owner supplies the single schema/definition and model Tool projection; the engine contains no Skill dispatch. No binding is persisted or registered at runtime.

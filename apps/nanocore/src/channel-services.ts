@@ -249,11 +249,11 @@ export function createChannelServices(input: {
   }
 
   /** Publishes only an exact source reference; a notification write cannot change the Core request. */
-  function attentionRaised(record: PendingRequestRecord): void {
+  async function attentionRaised(record: PendingRequestRecord): Promise<void> {
     if (record.state !== 'pending') return;
     const actor = ordinaryActor(record.responsibleUserId);
     if (!actor || !currentRequest(actor, record)) return;
-    const delivery = notifications.enqueue({
+    const delivery = await notifications.enqueue({
       source: {
         workspaceId: record.workspaceId,
         threadId: record.threadId,
@@ -267,7 +267,7 @@ export function createChannelServices(input: {
   }
 
   /** Re-enumerates the request authority at boot or binding change, without a notification runner or implicit retry. */
-  function recoverAttention(): void {
+  async function recoverAttention(): Promise<void> {
     for (const workspace of store.listWorkspaces()) {
       try {
         const db = input.openWorkspace(workspace.id);
@@ -275,7 +275,7 @@ export function createChannelServices(input: {
           for (const thread of store.listThreads(workspace.id)) {
             for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
               try {
-                attentionRaised(record);
+                await attentionRaised(record);
               } catch {
                 /* An unavailable projection never settles or blocks a Core request. */
               }

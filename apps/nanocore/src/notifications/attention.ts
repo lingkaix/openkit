@@ -5,17 +5,14 @@ import { z } from 'zod';
 import type { CoreDb } from '../storage/db.js';
 import {
   type AttemptStatusSchema,
+  AttentionEnqueueSchema,
   type ChannelSchema,
   DeliverSchema,
   type FailureCodeSchema,
   RowSchema,
-  SourceSchema,
+  type SourceSchema,
 } from './attention-codecs.js';
 import { AttentionError } from './attention-error.js';
-
-const EnqueueSchema = z
-  .object({ source: SourceSchema, recipientUserId: z.string().refine(isUserId) })
-  .strict();
 
 /** Exact Core references; neither captured arguments nor source content are retained. */
 export type AttentionSource = z.infer<typeof SourceSchema>;
@@ -186,6 +183,37 @@ export function reconcileIncompleteAttentionAttemptsInDb(
   })();
 }
 
+/** Original INSERT-on-conflict and complete retained projection remain one transaction. */
+export function enqueueAttentionInDb(
+  sqlite: Database.Database,
+  input: z.infer<typeof AttentionEnqueueSchema>,
+  now: () => string
+): AttentionDelivery {
+  const { source, recipientUserId } = input;
+  return sqlite.transaction(() => {
+    sqlite
+      .prepare(`INSERT INTO notification_attention
+          (id, workspace_id, thread_id, source_kind, request_id, recipient_user_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (workspace_id, thread_id, source_kind, request_id, recipient_user_id) DO NOTHING`)
+      .run(
+        randomUUID(),
+        source.workspaceId,
+        source.threadId,
+        source.kind,
+        source.requestId,
+        recipientUserId,
+        now()
+      );
+    return decodeRow(
+      sqlite
+        .prepare(`${SELECT} WHERE a.workspace_id = ? AND a.thread_id = ? AND a.source_kind = ?
+            AND a.request_id = ? AND a.recipient_user_id = ?`)
+        .get(source.workspaceId, source.threadId, source.kind, source.requestId, recipientUserId)
+    );
+  })();
+}
+
 /** Owns attention delivery only; the injected Core database must already be migrated. */
 export class AttentionNotifications {
   constructor(
@@ -193,38 +221,46 @@ export class AttentionNotifications {
     private readonly options: {
       now?: () => string;
       buildAppPath?: (source: AttentionSource) => string;
-      /** Canonical runtime binding for startup reconciliation, claim and completion commits. */
+      /** Canonical runtime binding for enqueue, startup reconciliation, claim and completion commits. */
       nativeCoreDb?: CoreDb;
     } = {}
   ) {}
 
   /** Adds one exact source/recipient reference, returning the existing reference on replay. */
-  enqueue(input: { source: AttentionSource; recipientUserId: string }): AttentionDelivery {
-    const parsed = EnqueueSchema.safeParse(input);
+  async enqueue(input: {
+    source: AttentionSource;
+    recipientUserId: string;
+  }): Promise<AttentionDelivery> {
+    const parsed = AttentionEnqueueSchema.safeParse(input);
     if (!parsed.success) throw new AttentionError('invalid_attention_input');
-    const { source, recipientUserId } = parsed.data;
-    return this.sqlite.transaction(() => {
-      this.sqlite
-        .prepare(`INSERT INTO notification_attention
-          (id, workspace_id, thread_id, source_kind, request_id, recipient_user_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (workspace_id, thread_id, source_kind, request_id, recipient_user_id) DO NOTHING`)
-        .run(
-          randomUUID(),
-          source.workspaceId,
-          source.threadId,
-          source.kind,
-          source.requestId,
-          recipientUserId,
-          this.now()
-        );
-      return decodeRow(
-        this.sqlite
-          .prepare(`${SELECT} WHERE a.workspace_id = ? AND a.thread_id = ? AND a.source_kind = ?
-            AND a.request_id = ? AND a.recipient_user_id = ?`)
-          .get(source.workspaceId, source.threadId, source.kind, source.requestId, recipientUserId)
-      );
-    })();
+    const coreDb = this.options.nativeCoreDb;
+    if (!coreDb) return enqueueAttentionInDb(this.sqlite, parsed.data, () => this.now());
+    const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
+      '../storage/control-store-worker-client.js'
+    );
+    if (coreDb.sqlite !== this.sqlite)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    let createdAt: string | null = null;
+    let clockError: unknown;
+    try {
+      createdAt = this.now();
+    } catch (error) {
+      clockError = error;
+    }
+    try {
+      return await getControlStoreWorkerClient().attentionEnqueue(coreDb, {
+        ...parsed.data,
+        createdAt,
+      });
+    } catch (error) {
+      if (
+        createdAt === null &&
+        error instanceof AttentionError &&
+        error.code === 'invalid_attention_input'
+      )
+        throw clockError;
+      throw error;
+    }
   }
 
   /** Reads an internal reference; callers must use current admission before exposing it. */

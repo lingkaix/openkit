@@ -65,8 +65,15 @@ import {
   type PreparedNativeSchemaApplication,
   prepareNativeSchemaApplication,
 } from '../knowledge/schema-application.js';
-import { reconcileIncompleteAttentionAttemptsInDb } from '../notifications/attention.js';
 import {
+  enqueueAttentionInDb,
+  reconcileIncompleteAttentionAttemptsInDb,
+} from '../notifications/attention.js';
+import {
+  type AttentionEnqueueCommand,
+  AttentionEnqueueCommandSchema,
+  type AttentionEnqueueResult,
+  AttentionEnqueueResultSchema,
   type AttentionReconciliationResult,
   AttentionReconciliationResultSchema,
 } from '../notifications/attention-codecs.js';
@@ -141,6 +148,7 @@ import {
   prepareControlCapabilityCommand,
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
+import { readControlScalarText } from './control-store-input.js';
 import { applyControlMaintenanceAdmission } from './control-store-maintenance-native.js';
 import {
   applyControlPendingTransition,
@@ -353,6 +361,7 @@ type WriteCommand = Extract<
       | 'backend-session'
       | 'remote-mcp-audit'
       | 'attention-reconcile-incomplete-attempts'
+      | 'attention-enqueue'
       | 'attention-attempt-claim'
       | 'attention-attempt-completion'
       | 'local-identity'
@@ -415,6 +424,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedSchemaApplication?: PreparedNativeSchemaApplication;
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
+  readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
   readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
@@ -2231,6 +2241,30 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'attention-enqueue') {
+            if (owner.scopeDb?.scope !== 'core' || !request.preparedAttentionEnqueue)
+              throw new ControlProductPreconditionError();
+            assertControlProductWriter(owner.sqlite);
+            const input = request.preparedAttentionEnqueue;
+            let result: AttentionEnqueueResult;
+            try {
+              const delivery = enqueueAttentionInDb(owner.sqlite, input, () => {
+                if (input.createdAt === null) throw new AttentionError('invalid_attention_input');
+                return input.createdAt;
+              });
+              result = { status: 'enqueued', delivery };
+            } catch (error) {
+              // The original nested transaction has rolled back before safe refusal.
+              if (!(error instanceof AttentionError)) throw error;
+              result = AttentionEnqueueResultSchema.parse({ status: 'refused', code: error.code });
+            }
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'attention-enqueue',
+              result,
+            };
           } else if (request.operation === 'attention-reconcile-incomplete-attempts') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             assertControlProductWriter(owner.sqlite);
@@ -3707,6 +3741,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
       value.operation === 'attention-reconcile-incomplete-attempts' ||
+      value.operation === 'attention-enqueue' ||
       value.operation === 'attention-attempt-claim' ||
       value.operation === 'attention-attempt-completion' ||
       value.operation === 'local-identity' ||
@@ -3784,6 +3819,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedApp: PreparedControlApp | undefined;
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
+          let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
@@ -3805,6 +3841,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedObservation: ControlWorkObservationInput | undefined;
           let preparedResolvedSetup: PreparedResolvedAgentSetup | undefined;
           try {
+            if (value.operation === 'attention-enqueue') {
+              preparedAttentionEnqueue = AttentionEnqueueCommandSchema.parse(
+                JSON.parse(readControlScalarText(value.input, value.content))
+              );
+            }
             if (value.operation === 'resolved-agent-setup') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               preparedResolvedSetup = await prepareResolvedAgentSetup(owner.scopeDb, value.input);
@@ -4147,6 +4188,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedApp,
               appInput,
               preparedSchedulerAdmission,
+              preparedAttentionEnqueue,
               preparedThreadReadItemIds,
               preparedEntries,
               preparedGenerativePresentation,

@@ -79,6 +79,8 @@ import {
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
 import {
+  type AttentionEnqueueResult,
+  AttentionEnqueueResultSchema,
   type AttentionReconciliation,
   type AttentionReconciliationResult,
   AttentionReconciliationResultSchema,
@@ -155,7 +157,11 @@ import {
   ControlCapabilityWireInputSchema,
   controlCapabilityText,
 } from './control-store-capability.js';
-import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
+import {
+  type ControlScalarText,
+  ControlScalarTextSchema,
+  readControlScalarText,
+} from './control-store-input.js';
 import {
   controlKnowledgeContentSchema,
   decodeControlKnowledgeHead,
@@ -406,7 +412,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 82;
+export const CONTROL_WORKER_VERSION = 83;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -813,6 +819,11 @@ export type ControlWorkerCommand =
           readonly input: ControlWorkspaceReviewDecision;
         }
       | {
+          readonly operation: 'attention-enqueue';
+          readonly input: ControlScalarText;
+          readonly content: ArrayBuffer;
+        }
+      | {
           readonly operation: 'attention-reconcile-incomplete-attempts';
           readonly input: AttentionReconciliation;
         }
@@ -924,6 +935,7 @@ export function controlWorkerInputBytes(
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
+              command.operation === 'attention-enqueue' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
               command.operation === 'worker-control-final-status' ||
@@ -1269,6 +1281,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'attention-enqueue';
+      readonly result: AttentionEnqueueResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'attention-reconcile-incomplete-attempts';
@@ -1790,6 +1807,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'attention-enqueue')
+    return AttentionEnqueueResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-reconcile-incomplete-attempts')
     return AttentionReconciliationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-attempt-claim')
@@ -2313,6 +2332,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  if (value.operation === 'attention-enqueue') {
+    const parsed = ControlScalarTextSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'attention-reconcile-incomplete-attempts')
     return (
       exactFields(value, [...scoped, 'input']) &&

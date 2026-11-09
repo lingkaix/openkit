@@ -5,7 +5,7 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AttentionNotifications } from '../notifications/attention.js';
+import { AttentionNotifications, enqueueAttentionInDb } from '../notifications/attention.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   type ControlAttentionAttemptCompletion,
@@ -102,15 +102,20 @@ function fixture() {
     buildAppPath: () => '/tasks/completion?requestId=apr_completion_owner',
   };
   const notifications = new AttentionNotifications(coreDb.sqlite, options);
-  const delivery = notifications.enqueue({
-    source: {
-      workspaceId: testEntityId('ws', 'completion-owner'),
-      threadId: testEntityId('th', 'completion-owner'),
-      kind: 'approval-request',
-      requestId: 'apr_completion_owner',
+  // Isolated pre-open fixture setup retains the original owner; the subject starts its native scope.
+  const delivery = enqueueAttentionInDb(
+    coreDb.sqlite,
+    {
+      source: {
+        workspaceId: testEntityId('ws', 'completion-owner'),
+        threadId: testEntityId('th', 'completion-owner'),
+        kind: 'approval-request',
+        requestId: 'apr_completion_owner',
+      },
+      recipientUserId,
     },
-    recipientUserId,
-  });
+    () => finishedAt
+  );
   return { coreDb, notifications, delivery, options };
 }
 
@@ -478,7 +483,7 @@ describe('native Attention attempt completion', () => {
     const f = fixture();
     // Warm the same admitted physical Core through another genuine enqueue,
     // claim and completion, not an invented receipt or an off-domain command.
-    const warm = f.notifications.enqueue({
+    const warm = await f.notifications.enqueue({
       source: { ...f.delivery.source, requestId: 'apr_completion_warm' },
       recipientUserId,
     });

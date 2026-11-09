@@ -15,6 +15,9 @@ import {
 } from '../auth/local-identity-codecs.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
 import {
+  type AttentionEnqueueCommand,
+  AttentionEnqueueCommandSchema,
+  AttentionEnqueueResultSchema,
   type AttentionReconciliation,
   AttentionReconciliationResultSchema,
   AttentionReconciliationSchema,
@@ -81,7 +84,6 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { ApplyKnowledgeSchemaResponse } from '@openkit/app-api-schemas';
-import type { AuditEvent } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import {
   createPrivateTreeSync,
@@ -1976,6 +1978,54 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Returns the original deduplicated enqueue snapshot only after its Core FULL acknowledgement. */
+  async attentionEnqueue(db: CoreDb, value: AttentionEnqueueCommand): Promise<AttentionDelivery> {
+    const admittedInput = AttentionEnqueueCommandSchema.parse(value);
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    if (
+      admitted &&
+      (admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    // JSON preserves every admitted JS identity for the unchanged SQLite boundary,
+    // including escaped scalar values. Existing binary capacity is checked before allocation.
+    const json = JSON.stringify(admittedInput);
+    const command = {
+      operation: 'attention-enqueue' as const,
+      database,
+      input: frameControlScalarText(json),
+      content: new ArrayBuffer(0),
+    };
+    const reply = admitted
+      ? await this.request(command, [json])
+      : (
+          await Promise.all([
+            this.open({
+              database,
+              path: scope.path,
+              dataRoot: db.dataRoot,
+              create: false,
+              initialize: 'core',
+              productOwner: scope.owner,
+              contentMount: scope.contentMount,
+            }),
+            this.request(command, [json]),
+          ])
+        )[1];
+    if (reply.operation !== 'attention-enqueue')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = AttentionEnqueueResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    if (result.data.status === 'refused') throw new AttentionError(result.data.code);
+    return result.data.delivery;
   }
 
   /** Joins the complete original startup reconciliation under the native Core FULL boundary. */
@@ -3950,6 +4000,7 @@ class ControlStoreWorkerClient {
       command.operation === 'generative-presentation' ||
       command.operation === 'app-kernel' ||
       command.operation === 'schema-application' ||
+      command.operation === 'attention-enqueue' ||
       command.operation === 'thread-read-membership' ||
       command.operation === 'worker-control-final-status' ||
       command.operation === 'worker-control-heartbeat' ||
@@ -3968,6 +4019,7 @@ class ControlStoreWorkerClient {
                 command.operation === 'generative-presentation' ||
                 command.operation === 'app-kernel' ||
                 command.operation === 'schema-application' ||
+                command.operation === 'attention-enqueue' ||
                 command.operation === 'thread-read-membership' ||
                 command.operation === 'worker-control-final-status' ||
                 command.operation === 'worker-control-heartbeat' ||

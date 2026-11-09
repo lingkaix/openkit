@@ -6,7 +6,11 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { AttentionNotifications, type AttentionSource } from '../notifications/attention.js';
+import {
+  AttentionNotifications,
+  type AttentionSource,
+  enqueueAttentionInDb,
+} from '../notifications/attention.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   type ControlAttentionAttemptClaim,
@@ -115,15 +119,20 @@ function fixture(requestId = 'apr_claim_owner') {
     },
   };
   const notifications = new AttentionNotifications(coreDb.sqlite, options);
-  const delivery = notifications.enqueue({
-    source: {
-      workspaceId: testEntityId('ws', 'claim-owner'),
-      threadId: testEntityId('th', 'claim-owner'),
-      kind: 'approval-request',
-      requestId,
+  // Isolated pre-open fixture setup retains the original owner; the subject starts its native scope.
+  const delivery = enqueueAttentionInDb(
+    coreDb.sqlite,
+    {
+      source: {
+        workspaceId: testEntityId('ws', 'claim-owner'),
+        threadId: testEntityId('th', 'claim-owner'),
+        kind: 'approval-request',
+        requestId,
+      },
+      recipientUserId,
     },
-    recipientUserId,
-  });
+    () => startedAt
+  );
   return { coreDb, notifications, delivery, options, counters };
 }
 type Fixture = ReturnType<typeof fixture>;
@@ -597,7 +606,7 @@ it.each(['connection', 'path', 'scope'] as const)(
 it('checks the genuine cached opening binding before posting another claim', async () => {
   const f = fixture();
   await send(f);
-  const queued = f.notifications.enqueue({
+  const queued = await f.notifications.enqueue({
     source: { ...f.delivery.source, requestId: 'apr_claim_cached' },
     recipientUserId,
   });

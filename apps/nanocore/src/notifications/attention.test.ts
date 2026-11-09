@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyNativeScopeMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
+  type AttentionDelivery,
   AttentionNotifications,
   type AttentionSource,
   type AttentionTransport,
@@ -62,13 +64,27 @@ const now = () => '2026-10-16T12:00:00.000Z';
 const dbs: Database.Database[] = [];
 const directories: string[] = [];
 
-function fixture(path = ':memory:') {
+/** Compares complete deliveries without printing megabytes if an identity differs. */
+function compactDelivery(delivery: AttentionDelivery) {
+  return {
+    ...delivery,
+    source: {
+      ...delivery.source,
+      requestId: {
+        length: delivery.source.requestId.length,
+        digest: createHash('sha256').update(delivery.source.requestId).digest('hex'),
+      },
+    },
+  };
+}
+
+async function fixture(path = ':memory:') {
   const sqlite = new Database(path);
   dbs.push(sqlite);
   sqlite.pragma('foreign_keys = ON');
   applyNativeScopeMigrations(sqlite, 'core');
   const notifications = new AttentionNotifications(sqlite, { now });
-  const delivery = notifications.enqueue({ source, recipientUserId: aliceId });
+  const delivery = await notifications.enqueue({ source, recipientUserId: aliceId });
   return { sqlite, notifications, delivery };
 }
 
@@ -91,9 +107,12 @@ describe('attention delivery owner', () => {
     expect(sqlite.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all()).toEqual([]);
   });
 
-  it('deduplicates the exact source and recipient and preserves other identities', () => {
-    const { notifications, delivery } = fixture();
-    expect(notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(delivery);
+  it('deduplicates the exact source and recipient and preserves other identities', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'attention-enqueue-restart-'));
+    directories.push(directory);
+    const path = join(directory, 'core.sqlite');
+    const { sqlite, notifications, delivery } = await fixture(path);
+    expect(await notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(delivery);
     for (const changed of [
       { source, recipientUserId: bobId },
       { source: { ...source, requestId: 'apr_other' }, recipientUserId: aliceId },
@@ -110,15 +129,149 @@ describe('attention delivery owner', () => {
         recipientUserId: aliceId,
       },
     ]) {
-      expect(notifications.enqueue(changed).id).not.toBe(delivery.id);
+      expect((await notifications.enqueue(changed)).id).not.toBe(delivery.id);
     }
+
+    // Pending Request selectors have no public length cap. Include JSON escapes,
+    // NUL, BOM and multibyte text beyond the ordinary 1 MiB native envelope.
+    const requestId = `apr_${'"\\\n\u0000\uFEFF😀'.repeat(110_000)}`;
+    expect(Buffer.byteLength(requestId)).toBeGreaterThan(1_048_576);
+    const exactSource = { ...source, requestId };
+    const exact = await notifications.enqueue({ source: exactSource, recipientUserId: aliceId });
+    expect(compactDelivery(exact)).toEqual(
+      compactDelivery({
+        ...exact,
+        source: exactSource,
+        status: 'queued',
+        channel: null,
+        attempt: null,
+        createdAt: now(),
+      })
+    );
+    const later = new AttentionNotifications(sqlite, { now: () => '2026-10-19T00:00:00.000Z' });
+    expect(
+      compactDelivery(await later.enqueue({ source: exactSource, recipientUserId: aliceId }))
+    ).toEqual(compactDelivery(exact));
+    expect((await later.enqueue({ source: exactSource, recipientUserId: bobId })).id).not.toBe(
+      exact.id
+    );
+    expect(
+      (
+        await later.enqueue({
+          source: { ...exactSource, requestId: `${requestId}x` },
+          recipientUserId: aliceId,
+        })
+      ).id
+    ).not.toBe(exact.id);
+    sqlite.close();
+
+    const reopened = new Database(path);
+    dbs.push(reopened);
+    const restarted = new AttentionNotifications(reopened, { now });
+    expect(compactDelivery(restarted.get(exact.id)!)).toEqual(compactDelivery(exact));
+    expect(
+      compactDelivery(await restarted.enqueue({ source: exactSource, recipientUserId: aliceId }))
+    ).toEqual(compactDelivery(exact));
   });
 
-  it('bounds recipient reads and applies current source and audience admission', () => {
-    const { notifications, delivery } = fixture();
-    notifications.enqueue({ source, recipientUserId: bobId });
+  it('rolls back enqueue when its inserted projection is corrupt and retains no row after reopen', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'attention-enqueue-rollback-'));
+    directories.push(directory);
+    const path = join(directory, 'core.sqlite');
+    const { sqlite, notifications, delivery } = await fixture(path);
+    const input = {
+      source: { ...source, requestId: 'apr_corrupt_insert' },
+      recipientUserId: aliceId,
+    };
+    // Inject corruption after valid INSERT admission and before its owning
+    // projection decoder. Refusal must roll back that same complete transaction.
+    sqlite.exec(`CREATE TRIGGER corrupt_attention_projection AFTER INSERT ON notification_attention
+      BEGIN UPDATE notification_attention SET created_at = 'invalid' WHERE id = NEW.id; END`);
+    await expect(Promise.resolve().then(() => notifications.enqueue(input))).rejects.toThrow(
+      'attention_recovery_required'
+    );
+    expect(notifications.listForActor(aliceId, {}, () => true)).toEqual([delivery]);
+    sqlite.exec('DROP TRIGGER corrupt_attention_projection');
+    sqlite.close();
+
+    const reopened = new Database(path);
+    dbs.push(reopened);
+    const restarted = new AttentionNotifications(reopened, { now });
+    expect(restarted.listForActor(aliceId, {}, () => true)).toEqual([delivery]);
+    const accepted = await restarted.enqueue(input);
+    expect(accepted).toMatchObject({
+      source: input.source,
+      status: 'queued',
+      attempt: null,
+      createdAt: now(),
+    });
+  });
+
+  it('natively enqueues and replays the exact large tuple with Main query-only across reopen', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'attention-native-enqueue-'));
+    directories.push(directory);
+    const coreDb = openCoreDb(directory);
+    dbs.push(coreDb.sqlite);
+    applyNativeScopeMigrations(coreDb.sqlite, 'core');
+    const notifications = new AttentionNotifications(coreDb.sqlite, { nativeCoreDb: coreDb, now });
+    const requestId = `apr_${'"\\\n\u0000\uFEFF😀'.repeat(110_000)}`;
+    const input = { source: { ...source, requestId }, recipientUserId: aliceId };
+    coreDb.sqlite.exec(`CREATE TRIGGER corrupt_attention_projection AFTER INSERT ON notification_attention
+      BEGIN UPDATE notification_attention SET created_at = 'invalid' WHERE id = NEW.id; END`);
+    coreDb.sqlite.pragma('query_only = ON');
+    await expect(notifications.enqueue(input)).rejects.toThrow('attention_recovery_required');
+    expect(notifications.listForActor(aliceId, {}, () => true)).toEqual([]);
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite.exec('DROP TRIGGER corrupt_attention_projection');
+    coreDb.sqlite.pragma('query_only = ON');
+
+    const [first, concurrent] = await Promise.all([
+      notifications.enqueue(input),
+      notifications.enqueue(input),
+    ]);
+    expect(compactDelivery(first)).toEqual(
+      compactDelivery({
+        ...first,
+        source: input.source,
+        recipientUserId: aliceId,
+        createdAt: now(),
+        channel: null,
+        attempt: null,
+        status: 'queued',
+      })
+    );
+    expect(compactDelivery(concurrent)).toEqual(compactDelivery(first));
+    expect(notifications.listForActor(aliceId, {}, () => true)).toHaveLength(1);
+    const transport = vi.fn<AttentionTransport>().mockResolvedValue({ status: 'sent' });
+    const settled = await notifications.deliver(
+      {
+        deliveryId: first.id,
+        recipientUserId: aliceId,
+        channel: 'discord',
+        expectedAttemptId: null,
+      },
+      { isEligible: () => true, transport }
+    );
+    expect(compactDelivery(await notifications.enqueue(input))).toEqual(compactDelivery(settled));
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.close();
+
+    const reopened = openCoreDb(directory);
+    dbs.push(reopened.sqlite);
+    reopened.sqlite.pragma('query_only = ON');
+    const restarted = new AttentionNotifications(reopened.sqlite, { nativeCoreDb: reopened, now });
+    expect(compactDelivery(restarted.get(first.id)!)).toEqual(compactDelivery(settled));
+    expect(compactDelivery(await restarted.enqueue(input))).toEqual(compactDelivery(settled));
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds recipient reads and applies current source and audience admission', async () => {
+    const { notifications, delivery } = await fixture();
+    await notifications.enqueue({ source, recipientUserId: bobId });
     for (let index = 0; index < 4; index++) {
-      notifications.enqueue({
+      await notifications.enqueue({
         source: { ...source, requestId: `apr_${index}` },
         recipientUserId: aliceId,
       });
@@ -171,15 +324,17 @@ describe('attention delivery owner', () => {
     expect(new Set(pagedIds).size).toBe(5);
   });
 
-  it('rejects malformed identities and captured source arguments at admission', () => {
-    const { notifications } = fixture();
+  it('rejects malformed identities and captured source arguments at admission', async () => {
+    const { notifications } = await fixture();
     for (const input of [
       { source: { ...source, workspaceId: 'bad' }, recipientUserId: aliceId },
       { source: { ...source, threadId: 'bad' }, recipientUserId: aliceId },
       { source, recipientUserId: 'bad' },
       { source: { ...source, arguments: { private: 'content' } }, recipientUserId: aliceId },
     ]) {
-      expect(() => notifications.enqueue(input)).toThrow('invalid_attention_input');
+      await expect(Promise.resolve().then(() => notifications.enqueue(input))).rejects.toThrow(
+        'invalid_attention_input'
+      );
     }
   });
 
@@ -187,7 +342,7 @@ describe('attention delivery owner', () => {
     const directory = mkdtempSync(join(tmpdir(), 'attention-claim-'));
     directories.push(directory);
     const path = join(directory, 'core.sqlite');
-    const { notifications, delivery } = fixture(path);
+    const { notifications, delivery } = await fixture(path);
     const observerDb = new Database(path);
     dbs.push(observerDb);
     const observer = new AttentionNotifications(observerDb);
@@ -223,11 +378,11 @@ describe('attention delivery owner', () => {
       status: 'sent',
       attempt: { status: 'sent', failureCode: null },
     });
-    expect(notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(result);
+    expect(await notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(result);
   });
 
   it('makes no contact after authority loss or admission dependency failure', async () => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const transport = vi.fn<AttentionTransport>();
     for (const isEligible of [
       () => false,
@@ -257,7 +412,7 @@ describe('attention delivery owner', () => {
   });
 
   it('allows only explicit retry of definite no-send and keeps the original channel', async () => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const input = {
       deliveryId: delivery.id,
       recipientUserId: aliceId,
@@ -307,7 +462,7 @@ describe('attention delivery owner', () => {
   });
 
   it('does not replay an explicit retry that also ends in definite no-send', async () => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const first = {
       deliveryId: delivery.id,
       recipientUserId: aliceId,
@@ -328,7 +483,7 @@ describe('attention delivery owner', () => {
   it.each(['throw', 'unknown', 'invalid'] as const)(
     'keeps %s transport results unknown and prevents retry or channel fallback',
     async (mode) => {
-      const { notifications, delivery } = fixture();
+      const { notifications, delivery } = await fixture();
       const input = {
         deliveryId: delivery.id,
         expectedAttemptId: null,
@@ -371,7 +526,7 @@ describe('attention delivery owner', () => {
   );
 
   it('refuses concurrent and wrong-recipient sends before any additional contact', async () => {
-    const { sqlite, notifications, delivery } = fixture();
+    const { sqlite, notifications, delivery } = await fixture();
     const observer = new AttentionNotifications(sqlite);
     const input = {
       deliveryId: delivery.id,
@@ -403,10 +558,10 @@ describe('attention delivery owner', () => {
     const directory = mkdtempSync(join(tmpdir(), 'attention-restart-'));
     directories.push(directory);
     const path = join(directory, 'core.sqlite');
-    const { sqlite, notifications, delivery } = fixture(path);
+    const { sqlite, notifications, delivery } = await fixture(path);
     const terminal = [];
     for (const status of ['sent', 'failed-no-send', 'delivery-unknown'] as const) {
-      const reference = notifications.enqueue({
+      const reference = await notifications.enqueue({
         source: { ...source, requestId: `apr_terminal_${status}` },
         recipientUserId: aliceId,
       });
@@ -422,11 +577,11 @@ describe('attention delivery owner', () => {
         )
       );
     }
-    const queued = notifications.enqueue({
+    const queued = await notifications.enqueue({
       source: { ...source, requestId: 'apr_still_queued' },
       recipientUserId: aliceId,
     });
-    const second = notifications.enqueue({ source, recipientUserId: bobId });
+    const second = await notifications.enqueue({ source, recipientUserId: bobId });
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
@@ -497,8 +652,8 @@ describe('attention delivery owner', () => {
     const directory = mkdtempSync(join(tmpdir(), 'attention-restart-corrupt-'));
     directories.push(directory);
     const path = join(directory, 'core.sqlite');
-    const { sqlite, notifications, delivery } = fixture(path);
-    const second = notifications.enqueue({ source, recipientUserId: bobId });
+    const { sqlite, notifications, delivery } = await fixture(path);
+    const second = await notifications.enqueue({ source, recipientUserId: bobId });
     sqlite.exec(`CREATE TRIGGER refuse_attempt_settlement BEFORE UPDATE ON notification_delivery_attempts
       BEGIN SELECT RAISE(ABORT, 'simulated lost settlement'); END`);
     for (const reference of [delivery, second]) {
@@ -553,8 +708,8 @@ describe('attention delivery owner', () => {
     applyNativeScopeMigrations(coreDb.sqlite, 'core');
     const original = new AttentionNotifications(coreDb.sqlite, { now });
     const references = [
-      original.enqueue({ source, recipientUserId: aliceId }),
-      original.enqueue({ source, recipientUserId: bobId }),
+      await original.enqueue({ source, recipientUserId: aliceId }),
+      await original.enqueue({ source, recipientUserId: bobId }),
     ];
     coreDb.sqlite.exec(`CREATE TRIGGER refuse_attempt_settlement BEFORE UPDATE ON notification_delivery_attempts
       BEGIN SELECT RAISE(ABORT, 'simulated lost settlement'); END`);
@@ -659,7 +814,7 @@ describe('attention delivery owner', () => {
   });
 
   it('uses the injected App route and refuses an external link before contact', async () => {
-    const { sqlite, delivery } = fixture();
+    const { sqlite, delivery } = await fixture();
     const transport = vi.fn<AttentionTransport>().mockResolvedValue({ status: 'sent' });
     const notifications = new AttentionNotifications(sqlite, {
       now,
@@ -700,7 +855,7 @@ describe('attention delivery owner', () => {
   });
 
   it('refuses a contradictory history instead of retrying a prior unknown send', async () => {
-    const { sqlite, notifications, delivery } = fixture();
+    const { sqlite, notifications, delivery } = await fixture();
     await notifications.deliver(
       {
         deliveryId: delivery.id,
@@ -731,7 +886,7 @@ describe('attention delivery owner', () => {
   });
 
   it('fails closed on unknown retained core values without transport', async () => {
-    const { sqlite, notifications, delivery } = fixture();
+    const { sqlite, notifications, delivery } = await fixture();
     sqlite.pragma('ignore_check_constraints = ON');
     sqlite
       .prepare('UPDATE notification_attention SET channel = ? WHERE id = ?')
@@ -763,10 +918,10 @@ describe('attention delivery owner', () => {
     ).rejects.toThrow('attention_not_found');
   });
 
-  it('paginates notification.list with an opaque recipient-scoped cursor and rejects foreign cursors', () => {
-    const { notifications } = fixture();
+  it('paginates notification.list with an opaque recipient-scoped cursor and rejects foreign cursors', async () => {
+    const { notifications } = await fixture();
     for (let index = 0; index < 3; index++) {
-      notifications.enqueue({
+      await notifications.enqueue({
         source: { ...source, requestId: `apr_page_${index}` },
         recipientUserId: aliceId,
       });

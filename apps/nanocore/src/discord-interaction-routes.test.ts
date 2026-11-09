@@ -28,7 +28,7 @@ function headers(value = body) {
 }
 function fixture(handle = vi.fn(async () => ({ type: 1 as const }))) {
   const app = new Hono<{ Variables: AuthVariables }>();
-  const recoverAttention = vi.fn();
+  const recoverAttention = vi.fn(async () => undefined);
   const services = {
     discord: { handleVerified: handle },
     recoverAttention,
@@ -71,6 +71,31 @@ describe('signed Discord HTTP entry', () => {
     });
     expect(tooLarge.status).toBe(413);
     expect(f.handle).not.toHaveBeenCalled();
+  });
+
+  it('keeps the admitted reply when asynchronous Attention recovery later refuses', async () => {
+    const f = fixture();
+    let refuse!: (error: Error) => void;
+    f.recoverAttention.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          refuse = reject;
+        })
+    );
+    const response = await f.app.request('/api/channels/discord/interactions', {
+      method: 'POST',
+      body,
+      headers: headers(),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ type: 1 });
+    expect(f.recoverAttention).toHaveBeenCalledOnce();
+    refuse(new Error('simulated native attention refusal'));
+    // Cross the rejection turn so the runner detects an unhandled recovery
+    // promise if the signed-route owner fails to contain this separate effect.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.handle).toHaveBeenCalledOnce();
+    expect(f.recoverAttention).toHaveBeenCalledOnce();
   });
 
   it('returns truthful progress before the inline deadline while the admitted owner remains pending', async () => {
