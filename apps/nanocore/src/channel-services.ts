@@ -153,6 +153,8 @@ export function createChannelServices(input: {
   const discord = input.discordConfig
     ? createDiscordChannel({
         sqlite: coreDb.sqlite,
+        nativeCoreDb: coreDb,
+        mode: input.mode,
         ...input.discordConfig,
         newRequestId: randomUUID,
         appBaseUrl: input.publicBaseUrl!,
@@ -293,7 +295,7 @@ export function createChannelServices(input: {
   return {
     discord,
     binding: (actor: Actor) => readDiscordAccountBinding(coreDb.sqlite, actor.userId),
-    revokeBinding: (actor: Actor) => revokeDiscordAccountBinding(coreDb.sqlite, actor.userId),
+    revokeBinding: (actor: Actor) => revokeDiscordAccountBinding(coreDb, actor.userId),
     notifications,
     inspectPending,
     eligible,
@@ -331,8 +333,8 @@ export function createChannelOperationImplementations(services: ChannelServices 
         throw new OperationError('channel_unavailable', 'Discord is not configured.', 503);
       return discord.beginPairing(publicOperationActor(context));
     },
-    'channel.discord.revoke': (_input, context) => {
-      requireServices().revokeBinding(publicOperationActor(context));
+    'channel.discord.revoke': async (_input, context) => {
+      await requireServices().revokeBinding(publicOperationActor(context));
       return null;
     },
     'notification.list': (input, context) => {

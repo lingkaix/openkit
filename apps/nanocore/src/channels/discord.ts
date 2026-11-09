@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto';
 import {
   AnswerUserInputRequestSchema,
   isUserId,
@@ -7,8 +7,14 @@ import {
 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import type { Actor } from '../auth/identity.js';
+import { type Actor, getLocalUserId } from '../auth/identity.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import type { CoreMode } from '../config/mode.js';
 import { OperationError } from '../operation-error.js';
+import { assertControlProductWriter } from '../storage/control-store-products.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
+import type { CoreDb } from '../storage/db.js';
+import type { ControlDiscordChannelInput, ControlDiscordChannelResult } from './discord-codecs.js';
 
 /** Discord inline response. Protected replies are private and disable mentions. */
 export type DiscordReply =
@@ -41,6 +47,10 @@ export type DiscordPendingView =
 /** Current identity, Pending owner and native invocation dependencies supplied by Core composition. */
 export interface DiscordChannelOptions {
   readonly sqlite: Database.Database;
+  /** Canonical live composition; raw databases remain explicit fixture owners. */
+  readonly nativeCoreDb?: CoreDb;
+  /** Current deployment mode supplies the original local-User restriction. */
+  readonly mode?: CoreMode;
   readonly applicationId: string;
   readonly publicKey: string;
   /** Trusted public App origin, independent of the inbound request Host. */
@@ -211,7 +221,7 @@ export function readDiscordAccountBinding(
 }
 
 /** Revokes account control and outstanding challenges without contacting or configuring Discord. */
-export function revokeDiscordAccountBinding(
+function revokeDiscordAccountBindingInDb(
   sqlite: Database.Database,
   userId: string,
   now = Date.now()
@@ -230,6 +240,210 @@ export function revokeDiscordAccountBinding(
         .run(now, userId);
     })
     .immediate();
+}
+
+/** Original stage dependencies stay local to their SQL owner, never on the native wire. */
+interface DiscordSqlContext {
+  readonly now: () => number;
+  readonly newRequestId: () => string;
+  readonly resolveActor: (userId: string) => Actor | null;
+}
+
+/** Shares each original complete SQL stage without joining its separate effect boundaries. */
+function applyDiscordStageInDb(
+  sqlite: Database.Database,
+  input: ControlDiscordChannelInput,
+  context: DiscordSqlContext
+): ControlDiscordChannelResult {
+  switch (input.stage) {
+    case 'reconcile-incomplete':
+      return {
+        stage: input.stage,
+        changes: sqlite
+          .prepare(
+            "UPDATE discord_inbound_receipts SET state = 'response-unknown' WHERE state = 'dispatching'"
+          )
+          .run().changes,
+      };
+    case 'revoke-binding':
+      revokeDiscordAccountBindingInDb(sqlite, input.userId, context.now());
+      return { stage: input.stage };
+    case 'issue-challenge':
+      sqlite
+        .transaction(() => {
+          sqlite
+            .prepare(
+              'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL'
+            )
+            .run(context.now(), input.userId);
+          sqlite
+            .prepare(
+              'INSERT INTO discord_pairing_challenges(digest,user_id,expires_at) VALUES(?,?,?)'
+            )
+            .run(input.digest, input.userId, input.expiresAt);
+        })
+        .immediate();
+      return { stage: input.stage };
+    case 'consume-challenge': {
+      const text = sqlite
+        .transaction(() => {
+          const row = sqlite
+            .prepare(
+              'SELECT user_id AS userId FROM discord_pairing_challenges WHERE digest = ? AND consumed_at IS NULL AND expires_at > ?'
+            )
+            .get(input.digest, context.now()) as { userId: string } | undefined;
+          if (!row || context.resolveActor(row.userId)?.userId !== row.userId)
+            return 'Pairing challenge unavailable. Start pairing in OpenKit.' as const;
+          const existing = sqlite
+            .prepare(
+              'SELECT user_id AS userId,revoked_at AS revokedAt FROM discord_account_bindings WHERE discord_user_id = ?'
+            )
+            .get(input.discordUserId) as { userId: string; revokedAt: number | null } | undefined;
+          if (
+            (existing && existing.revokedAt === null) ||
+            readDiscordAccountBinding(sqlite, row.userId)
+          )
+            return 'An active binding exists. Revoke it in OpenKit before pairing again.' as const;
+          sqlite
+            .prepare(
+              'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE digest = ? AND consumed_at IS NULL'
+            )
+            .run(context.now(), input.digest);
+          sqlite
+            .prepare(`INSERT INTO discord_account_bindings(discord_user_id,user_id,revision,paired_at,revoked_at) VALUES(?,?,?,?,NULL)
+          ON CONFLICT(discord_user_id) DO UPDATE SET user_id = excluded.user_id,revision = excluded.revision,paired_at = excluded.paired_at,revoked_at = NULL`)
+            .run(
+              input.discordUserId,
+              row.userId,
+              RequestIdSchema.parse(context.newRequestId()),
+              context.now()
+            );
+          return 'Discord account paired. Current Core authority is checked for each response.' as const;
+        })
+        .immediate();
+      return { stage: input.stage, text };
+    }
+    case 'reserve-inbound': {
+      const receipt = sqlite
+        .transaction(() => {
+          const existing = sqlite
+            .prepare(
+              'SELECT payload_digest AS payloadDigest,state FROM discord_inbound_receipts WHERE event_id = ?'
+            )
+            .get(input.eventId) as { payloadDigest: string; state: string } | undefined;
+          if (existing) return { existing };
+          const requestId = RequestIdSchema.parse(context.newRequestId());
+          sqlite
+            .prepare(
+              "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at,discord_user_id) VALUES(?,?,?,'dispatching',?,?)"
+            )
+            .run(input.eventId, input.payloadDigest, requestId, context.now(), input.discordUserId);
+          return { requestId };
+        })
+        .immediate();
+      return { stage: input.stage, receipt };
+    }
+    case 'publish-origin':
+      return {
+        stage: input.stage,
+        changes: sqlite
+          .prepare(`UPDATE discord_inbound_receipts SET core_user_id = ?,binding_revision = ?,operation_id = ?,workspace_id = ?,thread_id = ?,pending_request_id = ?,turn_id = ?
+          WHERE event_id = ? AND request_id = ? AND state = 'dispatching' AND operation_id IS NULL`)
+          .run(
+            input.userId,
+            input.bindingRevision,
+            input.operationId,
+            input.workspaceId,
+            input.threadId,
+            input.pendingRequestId,
+            input.turnId,
+            input.eventId,
+            input.requestId
+          ).changes,
+      };
+    case 'publish-disclosure':
+      sqlite
+        .prepare(`INSERT INTO discord_disclosures(token_digest,discord_user_id,binding_revision,workspace_id,thread_id,pending_request_id,kind,content_digest,expires_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(
+          input.tokenDigest,
+          input.discordUserId,
+          input.bindingRevision,
+          input.workspaceId,
+          input.threadId,
+          input.pendingRequestId,
+          input.kind,
+          input.contentDigest,
+          input.expiresAt
+        );
+      return { stage: input.stage };
+    case 'settle-inbound':
+      sqlite
+        .prepare(
+          "UPDATE discord_inbound_receipts SET state = ? WHERE event_id = ? AND state = 'dispatching'"
+        )
+        .run(input.state, input.eventId);
+      return { stage: input.stage };
+  }
+}
+
+/** Decides current Core actor/binding facts and the original stage in the admitted writer. */
+export function applyControlDiscordChannel(
+  coreDb: CoreDb,
+  input: ControlDiscordChannelInput
+): ControlDiscordChannelResult {
+  assertControlProductWriter(coreDb.sqlite);
+  const resolveActor = (userId: string): Actor | null => {
+    if (!isCanonicalUserActive(coreDb, userId)) return null;
+    if ('mode' in input && input.mode === 'local' && getLocalUserId(coreDb) !== userId) return null;
+    if (input.stage === 'consume-challenge' && input.admittedUserId !== userId) return null;
+    return { kind: 'session', userId };
+  };
+  if (input.stage === 'issue-challenge' && !resolveActor(input.userId))
+    throw new OperationError(
+      'channel_actor_unavailable',
+      'Current actor authority is unavailable.',
+      403
+    );
+  if (input.stage === 'publish-origin' || input.stage === 'publish-disclosure') {
+    if (!resolveActor(input.userId))
+      throw new OperationError(
+        'channel_authority_unavailable',
+        'Current authority unavailable.',
+        403
+      );
+    const binding = readDiscordAccountBinding(coreDb.sqlite, input.userId);
+    if (
+      !binding ||
+      binding.discordUserId !== input.discordUserId ||
+      binding.revision !== input.bindingRevision
+    )
+      throw new OperationError('channel_binding_unavailable', 'Current binding unavailable.', 403);
+  }
+  // The same production clock and UUID source stay at their original SQL expression points.
+  return applyDiscordStageInDb(coreDb.sqlite, input, {
+    now: Date.now,
+    newRequestId: randomUUID,
+    resolveActor,
+  });
+}
+
+/** Sends one closed original stage to the existing Core owner with no Main write fallback. */
+async function publishDiscordStage(coreDb: CoreDb, input: ControlDiscordChannelInput) {
+  const { getControlStoreWorkerClient } = await import('../storage/control-store-worker-client.js');
+  return getControlStoreWorkerClient().discordChannel(coreDb, input);
+}
+
+/** Boot joins the original incomplete-dispatch reconciliation before the configured adapter serves. */
+export async function reconcileIncompleteDiscordInteractions(coreDb: CoreDb): Promise<number> {
+  const result = await publishDiscordStage(coreDb, { stage: 'reconcile-incomplete' });
+  if (result.stage !== 'reconcile-incomplete') throw new Error('Discord stage reply differs.');
+  return result.changes;
+}
+
+/** Revokes the original binding/challenge tuple even when no adapter is configured. */
+export async function revokeDiscordAccountBinding(coreDb: CoreDb, userId: string): Promise<void> {
+  await publishDiscordStage(coreDb, { stage: 'revoke-binding', userId });
 }
 
 /** Creates the Discord projection over migration-owned tables, without network or schema creation. */
@@ -251,12 +465,31 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
   const appLink = `Open OpenKit: ${appUrl.origin}`;
   const reply = (text: string, link = appUrl.origin) =>
     discordPrivateReply(`${text}\nOpen OpenKit: ${link}`);
-  // A prior unfinished dispatch is uncertain. Never replay it, even if Core's receipt is absent.
-  sqlite
-    .prepare(
-      "UPDATE discord_inbound_receipts SET state = 'response-unknown' WHERE state = 'dispatching'"
-    )
-    .run();
+  const coreDb = options.nativeCoreDb;
+  if (coreDb && (coreDb.sqlite !== sqlite || options.mode === undefined))
+    throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+  const mode = options.mode ?? 'server';
+
+  /** One family dispatch preserves the distinct original SQL stage and its acknowledgement. */
+  async function writeStage<S extends ControlDiscordChannelInput['stage']>(
+    input: Extract<ControlDiscordChannelInput, { stage: S }>
+  ): Promise<Extract<ControlDiscordChannelResult, { stage: S }>> {
+    const result = coreDb
+      ? await publishDiscordStage(coreDb, input)
+      : applyDiscordStageInDb(sqlite, input, {
+          now,
+          newRequestId: options.newRequestId,
+          resolveActor: options.resolveActor,
+        });
+    if (result.stage !== input.stage)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result as Extract<ControlDiscordChannelResult, { stage: S }>;
+  }
+
+  /** A prior unfinished dispatch is uncertain; boot joins this before serving, never replaying it. */
+  async function reconcileIncompleteInteractions(): Promise<number> {
+    return (await writeStage({ stage: 'reconcile-incomplete' })).changes;
+  }
 
   /** Reads the current active account binding for a Core user. */
   function binding(actor: Actor): DiscordAccountBinding | null {
@@ -264,7 +497,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
   }
 
   /** Starts a one-use, five-minute challenge for the authenticated Core user, storing only its digest. */
-  function beginPairing(actor: Actor): { challenge: string; expiresAt: number } {
+  async function beginPairing(actor: Actor): Promise<{ challenge: string; expiresAt: number }> {
     if (options.resolveActor(actor.userId)?.userId !== actor.userId)
       throw new OperationError(
         'channel_actor_unavailable',
@@ -273,61 +506,49 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       );
     const challenge = randomBytes(32).toString('base64url');
     const expiresAt = now() + freshnessMs;
-    sqlite
-      .transaction(() => {
-        sqlite
-          .prepare(
-            'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL'
-          )
-          .run(now(), actor.userId);
-        sqlite
-          .prepare(
-            'INSERT INTO discord_pairing_challenges(digest,user_id,expires_at) VALUES(?,?,?)'
-          )
-          .run(digest(challenge), actor.userId, expiresAt);
-      })
-      .immediate();
+    await writeStage({
+      stage: 'issue-challenge',
+      mode,
+      userId: actor.userId,
+      digest: digest(challenge),
+      expiresAt,
+    });
+    if (options.resolveActor(actor.userId)?.userId !== actor.userId)
+      throw new OperationError(
+        'channel_actor_unavailable',
+        'Current actor authority is unavailable.',
+        403
+      );
     return { challenge, expiresAt };
   }
 
   /** Revokes the binding and every unused challenge before later responses or sends can use them. */
-  function revoke(actor: Actor): void {
-    revokeDiscordAccountBinding(sqlite, actor.userId, now());
+  async function revoke(actor: Actor): Promise<void> {
+    await writeStage({ stage: 'revoke-binding', userId: actor.userId });
   }
 
   /** Atomically consumes external account proof and the Core-issued pairing challenge. */
-  function pair(discordUserId: string, challenge: string): string {
-    return sqlite
-      .transaction(() => {
-        const row = sqlite
-          .prepare(
-            'SELECT user_id AS userId FROM discord_pairing_challenges WHERE digest = ? AND consumed_at IS NULL AND expires_at > ?'
-          )
-          .get(digest(challenge), now()) as { userId: string } | undefined;
-        if (!row || options.resolveActor(row.userId)?.userId !== row.userId)
-          return 'Pairing challenge unavailable. Start pairing in OpenKit.';
-        const existing = sqlite
-          .prepare(
-            'SELECT user_id AS userId,revoked_at AS revokedAt FROM discord_account_bindings WHERE discord_user_id = ?'
-          )
-          .get(discordUserId) as { userId: string; revokedAt: number | null } | undefined;
-        if (
-          (existing && existing.revokedAt === null) ||
-          binding({ userId: row.userId, kind: 'session' })
+  async function pair(discordUserId: string, challenge: string): Promise<string> {
+    let admittedUserId: string | null = null;
+    if (coreDb) {
+      // Current Main admission remains before post; native deciding authority rereads it.
+      const row = sqlite
+        .prepare(
+          'SELECT user_id AS userId FROM discord_pairing_challenges WHERE digest = ? AND consumed_at IS NULL AND expires_at > ?'
         )
-          return 'An active binding exists. Revoke it in OpenKit before pairing again.';
-        sqlite
-          .prepare(
-            'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE digest = ? AND consumed_at IS NULL'
-          )
-          .run(now(), digest(challenge));
-        sqlite
-          .prepare(`INSERT INTO discord_account_bindings(discord_user_id,user_id,revision,paired_at,revoked_at) VALUES(?,?,?,?,NULL)
-        ON CONFLICT(discord_user_id) DO UPDATE SET user_id = excluded.user_id,revision = excluded.revision,paired_at = excluded.paired_at,revoked_at = NULL`)
-          .run(discordUserId, row.userId, RequestIdSchema.parse(options.newRequestId()), now());
-        return 'Discord account paired. Current Core authority is checked for each response.';
+        .get(digest(challenge), now()) as { userId: string } | undefined;
+      if (row && options.resolveActor(row.userId)?.userId === row.userId)
+        admittedUserId = row.userId;
+    }
+    return (
+      await writeStage({
+        stage: 'consume-challenge',
+        mode,
+        discordUserId,
+        digest: digest(challenge),
+        admittedUserId,
       })
-      .immediate();
+    ).text;
   }
 
   /** Dispatches exactly one verified event after its durable deduplication fence commits. */
@@ -352,24 +573,13 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       );
     const command = commandSchema.parse(envelope);
     if (envelope.type !== 2) return reply('This interaction is unsupported. Use OpenKit.');
-    const receipt = sqlite
-      .transaction(() => {
-        const existing = sqlite
-          .prepare(
-            'SELECT payload_digest AS payloadDigest,state FROM discord_inbound_receipts WHERE event_id = ?'
-          )
-          .get(envelope.id) as { payloadDigest: string; state: string } | undefined;
-        if (existing) return { existing };
-        const requestId = RequestIdSchema.parse(options.newRequestId());
-        sqlite
-          .prepare(
-            "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at,discord_user_id) VALUES(?,?,?,'dispatching',?,?)"
-          )
-          .run(envelope.id, input.payloadDigest, requestId, now(), command.user.id);
-        return { requestId };
-      })
-      .immediate();
-    if (receipt.existing) {
+    const { receipt } = await writeStage({
+      stage: 'reserve-inbound',
+      eventId: envelope.id,
+      payloadDigest: input.payloadDigest,
+      discordUserId: command.user.id,
+    });
+    if ('existing' in receipt) {
       if (receipt.existing.payloadDigest !== input.payloadDigest)
         return reply('Interaction identity conflict. Inspect the request in OpenKit.');
       return reply(
@@ -379,6 +589,15 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       );
     }
     let submitted = false;
+    let settlementStarted = false;
+    let settlementFinished = false;
+    let protectedReplyAdmission: (() => void) | undefined;
+    /** Never repost settlement when its own acknowledgement is unavailable. */
+    async function settleReceipt(state: 'settled' | 'response-unknown') {
+      settlementStarted = true;
+      await settle(envelope.id, state);
+      settlementFinished = true;
+    }
     try {
       const subcommand = command.data.options[0]!;
       const values = Object.create(null) as Record<string, string>;
@@ -392,7 +611,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
       if (subcommand.name === 'pair') {
         text =
           names === 'challenge'
-            ? pair(command.user.id, values.challenge!)
+            ? await pair(command.user.id, values.challenge!)
             : 'This pairing input is unsupported. Start pairing in OpenKit.';
       } else {
         const expectedNames =
@@ -431,24 +650,30 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
           pendingRequestId: values.request!,
         };
         if (subcommand.name === 'approve') {
-          const link = options.requestLink({ actor, ...target });
           text = 'Approval grants require the complete App confirmation.';
-          settle(envelope.id, 'settled');
+          await settleReceipt('settled');
+          const link =
+            options.resolveActor(actor.userId)?.userId === actor.userId &&
+            binding(actor)?.revision === row.revision
+              ? options.requestLink({ actor, ...target })
+              : null;
           return reply(text, link ?? appUrl.origin);
         }
         if (subcommand.name !== 'inspect') {
-          const disclosure = sqlite
-            .prepare(`SELECT content_digest AS contentDigest,kind FROM discord_disclosures
+          const readCurrentDisclosure = () =>
+            sqlite
+              .prepare(`SELECT content_digest AS contentDigest,kind FROM discord_disclosures
             WHERE token_digest = ? AND discord_user_id = ? AND binding_revision = ? AND workspace_id = ? AND thread_id = ? AND pending_request_id = ? AND expires_at > ?`)
-            .get(
-              digest(values.disclosure!),
-              command.user.id,
-              row.revision,
-              target.workspaceId,
-              target.threadId,
-              target.pendingRequestId,
-              now()
-            ) as { contentDigest: string; kind: string } | undefined;
+              .get(
+                digest(values.disclosure!),
+                command.user.id,
+                row.revision,
+                target.workspaceId,
+                target.threadId,
+                target.pendingRequestId,
+                now()
+              ) as { contentDigest: string; kind: string } | undefined;
+          const disclosure = readCurrentDisclosure();
           if (!disclosure)
             throw new OperationError(
               'channel_disclosure_unavailable',
@@ -464,7 +689,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
             );
           if ((subcommand.name === 'answer') !== (view.kind === 'user-input'))
             throw new OperationError('unsupported_request_kind', 'Unsupported request kind.', 400);
-          // No await separates the fresh authority, audience, binding and exact-content checks from native invocation.
+          // Preserve the original initial source/disclosure checks before origin publication.
           if (binding(actor)?.revision !== row.revision)
             throw new OperationError(
               'channel_binding_unavailable',
@@ -490,26 +715,45 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
           const operationId = subcommand.name === 'answer' ? 'question.answer' : 'approval.respond';
           // The receipt owns the admitted responder and source, even if native acceptance stays unknown.
           // Commit these facts before dispatch; later bindings must never relabel this event.
-          const origin = sqlite
-            .prepare(`UPDATE discord_inbound_receipts SET core_user_id = ?,binding_revision = ?,operation_id = ?,workspace_id = ?,thread_id = ?,pending_request_id = ?,turn_id = ?
-            WHERE event_id = ? AND request_id = ? AND state = 'dispatching' AND operation_id IS NULL`)
-            .run(
-              actor.userId,
-              row.revision,
-              operationId,
-              view.workspaceId,
-              view.threadId,
-              view.pendingRequestId,
-              view.turnId,
-              envelope.id,
-              receipt.requestId
-            );
+          const origin = await writeStage({
+            stage: 'publish-origin',
+            mode,
+            userId: actor.userId,
+            discordUserId: command.user.id,
+            bindingRevision: row.revision,
+            operationId,
+            workspaceId: view.workspaceId,
+            threadId: view.threadId,
+            pendingRequestId: view.pendingRequestId,
+            turnId: view.turnId,
+            eventId: envelope.id,
+            requestId: receipt.requestId,
+          });
           if (origin.changes !== 1)
             throw new OperationError(
               'channel_origin_unavailable',
               'The required channel response origin could not be retained.',
               503
             );
+          admitAfterStage(actor, target, row.revision, view);
+          // The original expiring proof must still be current after the new acknowledgement gap.
+          const currentDisclosure = readCurrentDisclosure();
+          if (!currentDisclosure)
+            throw new OperationError(
+              'channel_disclosure_unavailable',
+              'Current disclosure unavailable.',
+              409
+            );
+          if (
+            currentDisclosure.kind !== view.kind ||
+            currentDisclosure.contentDigest !== viewDigest(view)
+          )
+            throw new OperationError(
+              'channel_disclosure_changed',
+              'The exact effect or question changed.',
+              409
+            );
+          // No await separates these repeated current checks from native invocation.
           submitted = true;
           await options.invoke(operationId, input, actor);
           text =
@@ -524,27 +768,35 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
               'The complete request requires OpenKit.',
               400
             );
-          sqlite
-            .prepare(`INSERT INTO discord_disclosures(token_digest,discord_user_id,binding_revision,workspace_id,thread_id,pending_request_id,kind,content_digest,expires_at)
-            VALUES(?,?,?,?,?,?,?,?,?)`)
-            .run(
-              digest(token),
-              command.user.id,
-              row.revision,
-              target.workspaceId,
-              target.threadId,
-              target.pendingRequestId,
-              view.kind,
-              viewDigest(view),
-              now() + freshnessMs
-            );
+          await writeStage({
+            stage: 'publish-disclosure',
+            mode,
+            userId: actor.userId,
+            tokenDigest: digest(token),
+            discordUserId: command.user.id,
+            bindingRevision: row.revision,
+            workspaceId: target.workspaceId,
+            threadId: target.threadId,
+            pendingRequestId: target.pendingRequestId,
+            kind: view.kind,
+            contentDigest: viewDigest(view),
+            expiresAt: now() + freshnessMs,
+          });
+          protectedReplyAdmission = () => admitAfterStage(actor, target, row.revision, view);
+          protectedReplyAdmission();
         }
       }
-      settle(envelope.id, 'settled');
+      await settleReceipt('settled');
+      protectedReplyAdmission?.();
       return reply(text);
     } catch (error) {
+      if (settlementStarted && !settlementFinished) throw error;
+      if (error instanceof ControlStoreWorkerError && error.commit === 'unknown')
+        return reply(
+          'The response outcome is unknown. Inspect the request in OpenKit before a new attempt.'
+        );
       const unknown = submitted && (!(error instanceof OperationError) || error.status >= 500);
-      settle(envelope.id, unknown ? 'response-unknown' : 'settled');
+      if (!settlementStarted) await settleReceipt(unknown ? 'response-unknown' : 'settled');
       if (unknown)
         return reply(
           'The response outcome is unknown. Inspect the request in OpenKit before a new attempt.'
@@ -578,16 +830,37 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
     return view;
   }
 
+  /** Rechecks the original actor, binding, source and exact content after a native acknowledgement. */
+  function admitAfterStage(
+    actor: Actor,
+    target: { workspaceId: string; threadId: string; pendingRequestId: string },
+    revision: string,
+    original: Extract<DiscordPendingView, { status: 'available' }>
+  ): void {
+    if (options.resolveActor(actor.userId)?.userId !== actor.userId)
+      throw new OperationError(
+        'channel_authority_unavailable',
+        'Current authority unavailable.',
+        403
+      );
+    if (binding(actor)?.revision !== revision)
+      throw new OperationError('channel_binding_unavailable', 'Current binding unavailable.', 403);
+    const current = currentView(actor, target);
+    if (current.kind !== original.kind || viewDigest(current) !== viewDigest(original))
+      throw new OperationError(
+        'channel_disclosure_changed',
+        'The exact effect or question changed.',
+        409
+      );
+  }
+
   /** Stores no request content, answers, captured arguments or interaction tokens. */
-  function settle(eventId: string, state: 'settled' | 'response-unknown') {
-    sqlite
-      .prepare(
-        "UPDATE discord_inbound_receipts SET state = ? WHERE event_id = ? AND state = 'dispatching'"
-      )
-      .run(state, eventId);
+  async function settle(eventId: string, state: 'settled' | 'response-unknown'): Promise<void> {
+    await writeStage({ stage: 'settle-inbound', eventId, state });
   }
 
   return {
+    reconcileIncompleteInteractions,
     beginPairing,
     binding,
     revoke,

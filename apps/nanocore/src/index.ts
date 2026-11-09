@@ -46,6 +46,7 @@ import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
 import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
 import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
+import { reconcileIncompleteDiscordInteractions } from './channels/discord.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
 import { BootConfigError, resolveMode } from './config/mode.js';
@@ -695,6 +696,8 @@ const auth =
 readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
 let prepareKnowledgeMaintenance: ((instant: string) => Promise<void>) | undefined;
+if (runtimeConfigSnapshot.openKitConfig.channels?.discord)
+  await reconcileIncompleteDiscordInteractions(coreDb);
 const app = createApp({
   onKnowledgeMaintenanceReady: (prepare) => {
     prepareKnowledgeMaintenance = prepare;

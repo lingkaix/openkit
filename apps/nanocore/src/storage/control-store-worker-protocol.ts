@@ -66,6 +66,12 @@ import {
 } from '../auth/nanohost-transport-codecs.js';
 import type { ScopeAdmissionFailure } from '../bootstrap/readiness.js';
 import {
+  type ControlDiscordChannelInput,
+  ControlDiscordChannelInputSchema,
+  type ControlDiscordChannelResult,
+  ControlDiscordChannelResultSchema,
+} from '../channels/discord-codecs.js';
+import {
   ControlAppRefusalSchema,
   type ControlAppResult,
   ControlAppResultSchema,
@@ -412,7 +418,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 83;
+export const CONTROL_WORKER_VERSION = 84;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -817,6 +823,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
+          readonly operation: 'discord-channel';
+          readonly input: ControlDiscordChannelInput;
         }
       | {
           readonly operation: 'attention-enqueue';
@@ -1281,6 +1291,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'discord-channel';
+      readonly result: ControlDiscordChannelResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'attention-enqueue';
@@ -1807,6 +1822,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'discord-channel')
+    return ControlDiscordChannelResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-enqueue')
     return AttentionEnqueueResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-reconcile-incomplete-attempts')
@@ -2330,6 +2347,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'discord-channel')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlDiscordChannelInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'attention-enqueue') {

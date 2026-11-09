@@ -39,6 +39,11 @@ import { applyControlLocalIdentity } from '../auth/identity.js';
 import { isNanoHostTransportAdminRefusal } from '../auth/nanohost-transport-codecs.js';
 import { applyControlNanoHostTransport } from '../auth/nanohost-transport-native.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import { applyControlDiscordChannel } from '../channels/discord.js';
+import {
+  type ControlDiscordChannelResult,
+  ControlDiscordChannelResultSchema,
+} from '../channels/discord-codecs.js';
 import { assertWritable, mapAppSqliteError } from '../generative-kernel/app-model.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
@@ -362,6 +367,7 @@ type WriteCommand = Extract<
       | 'remote-mcp-audit'
       | 'attention-reconcile-incomplete-attempts'
       | 'attention-enqueue'
+      | 'discord-channel'
       | 'attention-attempt-claim'
       | 'attention-attempt-completion'
       | 'local-identity'
@@ -2241,6 +2247,27 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'discord-channel') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            let result: ControlDiscordChannelResult;
+            try {
+              result = applyControlDiscordChannel(owner.scopeDb, request.input);
+            } catch (error) {
+              if (!(error instanceof OperationError)) throw error;
+              result = ControlDiscordChannelResultSchema.parse({
+                stage: 'refused',
+                code: error.code,
+                message: error.message,
+                status: error.status,
+              });
+            }
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'discord-channel',
+              result,
+            };
           } else if (request.operation === 'attention-enqueue') {
             if (owner.scopeDb?.scope !== 'core' || !request.preparedAttentionEnqueue)
               throw new ControlProductPreconditionError();
@@ -3742,6 +3769,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'remote-mcp-audit' ||
       value.operation === 'attention-reconcile-incomplete-attempts' ||
       value.operation === 'attention-enqueue' ||
+      value.operation === 'discord-channel' ||
       value.operation === 'attention-attempt-claim' ||
       value.operation === 'attention-attempt-completion' ||
       value.operation === 'local-identity' ||

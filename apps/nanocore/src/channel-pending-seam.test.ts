@@ -21,7 +21,10 @@ import {
   setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
@@ -254,6 +257,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
   }
   let services = compose();
   await services.notifications.reconcileIncompleteAttempts();
+  await services.discord?.reconcileIncompleteInteractions();
   let event = 100000000000000000n;
   const envelope = (command: string, values: Record<string, string>) => ({
     id: String(++event),
@@ -321,7 +325,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       workspaceAvailable = available;
     },
     async pair() {
-      const { challenge } = services.discord!.beginPairing(actor);
+      const { challenge } = await services.discord!.beginPairing(actor);
       expect(text(await send('pair', { challenge }))).toContain('paired');
     },
     async disclose() {
@@ -389,6 +393,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       store = new FsStore({ dataRoot });
       services = compose();
       await services.notifications.reconcileIncompleteAttempts();
+      await services.discord?.reconcileIncompleteInteractions();
     },
   };
 }
@@ -576,10 +581,11 @@ describe('Discord to native Pending Request seam', () => {
       invokePending,
     });
     await services.notifications.reconcileIncompleteAttempts();
+    await services.discord?.reconcileIncompleteInteractions();
     expect(
-      services.discord!.beginPairing({ userId: FIXTURE_LOCAL_USER_ID, kind: 'local' })
+      await services.discord!.beginPairing({ userId: FIXTURE_LOCAL_USER_ID, kind: 'local' })
     ).toEqual({ challenge: expect.any(String), expiresAt: expect.any(Number) });
-    expect(() => services.discord!.beginPairing(actor)).toThrow(
+    await expect(services.discord!.beginPairing(actor)).rejects.toThrow(
       'Current actor authority is unavailable.'
     );
     expect(openWorkspace).not.toHaveBeenCalled();
@@ -625,7 +631,7 @@ describe('Discord to native Pending Request seam', () => {
   it('retains native binding status and revocation after Discord configuration is removed', async () => {
     const f = await fixture();
     await f.pair();
-    f.services.discord!.beginPairing(actor);
+    await f.services.discord!.beginPairing(actor);
     expect(
       f.coreDb.sqlite
         .prepare(
@@ -773,7 +779,7 @@ describe('Discord to native Pending Request seam', () => {
         expect(isThreadIdVisible(f.store, DEMO_WORKSPACE_ID, thread.id, actor.userId)).toBe(false);
         expect(f.store.getThread(DEMO_WORKSPACE_ID, thread.id)).toEqual(thread);
       } else {
-        f.services.discord!.revoke(actor);
+        await f.services.discord!.revoke(actor);
       }
       expect(text(await f.send('deny', { ...f.target, disclosure }))).toContain('refused');
       expect(f.nativeCalls).toHaveLength(0);
@@ -810,7 +816,7 @@ describe('Discord to native Pending Request seam', () => {
       await preparing;
       try {
         if (loss === 'membership') f.removeMembership();
-        else f.services.discord!.revoke(actor);
+        else await f.services.discord!.revoke(actor);
       } finally {
         release!();
       }
@@ -890,9 +896,10 @@ describe('Discord to native Pending Request seam', () => {
     // Keep the origin prerequisite writable; fail only the receipt publication after native dispatch.
     f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE OF state ON discord_inbound_receipts
       WHEN OLD.event_id = '${event.id}' BEGIN SELECT RAISE(ABORT, 'simulated receipt publication failure'); END`);
-    await expect(f.services.discord!.handleSignedInteraction(signed)).rejects.toThrow(
-      'simulated receipt publication failure'
-    );
+    const failed = f.services.discord!.handleSignedInteraction(signed);
+    // Native diagnostics redact SQLite text; only this separate settlement was rolled back.
+    await expect(failed).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(failed).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
     expect(f.record().state).toBe('resolved');
     expect(f.store.getApproval(f.target.request).status).toBe('denied');
     expect(f.nativeCalls).toHaveLength(1);

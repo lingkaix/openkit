@@ -13,6 +13,12 @@ import {
   type ControlLocalIdentity,
   ControlLocalIdentityResultSchema,
 } from '../auth/local-identity-codecs.js';
+import {
+  type ControlDiscordChannelInput,
+  ControlDiscordChannelInputSchema,
+  type ControlDiscordChannelResult,
+  ControlDiscordChannelResultSchema,
+} from '../channels/discord-codecs.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
 import {
   type AttentionEnqueueCommand,
@@ -1978,6 +1984,52 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Joins one original Discord stage before permitting its caller to continue. */
+  async discordChannel(
+    db: CoreDb,
+    value: ControlDiscordChannelInput
+  ): Promise<Exclude<ControlDiscordChannelResult, { stage: 'refused' }>> {
+    const input = ControlDiscordChannelInputSchema.parse(value);
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    if (
+      admitted &&
+      (admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const command = { operation: 'discord-channel' as const, database, input };
+    const reply = admitted
+      ? await this.request(command)
+      : (
+          await Promise.all([
+            this.open({
+              database,
+              path: scope.path,
+              dataRoot: db.dataRoot,
+              create: false,
+              initialize: 'core',
+              productOwner: scope.owner,
+              contentMount: scope.contentMount,
+            }),
+            this.request(command),
+          ])
+        )[1];
+    if (reply.operation !== 'discord-channel')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlDiscordChannelResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    if (result.data.stage === 'refused')
+      throw new OperationError(result.data.code, result.data.message, result.data.status);
+    if (result.data.stage !== input.stage)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result.data;
   }
 
   /** Returns the original deduplicated enqueue snapshot only after its Core FULL acknowledgement. */
