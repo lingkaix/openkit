@@ -34,13 +34,14 @@ import {
   openUserDb,
   openUserReadDb,
   openWorkspaceDb,
+  type UserDb,
   type WorkspaceDb,
 } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { controlThreads } from './schema/index.js';
 
-/** Installs retained bytes with the live writer stopped; this fixture proves decoding, not command acceptance. */
-function seedRetainedReceipt(db: WorkspaceDb, record: CommandRequestRecord): void {
+/** Installs retained bytes with the native writer stopped; this fixture proves reading, not command acceptance. */
+function seedRetainedReceipt(db: UserDb | WorkspaceDb, record: CommandRequestRecord): void {
   db.sqlite
     .prepare(`INSERT INTO idempotency_requests
       (schema_version, request_key, command_name, request_id, scope_json, input_hash,
@@ -553,27 +554,37 @@ describe('retained SQL receipt format', () => {
 });
 
 describe('released receipt census pages and ordinary caller selection', () => {
-  function fixture() {
+  async function fixture() {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-census-wal-'));
     const store = createTestStore({ dataRoot });
-    const writer = createTestStore({ dataRoot });
     const userId = testEntityId('usr', 'receipt-census-owner');
     const scope = { userId };
-    // This unchanged public User command-receipt owner writes these rows, not fixture SQL.
-    const add = (index: number) =>
-      writer.recordCommandRequest({
+    await shutdownControlStoreWorkerClient();
+    const writer = openUserDb(dataRoot, userId);
+    applyScopedMigrations(writer);
+    // Retained reader fixtures use a genuine independent WAL writer. The deciding
+    // later INSERT stays synchronous inside the supplied reader's transaction.
+    const add = (index: number) => {
+      const requestId = `0190f4c8-0000-7000-8000-${String(index + 1).padStart(12, '0')}`;
+      const record: CommandRequestRecord = {
+        key: commandRequestKey('workspace.create', requestId, scope),
         command: 'workspace.create',
-        requestId: `0190f4c8-0000-7000-8000-${String(index + 1).padStart(12, '0')}`,
+        requestId,
         scope,
         inputHash: `sha256:receipt-census-${index}`,
         response: { kind: 'workspace', id: testEntityId('ws', 'receipt-census-result') },
         createdAt: '2026-10-06T00:00:00.000Z',
         expiresAt: '3001-01-01T00:00:00.000Z',
-      });
+      };
+      seedRetainedReceipt(writer, record);
+      return record;
+    };
     const records = Array.from({ length: 129 }, (_, index) => add(index));
     const db = openUserReadDb(dataRoot, userId);
-    onTestFinished(() => {
+    onTestFinished(async () => {
       if (db.sqlite.open) db.sqlite.close();
+      if (writer.sqlite.open) writer.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     });
     expect(db.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -583,8 +594,8 @@ describe('released receipt census pages and ordinary caller selection', () => {
 
   it.each(['standalone', 'nested'] as const)(
     'preserves the original supplied-connection selection through a real later WAL owner insert (%s)',
-    (mode) => {
-      const { db, records, add } = fixture();
+    async (mode) => {
+      const { db, records, add } = await fixture();
       const prepare = db.sqlite.prepare.bind(db.sqlite);
       let crossed = false;
       let late: CommandRequestRecord | undefined;
@@ -622,8 +633,8 @@ describe('released receipt census pages and ordinary caller selection', () => {
     }
   );
 
-  it('releases before each cooperative page and does not promise a cross-page snapshot', () => {
-    const { db, records, add } = fixture();
+  it('releases before each cooperative page and does not promise a cross-page snapshot', async () => {
+    const { db, records, add } = await fixture();
     const pages = readCommandRequestRecordPagesFromSqlite(db.sqlite);
     const first = pages.next().value;
     expect(first).toEqual(records.slice(0, 128));
@@ -633,8 +644,8 @@ describe('released receipt census pages and ordinary caller selection', () => {
     expect(db.sqlite.inTransaction).toBe(false);
   });
 
-  it('refuses a later-page retained version before JSON decoding without rewriting it', () => {
-    const { dataRoot, userId, db, records } = fixture();
+  it('refuses a later-page retained version before JSON decoding without rewriting it', async () => {
+    const { dataRoot, userId, db, records } = await fixture();
     // Deliberate retained corruption only after owner seeding; not an admission fixture.
     const retained = openUserDb(dataRoot, userId);
     try {
@@ -660,13 +671,20 @@ describe('released receipt census pages and ordinary caller selection', () => {
 describe('User command receipt inventories', () => {
   it('lists only active receipts while durable inventory retains the complete ordered history', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-user-receipt-inventory-'));
+    let writer: UserDb | undefined;
     onTestFinished(async () => {
+      if (writer?.sqlite.open) writer.sqlite.close();
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createTestStore({ dataRoot });
     const userId = testEntityId('usr', 'user-receipt-inventory');
-    const expired = store.recordCommandRequest({
+    await shutdownControlStoreWorkerClient();
+    writer = openUserDb(dataRoot, userId);
+    applyScopedMigrations(writer);
+    const expired: CommandRequestRecord = {
+      key: commandRequestKey('workspace.create', '0190f4c8-0000-7000-8000-000000000601', {
+        userId,
+      }),
       command: 'workspace.create',
       requestId: '0190f4c8-0000-7000-8000-000000000601',
       scope: { userId },
@@ -674,8 +692,12 @@ describe('User command receipt inventories', () => {
       response: { kind: 'workspace', id: testEntityId('ws', 'expired-user-receipt') },
       createdAt: '2026-10-06T00:00:00.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
-    });
-    const active = store.recordCommandRequest({
+    };
+    seedRetainedReceipt(writer, expired);
+    const active: CommandRequestRecord = {
+      key: commandRequestKey('workspace.create', '0190f4c8-0000-7000-8000-000000000602', {
+        userId,
+      }),
       command: 'workspace.create',
       requestId: '0190f4c8-0000-7000-8000-000000000602',
       scope: { userId },
@@ -683,7 +705,8 @@ describe('User command receipt inventories', () => {
       response: { kind: 'workspace', id: testEntityId('ws', 'active-user-receipt') },
       createdAt: '2026-10-07T00:00:00.000Z',
       expiresAt: '3001-01-01T00:00:00.000Z',
-    });
+    };
+    seedRetainedReceipt(writer, active);
 
     expect(readDurableCommandRequestRecords(dataRoot)).toEqual({
       records: [expired, active],

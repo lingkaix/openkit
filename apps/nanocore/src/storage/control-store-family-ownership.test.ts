@@ -188,6 +188,9 @@ function admission(f: ReturnType<typeof fixture>, record = receipt(f.scope)): Co
 
 /** Distinguishes exact operation/scope/version partitions without another ownership column. */
 function seedPartitions(f: ReturnType<typeof fixture>) {
+  // Metadata updates now share the native Workspace partition; the same command
+  // remains outside the activated Core partition. Keep the exact retained row.
+  const metadataUpdate = receipt(f.scope, 'workspace.update', expiredAt);
   const commands = [
     'thread.create',
     'thread.update',
@@ -199,10 +202,11 @@ function seedPartitions(f: ReturnType<typeof fixture>) {
   const expired = [
     ...commands.map((command) => receipt(f.scope, command, expiredAt)),
     receipt({ ...f.scope, threadId: allocateEntityId('th') }, 'thread.update', expiredAt),
+    ...(f.owner.kind === 'workspace' ? [metadataUpdate] : []),
   ];
   const protectedRows = [
     receipt(f.scope),
-    receipt(f.scope, 'workspace.update', expiredAt),
+    ...(f.owner.kind === 'server' ? [metadataUpdate] : []),
     receipt({ workspaceId: allocateEntityId('ws') }, 'thread.create', expiredAt),
     receipt(
       f.owner.kind === 'server' ? { workspaceId: allocateEntityId('ws') } : { coreId: 'server' },
@@ -235,14 +239,15 @@ function seedPartitions(f: ReturnType<typeof fixture>) {
   f.db.sqlite
     .prepare('UPDATE idempotency_requests SET schema_version=2 WHERE request_key=?')
     .run(protectedRows.at(-1)!.key);
-  for (const row of [...expired, protectedRows[1]!]) retainedAudit(f, row);
+  for (const row of [...expired, ...(f.owner.kind === 'server' ? [metadataUpdate] : [])])
+    retainedAudit(f, row);
   expect(
     f.db.sqlite
       .prepare('SELECT request_key FROM idempotency_requests ORDER BY request_key')
       .pluck()
       .all()
   ).toEqual([...expired, ...protectedRows].map((row) => row.key).sort());
-  return { expired, protectedRows };
+  return { expired, protectedRows, metadataUpdate };
 }
 
 /** Materializes logical rows only. WAL/SHM paths and process shutdown are outside this oracle. */
@@ -424,6 +429,12 @@ describe.each(['server', 'workspace'] as const)('prepared %s family ownership', 
       expect(reader.get(product.kind, String(record.id))).toEqual({ revision: 1, record });
     }
     const after = retainedRows(reader.sqlite);
+    expect(
+      after.receipts.some(
+        (row) => (row as { request_key: string }).request_key === partitions.metadataUpdate.key
+      ),
+      'expired Workspace metadata receipts join only their physical Workspace native partition'
+    ).toBe(f.owner.kind === 'server');
     expect(
       after.receipts.map((row) => (row as { request_key: string }).request_key).sort()
     ).toEqual([...partitions.protectedRows.map((row) => row.key), input.receipt.key].sort());

@@ -29,6 +29,8 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import * as goalCoordinator from '../runtime/goal-coordinator.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
+import { commandRequestExpiresAt } from '../storage/command-request-records.js';
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -1693,19 +1695,23 @@ describe('FsStore persistence', () => {
       undefined,
       workspaceAdmission
     );
-    store.recordCommandRequest({
+    const userScope = { userId: 'usr_00000000-0000-7000-8000-000000000001' };
+    const userInputHash = commandInputHash({ purpose: 'user-database-owner' });
+    const userCreatedAt = new Date().toISOString();
+    await store.publishWorkspaceCommandReceipt({
+      key: commandRequestKey('workspace.create', userRequestId, userScope),
       command: 'workspace.create',
       requestId: userRequestId,
-      scope: { userId: 'usr_00000000-0000-7000-8000-000000000001' },
-      inputHash: 'sha256:user-database-owner',
+      scope: userScope,
+      inputHash: userInputHash,
       response: { kind: 'workspace', id: 'ws_00000000-0000-7116-b5d0-d8be9495feba' },
-      createdAt: '2026-07-12T00:00:01.000Z',
-      expiresAt: '2999-01-01T00:00:00.000Z',
+      createdAt: userCreatedAt,
+      expiresAt: commandRequestExpiresAt(userCreatedAt),
     });
 
     for (const expected of [
       {
-        inputHash: 'sha256:user-database-owner',
+        inputHash: userInputHash,
         path: userDbPath(dataRoot, 'usr_00000000-0000-7000-8000-000000000001'),
         requestId: userRequestId,
       },
