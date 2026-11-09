@@ -50,6 +50,13 @@ export function createTestSessionActor(coreDb: CoreDb, userId: string): Actor {
 export function createAppWithLocalIdentity(
   options: CreateAppOptions = {}
 ): ReturnType<typeof createNanoCoreApp> {
+  // Automatic setup must not repair used or nonlocal-only User authority.
+  if (
+    options.mode !== 'server' &&
+    options.coreDb?.canInitializeLocalUser &&
+    !options.coreDb.sqlite.prepare('SELECT 1 FROM users LIMIT 1').get()
+  )
+    ensureLocalUser(options.coreDb);
   let admission = options.workspaceMutationAdmission ?? options.automationStore?.mutationAdmission;
   const dataRoot = options.dataRoot ?? options.store?.getDataRoot() ?? options.coreDb?.dataRoot;
   if (dataRoot) {

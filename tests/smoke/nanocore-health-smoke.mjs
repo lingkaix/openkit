@@ -162,7 +162,7 @@ async function seedWorkspaceDeletionRequest(dataRoot) {
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
-    const localUserId = ensureLocalUser(coreDb);
+    const localUserId = await ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Deletion recovery smoke');
     recordWorkspaceOwnerMembership({

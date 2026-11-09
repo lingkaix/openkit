@@ -1,9 +1,11 @@
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import type { CoreMode } from '../config/mode.js';
+import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { ensureUserLayout } from '../storage/fs-layout.js';
 import { users } from '../storage/schema/index.js';
 import type { OpenKitAccessTokenScope } from './access-token.js';
+import type { ControlLocalIdentity } from './local-identity-codecs.js';
 
 /**
  * Request actor used by the NanoCore auth facade.
@@ -101,39 +103,61 @@ export function getLocalUserId(coreDb: CoreDb): string {
   return users[0]!.id;
 }
 
+/** Applies the original unique-local lookup and fresh-only allocation in the native Core savepoint. */
+export function applyControlLocalIdentity(coreDb: CoreDb, input: ControlLocalIdentity): string {
+  if (coreDb.scope !== 'core' || !coreDb.sqlite.inTransaction)
+    throw new ControlProductPreconditionError();
+  const existing = coreDb.sqlite.prepare("SELECT id FROM users WHERE kind = 'local'").all();
+  if (existing.length > 0) return getLocalUserId(coreDb);
+  const count = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
+    count: number;
+  };
+  if (!input.freshInitialization || count.count !== 0) {
+    throw new Error('Missing local User on an initialized deployment requires inspection.');
+  }
+  const now = new Date();
+  const id = allocateEntityId('usr');
+  coreDb.db
+    .insert(users)
+    .values({
+      id,
+      kind: 'local',
+      displayName: 'Local User',
+      email: 'local@local.openkit.invalid',
+      emailVerified: false,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now.toISOString(),
+    })
+    .run();
+  return id;
+}
+
 /**
- * Initializes one canonical local User only within the proved fresh deployment transaction.
- * Reopen, updates and disabled state retain the recorded identity; an empty used lookup never remints.
+ * Joins canonical local initialization before boot recovery, then completes the existing User layout.
+ * Reopen and disabled state reuse the recorded identity; an uncertain result cannot renew allocation authority.
  */
-export function ensureLocalUser(coreDb: CoreDb): string {
-  const id = coreDb.sqlite.transaction(() => {
-    const existing = coreDb.sqlite.prepare("SELECT id FROM users WHERE kind = 'local'").all();
-    if (existing.length > 0) return getLocalUserId(coreDb);
-    const count = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get() as {
-      count: number;
-    };
-    if (!coreDb.canInitializeLocalUser || count.count !== 0) {
-      throw new Error('Missing local User on an initialized deployment requires inspection.');
-    }
-    const now = new Date();
-    const id = allocateEntityId('usr');
-    coreDb.db
-      .insert(users)
-      .values({
-        id,
-        kind: 'local',
-        displayName: 'Local User',
-        email: 'local@local.openkit.invalid',
-        emailVerified: false,
-        image: null,
-        createdAt: now,
-        updatedAt: now,
-        lastSeenAt: now.toISOString(),
-      })
-      .run();
-    return id;
-  })();
+export async function ensureLocalUser(coreDb: CoreDb): Promise<string> {
+  // Keep Main orchestration out of the native deciding section's static import graph.
+  const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
+    '../storage/control-store-worker-client.js'
+  );
+  const freshInitialization = coreDb.canInitializeLocalUser;
   coreDb.canInitializeLocalUser = false;
+  let id: string;
+  try {
+    id = await getControlStoreWorkerClient().localIdentity(coreDb, { freshInitialization });
+  } catch (error) {
+    // Only proved rollback retains the original proof; a lost ACK must never permit reminting.
+    if (
+      freshInitialization &&
+      error instanceof ControlStoreWorkerError &&
+      error.commit === 'not-committed'
+    )
+      coreDb.canInitializeLocalUser = true;
+    throw error;
+  }
   ensureUserLayout(coreDb.dataRoot, id);
   return id;
 }

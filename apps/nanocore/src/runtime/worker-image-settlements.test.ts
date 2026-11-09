@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
+import { getLocalUserId } from '../auth/identity.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
@@ -18,6 +18,7 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';

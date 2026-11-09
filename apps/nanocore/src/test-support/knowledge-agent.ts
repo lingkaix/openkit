@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { serverKnowledgeRoot } from '../storage/fs-layout.js';
 import { createTestGatewayConfig } from './agent-environment.js';
 import { createApp } from './app.js';
+import { ensureLocalUser } from './local-user.js';
 
 /** Only the external transport is fake; native query Tools and Gateway own each answer. */
 export function createKnowledgeAnswerApp(

@@ -8,7 +8,6 @@ import { allocateEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { type AuthVariables, createAuthMiddleware } from '../auth/middleware.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { ProviderProfile } from '../config/providers-loader.js';
@@ -25,6 +24,7 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { createVaultReference } from '../vault/vault-references.js';

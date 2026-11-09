@@ -35,6 +35,7 @@ import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
 import { applyControlBetterAuth } from '../auth/better-auth-native.js';
 import { applyControlBootstrapEnsure } from '../auth/bootstrap-ensure-native.js';
+import { applyControlLocalIdentity } from '../auth/identity.js';
 import { isNanoHostTransportAdminRefusal } from '../auth/nanohost-transport-codecs.js';
 import { applyControlNanoHostTransport } from '../auth/nanohost-transport-native.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
@@ -354,6 +355,7 @@ type WriteCommand = Extract<
       | 'attention-reconcile-incomplete-attempts'
       | 'attention-attempt-claim'
       | 'attention-attempt-completion'
+      | 'local-identity'
       | 'bootstrap-ensure'
       | 'access-token-lifecycle'
       | 'server-admin-token-default'
@@ -2275,6 +2277,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'attention-attempt-completion',
               result,
             };
+          } else if (request.operation === 'local-identity') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlLocalIdentity(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'local-identity',
+              result,
+            };
           } else if (request.operation === 'bootstrap-ensure') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlBootstrapEnsure(owner.scopeDb, request.input);
@@ -3697,6 +3709,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'attention-reconcile-incomplete-attempts' ||
       value.operation === 'attention-attempt-claim' ||
       value.operation === 'attention-attempt-completion' ||
+      value.operation === 'local-identity' ||
       value.operation === 'bootstrap-ensure' ||
       value.operation === 'access-token-lifecycle' ||
       value.operation === 'server-admin-token-default' ||

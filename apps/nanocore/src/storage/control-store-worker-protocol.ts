@@ -53,6 +53,11 @@ import {
 } from '../auth/bootstrap-ensure-codecs.js';
 import type { Actor } from '../auth/identity.js';
 import {
+  type ControlLocalIdentity,
+  ControlLocalIdentityResultSchema,
+  ControlLocalIdentitySchema,
+} from '../auth/local-identity-codecs.js';
+import {
   type ControlNanoHostTransportInput,
   ControlNanoHostTransportInputSchema,
   type ControlNanoHostTransportResult,
@@ -401,7 +406,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 81;
+export const CONTROL_WORKER_VERSION = 82;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -818,6 +823,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'attention-attempt-completion';
           readonly input: ControlAttentionAttemptCompletion;
+        }
+      | {
+          readonly operation: 'local-identity';
+          readonly input: ControlLocalIdentity;
         }
       | {
           readonly operation: 'bootstrap-ensure';
@@ -1274,6 +1283,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'attention-attempt-completion';
       readonly result: ControlAttentionAttemptCompletionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'local-identity';
+      readonly result: string;
     }
   | {
       readonly status: 'ok';
@@ -1782,6 +1796,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlAttentionAttemptClaimResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'attention-attempt-completion')
     return ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'local-identity')
+    return ControlLocalIdentityResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'bootstrap-ensure')
     return ControlBootstrapEnsureResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'access-token-lifecycle')
@@ -2312,6 +2328,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlAttentionAttemptCompletionSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'local-identity')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlLocalIdentitySchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'bootstrap-ensure')

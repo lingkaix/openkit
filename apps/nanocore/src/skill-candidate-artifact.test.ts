@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { type ActorRef, allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { type Actor, ensureLocalUser } from './auth/identity.js';
+import type { Actor } from './auth/identity.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { validateCatalogTree } from './catalog/resource-catalog.js';
@@ -24,6 +24,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const cleanup: Array<() => void> = [];

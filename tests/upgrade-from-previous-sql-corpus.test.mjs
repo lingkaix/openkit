@@ -43,7 +43,7 @@ async function fixture(t, existingRuntimeTarget = false) {
   const { recordWorkspaceOwnerMembership } = await load('workspace-membership');
   const coreDb = openCoreDb(join(root, 'data'));
   applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
+  const userId = await ensureLocalUser(coreDb);
   if (existingRuntimeTarget) {
     const targets = await load('runtime/nanohost-runtime-target');
     const { readDataRootLayoutMarker } = await load('storage/fs-layout');

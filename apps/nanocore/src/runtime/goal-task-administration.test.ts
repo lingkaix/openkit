@@ -19,7 +19,6 @@ import {
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -45,6 +44,7 @@ import {
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools } from './goal-coordinator.js';

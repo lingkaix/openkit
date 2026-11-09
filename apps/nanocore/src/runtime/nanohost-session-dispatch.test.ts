@@ -8,7 +8,7 @@ import { getRequestListener } from '@hono/node-server';
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
+import { getLocalUserId } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -20,6 +20,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {

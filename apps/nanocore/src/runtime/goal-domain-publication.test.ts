@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
@@ -12,6 +11,7 @@ import { listServerPermissionDecisions } from '../policy/permission-decisions.js
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';

@@ -18,7 +18,7 @@ import {
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from './auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from './auth/bootstrap-token.js';
-import { ensureLocalUser } from './auth/identity.js';
+import { ensureLocalUser, getLocalUserId } from './auth/identity.js';
 import {
   bindRequiresServerAuthenticatedTls,
   createNanoHostTransportSessionAuthority,
@@ -399,9 +399,9 @@ const bootResult = await runBootPhases({
       name: 'local-identity',
       subsystem: 'config',
       critical: true,
-      run: () => {
+      run: async () => {
         if (mode === 'local') {
-          ensureLocalUser(requireBootValue(coreDb, 'Core database was not initialized.'));
+          await ensureLocalUser(requireBootValue(coreDb, 'Core database was not initialized.'));
         }
 
         return { status: 'ok' };
@@ -641,7 +641,7 @@ const runtimeConfigManager = createRuntimeConfigManager({
 
 if (mode === 'local') {
   // A quarantined Personal scope must not prevent the server or healthy siblings from booting.
-  const userId = ensureLocalUser(coreDb);
+  const userId = getLocalUserId(coreDb);
   await ensureUserQuickChatWorkspace({
     coreDb,
     store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),

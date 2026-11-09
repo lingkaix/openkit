@@ -61,9 +61,9 @@ The HTTP MCP fixture exposes server-observed header snapshots for exact bearer a
 
 `recordTestAgentEnvironmentPackage` accepts an explicit Core database when the test exercises a storage or physical runtime consumer. Use the same Core owner as the Workspace and executor so the package retains that data root's deployment and admission facts; its standalone default remains for package-only fixtures.
 
-`local-user.ts` explicitly seeds a canonical fixture User for tests that assert exact identity bytes, then invokes the production recorded-User owner. Local identity lifecycle tests use the production initializer directly. The fixture supplies no production default or alternate identifier mechanism.
+`local-user.ts` explicitly seeds a canonical fixture User, consumes fixture initialization permission, and completes its User layout before using the production recorded-User reader. Synchronous non-lifecycle callers use this fixture rather than the asynchronous boot initializer. Local identity lifecycle tests use the production initializer directly. The fixture supplies no production default or alternate identifier mechanism.
 
-`createAppWithLocalIdentity` supplies only the explicit local fixture identity when a test has no Core database. Tests of production runtime or configuration defaults use it without simulated-provider or environment injection. Existing Core and server authority remain caller-owned.
+`createAppWithLocalIdentity` supplies the explicit local fixture identity without a Core database. With a local Core database, automatic setup invokes the existing local-User fixture only when the captured fresh proof remains valid and the entire User table is empty; used missing authority and nonlocal-only authority remain refusals. Existing identities go directly to read-only App construction. Tests of production runtime or configuration defaults use this helper without simulated-provider or environment injection. Existing server authority remains caller-owned.
 
 `entity-ids.ts` allocates shared-codec IDs once for process-local fixture keys. Setup and assertions share those exact allocations. It declares no owner derivation and supplies no cross-process replay authority; process-boundary tests pass the recorded IDs explicitly.
 

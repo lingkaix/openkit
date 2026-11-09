@@ -1,15 +1,17 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   actorFromRequest,
   actorFromSession,
   ensureLocalUser,
+  getLocalUserId,
   isDeploymentAdminActor,
 } from './identity.js';
 
@@ -94,17 +96,17 @@ describe('isDeploymentAdminActor', () => {
 });
 
 describe('ensureLocalUser', () => {
-  it('allocates once and returns the same recorded local User', () => {
+  it('allocates once and returns the same recorded local User', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-local-user-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
-      const localUserId = ensureLocalUser(coreDb);
+      const localUserId = await ensureLocalUser(coreDb);
       expect(localUserId).toMatch(
         /^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
       );
-      expect(ensureLocalUser(coreDb)).toBe(localUserId);
+      expect(await ensureLocalUser(coreDb)).toBe(localUserId);
 
       const row = coreDb.sqlite
         .prepare('SELECT COUNT(*) AS count FROM users WHERE id = ?')
@@ -130,14 +132,17 @@ describe('ensureLocalUser', () => {
         kind: 'local',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -152,57 +157,95 @@ function fixture() {
 }
 
 describe('canonical local User authority', () => {
-  it('allocates once, reuses the row after reopen and preserves a disabled identity', () => {
+  it('allocates once, reuses the row after reopen and preserves a disabled identity', async () => {
     const { root, db } = fixture();
-    const id = ensureLocalUser(db);
+    const id = await ensureLocalUser(db);
     expect(id).toMatch(/^usr_[0-9a-f-]{14}7[0-9a-f-]{21}$/);
-    expect(ensureLocalUser(db)).toBe(id);
+    expect(await ensureLocalUser(db)).toBe(id);
+    await shutdownControlStoreWorkerClient();
     db.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(id);
     db.sqlite.close();
     const reopened = openCoreDb(root);
     databases.push(reopened);
     applyMigrations(reopened);
-    expect(ensureLocalUser(reopened)).toBe(id);
+    expect(await ensureLocalUser(reopened)).toBe(id);
     expect(reopened.sqlite.prepare('SELECT id, status FROM users').all()).toEqual([
       { id, status: 'disabled' },
     ]);
   });
-  it('does not recreate missing local authority in the same initialized connection', () => {
+  it('does not recreate missing local authority in the same initialized connection', async () => {
     const { db } = fixture();
-    ensureLocalUser(db);
+    await ensureLocalUser(db);
     db.sqlite.prepare("DELETE FROM users WHERE kind = 'local'").run();
-    expect(() => ensureLocalUser(db)).toThrow();
+    await expect(Promise.resolve().then(() => ensureLocalUser(db))).rejects.toThrow();
     expect(db.sqlite.prepare('SELECT id FROM users').all()).toEqual([]);
   });
-  it('does not recreate missing local authority after reopen', () => {
+  it('does not recreate missing local authority after reopen', async () => {
     const { root, db } = fixture();
-    ensureLocalUser(db);
+    await ensureLocalUser(db);
+    await shutdownControlStoreWorkerClient();
     db.sqlite.prepare("DELETE FROM users WHERE kind = 'local'").run();
     db.sqlite.close();
     const reopened = openCoreDb(root);
     databases.push(reopened);
     applyMigrations(reopened);
-    expect(() => ensureLocalUser(reopened)).toThrow();
+    await expect(Promise.resolve().then(() => ensureLocalUser(reopened))).rejects.toThrow();
     expect(reopened.sqlite.prepare('SELECT id FROM users').all()).toEqual([]);
   });
-  it('refuses ambiguous local authority without mutating either recorded identity', () => {
+  it('refuses ambiguous local authority without mutating either recorded identity', async () => {
     const { db } = fixture();
-    const id = ensureLocalUser(db);
+    const id = await ensureLocalUser(db);
     db.sqlite
       .prepare(`INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status)
       SELECT ?, kind, display_name, 'second-local@example.invalid', email_verified, created_at, updated_at, status FROM users WHERE id = ?`)
       .run('usr_01890f3e-0000-7000-8000-000000000002', id);
     const before = db.sqlite.serialize();
-    expect(() => ensureLocalUser(db)).toThrow();
+    await expect(Promise.resolve().then(() => ensureLocalUser(db))).rejects.toThrow();
     expect(db.sqlite.serialize().equals(before)).toBe(true);
   });
-  it('does not treat an empty lookup on an existing database as fresh initialization', () => {
+  it('does not treat an empty lookup on an existing database as fresh initialization', async () => {
     const { root, db } = fixture();
     db.sqlite.close();
     const reopened = openCoreDb(root);
     databases.push(reopened);
     applyMigrations(reopened);
-    expect(() => ensureLocalUser(reopened)).toThrow();
+    await expect(Promise.resolve().then(() => ensureLocalUser(reopened))).rejects.toThrow();
     expect(reopened.sqlite.prepare('SELECT id FROM users').all()).toEqual([]);
+  });
+
+  it('concurrent initialization attempts return the same single canonical User', async () => {
+    const { db } = fixture();
+    // Core Identity, Implicit Local Human: one allocation under the single-writer boundary.
+    const ids = await Promise.all([ensureLocalUser(db), ensureLocalUser(db)]);
+    expect(ids[0]).toMatch(
+      /^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(ids[1]).toBe(ids[0]);
+    expect(db.sqlite.prepare('SELECT id FROM users').all()).toEqual([{ id: ids[0] }]);
+    expect(getLocalUserId(db)).toBe(ids[0]);
+  });
+
+  it('refuses incomplete User layout and retains the committed identity on a later attempt', async () => {
+    const { root, db } = fixture();
+    const id = await ensureLocalUser(db);
+    // Fault after genuine identity setup: a file obstructs one owned User directory.
+    const userPath = join(root, 'users', id);
+    const filesPath = join(userPath, 'files');
+    rmSync(filesPath, { recursive: true, force: true });
+    writeFileSync(filesPath, 'User layout obstruction');
+    await expect(Promise.resolve().then(() => ensureLocalUser(db))).rejects.toThrow();
+    expect(getLocalUserId(db)).toBe(id);
+    expect(db.sqlite.prepare('SELECT id FROM users').all()).toEqual([{ id }]);
+    expect(db.sqlite.inTransaction).toBe(false);
+    rmSync(filesPath);
+
+    expect(await ensureLocalUser(db)).toBe(id);
+    for (const directory of ['files', 'data', 'db', 'logs', 'config']) {
+      expect(existsSync(join(userPath, directory))).toBe(true);
+    }
+    // A failed layout cannot renew first-allocation authority after the User commit.
+    db.sqlite.prepare('DELETE FROM users WHERE id = ?').run(id);
+    await expect(Promise.resolve().then(() => ensureLocalUser(db))).rejects.toThrow();
+    expect(db.sqlite.prepare('SELECT id FROM users').all()).toEqual([]);
   });
 });

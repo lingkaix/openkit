@@ -10,7 +10,6 @@ import {
 } from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   CatalogContentUnavailableError,
   CatalogIntegrityError,
@@ -28,6 +27,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { disposeTestStore } from '../test-support/store.js';

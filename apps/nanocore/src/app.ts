@@ -41,7 +41,7 @@ import { prepareWorkspaceAuditEvent } from './audit-events.js';
 import { resolveSessionDeploymentAdminTokenId } from './auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
-import { type Actor, ensureLocalUser } from './auth/identity.js';
+import { type Actor, getLocalUserId } from './auth/identity.js';
 import { isLoopbackHost } from './auth/loopback-host.js';
 // Actor type used by mode worker turn request credential threading
 import {
@@ -666,7 +666,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   let localUserId: string | undefined;
   if (mode === 'local') {
-    localUserId = options.coreDb ? ensureLocalUser(options.coreDb) : options.localUserId;
+    localUserId = options.coreDb ? getLocalUserId(options.coreDb) : options.localUserId;
     if (
       !isEntityId('usr', localUserId) ||
       (options.coreDb && options.localUserId !== undefined && options.localUserId !== localUserId)

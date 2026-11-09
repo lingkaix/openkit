@@ -12,7 +12,6 @@ import {
 } from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   importWorkspaceSkill,
   removeWorkspaceSkill,
@@ -23,6 +22,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { disposeTestStore } from '../test-support/store.js';
 import {

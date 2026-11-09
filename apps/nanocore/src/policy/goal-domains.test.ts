@@ -7,7 +7,6 @@ import { ProductOperationSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
@@ -21,6 +20,7 @@ import {
   heldServerPermissionAck,
   releaseCommit,
 } from '../test-support/control-native-transport.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService, type GoalDomainStatement } from './goal-domains.js';
 import { evaluateGoalTaskAccess } from './goal-task-access.js';

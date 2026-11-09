@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatReferenceUri, KnowledgeNotebookPageSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from './auth/identity.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import type { KnowledgeNotebook } from './knowledge/notebook.js';
@@ -33,6 +32,7 @@ import {
   knowledgePageFixture,
   serializeKnowledgePageFixture,
 } from './test-support/knowledge-page.js';
+import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';

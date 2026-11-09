@@ -9,6 +9,10 @@ import {
   type ControlBootstrapEnsureResult,
   ControlBootstrapEnsureResultSchema,
 } from '../auth/bootstrap-ensure-codecs.js';
+import {
+  type ControlLocalIdentity,
+  ControlLocalIdentityResultSchema,
+} from '../auth/local-identity-codecs.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
 import {
   type AttentionReconciliation,
@@ -2113,6 +2117,45 @@ class ControlStoreWorkerClient {
     if (reply.operation !== 'attention-attempt-completion')
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     const result = ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result.data;
+  }
+
+  /** Initializes or reuses the canonical local User under captured fresh authority and FULL commit. */
+  async localIdentity(db: CoreDb, input: ControlLocalIdentity): Promise<string> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'local-identity', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'local-identity', database, input });
+    }
+    if (reply.operation !== 'local-identity')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlLocalIdentityResultSchema.safeParse(reply.result);
     if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return result.data;
   }

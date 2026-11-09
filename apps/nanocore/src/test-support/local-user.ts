@@ -1,5 +1,6 @@
-import { ensureLocalUser as ensureRecordedLocalUser } from '../auth/identity.js';
+import { getLocalUserId } from '../auth/identity.js';
 import type { CoreDb } from '../storage/db.js';
+import { ensureUserLayout } from '../storage/fs-layout.js';
 
 /** Explicit canonical identity for fixtures that assert exact local-owner bytes. */
 export const FIXTURE_LOCAL_USER_ID = 'usr_00000000-0000-7000-8000-000000000001';
@@ -15,5 +16,8 @@ export function ensureLocalUser(coreDb: CoreDb): string {
       VALUES (?, 'local', 'Local fixture', ?, 0, ?, ?, 'active')`)
       .run(FIXTURE_LOCAL_USER_ID, ['fixture-local', 'example.invalid'].join('@'), now, now);
   }
-  return ensureRecordedLocalUser(coreDb);
+  const id = getLocalUserId(coreDb);
+  coreDb.canInitializeLocalUser = false;
+  ensureUserLayout(coreDb.dataRoot, id);
+  return id;
 }

@@ -4,7 +4,6 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   catalogDocumentPath,
   importWorkspaceSkill,
@@ -20,6 +19,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';

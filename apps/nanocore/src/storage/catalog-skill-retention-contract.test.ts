@@ -10,7 +10,6 @@ import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
-import { ensureLocalUser } from '../auth/identity.js';
 import {
   type CatalogTreeFile,
   importWorkspaceSkill,
@@ -29,6 +28,7 @@ import {
 } from '../runtime/aep-snapshot-ledger.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
