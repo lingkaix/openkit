@@ -32,6 +32,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
+import { presentControlFacts } from './control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -505,20 +506,34 @@ it.each(['workspace', 'workspace-readonly'] as const)(
 
 it('native leaf refuses application outside its covering Core transaction', async () => {
   const f = await fixture('revoke');
+  const actor = f.context.actor;
+  if (!actor) throw new Error('Expected the actual authenticated fixture actor.');
+  const input = {
+    kind: 'revoke' as const,
+    actor: presentControlFacts(actor),
+    tokenId: f.target.record.tokenId,
+  };
+  expect(ControlAccessTokenLifecycleSchema.safeParse(input).success).toBe(true);
   const before = facts(f.coreDb);
-  expect(() =>
-    applyControlAccessTokenLifecycle(f.coreDb, { kind: 'revoke', tokenId: f.target.record.tokenId })
-  ).toThrow();
+  expect(() => applyControlAccessTokenLifecycle(f.coreDb, input)).toThrow();
   expect(facts(f.coreDb)).toBe(before);
 });
 
 it('closes mutation inputs and returns only original non-secret record snapshots', async () => {
   const f = await fixture('rotate');
+  const actor = f.context.actor;
+  if (!actor) throw new Error('Expected the actual authenticated fixture actor.');
   const successor = {
     tokenId: allocateEntityId('tok'),
     tokenHash: hashOpenKitAccessTokenSecret(f.target.token),
   };
-  const input = { kind: 'rotate', tokenId: f.target.record.tokenId, graceSeconds: 60, successor };
+  const input = {
+    kind: 'rotate',
+    actor: presentControlFacts(actor),
+    tokenId: f.target.record.tokenId,
+    graceSeconds: 60,
+    successor,
+  };
   expect(ControlAccessTokenLifecycleSchema.safeParse(input).success).toBe(true);
   for (const bad of [
     { ...input, kind: 'issue' },
@@ -544,4 +559,53 @@ it('closes mutation inputs and returns only original non-secret record snapshots
       value: { ...result.value, secret: 'unexpected' },
     }).success
   ).toBe(false);
+});
+
+// Owners: Remote Auth Credential Bootstrap / Token Lifecycle, and the existing
+// Core native lifecycle's closed hash-only tuple. Actor facts are not a grant.
+it('admits the closed issue tuple with actual caller facts and rejects missing or private fields', async () => {
+  const f = await fixture('rotate');
+  const actor = f.context.actor;
+  if (!actor) throw new Error('Expected the actual authenticated fixture actor.');
+  const token = {
+    tokenId: allocateEntityId('tok'),
+    tokenHash: hashOpenKitAccessTokenSecret(f.target.token),
+  };
+  const issue = {
+    kind: 'issue',
+    actor: presentControlFacts(actor),
+    ownerUserId: f.target.record.ownerUserId,
+    scope: f.target.record.scope,
+    workspaceIds: [...f.target.record.workspaceIds],
+    expiresAt: f.target.record.expiresAt,
+    token,
+  };
+  expect(ControlAccessTokenLifecycleSchema.safeParse(issue).success).toBe(true);
+  // Workspace bindings retain their existing empty-list default for this scope.
+  const { workspaceIds: _bindings, ...defaultBindings } = issue;
+  expect(ControlAccessTokenLifecycleSchema.safeParse(defaultBindings).success).toBe(true);
+  for (const key of ['kind', 'actor', 'ownerUserId', 'scope', 'expiresAt', 'token'] as const) {
+    const missing = { ...issue };
+    delete (missing as Record<string, unknown>)[key];
+    expect(ControlAccessTokenLifecycleSchema.safeParse(missing).success).toBe(false);
+  }
+  for (const bad of [
+    { ...issue, kind: 'unknown' },
+    { ...issue, token: { tokenId: token.tokenId } },
+    { ...issue, token: { tokenHash: token.tokenHash } },
+    { ...issue, token: { ...token, tokenHash: 'invalid' } },
+    { ...issue, secret: f.target.token },
+    { ...issue, token: { ...token, secret: f.target.token } },
+    { ...issue, actor: { ...issue.actor, authorization: `Bearer ${f.owner.token}` } },
+    { ...issue, now: '2099-01-01T00:00:00.000Z' },
+    { ...issue, sql: 'unexpected' },
+  ])
+    expect(ControlAccessTokenLifecycleSchema.safeParse(bad).success).toBe(false);
+  const result = { kind: 'issue', record: f.target.record };
+  expect(ControlAccessTokenLifecycleResultSchema.safeParse(result).success).toBe(true);
+  for (const bad of [
+    { ...result, secret: f.target.token },
+    { ...result, record: { ...result.record, tokenHash: token.tokenHash } },
+  ])
+    expect(ControlAccessTokenLifecycleResultSchema.safeParse(bad).success).toBe(false);
 });
