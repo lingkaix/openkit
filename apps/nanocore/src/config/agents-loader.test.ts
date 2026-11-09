@@ -86,11 +86,16 @@ describe('loadAgentManifests', () => {
           displayName: 'Pi Agent',
           id: 'agent_pi',
           models: expect.objectContaining({ preferredLogicalModelId: 'smart' }),
-          readiness: expect.objectContaining({ status: 'disabled' }),
           runtime: expect.objectContaining({ adapter: 'pi', kind: 'pi' }),
         }),
       ])
     );
+    expect(
+      result.manifests.find((manifest) => manifest.id === 'agent_pi')?.readiness
+    ).toBeUndefined();
+    expect(
+      result.manifests.find((manifest) => manifest.id === 'agent_deepseek')?.readiness?.status
+    ).toBe('disabled');
   });
 
   it('rejects compact agent manifests with a typed diagnostic', () => {
