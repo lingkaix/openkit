@@ -37,6 +37,8 @@ import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
+  GENERATIVE_UI_NATIVE_CATALOG_ID,
+  GENERATIVE_UI_PROTOCOL_VERSION,
   operationToolName,
   StartTaskModeResponseSchema,
   WorkspaceExportResponseSchema,
@@ -86,6 +88,7 @@ import {
 } from './config/runtime-config.js';
 import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { retainWorkObservationBody } from './evidence-bundles.js';
+import { publishGenerativePresentation } from './generative-ui/commands.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './policy/configuration.js';
@@ -139,6 +142,7 @@ import {
 } from './runtime/pending-requests.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import { isAlreadyDecidedWorkerMcpItem } from './runtime/worker-mcp-decision.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
   createDefaultWorkerMcpGateway,
@@ -6805,7 +6809,11 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
     tools(value: typeof tools) {
       tools = value;
     },
-    async call(id = ++requestId, kind: 'echo' | 'knowledge' = 'echo') {
+    async call(
+      id = ++requestId,
+      kind: 'echo' | 'knowledge' = 'echo',
+      toolArguments?: Record<string, unknown>
+    ) {
       await openTestNativeWorkspace(db);
       const response = await app.request(
         `/api/worker-capabilities/mcp/${kind === 'echo' ? 'echo' : 'openkit-work'}`,
@@ -6824,7 +6832,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
               name: kind === 'echo' ? 'echo' : operationToolName('knowledge.ask'),
               arguments:
                 kind === 'echo'
-                  ? { message: 'commit observation' }
+                  ? (toolArguments ?? { message: 'commit observation' })
                   : { question: 'What is known?' },
             },
           }),
@@ -6896,6 +6904,176 @@ function expectMcpCommittedTuples(fixture: Awaited<ReturnType<typeof createMcpCo
   ).toEqual([mcpEchoTool()]);
   expect(fixture.store.listAllItems().filter((item) => item.id === call.itemId)).toHaveLength(1);
 }
+
+describe('MCP retained tool-call bodies', () => {
+  it('retains redacted MCP bodies through public reads, bounded previews, digest binding and restart', async () => {
+    const f = await createMcpCommitFixture();
+    try {
+      f.tools([
+        {
+          ...mcpEchoTool(),
+          inputSchema: { ...mcpEchoTool().inputSchema, additionalProperties: true },
+        },
+      ]);
+      const args = {
+        message: `Requested ${'x'.repeat(5000)} Bearer fixture-argument-secret`,
+        password: 'fixture-password-value',
+        nested: { apiKey: 'fixture-nested-value', keep: 'visible' },
+      };
+      const rawResult = {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Head Bearer fixture-result-secret ${'🙂'.repeat(4096)} exact tail`,
+          },
+        ],
+        structuredContent: { secret: 'fixture-structured-value', keep: 'visible' },
+      };
+      const expected = {
+        arguments: {
+          ...args,
+          message: `Requested ${'x'.repeat(5000)} Bearer [redacted]`,
+          password: '[redacted]',
+          nested: { apiKey: '[redacted]', keep: 'visible' },
+        },
+        result: JSON.stringify({
+          content: [
+            { type: 'text', text: `Head Bearer [redacted] ${'🙂'.repeat(4096)} exact tail` },
+          ],
+          structuredContent: { secret: '[redacted]', keep: 'visible' },
+        }),
+      };
+      f.gateway.callTool.mockResolvedValueOnce(rawResult);
+      expect(await f.call(9700, 'echo', args)).toMatchObject({ result: rawResult });
+      expect(f.gateway.callTool).toHaveBeenCalledWith(expect.objectContaining({ arguments: args }));
+      const call = listWorkspaceCapabilityCalls(f.db, f.workspaceId).at(-1)!;
+      const item = f.store.listAllItems().find((candidate) => candidate.id === call.itemId)!;
+      expect(item).toMatchObject({ type: 'tool-call', status: 'completed', ...expected });
+      if (item.type !== 'tool-call') throw new Error('Expected the canonical MCP Item.');
+      const selector = {
+        workspaceId: f.workspaceId,
+        threadId: f.environmentPackage.scope.threadId,
+        turnId: f.environmentPackage.scope.turnId,
+      };
+      const legacy = await f.store.createItem({
+        ...item,
+        id: allocateEntityId('it'),
+        causationId: null,
+        arguments: null,
+        result: null,
+      });
+      const app = createApp({ store: f.store, dataRoot: f.dataRoot, coreDb: f.coreDb });
+      const read = async (
+        operation: 'turn.read' | 'thread.item-body' | 'thread.timeline',
+        extra = {}
+      ) => {
+        const response = await app.request(
+          ...operationRequest(operation, { ...selector, ...extra })
+        );
+        expect(response.status).toBe(200);
+        return response.json();
+      };
+      const turnRead = await read('turn.read');
+      expect(turnRead.items).toContainEqual(item);
+      expect(turnRead.items).toContainEqual(legacy);
+      const body = await read('thread.item-body', { itemId: item.id });
+      expect(body.item).toEqual(item);
+      expect((await read('thread.item-body', { itemId: legacy.id })).item).toEqual(legacy);
+      const timeline = await read('thread.timeline', { view: 'items', placement: 'step' });
+      const preview = timeline.items.find((candidate: { id: string }) => candidate.id === item.id);
+      expect(preview.detail).toMatchObject({
+        kind: 'preview',
+        field: 'result',
+        side: 'tail',
+        truncated: true,
+        sizeBytes: Buffer.byteLength(expected.result),
+      });
+      expect(Buffer.byteLength(preview.detail.text)).toBeLessThanOrEqual(4096);
+      expect(expected.result.endsWith(preview.detail.text)).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(timeline))).toBeLessThanOrEqual(262144);
+      for (const value of [item, turnRead, body, timeline]) {
+        for (const secret of [
+          'fixture-argument-secret',
+          'fixture-password-value',
+          'fixture-nested-value',
+          'fixture-result-secret',
+          'fixture-structured-value',
+        ])
+          expect(JSON.stringify(value)).not.toContain(secret);
+      }
+      const publish = (text: string, requestId: string) =>
+        publishGenerativePresentation(
+          {
+            store: f.store,
+            dataRoot: f.dataRoot,
+            workspaceId: f.workspaceId,
+            workspaceDb: f.db,
+            actor: f.environmentPackage.scope.triggerActor,
+            inflightCommands: new WeakMap(),
+            requestId,
+          },
+          {
+            threadId: selector.threadId,
+            turnId: selector.turnId,
+            title: 'Tool observation',
+            fallbackText: 'Retained observation',
+            actions: [],
+            source: {
+              kind: 'item',
+              itemId: item.id,
+              contentDigest: `sha256:${createHash('sha256').update(text).digest('hex')}`,
+            },
+            messages: [
+              {
+                version: GENERATIVE_UI_PROTOCOL_VERSION,
+                createSurface: {
+                  surfaceId: 'redacted-tool',
+                  catalogId: GENERATIVE_UI_NATIVE_CATALOG_ID,
+                  sendDataModel: false,
+                },
+              },
+              {
+                version: GENERATIVE_UI_PROTOCOL_VERSION,
+                updateComponents: {
+                  surfaceId: 'redacted-tool',
+                  components: [{ id: 'root', component: 'Text', text: { path: '/text' } }],
+                },
+              },
+            ],
+          }
+        );
+      await expect(publish(JSON.stringify(rawResult), randomUUID())).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      const presentation = await publish(expected.result, randomUUID());
+      expect(presentation.messages[2]).toMatchObject({
+        updateDataModel: { value: { text: expected.result } },
+      });
+      const completedAt = new Date().toISOString();
+      await f.store.completeTurn(selector.turnId, { status: 'completed', completedAt });
+      await shutdownControlStoreWorkerClient();
+      await verifyAndMigrateExistingScopedDatabases(f.dataRoot);
+      const cold = new FsStore({ dataRoot: f.dataRoot });
+      expect(await reconcileWorkerMcpItems(f.dataRoot, cold)).toBe(0);
+      expect(await reconcileWorkerMcpItems(f.dataRoot, cold)).toBe(0);
+      expect(cold.getThreadItem(f.workspaceId, selector.threadId, item.id)).toEqual(item);
+      expect(isAlreadyDecidedWorkerMcpItem(f.db, f.environmentPackage, item, completedAt)).toBe(
+        true
+      );
+      expect(
+        isAlreadyDecidedWorkerMcpItem(
+          f.db,
+          f.environmentPackage,
+          { ...item, tool: 'different' },
+          completedAt
+        )
+      ).toBe(false);
+      expect(f.gateway.callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      await f.close();
+    }
+  });
+});
 
 describe('MCP physical commit contract', () => {
   it.each([

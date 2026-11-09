@@ -1,6 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { CapabilityCallStatusSchema, ItemSchema, readRetainedV1 } from '@openkit/protocol';
+import {
+  CapabilityCallStatusSchema,
+  type Item,
+  ItemSchema,
+  readRetainedV1,
+} from '@openkit/protocol';
 import { DISPLAY_PROJECTION_REFRESH_FIELDS, type FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -96,20 +101,23 @@ export interface DecidedMcpPublicationRow {
 }
 
 /**
- * Reconstructs the ledger-owned publication used by boot and terminal recovery.
+ * Reconstructs ledger-owned metadata, preserving the existing canonical Item body when present.
+ * An absent body stays explicitly null; the ledger cannot reconstruct or authorize a new Tool effect.
  *
  * @param workspaceId Owning Workspace.
  * @param row Terminal MCP call with complete publication fields.
  * @param parentItemId Parent established by the call's immutable AEP snapshot.
+ * @param body Body from an already-retained canonical Tool Item, never caller-supplied content.
  * @returns Validated product-safe MCP Item.
  */
 export function decidedMcpPublicationItem(
   workspaceId: string,
   row: DecidedMcpPublicationRow,
-  parentItemId: string | null
+  parentItemId: string | null,
+  body?: Pick<Extract<Item, { type: 'tool-call' }>, 'arguments' | 'result'>
 ): ReturnType<FsStore['listAllItems']>[number] {
   return ItemSchema.parse({
-    arguments: null,
+    arguments: body?.arguments ?? null,
     causationId: row.call_id,
     completedAt: row.completed_at,
     createdAt: row.completed_at,
@@ -119,7 +127,7 @@ export function decidedMcpPublicationItem(
     error: row.status === 'succeeded' ? null : row.error_code,
     id: row.item_id,
     ...(parentItemId ? { parentItemId } : {}),
-    result: null,
+    result: body?.result ?? null,
     server: row.provider_ref,
     status:
       row.status === 'succeeded' ? 'completed' : row.status === 'denied' ? 'declined' : 'failed',
@@ -178,7 +186,7 @@ export function isAlreadyDecidedWorkerMcpItem(
     return false;
   const parent = decidedMcpParentItemId(workspaceDb, scope.workspaceId, row);
   if (parent.kind !== 'decided') return false;
-  const candidate = decidedMcpPublicationItem(scope.workspaceId, row, parent.parentItemId);
+  const candidate = decidedMcpPublicationItem(scope.workspaceId, row, parent.parentItemId, item);
   // Keep repair equality separate from the Store's display refresh admission.
   const decidedFields = (value: ReturnType<FsStore['listAllItems']>[number]) =>
     Object.fromEntries(

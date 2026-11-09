@@ -48,6 +48,7 @@ import {
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import { redactInternalAgentDiagnosticValue } from './internal-agents/redaction.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
@@ -1197,8 +1198,14 @@ export async function reconcileWorkerMcpItems(dataRoot: string, store: FsStore):
         readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
         const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
         const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
-        const parsed = decidedMcpPublicationItem(workspaceId, row, parentItemId);
         const existing = storedItems.get(row.item_id);
+        // The canonical Item owns its body; the ledger can reconstruct only missing metadata.
+        const parsed = decidedMcpPublicationItem(
+          workspaceId,
+          row,
+          parentItemId,
+          existing?.type === 'tool-call' ? existing : undefined
+        );
         if (existing) {
           if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.kind === 'decided')) {
             throw new Error(
@@ -1471,6 +1478,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     let usageRecoveryRequired = false;
     let cancelled = false;
     let publishTerminalItem = true;
+    let terminalResult: Awaited<ReturnType<WorkerMcpGateway['callTool']>> | null = null;
     let observedCredentials: WorkerMcpGatewayCredentials | undefined;
 
     /** Publishes once before successful disclosure or during the original failure closeout. */
@@ -1478,6 +1486,8 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       publishTerminalItem = false;
       try {
         await publishWorkerMcpItem({
+          arguments: input.arguments,
+          result: terminalResult,
           call: publishedCall,
           durationMs: Date.now() - startedAt,
           environmentPackage: input.environmentPackage,
@@ -1785,6 +1795,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       terminalCommitted = true;
       status = 'completed';
+      terminalResult = result;
       const assertResultCurrent = () => {
         let current = false;
         try {
@@ -3055,6 +3066,8 @@ async function startMcpCapabilityCall(input: {
  * Timestamps and duration are copied from the capability_calls row so boot reconstruction can compare them.
  */
 async function publishWorkerMcpItem(input: {
+  readonly arguments: Record<string, unknown>;
+  readonly result: Awaited<ReturnType<WorkerMcpGateway['callTool']>> | null;
   readonly call: StartedCapabilityCall;
   readonly durationMs: number;
   readonly environmentPackage: AgentEnvironmentPackage;
@@ -3083,7 +3096,7 @@ async function publishWorkerMcpItem(input: {
     : input.durationMs;
   await input.store.createItem(
     {
-      arguments: null,
+      arguments: redactInternalAgentDiagnosticValue(input.arguments) as Record<string, unknown>,
       causationId: input.call.id,
       completedAt,
       createdAt: completedAt,
@@ -3093,7 +3106,10 @@ async function publishWorkerMcpItem(input: {
       ...(input.environmentPackage.scope.itemId
         ? { parentItemId: input.environmentPackage.scope.itemId }
         : {}),
-      result: null,
+      result:
+        input.result === null
+          ? null
+          : JSON.stringify(redactInternalAgentDiagnosticValue(input.result)),
       server: input.serverId,
       status: input.status,
       threadId: input.environmentPackage.scope.threadId,

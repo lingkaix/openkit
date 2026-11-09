@@ -223,7 +223,7 @@ The first active Tool-condition subset is human-authored ordinary `prohibit` and
 - Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/mediation.md`.
 - `mcp.list-servers` and `mcp.list-tools` are capability calls for audit purposes but do not emit usage rows.
 - Server lifecycle transitions, schema snapshot captures, and credential-bearing spawns emit audit events.
-- Usage rows and audit rows MUST NOT contain tool arguments or results; those belong to redacted diagnostics and restricted evidence per the audit spec's visibility split.
+- Usage rows and audit rows MUST NOT contain tool arguments or results; new `tool-call` Items retain secret-redacted arguments and the serialized result in their canonical body with bounded timeline previews and full reads by lineage, result digests bind the exact retained result bytes, and older null bodies remain readable.
 
 ## Accepted Design
 

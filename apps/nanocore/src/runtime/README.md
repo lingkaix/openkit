@@ -1,5 +1,7 @@
 # Runtime
 
+MCP terminal Items retain existing-policy-redacted arguments and serialized results. Timeline and live previews keep their existing bounds; the lineage body owner returns the canonical redacted body, and result digests cover its exact stored bytes. Boot and terminal repair validate ledger/AEP metadata while preserving an already-canonical body. A missing body cannot be recovered from the metadata-only ledger and stays null without replaying the Tool.
+
 The MCP gateway preserves typed upstream HTTP status and exact refused semantic-result bytes for the original terminal Audit. Upstream 429 emits a structured application warning even during pre-call discovery; no upstream body enters that log or the Audit.
 
 The worker protocol and native dispatcher import the unchanged backend cleanup request and reply schemas from `worker-backend-cleanup-codecs.ts`. Types, SQL, cleanup projection and native transaction bodies remain in `worker-backend-cleanup-projection.ts`; the codec links to its input type through an erased import.
