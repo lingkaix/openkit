@@ -341,7 +341,7 @@ describe('workspace-transaction idempotent commands', () => {
           response_json,
           created_at,
           expires_at
-        ) VALUES ('test-owner:' || ?, 'catalog.light-app-import', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
+        ) VALUES ('test-owner:' || ?, 'catalog.shared-mcp-set-disabled', ?, '{}', 'test-owner-input', 'knowledge', ?, NULL, '2026-07-18T00:00:00.000Z', '9999-12-31T23:59:59.999Z')`
       );
       const getOwner = workspaceDb.sqlite.prepare(
         `SELECT response_id AS id
@@ -351,10 +351,10 @@ describe('workspace-transaction idempotent commands', () => {
 
       const scope: CommandRequestScope = { workspaceId };
       const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-      // Exercise the generic Main receipt transaction with a currently Main-owned definition command.
-      // The isolated owner SQL below tests transaction completion, not definition publication.
+      // Exercise the generic Main receipt transaction with a currently Main-owned shared-MCP command.
+      // The isolated owner SQL below tests transaction completion, not MCP publication.
       const common = {
-        command: 'catalog.light-app-import' as const,
+        command: 'catalog.shared-mcp-set-disabled' as const,
         inflightCommands,
         replay: () => {
           throw new Error('Unexpected command replay.');
@@ -399,7 +399,12 @@ describe('workspace-transaction idempotent commands', () => {
       ).resolves.toEqual({ id: 'owner_committed' });
       expect(getOwner.get('owner_committed')).toEqual({ id: 'owner_committed' });
       expect(
-        store.getCommandRequest('catalog.light-app-import', 'request_committed', scope, workspaceDb)
+        store.getCommandRequest(
+          'catalog.shared-mcp-set-disabled',
+          'request_committed',
+          scope,
+          workspaceDb
+        )
       ).toMatchObject({ response: { id: 'owner_committed', kind: 'knowledge' } });
 
       const receiptWriter = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
@@ -426,7 +431,7 @@ describe('workspace-transaction idempotent commands', () => {
       expect
         .soft(
           store.getCommandRequest(
-            'catalog.light-app-import',
+            'catalog.shared-mcp-set-disabled',
             'request_rolled_back',
             scope,
             workspaceDb
@@ -457,7 +462,12 @@ describe('workspace-transaction idempotent commands', () => {
       expect.soft(getOwner.get('owner_async')).toBeUndefined();
       expect
         .soft(
-          store.getCommandRequest('catalog.light-app-import', 'request_async', scope, workspaceDb)
+          store.getCommandRequest(
+            'catalog.shared-mcp-set-disabled',
+            'request_async',
+            scope,
+            workspaceDb
+          )
         )
         .toBeNull();
     } finally {

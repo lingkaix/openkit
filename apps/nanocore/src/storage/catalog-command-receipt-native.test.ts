@@ -10,6 +10,7 @@ import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
   catalogDocumentPath,
+  createMcpConfig,
   loadWorkspaceResourceCatalog,
   submitWorkspaceSkillCandidate,
 } from '../catalog/resource-catalog.js';
@@ -651,34 +652,29 @@ it('preserves concurrent deduplication, current Catalog replay, mismatch, CAS an
 it('preserves exact receipt TTL and both real pruning partitions without making expiry replay authority', async () => {
   const f = await fixture();
   const past = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+  // A real still-Main public Workspace command supplies the ordinary partition.
+  // Its server definition is owner-created; no transport session or credential is fabricated.
+  createMcpConfig({
+    dataRoot: f.dataRoot,
+    owner: { kind: 'server' },
+    expectedRevision: 0,
+    id: 'legacy-main',
+    displayName: 'Main receipt peer',
+    declaration: { kind: 'http', endpoint: 'https://mcp.example.test/mcp' },
+    allowedTools: ['echo'],
+    createdAt: past.toISOString(),
+  });
   const legacyInput = {
     workspaceId: f.workspaceId,
     requestId: randomUUID(),
-    entryId: 'legacy-one',
-    displayName: 'Unrelated Main receipt',
-    selectDefault: false,
-    definition: {
-      format: 'openkit.light-app',
-      schemaVersion: 1,
-      title: 'Main receipt peer',
-      purpose: 'Preserve the ordinary receipt pruning partition.',
-      references: [],
-      collections: [
-        {
-          name: 'records',
-          type: 'base',
-          description: 'Main receipt fixture.',
-          fields: [{ name: 'value', type: 'text', required: false, description: 'Exact value.' }],
-          indexes: [],
-        },
-      ],
-    },
+    mcpId: 'legacy-main',
+    disabled: true,
     expectedRevision: 0,
   };
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(past);
-  const legacy = await f.call(legacyInput, 'catalog.light-app-import');
-  expect(legacy.status, await legacy.clone().text()).toBe(201);
+  const legacy = await f.call(legacyInput, 'catalog.shared-mcp-set-disabled');
+  expect(legacy.status, await legacy.clone().text()).toBe(200);
   f.input.expectedRevision = 1;
   const response = await f.call();
   expect(response.status, await response.clone().text()).toBe(201);
@@ -700,7 +696,9 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   expect(getCommandRequestRecordFromDb(f.db, record.key, record.expiresAt)).toBeNull();
   expect(f.records()).toEqual(before);
   // This existing legacy lookup really prunes Main's partition; it must not delete native rows.
-  expect(f.store.getCommandRequest('catalog.light-app-import', randomUUID(), f.scope)).toBeNull();
+  expect(
+    f.store.getCommandRequest('catalog.shared-mcp-set-disabled', randomUUID(), f.scope)
+  ).toBeNull();
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toBeUndefined();
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toEqual(nativeOther);
   expect(f.record(), 'Main expiry maintenance deleted the moved Catalog receipt.').toEqual(record);
@@ -710,12 +708,12 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   vi.setSystemTime(past);
   const anotherLegacyInput = {
     ...legacyInput,
-    entryId: 'legacy-two',
+    disabled: false,
     requestId: randomUUID(),
     expectedRevision: 2,
   };
-  const anotherLegacy = await f.call(anotherLegacyInput, 'catalog.light-app-import');
-  expect(anotherLegacy.status, await anotherLegacy.clone().text()).toBe(201);
+  const anotherLegacy = await f.call(anotherLegacyInput, 'catalog.shared-mcp-set-disabled');
+  expect(anotherLegacy.status, await anotherLegacy.clone().text()).toBe(200);
   const mainOther = f.records().find((row) => row.requestId === anotherLegacyInput.requestId);
   expect(mainOther).toBeDefined();
   vi.useRealTimers();

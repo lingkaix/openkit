@@ -294,7 +294,7 @@ export function applyWorkspaceCommandReceiptInDb(
         (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
       (record.command === 'worker_environment.purge' &&
         record.response.id !== record.scope.storageRef) ||
-      (record.response.kind === 'skill_catalog' &&
+      ((record.response.kind === 'skill_catalog' || record.response.kind === 'light_app_catalog') &&
         (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
       ((record.command === 'artifact.version-commit' ||
         record.command === 'artifact.version-file-commit') &&

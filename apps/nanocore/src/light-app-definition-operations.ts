@@ -189,7 +189,7 @@ export function createLightAppDefinitionOperationImplementations(
             throw new CatalogIntegrityError('Definition receipt has an invalid resource kind.');
           return options.replay(receipt.response.id);
         },
-        execute: async () => {
+        execute: async (receipt) => {
           authorize();
           if (
             loadWorkspaceResourceCatalog(dataRoot(), input.workspaceId).revision !==
@@ -214,6 +214,25 @@ export function createLightAppDefinitionOperationImplementations(
             stage: operation,
             event,
           });
+          if (store.getDataRoot() !== null) {
+            const { responseKind, ...originalReceipt } = receipt;
+            const receiptScope = { workspaceId: input.workspaceId, actorId: context.actorRef.id };
+            await store.publishWorkspaceCommandReceipt(
+              operation === 'catalog.light-app-import'
+                ? {
+                    ...originalReceipt,
+                    command: operation,
+                    scope: receiptScope,
+                    response: { kind: 'light_app_definition', id: options.responseId(result) },
+                  }
+                : {
+                    ...originalReceipt,
+                    command: operation,
+                    scope: receiptScope,
+                    response: { kind: 'light_app_catalog', id: options.responseId(result) },
+                  }
+            );
+          }
           return result;
         },
       });

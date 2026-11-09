@@ -2730,11 +2730,13 @@ class ControlStoreWorkerClient {
             action:
               receipt.command === 'workspace.update'
                 ? 'update-receipt'
-                : receipt.command.startsWith('catalog.skill-')
-                  ? 'skill-receipt'
-                  : receipt.command.startsWith('artifact.')
-                    ? 'artifact-receipt'
-                    : 'environment-receipt',
+                : receipt.command.startsWith('catalog.light-app-')
+                  ? 'light-app-receipt'
+                  : receipt.command.startsWith('catalog.skill-')
+                    ? 'skill-receipt'
+                    : receipt.command.startsWith('artifact.')
+                      ? 'artifact-receipt'
+                      : 'environment-receipt',
             workspaceId: receipt.scope.workspaceId,
             receipt,
           }
@@ -2752,7 +2754,8 @@ class ControlStoreWorkerClient {
       input.action === 'update-receipt' ||
       input.action === 'environment-receipt' ||
       input.action === 'skill-receipt' ||
-      input.action === 'artifact-receipt'
+      input.action === 'artifact-receipt' ||
+      input.action === 'light-app-receipt'
     ) {
       const scope = nativeProductScope(dataRoot, {
         kind: 'workspace',
@@ -2791,11 +2794,13 @@ class ControlStoreWorkerClient {
             action:
               input.action === 'update-receipt'
                 ? 'update-maintenance'
-                : input.action === 'skill-receipt'
-                  ? 'skill-maintenance'
-                  : input.action === 'artifact-receipt'
-                    ? 'artifact-maintenance'
-                    : 'environment-maintenance',
+                : input.action === 'light-app-receipt'
+                  ? 'light-app-maintenance'
+                  : input.action === 'skill-receipt'
+                    ? 'skill-maintenance'
+                    : input.action === 'artifact-receipt'
+                      ? 'artifact-maintenance'
+                      : 'environment-maintenance',
             workspaceId: input.workspaceId,
             referenceTime,
           }

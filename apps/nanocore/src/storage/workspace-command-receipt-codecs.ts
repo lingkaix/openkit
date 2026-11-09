@@ -8,9 +8,9 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** The original creator receipt belongs to User; metadata, environment, Skill and Artifact receipts belong to Workspace. */
+/** The original creator receipt belongs to User; metadata, environment, Skill, Artifact and Light App receipts belong to Workspace. */
 export const WORKSPACE_USER_COMMAND_RECEIPTS = ['workspace.create'] as const;
-/** Existing closed public metadata, Worker environment, Skill and Artifact commands share this physical Workspace receipt partition. */
+/** Existing closed public metadata, Worker environment, Skill, Artifact and Light App commands share this physical Workspace receipt partition. */
 export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'workspace.update',
   'worker_environment.prepare',
@@ -25,6 +25,10 @@ export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
   'artifact.version-commit',
   'artifact.version-file-commit',
   'artifact.introduce',
+  'catalog.light-app-import',
+  'catalog.light-app-history-import',
+  'catalog.light-app-select',
+  'catalog.light-app-pin',
 ] as const;
 
 const receiptBase = {
@@ -115,6 +119,29 @@ const skillReceipt = z.discriminatedUnion('command', [
   }),
 ]);
 
+/** Declarative Light App catalog receipts retain the exact definition digest or Workspace pointer and original acting ActorRef identity. */
+const lightAppReceipt = z.discriminatedUnion('command', [
+  z.strictObject({
+    ...receiptBase,
+    command: z.literal('catalog.light-app-import'),
+    scope: z.strictObject({ workspaceId: WorkspaceIdSchema, actorId: z.string().min(1) }),
+    response: z.strictObject({
+      kind: z.literal('light_app_definition'),
+      id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    }),
+  }),
+  z.strictObject({
+    ...receiptBase,
+    command: z.enum([
+      'catalog.light-app-history-import',
+      'catalog.light-app-select',
+      'catalog.light-app-pin',
+    ]),
+    scope: z.strictObject({ workspaceId: WorkspaceIdSchema, actorId: z.string().min(1) }),
+    response: z.strictObject({ kind: z.literal('light_app_catalog'), id: WorkspaceIdSchema }),
+  }),
+]);
+
 /** Four original Artifact receipt producers preserve their exact actor, Thread and target selectors. */
 const artifactReceipt = z.discriminatedUnion('command', [
   z.strictObject({
@@ -187,6 +214,16 @@ export const ControlWorkspaceCommandReceiptInputSchema = z.discriminatedUnion('a
   }),
   z.strictObject({
     action: z.literal('skill-maintenance'),
+    workspaceId: WorkspaceIdSchema,
+    referenceTime: z.string().datetime(),
+  }),
+  z.strictObject({
+    action: z.literal('light-app-receipt'),
+    workspaceId: WorkspaceIdSchema,
+    receipt: lightAppReceipt,
+  }),
+  z.strictObject({
+    action: z.literal('light-app-maintenance'),
     workspaceId: WorkspaceIdSchema,
     referenceTime: z.string().datetime(),
   }),
