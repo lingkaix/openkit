@@ -1867,7 +1867,7 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
       ).toString('hex'),
     });
   };
-  const challenge = channel.beginPairing(actor);
+  const challenge = await channel.beginPairing(actor);
   sql.discordChallengeDigest = digest(challenge.challenge);
   sql.discordPairEventId = '100000000000000001';
   const paired = await send(sql.discordPairEventId, 'pair', { challenge: challenge.challenge });
@@ -1884,7 +1884,7 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
   if (!token) throw new Error('Discord corpus disclosure was not admitted.');
   sql.discordDisclosureDigest = digest(token);
   const notifications = new o.attention.AttentionNotifications(core.sqlite, { now: () => NOW });
-  const delivery = notifications.enqueue({
+  const delivery = await notifications.enqueue({
     source: { workspaceId, threadId, kind: 'approval-request', requestId: sql.pendingRequestId },
     recipientUserId: sql.userId,
   });

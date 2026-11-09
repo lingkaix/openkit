@@ -166,7 +166,9 @@ async function fixture(
     thread,
     turn,
     appOptions,
-    close() {
+    async close() {
+      // App recovery can still own accepted native Attention work when admission refuses requests.
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     },
@@ -344,7 +346,7 @@ describe('Task conversation and Pending Request definition projections', () => {
           db.sqlite.close();
         }
       } finally {
-        f.close();
+        await f.close();
       }
     }
   );
@@ -377,7 +379,7 @@ describe('Task conversation and Pending Request definition projections', () => {
         }
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -420,7 +422,7 @@ describe('Task conversation and Pending Request definition projections', () => {
         ownerDb.sqlite.close();
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -440,7 +442,7 @@ describe('Task conversation and Pending Request definition projections', () => {
             status: 409,
           });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -464,7 +466,7 @@ describe('Task conversation and Pending Request definition projections', () => {
       }
       expect(f.store.listCommandRequests()).toEqual(beforeCommands);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -500,7 +502,7 @@ describe('Task conversation and Pending Request definition projections', () => {
           db.sqlite.close();
         }
       } finally {
-        f.close();
+        await f.close();
       }
     }
   );
@@ -540,7 +542,7 @@ describe('Task conversation and Pending Request definition projections', () => {
       expect(f.store.listAllItems()).toEqual(beforeItems);
       expect(f.store.listCommandRequests()).toEqual(beforeCommands);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -565,7 +567,7 @@ describe('Task conversation and Pending Request definition projections', () => {
       expect(f.store.listAllItems()).toEqual(beforeItems);
       expect(f.store.listCommandRequests()).toEqual(beforeCommands);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -589,7 +591,7 @@ describe('Task conversation and Pending Request definition projections', () => {
       }
       expect(f.store.listCommandRequests()).toEqual(beforeCommands);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -650,7 +652,7 @@ describe('Task conversation and Pending Request definition projections', () => {
           ).status
         ).toBe(404);
       } finally {
-        f.close();
+        await f.close();
       }
     }
   );
