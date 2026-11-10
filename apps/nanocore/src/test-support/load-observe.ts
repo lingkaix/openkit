@@ -1,12 +1,148 @@
 /** Test-only passive client-admission and native observer handshake; never controls admission. */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { performance } from 'node:perf_hooks';
+import { loadavg } from 'node:os';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { BroadcastChannel } from 'node:worker_threads';
+import { startMainLoopObserver } from '../main-loop-observer.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { CONTROL_WORKER_LIMITS } from '../storage/control-store-worker-protocol.js';
 import { classifyOutcomeError } from './load-plan.js';
+import baseline from './main-loop-baseline.json' with { type: 'json' };
+
+type LoopMetrics = { p50Ms: number; p99Ms: number; p999Ms: number; maxMs: number };
+type HostLoad = { load1: number; load5: number } | null;
+type LoopRecord = Readonly<Record<string, string | number>>;
+const LOOP_RECORD_LIMIT = 64;
+
+/** Boundary samples describe host contention; an unavailable sample is never quiet evidence. */
+export function observeHostLoad(): HostLoad {
+  try {
+    const [load1, load5] = loadavg();
+    return Number.isFinite(load1) && Number.isFinite(load5)
+      ? { load1: load1!, load5: load5! }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Absolute budgets decide quiet runs; relative changes are descriptive warnings only. */
+export function mainLoopBudget(
+  metrics: { [K in keyof LoopMetrics]: number | null } & { samples: number },
+  host: { start: HostLoad; end: HostLoad },
+  profile: string
+) {
+  const observed = host.start !== null && host.end !== null;
+  const confounded = observed
+    ? Math.max(host.start!.load1, host.start!.load5, host.end!.load1, host.end!.load5) >= 8
+    : null;
+  const complete =
+    metrics.samples > 0 &&
+    (Object.keys(baseline.metrics) as Array<keyof LoopMetrics>).every(
+      (key) => typeof metrics[key] === 'number' && Number.isFinite(metrics[key])
+    );
+  const exceeded = [
+    ...(metrics.p99Ms !== null && metrics.p99Ms > 20 ? ['p99Ms'] : []),
+    ...(metrics.p999Ms !== null && metrics.p999Ms > 50 ? ['p999Ms'] : []),
+  ];
+  const warnings =
+    complete && profile === baseline.profile
+      ? (Object.keys(baseline.metrics) as Array<keyof LoopMetrics>)
+          .filter((key) => metrics[key]! > baseline.metrics[key] * 1.25)
+          .map((key) => `WARN main-loop ${key} exceeds baseline by more than 25%`)
+      : [];
+  return {
+    status:
+      !observed || !complete
+        ? 'NOT CHECKED'
+        : confounded
+          ? 'HOST CONFOUNDED'
+          : exceeded.length
+            ? 'FAIL'
+            : 'PASS',
+    confounded,
+    confoundedRule: 'max(start.load1,start.load5,end.load1,end.load5) >= 8',
+    absolute: { p99MaxMs: 20, p999MaxMs: 50, exceeded },
+    baselineCommit: baseline.sourceCommit,
+    relative:
+      profile === baseline.profile && complete
+        ? 'CHECKED; WARN ONLY'
+        : 'NOT CHECKED; profile or samples differ',
+    warnings,
+  };
+}
+
+/** Reuses the load histogram and step-3 sampler; bounded overlap is not a causal attribution. */
+export function observeMainLoop() {
+  const histogram = monitorEventLoopDelay({ resolution: 1 });
+  const gaps: Array<{ startMonotonicMs: number; endMonotonicMs: number; durationMs: number }> = [];
+  const observations: LoopRecord[] = [];
+  let count = 0,
+    droppedObservations = 0,
+    observerErrors = 0;
+  let previous = performance.now();
+  const sampleGap = () => {
+    const now = performance.now();
+    if (now - previous > 100) {
+      count++;
+      if (gaps.length < LOOP_RECORD_LIMIT)
+        gaps.push({ startMonotonicMs: previous, endMonotonicMs: now, durationMs: now - previous });
+    }
+    previous = now;
+  };
+  let sampler: ReturnType<typeof startMainLoopObserver>;
+  try {
+    sampler = startMainLoopObserver({
+      emit(record) {
+        if (record.event === 'main_loop_observation_gap') observerErrors += Number(record.count);
+        if (record.event !== 'main_loop_long_task') return;
+        if (observations.length < LOOP_RECORD_LIMIT) observations.push(record);
+        else droppedObservations++;
+      },
+    });
+  } catch {
+    histogram.disable();
+    return null;
+  }
+  const timer = setInterval(sampleGap, 1);
+  timer.unref();
+  histogram.enable();
+  return {
+    finish() {
+      sampleGap();
+      clearInterval(timer);
+      sampler.stop();
+      histogram.disable();
+      return {
+        p50Ms: histogram.percentile(50) / 1e6,
+        p99Ms: histogram.percentile(99) / 1e6,
+        p999Ms: histogram.percentile(99.9) / 1e6,
+        maxMs: histogram.max / 1e6,
+        samples: histogram.count,
+        gapsOver100Ms: count,
+        gapCountMeaning:
+          'observed 1ms timer scheduling intervals over 100ms; not a count of unique blocking causes',
+        gaps: gaps.map((gap) => {
+          const overlap = observations.filter(
+            (record) =>
+              Number(record.startMonotonicMs) < gap.endMonotonicMs &&
+              Number(record.endMonotonicMs) > gap.startMonotonicMs
+          );
+          return {
+            ...gap,
+            attribution: overlap.length ? 'observed_work_overlap' : 'unknown',
+            observations: overlap,
+          };
+        }),
+        omittedGaps: count - gaps.length,
+        droppedObservations,
+        observerErrors,
+      };
+    },
+  };
+}
 export async function observeNative(lower: number, upper: number) {
   const client = getControlStoreWorkerClient() as any;
   const expected: number[] = [];

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "4915f8ea5abf334697683e0e1a54391ba5450a1f",
+  "evidence": "admission-prequal-20261110/quiet-baseline/diagnostic-receipt.json",
+  "profile": "reference-1ws",
+  "metrics": {
+    "p50Ms": 1.057791,
+    "p99Ms": 17.661951,
+    "p999Ms": 24.084479,
+    "maxMs": 101.056511
+  }
+}

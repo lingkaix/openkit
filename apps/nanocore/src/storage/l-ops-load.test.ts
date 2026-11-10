@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { join } from 'node:path';
-import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { allocateEntityId } from '@openkit/protocol';
@@ -14,6 +14,9 @@ import {
   diagnosticContext,
   diagnosticError,
   diagnosticStage,
+  mainLoopBudget,
+  observeHostLoad,
+  observeMainLoop,
   observeNative,
 } from '../test-support/load-observe.js';
 import {
@@ -127,8 +130,18 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
     referenceRateParameter: RATE,
     thresholdsUnchanged: true,
     qualification: false,
+    hostLoad: { start: observeHostLoad(), end: null },
+    mainLoop: {
+      p50Ms: null,
+      p99Ms: null,
+      p999Ms: null,
+      maxMs: null,
+      samples: 0,
+      gapsOver100Ms: null,
+    },
   };
-  const loop = monitorEventLoopDelay({ resolution: 1 });
+  let loop: ReturnType<typeof observeMainLoop> | undefined;
+  let loopStart: ReturnType<typeof setTimeout> | undefined;
   let start = 0,
     measure = Infinity,
     stop = Infinity;
@@ -198,7 +211,16 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
     demand(sql, 'Main SQL observer missing');
     sql.windowStart = measure;
     sql.windowEnd = stop;
-    setTimeout(() => loop.enable(), Math.max(0, measure - performance.now()));
+    loopStart = setTimeout(
+      () => {
+        try {
+          loop = observeMainLoop();
+        } catch {
+          result.mainLoop.observerErrors = 1;
+        }
+      },
+      Math.max(0, measure - performance.now())
+    );
     function launch(row: Outcome & Record<string, any>) {
       row.issuedMs = performance.now() - start;
       const actor = actors[row.workspace]![row.actor]!;
@@ -263,12 +285,13 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
       } while (i < rows.length && Math.abs(rows[i]!.dueMs - due) < 1e-7);
     }
     await sleep(Math.max(0, stop - performance.now()));
-    loop.disable();
-    result.mainLoop = {
-      p99Ms: loop.percentile(99) / 1e6,
-      maxMs: loop.max / 1e6,
-      samples: loop.count,
-    };
+    clearTimeout(loopStart);
+    try {
+      result.mainLoop = loop?.finish() ?? result.mainLoop;
+    } catch {
+      result.mainLoop.observerErrors = 1;
+    }
+    loop = undefined;
     result.settled = await Promise.race([
       Promise.allSettled([...pending]).then(() => true),
       sleep(30000).then(() => false),
@@ -470,7 +493,12 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
     result.failure = { name: e?.name, message: String(e?.message ?? 'unknown'), code: e?.code };
     throw e;
   } finally {
-    loop.disable();
+    clearTimeout(loopStart);
+    try {
+      if (loop) result.mainLoop = loop.finish();
+    } catch {
+      result.mainLoop.observerErrors = 1;
+    }
     if (observation && !observerClosed) {
       try {
         result.finalObservation = await observation.finish();
@@ -496,6 +524,19 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
     try {
       coreDb.sqlite.close();
     } catch {}
+    result.hostLoad.end = observeHostLoad();
+    if (result.mainLoop) {
+      result.mainLoop.budget = mainLoopBudget(
+        result.mainLoop,
+        result.hostLoad,
+        CONTROL ? 'control' : `${PROFILE}-${N}ws`
+      );
+      for (const warning of result.mainLoop.budget.warnings) console.warn(warning);
+    }
     write(output, result);
   }
+  demand(
+    result.mainLoop?.budget.status !== 'FAIL',
+    'Main-loop absolute budget exceeded on an unconfounded host'
+  );
 }, 900000);
