@@ -171,19 +171,7 @@ const draftSchema = z
     payload: z.record(z.string(), z.unknown()),
   })
   .strip();
-// Only retained version-1 data accepts historical observer names; live drafts stay canonical-only.
 const recordSchema = draftSchema.extend({
-  obs: z.preprocess(
-    (value) =>
-      value === 'core'
-        ? 'nanocore'
-        : value === 'gateway'
-          ? 'llm-gateway'
-          : value === 'sidecar'
-            ? 'worker-shim'
-            : value,
-    draftSchema.shape.obs
-  ),
   v: z.literal(1),
   seq: z.number().int().positive(),
   turnId: TurnIdSchema,

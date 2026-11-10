@@ -2,7 +2,7 @@
 
 This directory owns NanoCore's native Drizzle Kit journals. Each of `core`, `user`, `workspace`, and `app` has its own SQL files and `meta/_journal.json`. Startup applies those journals through `drizzle-orm/better-sqlite3` `migrate`. The TypeScript table exports under `src/storage/schema` mix scopes and must not generate every table into every database.
 
-Before the first release, keep the current schema in `0000_setup.sql` for each affected scope. After release, each schema-changing release adds one SQL file per affected scope.
+Before the first release, an explicitly authorized reset-bound schema correction may edit an existing SQL file while preserving its journal entry and tag. Do not squash or rename journals as part of such a correction. After release, each schema-changing release adds one SQL file per affected scope.
 
 ## Create SQL for one scope
 

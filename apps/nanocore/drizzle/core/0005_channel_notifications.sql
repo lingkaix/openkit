@@ -5,7 +5,7 @@ CREATE TABLE notification_attention (
   source_kind TEXT NOT NULL CHECK (source_kind IN ('approval-request', 'user-input-request')),
   request_id TEXT NOT NULL,
   recipient_user_id TEXT NOT NULL,
-  channel TEXT CHECK (channel IN ('discord', 'email')),
+  channel TEXT,
   created_at TEXT NOT NULL,
   UNIQUE (workspace_id, thread_id, source_kind, request_id, recipient_user_id)
 );
@@ -15,7 +15,7 @@ CREATE INDEX notification_attention_recipient ON notification_attention (recipie
 CREATE TABLE notification_delivery_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   attention_id TEXT NOT NULL REFERENCES notification_attention(id) ON DELETE CASCADE,
-  channel TEXT NOT NULL CHECK (channel IN ('discord', 'email')),
+  channel TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('sending', 'sent', 'failed-no-send', 'delivery-unknown')),
   failure_code TEXT CHECK (failure_code IN ('authority-unavailable', 'transport-refused', 'transport-unknown', 'restart')),
   started_at TEXT NOT NULL,

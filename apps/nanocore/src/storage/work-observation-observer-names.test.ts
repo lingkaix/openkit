@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ZodError } from 'zod';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { ModelCapture, withTurnModelCapture } from '../llm/model-capture.js';
@@ -33,24 +34,16 @@ import {
   type WorkObservationDraft,
   type WorkObservationRecord,
 } from './work-observations.js';
-import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
+import {
+  parsePortableWorkObservations,
+  verifyWorkspaceExportTree,
+  WORKSPACE_EXPORT_MANIFEST_FILE,
+} from './workspace-export.js';
 import { createVerifiedWorkspaceExport } from './workspace-transfer-routes.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const roots: string[] = [];
 const databases: (CoreDb | WorkspaceDb)[] = [];
-const names: Readonly<Record<string, string>> = {
-  core: 'nanocore',
-  gateway: 'llm-gateway',
-  sidecar: 'worker-shim',
-  nanohost: 'nanohost',
-};
-const historicalNames: Readonly<Record<string, string>> = {
-  nanocore: 'core',
-  'llm-gateway': 'gateway',
-  'worker-shim': 'sidecar',
-  nanohost: 'nanohost',
-};
 
 afterEach(async () => {
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
@@ -122,8 +115,8 @@ function nativeRows(db: WorkspaceDb, turnId: string): WorkObservationRecord[] {
   return nativeBytes(db, turnId).map((record) => JSON.parse(record));
 }
 
-/** Installs historical spelling in existing fixture identities only while the native writer is stopped. */
-async function retainHistoricalRows(
+/** Installs retained annotations or an invalid observer in real rows while the native writer is stopped. */
+async function retainFixtureRows(
   f: Awaited<ReturnType<typeof fixture>>,
   rows: readonly (Omit<WorkObservationRecord, 'obs'> & { obs: string })[]
 ) {
@@ -289,7 +282,7 @@ function gap(
   };
 }
 
-// Owner: docs/specs/20260921-work_data_retention_format.md (RET) plus the engineer's retained-v1 rename ruling.
+// Owner: RET plus the pre-reset F4 ruling in evidence/freeze-audit/consensus.md: historical aliases are refused.
 describe('retained observer names', () => {
   it('RET Collection Responsibility: "Each point writes only in its observer value obs" — real writers and publications use the new names', async () => {
     const f = await fixture();
@@ -310,7 +303,7 @@ describe('retained observer names', () => {
     ]);
   });
 
-  it('RET Observation Ledger Envelope: "Append only" — historical v1 names reopen mapped without changing native metadata bytes', async () => {
+  it('RET Observation Ledger Envelope: "Append only" — canonical v1 names and additive annotations reopen without changing native metadata bytes', async () => {
     const f = await fixture();
     await captureAllWriters(f);
     await appendWorkObservation(f.db, {
@@ -318,12 +311,11 @@ describe('retained observer names', () => {
       observation: gap(f, 'nanohost', 'host'),
       bodies: [],
     });
-    const historical = nativeRows(f.db, f.turn.id).map((row) => ({
+    const retained = nativeRows(f.db, f.turn.id).map((row) => ({
       ...row,
-      obs: historicalNames[row.obs] ?? row.obs,
       ext: { 'test.annotation': { text: 'retain é', values: [null, 0] } },
     }));
-    await retainHistoricalRows(f, historical);
+    await retainFixtureRows(f, retained);
     const bytes = nativeBytes(f.db, f.turn.id);
     const manifest = f.db.sqlite
       .prepare('SELECT record_json FROM control_turns WHERE id=?')
@@ -331,19 +323,19 @@ describe('retained observer names', () => {
     f.db.sqlite.close();
     const reopened = workspaceDb(f.dataRoot, f.db.workspaceId);
     const rows = readWorkObservations(reopened, f.owner);
-    expect.soft(rows).toEqual(historical.map((row) => ({ ...row, obs: names[row.obs] })));
+    expect(rows).toEqual(retained);
     expect(nativeBytes(reopened, f.turn.id)).toEqual(bytes);
     expect(
       reopened.sqlite.prepare('SELECT record_json FROM control_turns WHERE id=?').get(f.turn.id)
     ).toEqual(manifest);
   });
 
-  it('RET Capture Publication: "Same identity and same content replay is idempotent" — mixed historical/current rows replay without append or rewrite', async () => {
+  it('RET Capture Publication: "Same identity and same content replay is idempotent" — canonical v1 rows replay without append or rewrite', async () => {
     const f = await fixture();
     await captureModel(f);
     const [metadata, publication] = nativeRows(f.db, f.turn.id);
-    await retainHistoricalRows(f, [
-      { ...metadata!, obs: 'gateway' },
+    await retainFixtureRows(f, [
+      { ...metadata!, obs: 'llm-gateway' },
       { ...publication!, obs: 'llm-gateway' },
     ]);
     const bytes = nativeBytes(f.db, f.turn.id);
@@ -399,7 +391,7 @@ describe('retained observer names', () => {
     expect(nativeBytes(reopened, f.turn.id)).toEqual(bytes);
   });
 
-  it('RET References: "A reference MUST NEVER be wrong" — old exports retain bytes, annotations and lineage with mapped observers', async () => {
+  it('RET References: "A reference MUST NEVER be wrong" — canonical exports retain bytes, additive annotations and lineage', async () => {
     const f = await fixture();
     await captureModel(f);
     const sourceLedger = nativeBytes(f.db, f.turn.id);
@@ -425,14 +417,13 @@ describe('retained observer names', () => {
     const observationPath = [...exported.verified.fileContents.keys()].find((path) =>
       path.endsWith('/observations.jsonl')
     )!;
-    // Build an old export from real producer output, then verify its revised byte inventory.
-    const historical = diskRows(join(exportRoot, observationPath)).map((row) => ({
+    // Add descriptive extensions to real producer output, then verify the exact revised byte inventory.
+    const retained = diskRows(join(exportRoot, observationPath)).map((row) => ({
       ...row,
-      obs: 'gateway',
-      ext: { 'test.annotation': { text: 'historical é', values: [null, 0] } },
+      ext: { 'test.annotation': { text: 'retained é', values: [null, 0] } },
       futureAnnotation: 'ignored without rewriting the source',
     }));
-    const bytes = ledgerBytes(historical);
+    const bytes = ledgerBytes(retained);
     writeFileSync(join(exportRoot, observationPath), bytes);
     const manifest = JSON.parse(exported.verified.manifestText);
     const entry = manifest.contentInventory.find(
@@ -454,13 +445,13 @@ describe('retained observer names', () => {
     expect(rows).toHaveLength(2);
     expect(rows[1]!.parent).toBe(rows[0]!.id);
     expect(rows[0]!.corr).toBe('call-one');
-    expect(rows.map((row) => row.ext)).toEqual(historical.map((row) => row.ext));
-    const sourceRef = historical[1]!.refs![0]!;
+    expect(rows.map((row) => row.ext)).toEqual(retained.map((row) => row.ext));
+    const sourceRef = retained[1]!.refs![0]!;
     expect(rows[1]!.refs![0]!).toEqual(sourceRef);
     const sourceBody = readWorkObservationBody(f.db, {
       ...f.owner,
       bundleId: sourceRef.locator,
-      createdAt: historical[1]!.ts,
+      createdAt: retained[1]!.ts,
       sha256: sourceRef.digest!,
     });
     expect(sourceBody).not.toBeNull();
@@ -471,6 +462,53 @@ describe('retained observer names', () => {
     expect(readFileSync(join(exportRoot, observationPath))).toEqual(bytes);
     expect(readFileSync(manifestPath)).toEqual(manifestBytes);
     expect(nativeBytes(f.db, f.turn.id)).toEqual(sourceLedger);
+  });
+
+  it.each(['core', 'gateway', 'sidecar'])(
+    'F4 pre-reset format: historical observer %s is refused by retained native and portable readers without rewriting bytes',
+    async (obs) => {
+      const f = await fixture();
+      const observation = gap(f, 'nanocore', `retained-${obs}`);
+      await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] });
+      const [canonical] = nativeRows(f.db, f.turn.id);
+      expect(canonical).toMatchObject({ v: 1, obs: 'nanocore' });
+      const invalid = { ...canonical!, obs };
+      await retainFixtureRows(f, [invalid]);
+      const bytes = nativeBytes(f.db, f.turn.id);
+      f.db.sqlite.close();
+      const reopened = workspaceDb(f.dataRoot, f.db.workspaceId);
+      expect.soft(() => parseWorkObservationRecord(invalid)).toThrow(ZodError);
+      expect.soft(() => readWorkObservations(reopened, f.owner)).toThrow(ZodError);
+      expect
+        .soft(() => parsePortableWorkObservations(ledgerBytes([invalid]).toString(), f.turn.id))
+        .toThrow(ZodError);
+      expect(nativeBytes(reopened, f.turn.id)).toEqual(bytes);
+    }
+  );
+
+  it('F4 retained observer envelope keeps an explicit v1 marker and ignores additive descriptive content', async () => {
+    const f = await fixture();
+    for (const obs of ['nanocore', 'llm-gateway', 'worker-shim', 'nanohost']) {
+      const row = {
+        ...gap(f, obs, `extended-${obs}`),
+        v: 1,
+        seq: 1,
+        turnId: f.turn.id,
+        ext: { 'test.future': { description: 'retained é', values: [null, 0] } },
+      };
+      expect(parseWorkObservationRecord({ ...row, futureDescription: 'ignored' })).toEqual(row);
+      expect(
+        parsePortableWorkObservations(
+          ledgerBytes([{ ...row, futureDescription: 'ignored' }]).toString(),
+          f.turn.id
+        )
+      ).toEqual([row]);
+      const { v: _v, ...missingVersion } = row;
+      expect(() => parseWorkObservationRecord(missingVersion)).toThrow(ZodError);
+      for (const v of [0, 2, '1']) {
+        expect(() => parseWorkObservationRecord({ ...row, v })).toThrow(ZodError);
+      }
+    }
   });
 
   it('RET Observation Ledger Envelope: obs identifies the observer; Contract Evolution: unknown core values fail closed — accepts current names only for writes', async () => {

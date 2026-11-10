@@ -6,11 +6,13 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import {
   AttentionNotifications,
   type AttentionSource,
   enqueueAttentionInDb,
 } from '../notifications/attention.js';
+import { AttentionError } from '../notifications/attention-error.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   type ControlAttentionAttemptClaim,
@@ -215,6 +217,129 @@ afterEach(async () => {
     for (const sqlite of databases.splice(0).reverse()) if (sqlite.open) sqlite.close();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   }
+});
+
+// F3 pre-reset ruling: channel storage is extensible; connector admission remains closed in code.
+it.each(['notification_attention', 'notification_delivery_attempts'] as const)(
+  'F3 stores a future channel in migrated %s and preserves it on cold reopen',
+  async (table) => {
+    const f = fixture();
+    await expect(send(f)).resolves.toMatchObject({ status: 'sent', channel: 'discord' });
+    await shutdownControlStoreWorkerClient();
+    const sqlite = f.coreDb.sqlite;
+    expect(sqlite.prepare(`UPDATE ${table} SET channel = ?`).run('future-connector').changes).toBe(
+      1
+    );
+    sqlite.close();
+    const reopened = cold(f);
+    expect(reopened.prepare(`SELECT channel FROM ${table}`).all()).toEqual([
+      { channel: 'future-connector' },
+    ]);
+    const other =
+      table === 'notification_attention'
+        ? 'notification_delivery_attempts'
+        : 'notification_attention';
+    expect(reopened.prepare(`SELECT channel FROM ${other}`).all()).toEqual([
+      { channel: 'discord' },
+    ]);
+    const notifications = new AttentionNotifications(reopened);
+    expect(() => notifications.get(f.delivery.id)).toThrowError(
+      expect.objectContaining({ name: 'AttentionError', code: 'attention_recovery_required' })
+    );
+  }
+);
+
+it('F3 preserves Attention nullability, source and attempt checks, indices and cascading ownership', async () => {
+  const f = fixture();
+  const sqlite = f.coreDb.sqlite;
+  const reject = (operation: () => unknown, code: string) => {
+    expect(operation).toThrowError(expect.objectContaining({ code }));
+  };
+  expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
+  for (const [table, notnull] of [
+    ['notification_attention', 0],
+    ['notification_delivery_attempts', 1],
+  ] as const) {
+    expect(
+      (sqlite.pragma(`table_info(${table})`) as { name: string }[]).find(
+        (column) => column.name === 'channel'
+      )
+    ).toMatchObject({ type: 'TEXT', notnull });
+  }
+  expect(sqlite.prepare('SELECT channel FROM notification_attention').get()).toEqual({
+    channel: null,
+  });
+  reject(
+    () => sqlite.prepare('UPDATE notification_attention SET source_kind = ?').run('future-source'),
+    'SQLITE_CONSTRAINT_CHECK'
+  );
+  reject(
+    () =>
+      sqlite
+        .prepare(`INSERT INTO notification_attention
+    (id, workspace_id, thread_id, source_kind, request_id, recipient_user_id, created_at)
+    SELECT ?, workspace_id, thread_id, source_kind, request_id, recipient_user_id, created_at
+    FROM notification_attention`)
+        .run(randomUUID()),
+    'SQLITE_CONSTRAINT_UNIQUE'
+  );
+  const insert = sqlite.prepare(`INSERT INTO notification_delivery_attempts
+    (attention_id, channel, status, started_at) VALUES (?, ?, 'sending', ?)`);
+  reject(() => insert.run(f.delivery.id, null, startedAt), 'SQLITE_CONSTRAINT_NOTNULL');
+  reject(
+    () => insert.run('missing-attention', 'discord', startedAt),
+    'SQLITE_CONSTRAINT_FOREIGNKEY'
+  );
+  insert.run(f.delivery.id, 'discord', startedAt);
+  reject(() => insert.run(f.delivery.id, 'email', startedAt), 'SQLITE_CONSTRAINT_UNIQUE');
+  for (const update of [
+    "UPDATE notification_delivery_attempts SET status = 'future-state'",
+    "UPDATE notification_delivery_attempts SET failure_code = 'future-failure'",
+    "UPDATE notification_delivery_attempts SET status = 'sent'",
+    "UPDATE notification_delivery_attempts SET finished_at = '2026-11-05T14:00:01.000Z'",
+  ])
+    reject(() => sqlite.prepare(update).run(), 'SQLITE_CONSTRAINT_CHECK');
+  expect(
+    sqlite
+      .prepare('SELECT status, failure_code, finished_at FROM notification_delivery_attempts')
+      .all()
+  ).toEqual([{ status: 'sending', failure_code: null, finished_at: null }]);
+  const indices = [
+    ['notification_attention_recipient', ['recipient_user_id', 'created_at', 'id']],
+    ['notification_attempt_attention', ['attention_id', 'id']],
+    ['notification_one_active_attempt', ['attention_id']],
+  ] as const;
+  for (const [index, columns] of indices) {
+    expect(
+      (sqlite.pragma(`index_info(${index})`) as { name: string }[]).map((column) => column.name)
+    ).toEqual(columns);
+  }
+  expect(
+    sqlite.prepare('DELETE FROM notification_attention WHERE id = ?').run(f.delivery.id).changes
+  ).toBe(1);
+  expect(
+    sqlite.prepare('SELECT COUNT(*) AS count FROM notification_delivery_attempts').get()
+  ).toEqual({ count: 0 });
+});
+
+it('F3 refuses a future channel through Attention and native claim admission before any write or contact', async () => {
+  const f = fixture();
+  const channel = 'future-connector' as Parameters<AttentionNotifications['deliver']>[0]['channel'];
+  const refused = send(f, { channel });
+  await expect(refused).rejects.toBeInstanceOf(AttentionError);
+  await expect(refused).rejects.toMatchObject({ code: 'invalid_attention_input' });
+  await expect(
+    getControlStoreWorkerClient().attentionAttemptClaim(f.coreDb, {
+      deliveryId: f.delivery.id,
+      recipientUserId,
+      channel,
+      retry: false,
+      expectedAttemptId: null,
+      startedAt,
+    })
+  ).rejects.toBeInstanceOf(ZodError);
+  expect(fault.posts).toEqual([]);
+  expectUnclaimed(f);
 });
 
 it('commits the original sending claim with Main readonly before fresh eligibility and transport', async () => {
