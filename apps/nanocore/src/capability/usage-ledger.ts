@@ -20,6 +20,7 @@ import {
   type ControlCapabilityCommandInput,
   ControlCapabilityCommandInputSchema,
   type ControlCapabilityCommandResult,
+  mcpToolContactUsage,
 } from '../storage/control-store-capability.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import {
@@ -351,21 +352,7 @@ export async function finishMcpToolCall(
       workspaceId: workspaceDb.workspaceId,
       call: { id: call.id, inserted: call.inserted, context: call.context },
       ...(decision ? { decision } : {}),
-      ...(contacted
-        ? {
-            usage: {
-              now,
-              records: [
-                {
-                  category: 'tool' as const,
-                  quantity: 1,
-                  source: 'mcp-gateway-request-dispatched',
-                  unit: 'tool_calls' as const,
-                },
-              ],
-            },
-          }
-        : {}),
+      ...(contacted ? { usage: mcpToolContactUsage(now) } : {}),
       finish: presentControlFacts({ ...terminal, clearItem: terminal.clearItem || undefined, now }),
     });
   } catch (error) {

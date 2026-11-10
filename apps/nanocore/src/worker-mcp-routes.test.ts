@@ -7351,7 +7351,7 @@ describe('MCP physical commit contract', () => {
     { warm: false, count: 3 },
     { warm: true, count: 2 },
   ])(
-    'uses exactly $count physical ledger commits for warm=$warm without hiding discovery',
+    'uses exactly $count physical commits for warm=$warm including the Tool Item',
     async ({ warm, count }) => {
       const f = await createMcpCommitFixture();
       try {
@@ -7371,6 +7371,11 @@ describe('MCP physical commit contract', () => {
         // Engineer COORD05:4x accepts r1825 W1/W2 and C1/C2/C3; count native COMMIT and autocommit, not JS calls.
         // R1842:14/22: the switched ledger and its linked Audit have no Main DML.
         expect(f.trace.mainLedgerWrites).toEqual([]);
+        expect(f.trace.mainCommits).toEqual([]);
+        expect(f.trace.otherCommits).toEqual([]);
+        expect.soft(f.trace.physical, JSON.stringify(f.trace.physical)).toHaveLength(count);
+        expect(f.trace.productCommits).toEqual([f.trace.physical.at(-1)]);
+        expect(f.trace.productCommits[0]?.ledger).toBe(true);
         expect.soft(f.trace.commits, JSON.stringify(f.trace.commits)).toHaveLength(count);
         const groups = f.trace.commits;
         expect
@@ -7422,6 +7427,62 @@ describe('MCP physical commit contract', () => {
 });
 
 describe('MCP proved failure and admitted schema observation', () => {
+  it('records the original outcome after a native terminal Item rollback without disclosing it', async () => {
+    const f = await createMcpCommitFixture();
+    try {
+      f.db.sqlite.exec(`
+        CREATE TRIGGER refuse_terminal_mcp_item BEFORE INSERT ON control_product_entries
+        WHEN NEW.kind = 'item'
+        BEGIN SELECT RAISE(ABORT, 'injected terminal Item refusal'); END;
+      `);
+      f.trace.reset();
+      const response = await f.call();
+      expect(response).toMatchObject({ error: { data: { code: 'recovery_required' } } });
+      expect(response).not.toHaveProperty('result');
+      expect(JSON.stringify(response)).not.toContain('injected terminal Item refusal');
+      expect(f.contacts()).toBe(1);
+      const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+      expect(calls).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+      expect(listWorkspaceUsageRecords(f.db, f.workspaceId)).toEqual([
+        expect.objectContaining({ capabilityCallId: calls[0]!.id, quantity: 1 }),
+      ]);
+      expect(
+        listWorkspaceAuditEvents(f.db, f.workspaceId).filter(
+          (event) => event.action === 'capability.finish'
+        )
+      ).toEqual([expect.objectContaining({ capabilityCallId: calls[0]!.id })]);
+      expect(f.store.listAllItems().some((item) => item.id === calls[0]!.itemId)).toBe(false);
+      expect(f.trace.productCommits).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('withholds the result and never repeats settlement when the combined ACK is unknown', async () => {
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const append = client.appendItem.bind(client);
+    const item = vi.spyOn(client, 'appendItem').mockImplementation(async (...args) => {
+      const result = await append(...args);
+      if (args[2]) throw new ControlStoreWorkerError('unavailable', 'unknown');
+      return result;
+    });
+    const ledger = vi.spyOn(client, 'workspaceCapability');
+    try {
+      const response = await f.call();
+      expect(response).toMatchObject({ error: { data: { code: 'recovery_required' } } });
+      expect(response).not.toHaveProperty('result');
+      expect(f.contacts()).toBe(1);
+      expect(item.mock.calls.filter((args) => args[2])).toHaveLength(1);
+      expect(ledger.mock.calls.some(([, input]) => input.kind === 'usage-finish')).toBe(false);
+      expectMcpCommittedTuples(f);
+    } finally {
+      item.mockRestore();
+      ledger.mockRestore();
+      await f.close();
+    }
+  });
+
   it.each(['sql-busy', 'native-busy'] as const)(
     'discloses the committed pre-Tool %s failure without claiming admission rollback',
     async (fault) => {
@@ -8537,18 +8598,23 @@ describe('MCP native admission and original closeout', () => {
     let injected = 0;
     const nativePublication = vi
       .spyOn(client, 'appendItem')
-      .mockImplementation(async (key, input) => {
+      .mockImplementation(async (key, input, mcpCall) => {
         if (
           key === database &&
           input.item.turnId === f.environmentPackage.scope.turnId &&
-          listWorkspaceCapabilityCalls(f.db, f.workspaceId).some(
-            (call) => call.id === callId && call.status === 'succeeded'
-          )
+          input.item.id === itemId
         ) {
           injected += 1;
+          expect.soft(mcpCall?.id).toBe(callId);
+          expect
+            .soft(
+              listWorkspaceCapabilityCalls(f.db, f.workspaceId).find((call) => call.id === callId)
+                ?.status
+            )
+            .toBe('running');
           throw failure;
         }
-        return appendItem(key, input);
+        return appendItem(key, input, mcpCall);
       });
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {

@@ -167,6 +167,8 @@ import {
   ControlCapabilityCommandResultSchema,
   type ControlCapabilityWireInput,
   ControlCapabilityWireInputSchema,
+  type ControlMcpItemCall,
+  ControlMcpItemCallSchema,
   controlCapabilityText,
 } from './control-store-capability.js';
 import {
@@ -742,7 +744,11 @@ export type ControlWorkerCommand =
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
-      | { readonly operation: 'item'; readonly input: ControlItemAppend }
+      | {
+          readonly operation: 'item';
+          readonly input: ControlItemAppend;
+          readonly mcpCall?: ControlMcpItemCall;
+        }
       | { readonly operation: 'event'; readonly input: ControlEventAppend }
       | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
@@ -2209,8 +2215,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     );
   if (value.operation === 'item')
     return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlItemAppendSchema.safeParse(value.input).success
+      exactFields(value, [...scoped, 'input'], ['mcpCall']) &&
+      ControlItemAppendSchema.safeParse(value.input).success &&
+      (value.mcpCall === undefined ||
+        (ControlMcpItemCallSchema.safeParse(value.mcpCall).success &&
+          Buffer.byteLength(JSON.stringify(value.mcpCall)) <= CONTROL_PRODUCT_LIMITS.payloadBytes))
     );
   if (value.operation === 'open') {
     return (

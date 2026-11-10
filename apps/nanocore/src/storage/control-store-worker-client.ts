@@ -202,6 +202,7 @@ import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
   type ControlCapabilityWireInput,
+  type ControlMcpItemCall,
   type ControlWorkspaceCapabilityCommandResult,
   controlCapabilityText,
   prepareControlCapabilityTransfer,
@@ -1664,9 +1665,18 @@ class ControlStoreWorkerClient {
   }
 
   /** Publishes an addressed Item only after its native head checks, exact bytes and covering FULL commit. */
-  async appendItem(database: string, input: ControlItemAppend): Promise<ControlItemAppend['item']> {
+  async appendItem(
+    database: string,
+    input: ControlItemAppend,
+    mcpCall?: ControlMcpItemCall
+  ): Promise<ControlItemAppend['item']> {
     try {
-      const reply = await this.request({ operation: 'item', database, input });
+      const reply = await this.request({
+        operation: 'item',
+        database,
+        input,
+        ...(mcpCall && { mcpCall }),
+      });
       return (reply as Extract<Success, { operation: 'item' }>).result;
     } catch (error) {
       if (

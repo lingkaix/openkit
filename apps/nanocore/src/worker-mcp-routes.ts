@@ -153,6 +153,7 @@ import {
 import {
   type ControlCapabilityAdmissionFailure,
   ControlCapabilityCommandInputSchema,
+  type ControlMcpItemCall,
 } from './storage/control-store-capability.js';
 import { getWorkspaceProductReadHandle } from './storage/control-store-product-records.js';
 import {
@@ -1549,7 +1550,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     let usageRecoveryRequired = false;
     let cancelled = false;
     let publishTerminalItem = true;
-    let terminalResult: Awaited<ReturnType<WorkerMcpGateway['callTool']>> | null = null;
+    let publicationFailure: { error: unknown } | undefined;
     let observedCredentials: WorkerMcpGatewayCredentials | undefined;
     let pendingInjections: readonly PendingMcpVaultInjection[] | null = null;
     // A catalog hit proves no new delivery. Complete the original receipt only after a real exchange.
@@ -1574,49 +1575,63 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
     };
 
-    /** Publishes once before successful disclosure or during the original failure closeout. */
+    const writeTerminal = (
+      publishedCall: StartedCapabilityCall,
+      completion?: {
+        result: Awaited<ReturnType<WorkerMcpGateway['callTool']>>;
+        completedAt: string;
+      }
+    ) =>
+      publishWorkerMcpItem({
+        arguments: input.arguments,
+        result: completion?.result ?? null,
+        call: publishedCall,
+        durationMs: Date.now() - startedAt,
+        environmentPackage: input.environmentPackage,
+        errorCode,
+        itemId,
+        serverId: input.serverId,
+        status: completion ? 'completed' : status,
+        store: input.input.store,
+        toolName: input.toolName,
+        workspaceDb: input.workspaceDb,
+        ...(completion && { completedAt: completion.completedAt, mcpCall: publishedCall }),
+      });
+
+    const terminalPublicationError = (error: unknown, publishedCall: StartedCapabilityCall) => {
+      try {
+        const cause =
+          error instanceof Database.SqliteError
+            ? { errorClass: 'SqliteError', code: error.code }
+            : error instanceof ControlStoreWorkerError
+              ? { errorClass: 'ControlStoreWorkerError', code: error.code, commit: error.commit }
+              : { errorClass: 'other' };
+        console.error(
+          JSON.stringify({
+            event: 'worker.mcp.item-publication-failure',
+            callId: publishedCall.id,
+            ...cause,
+          })
+        );
+      } catch {
+        // A diagnostic sink failure cannot turn missing publication into successful disclosure.
+      }
+      return new ProtocolError(
+        ProtocolErrorCode.InternalError,
+        status === 'completed'
+          ? 'MCP call completed; terminal Item publication is unavailable.'
+          : 'MCP terminal Item publication is unavailable.',
+        { code: 'recovery_required' }
+      );
+    };
+
+    /** Publishes the remaining failure Item during its original closeout. */
     const publishTerminal = async (publishedCall: StartedCapabilityCall) => {
       publishTerminalItem = false;
       try {
-        await publishWorkerMcpItem({
-          arguments: input.arguments,
-          result: terminalResult,
-          call: publishedCall,
-          durationMs: Date.now() - startedAt,
-          environmentPackage: input.environmentPackage,
-          errorCode,
-          itemId,
-          serverId: input.serverId,
-          status,
-          store: input.input.store,
-          toolName: input.toolName,
-          workspaceDb: input.workspaceDb,
-        });
+        await writeTerminal(publishedCall);
       } catch (error) {
-        try {
-          const cause =
-            error instanceof Database.SqliteError
-              ? { errorClass: 'SqliteError', code: error.code }
-              : error instanceof ControlStoreWorkerError
-                ? { errorClass: 'ControlStoreWorkerError', code: error.code, commit: error.commit }
-                : { errorClass: 'other' };
-          console.error(
-            JSON.stringify({
-              event: 'worker.mcp.item-publication-failure',
-              callId: publishedCall.id,
-              ...cause,
-            })
-          );
-        } catch {
-          // A diagnostic sink failure cannot turn missing publication into successful disclosure.
-        }
-        throw new ProtocolError(
-          ProtocolErrorCode.InternalError,
-          status === 'completed'
-            ? 'MCP call completed; terminal Item publication is unavailable.'
-            : 'MCP terminal Item publication is unavailable.',
-          { code: 'recovery_required' }
-        );
+        throw terminalPublicationError(error, publishedCall);
       }
     };
 
@@ -1873,7 +1888,17 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       await completePendingInjections();
       usageAttempted = true;
       try {
-        await finishMcpToolCall(call, input.workspaceDb, { status: 'succeeded' });
+        try {
+          await writeTerminal(call, { result, completedAt: new Date().toISOString() });
+        } catch (error) {
+          if (error instanceof ControlStoreWorkerError && error.commit !== 'not-committed')
+            throw error;
+          // The Item request did not commit. Preserve the known external outcome even
+          // if the Item cannot be published; never repeat contact or a possibly committed write.
+          await finishMcpToolCall(call, input.workspaceDb, { status: 'succeeded' });
+          publicationFailure = { error };
+        }
+        publishTerminalItem = false;
       } catch (error) {
         if (error instanceof ControlStoreWorkerError && error.commit === 'unknown') {
           usageRecoveryRequired = true;
@@ -1890,7 +1915,6 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       terminalCommitted = true;
       status = 'completed';
-      terminalResult = result;
       const assertResultCurrent = () => {
         let current = false;
         try {
@@ -1924,12 +1948,13 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           );
         }
       }
-      if (publishTerminalItem) await publishTerminal(call);
+      if (publicationFailure) throw publicationFailure.error;
       assertResultCurrent();
       return result;
     } catch (error) {
       // Acknowledged terminal outcomes stay decided when later observation or reply checks fail.
       if (terminalCommitted) {
+        if (publicationFailure) throw terminalPublicationError(publicationFailure.error, call);
         if (error instanceof ProtocolError) throw error;
         const normalized = normalizeWorkerMcpRouteError(error);
         throw new ProtocolError(
@@ -3167,8 +3192,8 @@ async function startMcpCapabilityCall(input: {
 }
 
 /**
- * Publishes one terminal product-safe tool-call Item after the ledger winner.
- * Timestamps and duration are copied from the capability_calls row so boot reconstruction can compare them.
+ * Publishes a product-safe tool-call Item at the ledger's terminal timestamp.
+ * A successful Item and its original usage/finish share one native acknowledgement.
  */
 async function publishWorkerMcpItem(input: {
   readonly arguments: Record<string, unknown>;
@@ -3183,6 +3208,8 @@ async function publishWorkerMcpItem(input: {
   readonly store: FsStore;
   readonly toolName: string;
   readonly workspaceDb: WorkspaceDb;
+  readonly completedAt?: string;
+  readonly mcpCall?: ControlMcpItemCall;
 }): Promise<void> {
   const reader = borrowWorkspaceReadDb(input.workspaceDb.dataRoot, input.workspaceDb.workspaceId);
   const ledger = reader.sqlite.transaction(() => {
@@ -3195,7 +3222,7 @@ async function publishWorkerMcpItem(input: {
       | undefined;
   })();
   if (ledger) readRetainedV1({ schemaVersion: ledger.schema_version }, () => undefined);
-  const completedAt = ledger?.completed_at ?? new Date().toISOString();
+  const completedAt = input.completedAt ?? ledger?.completed_at ?? new Date().toISOString();
   const durationMs = ledger?.started_at
     ? Math.max(0, Date.parse(completedAt) - Date.parse(ledger.started_at))
     : input.durationMs;
@@ -3223,7 +3250,9 @@ async function publishWorkerMcpItem(input: {
       type: 'tool-call',
       owner: { kind: 'workspace', workspaceId: input.environmentPackage.scope.workspaceId },
     },
-    ALREADY_DECIDED_PUBLICATION_ADMISSION
+    ALREADY_DECIDED_PUBLICATION_ADMISSION,
+    undefined,
+    input.mcpCall
   );
 }
 

@@ -150,6 +150,7 @@ import { applyControlAdmission } from './control-store-admission.js';
 import {
   applyControlCapabilityCommand,
   applyControlCoreCapabilityCommand,
+  applyControlMcpItemSettlement,
   applyControlUserPolicyCommand,
   type ControlCapabilityCommandInput,
   CoreCapabilityRefusal,
@@ -2160,6 +2161,19 @@ function flush(owner: OwnedDatabase): void {
               plan.head.revision
             )
               throw new ControlProductPreconditionError();
+            if (request.operation === 'item' && request.mcpCall) {
+              if (
+                owner.scopeDb.scope !== 'workspace' ||
+                request.input.category !== 'already-decided-publication' ||
+                request.preparedItem!.replay
+              )
+                throw new ControlProductPreconditionError();
+              applyControlMcpItemSettlement(
+                owner.scopeDb,
+                request.preparedItem!.item,
+                request.mcpCall
+              );
+            }
             if (request.preparedPublication)
               applyControlPublication(
                 owner.scopeDb,

@@ -206,6 +206,7 @@ import {
   type ControlAdmissionResult,
   ControlAdmissionSchema,
 } from '../storage/control-store-admission-codecs.js';
+import type { ControlMcpItemCall } from '../storage/control-store-capability.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import type { ControlProductMutation } from '../storage/control-store-product-records.js';
@@ -5803,7 +5804,8 @@ export class FsStore {
   private async createItemPublication(
     input: Item,
     admission?: TerminalTurnWriteAdmission,
-    _progress?: typeof RETAINED_PROGRESS_PUBLICATION
+    _progress?: typeof RETAINED_PROGRESS_PUBLICATION,
+    mcpCall?: ControlMcpItemCall
   ): Promise<Item> {
     const item = ItemSchema.parse(input);
     if (item.owner.kind !== 'workspace')
@@ -5822,11 +5824,13 @@ export class FsStore {
         productOwner: scope.owner,
         contentMount: scope.contentMount,
       });
-      return client.appendItem(database, {
-        item,
-        ...(admission && { category: admission.category }),
-      });
+      return client.appendItem(
+        database,
+        { item, ...(admission && { category: admission.category }) },
+        mcpCall
+      );
     }
+    if (mcpCall) throw new Error('MCP Item settlement requires the native Workspace owner.');
     const turn = this.getTurn(item.owner.workspaceId, item.threadId, item.turnId);
     const existing = turn.items.find((value) => value.id === item.id);
     if (checkControlItemAppend(item, turn, existing, turn.items, admission?.category))

@@ -12,6 +12,7 @@ import {
   CapabilityCallIdSchema,
   CapabilityCallSchema,
   GatewayRouteLineageEntrySchema,
+  type Item,
   PermissionDecisionIdSchema,
   PolicyDecisionV1Schema,
   PolicyInvocationV1Schema,
@@ -31,6 +32,7 @@ import { z } from 'zod';
 import { recordUserAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
   clearCapabilityCallItemInDb,
+  findCapabilityCallById,
   finishCapabilityCallInDb,
   hasCapabilityCallRequestId,
   normalizeCapabilityRequestId,
@@ -123,6 +125,32 @@ const callContext = z
 const startedCall = z
   .object({ id: CapabilityCallIdSchema, inserted: z.boolean(), context: callContext })
   .strict();
+/** The already-admitted MCP Call whose ordinary terminal Item may carry its settlement. */
+export const ControlMcpItemCallSchema = startedCall.refine(
+  ({ inserted, context }) =>
+    inserted &&
+    context.family === 'mcp' &&
+    context.operation === 'mcp.call-tool' &&
+    context.capabilityId === 'mcp.call-tool',
+  { message: 'Item settlement belongs to the original admitted MCP Tool Call.' }
+);
+export type ControlMcpItemCall = z.infer<typeof ControlMcpItemCallSchema>;
+
+/** The original contacted Tool's usage measurement, shared by both settlement paths. */
+export function mcpToolContactUsage(now: string) {
+  return {
+    now,
+    records: [
+      {
+        category: 'tool' as const,
+        quantity: 1,
+        source: 'mcp-gateway-request-dispatched',
+        unit: 'tool_calls' as const,
+      },
+    ],
+  };
+}
+
 const auditLineage = z.object({ commandRequestId: RequestIdSchema }).strict();
 const timestamp = z.string().datetime({ offset: true });
 // Summaries retain descriptive JSON only; mediation, invocation and use limits carry authority.
@@ -1194,4 +1222,59 @@ export function applyControlCapabilityCommand(
   }
   if (!final) throw new WorkerRawOutputAuthorityError();
   return { ...final, chargedBytes };
+}
+
+/** Applies only the Item's own successful Call, in the existing native Item savepoint. */
+export function applyControlMcpItemSettlement(
+  db: WorkspaceDb,
+  item: Item,
+  call: ControlMcpItemCall
+): void {
+  const original = findCapabilityCallById(db, call.id);
+  if (
+    item.type !== 'tool-call' ||
+    item.status !== 'completed' ||
+    item.error !== null ||
+    item.owner.kind !== 'workspace' ||
+    item.owner.workspaceId !== db.workspaceId ||
+    item.causationId !== call.id ||
+    !original ||
+    original.workspace_id !== db.workspaceId ||
+    original.family !== 'mcp' ||
+    original.operation !== 'mcp.call-tool' ||
+    original.capability_id !== 'mcp.call-tool' ||
+    original.status !== 'running' ||
+    original.completed_at !== null ||
+    !original.started_at ||
+    original.item_id !== item.id ||
+    original.thread_id !== item.threadId ||
+    original.turn_id !== item.turnId ||
+    original.provider_ref !== item.server ||
+    original.service_ref !== `mcp-tool:${item.tool}` ||
+    original.package_snapshot_id !== call.context.packageSnapshotId ||
+    original.agent_session_id !== call.context.agentSessionId ||
+    original.agent_id !== call.context.agentId ||
+    call.context.workspaceId !== db.workspaceId ||
+    call.context.threadId !== item.threadId ||
+    call.context.turnId !== item.turnId ||
+    call.context.itemId !== item.id ||
+    item.createdAt !== item.completedAt ||
+    !item.completedAt ||
+    item.durationMs !== Math.max(0, Date.parse(item.completedAt) - Date.parse(original.started_at))
+  )
+    throw new WorkerRawOutputAuthorityError();
+  applyControlCapabilityCommand(
+    db,
+    {
+      kind: 'usage-finish',
+      workspaceId: db.workspaceId,
+      call,
+      usage: mcpToolContactUsage(item.completedAt),
+      finish: { status: 'succeeded', now: item.completedAt },
+    },
+    // The closed success tuple has no Goal escalation.
+    () => {
+      throw new WorkerRawOutputAuthorityError();
+    }
+  );
 }
