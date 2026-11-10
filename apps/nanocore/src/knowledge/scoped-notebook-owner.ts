@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { setImmediate as yieldToMain } from 'node:timers/promises';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -154,6 +155,63 @@ export function pinScopedNotebook(input: ScopedNotebookContext): PinnedScopedNot
           throw new NotebookError('recovery_required');
       }
       return revision;
+    },
+  };
+}
+
+/** Prepares complete immutable scope conformance; every later read still checks current scope and schema. */
+export async function prepareScopedNotebookReader(
+  input: ScopedNotebookContext,
+  notebook: KnowledgeNotebook,
+  revision: string
+): Promise<PinnedScopedNotebook> {
+  const context = { ...input, operation: 'knowledge.read' as const };
+  const owner = resolveScopedNotebookOwner(context);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.coreDb.dataRoot,
+    scope: owner.ownerScope,
+  });
+  let schemaText: string;
+  try {
+    schemaText = readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8');
+  } catch {
+    throw new NotebookError('recovery_required');
+  }
+  const schema = parseScopeKnowledgeSchema(schemaText);
+  if (!schema.ok) throw new NotebookError('recovery_required');
+  const content = await notebook.readRevisionAsync(revision);
+  for (const [path, text] of Object.entries(content.files)) {
+    const parsed = parseOkfDocument({ path, content: text });
+    if (!parsed.ok) throw new NotebookError('recovery_required');
+    if (!parsed.document.reserved) {
+      const report = validateScopeKnowledgeSchema(parsed.document, schema.schema, owner.ownerScope);
+      if (report.conformance !== 'scope-schema-valid' || report.errors.length)
+        throw new NotebookError('recovery_required');
+    }
+    await yieldToMain();
+  }
+  return {
+    knowledgeBaseId,
+    ownerScope: owner.ownerScope,
+    notebookRevision: revision,
+    read: (paths) => {
+      resolveScopedNotebookOwner(context);
+      if (
+        readDefaultKnowledgeBaseId({ dataRoot: input.coreDb.dataRoot, scope: owner.ownerScope }) !==
+        knowledgeBaseId
+      )
+        throw new NotebookError('recovery_required');
+      try {
+        if (
+          readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8') !==
+          schemaText
+        )
+          throw new NotebookError('conflict');
+      } catch (error) {
+        if (error instanceof NotebookError) throw error;
+        throw new NotebookError('recovery_required');
+      }
+      return notebook.readRevision(revision, paths);
     },
   };
 }

@@ -2,7 +2,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync } from 'node:fs';
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { setImmediate as yieldToMain } from 'node:timers/promises';
 import {
   KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION,
   KnowledgeNotebookCommitMetadataSchema,
@@ -13,8 +13,6 @@ import { NotebookError } from './notebook-error.js';
 import { assertSourcePointerEdit } from './source-pointer-codecs.js';
 
 export { NotebookError, type NotebookLinkDiagnostic } from './notebook-error.js';
-
-const execFileAsync = promisify(execFile);
 
 const PUBLISHED_REF = 'refs/heads/published';
 const FILE_BYTES = 2 * 1024 * 1024;
@@ -86,10 +84,39 @@ export function validateNotebookFiles(
     throw new NotebookError('invalid_request');
 }
 
+/** Private immutable tree/body result shared by both scheduling paths. */
+interface NotebookInspection {
+  readonly record: Omit<NotebookRevision, 'files'> & {
+    readonly entries: Readonly<Record<string, string>>;
+  };
+  readonly tree: string;
+  readonly blobs: readonly string[];
+}
+
+/** One fixed Git plumbing command shared by synchronous and asynchronous publication. */
+interface NotebookGitCommand {
+  readonly args: readonly string[];
+  readonly input?: string;
+  readonly author?: string;
+}
+
 /** One bare Git content authority; it owns no live authorization, command receipts or editing lifecycle. */
 export class KnowledgeNotebook {
   private readonly repositoryPath: string;
   private readonly selectedRevision: string | undefined;
+  /** Full verified reads belong to one publication only; no shared revision or authority cache. */
+  private preparedReads?: {
+    readonly device: number;
+    readonly inode: number;
+    readonly revisions: Map<
+      string,
+      {
+        readonly tree: string;
+        readonly record: ReturnType<KnowledgeNotebook['inspectRevision']>;
+      }
+    >;
+    readonly blobs: Map<string, string>;
+  };
 
   constructor(input: {
     readonly repositoryPath: string;
@@ -172,19 +199,40 @@ export class KnowledgeNotebook {
   }
 
   /** Reads fixed plumbing off the event loop with the original output and error bounds. */
-  private async gitBytesAsync(args: readonly string[]): Promise<Buffer> {
+  private async gitBytesAsync(
+    args: readonly string[],
+    input?: string,
+    author = 'OpenKit',
+    maxBuffer = GIT_OUTPUT_BYTES
+  ): Promise<Buffer> {
     try {
-      const command = this.gitInvocation(args);
-      return (await execFileAsync('git', command.args, command.options)).stdout;
+      const command = this.gitInvocation(args, input, author);
+      return await new Promise<Buffer>((resolve, reject) => {
+        const child = execFile(
+          'git',
+          command.args,
+          { ...command.options, maxBuffer },
+          (error, stdout) => {
+            if (error) reject(error);
+            else resolve(stdout);
+          }
+        );
+        child.stdin?.on('error', reject);
+        child.stdin?.end(command.options.input);
+      });
     } catch {
       throw new NotebookError('recovery_required');
     }
   }
 
   /** Decodes asynchronous text with the original strict UTF-8 boundary. */
-  private async gitAsync(args: readonly string[]): Promise<string> {
+  private async gitAsync(
+    args: readonly string[],
+    input?: string,
+    author = 'OpenKit'
+  ): Promise<string> {
     try {
-      const bytes = await this.gitBytesAsync(args);
+      const bytes = await this.gitBytesAsync(args, input, author);
       return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
       throw new NotebookError('recovery_required');
@@ -202,6 +250,9 @@ export class KnowledgeNotebook {
 
   /** Verifies an original Source blob before applying its captured-field edit constraints. */
   private readBlob(object: string): string {
+    this.assertPreparedRoot();
+    const prepared = this.preparedReads?.blobs.get(object);
+    if (prepared !== undefined) return prepared;
     return this.decodeBlob(object, this.readObjectsBatch([{ id: object, type: 'blob' }])[0]!);
   }
 
@@ -219,6 +270,14 @@ export class KnowledgeNotebook {
       'OpenKit',
       objects.length * (GIT_OUTPUT_BYTES + 128)
     );
+    return this.decodeObjectsBatch(objects, bytes);
+  }
+
+  /** Checks every frame and exact response count before either reader can return a blob. */
+  private decodeObjectsBatch(
+    objects: readonly { readonly id: string; readonly type: 'commit' | 'blob' }[],
+    bytes: Buffer
+  ): Buffer[] {
     let offset = 0;
     const result: Buffer[] = [];
     for (const object of objects) {
@@ -339,9 +398,35 @@ export class KnowledgeNotebook {
       readonly objects: readonly string[];
       readonly missing?: boolean;
     }
-  ) {
+  ): NotebookInspection {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
+    this.assertPreparedRoot();
+    const prepared = this.preparedReads?.revisions.get(revision);
+    const cachedSelection = prepared
+      ? (select?.(prepared.record.entries, prepared.tree) ?? { objects: [] })
+      : undefined;
+    if (
+      prepared &&
+      cachedSelection?.objects.every((object) => this.preparedReads!.blobs.has(object))
+    ) {
+      const selected = cachedSelection;
+      const blobs = selected.objects.map((object) => {
+        const body = this.preparedReads!.blobs.get(object);
+        if (body === undefined) throw new NotebookError('recovery_required');
+        return body;
+      });
+      if (selected.missing) throw new NotebookError('invalid_request');
+      return {
+        record: {
+          ...prepared.record,
+          metadata: structuredClone(prepared.record.metadata),
+          entries: Object.assign(Object.create(null), prepared.record.entries),
+        },
+        tree: prepared.tree,
+        blobs,
+      };
+    }
     const tree = this.git(['ls-tree', '-r', '-z', '--full-tree', revision]);
     const entries = this.decodeTree(tree);
     const selected = select?.(entries, tree) ?? { objects: [] };
@@ -453,6 +538,98 @@ export class KnowledgeNotebook {
     return Object.fromEntries(selected.map((id, index) => [id, blobs[index]!]));
   }
 
+  /** Starts one operation-local immutable preparation, independent of any live authority decision. */
+  async withPreparedReadsAsync(
+    revisions: readonly string[],
+    input: { readonly paths?: readonly string[]; readonly sources?: boolean } = {}
+  ): Promise<KnowledgeNotebook> {
+    const prepared = new KnowledgeNotebook({
+      repositoryPath: this.repositoryPath,
+      ...(this.selectedRevision ? { selectedRevision: this.selectedRevision } : {}),
+    });
+    let root: ReturnType<typeof lstatSync>;
+    try {
+      root = lstatSync(this.repositoryPath);
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+    if (!root.isDirectory() || root.isSymbolicLink()) throw new NotebookError('recovery_required');
+    prepared.preparedReads = {
+      device: root.dev,
+      inode: root.ino,
+      revisions: new Map(),
+      blobs: new Map(),
+    };
+    for (const revision of revisions) await prepared.preloadRevisionAsync(revision, input);
+    return prepared;
+  }
+
+  /** Verifies another complete exact revision in the same publication, never across calls. */
+  async preloadRevisionAsync(
+    revision: string,
+    input: { readonly paths?: readonly string[]; readonly sources?: boolean } = {}
+  ): Promise<void> {
+    const sources = input.sources ?? true;
+    if (!this.preparedReads) throw new NotebookError('recovery_required');
+    const select = (pages: Readonly<Record<string, string>>, tree: string) => {
+      const all = {
+        ...pages,
+        ...Object.fromEntries(
+          Object.entries(this.sourceObjects(revision, tree)).map(([id, object]) => [
+            `@sources/${id}.md`,
+            object,
+          ])
+        ),
+      };
+      const selection = this.selectObjects(all, input.paths ?? Object.keys(pages));
+      return {
+        ...selection,
+        objects: [
+          ...selection.objects,
+          ...(sources ? Object.values(this.sourceObjects(revision, tree)) : []),
+        ],
+      };
+    };
+    const prior = this.preparedReads.revisions.get(revision);
+    if (prior) {
+      const requested = select(prior.record.entries, prior.tree);
+      if (
+        !requested.missing &&
+        requested.objects.every((object) => this.preparedReads!.blobs.has(object))
+      ) {
+        this.assertPreparedRoot();
+        return;
+      }
+    }
+    const inspected = await this.inspectRevisionTreeAsync(revision, select, true);
+    this.assertPreparedRoot();
+    const objects = select(inspected.record.entries, inspected.tree).objects;
+    objects.forEach((object, index) => {
+      this.preparedReads!.blobs.set(object, inspected.blobs[index]!);
+    });
+    this.preparedReads.revisions.set(revision, {
+      tree: inspected.tree,
+      record: inspected.record,
+    });
+  }
+
+  /** The same pathname must still denote the physical root that supplied prepared immutable bytes. */
+  private assertPreparedRoot(): void {
+    if (!this.preparedReads) return;
+    try {
+      const root = lstatSync(this.repositoryPath);
+      if (
+        !root.isDirectory() ||
+        root.isSymbolicLink() ||
+        root.dev !== this.preparedReads.device ||
+        root.ino !== this.preparedReads.inode
+      )
+        throw new Error('root changed');
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+  }
+
   /** Pins current validated metadata without blocking on Git subprocesses. */
   async publishedRevisionAsync(): Promise<string> {
     const revision =
@@ -462,87 +639,128 @@ export class KnowledgeNotebook {
     return revision;
   }
 
-  /** Pins strict metadata and tree identities through the shared pure decoders. */
-  async inspectRevisionAsync(revision: string) {
-    return (await this.inspectRevisionObjectsAsync(revision)).record;
+  /** Pins strict metadata and tree identities through the same batch framing and pure decoders. */
+  async inspectRevisionAsync(revision: string): Promise<NotebookInspection['record']> {
+    return (await this.inspectRevisionTreeAsync(revision)).record;
   }
 
-  /** Decodes one exact tree for Page and Source readers without a second Git inspection. */
-  private async inspectRevisionObjectsAsync(revision: string) {
+  /** Exactly one tree and one selected-object batch, with released per-blob decoding work. */
+  private async inspectRevisionTreeAsync(
+    revision: string,
+    select?: Parameters<KnowledgeNotebook['inspectRevisionTree']>[1],
+    fresh = false
+  ): Promise<NotebookInspection> {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
-    const commit = await this.gitAsync(['cat-file', 'commit', revision]);
-    const record = this.decodeCommit(revision, commit);
+    this.assertPreparedRoot();
+    const cached = this.preparedReads?.revisions.get(revision);
+    const chosen = cached
+      ? (select?.(cached.record.entries, cached.tree) ?? { objects: [] })
+      : undefined;
+    if (
+      !fresh &&
+      cached &&
+      chosen?.objects.every((object) => this.preparedReads!.blobs.has(object))
+    )
+      return this.inspectRevisionTree(revision, select);
     const tree = await this.gitAsync(['ls-tree', '-r', '-z', '--full-tree', revision]);
     const entries = this.decodeTree(tree);
-    return {
-      record: {
+    const selected = select?.(entries, tree) ?? { objects: [] };
+    const objects = [
+      { id: revision, type: 'commit' as const },
+      ...selected.objects.map((id) => ({ id, type: 'blob' as const })),
+    ];
+    if (objects.some(({ id }) => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id)))
+      throw new NotebookError('recovery_required');
+    const bytes = await this.gitBytesAsync(
+      ['cat-file', '--batch'],
+      objects.map(({ id }) => `${id}\n`).join(''),
+      'OpenKit',
+      objects.length * (GIT_OUTPUT_BYTES + 128)
+    );
+    const [commit, ...bodies] = this.decodeObjectsBatch(objects, bytes);
+    let record: Omit<NotebookRevision, 'files'>;
+    try {
+      record = this.decodeCommit(
         revision,
-        parentRevision: record.parentRevision,
-        entries,
-        metadata: record.metadata,
-      },
-      sourceObjects: this.decodeSourceObjects(
-        tree
-          .split('\0')
-          .filter((row) => row.includes('\tsources/'))
-          .join('\0')
+        new TextDecoder('utf-8', { fatal: true }).decode(commit)
+      );
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+    const blobs: string[] = [];
+    for (let index = 0; index < bodies.length; index++) {
+      blobs.push(this.decodeBlob(selected.objects[index]!, bodies[index]!));
+      if (index % 16 === 15) await yieldToMain();
+    }
+    if (selected.missing) throw new NotebookError('invalid_request');
+    this.assertPreparedRoot();
+    return { record: { ...record, entries }, tree, blobs };
+  }
+
+  /** Loads the original selected Page/Source set in a single asynchronous object batch. */
+  async readRevisionWithSourcesAsync(
+    revision: string,
+    input: { readonly pageIds?: readonly string[]; readonly sources: boolean }
+  ): Promise<
+    NotebookInspection['record'] & {
+      readonly files: Readonly<Record<string, string>>;
+      readonly sources: Readonly<Record<string, string>> | undefined;
+    }
+  > {
+    let paths: string[] = [];
+    let sources: Readonly<Record<string, string>> = {};
+    const inspected = await this.inspectRevisionTreeAsync(revision, (entries, tree) => {
+      paths = input.pageIds
+        ? input.pageIds.map((id) => `${id}.md`).filter((path) => Object.hasOwn(entries, path))
+        : Object.keys(entries).filter((path) => !['index.md', 'log.md'].includes(basename(path)));
+      sources = input.sources ? this.sourceObjects(revision, tree) : {};
+      return { objects: [...paths.map((path) => entries[path]!), ...Object.values(sources)] };
+    });
+    return {
+      ...inspected.record,
+      files: Object.assign(
+        Object.create(null),
+        Object.fromEntries(paths.map((path, index) => [path, inspected.blobs[index]!]))
+      ),
+      sources: input.sources
+        ? Object.assign(
+            Object.create(null),
+            Object.fromEntries(
+              Object.keys(sources).map((id, index) => [id, inspected.blobs[paths.length + index]!])
+            )
+          )
+        : undefined,
+    };
+  }
+
+  /** Reads the same exact selected Page prefix and absent-path refusal as the synchronous reader. */
+  async readRevisionAsync(revision: string, paths?: readonly string[]): Promise<NotebookRevision> {
+    let selected: readonly string[] = [];
+    const {
+      record: { entries: _entries, ...record },
+      blobs,
+    } = await this.inspectRevisionTreeAsync(revision, (entries) => {
+      selected = paths ?? Object.keys(entries);
+      return this.selectObjects(entries, selected);
+    });
+    return {
+      ...record,
+      files: Object.assign(
+        Object.create(null),
+        Object.fromEntries(selected.map((path, index) => [path, blobs[index]!]))
       ),
     };
   }
 
-  /** Loads one strict inventory, keeping exact Page selections and native Source bodies separate. */
-  async readRevisionWithSourcesAsync(
-    revision: string,
-    input: { readonly pageIds?: readonly string[]; readonly sources: boolean }
-  ) {
-    const { record, sourceObjects } = await this.inspectRevisionObjectsAsync(revision);
-    const paths = input.pageIds
-      ? input.pageIds.map((id) => `${id}.md`).filter((path) => Object.hasOwn(record.entries, path))
-      : Object.keys(record.entries).filter(
-          (path) => !['index.md', 'log.md'].includes(basename(path))
-        );
-    const files: Record<string, string> = Object.create(null);
-    for (const path of paths) {
-      const object = record.entries[path]!;
-      files[path] = await this.readBlobAsync(object);
-    }
-    const sources: Record<string, string> | undefined = input.sources
-      ? Object.create(null)
-      : undefined;
-    if (sources)
-      for (const [id, object] of Object.entries(sourceObjects))
-        sources[id] = await this.readBlobAsync(object);
-    return { ...record, files, sources };
-  }
-
-  /** Checks the exact immutable blob identity and UTF-8 bytes under the original read bounds. */
-  private async readBlobAsync(object: string): Promise<string> {
-    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
-      throw new NotebookError('recovery_required');
-    return this.decodeBlob(object, await this.gitBytesAsync(['cat-file', 'blob', object]));
-  }
-
-  /** Reads selected exact immutable Pages sequentially under the original bounds. */
-  async readRevisionAsync(revision: string, paths?: readonly string[]): Promise<NotebookRevision> {
-    const { entries, ...record } = await this.inspectRevisionAsync(revision);
-    const files: Record<string, string> = Object.create(null);
-    for (const path of paths ?? Object.keys(entries)) {
-      const object = entries[path];
-      if (!object) throw new NotebookError('invalid_request');
-      files[path] = await this.readBlobAsync(object);
-    }
-    return { ...record, files };
-  }
-
-  /** Reads native Source pointers sequentially without reading raw originals. */
+  /** Reads only native Source pointers through the same strict immutable tree. */
   async readSourcePointersAsync(revision: string): Promise<Readonly<Record<string, string>>> {
-    const { sourceObjects: sources } = await this.inspectRevisionObjectsAsync(revision);
-    const content: [string, string][] = [];
-    for (const [id, object] of Object.entries(sources)) {
-      content.push([id, await this.readBlobAsync(object)]);
-    }
-    return Object.fromEntries(content);
+    let sources: Readonly<Record<string, string>> = {};
+    const { blobs } = await this.inspectRevisionTreeAsync(revision, (_entries, tree) => {
+      sources = this.sourceObjects(revision, tree);
+      return { objects: Object.values(sources) };
+    });
+    return Object.fromEntries(Object.keys(sources).map((id, index) => [id, blobs[index]!]));
   }
 
   /** Checks history's limit-one published ancestry without loading Page bodies. */
@@ -572,6 +790,13 @@ export class KnowledgeNotebook {
     readonly changes: Readonly<Record<string, string | null>>;
     readonly metadata: NotebookCommitMetadata;
   }): string {
+    return this.finishPlumbing(this.prepareSourcePointerSteps(input));
+  }
+
+  /** Common Source validation and native serialization, independent of scheduling. */
+  private *prepareSourcePointerSteps(
+    input: Parameters<KnowledgeNotebook['prepareSourcePointers']>[0]
+  ): Generator<NotebookGitCommand, string, string> {
     const inspected = this.inspectRevisionTree(input.baseRevision);
     const base = inspected.record;
     const metadata = NotebookCommitMetadataSchema.parse(input.metadata);
@@ -586,9 +811,9 @@ export class KnowledgeNotebook {
       )
         throw new NotebookError('invalid_request');
       if (content === null) delete sources[id];
-      else sources[id] = this.git(['hash-object', '-w', '--stdin'], content).trim();
+      else sources[id] = (yield { args: ['hash-object', '-w', '--stdin'], input: content }).trim();
     }
-    return this.createCommit(base.entries, metadata, input.baseRevision, sources);
+    return yield* this.createCommitSteps(base.entries, metadata, input.baseRevision, sources);
   }
 
   /** Gets immutable Source objects without loading raw originals or admitting metadata for disclosure. */
@@ -596,6 +821,9 @@ export class KnowledgeNotebook {
     revision: string,
     inspectedTree?: string
   ): Readonly<Record<string, string>> {
+    this.assertPreparedRoot();
+    const preparedTree = this.preparedReads?.revisions.get(revision)?.tree;
+    inspectedTree ??= preparedTree;
     const tree =
       inspectedTree === undefined
         ? this.git(['ls-tree', '-r', '-z', '--full-tree', revision, '--', 'sources/'])
@@ -619,6 +847,46 @@ export class KnowledgeNotebook {
     return sources;
   }
 
+  /** Drives the same fixed serializer without a second implementation of its validation. */
+  private finishPlumbing(steps: Generator<NotebookGitCommand, string, string>): string {
+    let step = steps.next();
+    while (!step.done) {
+      const { args, input, author } = step.value;
+      step = steps.next(this.git(args, input, author));
+    }
+    return step.value;
+  }
+
+  /** Releases Main while each fixed Git child completes; no effect is retried. */
+  private async finishPlumbingAsync(
+    steps: Generator<NotebookGitCommand, string, string>
+  ): Promise<string> {
+    let step = steps.next();
+    while (!step.done) {
+      const { args, input, author } = step.value;
+      step = steps.next(await this.gitAsync(args, input, author));
+    }
+    return step.value;
+  }
+
+  /** Writes the original fixed-base candidate with prepared reads and asynchronous native effects. */
+  async prepareAsync(input: Parameters<KnowledgeNotebook['prepare']>[0]): Promise<string> {
+    const notebook = this.preparedReads
+      ? this
+      : await this.withPreparedReadsAsync([input.baseRevision]);
+    return notebook.finishPlumbingAsync(notebook.prepareSteps(input));
+  }
+
+  /** Writes the same Source-only candidate without synchronous children. */
+  async prepareSourcePointersAsync(
+    input: Parameters<KnowledgeNotebook['prepareSourcePointers']>[0]
+  ): Promise<string> {
+    const notebook = this.preparedReads
+      ? this
+      : await this.withPreparedReadsAsync([input.baseRevision], { paths: [], sources: false });
+    return notebook.finishPlumbingAsync(notebook.prepareSourcePointerSteps(input));
+  }
+
   /** Creates an unpublished fixed-base candidate; validation/authority checks precede caller publication. */
   prepare(input: {
     readonly baseRevision: string;
@@ -627,6 +895,13 @@ export class KnowledgeNotebook {
     /** Native package admission supplies already-validated Source pointers for the same commit. */
     readonly sourcePointers?: Readonly<Record<string, string>>;
   }): string {
+    return this.finishPlumbing(this.prepareSteps(input));
+  }
+
+  /** Common edit validation and native serialization, independent of scheduling. */
+  private *prepareSteps(
+    input: Parameters<KnowledgeNotebook['prepare']>[0]
+  ): Generator<NotebookGitCommand, string, string> {
     if (Object.keys(input.changes).length > 256) throw new NotebookError('invalid_request');
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
     if (!metadata.success) throw new NotebookError('invalid_request');
@@ -652,18 +927,18 @@ export class KnowledgeNotebook {
         if (!KnowledgeSourceIdSchema.safeParse(id).success || !sources[id] || value === null)
           throw new NotebookError('invalid_request');
         assertSourcePointerEdit(this.readBlob(sources[id]!), value);
-        sources[id] = this.git(['hash-object', '-w', '--stdin'], value).trim();
+        sources[id] = (yield { args: ['hash-object', '-w', '--stdin'], input: value }).trim();
       } else if (value === null) delete entries[path];
-      else entries[path] = this.git(['hash-object', '-w', '--stdin'], value).trim();
+      else entries[path] = (yield { args: ['hash-object', '-w', '--stdin'], input: value }).trim();
     }
     if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('invalid_request');
     for (const [id, content] of Object.entries(input.sourcePointers ?? {})) {
       KnowledgeSourceIdSchema.parse(id);
       if (Object.hasOwn(sources, id) || Buffer.byteLength(content) > FILE_BYTES)
         throw new NotebookError('invalid_request');
-      sources[id] = this.git(['hash-object', '-w', '--stdin'], content).trim();
+      sources[id] = (yield { args: ['hash-object', '-w', '--stdin'], input: content }).trim();
     }
-    return this.createCommit(entries, metadata.data, input.baseRevision, sources);
+    return yield* this.createCommitSteps(entries, metadata.data, input.baseRevision, sources);
   }
 
   /** Compares and sets the sole publication ref after the caller's final admission and Audit boundary. */
@@ -683,6 +958,40 @@ export class KnowledgeNotebook {
       if (observed !== input.baseRevision && observed !== input.candidateRevision)
         throw new NotebookError('conflict', observed);
       // A missing or uncertain ref result cannot supply completed command evidence.
+      throw new NotebookError('recovery_required');
+    }
+    return { revision: input.candidateRevision };
+  }
+
+  /** Verifies and publishes the same fixed-base ref off Main, with fresh admission before dispatch. */
+  async publishAsync(input: {
+    readonly baseRevision: string;
+    readonly candidateRevision: string;
+    readonly beforePublish?: () => void;
+  }): Promise<{ revision: string }> {
+    const candidate = await this.inspectRevisionAsync(input.candidateRevision);
+    if (candidate.parentRevision !== input.baseRevision) throw new NotebookError('invalid_request');
+    await this.gitAsync([
+      'fsck',
+      '--strict',
+      '--no-reflogs',
+      '--no-dangling',
+      input.candidateRevision,
+    ]);
+    const current = await this.publishedRevisionAsync();
+    if (current !== input.baseRevision) throw new NotebookError('conflict', current);
+    input.beforePublish?.();
+    try {
+      await this.gitAsync([
+        'update-ref',
+        PUBLISHED_REF,
+        input.candidateRevision,
+        input.baseRevision,
+      ]);
+    } catch {
+      const observed = await this.publishedRevisionAsync();
+      if (observed !== input.baseRevision && observed !== input.candidateRevision)
+        throw new NotebookError('conflict', observed);
       throw new NotebookError('recovery_required');
     }
     return { revision: input.candidateRevision };
@@ -804,6 +1113,16 @@ export class KnowledgeNotebook {
     parent: string | null,
     sourceObjects?: Readonly<Record<string, string>>
   ): string {
+    return this.finishPlumbing(this.createCommitSteps(objects, metadata, parent, sourceObjects));
+  }
+
+  /** Produces only the original data-only tree/commit plumbing and exact metadata bytes. */
+  private *createCommitSteps(
+    objects: Readonly<Record<string, string>>,
+    metadata: NotebookCommitMetadata,
+    parent: string | null,
+    sourceObjects?: Readonly<Record<string, string>>
+  ): Generator<NotebookGitCommand, string, string> {
     const tree = new Map<string, string | Map<string, unknown>>();
     const paths = {
       ...Object.fromEntries(
@@ -828,20 +1147,24 @@ export class KnowledgeNotebook {
       if (entries.has(basename)) throw new NotebookError('invalid_request');
       entries.set(basename, object);
     }
-    const writeTree = (entries: typeof tree): string => {
-      const rows = [...entries].map(([name, value]) =>
-        typeof value === 'string'
-          ? `100644 blob ${value}\t${name}\0`
-          : `040000 tree ${writeTree(value as typeof tree)}\t${name}\0`
-      );
-      return this.git(['mktree', '-z'], rows.join('')).trim();
+    const writeTree = function* (
+      entries: typeof tree
+    ): Generator<NotebookGitCommand, string, string> {
+      const rows: string[] = [];
+      for (const [name, value] of entries) {
+        rows.push(
+          typeof value === 'string'
+            ? `100644 blob ${value}\t${name}\0`
+            : `040000 tree ${yield* writeTree(value as typeof tree)}\t${name}\0`
+        );
+      }
+      return (yield { args: ['mktree', '-z'], input: rows.join('') }).trim();
     };
-    const root = writeTree(tree);
-    const revision = this.git(
-      ['commit-tree', root, ...(parent ? ['-p', parent] : []), '-F', '-'],
-      `${JSON.stringify({ schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION, ...metadata })}\n`,
-      metadata.producer.id
-    ).trim();
-    return revision;
+    const root = yield* writeTree(tree);
+    return (yield {
+      args: ['commit-tree', root, ...(parent ? ['-p', parent] : []), '-F', '-'],
+      input: `${JSON.stringify({ schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION, ...metadata })}\n`,
+      author: metadata.producer.id,
+    }).trim();
   }
 }

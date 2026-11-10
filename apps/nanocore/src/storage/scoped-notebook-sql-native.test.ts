@@ -1884,15 +1884,17 @@ it('uses original post-publication Main time for Source receipt maintenance when
     const expiry = Date.parse(peer.expires_at);
     const admittedAt = new Date(expiry - 60_000).toISOString();
     vi.setSystemTime(new Date(admittedAt));
-    const publish = KnowledgeNotebook.prototype.publish;
+    const publish = KnowledgeNotebook.prototype.publishAsync;
     let published = false;
-    vi.spyOn(KnowledgeNotebook.prototype, 'publish').mockImplementation(function (input) {
-      const result = publish.call(this, input);
-      published = true;
-      // Only Main Date advances, after the genuine Git publisher completed the protected effect.
-      vi.setSystemTime(new Date(expiry + 60_000));
-      return result;
-    });
+    vi.spyOn(KnowledgeNotebook.prototype, 'publishAsync').mockImplementation(
+      async function (input) {
+        const result = await publish.call(this, input);
+        published = true;
+        // Only Main Date advances, after the genuine Git publisher completed the protected effect.
+        vi.setSystemTime(new Date(expiry + 60_000));
+        return result;
+      }
+    );
     const request = {
       requestId: f.request.requestId,
       kind: 'document' as const,

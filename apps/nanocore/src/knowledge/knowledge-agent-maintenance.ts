@@ -12,6 +12,7 @@ export {
 } from '../storage/control-store-maintenance-codecs.js';
 
 import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
@@ -23,6 +24,7 @@ import {
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
 import { createAssistantHistory } from '../internal-agents/assistant-history.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
@@ -30,12 +32,10 @@ import { readInternalContextEvidence } from '../internal-agents/internal-context
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
 import type { FsStore, KnowledgeSourceRecord } from '../lib/store.js';
-
 import {
   admitKnowledgeRetrieval,
   knowledgeSourceLineageReadable,
   readAuthorizedWorkspaceNotebookPages,
-  readCurrentWorkspaceNotebookSelection,
   threadReadable,
 } from '../retrieval-knowledge-adapter.js';
 import {
@@ -63,6 +63,10 @@ import {
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import {
+  prepareWorkspaceNotebookReads,
+  type WorkspaceNotebookSelection,
+} from './notebook-workspace-selection.js';
 import {
   attributedNotebookPageBytes,
   parseOkfDocument,
@@ -119,7 +123,10 @@ export interface KnowledgeMaintenanceInput {
   readonly receipt?: IdempotentCommandReceipt;
   /** Required for native Worker/scheduler calls without a public request actor. */
   readonly currentAdmission?:
-    | ((request: NotebookUpdate) => NotebookPublicationAdmission)
+    | ((
+        request: NotebookUpdate,
+        preparedSelection?: WorkspaceNotebookSelection
+      ) => NotebookPublicationAdmission)
     | undefined;
 }
 
@@ -166,21 +173,29 @@ export async function prepareKnowledgeMaintenance(
     throw new NotebookError('invalid_request');
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
   const selectNotebook = () =>
-    readCurrentWorkspaceNotebookSelection({
+    prepareWorkspaceNotebookReads({
       workspaceDb,
-      dataRoot: dependencies.coreDb.dataRoot,
-      workspaceId: input.workspaceId,
+      readPaths: [],
+      sources: true,
+      workspaceRoot: join(dependencies.coreDb.dataRoot, 'workspaces', input.workspaceId),
+      knowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot: dependencies.coreDb.dataRoot,
+        scope: { kind: 'workspace', workspaceId: input.workspaceId },
+      }),
     });
-  let workspaceSelection = selectNotebook();
+  let workspaceSelection = await selectNotebook();
   let notebook = workspaceSelection.notebook;
   let baseRevision = notebook.publishedRevision();
-  input.currentAdmission?.({
-    workspaceId: input.workspaceId,
-    requestId: input.requestId,
-    baseRevision,
-    changes: [],
-    summary: input.instructions,
-  });
+  input.currentAdmission?.(
+    {
+      workspaceId: input.workspaceId,
+      requestId: input.requestId,
+      baseRevision,
+      changes: [],
+      summary: input.instructions,
+    },
+    workspaceSelection
+  );
   input.signal.throwIfAborted();
   const admitted = await admitControlMaintenance(dependencies.coreDb.dataRoot, input.workspaceId, {
     purpose: 'maintenance',
@@ -272,18 +287,25 @@ export async function prepareKnowledgeMaintenance(
       summary,
       ...extra,
     });
-  const admission = (request: NotebookUpdate) =>
-    input.currentAdmission
-      ? input.currentAdmission(request)
+  const admission = (
+    request: NotebookUpdate,
+    preparedSelection = workspaceSelection,
+    preparedSources = true
+  ) => {
+    workspaceSelection = preparedSelection;
+    return input.currentAdmission
+      ? input.currentAdmission(request, preparedSources ? preparedSelection : undefined)
       : readWorkspaceNotebookAdmission({
           ...dependencies,
           workspaceDb,
           requestActor: input.requestActor!,
           actor,
-          notebook,
-          scopeSchemaText: workspaceSelection.scopeSchemaText,
+          notebook: preparedSelection.notebook,
+          preparedSelection: preparedSources ? preparedSelection : undefined,
+          scopeSchemaText: preparedSelection.scopeSchemaText,
           request,
         });
+  };
   const empty = {
     workspaceId: input.workspaceId,
     requestId: input.requestId,
@@ -438,7 +460,13 @@ export async function prepareKnowledgeMaintenance(
                 commandInput: { maintenanceRequestId: input.requestId, source: metadata },
                 captureChannel: 'knowledge.source.register',
                 revalidatePublication: () => {
-                  admission({ ...empty, baseRevision: notebook.publishedRevision() });
+                  // Capture advances its own SQL head before this post-ACK check. Its Source owner
+                  // retains current admission; the editor snapshot is pinned afresh after capture.
+                  admission(
+                    { ...empty, baseRevision: notebook.publishedRevision() },
+                    workspaceSelection,
+                    false
+                  );
                 },
               },
               metadata,
@@ -506,7 +534,7 @@ export async function prepareKnowledgeMaintenance(
           ? `${input.instructions} This knowledge.tell request supplies information in source:${suppliedSource.id}@${suppliedSource.contentDigest}. Integrate that Source, preserving evidence, conflicts and unknowns. The overview and prior human notebook edits are separate context; equality between them does not mean the supplied information is already integrated. If the information is already represented, a native no-change outcome is valid. Otherwise edit the admitted notebook snapshot, keep its overview current, then submit those edits under the existing publication and Review rules. Source capture alone is not notebook page integration.`
           : input.instructions;
         // Native Source capture advances the selected SQL head. Pin the editor and model only after capture.
-        workspaceSelection = selectNotebook();
+        workspaceSelection = await selectNotebook();
         notebook = workspaceSelection.notebook;
         baseRevision = notebook.publishedRevision();
         target.notebookRevision = baseRevision;
@@ -519,6 +547,7 @@ export async function prepareKnowledgeMaintenance(
         const selectedPaths = Object.keys(notebook.inspectRevision(baseRevision).entries)
           .sort()
           .filter((path) => !selectedPages || selectedPages.has(path.slice(0, -3)));
+        await notebook.preloadRevisionAsync(baseRevision, { paths: selectedPaths, sources: false });
         const selectedFiles = notebook.readRevision(baseRevision, selectedPaths).files;
         for (const path of selectedPaths) {
           const content = selectedFiles[path]!;
@@ -568,6 +597,10 @@ export async function prepareKnowledgeMaintenance(
           sourceFiles[source.id] = text;
           admittedReferences.add(`source:${source.id}@${source.contentDigest}`);
         }
+        await notebook.preloadRevisionAsync(baseRevision, {
+          paths: [...editableSources].map((id) => `@sources/${id}.md`),
+          sources: false,
+        });
         for (const id of editableSources) {
           const path = `@sources/${id}.md`;
           const content = notebook.readContent(baseRevision, [path])[path]!;
@@ -726,11 +759,12 @@ export async function prepareKnowledgeMaintenance(
                         settingReference: `workspace:${input.workspaceId}:knowledgeMaintenance:${JSON.stringify(setting)}`,
                         settingDigest: commandInputHash(setting),
                       },
-                      revalidate: () => {
+                      revalidate: (preparedSelection) => {
+                        if (preparedSelection) workspaceSelection = preparedSelection;
                         assertCurrent();
                         if (commandInputHash(settings()) !== commandInputHash(setting))
                           throw new NotebookError('review_required');
-                        return admission(request);
+                        return admission(request, preparedSelection);
                       },
                     },
                     request
@@ -925,7 +959,13 @@ export async function prepareKnowledgeMaintenance(
         let cursor: string | null = baseRevision;
         let scanned = 0;
         while (cursor && cursor !== previous && scanned++ < 256) {
+          await notebook.preloadRevisionAsync(cursor, { paths: [], sources: false });
           const revision = notebook.inspectRevision(cursor);
+          if (revision.parentRevision)
+            await notebook.preloadRevisionAsync(revision.parentRevision, {
+              paths: [],
+              sources: false,
+            });
           const parent = revision.parentRevision
             ? notebook.inspectRevision(revision.parentRevision)
             : undefined;

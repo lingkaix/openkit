@@ -27,8 +27,15 @@ import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-kno
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import type { KnowledgeNotebook, NotebookCommitMetadata } from './notebook.js';
 import { NotebookError } from './notebook-error.js';
-import { validateNotebookCandidate } from './notebook-validation.js';
-import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
+import {
+  prepareNotebookCandidateValidation,
+  validateNotebookCandidate,
+} from './notebook-validation.js';
+import {
+  prepareWorkspaceNotebookReads,
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from './notebook-workspace-selection.js';
 import { attributedNotebookPageBytes } from './okf.js';
 import { decodeSourcePointer } from './source-pointers.js';
 
@@ -110,7 +117,14 @@ export interface NotebookPublicationDependencies {
   /** Human-confirmed removed paths and their exact bytes at the fixed base. */
   readonly confirmedRemovals?: Readonly<Record<string, string>>;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly revalidate: () => NotebookPublicationAdmission;
+  /** Native scoped owners prepare immutable conformance before the synchronous current-admission callback. */
+  readonly prepareAdmission?: (
+    notebook: KnowledgeNotebook,
+    revisions: readonly string[]
+  ) => Promise<KnowledgeNotebook>;
+  readonly revalidate: (
+    preparedSelection?: WorkspaceNotebookSelection
+  ) => NotebookPublicationAdmission;
 }
 
 /** Trusted database owner; no page metadata or request path selects this value. */
@@ -554,13 +568,56 @@ async function publishAdmittedNotebook(
       : ownerScope.kind === 'user'
         ? { userId: ownerScope.userId, actorId: actor.id }
         : { coreId: 'server', actorId: actor.id };
+  if (dependencies.prepareAdmission)
+    dependencies = {
+      ...dependencies,
+      notebook: await dependencies.prepareAdmission(dependencies.notebook, [request.baseRevision]),
+    };
+  const initialAdmission = dependencies.revalidate();
+  const pageScope = parseReferenceScope(initialAdmission.pageScopeId ?? '');
+  let preparedSelection: WorkspaceNotebookSelection | undefined;
+  const originalRevalidate = dependencies.revalidate;
+  if (dependencies.owner.kind === 'workspace' && pageScope?.family === 'page') {
+    preparedSelection = await prepareWorkspaceNotebookReads({
+      workspaceDb: dependencies.owner.workspaceDb,
+      workspaceRoot: join(
+        dependencies.owner.workspaceDb.dataRoot,
+        'workspaces',
+        dependencies.owner.workspaceDb.workspaceId
+      ),
+      knowledgeBaseId: pageScope.knowledgeBaseId,
+      revisions: [request.baseRevision],
+    });
+  }
+  const notebook =
+    preparedSelection?.notebook ??
+    (dependencies.prepareAdmission
+      ? dependencies.notebook
+      : await dependencies.notebook.withPreparedReadsAsync([request.baseRevision]));
+  dependencies = {
+    ...dependencies,
+    notebook,
+    revalidate: () => originalRevalidate(preparedSelection),
+  };
   dependencies.revalidate();
 
-  const project = (
+  let projected = false;
+  const project = async (
     revision: string,
     evidence: KnowledgeNotebookAdmission
-  ): NotebookPublication<KnowledgeOwnerScope> => {
+  ): Promise<NotebookPublication<KnowledgeOwnerScope>> => {
     if (revision !== evidence.candidateRevision) throw new NotebookError('recovery_required');
+    await dependencies.notebook.preloadRevisionAsync(revision);
+    await dependencies.prepareAdmission?.(dependencies.notebook, [request.baseRevision, revision]);
+    if (dependencies.owner.kind === 'workspace' && preparedSelection) {
+      preparedSelection = await prepareWorkspaceNotebookReads({
+        workspaceDb: dependencies.owner.workspaceDb,
+        workspaceRoot: preparedSelection.workspaceRoot,
+        knowledgeBaseId: preparedSelection.head.knowledgeBaseId,
+        revisions: [request.baseRevision, revision],
+      });
+    }
+    dependencies.revalidate();
     const candidate = readNotebookAdmissionRevision(dependencies, request, evidence, ownerScope);
     // A saved unpublished candidate is not a completed publication.
     const pageScope = parseReferenceScope(dependencies.revalidate().pageScopeId ?? '');
@@ -569,19 +626,8 @@ async function publishAdmittedNotebook(
       (pageScope?.family !== 'page' || pageScope.kind !== 'workspace')
     )
       throw new NotebookError('recovery_required');
-    const publishedNotebook =
-      dependencies.owner.kind === 'workspace'
-        ? readWorkspaceNotebookSelection({
-            workspaceDb: dependencies.owner.workspaceDb,
-            workspaceRoot: join(
-              dependencies.owner.workspaceDb.dataRoot,
-              'workspaces',
-              dependencies.owner.workspaceDb.workspaceId
-            ),
-            knowledgeBaseId: pageScope?.family === 'page' ? pageScope.knowledgeBaseId : '',
-          }).notebook
-        : dependencies.notebook;
-    publishedNotebook.history({ revision, limit: 1 });
+    const publishedNotebook = preparedSelection?.notebook ?? dependencies.notebook;
+    await publishedNotebook.assertPublishedAncestryAsync(revision);
     const base = dependencies.notebook.readRevision(request.baseRevision);
     const baseContent = dependencies.notebook.readContent(request.baseRevision);
     const candidateContent = dependencies.notebook.readContent(revision);
@@ -606,6 +652,7 @@ async function publishAdmittedNotebook(
       Object.entries(expected).some(([path, content]) => candidateContent[path] !== content)
     )
       throw new NotebookError('recovery_required');
+    projected = true;
     const changedPageIds = [
       ...new Set([...Object.keys(base.files), ...Object.keys(candidate.files)]),
     ]
@@ -622,7 +669,7 @@ async function publishAdmittedNotebook(
     };
   };
 
-  return runIdempotentCommand({
+  const result = await runIdempotentCommand<NotebookPublication<KnowledgeOwnerScope>>({
     store: dependencies.store,
     ...(dependencies.owner.kind === 'workspace'
       ? { workspaceDb: dependencies.owner.workspaceDb }
@@ -639,7 +686,7 @@ async function publishAdmittedNotebook(
     input: commandInput,
     responseKind: 'knowledge_notebook_revision',
     responseId: (result) => result.notebookRevision,
-    replay: (receipt) => {
+    replay: async (receipt) => {
       dependencies.revalidate();
       const admitted = readNotebookAdmissions(
         dependencies,
@@ -665,10 +712,13 @@ async function publishAdmittedNotebook(
         'knowledge.notebook.admit'
       )) {
         if (prior.inputDigest !== inputDigest) throw new IdempotencyKeyConflictError();
+        await dependencies.notebook.preloadRevisionAsync(prior.candidateRevision, {
+          sources: false,
+        });
         readNotebookAdmissionRevision(dependencies, request, prior, ownerScope);
         let published = false;
         try {
-          dependencies.notebook.history({ revision: prior.candidateRevision, limit: 1 });
+          await dependencies.notebook.assertPublishedAncestryAsync(prior.candidateRevision);
           published = true;
         } catch (error) {
           if (!(error instanceof NotebookError) || error.code !== 'invalid_request') throw error;
@@ -698,6 +748,9 @@ async function publishAdmittedNotebook(
                   dependencies.producer.kind === 'agent' ? 'delegated' : 'user-authored'
                 );
       }
+      let validatePrepared:
+        | Awaited<ReturnType<typeof prepareNotebookCandidateValidation>>
+        | undefined;
       const check = (facts: NotebookPublicationAdmission) => {
         if (dependencies.sourcePointers) {
           if (operation !== 'knowledge.package.import') throw new NotebookError('invalid_request');
@@ -715,7 +768,9 @@ async function publishAdmittedNotebook(
               throw new NotebookError('invalid_request');
           }
         }
-        return validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
+        return validatePrepared
+          ? validatePrepared(facts)
+          : validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
       };
       const admission = dependencies.revalidate();
       const pageScope = parseReferenceScope(admission.pageScopeId ?? '');
@@ -726,18 +781,7 @@ async function publishAdmittedNotebook(
           pageScope.workspaceId !== dependencies.owner.workspaceDb.workspaceId)
       )
         throw new NotebookError('invalid_request');
-      const workspaceSelection =
-        dependencies.owner.kind === 'workspace' && pageScope?.family === 'page'
-          ? readWorkspaceNotebookSelection({
-              workspaceDb: dependencies.owner.workspaceDb,
-              workspaceRoot: join(
-                dependencies.owner.workspaceDb.dataRoot,
-                'workspaces',
-                dependencies.owner.workspaceDb.workspaceId
-              ),
-              knowledgeBaseId: pageScope.knowledgeBaseId,
-            })
-          : undefined;
+      const workspaceSelection = preparedSelection;
       if (
         workspaceSelection &&
         (workspaceSelection.head.notebookCommit !== request.baseRevision ||
@@ -745,7 +789,13 @@ async function publishAdmittedNotebook(
             workspaceSelection.scopeSchemaText !== admission.scopeSchemaText))
       )
         throw new NotebookError('conflict');
-      const validated = check(admission);
+      validatePrepared = await prepareNotebookCandidateValidation({
+        ownerScope,
+        base,
+        candidate: { files },
+        ...admission,
+      });
+      const validated = check(dependencies.revalidate());
       if (validated.errors.length) throw new NotebookError('invalid_request');
       if (
         !dependencies.reviewedCandidate &&
@@ -763,7 +813,7 @@ async function publishAdmittedNotebook(
       const authority = publicationAuthority(dependencies, request);
       const candidateRevision =
         dependencies.reviewedCandidate?.candidateRevision ??
-        dependencies.notebook.prepare({
+        (await dependencies.notebook.prepareAsync({
           baseRevision: request.baseRevision,
           changes: Object.fromEntries(
             request.changes.map(({ path, content }) => [
@@ -779,7 +829,12 @@ async function publishAdmittedNotebook(
             authority,
             sourceReferences: [...validated.sourceReferences],
           },
-        });
+        }));
+      await dependencies.notebook.preloadRevisionAsync(candidateRevision);
+      await dependencies.prepareAdmission?.(dependencies.notebook, [
+        request.baseRevision,
+        candidateRevision,
+      ]);
       const workspaceDb =
         dependencies.owner.kind === 'workspace' ? dependencies.owner.workspaceDb : undefined;
       const nextHead =
@@ -802,6 +857,8 @@ async function publishAdmittedNotebook(
             workspaceDb,
             workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
             knowledgeBaseId: workspaceSelection.head.knowledgeBaseId,
+            preparedSelection: workspaceSelection,
+            requirePreparedMatch: true,
           });
           if (
             !isDeepStrictEqual(current.head, workspaceSelection.head) ||
@@ -918,7 +975,11 @@ async function publishAdmittedNotebook(
       await audit('knowledge.notebook.admit', revalidatePublication);
       // Current execution authority and source facts can change during the original admission ACK.
       revalidatePublication();
-      dependencies.notebook.publish({ baseRevision: request.baseRevision, candidateRevision });
+      await dependencies.notebook.publishAsync({
+        baseRevision: request.baseRevision,
+        candidateRevision,
+        beforePublish: revalidatePublication,
+      });
       await audit(operation);
       if (dependencies.owner.kind === 'workspace') throw new NotebookError('invalid_request');
       const db =
@@ -931,4 +992,23 @@ async function publishAdmittedNotebook(
       return project(candidateRevision, evidence);
     },
   });
+  if (!projected) {
+    // An in-flight duplicate shares the winner's result without running this caller's
+    // projection. Refresh its immutable selection before its own final live admission.
+    await dependencies.notebook.preloadRevisionAsync(result.notebookRevision);
+    await dependencies.prepareAdmission?.(dependencies.notebook, [
+      request.baseRevision,
+      result.notebookRevision,
+    ]);
+    if (dependencies.owner.kind === 'workspace' && preparedSelection) {
+      preparedSelection = await prepareWorkspaceNotebookReads({
+        workspaceDb: dependencies.owner.workspaceDb,
+        workspaceRoot: preparedSelection.workspaceRoot,
+        knowledgeBaseId: preparedSelection.head.knowledgeBaseId,
+        revisions: [request.baseRevision, result.notebookRevision],
+      });
+    }
+    dependencies.revalidate();
+  }
+  return result;
 }

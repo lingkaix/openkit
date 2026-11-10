@@ -51,7 +51,11 @@ import {
   publishWorkspaceNotebook,
 } from './knowledge/notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
-import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
+import {
+  prepareWorkspaceNotebookReads,
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from './knowledge/notebook-workspace-selection.js';
 import {
   KnowledgePageValidationError,
   parseOkfDocument,
@@ -420,11 +424,12 @@ export function createKnowledgeOperationImplementations(
         dataRoot,
         scope: { kind: 'workspace', workspaceId: request.workspaceId },
       });
-      const { notebook, scopeSchemaText } = readWorkspaceNotebookSelection({
+      let prepared = await prepareWorkspaceNotebookReads({
         workspaceDb,
         workspaceRoot,
         knowledgeBaseId,
       });
+      const { notebook } = prepared;
       return await run({
         store,
         workspaceDb,
@@ -432,19 +437,22 @@ export function createKnowledgeOperationImplementations(
         producer: actor,
         actor,
         inflightCommands,
-        revalidate: () =>
-          readWorkspaceNotebookAdmission({
+        revalidate: (preparedSelection) => {
+          if (preparedSelection) prepared = preparedSelection;
+          return readWorkspaceNotebookAdmission({
             store,
             coreDb,
             workspaceDb,
-            notebook,
-            scopeSchemaText,
+            notebook: prepared.notebook,
+            scopeSchemaText: prepared.scopeSchemaText,
+            preparedSelection: prepared,
             request,
             requestActor: publicOperationActor(context),
             actor,
             runtimeConfigManager,
             workspaceMutationAdmission,
-          }),
+          });
+        },
       });
     } catch (error) {
       notebookCommandFailure(error);
@@ -706,7 +714,7 @@ export function createKnowledgeOperationImplementations(
         );
       const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
       try {
-        const { notebook, scopeSchemaText } = readWorkspaceNotebookSelection({
+        let prepared = await prepareWorkspaceNotebookReads({
           workspaceDb,
           workspaceRoot: join(dataRoot, 'workspaces', input.workspaceId),
           knowledgeBaseId: readDefaultKnowledgeBaseId({
@@ -714,6 +722,7 @@ export function createKnowledgeOperationImplementations(
             scope: { kind: 'workspace', workspaceId: input.workspaceId },
           }),
         });
+        const { notebook } = prepared;
         const publication = await publishWorkspaceNotebook(
           {
             store,
@@ -721,19 +730,22 @@ export function createKnowledgeOperationImplementations(
             notebook,
             producer: actor,
             inflightCommands,
-            revalidate: () =>
-              readWorkspaceNotebookAdmission({
+            revalidate: (preparedSelection) => {
+              if (preparedSelection) prepared = preparedSelection;
+              return readWorkspaceNotebookAdmission({
                 store,
                 coreDb,
                 workspaceDb,
-                notebook,
-                scopeSchemaText,
+                notebook: prepared.notebook,
+                preparedSelection: prepared,
+                scopeSchemaText: prepared.scopeSchemaText,
                 request: input,
                 requestActor,
                 actor,
                 runtimeConfigManager,
                 workspaceMutationAdmission,
-              }),
+              });
+            },
           },
           input
         );
@@ -1519,7 +1531,7 @@ export function createKnowledgeOperationImplementations(
             .some((review) => review.reviewId === reviewId)
         )
           throw new NotebookError('recovery_required');
-        const current = () => {
+        const current = (preparedSelection?: WorkspaceNotebookSelection) => {
           if (
             !coreDb ||
             !isWorkspaceOperationAuthorized(coreDb, publicOperationActor(context), workspaceId, {
@@ -1539,7 +1551,7 @@ export function createKnowledgeOperationImplementations(
             knowledgeProposalDocumentDigest(saved) !== commandInput.proposalDigest
           )
             throw new NotebookError('conflict');
-          return owner.revalidate();
+          return owner.revalidate(preparedSelection);
         };
         current();
         const prepareDecision = () =>

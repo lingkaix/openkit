@@ -50,7 +50,10 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { redactInternalAgentDiagnosticValue } from './internal-agents/redaction.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
-import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
+import {
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from './knowledge/notebook-workspace-selection.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import { serveStatelessMcp } from './mcp-stateless-http.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
@@ -687,13 +690,36 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                         automationStore: input.automationStore,
                         turnStartServices: input.turnStartServices,
                         knowledgeCallId: call.id,
-                        knowledgePublicationAdmission: (publication) => {
+                        knowledgePublicationAdmission: (
+                          publication,
+                          preparedSelection?: WorkspaceNotebookSelection
+                        ) => {
+                          const currentAuthority = () => {
+                            requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+                            requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                            if (
+                              !currentWorkerLineageWorkspaceAuthority(
+                                input.coreDb!,
+                                {
+                                  ...environmentPackage.scope,
+                                  packageSnapshotId: environmentPackage.snapshotId,
+                                },
+                                'knowledge.write',
+                                true
+                              )
+                            )
+                              throw mcpDeniedError();
+                            requireCurrentBuiltinToolPolicy();
+                          };
+                          currentAuthority();
                           const workspaceRoot = join(
                             input.coreDb!.dataRoot,
                             'workspaces',
                             environmentPackage.scope.workspaceId
                           );
                           const selection = readWorkspaceNotebookSelection({
+                            preparedSelection,
+                            requirePreparedMatch: preparedSelection !== undefined,
                             workspaceDb: workspaceDb!,
                             workspaceRoot,
                             knowledgeBaseId: readDefaultKnowledgeBaseId({
@@ -713,27 +739,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                               kind: 'user',
                               id: responsibleUserIdForActor(environmentPackage.scope.triggerActor)!,
                             },
-                            currentAuthority: () => {
-                              requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
-                              requireCurrentMcpWorkspaceAuthority(
-                                input.coreDb!,
-                                environmentPackage
-                              );
-                              if (
-                                !currentWorkerLineageWorkspaceAuthority(
-                                  input.coreDb!,
-                                  {
-                                    ...environmentPackage.scope,
-                                    packageSnapshotId: environmentPackage.snapshotId,
-                                  },
-                                  'knowledge.write',
-                                  true
-                                )
-                              )
-                                throw mcpDeniedError();
-                              requireCurrentBuiltinToolPolicy();
-                            },
+                            currentAuthority,
                             notebook: selection.notebook,
+                            preparedSelection: selection,
                             scopeSchemaText: selection.scopeSchemaText,
                             runtimeConfigManager: { current: input.runtimeConfig },
                             workspaceMutationAdmission: input.workspaceMutationAdmission,

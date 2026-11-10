@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import { setImmediate as yieldToMain } from 'node:timers/promises';
 import {
   type KnowledgeOwnerScope,
   parseReferenceScope,
@@ -91,6 +92,55 @@ export function validateNotebookCandidate(input: {
   /** Trusted current suppression permits an unavailable link, never a readable or restored page. */
   readonly suppressedPageIds?: readonly string[];
 }): NotebookValidationResult {
+  return validatePreparedNotebookCandidate(input);
+}
+
+/** Immutable syntax/link facts from this one complete candidate, never a current disclosure grant. */
+interface CandidateDocuments {
+  readonly documents: ReadonlyMap<string, ReturnType<typeof parseOkfDocument>>;
+  readonly links: ReadonlyMap<string, ReturnType<typeof pageLinks>>;
+}
+
+/** Fully parses each candidate again for this publication, releasing Main between Pages. */
+export async function prepareNotebookCandidateValidation(
+  input: Parameters<typeof validateNotebookCandidate>[0]
+) {
+  const base = { files: { ...input.base.files } };
+  const candidate = { files: { ...input.candidate.files } };
+  const documents = new Map<string, ReturnType<typeof parseOkfDocument>>();
+  const links = new Map<string, ReturnType<typeof pageLinks>>();
+  for (const [path, content] of Object.entries(candidate.files)) {
+    const parsed = parseOkfDocument({ path, content });
+    documents.set(path, parsed);
+    if (parsed.ok) links.set(path, pageLinks(path, parsed.document.body));
+    await yieldToMain();
+  }
+  return (
+    facts: Pick<
+      Parameters<typeof validateNotebookCandidate>[0],
+      | 'pageScopeId'
+      | 'scopeSchemaText'
+      | 'registeredSources'
+      | 'resolvedReferences'
+      | 'suppressedPageIds'
+    >
+  ) =>
+    validatePreparedNotebookCandidate(
+      {
+        ownerScope: input.ownerScope,
+        base,
+        candidate,
+        ...facts,
+      },
+      { documents, links }
+    );
+}
+
+/** Rechecks the original complete predicate with fresh authority facts and optional immutable syntax. */
+function validatePreparedNotebookCandidate(
+  input: Parameters<typeof validateNotebookCandidate>[0],
+  prepared?: CandidateDocuments
+): NotebookValidationResult {
   const paths = [
     ...new Set([...Object.keys(input.base.files), ...Object.keys(input.candidate.files)]),
   ].sort();
@@ -152,7 +202,7 @@ export function validateNotebookCandidate(input: {
       }
     }
 
-    const parsed = parseOkfDocument({ path, content });
+    const parsed = prepared?.documents.get(path) ?? parseOkfDocument({ path, content });
     if (!parsed.ok) {
       // An unchanged malformed member indicates corrupt content, rather than permission to omit it.
       fail(pageId, 'notebook.invalid_document');
@@ -210,7 +260,7 @@ export function validateNotebookCandidate(input: {
           }
       }
     }
-    const links = pageLinks(path, parsed.document.body);
+    const links = prepared?.links.get(path) ?? pageLinks(path, parsed.document.body);
     let unresolved = false;
     for (const { target, resolved } of links) {
       if (suppressedPaths.has(resolved) && !Object.hasOwn(input.candidate.files, resolved))

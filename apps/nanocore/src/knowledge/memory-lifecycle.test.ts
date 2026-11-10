@@ -231,12 +231,12 @@ describe('explicit native self Memory', () => {
 
     // Saved pages require current pointer/KB authority, independently of original delivery.
     const configuration = join(f.input.coreDb.dataRoot, 'users', alice, 'config', 'user.jsonc');
-    const prepare = KnowledgeNotebook.prototype.prepare;
-    vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementationOnce(function (
+    const prepare = KnowledgeNotebook.prototype.prepareAsync;
+    vi.spyOn(KnowledgeNotebook.prototype, 'prepareAsync').mockImplementationOnce(async function (
       this: KnowledgeNotebook,
       input
     ) {
-      const candidate = prepare.call(this, input);
+      const candidate = await prepare.call(this, input);
       writeFileSync(configuration, '{"schemaVersion":1}\n');
       return candidate;
     });
@@ -445,12 +445,12 @@ describe('explicit native self Memory', () => {
     const f = fixture();
     const saved = await saveMemoryPage(f.input, f.request());
     const selected = readMemoryPage(f.input, 'preferences')!;
-    const prepare = KnowledgeNotebook.prototype.prepare;
-    vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementationOnce(function (
+    const prepare = KnowledgeNotebook.prototype.prepareAsync;
+    vi.spyOn(KnowledgeNotebook.prototype, 'prepareAsync').mockImplementationOnce(async function (
       this: KnowledgeNotebook,
       input
     ) {
-      const candidate = prepare.call(this, input);
+      const candidate = await prepare.call(this, input);
       recordMemorySuppression(f.input, {
         requestId: randomUUID(),
         pageId: selected.id,

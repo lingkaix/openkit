@@ -139,6 +139,16 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
     store
       .listThreads(workspace.id)
       .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id));
+  // Join the real terminal native ACK; scan returns after launching detached execution.
+  const settled = Promise.withResolvers<void>();
+  const updateTurn = store.updateTurn.bind(store);
+  const terminal = vi.spyOn(store, 'updateTurn').mockImplementation(async (...args) => {
+    const result = await updateTurn(...args);
+    if (args[1].status === 'failed' && store.getTurnById(args[0]).agentId === 'knowledge-manager')
+      settled.resolve();
+    return result;
+  });
+  onTestFinished(() => terminal.mockRestore());
   configure(false);
   boot();
   await scan('2026-10-17T10:00:00.000Z');
@@ -146,6 +156,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   configure(true);
   boot();
   await scan('2026-10-17T10:01:00.000Z');
+  await settled.promise;
   const retained = turns();
   expect(retained).toHaveLength(1);
   expect(retained[0]).toMatchObject({

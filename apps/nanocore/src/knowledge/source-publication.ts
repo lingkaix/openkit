@@ -278,7 +278,7 @@ export async function publishCapturedSource(
       );
       admit();
     }
-    const baseRevision = notebook.publishedRevision();
+    const baseRevision = await notebook.publishedRevisionAsync();
     if (readSourcePointers(input.owner, baseRevision, selection).has(source.id))
       throw new NotebookError('conflict', baseRevision);
     const root = resolve(notebookRoot, mount.root);
@@ -363,7 +363,7 @@ export async function publishCapturedSource(
         },
         sourceReferences: [],
       };
-      const candidateRevision = notebook.prepareSourcePointers({
+      const candidateRevision = await notebook.prepareSourcePointersAsync({
         baseRevision,
         changes: { [source.id]: content },
         metadata,
@@ -478,7 +478,11 @@ export async function publishCapturedSource(
       writeFileAtomic(destination, Buffer.concat(chunks));
       await audit('knowledge.notebook.admit');
       admit();
-      notebook.publish({ baseRevision, candidateRevision });
+      await notebook.publishAsync({
+        baseRevision,
+        candidateRevision,
+        beforePublish: () => admit(true),
+      });
       await audit(input.captureChannel);
       return readSourcePointers(input.owner).get(source.id)!;
     } finally {

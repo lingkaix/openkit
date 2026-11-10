@@ -254,11 +254,11 @@ describe('internal direct User and Server Notebook publication', () => {
       expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
 
       await protect([]);
-      const prepare = KnowledgeNotebook.prototype.prepare;
+      const prepare = KnowledgeNotebook.prototype.prepareAsync;
       const prepared = vi
-        .spyOn(KnowledgeNotebook.prototype, 'prepare')
+        .spyOn(KnowledgeNotebook.prototype, 'prepareAsync')
         .mockImplementationOnce(async function (this: KnowledgeNotebook, input) {
-          const candidate = prepare.call(this, input);
+          const candidate = await prepare.call(this, input);
           await protect(['note']);
           return candidate;
         });
@@ -412,12 +412,12 @@ describe('internal direct User and Server Notebook publication', () => {
 
   it('rechecks a real administrator revocation after preparation and before Audit/ref publication', async () => {
     const f = await fixture();
-    const prepare = KnowledgeNotebook.prototype.prepare;
-    vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementationOnce(function (
+    const prepare = KnowledgeNotebook.prototype.prepareAsync;
+    vi.spyOn(KnowledgeNotebook.prototype, 'prepareAsync').mockImplementationOnce(async function (
       this: KnowledgeNotebook,
       input
     ) {
-      const revision = prepare.call(this, input);
+      const revision = await prepare.call(this, input);
       revokeOpenKitAccessTokenRecord(f.coreDb, f.administrator.tokenId!);
       return revision;
     });

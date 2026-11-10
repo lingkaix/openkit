@@ -645,9 +645,11 @@ describe('Item-confirmed self Memory forget', () => {
     const f = await fixture();
     const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
-    const publish = vi.spyOn(KnowledgeNotebook.prototype, 'publish').mockImplementationOnce(() => {
-      throw new Error('Publication outcome could not be established.');
-    });
+    const publish = vi
+      .spyOn(KnowledgeNotebook.prototype, 'publishAsync')
+      .mockImplementationOnce(() => {
+        throw new Error('Publication outcome could not be established.');
+      });
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
       code: 'recovery_required',
     });

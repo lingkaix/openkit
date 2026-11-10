@@ -16,7 +16,9 @@ import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
 import { admitUserMemorySources } from './scoped-knowledge-sources.js';
 import {
+  type PinnedScopedNotebook,
   pinScopedNotebook,
+  prepareScopedNotebookReader,
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
   type ScopedNotebookContext,
@@ -92,9 +94,11 @@ export async function publishScopedNotebook(
       resolve(userDb.dataRoot) !== resolve(input.coreDb.dataRoot))
   )
     throw new NotebookError('invalid_request');
-  const notebook = new KnowledgeNotebook({
+  let notebook = new KnowledgeNotebook({
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
+  let prepared = false;
+  const readers = new Map<string, PinnedScopedNotebook>();
   const producer = { kind: 'user' as const, id: input.actor!.userId };
   return publishNotebook(
     {
@@ -116,10 +120,23 @@ export async function publishScopedNotebook(
             },
           }
         : {}),
+      prepareAdmission: async (candidate, revisions) => {
+        resolveScopedNotebookOwner(context);
+        notebook = prepared ? candidate : await candidate.withPreparedReadsAsync(revisions);
+        prepared = true;
+        const current = await notebook.publishedRevisionAsync();
+        for (const revision of new Set([...revisions, current])) {
+          await notebook.preloadRevisionAsync(revision);
+          if (!readers.has(revision))
+            readers.set(revision, await prepareScopedNotebookReader(context, notebook, revision));
+        }
+        return notebook;
+      },
       revalidate: () => {
         // Current identity/credential admission precedes every retained read and the publisher's final CAS.
         resolveScopedNotebookOwner(context);
-        const pinnedNotebook = pinScopedNotebook(context);
+        const pinnedNotebook = readers.get(notebook.publishedRevision());
+        if (!pinnedNotebook) throw new NotebookError('conflict');
         const currentFiles = pinnedNotebook.read().files;
         const baseFiles = notebook.readRevision(request.baseRevision).files;
         const suppressions = userDb

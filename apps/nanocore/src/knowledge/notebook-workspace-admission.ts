@@ -20,13 +20,16 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
 import {
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from './notebook-workspace-selection.js';
+import {
   parseKnowledgePageSourceReference,
   parseOkfDocument,
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
 } from './okf.js';
-
-import { assertSourcePointerEdit } from './source-pointers.js';
+import { assertSourcePointerEdit, readSourcePointers } from './source-pointers.js';
 
 /** Current native owners needed at the final direct-human Workspace publication boundary. */
 interface WorkspacePublicationAuthority {
@@ -38,6 +41,8 @@ interface WorkspacePublicationAuthority {
   readonly currentAuthority?: () => void;
   readonly actor: Extract<ActorRef, { kind: 'user' }>;
   readonly notebook: KnowledgeNotebook;
+  /** Immutable Source bodies prepared for this call; the complete live SQL head is checked before reuse. */
+  readonly preparedSelection?: WorkspaceNotebookSelection | undefined;
   /** Exact SQL-selected schema bytes for activated Workspace readers. */
   readonly scopeSchemaText: string;
   readonly request: NotebookUpdate;
@@ -132,8 +137,28 @@ function* readWorkspaceNotebookAdmissionWithOwners(
   ])
     assertCanonicalDirectory(path);
   const scopeSchemaText = input.scopeSchemaText;
+  const selection = input.preparedSelection
+    ? readWorkspaceNotebookSelection({
+        workspaceDb: input.workspaceDb,
+        workspaceRoot,
+        knowledgeBaseId,
+        preparedSelection: input.preparedSelection,
+        requirePreparedMatch: true,
+      })
+    : undefined;
+  // Reuse exactly the canonical pointer decoder used by Store, after the same live owner/head checks.
+  // Reopening a fresh Notebook here would repeat blocking Git at every final admission.
   const sourceRecords = new Map(
-    input.store.listKnowledgeSources(workspaceId).map((source) => [source.id, source])
+    (selection
+      ? [
+          ...readSourcePointers(
+            { dataRoot: input.coreDb.dataRoot, ownerScope: { kind: 'workspace', workspaceId } },
+            undefined,
+            selection
+          ).values(),
+        ].map(({ source }) => ({ ...source, workspaceId }))
+      : input.store.listKnowledgeSources(workspaceId)
+    ).map((source) => [source.id, source])
   );
   const registeredSources = new Map(
     [...sourceRecords].map(([id, source]) => [id, source.contentDigest])

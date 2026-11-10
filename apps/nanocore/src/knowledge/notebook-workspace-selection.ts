@@ -22,14 +22,63 @@ export interface WorkspaceNotebookSelection {
  * The caller supplies both real private roots under its existing admission. Paths,
  * Git refs and authored YAML never infer authority or replace a missing SQL head.
  */
-export function readWorkspaceNotebookSelection(input: {
+/** Private-root inputs retained across immutable preparation, never across authority checks. */
+export interface WorkspaceNotebookSelectionInput {
   readonly workspaceDb: Pick<WorkspaceDb, 'scope' | 'sqlite' | 'workspaceId'>;
   /** Actual admitted Workspace root; neither a database filename nor Git path may replace it. */
   readonly workspaceRoot: string;
   readonly knowledgeBaseId: string;
   /** Verified immutable facts from this call chain; never a retained admission decision. */
   readonly preparedSelection?: WorkspaceNotebookSelection | undefined;
-}): WorkspaceNotebookSelection {
+
+  /** Final native admission must not fall back to synchronous Git after a changed head. */
+  readonly requirePreparedMatch?: boolean;
+  /** Additional exact historical revisions consumed by this publication/replay only. */
+  readonly revisions?: readonly string[];
+  /** Editors prepare only the exact selected body set; full publication leaves this absent. */
+  readonly readPaths?: readonly string[];
+  readonly sources?: boolean;
+}
+
+/** Reads the existing synchronous selection for callers that do not prepare immutable facts. */
+export function readWorkspaceNotebookSelection(
+  input: WorkspaceNotebookSelectionInput
+): WorkspaceNotebookSelection {
+  return selectWorkspaceNotebook(input, true);
+}
+
+/** Prepares one current immutable selection, with at most one fresh read after a concurrent head change. */
+export async function prepareWorkspaceNotebookReads(
+  input: WorkspaceNotebookSelectionInput
+): Promise<WorkspaceNotebookSelection> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const selection = selectWorkspaceNotebook(
+      { ...input, preparedSelection: undefined, requirePreparedMatch: false },
+      false
+    );
+    const notebook = await selection.notebook.withPreparedReadsAsync(
+      [...new Set([selection.head.notebookCommit, ...(input.revisions ?? [])])],
+      {
+        ...(input.readPaths ? { paths: input.readPaths } : {}),
+        ...(input.sources !== undefined ? { sources: input.sources } : {}),
+      }
+    );
+    if (
+      isDeepStrictEqual(
+        readControlKnowledgeHead(input.workspaceDb, input.knowledgeBaseId),
+        selection.head
+      )
+    )
+      return { ...selection, notebook };
+  }
+  throw new NotebookError('conflict');
+}
+
+/** Schema/root selection shares the original synchronous checks; only Git scheduling differs. */
+function selectWorkspaceNotebook(
+  input: WorkspaceNotebookSelectionInput,
+  inspect: boolean
+): WorkspaceNotebookSelection {
   try {
     const head = readControlKnowledgeHead(input.workspaceDb, input.knowledgeBaseId);
     if (!head) throw new NotebookError('recovery_required');
@@ -52,6 +101,7 @@ export function readWorkspaceNotebookSelection(input: {
         throw new NotebookError('recovery_required');
       return { ...input.preparedSelection, head };
     }
+    if (input.requirePreparedMatch) throw new NotebookError('conflict');
     const owner = { kind: 'workspace' as const, workspaceId: input.workspaceDb.workspaceId };
     const bytes = readImmutableContentBytes(
       {
@@ -70,7 +120,7 @@ export function readWorkspaceNotebookSelection(input: {
       repositoryPath: join(input.workspaceRoot, 'knowledge', 'notebook.git'),
       selectedRevision: head.notebookCommit,
     });
-    notebook.inspectRevision(head.notebookCommit);
+    if (inspect) notebook.inspectRevision(head.notebookCommit);
     return {
       workspaceRoot: input.workspaceRoot,
       head,
