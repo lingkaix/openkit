@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -19,9 +19,11 @@ import {
   prepareRetainedProductJson,
   readImmutableProductJson,
 } from './immutable-content.js';
+import * as immutableReads from './immutable-content-read.js';
 import {
   listNativeProducts,
   nativeProductScope,
+  prepareNativeTurnHistoryRead,
   readNativeProduct,
   readNativeProductEntries,
   readNativeTurnWriteHead,
@@ -584,4 +586,249 @@ describe('retained native metadata reader lifetime', () => {
     await shutdownControlStoreWorkerClient();
     expect(readers().filter((sqlite) => sqlite.open)).toEqual([]);
   });
+});
+
+// Storage, Item Log Invariants: prepared bytes retain complete history; SQL selects current facts.
+describe('prepared native Turn history read set', () => {
+  it('returns verified Items with fresh acknowledged status on the borrowed SQL connection', async () => {
+    const f = await fixture();
+    // Reuse the existing real immutable-file publisher, including its original assertions.
+    await writeRetainedItemFixture(f, writeRetainedV1(f.item));
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const scope = { ...f.scope, sqlite: db.sqlite };
+    const originalRead = immutableReads.readImmutableContentBytes;
+    const transactions: boolean[] = [];
+    const reads = vi
+      .spyOn(immutableReads, 'readImmutableContentBytes')
+      .mockImplementation((...args) => {
+        transactions.push(db.sqlite.inTransaction);
+        return originalRead(...args);
+      });
+    try {
+      const before = committedCut(f);
+      const prepared = await prepareNativeTurnHistoryRead(scope, f.turn.id);
+      expect(prepared).toBeDefined();
+      expect(transactions.length).toBeGreaterThan(0);
+      expect(transactions.every((active) => !active)).toBe(true);
+      expect(committedCut(f)).toEqual(before);
+      reads.mockClear();
+      const state = connectionState(db.sqlite);
+      const unchanged = db.sqlite.transaction(() => prepared!.readCurrent())();
+      expect(unchanged.items).toEqual([f.item]);
+      expect(unchanged.status).toBe(f.turn.status);
+      expect(reads).not.toHaveBeenCalled();
+      expect(connectionState(db.sqlite)).toEqual(state);
+
+      // A real owner ACK changes mutable metadata without changing the prepared Item history.
+      await f.store.completeTurn(f.turn.id, {
+        status: 'completed',
+        completedAt: f.turn.startedAt!,
+      });
+      const expected = f.store.getTurnById(f.turn.id);
+      expect(expected.status).toBe('completed');
+      expect(committedCut(f).items).toEqual(before.items);
+      reads.mockClear();
+      const currentState = connectionState(db.sqlite);
+      expect(db.sqlite.transaction(() => prepared!.readCurrent())()).toEqual(expected);
+      expect(reads).not.toHaveBeenCalled();
+      expect(connectionState(db.sqlite)).toEqual(currentState);
+      expect(db.sqlite.open).toBe(true);
+    } finally {
+      reads.mockRestore();
+      if (db.sqlite.open) db.sqlite.close();
+    }
+  });
+
+  it.each(['revision', 'new Item'] as const)(
+    'refuses an acknowledged %s after preparation instead of returning stale or empty Items',
+    async (change) => {
+      const f = await fixture();
+      const db = openWorkspaceDb(f.root, f.workspace.id);
+      try {
+        const prepared = await prepareNativeTurnHistoryRead(
+          { ...f.scope, sqlite: db.sqlite },
+          f.turn.id
+        );
+        expect(prepared).toBeDefined();
+        expect(prepared!.readCurrent().items).toEqual([f.item]);
+        const changed = {
+          ...f.item,
+          ...(change === 'new Item' ? { id: allocateEntityId('it') } : {}),
+          text: 'Acknowledged after history preparation',
+        };
+        await expect(f.store.createItem(changed)).resolves.toEqual(changed);
+        expect(f.store.getTurnById(f.turn.id).items).toContainEqual(changed);
+        const beforeRefusal = committedCut(f);
+        expect(() => db.sqlite.transaction(() => prepared!.readCurrent())()).toThrow();
+        expect(committedCut(f)).toEqual(beforeRefusal);
+        expect(db.sqlite.inTransaction).toBe(false);
+        expect(db.sqlite.open).toBe(true);
+      } finally {
+        if (db.sqlite.open) db.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['original descriptor', 'original trigger'] as const)(
+    'refuses a changed %s while preserving the prepared latest Item',
+    async (change) => {
+      const f = await fixture();
+      const revised = { ...f.item, text: 'Second acknowledged revision' };
+      await expect(f.store.createItem(revised)).resolves.toEqual(revised);
+      const db = openWorkspaceDb(f.root, f.workspace.id);
+      try {
+        const prepared = await prepareNativeTurnHistoryRead(
+          { ...f.scope, sqlite: db.sqlite },
+          f.turn.id
+        );
+        expect(prepared).toBeDefined();
+        expect(prepared!.readCurrent().items).toEqual([revised]);
+        const before = committedCut(f);
+        if (change === 'original descriptor') {
+          const original = before.items.find((entry) => entry.id === f.item.id)!;
+          expect(original.revision).toBe(1);
+          expect(before.items.at(-1)!.revision).toBe(2);
+          // Fault after genuine publication: only the old descriptor changes, not the head.
+          expect(
+            db.sqlite
+              .prepare(
+                "UPDATE control_product_entries SET content_json=? WHERE turn_id=? AND kind='item' AND id=? AND revision=?"
+              )
+              .run(
+                JSON.stringify({
+                  ...original.content,
+                  byteLength: original.content.byteLength + 1,
+                }),
+                f.turn.id,
+                original.id,
+                original.revision
+              ).changes
+          ).toBe(1);
+        } else {
+          // Fault after genuine publication: a different original source is not fresh status.
+          const record = {
+            ...before.turn.record,
+            triggerActor: { kind: 'user', id: allocateEntityId('usr') },
+          };
+          expect(
+            db.sqlite
+              .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+              .run(JSON.stringify(record), f.turn.id).changes
+          ).toBe(1);
+        }
+        const beforeRefusal = committedCut(f);
+        expect(beforeRefusal.items.at(-1)).toEqual(before.items.at(-1));
+        expect(() => db.sqlite.transaction(() => prepared!.readCurrent())()).toThrow();
+        expect(committedCut(f)).toEqual(beforeRefusal);
+        expect(db.sqlite.inTransaction).toBe(false);
+      } finally {
+        if (db.sqlite.open) db.sqlite.close();
+      }
+    }
+  );
+
+  it('refuses a descriptor change during the original immutable preparation read', async () => {
+    const f = await fixture();
+    await writeRetainedItemFixture(f, writeRetainedV1(f.item));
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const originalRead = immutableReads.readImmutableContentBytes;
+    const before = committedCut(f);
+    const entry = before.items.at(-1)!;
+    let reached = false;
+    const reads = vi
+      .spyOn(immutableReads, 'readImmutableContentBytes')
+      .mockImplementation((...args) => {
+        if (!reached && args[0].root === f.scope.contentMount.root) {
+          reached = true;
+          expect(db.sqlite.inTransaction).toBe(false);
+          // The original descriptor has already selected real bytes. Change that SQL fact now.
+          expect(
+            db.sqlite
+              .prepare(
+                "UPDATE control_product_entries SET content_json=? WHERE turn_id=? AND kind='item' AND id=? AND revision=?"
+              )
+              .run(
+                JSON.stringify({ ...entry.content, byteLength: entry.content.byteLength + 1 }),
+                f.turn.id,
+                entry.id,
+                entry.revision
+              ).changes
+          ).toBe(1);
+        }
+        return originalRead(...args);
+      });
+    try {
+      await expect(
+        prepareNativeTurnHistoryRead({ ...f.scope, sqlite: db.sqlite }, f.turn.id)
+      ).rejects.toThrow();
+      expect(reached).toBe(true);
+      expect(db.sqlite.inTransaction).toBe(false);
+      expect(db.sqlite.open).toBe(true);
+      const after = committedCut(f);
+      expect(after.turn).toEqual(before.turn);
+      expect(after.events).toEqual(before.events);
+      expect(after.items).toEqual(
+        before.items.map((value) =>
+          value === entry
+            ? {
+                ...value,
+                content: { ...value.content, byteLength: value.content.byteLength + 1 },
+              }
+            : value
+        )
+      );
+    } finally {
+      reads.mockRestore();
+      if (db.sqlite.open) db.sqlite.close();
+    }
+  });
+
+  it.each(['missing', 'corrupt'] as const)(
+    'refuses %s immutable bytes at the actual preparation read boundary',
+    async (fault) => {
+      const f = await fixture();
+      await writeRetainedItemFixture(f, writeRetainedV1(f.item));
+      const entry = committedCut(f).items.at(-1)!;
+      const reference = entry.content.reference;
+      if (!('locator' in reference)) throw new Error('Fixture requires actual immutable bytes.');
+      const path = join(f.scope.contentMount.root, reference.locator.path);
+      const bytes = readFileSync(path);
+      const db = openWorkspaceDb(f.root, f.workspace.id);
+      const originalRead = immutableReads.readImmutableContentBytes;
+      let reached = false;
+      const reads = vi
+        .spyOn(immutableReads, 'readImmutableContentBytes')
+        .mockImplementation((...args) => {
+          if (!reached && args[0].root === f.scope.contentMount.root) {
+            reached = true;
+            expect(db.sqlite.inTransaction).toBe(false);
+            // Real filesystem fault at the crossing; the original verifier decides refusal.
+            unlinkSync(path);
+            if (fault === 'corrupt') {
+              const corrupted = Buffer.from(bytes);
+              corrupted[0] = corrupted[0]! ^ 1;
+              writeFileSync(path, corrupted, { mode: 0o444 });
+            }
+          }
+          return originalRead(...args);
+        });
+      try {
+        const before = committedCut(f);
+        await expect(
+          prepareNativeTurnHistoryRead({ ...f.scope, sqlite: db.sqlite }, f.turn.id)
+        ).rejects.toThrow();
+        expect(reached).toBe(true);
+        expect(committedCut(f)).toEqual(before);
+        expect(db.sqlite.inTransaction).toBe(false);
+        expect(db.sqlite.open).toBe(true);
+      } finally {
+        reads.mockRestore();
+        if (reached) {
+          if (existsSync(path)) unlinkSync(path);
+          writeFileSync(path, bytes, { mode: 0o444 });
+        }
+        if (db.sqlite.open) db.sqlite.close();
+      }
+    }
+  );
 });

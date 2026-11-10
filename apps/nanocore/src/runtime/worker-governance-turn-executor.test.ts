@@ -77,6 +77,7 @@ import { getArtifactReview } from '../artifact-reviews.js';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
+  getOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
@@ -95,6 +96,10 @@ import { admitModelRequest } from '../context/model-request-admission.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import {
+  createStructuredWorkerDelegationRequest,
+  serializeStructuredWorkerDelegationRequest,
+} from '../internal-agents/delegation.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   commandRequestExpiresAt,
@@ -108,14 +113,21 @@ import type {
   LLMGatewayProviderDispatcher,
 } from '../llm/provider-dispatcher.js';
 import { createOperationEngine } from '../operation-invocation.js';
+import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
+import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from '../policy/interception.js';
-import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
+import {
+  listExportableWorkspacePermissionDecisions,
+  readPolicyStatementUseCount,
+} from '../policy/permission-decisions.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import { presentControlFacts } from '../storage/control-store-input.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -129,6 +141,9 @@ import {
   applyScopedMigrations,
 } from '../storage/migrate.js';
 import { readRetrievalTrace, retrievalTraceRelativePath } from '../storage/retrieval-traces.js';
+import { runtimePolicyIdentityForSnapshot } from '../storage/runtime-policy-publication.js';
+import { ControlVaultInputSchema } from '../storage/vault-native-codecs.js';
+import { prepareControlVaultRead } from '../storage/vault-policy-read.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import {
   agentSessionsRoot,
@@ -195,12 +210,18 @@ import {
 } from '../workspace-mutation-admission.js';
 import * as snapshotLedger from './aep-snapshot-ledger.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { resolveAgentEnvironmentPackage as resolveLoginEnvironmentPackage } from './agent-environment.js';
+import {
+  resolveAgentEnvironmentPackageMetadata,
+  resolveAgentEnvironmentPackage as resolveLoginEnvironmentPackage,
+} from './agent-environment.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attempts from './execution-attempt-records.js';
 import * as nativeExecutionAttempts from './execution-attempts.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionJournalRef } from './execution-step-journal.js';
+import { executeGoalOperation, readGoalView, requireNativeCoordinatorGoal } from './goal-owner.js';
+import { reserveGoalTask } from './goal-task-admission.js';
+import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import {
   commandInputHash,
   conversationTaskThreadId,
@@ -16402,6 +16423,10 @@ describe('reviewed Login access through the neutral credential effect', () => {
     'missing-submit-deadline',
     'delivery-rejected-during-refresh',
     'duplicate-pending-delivery',
+    'policy-closed-before-native-successor',
+    'policy-active-before-native-receipt',
+    'decision-proof-mismatch-before-native-receipt',
+    'aep-corrupt-after-preparation',
   ] as const)(
     'commits the refreshed successor and fresh Use/Audit before access, then receipts only external completion (%s)',
     async (ending) => {
@@ -16439,6 +16464,29 @@ describe('reviewed Login access through the neutral credential effect', () => {
         'not-entered';
       let nativeStage: { mockRestore(): void } | undefined;
       let nativePosting: { mockRestore(): void } | undefined;
+      let policyPublication: { mockRestore(): void } | undefined;
+      let forwardPolicyActivation: (() => void) | undefined;
+      let policyApplication: Promise<unknown> | undefined;
+      let policyApplicationApplied = false;
+      let policyCloseAcknowledged = false;
+      let policyActivationAcknowledged = false;
+      let policyMarkerState: string | undefined;
+      let policyIdentityMatched = false;
+      let policyOriginalDecision: string | undefined;
+      let policyOriginalRevision: string | undefined;
+      let policyTargetDatabase: string | undefined;
+      const policyEvents: string[] = [];
+      let proofOriginalDecision: string | undefined;
+      let proofOriginalAudit: string | undefined;
+      let proofOriginalJson: string | undefined;
+      let proofAlteredDigest: string | undefined;
+      let proofNativeRefusalCode: string | undefined;
+      let aepPreparationReached = false;
+      let aepFirstHeadSucceeded = false;
+      let aepSecondHeadRefused = false;
+      let aepOwnerReadFailure = false;
+      let aepSnapshotRestored = false;
+      let aepPreparationClosed = false;
       let pending: Promise<Response> | undefined;
       let effectCompleted = false;
       let accessPortEntries = 0;
@@ -17231,6 +17279,548 @@ describe('reviewed Login access through the neutral credential effect', () => {
             confirmation: proposed.confirmation,
           })
         ).toMatchObject({ persisted: true, reload: 'applied' });
+        // The manager, not a default App binder or a carried document, publishes actual loaded readiness.
+        await manager.bindNativePolicyPublication(fixture.coreDb);
+        if (ending === 'decision-proof-mismatch-before-native-receipt') {
+          type ReceiptInput =
+            import('../storage/vault-native-codecs.js').ControlVaultMainInputMap['receipt-create'];
+          const client = getControlStoreWorkerClient();
+          const nativeVault = client.vault.bind(client);
+          const originalPost = NativeWorker.prototype.postMessage;
+          const coreAddress = `core:${nativeProductScope(fixture.coreDb.dataRoot, { kind: 'server' }).path}`;
+          expect(
+            readGoalTaskPolicyContext({
+              coreDb: fixture.coreDb,
+              store: fixture.store,
+              db,
+              lineage: { ...pkg.scope, packageSnapshotId: pkg.snapshotId },
+            })
+          ).toBeNull();
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              originalPost.apply(this, args);
+              const frame = args[0] as {
+                operation?: string;
+                database?: string;
+                input?: { kind?: string; record?: Partial<ReceiptInput> };
+              };
+              if (
+                nativeFaultArmed &&
+                frame.operation === 'vault' &&
+                frame.database === coreAddress &&
+                frame.input?.kind === 'receipt-create' &&
+                frame.input.record?.receiptId === receiptId
+              ) {
+                const proof = frame.input.record.loginBinding?.policyProof;
+                expect(proof).toBeDefined();
+                expect(proof?.decision.proposalDigest).toBe(proofAlteredDigest);
+                const original = JSON.parse(proofOriginalJson!);
+                expect({
+                  ...proof,
+                  decision: {
+                    ...proof!.decision,
+                    proposalDigest: original.decision.proposalDigest,
+                  },
+                }).toEqual(original);
+                nativePosts.push('target');
+                nativeTargetPosted = true;
+              }
+            });
+          nativeStage = vi.spyOn(client, 'vault').mockImplementation((async (
+            selectedDb,
+            kind,
+            record,
+            beforeSubmit
+          ) => {
+            if (
+              nativeFaultArmed ||
+              kind !== 'receipt-create' ||
+              (record as { receiptId?: string }).receiptId !== receiptId
+            )
+              return nativeVault(selectedDb, kind, record, beforeSubmit);
+            nativeFaultArmed = true;
+            const receipt = record as ReceiptInput;
+            const binding = receipt.loginBinding;
+            const proof = binding?.policyProof;
+            if (!binding || !proof) throw new Error('Original governed Policy proof is absent.');
+            expect(proof.caller.kind).toBe('public');
+            expect(proof.proposal.operation).toBe('vault.binding-deliver');
+            expect(proof.decision.proposalDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+            proofOriginalJson = canonicalJsonText(proof);
+            const originalRecord = canonicalJsonText(record);
+            const originalGrant = getVaultGrant(fixture.coreDb, grantId);
+            const original = listExportableWorkspacePermissionDecisions(db, workspaceId).find(
+              (decision) => decision.decisionId === proof.decision.decisionId
+            );
+            expect(original).toMatchObject({
+              result: 'allow',
+              enforcementPoint: 'vault.binding-deliver@decide',
+              contextSummary: { requestId },
+              mediation: { role: 'final', proposalDigest: proof.decision.proposalDigest },
+            });
+            const audit = listWorkspaceAuditEvents(db, workspaceId, fixture.coreDb).find(
+              (event) => event.id === original?.auditEventId
+            );
+            expect(audit).toBeDefined();
+            proofOriginalDecision = canonicalJsonText(original);
+            proofOriginalAudit = canonicalJsonText(audit);
+            const hex = proof.decision.proposalDigest.slice('sha256:'.length);
+            proofAlteredDigest = `sha256:${hex[0] === '0' ? '1' : '0'}${hex.slice(1)}`;
+            // Policy decision correlation: change one carried digest, never the original row or proposal.
+            const altered: ReceiptInput = {
+              ...receipt,
+              loginBinding: {
+                ...binding,
+                policyProof: {
+                  ...proof,
+                  decision: { ...proof.decision, proposalDigest: proofAlteredDigest },
+                },
+              },
+            };
+            try {
+              const result = await nativeVault(selectedDb, 'receipt-create', altered, async () => {
+                expect(typeof beforeSubmit).toBe('function');
+                await beforeSubmit?.();
+                admissionSlotReached = true;
+                expect(getVaultGrant(fixture.coreDb, grantId)).toEqual(originalGrant);
+                expect(
+                  requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+                ).toEqual(pkg);
+                expect(() =>
+                  assertCurrentWorkerCredentialAuthority(
+                    fixture.coreDb,
+                    pkg,
+                    () => new Date().toISOString(),
+                    pkg.credentials.declarations[0]!
+                  )
+                ).not.toThrow();
+                expect(getVaultReference(fixture.coreDb, referenceId)?.currentVersion).toBe(
+                  inputGeneration + 1
+                );
+                expect(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+                exactRecordPreserved = canonicalJsonText(record) === originalRecord;
+                expect(exactRecordPreserved).toBe(true);
+              });
+              nativeOutcome = 'committed';
+              return result;
+            } catch (error) {
+              const nativeError =
+                error instanceof ControlStoreWorkerError
+                  ? error
+                  : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+                    ? error.cause
+                    : undefined;
+              proofNativeRefusalCode = nativeError?.code;
+              nativeOutcome =
+                nativeTargetPosted && nativeError?.commit === 'not-committed'
+                  ? 'not-committed'
+                  : 'unclassified-refusal';
+              throw error;
+            }
+          }) as typeof client.vault);
+        }
+        if (
+          ending === 'policy-closed-before-native-successor' ||
+          ending === 'policy-active-before-native-receipt'
+        ) {
+          const client = getControlStoreWorkerClient();
+          const publish = client.runtimePolicyPublication.bind(client);
+          const originalVault = client.vault.bind(client);
+          const originalPost = NativeWorker.prototype.postMessage;
+          const coreAddress = `core:${nativeProductScope(fixture.coreDb.dataRoot, { kind: 'server' }).path}`;
+          const documentA = manager.current().openKitConfig.policy!.mediation!;
+          const selectedA = documentA.statements.find(
+            (statement) => statement.id === 'reviewed-login-access'
+          );
+          expect(selectedA?.state).toBe('active');
+          policyOriginalRevision = policyDigest(documentA);
+          const initiallyPublished = await publish(fixture.coreDb, { kind: 'inspect' });
+          expect(initiallyPublished.state).toBe('active');
+          expect(initiallyPublished.identity).toEqual(
+            runtimePolicyIdentityForSnapshot(manager.current())
+          );
+          expect(
+            manager.current().workspaceConfigs.some((entry) => entry.workspaceId === workspaceId)
+          ).toBe(true);
+          expect(
+            readGoalTaskPolicyContext({
+              coreDb: fixture.coreDb,
+              store: fixture.store,
+              db,
+              lineage: { ...pkg.scope, packageSnapshotId: pkg.snapshotId },
+            })
+          ).toBeNull();
+          const proposedB = await configuration.propose(
+            {
+              targetFamily: 'policy',
+              targetId: 'server',
+              expectedRevision: files.readFile('server.jsonc').file.revision!,
+              changes: {
+                rationale: 'Change loaded Policy identity without changing this binding allow.',
+                proposed: {
+                  ...documentA,
+                  statements: [
+                    ...documentA.statements,
+                    {
+                      id: 'reviewed-login-inactive-publication-input',
+                      kind: 'permission',
+                      effect: 'prohibit',
+                      grant: { kind: 'ordinary' },
+                      author: principal,
+                      authority: { kind: 'human', userId: LOCAL_USER_ID },
+                      authoredAt: new Date().toISOString(),
+                      state: 'inactive',
+                      scope,
+                      lifetime: { anchor },
+                    },
+                  ],
+                },
+              },
+            },
+            { threadId: adminThread.id, turnId: adminTurn.id, requestId: randomUUID() }
+          );
+          const activationHeld = Promise.withResolvers<void>();
+          policyPublication = vi
+            .spyOn(client, 'runtimePolicyPublication')
+            .mockImplementation(async (selectedDb, input) => {
+              const result = await publish(selectedDb, input);
+              if (selectedDb === fixture.coreDb && input.kind === 'close') {
+                expect(result.state).toBe('closed');
+                policyCloseAcknowledged = true;
+                policyEvents.push('close-ack');
+              }
+              if (selectedDb === fixture.coreDb && input.kind === 'activate') {
+                expect(result.state).toBe('active');
+                policyActivationAcknowledged = true;
+                policyEvents.push('activate-ack');
+              }
+              return result;
+            });
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              const frame = args[0] as {
+                operation?: string;
+                database?: string;
+                input?: {
+                  kind?: string;
+                  identity?: unknown;
+                  record?: { referenceId?: string; receiptId?: string };
+                };
+              };
+              if (
+                nativeFaultArmed &&
+                frame.operation === 'runtime-policy-publication' &&
+                frame.database === coreAddress
+              ) {
+                if (frame.input?.kind === 'close') policyEvents.push('close-post');
+                if (frame.input?.kind === 'activate') {
+                  expect(policyCloseAcknowledged).toBe(true);
+                  expect(frame.input.identity).toEqual(
+                    runtimePolicyIdentityForSnapshot(manager.current())
+                  );
+                  if (ending === 'policy-closed-before-native-successor') {
+                    if (forwardPolicyActivation)
+                      throw new Error('Unexpected second Policy activation during the control.');
+                    policyEvents.push('activate-held');
+                    let forwarded = false;
+                    forwardPolicyActivation = () => {
+                      if (forwarded) return;
+                      forwarded = true;
+                      policyEvents.push('activate-post');
+                      originalPost.apply(this, args);
+                    };
+                    activationHeld.resolve();
+                    return;
+                  }
+                  policyEvents.push('activate-post');
+                }
+              }
+              originalPost.apply(this, args);
+              if (
+                nativeFaultArmed &&
+                frame.operation === 'vault' &&
+                frame.database === coreAddress &&
+                ((ending === 'policy-closed-before-native-successor' &&
+                  frame.input?.kind === 'reference-advance' &&
+                  frame.input.record?.referenceId === referenceId) ||
+                  (ending === 'policy-active-before-native-receipt' &&
+                    frame.input?.kind === 'receipt-create' &&
+                    frame.input.record?.receiptId === receiptId))
+              ) {
+                nativeTargetPosted = true;
+                policyTargetDatabase = frame.database;
+                policyEvents.push('target-post');
+                targetPosted.resolve();
+              }
+            });
+          nativeStage = vi.spyOn(client, 'vault').mockImplementation((async (
+            selectedDb,
+            kind,
+            record,
+            beforeSubmit
+          ) => {
+            const selected = record as { referenceId?: string; receiptId?: string };
+            const target =
+              ending === 'policy-closed-before-native-successor'
+                ? kind === 'reference-advance' && selected.referenceId === referenceId
+                : kind === 'receipt-create' && selected.receiptId === receiptId;
+            if (nativeFaultArmed || !target)
+              return originalVault(selectedDb, kind, record, beforeSubmit);
+            nativeFaultArmed = true;
+            const digest = createHash('sha256').update(JSON.stringify(record)).digest('hex');
+            const originalGrant = getVaultGrant(fixture.coreDb, grantId);
+            try {
+              const result = await originalVault(selectedDb, kind, record, async () => {
+                expect(typeof beforeSubmit).toBe('function');
+                await beforeSubmit?.();
+                admissionSlotReached = true;
+                policyEvents.push('original-admission');
+                const original = listExportableWorkspacePermissionDecisions(db, workspaceId).filter(
+                  (decision) =>
+                    decision.enforcementPoint === 'vault.binding-deliver@decide' &&
+                    decision.mediation?.role === 'final' &&
+                    (decision.contextSummary as { requestId?: string })?.requestId === requestId
+                );
+                expect(original).toHaveLength(1);
+                expect(original[0]?.result).toBe('allow');
+                expect(original[0]?.policySnapshotId).toBe(policyOriginalRevision);
+                policyOriginalDecision = canonicalJsonText(original[0]);
+                policyApplication = configuration
+                  .apply({
+                    requestId: randomUUID(),
+                    candidate: proposedB.candidate,
+                    confirmation: proposedB.confirmation,
+                  })
+                  .then((applied) => {
+                    expect(applied).toMatchObject({ persisted: true, reload: 'applied' });
+                    policyApplicationApplied = true;
+                    policyEvents.push('apply-completed');
+                    return applied;
+                  });
+                void policyApplication.catch(() => {});
+                if (ending === 'policy-closed-before-native-successor') {
+                  await Promise.race([
+                    activationHeld.promise,
+                    policyApplication.then(() => {
+                      throw new Error('Policy application completed without its held activation.');
+                    }),
+                  ]);
+                  expect(policyActivationAcknowledged).toBe(false);
+                  expect(policyApplicationApplied).toBe(false);
+                } else {
+                  await policyApplication;
+                  expect(policyActivationAcknowledged).toBe(true);
+                }
+                const observed = await publish(fixture.coreDb, { kind: 'inspect' });
+                policyMarkerState = observed.state;
+                policyEvents.push(`inspect-${observed.state}`);
+                policyIdentityMatched =
+                  ending === 'policy-closed-before-native-successor'
+                    ? observed.state === 'closed' && observed.identity === null
+                    : canonicalJsonText(observed.identity) ===
+                      canonicalJsonText(runtimePolicyIdentityForSnapshot(manager.current()));
+                expect(policyMarkerState).toBe(
+                  ending === 'policy-closed-before-native-successor' ? 'closed' : 'active'
+                );
+                expect(policyIdentityMatched).toBe(true);
+                const currentDocument = manager.current().openKitConfig.policy!.mediation!;
+                expect(policyDigest(currentDocument) === policyOriginalRevision).toBe(false);
+                expect(
+                  currentDocument.statements.find((statement) => statement.id === selectedA?.id)
+                ).toEqual(selectedA);
+                expect(
+                  currentDocument.statements.find(
+                    (statement) => statement.id === 'reviewed-login-inactive-publication-input'
+                  )?.state
+                ).toBe('inactive');
+                expect(
+                  operationAuthorizer.authorizeWorkspace(
+                    fixture.coreDb,
+                    { kind: 'local', userId: LOCAL_USER_ID },
+                    workspaceId,
+                    { policyOperation: 'vault.use', mutating: true }
+                  )
+                ).not.toBeNull();
+                expect(getVaultGrant(fixture.coreDb, grantId)).toEqual(originalGrant);
+                expect(
+                  requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+                ).toEqual(pkg);
+                const attempt = attempts.requireSchedulerExecutionAttempt(
+                  fixture.coreDb,
+                  attemptId
+                );
+                expect(attempt).toMatchObject({
+                  phase: 'open',
+                  disposition: 'unknown',
+                  inputRef: pkg.snapshotId,
+                  deadline: submitDeadline,
+                });
+                expect(
+                  attempt.deadline !== null && attempt.deadline > new Date().toISOString()
+                ).toBe(true);
+                expect(() =>
+                  assertCurrentWorkerCredentialAuthority(
+                    fixture.coreDb,
+                    pkg,
+                    () => new Date().toISOString(),
+                    pkg.credentials.declarations[0]!
+                  )
+                ).not.toThrow();
+                expect(getVaultReference(fixture.coreDb, referenceId)?.currentVersion).toBe(
+                  ending === 'policy-closed-before-native-successor'
+                    ? inputGeneration
+                    : inputGeneration + 1
+                );
+                expect(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+                expect(
+                  canonicalJsonText(
+                    listExportableWorkspacePermissionDecisions(db, workspaceId).find(
+                      (decision) => decision.decisionId === original[0]?.decisionId
+                    )
+                  )
+                ).toBe(policyOriginalDecision);
+                exactRecordPreserved =
+                  createHash('sha256').update(JSON.stringify(record)).digest('hex') === digest;
+              });
+              nativeOutcome = 'committed';
+              return result;
+            } catch (error) {
+              const nativeError =
+                error instanceof ControlStoreWorkerError
+                  ? error
+                  : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+                    ? error.cause
+                    : undefined;
+              nativeOutcome =
+                nativeTargetPosted && nativeError?.commit === 'not-committed'
+                  ? 'not-committed'
+                  : 'unclassified-refusal';
+              throw error;
+            } finally {
+              // Finish the original real publication even when the deciding Vault target refuses.
+              forwardPolicyActivation?.();
+              if (policyApplication) await policyApplication;
+            }
+          }) as typeof client.vault);
+        }
+        if (ending === 'aep-corrupt-after-preparation') {
+          const client = getControlStoreWorkerClient();
+          const nativeVault = client.vault.bind(client);
+          const originalPost = NativeWorker.prototype.postMessage;
+          const coreAddress = `core:${nativeProductScope(fixture.coreDb.dataRoot, { kind: 'server' }).path}`;
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              originalPost.apply(this, args);
+              const frame = args[0];
+              if (
+                !frame ||
+                typeof frame !== 'object' ||
+                frame.operation !== 'vault' ||
+                frame.database !== coreAddress
+              )
+                return;
+              const command = ControlVaultInputSchema.safeParse(frame.input);
+              if (
+                command.success &&
+                command.data.kind === 'reference-advance' &&
+                command.data.record.referenceId === referenceId
+              )
+                nativeTargetPosted = true;
+            });
+          nativeStage = vi
+            .spyOn(client, 'vault')
+            .mockImplementation(async (selectedDb, kind, record, beforeSubmit) => {
+              if (
+                nativeFaultArmed ||
+                kind !== 'reference-advance' ||
+                !('referenceId' in record) ||
+                record.referenceId !== referenceId
+              )
+                return nativeVault(selectedDb, kind, record, beforeSubmit);
+              nativeFaultArmed = true;
+              const originalRecordDigest = createHash('sha256')
+                .update(JSON.stringify(record))
+                .digest('hex');
+              return nativeVault(selectedDb, kind, record, async () => {
+                expect(typeof beforeSubmit).toBe('function');
+                await beforeSubmit?.();
+                admissionSlotReached = true;
+                if (selectedDb.scope !== 'core')
+                  throw new Error('Expected the original Core owner.');
+                // Normalize the actual producer's clock through the same closed wire schema as client.vault.
+                // This module probe never calls assertCurrent or supplies a native publication state.
+                const clock = 'now' in record ? record.now : undefined;
+                if (clock !== undefined && typeof clock !== 'function')
+                  throw new Error('The original producer clock is unavailable.');
+                const input = ControlVaultInputSchema.parse({
+                  kind,
+                  record: { ...record, now: clock === undefined ? undefined : clock() },
+                });
+                const canonical = requireAgentEnvironmentPackageSnapshot(
+                  db,
+                  workspaceId,
+                  pkg.snapshotId
+                );
+                const prepared = await prepareControlVaultRead(selectedDb, input);
+                aepPreparationReached = prepared !== undefined;
+                if (!prepared) throw new Error('Actual Login read preparation is absent.');
+                const snapshotPath = join(
+                  agentSessionsRoot(db),
+                  pkg.scope.agentSessionId,
+                  'aep-snapshots',
+                  `${pkg.snapshotId}.json`
+                );
+                let originalBytes: Buffer | undefined;
+                let corrupted = false;
+                try {
+                  originalBytes = readFileSync(snapshotPath);
+                  expect(
+                    canonicalJsonText(prepared.consumerPackage) ===
+                      canonicalJsonText(canonical.snapshot)
+                  ).toBe(true);
+                  prepared.sampleHead();
+                  aepFirstHeadSucceeded = true;
+                  // Fault only the real immutable redacted snapshot after valid preparation/head sampling.
+                  writeFileSync(snapshotPath, '{');
+                  corrupted = true;
+                  try {
+                    prepared.sampleHead();
+                  } catch (error) {
+                    aepSecondHeadRefused = true;
+                    aepOwnerReadFailure =
+                      error instanceof snapshotLedger.AgentEnvironmentSnapshotReadError;
+                    throw error;
+                  }
+                  // A permissive head-sampling fault must fail the deciding flag, without publishing Core state.
+                  throw new Error('AEP preparation oracle stops before native publication.');
+                } finally {
+                  try {
+                    if (corrupted && originalBytes) writeFileSync(snapshotPath, originalBytes);
+                    if (originalBytes)
+                      aepSnapshotRestored = readFileSync(snapshotPath).equals(originalBytes);
+                  } finally {
+                    prepared.close();
+                    aepPreparationClosed = true;
+                    exactRecordPreserved =
+                      createHash('sha256').update(JSON.stringify(record)).digest('hex') ===
+                      originalRecordDigest;
+                  }
+                }
+              });
+            });
+        }
         const requestId = randomUUID();
         const materialResolvesBeforeOperation = materialResolution.mock.calls.length;
         pending = app.request(
@@ -17257,13 +17847,15 @@ describe('reviewed Login access through the neutral credential effect', () => {
           return { kind: 'returned' as const, response };
         });
         const crossing = await Promise.race([
-          ending === 'grant-revoked-during-refresh' ||
-          ending === 'deadline-during-refresh' ||
-          ending === 'delivery-rejected-during-refresh'
-            ? refreshEntered.promise.then(() => ({ kind: 'refresh-held' as const }))
-            : ending === 'grant-revoked-before-native-successor'
-              ? targetPosted.promise.then(() => ({ kind: 'native-publication' as const }))
-              : delivered.promise.then(() => ({ kind: 'delivered' as const })),
+          ending === 'policy-closed-before-native-successor'
+            ? targetPosted.promise.then(() => ({ kind: 'native-publication' as const }))
+            : ending === 'grant-revoked-during-refresh' ||
+                ending === 'deadline-during-refresh' ||
+                ending === 'delivery-rejected-during-refresh'
+              ? refreshEntered.promise.then(() => ({ kind: 'refresh-held' as const }))
+              : ending === 'grant-revoked-before-native-successor'
+                ? targetPosted.promise.then(() => ({ kind: 'native-publication' as const }))
+                : delivered.promise.then(() => ({ kind: 'delivered' as const })),
           returned,
         ]);
         const decisions = listExportableWorkspacePermissionDecisions(db, workspaceId).filter(
@@ -17280,6 +17872,145 @@ describe('reviewed Login access through the neutral credential effect', () => {
             (event) => event.id === decisions[0]?.auditEventId
           )
         ).toBe(true);
+        if (
+          ending === 'policy-closed-before-native-successor' ||
+          ending === 'policy-active-before-native-receipt'
+        ) {
+          expect(crossing.kind).toBe(
+            ending === 'policy-closed-before-native-successor' ? 'native-publication' : 'delivered'
+          );
+          if (ending === 'policy-active-before-native-receipt') completion.resolve();
+          const response = await pending;
+          if (policyApplication) await policyApplication;
+          expect(nativeFaultArmed).toBe(true);
+          expect(admissionSlotReached).toBe(true);
+          if (!nativeTargetPosted)
+            throw new Error('Main refused before the actual Policy publication target was posted.');
+          expect(nativeTargetPosted).toBe(true);
+          expect(policyTargetDatabase).toBe(
+            `core:${nativeProductScope(fixture.coreDb.dataRoot, { kind: 'server' }).path}`
+          );
+          expect(exactRecordPreserved).toBe(true);
+          expect(policyOriginalDecision).toBe(canonicalJsonText(decisions[0]));
+          expect(decisions[0]?.policySnapshotId).toBe(policyOriginalRevision);
+          expect(policyCloseAcknowledged).toBe(true);
+          expect(policyActivationAcknowledged).toBe(true);
+          expect(policyApplicationApplied).toBe(true);
+          expect(policyIdentityMatched).toBe(true);
+          expect(policyMarkerState).toBe(
+            ending === 'policy-closed-before-native-successor' ? 'closed' : 'active'
+          );
+          expect(policyEvents).toEqual(
+            ending === 'policy-closed-before-native-successor'
+              ? [
+                  'original-admission',
+                  'close-post',
+                  'close-ack',
+                  'activate-held',
+                  'inspect-closed',
+                  'target-post',
+                  'activate-post',
+                  'activate-ack',
+                  'apply-completed',
+                ]
+              : [
+                  'original-admission',
+                  'close-post',
+                  'close-ack',
+                  'activate-post',
+                  'activate-ack',
+                  'apply-completed',
+                  'inspect-active',
+                  'target-post',
+                ]
+          );
+          // These are native commit predicates. A later public refusal cannot erase a forbidden commit.
+          expect
+            .soft(nativeOutcome, 'The actual native target ignored closed or changed loaded Policy')
+            .toBe('not-committed');
+          expect
+            .soft(getVaultReference(fixture.coreDb, referenceId)?.currentVersion)
+            .toBe(
+              ending === 'policy-closed-before-native-successor'
+                ? inputGeneration
+                : inputGeneration + 1
+            );
+          expect.soft(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+          expect(response.ok).toBe(false);
+          const result: unknown = await response.json();
+          expect(privateValues.every((value) => !JSON.stringify(result).includes(value))).toBe(
+            true
+          );
+          expect(accessDelivered).toBe(ending === 'policy-active-before-native-receipt');
+          expect(effectCompleted).toBe(ending === 'policy-active-before-native-receipt');
+          expect(refreshCalls).toBe(2);
+          // Refresh/backend publication is a separate effect domain, not a rollback promise.
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            inputGeneration + 1
+          );
+          expect(
+            readNativeProduct(
+              nativeProductScope(fixture.coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+              'thread',
+              threadId
+            )?.record.login
+          ).toBeUndefined();
+          expect(
+            listWorkspaceAuditEvents(db, workspaceId, fixture.coreDb).some(
+              (event) =>
+                event.action === 'vault.binding-deliver' &&
+                event.requestId === requestId &&
+                event.outcome === 'failed'
+            )
+          ).toBe(true);
+          return;
+        }
+        if (ending === 'aep-corrupt-after-preparation') {
+          const response = await pending;
+          expect(crossing.kind).toBe('returned');
+          expect(nativeFaultArmed && admissionSlotReached).toBe(true);
+          expect(aepPreparationReached && aepFirstHeadSucceeded).toBe(true);
+          // The actual module's second sample, not the later public refusal, decides this oracle.
+          expect(
+            aepSecondHeadRefused,
+            'Head sampling reused an AEP after its canonical file became corrupt'
+          ).toBe(true);
+          expect(aepOwnerReadFailure).toBe(true);
+          expect(aepSnapshotRestored && aepPreparationClosed).toBe(true);
+          expect(exactRecordPreserved).toBe(true);
+          expect(nativeTargetPosted).toBe(false);
+          expect(response.ok).toBe(false);
+          const result: unknown = await response.json();
+          expect(privateValues.every((value) => !JSON.stringify(result).includes(value))).toBe(
+            true
+          );
+          expect(getVaultReference(fixture.coreDb, referenceId)?.currentVersion).toBe(
+            inputGeneration
+          );
+          expect(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+          expect(accessDelivered || effectCompleted).toBe(false);
+          expect(refreshCalls).toBe(2);
+          // Private backend refresh can precede preparation; this probe makes no rollback claim.
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            inputGeneration + 1
+          );
+          expect(
+            listVaultUseRecords(db).some(
+              (use) =>
+                use.vaultReferenceId === referenceId &&
+                use.materialVersion === inputGeneration &&
+                use.outcome === 'succeeded'
+            )
+          ).toBe(true);
+          expect(
+            readNativeProduct(
+              nativeProductScope(fixture.coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+              'thread',
+              threadId
+            )?.record.login
+          ).toBeUndefined();
+          return;
+        }
         if (ending === 'deadline-during-refresh') {
           expect(crossing.kind, 'expiry did not reach the held stock refresh').toBe('refresh-held');
           if (!submitDeadline)
@@ -17729,6 +18460,75 @@ describe('reviewed Login access through the neutral credential effect', () => {
         }
         completion.resolve();
         const response = await pending;
+        if (ending === 'decision-proof-mismatch-before-native-receipt') {
+          expect(crossing.kind).toBe('delivered');
+          expect(nativeFaultArmed).toBe(true);
+          expect(admissionSlotReached).toBe(true);
+          if (!nativeTargetPosted)
+            throw new Error('Altered proof did not reach actual native receipt posting.');
+          expect(nativePosts).toEqual(['target']);
+          expect(exactRecordPreserved).toBe(true);
+          expect(canonicalJsonText(decisions[0])).toBe(proofOriginalDecision);
+          expect(
+            canonicalJsonText(
+              listExportableWorkspacePermissionDecisions(db, workspaceId).find(
+                (decision) => decision.decisionId === decisions[0]?.decisionId
+              )
+            )
+          ).toBe(proofOriginalDecision);
+          expect(
+            canonicalJsonText(
+              listWorkspaceAuditEvents(db, workspaceId, fixture.coreDb).find(
+                (event) => event.id === decisions[0]?.auditEventId
+              )
+            )
+          ).toBe(proofOriginalAudit);
+          // Intended OLD is a real native commit despite this original-decision tuple mismatch.
+          expect
+            .soft(
+              {
+                nativeOutcome,
+                code: proofNativeRefusalCode,
+                receiptCount: listVaultInjectionReceipts(fixture.coreDb).length,
+              },
+              'Native receipt ignored the original decision proposal digest'
+            )
+            .toEqual({
+              nativeOutcome: 'not-committed',
+              code: 'precondition',
+              receiptCount: 0,
+            });
+          expect(getVaultReference(fixture.coreDb, referenceId)?.currentVersion).toBe(
+            inputGeneration + 1
+          );
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            inputGeneration + 1
+          );
+          expect(accessDelivered).toBe(true);
+          expect(effectCompleted).toBe(true);
+          expect(refreshCalls).toBe(2);
+          expect(
+            readNativeProduct(
+              nativeProductScope(fixture.coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+              'thread',
+              threadId
+            )?.record.login
+          ).toBeUndefined();
+          expect(response.ok).toBe(false);
+          const result: unknown = await response.json();
+          expect(privateValues.every((value) => !JSON.stringify(result).includes(value))).toBe(
+            true
+          );
+          expect(
+            listWorkspaceAuditEvents(db, workspaceId, fixture.coreDb).some(
+              (event) =>
+                event.action === 'vault.binding-deliver' &&
+                event.requestId === requestId &&
+                event.outcome === 'failed'
+            )
+          ).toBe(true);
+          return;
+        }
         if (ending === 'generation-queued-before-receipt') {
           if (predecessor) await predecessor.catch(() => {});
           expect(nativeFaultArmed, 'Core did not reach completed receipt publication').toBe(true);
@@ -17817,7 +18617,10 @@ describe('reviewed Login access through the neutral credential effect', () => {
       } finally {
         refreshRelease.resolve();
         completion.resolve();
+        forwardPolicyActivation?.();
         if (pending) await pending.catch(() => {});
+        if (policyApplication) await policyApplication.catch(() => {});
+        policyPublication?.mockRestore();
         if (startedSupply) await startedSupply;
         if (predecessor) await predecessor.catch(() => {});
         nativeStage?.mockRestore();
@@ -17828,6 +18631,1526 @@ describe('reviewed Login access through the neutral credential effect', () => {
         vault.lock();
         for (const handle of handles) closeTestCoreDb(handle);
         closeTestCoreDb(fixture.coreDb);
+      }
+    }
+  );
+});
+
+// The Goal/Task mapping requires current original authority at publication, including an allow's own finite use.
+describe('Login publication under the original Goal Task decision', () => {
+  it.each([
+    'last-allocation',
+    'plan-before-successor',
+    'plan-before-receipt',
+    'approver-credential-before-successor',
+    'coordinator-completed',
+    'coordinator-ended-before-receipt',
+  ] as const)(
+    'repeats the original consumed Task decision after an acknowledged cross-owner Plan change (%s)',
+    async (ending) => {
+      const coordinatorCase =
+        ending === 'coordinator-completed' || ending === 'coordinator-ended-before-receipt';
+      let coordinatorEndAcknowledged = false;
+      let coordinatorNativeCode: string | undefined;
+      let coordinatorOriginalAudit: string | undefined;
+      // Reuse infrastructure and the existing external backend double; create a new canonical Task.
+      const fixture = await createWorkerContextExecutorFixture(`login-task-${ending}`);
+      const { coreDb, store } = fixture;
+      const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+      const db = createTestWorkspaceDb(coreDb.dataRoot, workspaceId);
+      const operationHandles: WorkspaceDb[] = [];
+      const actor = { kind: 'local' as const, userId: LOCAL_USER_ID };
+      const triggerActor = { kind: 'user' as const, id: LOCAL_USER_ID };
+      const agentId = 'agent_codex_host';
+      const vault = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(coreDb.dataRoot, 'vault'),
+      });
+      vault.unlock({ masterKey: Buffer.alloc(32, 47) });
+      const accountId = randomUUID();
+      const refreshTokens = [randomUUID(), randomUUID(), randomUUID()];
+      const accessTokens = [0, 1, 2].map((generation) =>
+        [
+          Buffer.from('{}').toString('base64'),
+          Buffer.from(
+            JSON.stringify({
+              generation,
+              'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+            })
+          ).toString('base64'),
+          'synthetic-signature',
+        ].join('.')
+      );
+      let refreshCalls = 0;
+      let accessDisclosed = false;
+      let externalCompleted = false;
+      let predecessor: Promise<unknown> | undefined;
+      let predecessorAck = false;
+      let targetPosted = false;
+      let targetCommitted = false;
+      let nativeRefusal = false;
+      let originalAdmissionCompleted = false;
+      let targetRecordUnchanged = false;
+      let armed = false;
+      let originalDecisionId: string | undefined;
+      let originalDecisionSnapshot: string | undefined;
+      let approverCredential: ReturnType<typeof createOpenKitAccessTokenRecord> | undefined;
+      let credentialRevocationAcknowledged = false;
+      let credentialPublicationUnchanged = false;
+      let credentialSavedPolicyUnchanged = false;
+      let credentialApprovedDomainUnavailable = false;
+      const posted = Promise.withResolvers<void>();
+      const nativePosts: string[] = [];
+      let predecessorDatabase: string | undefined;
+      let targetDatabase: string | undefined;
+      let nativeStage: { mockRestore(): void } | undefined;
+      let nativePosting: { mockRestore(): void } | undefined;
+      const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const request = new Request(input, init);
+        expect(request.url === 'https://auth.openai.com/oauth/token').toBe(true);
+        const form = new URLSearchParams(await request.text());
+        expect(form.get('grant_type') === 'refresh_token').toBe(true);
+        expect(form.get('refresh_token') === refreshTokens[refreshCalls]).toBe(true);
+        refreshCalls += 1;
+        if (refreshCalls > 2) throw new Error('Unexpected stock refresh retry.');
+        return Response.json({
+          access_token: accessTokens[refreshCalls],
+          refresh_token: refreshTokens[refreshCalls],
+          expires_in: 3600,
+        });
+      });
+      try {
+        const admission = new WorkspaceMutationAdmission();
+        store.setWorkspaceMutationAdmission(admission);
+        const configDir = join(coreDb.dataRoot, 'config');
+        mkdirSync(configDir, { recursive: true });
+        if (!existsSync(join(configDir, 'server.jsonc')))
+          writeFileSync(join(configDir, 'server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+        const manager = createRuntimeConfigManager({ dataRoot: coreDb.dataRoot });
+        const files = new RuntimeConfigFileService({
+          dataRoot: coreDb.dataRoot,
+          userId: LOCAL_USER_ID,
+          workspaceIds: [workspaceId],
+          runtimeConfigManager: manager,
+          readRuntimeConfigStatus: () => manager.status(),
+        });
+        const domains = createGoalDomainPolicyService({
+          coreDb,
+          store,
+          repositoryWorkspaceDb: () => db,
+          files,
+          currentPolicy: () => manager.current().openKitConfig.policy?.mediation,
+          reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
+        });
+        const services = {
+          coreDb,
+          goalDomain: {
+            forActor: () => domains,
+            currentRevision: () =>
+              policyDigest(
+                manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+              ),
+          },
+        };
+        const app = createApp({
+          coreDb,
+          dataRoot: coreDb.dataRoot,
+          store,
+          vaultUnlockState: vault,
+          workspaceMutationAdmission: admission,
+          runtimeConfigManager: manager,
+        });
+        const bootstrap = await app.request(
+          ...operationRequest(
+            'vault.bootstrap-codex-auth',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                authJsonBase64: Buffer.from(
+                  JSON.stringify({
+                    tokens: {
+                      access_token: accessTokens[0],
+                      refresh_token: refreshTokens[0],
+                      account_id: accountId,
+                    },
+                  })
+                ).toString('base64'),
+              }),
+            }
+          )
+        );
+        expect(bootstrap.status).toBe(200);
+        const login = (await bootstrap.json()) as { referenceId: string; currentVersion: number };
+        const referenceId = login.referenceId;
+        const generation = login.currentVersion;
+        expect(generation).toBe(1);
+        const consentThread = await store.createThread(workspaceId, 'Review Task Login');
+        const requested = await app.request(
+          ...operationRequest(
+            'vault.grant-request',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId,
+                threadId: consentThread.id,
+                requestId: randomUUID(),
+                terms: {
+                  referenceId,
+                  ownerScope: 'workspace',
+                  lifetime: 'workspace',
+                  injectionPath: 'runtime-token',
+                  expiresAt: '2099-01-01T00:00:00.000Z',
+                },
+              }),
+            }
+          )
+        );
+        expect(requested.status).toBe(200);
+        const review = (await requested.json()) as {
+          threadId: string;
+          raisingTurnId: string;
+          approvalRequestId: string;
+        };
+        const approved = await app.request(
+          ...operationRequest(
+            'approval.respond',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId,
+                threadId: review.threadId,
+                turnId: review.raisingTurnId,
+                approvalRequestId: review.approvalRequestId,
+                decision: 'granted',
+                requestId: randomUUID(),
+              }),
+            }
+          )
+        );
+        expect(approved.status).toBe(200);
+        const issued = await app.request(
+          ...operationRequest(
+            'vault.grant-issue',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId,
+                threadId: review.threadId,
+                approvalRequestId: review.approvalRequestId,
+              }),
+            }
+          )
+        );
+        expect(issued.status).toBe(200);
+        const grantId = ((await issued.json()) as { grantId: string }).grantId;
+        const originalGrant = getVaultGrant(coreDb, grantId);
+        expect(originalGrant).toMatchObject({
+          issuance: 'target',
+          ownerScope: 'workspace',
+          workspaceId,
+          vaultReferenceId: referenceId,
+          allowedInjectionPaths: ['runtime-token'],
+          status: 'active',
+        });
+        const goal = (
+          await executeGoalOperation(
+            'goal.create',
+            {
+              workspaceId,
+              requestId: randomUUID(),
+              intent: 'Use the reviewed Login for this Task',
+            },
+            { actor },
+            store,
+            db,
+            services
+          )
+        ).goal!;
+        const goalScope = { workspaceId, threadId: goal.threadId, goalId: goal.goalId };
+        const coordinator = await store.createTurn(
+          workspaceId,
+          goal.threadId,
+          'Coordinate',
+          triggerActor,
+          null,
+          { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+        );
+        const coordinatorContext = { actor, coordinatorTurnId: coordinator.id };
+        const cards = await executeGoalOperation(
+          'goal.card.create',
+          {
+            ...goalScope,
+            requestId: randomUUID(),
+            description: 'Use the reviewed Login',
+            priority: 1,
+          },
+          { actor },
+          store,
+          db,
+          services
+        );
+        const card = cards.cards[0]!;
+        const resource = {
+          kind: 'container' as const,
+          container: {
+            owner: { kind: 'workspace' as const, workspaceId },
+            kind: 'workspace' as const,
+            id: workspaceId,
+          },
+        };
+        const proposed = await executeGoalOperation(
+          'goal.plan.propose',
+          {
+            ...goalScope,
+            requestId: randomUUID(),
+            expectedRevision: cards.goal!.changeRevision,
+            commitment: {
+              intentBasis: { revision: 0, intent: goal.intent },
+              cards: [
+                {
+                  cardId: card.cardId,
+                  revision: card.revision,
+                  description: card.description,
+                  priority: card.priority,
+                },
+              ],
+              permittedAdjustments: 'Use only the reviewed Login',
+              completionEvidence: ['Login result'],
+              boundaries: 'No other credential effects',
+            },
+            goalDomain: {
+              id: 'login-task-original-domain',
+              scope: {
+                subjects: [{ kind: 'agent', id: agentId }],
+                actions: ['vault.use'],
+                resources: [resource],
+              },
+              lifetime: {
+                uses: 1,
+                anchor: {
+                  owner: { kind: 'workspace', workspaceId },
+                  kind: 'goal',
+                  id: goal.goalId,
+                },
+              },
+            },
+          },
+          coordinatorContext,
+          store,
+          db,
+          services
+        );
+        const plan = proposed.versions[0]!;
+        const planApproval = {
+          ...goalScope,
+          pendingRequestId: plan.pendingRequestId,
+          decision: 'granted' as const,
+        };
+        if (ending === 'approver-credential-before-successor') {
+          // The approving credential belongs to the same responsible human. It is not the requester.
+          approverCredential = createOpenKitAccessTokenRecord(coreDb, {
+            ownerUserId: actor.userId,
+            scope: 'workspace',
+            workspaceIds: [workspaceId],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          });
+          const approvingActor = {
+            kind: 'token' as const,
+            userId: approverCredential.record.ownerUserId,
+            tokenId: approverCredential.tokenId,
+            tokenScope: approverCredential.record.scope,
+            tokenWorkspaceIds: approverCredential.record.workspaceIds,
+          };
+          expect(approvingActor.userId === actor.userId).toBe(true);
+          expect(getOpenKitAccessTokenRecord(coreDb, approvingActor.tokenId)?.status).toBe(
+            'active'
+          );
+          await executeGoalOperation(
+            'goal.plan.approve',
+            { ...planApproval, requestId: randomUUID() },
+            { actor: approvingActor },
+            store,
+            db,
+            services
+          );
+          const approved = readPendingRequest(db.sqlite, plan.pendingRequestId);
+          expect(
+            approved?.decidingActorContext?.kind === 'token' &&
+              approved.decidingActorContext.tokenId === approvingActor.tokenId &&
+              approved.decidingActorContext.userId === actor.userId &&
+              approved.responsibleUserId === actor.userId
+          ).toBe(true);
+        } else {
+          await executeGoalOperation(
+            'goal.plan.approve',
+            { ...planApproval, requestId: randomUUID() },
+            { actor },
+            store,
+            db,
+            services
+          );
+        }
+        await executeGoalOperation(
+          'goal.plan.approve',
+          { ...planApproval, requestId: randomUUID() },
+          coordinatorContext,
+          store,
+          db,
+          services
+        );
+        const domain = domains.read(goalScope);
+        expect(domain?.state).toBe('active');
+        if (!domain) throw new Error('Actual approved Goal domain is unavailable.');
+        const domainReference = { id: domain.id, digest: policyDigest(domain) };
+        expect(readPolicyStatementUseCount(db, domainReference)).toBe(0);
+
+        const { reporting: _reporting, ...taskRequest } = createStructuredWorkerDelegationRequest({
+          objective: 'Use the reviewed Login',
+          acceptanceCriteria: ['Login result'],
+          contextRefs: [{ kind: 'workspace', id: workspaceId }],
+          resources: [
+            { kind: 'policy', resource, reason: 'Use only the exact Task Login binding' },
+          ],
+          expectedArtifacts: [],
+          constraints: { maxContextTokens: 1000, maxWorkerIterations: 1 },
+          verification: [{ kind: 'manual', description: 'Inspect result' }],
+          reviewPolicy: { required: false, reviewers: ['human'], instructions: 'Inspect result' },
+          escalationConditions: [],
+          reviewContext: null,
+        });
+        const requestId = randomUUID();
+        const thread = await store.createThread(
+          workspaceId,
+          'Linked Login Task',
+          deriveEntityId('th', ['task', requestId]),
+          'conversation',
+          { visibility: 'workspace', threadSource: 'worker' }
+        );
+        db.sqlite.transaction(() =>
+          reserveGoalTask(
+            store,
+            db,
+            {
+              goalId: goal.goalId,
+              cardId: card.cardId,
+              cardRevision: card.revision,
+              intentRevision: 0,
+              planVersionId: plan.planVersionId,
+              withinCurrentIntent: true,
+              withinPermittedAdjustments: true,
+              rationale: 'Use the reviewed binding only',
+            },
+            thread.id
+          )
+        )();
+        const prompt = serializeStructuredWorkerDelegationRequest(taskRequest);
+        const agentSessionId = testEntityId('as', requestId);
+        const createdAt = new Date().toISOString();
+        await store.createAgentSession({
+          id: agentSessionId,
+          agentId,
+          workspaceId,
+          threadId: thread.id,
+          status: 'busy',
+          message: null,
+          createdAt,
+          updatedAt: createdAt,
+        });
+        const turn = await store.createTurn(workspaceId, thread.id, prompt, triggerActor, null, {
+          startedAt: createdAt,
+          executorKind: 'worker',
+          agentId,
+          agentSessionId,
+          turnId: deriveEntityId('tu', {
+            command: 'task.start',
+            actorId: LOCAL_USER_ID,
+            workspaceId,
+            threadId: thread.id,
+            requestId,
+          }),
+        });
+        await store.createItem({
+          id: deriveEntityId('it', ['task-user', turn.id]),
+          owner: { kind: 'workspace', workspaceId },
+          threadId: thread.id,
+          turnId: turn.id,
+          type: 'user-message',
+          status: 'completed',
+          actor: triggerActor,
+          text: prompt,
+          createdAt,
+          completedAt: createdAt,
+        });
+        const privateRoute = {
+          providerProfileId: 'native-metadata',
+          providerModel: 'gpt-5.1-codex',
+        };
+        const setup = createTestAgentSetup({
+          agentId,
+          privateRoute,
+          credentialDeclarations: [
+            {
+              id: 'reviewed-login',
+              requirementId: 'reviewed-login',
+              vaultGrantId: grantId,
+              visibility: 'runtime-token',
+              consumer: 'codex-login',
+            },
+          ],
+        });
+        setup.logicalModels.allowed = resolveHarnessLogicalModelCatalog(
+          createTestGatewayConfig({ privateRoute }),
+          new ProviderRegistry([
+            {
+              id: privateRoute.providerProfileId,
+              displayName: 'Synthetic Codex metadata',
+              kind: 'oauth',
+              vendor: 'openai-codex',
+              models: [privateRoute.providerModel],
+              modelMetadata: {
+                [privateRoute.providerModel]: {
+                  limit: { context: 128_000, output: 16_000 },
+                  modalities: { input: ['text', 'image'], output: ['text'] },
+                  reasoning: true,
+                  tool_call: true,
+                },
+              },
+            },
+          ]),
+          setup.logicalModels.allowed.map((model) => model.id)
+        );
+        // Image metadata is explicit module preparation, not physical readiness or native execution.
+        admitTestNativeEnvironment(coreDb, setup.manifest);
+        const entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue_${requestId}`,
+          requestId,
+          triggerActor,
+          workspaceId,
+          threadId: thread.id,
+          turnId: turn.id,
+          turnInput: prompt,
+          requestedAgentId: agentId,
+        });
+        const environmentInput = {
+          coreDb,
+          captureCoverage: { scope: 'server' as const, value: 'off' as const },
+          agentSetup: setup,
+          agentSessionId,
+          backend: { kind: 'openshell' as const },
+          turn,
+          turnInput: prompt,
+          triggerActor,
+          workspaceRoots: [],
+          vaultBackend: () => vault.backend(),
+          createdAt,
+          requestId,
+        };
+        const planned = resolveAgentEnvironmentPackageMetadata(environmentInput);
+        const attemptId = testEntityId('attempt', requestId);
+        recordTestExecutionAttempt(coreDb, {
+          entry,
+          attemptId,
+          agentSessionId,
+          inputRef: planned.snapshotId,
+          bindingRef: `binding_${requestId}`,
+          sessionCompatibilityKey: 'fixture',
+          now: () => createdAt,
+        });
+        const pkg = await resolveLoginEnvironmentPackage(environmentInput);
+        await snapshotLedger.recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage: pkg,
+          createdAt: pkg.createdAt,
+        });
+        const submitted = await nativeExecutionAttempts.recordSchedulerExecutionOperation(coreDb, {
+          attemptId,
+          operationId: randomUUID(),
+          submission: true,
+        });
+        expect(submitted.disposition).toBe('unknown');
+        expect(submitted.phase).toBe('open');
+        expect(submitted.deadline !== null && submitted.deadline > new Date().toISOString()).toBe(
+          true
+        );
+        expect(pkg.schemaVersion).toBe(4);
+        expect(pkg.llm.mode).toBe('harness');
+        expect(pkg.snapshotId).toBe(planned.snapshotId);
+        expect(submitted.inputRef).toBe(pkg.snapshotId);
+        await upsertWorkerCheckpoint(db, {
+          workspaceId,
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId,
+          requestInputHash: commandInputHash({ input: prompt }),
+          stage: 'preparing',
+          iteration: 0,
+          workerSessionId: agentSessionId,
+          contextDigest: commandInputHash(taskRequest),
+        });
+        const lineage = { ...pkg.scope, packageSnapshotId: pkg.snapshotId };
+        expect(readGoalTaskPolicyContext({ coreDb, store, db, lineage })).toMatchObject({
+          goalId: goal.goalId,
+          taskThreadId: thread.id,
+          turnId: turn.id,
+          planVersionId: plan.planVersionId,
+          agentId,
+          responsibleUserId: LOCAL_USER_ID,
+        });
+        const injection = listVaultInjectionPlans(coreDb).find(
+          (value) => value.packageSnapshotId === pkg.snapshotId
+        )!;
+        expect(injection).toMatchObject({
+          grantId,
+          injectionVisibility: 'runtime-token',
+          status: 'active',
+        });
+        const receiptId = `receipt_${pkg.snapshotId}_reviewed-login`;
+        expect(listVaultUseRecords(db)).toEqual([]);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(refreshCalls).toBe(1);
+
+        // Prepare and human-approve the successor without activating it or changing the original Task.
+        const before = readGoalView(store, db, goal.goalId);
+        const successorView = await executeGoalOperation(
+          'goal.plan.propose',
+          {
+            ...goalScope,
+            requestId: randomUUID(),
+            expectedRevision: before.goal!.changeRevision,
+            commitment: plan.commitment,
+            goalDomain: {
+              id: 'login-task-successor-domain',
+              scope: domain.scope,
+              lifetime: {
+                anchor: {
+                  owner: { kind: 'workspace', workspaceId },
+                  kind: 'goal',
+                  id: goal.goalId,
+                },
+              },
+            },
+          },
+          coordinatorContext,
+          store,
+          db,
+          services
+        );
+        const successorPlan = successorView.versions.at(-1)!;
+        const successorApproval = {
+          ...goalScope,
+          pendingRequestId: successorPlan.pendingRequestId,
+          decision: 'granted' as const,
+        };
+        await executeGoalOperation(
+          'goal.plan.approve',
+          { ...successorApproval, requestId: randomUUID() },
+          { actor },
+          store,
+          db,
+          services
+        );
+        expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+          plan.planVersionId
+        );
+        // Actual loaded Policy readiness is a prerequisite; it supplies no Goal permission.
+        await manager.bindNativePolicyPublication(coreDb);
+        const interception = new PolicyInterception();
+        const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+          async deliverCredentialAccess(
+            _input: { receiptId: string; expectedMaterialVersion: number },
+            supply: () => Promise<{
+              accessToken: string;
+              accountId: string;
+              planType: string | null;
+              receiptId: string;
+              materialGeneration: number;
+            }>,
+            _recheckAuthority: () => Promise<void>
+          ) {
+            expect(_input.receiptId).toBe(receiptId);
+            expect(_input.expectedMaterialVersion).toBe(generation);
+            const access = await supply();
+            accessDisclosed = true;
+            expect(access.accessToken === accessTokens[2] && access.accountId === accountId).toBe(
+              true
+            );
+            expect(access.materialGeneration).toBe(generation + 1);
+            expect(access.receiptId).toBe(receiptId);
+            const uses = listVaultUseRecords(db).filter(
+              (use) =>
+                use.outcome === 'succeeded' &&
+                use.vaultReferenceId === referenceId &&
+                use.materialVersion === generation + 1
+            );
+            expect(uses.length > 0).toBe(true);
+            expect(
+              uses.every(
+                (use) =>
+                  use.grantId === grantId &&
+                  use.planId === injection.planId &&
+                  use.receiptId === receiptId &&
+                  use.agentSessionId === agentSessionId
+              )
+            ).toBe(true);
+            expect(
+              uses.every((use) =>
+                listWorkspaceAuditEvents(db, workspaceId, coreDb).some(
+                  (event) =>
+                    event.id === use.auditEventId &&
+                    event.action === 'vault.resolve' &&
+                    event.outcome === 'succeeded'
+                )
+              )
+            ).toBe(true);
+            expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+            expect(
+              readNativeProduct(
+                nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+                'thread',
+                thread.id
+              )?.record.login
+            ).toBeUndefined();
+            externalCompleted = true;
+            return { receiptId: access.receiptId, materialGeneration: access.materialGeneration };
+          },
+        });
+        const executor = new WorkerGovernanceTurnExecutor({
+          backend,
+          coreDb,
+          workspaceMutationAdmission: admission,
+          fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+          policyInterception: () => interception,
+          readRuntimeConfig: () => manager.current(),
+          vaultBackend: () => vault.backend(),
+        });
+        const dependencies = {
+          coreDb,
+          dataRoot: coreDb.dataRoot,
+          store,
+          turnExecutor: executor,
+          workspaceMutationAdmission: admission,
+          policyInterception: interception,
+          readRuntimePolicy: () => manager.current().openKitConfig.policy?.mediation,
+          repositoryWorkspaceDb: (id: string) => {
+            const handle = createTestWorkspaceDb(coreDb.dataRoot, id);
+            operationHandles.push(handle);
+            return handle;
+          },
+          goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store, domains }),
+        };
+        const invoke = createOperationEngine(
+          createVaultOperationImplementations(dependencies),
+          dependencies
+        );
+        const decisionRows = () =>
+          listExportableWorkspacePermissionDecisions(db, workspaceId).filter(
+            (row) =>
+              row.enforcementPoint === 'vault.binding-deliver@decide' &&
+              row.mediation?.role === 'final'
+          );
+        expect(decisionRows()).toEqual([]);
+        if (
+          !coordinatorCase &&
+          ending !== 'last-allocation' &&
+          ending !== 'approver-credential-before-successor'
+        ) {
+          const client = getControlStoreWorkerClient();
+          const nativeVault = client.vault.bind(client);
+          const postMessage = NativeWorker.prototype.postMessage;
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              postMessage.apply(this, args);
+              const frame = args[0] as {
+                operation?: string;
+                database?: string;
+                input?: {
+                  kind?: string;
+                  record?: { referenceId?: string; receiptId?: string };
+                  command?: { operation?: string; arguments?: { pendingRequestId?: string } };
+                };
+              };
+              if (
+                frame.operation === 'goal' &&
+                frame.input?.command?.operation === 'goal.plan.approve' &&
+                frame.input.command.arguments?.pendingRequestId === successorPlan.pendingRequestId
+              ) {
+                predecessorDatabase = frame.database;
+                nativePosts.push('plan');
+                posted.resolve();
+              }
+              const selected = frame.input;
+              if (
+                frame.operation === 'vault' &&
+                ((ending === 'plan-before-successor' &&
+                  selected?.kind === 'reference-advance' &&
+                  selected.record?.referenceId === referenceId) ||
+                  (ending === 'plan-before-receipt' &&
+                    selected?.kind === 'receipt-create' &&
+                    selected.record?.receiptId === receiptId))
+              ) {
+                targetPosted = true;
+                targetDatabase = frame.database;
+                expect(predecessorAck, 'Target posting preceded the actual Plan ACK').toBe(true);
+                // Core and Workspace use different owner queues; the actual Plan ACK must precede this target.
+                expect(frame.database === predecessorDatabase).toBe(false);
+                nativePosts.push('target');
+              }
+            });
+          nativeStage = vi
+            .spyOn(client, 'vault')
+            .mockImplementation(async (selectedDb, kind, record, beforeSubmit) => {
+              const selected = record as { referenceId?: string; receiptId?: string };
+              const isTarget =
+                ending === 'plan-before-successor'
+                  ? kind === 'reference-advance' && selected.referenceId === referenceId
+                  : kind === 'receipt-create' && selected.receiptId === receiptId;
+              if (armed || !isTarget) return nativeVault(selectedDb, kind, record, beforeSubmit);
+              armed = true;
+              const recordDigest = createHash('sha256')
+                .update(JSON.stringify(record))
+                .digest('hex');
+              try {
+                const result = await nativeVault(selectedDb, kind, record, async () => {
+                  expect(typeof beforeSubmit).toBe('function');
+                  await beforeSubmit?.();
+                  originalAdmissionCompleted = true;
+                  const decisions = decisionRows();
+                  expect(decisions).toHaveLength(1);
+                  expect(decisions[0]?.result).toBe('allow');
+                  originalDecisionId = decisions[0]!.decisionId;
+                  originalDecisionSnapshot = canonicalJsonText(decisions[0]!);
+                  expect(readPolicyStatementUseCount(db, domainReference)).toBe(1);
+                  expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+                  expect(
+                    attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)
+                  ).toMatchObject({
+                    phase: 'open',
+                    disposition: 'unknown',
+                    deadline: submitted.deadline,
+                    inputRef: pkg.snapshotId,
+                  });
+                  expect(
+                    readGoalTaskPolicyContext({ coreDb, store, db, lineage })?.planVersionId
+                  ).toBe(plan.planVersionId);
+                  predecessor = executeGoalOperation(
+                    'goal.plan.approve',
+                    { ...successorApproval, requestId: randomUUID() },
+                    coordinatorContext,
+                    store,
+                    db,
+                    services
+                  );
+                  void predecessor.then(
+                    () => {
+                      predecessorAck = true;
+                      nativePosts.push('plan-ack');
+                      if (!nativePosts.includes('plan'))
+                        posted.reject(new Error('Plan completed without its actual owner frame.'));
+                    },
+                    () => {
+                      posted.reject(new Error('Actual successor Plan publication failed.'));
+                    }
+                  );
+                  // Post order cannot order two database owners. Await the actual Plan FULL/ACK
+                  // after Main's original callback, then forward the unchanged Core target.
+                  await posted.promise;
+                  await predecessor;
+                  expect(predecessorAck).toBe(true);
+                  expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+                    successorPlan.planVersionId
+                  );
+                  expect(() => readGoalTaskPolicyContext({ coreDb, store, db, lineage })).toThrow();
+                  expect(
+                    operationAuthorizer.currentWorkerLineageWorkspaceAuthority(
+                      coreDb,
+                      { ...lineage, triggerActor },
+                      'vault.use',
+                      true
+                    )
+                  ).not.toBeNull();
+                  expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+                  expect(
+                    attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)
+                  ).toMatchObject({
+                    phase: 'open',
+                    disposition: 'unknown',
+                    deadline: submitted.deadline,
+                    inputRef: pkg.snapshotId,
+                  });
+                  expect(
+                    submitted.deadline !== null && submitted.deadline > new Date().toISOString()
+                  ).toBe(true);
+                  expect(
+                    requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+                  ).toEqual(pkg);
+                  expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(
+                    ending === 'plan-before-successor' ? generation : generation + 1
+                  );
+                  targetRecordUnchanged =
+                    createHash('sha256').update(JSON.stringify(record)).digest('hex') ===
+                    recordDigest;
+                });
+                targetCommitted = true;
+                return result;
+              } catch (error) {
+                const nativeError =
+                  error instanceof ControlStoreWorkerError
+                    ? error
+                    : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+                      ? error.cause
+                      : undefined;
+                nativeRefusal = targetPosted && nativeError?.commit === 'not-committed';
+                throw error;
+              }
+            });
+        }
+        if (ending === 'approver-credential-before-successor') {
+          if (!approverCredential) throw new Error('Actual approving credential is missing.');
+          const credentialId = approverCredential.tokenId;
+          const client = getControlStoreWorkerClient();
+          const nativeVault = client.vault.bind(client);
+          const postMessage = NativeWorker.prototype.postMessage;
+          const coreAddress = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+          let unexpectedPublication = false;
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              // All original packets are forwarded unchanged; only real owner results establish ACK.
+              postMessage.apply(this, args);
+              const frame = args[0] as {
+                operation?: string;
+                database?: string;
+                input?: {
+                  kind?: string;
+                  tokenId?: string;
+                  record?: { referenceId?: string };
+                };
+              };
+              if (frame.database !== coreAddress || !armed) return;
+              if (
+                frame.operation === 'runtime-policy-publication' &&
+                frame.input?.kind !== 'inspect'
+              )
+                unexpectedPublication = true;
+              if (
+                frame.operation === 'access-token-lifecycle' &&
+                frame.input?.kind === 'revoke' &&
+                frame.input.tokenId === credentialId
+              ) {
+                predecessorDatabase = frame.database;
+                nativePosts.push('credential-revoke');
+              }
+              if (
+                frame.operation === 'vault' &&
+                frame.input?.kind === 'reference-advance' &&
+                frame.input.record?.referenceId === referenceId
+              ) {
+                targetPosted = true;
+                targetDatabase = frame.database;
+                expect(credentialRevocationAcknowledged).toBe(true);
+                nativePosts.push('target');
+              }
+            });
+          nativeStage = vi
+            .spyOn(client, 'vault')
+            .mockImplementation(async (selectedDb, kind, record, beforeSubmit) => {
+              const selected = record as { referenceId?: string };
+              if (armed || kind !== 'reference-advance' || selected.referenceId !== referenceId)
+                return nativeVault(selectedDb, kind, record, beforeSubmit);
+              armed = true;
+              const recordDigest = createHash('sha256')
+                .update(JSON.stringify(record))
+                .digest('hex');
+              try {
+                const result = await nativeVault(selectedDb, kind, record, async () => {
+                  expect(typeof beforeSubmit).toBe('function');
+                  await beforeSubmit?.();
+                  originalAdmissionCompleted = true;
+                  const decisions = decisionRows();
+                  expect(decisions).toHaveLength(1);
+                  const original = decisions[0]!;
+                  expect(original.result).toBe('allow');
+                  if (!original.mediation) throw new Error('Original final mediation is missing.');
+                  originalDecisionId = original.decisionId;
+                  originalDecisionSnapshot = canonicalJsonText(original);
+                  const ownUse = {
+                    decisionId: original.decisionId,
+                    proposalDigest: original.mediation.proposalDigest,
+                    policyRevision: original.policySnapshotId,
+                    authorizationRevision: original.mediation.authorizationRevision,
+                  };
+                  expect(domains.readForDecision({ ...goalScope, decision: ownUse })).toEqual(
+                    domain
+                  );
+                  expect(readPolicyStatementUseCount(db, domainReference)).toBe(1);
+                  const beforeSnapshot = manager.current();
+                  const beforeSource = files.readFile('server.jsonc');
+                  const beforePublication = await client.runtimePolicyPublication(coreDb, {
+                    kind: 'inspect',
+                  });
+                  expect(beforePublication.state).toBe('active');
+                  expect(beforePublication.identity).toEqual(
+                    runtimePolicyIdentityForSnapshot(beforeSnapshot)
+                  );
+                  expect(
+                    readGoalTaskPolicyContext({ coreDb, store, db, lineage })?.planVersionId
+                  ).toBe(plan.planVersionId);
+                  // Native revocation repeats the actual local requester's Kernel, then commits
+                  // under the existing canonical Core FULL owner. No later Audit is substituted for ACK.
+                  const revoked = await client.accessTokenLifecycle(coreDb, {
+                    kind: 'revoke',
+                    actor: presentControlFacts(actor),
+                    tokenId: credentialId,
+                  });
+                  expect(
+                    revoked.kind === 'revoke' &&
+                      revoked.record?.tokenId === credentialId &&
+                      revoked.record.status === 'revoked'
+                  ).toBe(true);
+                  credentialRevocationAcknowledged = true;
+                  nativePosts.push('credential-ack');
+                  expect(getOpenKitAccessTokenRecord(coreDb, credentialId)?.status).toBe('revoked');
+                  expect(
+                    operationAuthorizer.currentWorkerLineageWorkspaceAuthority(
+                      coreDb,
+                      { ...lineage, triggerActor },
+                      'vault.use',
+                      true
+                    )
+                  ).not.toBeNull();
+                  expect(
+                    operationAuthorizer.authorizeWorkspace(coreDb, actor, workspaceId, {
+                      policyOperation: 'vault.use',
+                      mutating: true,
+                    })
+                  ).not.toBeNull();
+                  expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+                  expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+                    plan.planVersionId
+                  );
+                  expect(
+                    readGoalTaskPolicyContext({ coreDb, store, db, lineage })?.planVersionId
+                  ).toBe(plan.planVersionId);
+                  expect(
+                    requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+                  ).toEqual(pkg);
+                  expect(
+                    attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)
+                  ).toMatchObject({
+                    phase: 'open',
+                    disposition: 'unknown',
+                    deadline: submitted.deadline,
+                    inputRef: pkg.snapshotId,
+                  });
+                  expect(
+                    submitted.deadline !== null && submitted.deadline > new Date().toISOString()
+                  ).toBe(true);
+                  expect(manager.current()).toBe(beforeSnapshot);
+                  const afterSource = files.readFile('server.jsonc');
+                  credentialSavedPolicyUnchanged =
+                    afterSource.content === beforeSource.content &&
+                    afterSource.file.revision === beforeSource.file.revision;
+                  expect(credentialSavedPolicyUnchanged).toBe(true);
+                  const afterPublication = await client.runtimePolicyPublication(coreDb, {
+                    kind: 'inspect',
+                  });
+                  credentialPublicationUnchanged =
+                    canonicalJsonText(afterPublication) === canonicalJsonText(beforePublication) &&
+                    !unexpectedPublication;
+                  expect(credentialPublicationUnchanged).toBe(true);
+                  credentialApprovedDomainUnavailable =
+                    domains.readForDecision({ ...goalScope, decision: ownUse }) === null;
+                  expect(credentialApprovedDomainUnavailable).toBe(true);
+                  expect(readPolicyStatementUseCount(db, domainReference)).toBe(1);
+                  expect(canonicalJsonText(decisionRows()[0])).toBe(originalDecisionSnapshot);
+                  expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(generation);
+                  expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+                  targetRecordUnchanged =
+                    createHash('sha256').update(JSON.stringify(record)).digest('hex') ===
+                    recordDigest;
+                });
+                targetCommitted = true;
+                return result;
+              } catch (error) {
+                const nativeError =
+                  error instanceof ControlStoreWorkerError
+                    ? error
+                    : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+                      ? error.cause
+                      : undefined;
+                nativeRefusal = targetPosted && nativeError?.commit === 'not-committed';
+                throw error;
+              }
+            });
+        }
+        if (coordinatorCase) {
+          const binding = { actor, ...goalScope, turnId: coordinator.id };
+          expect(requireNativeCoordinatorGoal(db, binding)).toMatchObject({
+            ...goalScope,
+            activePlanVersionId: plan.planVersionId,
+          });
+          expect(store.getTurnById(coordinator.id)).toMatchObject({
+            status: 'running',
+            agentId: 'goal-coordinator',
+          });
+          expect(store.getTurnById(coordinator.id)).not.toHaveProperty('agentSessionId');
+          const client = getControlStoreWorkerClient();
+          const nativeVault = client.vault.bind(client);
+          const originalPost = NativeWorker.prototype.postMessage;
+          const coreAddress = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              originalPost.apply(this, args);
+              const frame = args[0] as {
+                operation?: string;
+                database?: string;
+                input?: {
+                  kind?: string;
+                  record?: {
+                    receiptId?: string;
+                    loginBinding?: { policyProof?: { caller?: unknown } };
+                  };
+                };
+              };
+              if (
+                armed &&
+                frame.operation === 'vault' &&
+                frame.database === coreAddress &&
+                frame.input?.kind === 'receipt-create' &&
+                frame.input.record?.receiptId === receiptId
+              ) {
+                expect(frame.input.record.loginBinding?.policyProof?.caller).toMatchObject({
+                  kind: 'coordinator',
+                  actor,
+                  actorRef: triggerActor,
+                  ...goalScope,
+                  turnId: coordinator.id,
+                });
+                if (ending === 'coordinator-ended-before-receipt')
+                  expect(coordinatorEndAcknowledged).toBe(true);
+                targetPosted = true;
+                targetDatabase = frame.database;
+                nativePosts.push('target');
+              }
+            });
+          nativeStage = vi
+            .spyOn(client, 'vault')
+            .mockImplementation(async (selectedDb, kind, record, beforeSubmit) => {
+              if (
+                armed ||
+                kind !== 'receipt-create' ||
+                (record as { receiptId?: string }).receiptId !== receiptId
+              )
+                return nativeVault(selectedDb, kind, record, beforeSubmit);
+              armed = true;
+              const originalRecord = canonicalJsonText(record);
+              try {
+                const value = await nativeVault(selectedDb, kind, record, async () => {
+                  expect(typeof beforeSubmit).toBe('function');
+                  await beforeSubmit?.();
+                  originalAdmissionCompleted = true;
+                  const original = decisionRows();
+                  expect(original).toHaveLength(1);
+                  expect(original[0]?.result).toBe('allow');
+                  originalDecisionId = original[0]!.decisionId;
+                  originalDecisionSnapshot = canonicalJsonText(original[0]);
+                  const audit = listWorkspaceAuditEvents(db, workspaceId, coreDb).find(
+                    (event) => event.id === original[0]?.auditEventId
+                  );
+                  expect(audit).toBeDefined();
+                  coordinatorOriginalAudit = canonicalJsonText(audit);
+                  // The real getter must pass at this exact boundary before the isolated owner fault.
+                  const currentGoal = requireNativeCoordinatorGoal(db, binding);
+                  expect(currentGoal.activePlanVersionId).toBe(plan.planVersionId);
+                  const unchangedGoal = readGoalView(store, db, goal.goalId).goal;
+                  const workerTurn = store.getTurnById(turn.id);
+                  const workerTask = readGoalTaskPolicyContext({ coreDb, store, db, lineage });
+                  expect(workerTask?.planVersionId).toBe(plan.planVersionId);
+                  const published = await client.runtimePolicyPublication(coreDb, {
+                    kind: 'inspect',
+                  });
+                  expect(published.state).toBe('active');
+                  expect(published.identity).toEqual(
+                    runtimePolicyIdentityForSnapshot(manager.current())
+                  );
+                  if (ending === 'coordinator-ended-before-receipt') {
+                    // Ordinary Coordinator Turn terminal publication, not a role-job completion or native execution ACK.
+                    const ended = await store.updateTurn(coordinator.id, {
+                      status: 'completed',
+                      completedAt: new Date().toISOString(),
+                    });
+                    expect(ended.status).toBe('completed');
+                    expect(store.getTurnById(coordinator.id)).toEqual(ended);
+                    coordinatorEndAcknowledged = true;
+                    nativePosts.push('coordinator-ack');
+                    expect(() => requireNativeCoordinatorGoal(db, binding)).toThrow(
+                      expect.objectContaining({ code: 'coordinator_authority_denied' })
+                    );
+                  } else {
+                    expect(requireNativeCoordinatorGoal(db, binding)).toEqual(currentGoal);
+                  }
+                  // Only the original caller Turn ended: consumer Task, Plan and basic authority stay current.
+                  expect(readGoalView(store, db, goal.goalId).goal).toEqual(unchangedGoal);
+                  expect(store.getTurnById(turn.id)).toEqual(workerTurn);
+                  expect(readGoalTaskPolicyContext({ coreDb, store, db, lineage })).toEqual(
+                    workerTask
+                  );
+                  expect(
+                    operationAuthorizer.authorizeWorkspace(coreDb, actor, workspaceId, {
+                      policyOperation: 'vault.use',
+                      mutating: true,
+                    })
+                  ).not.toBeNull();
+                  expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+                  expect(
+                    requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+                  ).toEqual(pkg);
+                  expect(
+                    attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)
+                  ).toMatchObject({
+                    phase: 'open',
+                    disposition: 'unknown',
+                    inputRef: pkg.snapshotId,
+                    deadline: submitted.deadline,
+                  });
+                  expect(
+                    submitted.deadline !== null && submitted.deadline > new Date().toISOString()
+                  ).toBe(true);
+                  expect(
+                    await client.runtimePolicyPublication(coreDb, { kind: 'inspect' })
+                  ).toEqual(published);
+                  expect(readPolicyStatementUseCount(db, domainReference)).toBe(0);
+                  expect(domains.read(goalScope)).toEqual(domain);
+                  expect(canonicalJsonText(decisionRows()[0])).toBe(originalDecisionSnapshot);
+                  expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(
+                    generation + 1
+                  );
+                  expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+                  targetRecordUnchanged = canonicalJsonText(record) === originalRecord;
+                  expect(targetRecordUnchanged).toBe(true);
+                });
+                targetCommitted = true;
+                return value;
+              } catch (error) {
+                const nativeError =
+                  error instanceof ControlStoreWorkerError
+                    ? error
+                    : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+                      ? error.cause
+                      : undefined;
+                coordinatorNativeCode = nativeError?.code;
+                nativeRefusal = targetPosted && nativeError?.commit === 'not-committed';
+                throw error;
+              }
+            });
+        }
+        const operationRequestId = randomUUID();
+        const result = await invoke(
+          'vault.binding-deliver',
+          {
+            workspaceId,
+            bindingThreadId: thread.id,
+            planId: injection.planId,
+            receiptId,
+            materialVersion: generation,
+            requestId: operationRequestId,
+          },
+          coordinatorCase
+            ? {
+                kind: 'coordinator',
+                actor,
+                ...goalScope,
+                turnId: coordinator.id,
+                requestId: operationRequestId,
+              }
+            : {
+                kind: 'worker',
+                actor: triggerActor,
+                lineage,
+                requestId: operationRequestId,
+                bindings: {
+                  workspaceId,
+                  bindingThreadId: thread.id,
+                  requestId: operationRequestId,
+                },
+              }
+        ).then(
+          (value) => ({ kind: 'completed' as const, value }),
+          () => ({ kind: 'refused' as const })
+        );
+        if (predecessor) await predecessor;
+        const decisions = decisionRows();
+        expect(decisions).toHaveLength(1);
+        const originalDecision = decisions[0]!;
+        expect(originalDecision.result).toBe('allow');
+        if (coordinatorCase) {
+          expect(originalAdmissionCompleted).toBe(true);
+          if (!targetPosted) throw new Error('Actual Coordinator receipt target did not post.');
+          expect(targetDatabase).toBe(
+            `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`
+          );
+          expect(nativePosts).toEqual(
+            ending === 'coordinator-ended-before-receipt'
+              ? ['coordinator-ack', 'target']
+              : ['target']
+          );
+          expect(targetRecordUnchanged).toBe(true);
+          expect(originalDecision.decisionId).toBe(originalDecisionId);
+          expect(canonicalJsonText(originalDecision)).toBe(originalDecisionSnapshot);
+          expect(
+            canonicalJsonText(
+              listWorkspaceAuditEvents(db, workspaceId, coreDb).find(
+                (event) => event.id === originalDecision.auditEventId
+              )
+            )
+          ).toBe(coordinatorOriginalAudit);
+          expect(originalDecision.mediation?.subject).toMatchObject({
+            principal: { kind: 'human', id: LOCAL_USER_ID },
+            actor: { kind: 'agent', id: 'goal-coordinator', responsibleUserId: LOCAL_USER_ID },
+            responsibleHumanId: LOCAL_USER_ID,
+            credentialKind: actor.kind,
+            process: { workspaceId, threadId: goal.threadId, turnId: coordinator.id },
+          });
+          // Coordinator Kernel authority is distinct from the consuming Worker's finite Task allocation.
+          expect(readPolicyStatementUseCount(db, domainReference)).toBe(0);
+          expect(readGoalTaskPolicyContext({ coreDb, store, db, lineage })?.planVersionId).toBe(
+            plan.planVersionId
+          );
+          expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+            plan.planVersionId
+          );
+          expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+          expect(
+            requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+          ).toEqual(pkg);
+          expect(refreshCalls).toBe(2);
+          expect(accessDisclosed && externalCompleted).toBe(true);
+          expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(generation + 1);
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            generation + 1
+          );
+          expect(
+            readNativeProduct(
+              nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+              'thread',
+              thread.id
+            )?.record.login
+          ).toBeUndefined();
+          if (ending === 'coordinator-completed') {
+            expect(
+              requireNativeCoordinatorGoal(db, { actor, ...goalScope, turnId: coordinator.id })
+            ).toMatchObject({
+              activePlanVersionId: plan.planVersionId,
+            });
+            expect(targetCommitted).toBe(true);
+            expect(result.kind).toBe('completed');
+            if (result.kind !== 'completed')
+              throw new Error('Actual Coordinator positive did not complete.');
+            const receipt = WorkspaceVaultInjectionReceiptSchema.parse(result.value);
+            expect(receipt).toMatchObject({
+              receiptId,
+              planId: injection.planId,
+              grantId,
+              agentSessionId,
+              revocationStatus: 'active',
+            });
+            expect(listVaultInjectionReceipts(coreDb)).toEqual([receipt]);
+          } else {
+            expect(coordinatorEndAcknowledged).toBe(true);
+            expect
+              .soft(
+                {
+                  targetCommitted,
+                  nativeRefusal,
+                  code: coordinatorNativeCode,
+                  receipts: listVaultInjectionReceipts(coreDb).length,
+                },
+                'Native receipt committed after the original Coordinator Turn ended'
+              )
+              .toEqual({
+                targetCommitted: false,
+                nativeRefusal: true,
+                code: 'precondition',
+                receipts: 0,
+              });
+            expect(result.kind).toBe('refused');
+          }
+          expect(
+            listWorkspaceAuditEvents(db, workspaceId, coreDb).some(
+              (event) =>
+                event.action === 'vault.binding-deliver' &&
+                event.requestId === operationRequestId &&
+                event.outcome === (ending === 'coordinator-completed' ? 'succeeded' : 'failed')
+            )
+          ).toBe(true);
+          return;
+        }
+        expect(originalDecision.mediation?.subject).toMatchObject({
+          principal: { kind: 'agent', id: agentId },
+          responsibleHumanId: LOCAL_USER_ID,
+          credentialKind: 'worker-package',
+          process: { workspaceId, threadId: thread.id, turnId: turn.id },
+        });
+        expect(originalDecision.mediation?.consumedStatements).toEqual([{ ...domainReference }]);
+        expect(readPolicyStatementUseCount(db, domainReference)).toBe(1);
+        expect(refreshCalls).toBe(2);
+        expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+        expect(
+          requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+        ).toEqual(pkg);
+        expect(
+          readNativeProduct(
+            nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+            'thread',
+            thread.id
+          )?.record.login
+        ).toBeUndefined();
+        if (ending === 'approver-credential-before-successor') {
+          expect(originalAdmissionCompleted, 'Original Main admission did not complete').toBe(true);
+          expect(credentialRevocationAcknowledged, 'Actual credential revocation did not ACK').toBe(
+            true
+          );
+          if (!targetPosted)
+            throw new Error(
+              'The unchanged Vault target was not posted after credential revocation.'
+            );
+          expect(targetPosted).toBe(true);
+          const coreAddress = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+          expect(predecessorDatabase === coreAddress && targetDatabase === coreAddress).toBe(true);
+          expect(nativePosts).toEqual(['credential-revoke', 'credential-ack', 'target']);
+          expect(targetRecordUnchanged).toBe(true);
+          expect(originalDecision.decisionId).toBe(originalDecisionId);
+          expect(canonicalJsonText(originalDecision) === originalDecisionSnapshot).toBe(true);
+          expect(credentialSavedPolicyUnchanged && credentialPublicationUnchanged).toBe(true);
+          expect(credentialApprovedDomainUnavailable).toBe(true);
+          expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+            plan.planVersionId
+          );
+          expect(readGoalTaskPolicyContext({ coreDb, store, db, lineage })?.planVersionId).toBe(
+            plan.planVersionId
+          );
+          expect
+            .soft(
+              targetCommitted,
+              'Native successor committed after its approving credential ended'
+            )
+            .toBe(false);
+          expect
+            .soft(nativeRefusal, 'The actually posted native boundary did not refuse')
+            .toBe(true);
+          expect.soft(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(generation);
+          expect.soft(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(result.kind).toBe('refused');
+          expect(accessDisclosed || externalCompleted).toBe(false);
+          // The provider/private backend can already have X+1; the refusal grants no rollback.
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            generation + 1
+          );
+          return;
+        }
+        if (ending === 'last-allocation') {
+          expect(result.kind).toBe('completed');
+          if (result.kind !== 'completed')
+            throw new Error('Original last-allocation effect refused before completion.');
+          const receipt = WorkspaceVaultInjectionReceiptSchema.parse(result.value);
+          expect(receipt).toMatchObject({
+            receiptId,
+            planId: injection.planId,
+            grantId,
+            agentSessionId,
+            revocationStatus: 'active',
+          });
+          expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
+          expect(accessDisclosed && externalCompleted).toBe(true);
+          expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(generation + 1);
+          expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+            plan.planVersionId
+          );
+          // Ordinary exhaustion cannot authorize another effect; this original effect was already consumed exactly once.
+          expect(domains.read(goalScope)).toBeNull();
+          expect(
+            listWorkspaceAuditEvents(db, workspaceId, coreDb).some(
+              (event) => event.action === 'vault.binding-deliver' && event.outcome === 'succeeded'
+            )
+          ).toBe(true);
+        } else {
+          expect(
+            originalAdmissionCompleted,
+            'Main refused before the deciding cross-owner crossing'
+          ).toBe(true);
+          expect(targetPosted, 'Original target was never posted to the native writer').toBe(true);
+          expect(predecessorAck, 'Actual successor Plan publication did not acknowledge').toBe(
+            true
+          );
+          // Host placement is separate from product ownership; verify both exact owner addresses.
+          const goalAddress = `workspace:${nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId }).path}`;
+          const vaultAddress = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+          expect(
+            predecessorDatabase === goalAddress,
+            'Goal frame addressed another database owner'
+          ).toBe(true);
+          expect(
+            targetDatabase === vaultAddress,
+            'Vault frame addressed another database owner'
+          ).toBe(true);
+          expect(nativePosts).toEqual(['plan', 'plan-ack', 'target']);
+          expect(targetRecordUnchanged).toBe(true);
+          expect(originalDecision.decisionId).toBe(originalDecisionId);
+          expect(canonicalJsonText(originalDecision) === originalDecisionSnapshot).toBe(true);
+          expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
+            successorPlan.planVersionId
+          );
+          expect(() => readGoalTaskPolicyContext({ coreDb, store, db, lineage })).toThrow();
+          expect
+            .soft(
+              targetCommitted,
+              'Native publication committed after original Task authority ended'
+            )
+            .toBe(false);
+          expect
+            .soft(nativeRefusal, 'Refusal did not come from the actually posted native boundary')
+            .toBe(true);
+          expect.soft(result.kind).toBe('refused');
+          expect.soft(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect
+            .soft(getVaultReference(coreDb, referenceId)?.currentVersion)
+            .toBe(ending === 'plan-before-successor' ? generation : generation + 1);
+          expect(accessDisclosed).toBe(ending === 'plan-before-receipt');
+          expect(externalCompleted).toBe(ending === 'plan-before-receipt');
+          // The provider/backend may already have a successor; the native refusal promises no rollback.
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            generation + 1
+          );
+        }
+      } finally {
+        if (predecessor) await predecessor.catch(() => {});
+        nativeStage?.mockRestore();
+        nativePosting?.mockRestore();
+        http.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        vault.lock();
+        for (const handle of operationHandles) closeTestCoreDb(handle);
+        closeTestCoreDb(db);
+        closeTestCoreDb(coreDb);
       }
     }
   );

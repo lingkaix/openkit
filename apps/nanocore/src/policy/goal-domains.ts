@@ -18,12 +18,17 @@ import {
   evaluateProductAuthorization,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
-import { isThreadIdVisible } from '../auth/thread-visibility.js';
+import { isThreadIdVisible, type ThreadVisibilityReadPort } from '../auth/thread-visibility.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
-import { goalActor, readGoalView, requireCoordinatorGoal } from '../runtime/goal-owner.js';
+import {
+  goalActor,
+  readGoalView,
+  readNativeGoalView,
+  requireCoordinatorGoal,
+} from '../runtime/goal-owner.js';
 import {
   type GoalTaskPolicyContext,
   readGoalTaskPolicyContext,
@@ -73,15 +78,28 @@ export interface GoalDomainKey {
   readonly goalId: string;
 }
 
-/** Existing Policy persistence and live Goal/credential owners; no second grant store. */
-export interface GoalDomainPolicyDependencies {
+/** Real read dependencies and the complete default writer share one existing Goal owner. */
+export type GoalDomainPolicyDependencies = {
   readonly coreDb: CoreDb;
-  readonly store: FsStore;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly files: Pick<RuntimeConfigFileService, 'readFile' | 'validate' | 'updateFile'>;
   readonly currentPolicy: () => unknown;
-  readonly reload: () => ReturnType<RuntimeConfigManager['reload']>;
-}
+} & (
+  | {
+      readonly mode: 'read';
+      readonly store: ThreadVisibilityReadPort & {
+        getTurnById(
+          turnId: string
+        ): Pick<ReturnType<FsStore['getTurnById']>, 'owner' | 'threadId' | 'status'>;
+      };
+      readonly files: Pick<RuntimeConfigFileService, 'readFile'>;
+    }
+  | {
+      readonly mode?: 'write';
+      readonly store: FsStore;
+      readonly files: Pick<RuntimeConfigFileService, 'readFile' | 'validate' | 'updateFile'>;
+      readonly reload: () => ReturnType<RuntimeConfigManager['reload']>;
+    }
+);
 
 /** Known ended or unapproved authority is distinct from a failed dependency read. */
 class GoalDomainUnavailable extends Error {}
@@ -98,7 +116,7 @@ export function goalDomainSupportError(input: {
   readonly statement: Pick<GoalDomainStatement, 'scope' | 'lifetime'>;
   readonly workspaceId: string;
   readonly goalId: string;
-  readonly store: FsStore;
+  readonly store: GoalDomainPolicyDependencies['store'];
   readonly actor: Actor;
   readonly administratorEligible: boolean;
 }): string | null {
@@ -153,8 +171,8 @@ export function goalDomainSupportError(input: {
   return null;
 }
 
-/** Publishes only a committed, jointly approved Plan/domain through the sole config CAS writer. */
-export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies) {
+/** Shared read bodies retain current approval, Policy, credential and original-use predicates. */
+function createGoalDomainPolicyReadOwner(deps: GoalDomainPolicyDependencies) {
   function saved() {
     const file = deps.files.readFile('server.jsonc');
     const raw = parseJsoncObject(file.content, 'server.jsonc');
@@ -207,7 +225,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       throw new GoalDomainUnavailable(
         'Goal domain requires the exact completed joint human approval.'
       );
-    const view = readGoalView(deps.store, db, source.goalId);
+    const view = readNativeGoalView(db, source.goalId);
     const version = view.versions.find((item) => item.planVersionId === source.planVersionId);
     if (
       !view.goal ||
@@ -282,6 +300,157 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     return { statement: active, actor, goal: view.goal, request };
   }
 
+  function currentGoalHuman(
+    goal: NonNullable<ReturnType<typeof readGoalView>['goal']>,
+    workspaceId: string
+  ) {
+    const actor = goalActor(goal);
+    if (
+      !authorizeWorkspace(deps.coreDb, actor, workspaceId, {
+        policyOperation: 'workspace.configure',
+        mutating: true,
+      })
+    )
+      throw new Error('Goal Coordinator human credential is no longer authorized.');
+    const kernel = evaluateProductAuthorization(
+      deps.coreDb,
+      actor,
+      { kind: 'workspace', workspaceId },
+      'workspace.configure',
+      true
+    );
+    if (kernel.effect !== 'allow') throw new Error('Goal administration Kernel admission failed.');
+    return kernel;
+  }
+
+  function permissionAnchorCurrent(
+    permission: GoalDomainPermission,
+    context: GoalTaskPolicyContext
+  ) {
+    const anchor = permission.lifetime.anchor;
+    return (
+      anchor.owner.kind === 'workspace' &&
+      anchor.owner.workspaceId === context.workspaceId &&
+      ((anchor.kind === 'goal' && anchor.id === context.goalId) ||
+        (anchor.kind === 'thread' && anchor.id === context.taskThreadId) ||
+        (anchor.kind === 'turn' &&
+          anchor.id === context.turnId &&
+          !isSealedTurnTerminal(deps.store.getTurnById(anchor.id).status)))
+    );
+  }
+
+  function readCurrent(
+    key: GoalDomainKey,
+    ownDecision?: PolicyUseDecision
+  ): GoalDomainStatement | null {
+    const current = loaded();
+    if (ownDecision && ownDecision.policyRevision !== current.revision) return null;
+    const candidates = current.document.statements.filter(
+      (statement) =>
+        statement.kind === 'delegation' &&
+        statement.purpose === 'goal-domain' &&
+        statement.state === 'active' &&
+        statement.source?.workspaceId === key.workspaceId &&
+        statement.source.goalId === key.goalId
+    );
+    const currentStatements = candidates.filter((value) => {
+      const statement = value as GoalDomainStatement;
+      try {
+        const approval = approved(key.workspaceId, statement.source.approvalRequestId, ownDecision);
+        return policyDigest(approval.statement) === policyDigest(statement);
+      } catch (error) {
+        if (error instanceof GoalDomainUnavailable) return false;
+        throw error;
+      }
+    });
+    return currentStatements.length === 1 ? (currentStatements[0]! as GoalDomainStatement) : null;
+  }
+  /** Current native Task facts select only live exceptions; a historical allow is never a new use. */
+  function readPermissions(input: {
+    readonly context: GoalTaskPolicyContext;
+    readonly decision?: PolicyUseDecision;
+  }): GoalDomainPermission[] {
+    const { context, decision } = input;
+    const key = { workspaceId: context.workspaceId, goalId: context.goalId };
+    const current = loaded();
+    const domain = readCurrent(key, decision);
+    if (!domain) return [];
+    const goal = readNativeGoalView(deps.repositoryWorkspaceDb(context.workspaceId), context.goalId)
+      .goal!;
+    currentGoalHuman(goal, context.workspaceId);
+    const reference = { id: domain.id, digest: policyDigest(domain) };
+    const db = deps.repositoryWorkspaceDb(context.workspaceId);
+    return current.document.statements.filter((value): value is GoalDomainPermission => {
+      if (
+        value.kind !== 'permission' ||
+        value.state !== 'active' ||
+        value.effect !== 'allow' ||
+        value.grant.kind !== 'ordinary' ||
+        value.authority.kind !== 'delegation' ||
+        policyDigest(value.authority.statement) !== policyDigest(reference) ||
+        policyDigest(value.author) !== policyDigest(domain.delegate) ||
+        value.scope.subjects.length !== 1 ||
+        value.scope.subjects[0]?.kind !== 'agent' ||
+        value.scope.subjects[0].id !== context.agentId ||
+        !policyScopeContains(domain.scope, value.scope) ||
+        !permissionAnchorCurrent(value, context) ||
+        (value.lifetime.notAfter && Date.now() >= Date.parse(value.lifetime.notAfter))
+      )
+        return false;
+      if (value.lifetime.uses === undefined) return true;
+      const ref = { id: value.id, digest: policyDigest(value) };
+      const own = decision && policyStatementUsedByDecision(db, ref, decision) ? 1 : 0;
+      return readPolicyStatementUseCount(db, ref) - own < value.lifetime.uses;
+    });
+  }
+
+  return {
+    saved,
+    loaded,
+    approved,
+    currentGoalHuman,
+    permissionAnchorCurrent,
+    readCurrent,
+    readPermissions,
+  };
+}
+
+/** Explicit read mode exposes no writer methods; the default still requires complete writer dependencies. */
+export function createGoalDomainPolicyService(
+  deps: GoalDomainPolicyDependencies & { readonly mode: 'read' }
+): Pick<GoalDomainPolicyService, 'read' | 'readForDecision' | 'readPermissions'>;
+export function createGoalDomainPolicyService(
+  deps: Exclude<GoalDomainPolicyDependencies, { readonly mode: 'read' }>
+): GoalDomainPolicyService;
+export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies) {
+  if (deps.mode === 'read') {
+    const owner = createGoalDomainPolicyReadOwner(deps);
+    return {
+      read(key: GoalDomainKey) {
+        return owner.readCurrent(key);
+      },
+      readForDecision(key: GoalDomainKey & { readonly decision: PolicyUseDecision }) {
+        return owner.readCurrent(key, key.decision);
+      },
+      readPermissions: owner.readPermissions,
+    };
+  }
+  return createGoalDomainPolicyWriter(deps);
+}
+
+/** Publishes only a committed, jointly approved Plan/domain through the sole config CAS writer. */
+function createGoalDomainPolicyWriter(
+  deps: Exclude<GoalDomainPolicyDependencies, { readonly mode: 'read' }>
+) {
+  const {
+    saved,
+    loaded,
+    approved,
+    currentGoalHuman,
+    permissionAnchorCurrent,
+    readCurrent,
+    readPermissions,
+  } = createGoalDomainPolicyReadOwner(deps);
   function coordinatorAuthority(input: GoalDomainAdministrationInput) {
     if (input.workspaceDb.workspaceId !== input.taskLineage.workspaceId)
       throw new Error('Goal administration Workspace differs from its Task lineage.');
@@ -327,45 +496,6 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       responsibleHumanId: goal.responsibleUserId,
     };
     return { current, context, key, domain, goal, actor, kernel, subject };
-  }
-
-  function currentGoalHuman(
-    goal: NonNullable<ReturnType<typeof readGoalView>['goal']>,
-    workspaceId: string
-  ) {
-    const actor = goalActor(goal);
-    if (
-      !authorizeWorkspace(deps.coreDb, actor, workspaceId, {
-        policyOperation: 'workspace.configure',
-        mutating: true,
-      })
-    )
-      throw new Error('Goal Coordinator human credential is no longer authorized.');
-    const kernel = evaluateProductAuthorization(
-      deps.coreDb,
-      actor,
-      { kind: 'workspace', workspaceId },
-      'workspace.configure',
-      true
-    );
-    if (kernel.effect !== 'allow') throw new Error('Goal administration Kernel admission failed.');
-    return kernel;
-  }
-
-  function permissionAnchorCurrent(
-    permission: GoalDomainPermission,
-    context: GoalTaskPolicyContext
-  ) {
-    const anchor = permission.lifetime.anchor;
-    return (
-      anchor.owner.kind === 'workspace' &&
-      anchor.owner.workspaceId === context.workspaceId &&
-      ((anchor.kind === 'goal' && anchor.id === context.goalId) ||
-        (anchor.kind === 'thread' && anchor.id === context.taskThreadId) ||
-        (anchor.kind === 'turn' &&
-          anchor.id === context.turnId &&
-          !isSealedTurnTerminal(deps.store.getTurnById(anchor.id).status)))
-    );
   }
 
   async function persist(
@@ -595,47 +725,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       }));
     },
 
-    /** Current native Task facts select only live exceptions; a historical allow is never a new use. */
-    readPermissions(input: {
-      readonly context: GoalTaskPolicyContext;
-      readonly decision?: PolicyUseDecision;
-    }): GoalDomainPermission[] {
-      const { context, decision } = input;
-      const key = { workspaceId: context.workspaceId, goalId: context.goalId };
-      const current = loaded();
-      const domain = readCurrent(key, decision);
-      if (!domain) return [];
-      const goal = readGoalView(
-        deps.store,
-        deps.repositoryWorkspaceDb(context.workspaceId),
-        context.goalId
-      ).goal!;
-      currentGoalHuman(goal, context.workspaceId);
-      const reference = { id: domain.id, digest: policyDigest(domain) };
-      const db = deps.repositoryWorkspaceDb(context.workspaceId);
-      return current.document.statements.filter((value): value is GoalDomainPermission => {
-        if (
-          value.kind !== 'permission' ||
-          value.state !== 'active' ||
-          value.effect !== 'allow' ||
-          value.grant.kind !== 'ordinary' ||
-          value.authority.kind !== 'delegation' ||
-          policyDigest(value.authority.statement) !== policyDigest(reference) ||
-          policyDigest(value.author) !== policyDigest(domain.delegate) ||
-          value.scope.subjects.length !== 1 ||
-          value.scope.subjects[0]?.kind !== 'agent' ||
-          value.scope.subjects[0].id !== context.agentId ||
-          !policyScopeContains(domain.scope, value.scope) ||
-          !permissionAnchorCurrent(value, context) ||
-          (value.lifetime.notAfter && Date.now() >= Date.parse(value.lifetime.notAfter))
-        )
-          return false;
-        if (value.lifetime.uses === undefined) return true;
-        const ref = { id: value.id, digest: policyDigest(value) };
-        const own = decision && policyStatementUsedByDecision(db, ref, decision) ? 1 : 0;
-        return readPolicyStatementUseCount(db, ref) - own < value.lifetime.uses;
-      });
-    },
+    readPermissions,
 
     /** Reads all authority from the completed joint request; no second human approval exists. */
     activate(input: {
@@ -729,34 +819,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       return policyRevision.then((revision) => ({ changed: true, policyRevision: revision }));
     },
   };
-
-  function readCurrent(
-    key: GoalDomainKey,
-    ownDecision?: PolicyUseDecision
-  ): GoalDomainStatement | null {
-    const current = loaded();
-    if (ownDecision && ownDecision.policyRevision !== current.revision) return null;
-    const candidates = current.document.statements.filter(
-      (statement) =>
-        statement.kind === 'delegation' &&
-        statement.purpose === 'goal-domain' &&
-        statement.state === 'active' &&
-        statement.source?.workspaceId === key.workspaceId &&
-        statement.source.goalId === key.goalId
-    );
-    const currentStatements = candidates.filter((value) => {
-      const statement = value as GoalDomainStatement;
-      try {
-        const approval = approved(key.workspaceId, statement.source.approvalRequestId, ownDecision);
-        return policyDigest(approval.statement) === policyDigest(statement);
-      } catch (error) {
-        if (error instanceof GoalDomainUnavailable) return false;
-        throw error;
-      }
-    });
-    return currentStatements.length === 1 ? (currentStatements[0]! as GoalDomainStatement) : null;
-  }
 }
 
 /** Native Goal consumers use the same instance shape without importing transport types. */
-export type GoalDomainPolicyService = ReturnType<typeof createGoalDomainPolicyService>;
+export type GoalDomainPolicyService = ReturnType<typeof createGoalDomainPolicyWriter>;

@@ -288,6 +288,7 @@ import {
 import { applyControlThreadReadReceipt } from './thread-read-membership-native.js';
 import { applyControlVault } from './vault-native.js';
 import { controlVaultRefusal } from './vault-native-codecs.js';
+import { type PreparedControlVaultRead, prepareControlVaultRead } from './vault-policy-read.js';
 import {
   applyControlWorkObservation,
   type ControlWorkObservationInput,
@@ -473,6 +474,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
+  readonly preparedVaultRead?: PreparedControlVaultRead | undefined;
   readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
   readonly preparedCapability?: ControlCapabilityCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
@@ -1308,6 +1310,20 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         'targetId' in request.input ? `runtime-target:${request.input.targetId}` : 'runtime-target'
       );
       break;
+    case 'vault': {
+      if (request.input.kind !== 'reference-advance' && request.input.kind !== 'receipt-create')
+        break;
+      const authority = request.input.record.loginBinding;
+      if (!authority) break;
+      lanes.add(authority.binding.consumer.scope.turnId);
+      lanes.add(`session:${authority.binding.consumer.scope.agentSessionId}`);
+      const caller = authority.policyProof?.caller;
+      if (caller?.kind === 'worker') {
+        lanes.add(caller.lineage.turnId);
+        lanes.add(`session:${caller.lineage.agentSessionId}`);
+      } else if (caller?.kind === 'coordinator') lanes.add(caller.turnId);
+      break;
+    }
     case 'backend-session':
       if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
       for (const lane of controlBackendSessionLanes(owner.scopeDb, request.input)) lanes.add(lane);
@@ -1784,6 +1800,7 @@ function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWo
     Object.assign(request, { preparedTargetProof: undefined });
   try {
     request.preparedSchemaApplication?.close();
+    request.preparedVaultRead?.close();
     reply(result);
   } finally {
     request.finish();
@@ -2058,6 +2075,19 @@ function flush(owner: OwnedDatabase): void {
       );
     if (readyBatch(owner).length) owner.immediate = setImmediate(() => flush(owner));
     return;
+  }
+  // Re-sample only the selected request's canonical sources at the synchronous SQL head.
+  for (const request of batch) {
+    if (!request.preparedVaultRead || request.refusal || request.predecessorFailed) continue;
+    try {
+      request.preparedVaultRead.sampleHead();
+    } catch (error) {
+      const domain = domainRefusal(request.operation, error);
+      request.refusal = domain
+        ? { ...failure(request.id, 'precondition'), domain }
+        : failure(request.id, failureCode(error, [request.id]), 'not-committed');
+      refuseSuccessors(owner, request);
+    }
   }
   let bodyFinished = false;
   let replies: ControlWorkerReply[];
@@ -2971,7 +3001,10 @@ function flush(owner: OwnedDatabase): void {
               (owner.scopeDb.scope !== 'core' && owner.scopeDb.scope !== 'workspace')
             )
               throw new ControlProductPreconditionError();
-            const result = applyControlVault(owner.scopeDb, request.input);
+            const result = applyControlVault(owner.scopeDb, request.input, {
+              prepared: request.preparedVaultRead,
+              policyState: owner.runtimePolicy,
+            });
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -3990,6 +4023,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedSteer: WriteRequest['preparedSteer'];
           let preparedPending: PreparedControlPendingCommand | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
+          let preparedVaultRead: PreparedControlVaultRead | undefined;
           let preparedMaterial: ControlMaterialCommandInput | undefined;
           let preparedCapability: ControlCapabilityCommandInput | undefined;
           let preparedReview: PreparedControlReviewCommand | undefined;
@@ -4305,6 +4339,16 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 newDirectories
               );
             }
+            if (
+              value.operation === 'vault' &&
+              (value.input.kind === 'reference-advance' || value.input.kind === 'receipt-create') &&
+              value.input.record.loginBinding
+            ) {
+              await prepareAfterPredecessors(owner, queued, earlier);
+              if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+              preparedVaultRead = await prepareControlVaultRead(owner.scopeDb, value.input);
+              Object.assign(queued, { preparedVaultRead });
+            }
             if (value.operation === 'goal') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               preparedGoal = await prepareControlGoalCommand(
@@ -4365,6 +4409,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedEntries,
               preparedGenerativePresentation,
               preparedGoal,
+              preparedVaultRead,
               preparedReview,
               preparedPending,
               preparedPublication,
@@ -4393,6 +4438,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             });
             schedule(owner);
           } catch (error) {
+            preparedVaultRead?.close();
             const domain = domainRefusal(value.operation, error);
             queued.refusal = owner.poisoned
               ? failure(value.id, 'unavailable')
@@ -4425,6 +4471,7 @@ port.on('close', () => {
   stopping = true;
   for (const owner of databases.values()) {
     unschedule(owner);
+    for (const request of owner.pending) request.preparedVaultRead?.close();
     owner.pending.length = 0;
     owner.sqlite.close();
   }

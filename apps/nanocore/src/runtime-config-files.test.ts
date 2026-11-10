@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs, {
   chmodSync,
   existsSync,
@@ -7,14 +8,18 @@ import fs, {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
-import { RuntimeConfigFileService } from './config/runtime-config-files.js';
+import {
+  RuntimeConfigFileService,
+  readRuntimeConfigPolicySource,
+} from './config/runtime-config-files.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -868,4 +873,155 @@ describe('runtime config file API', () => {
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+});
+
+// openkit-test-platform: posix
+// These source checks require real POSIX file symlinks and link-resolution semantics.
+// Config Identity: source inspection preserves bytes/revisions; loading and Policy stay separate.
+describe.each([
+  {
+    kind: 'server',
+    owner: { kind: 'server' },
+    id: 'server.jsonc',
+    relativePath: 'config/server.jsonc',
+  },
+  {
+    kind: 'workspace',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+    id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
+    relativePath: 'workspaces/ws_00000000-0000-7000-8000-000000000001/config/workspace.jsonc',
+  },
+] as const)('$kind runtime config Policy source', ({ kind, owner, id, relativePath }) => {
+  it('returns exact raw source and content revision, then observes a fresh byte-only edit', () => {
+    // Reuse this owner's temporary-root pattern without initializing SQL or a runtime manager.
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+    const path = join(dataRoot, relativePath);
+    const source =
+      '// Preserve comments, CRLF and Unicode.\r\n{ "sourceOnly": "synthetic ☃", }\r\n';
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, source);
+      const expected = {
+        content: source,
+        file: {
+          id,
+          kind,
+          path: id,
+          exists: true,
+          revision: `sha256:${createHash('sha256').update(source).digest('hex')}`,
+          updatedAt: statSync(path).mtime.toISOString(),
+        },
+      };
+      // This source deliberately has no valid family configuration; reads do not load it.
+      expect(readRuntimeConfigPolicySource(dataRoot, owner)).toEqual(expected);
+      expect(readRuntimeConfigPolicySource(dataRoot, owner)).toEqual(expected);
+      const changed = `${source}// A source-only revision change.\r\n`;
+      writeFileSync(path, changed);
+      const current = readRuntimeConfigPolicySource(dataRoot, owner);
+      expect(current.content).toBe(changed);
+      expect(current.file).toEqual({
+        ...expected.file,
+        revision: `sha256:${createHash('sha256').update(changed).digest('hex')}`,
+        updatedAt: statSync(path).mtime.toISOString(),
+      });
+      expect(current.file.revision).not.toBe(expected.file.revision);
+      expect(readFileSync(path, 'utf8')).toBe(changed);
+      expect(existsSync(join(dataRoot, 'server'))).toBe(false);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing source without creating a file or default configuration', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+    const path = join(dataRoot, relativePath);
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      expect(() => readRuntimeConfigPolicySource(dataRoot, owner)).toThrow(
+        expect.objectContaining({ code: 'config_file_not_found', status: 404 })
+      );
+      expect(existsSync(path)).toBe(false);
+      expect(existsSync(join(dataRoot, 'server'))).toBe(false);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['inside', 'outside'] as const)(
+    'refuses a real file symlink with its target %s the config root before reading content',
+    (location) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+      const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+      const path = join(dataRoot, relativePath);
+      const target = join(location === 'inside' ? dirname(path) : outsideRoot, 'source.jsonc');
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(target, '// Synthetic outside-read sentinel.\n{}\n');
+        symlinkSync(target, path);
+        expect(lstatSync(path).isSymbolicLink()).toBe(true);
+        const reads = vi.spyOn(fs, 'readFileSync');
+        try {
+          syncBuiltinESMExports();
+          // Preserve existing error priority: containment is checked before file symlink refusal.
+          expect(() => readRuntimeConfigPolicySource(dataRoot, owner)).toThrow(
+            expect.objectContaining({
+              code:
+                location === 'inside' ? 'config_symlink_not_allowed' : 'config_path_not_allowed',
+              status: 400,
+            })
+          );
+          expect(reads).not.toHaveBeenCalled();
+        } finally {
+          reads.mockRestore();
+          syncBuiltinESMExports();
+        }
+        expect(readFileSync(target, 'utf8')).toBe('// Synthetic outside-read sentinel.\n{}\n');
+        expect(lstatSync(path).isSymbolicLink()).toBe(true);
+      } finally {
+        rmSync(dataRoot, { recursive: true, force: true });
+        rmSync(outsideRoot, { recursive: true, force: true });
+      }
+    }
+  );
+});
+
+describe('runtime config Policy source selector', () => {
+  it.each([
+    { kind: 'workspace', workspaceId: '' },
+    { kind: 'workspace', workspaceId: '../outside' },
+    { kind: 'workspace', workspaceId: 'nested/workspace' },
+    { kind: 'user' },
+  ])('refuses unsupported or invalid owner %j before any source content read', (owner) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+    const reads = vi.spyOn(fs, 'readFileSync');
+    try {
+      syncBuiltinESMExports();
+      expect(() =>
+        readRuntimeConfigPolicySource(
+          dataRoot,
+          owner as unknown as Parameters<typeof readRuntimeConfigPolicySource>[1]
+        )
+      ).toThrow(expect.objectContaining({ code: 'config_path_not_allowed', status: 400 }));
+      expect(reads).not.toHaveBeenCalled();
+      expect(fs.readdirSync(dataRoot)).toEqual([]);
+    } finally {
+      reads.mockRestore();
+      syncBuiltinESMExports();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('requires a nonempty bound data root before any source content read', () => {
+    const reads = vi.spyOn(fs, 'readFileSync');
+    try {
+      syncBuiltinESMExports();
+      expect(() => readRuntimeConfigPolicySource('', { kind: 'server' })).toThrow(
+        expect.objectContaining({ code: 'config_data_root_required', status: 400 })
+      );
+      expect(reads).not.toHaveBeenCalled();
+    } finally {
+      reads.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
 });

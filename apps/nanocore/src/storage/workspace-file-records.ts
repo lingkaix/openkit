@@ -1297,14 +1297,7 @@ export function* readNativeTurnHistorySteps(
     revisions.push(item);
     yield;
   }
-  const {
-    schemaVersion: _header,
-    captureCoverage: _coverage,
-    requiredFeatures: _features,
-    ...payload
-  } = snapshot.record;
-  const turn = { ...payload, items: [...items.values()] } as Turn;
-  TurnReaderSchema.parse(turn);
+  const turn = nativeTurnWithVerifiedItems(snapshot.record, [...items.values()]);
   return {
     revision: snapshot.revision,
     metadata: snapshot.record,
@@ -1312,6 +1305,128 @@ export function* readNativeTurnHistorySteps(
     itemRevisions: revisions,
     captureCoverage: metadata.captureCoverage ?? null,
   };
+}
+
+/** Repeats the retained Turn decoder for verified Items and the selected native metadata. */
+function nativeTurnWithVerifiedItems(
+  record: ControlProductSnapshot['record'],
+  items: Item[]
+): Turn {
+  const {
+    schemaVersion: _header,
+    captureCoverage: _coverage,
+    requiredFeatures: _features,
+    ...payload
+  } = record;
+  const turn = { ...payload, items } as Turn;
+  TurnReaderSchema.parse(turn);
+  return turn;
+}
+
+/** Request-local verified history; its caller must keep the original borrowed connection open. */
+export interface PreparedNativeTurnHistoryRead {
+  /** Reads only current SQL metadata and descriptors; changed history or attribution refuses. */
+  readonly readCurrent: () => Turn;
+}
+
+/**
+ * Prepares the complete existing history outside SQL, then binds it to its native descriptor vector.
+ * Requires an open borrowed connection and no enclosing transaction during cooperative preparation.
+ * An initially missing Turn returns undefined; a changed or missing prepared Turn throws.
+ * The capability owns no connection, permission, durable state or filesystem read during readCurrent.
+ */
+export async function prepareNativeTurnHistoryRead(
+  scope: NativeProductScope,
+  turnId: string
+): Promise<PreparedNativeTurnHistoryRead | undefined> {
+  const sqlite = scope.sqlite;
+  if (!sqlite?.open || sqlite.inTransaction)
+    throw new Error('Native Turn history preparation requires a borrowed connection outside SQL.');
+  const boundScope: NativeProductScope = {
+    path: scope.path,
+    owner: structuredClone(scope.owner),
+    contentMount: structuredClone(scope.contentMount),
+    sqlite,
+  };
+  const reader = openControlStoreProductReadHandle(boundScope.path, boundScope.owner, sqlite);
+  const readSet = sqlite.transaction(() => {
+    const snapshot = readNativeProduct(boundScope, 'turn', turnId, reader);
+    if (!snapshot) return undefined;
+    const descriptors: ReturnType<ControlStoreProductReadHandle['entries']> = [];
+    let after = 0;
+    for (;;) {
+      const page = reader.entries(turnId, 'item', after);
+      if (!page.length) return { snapshot, descriptors };
+      for (const row of page) {
+        if (row.sequence !== after + 1)
+          throw new Error('Native Turn history descriptor sequence is recovery_required.');
+        descriptors.push(row);
+        after = row.sequence;
+      }
+    }
+  });
+  const identity = (record: ControlProductSnapshot['record']) => {
+    const metadata = StoredTurnV1Schema.parse(record);
+    return {
+      id: metadata.id,
+      owner: metadata.owner,
+      threadId: metadata.threadId,
+      triggerActor: metadata.triggerActor,
+    };
+  };
+  try {
+    const before = readSet();
+    if (!before) {
+      reader.close();
+      return undefined;
+    }
+    const originalIdentity = identity(before.snapshot.record);
+    const steps = readNativeTurnHistorySteps(boundScope, turnId);
+    let history: ReturnType<typeof readNativeTurnHistory>;
+    try {
+      for (;;) {
+        if (!sqlite.open || sqlite.inTransaction)
+          throw new Error(
+            'Native Turn history preparation requires a borrowed connection outside SQL.'
+          );
+        const step = steps.next();
+        if (step.done) {
+          history = step.value;
+          break;
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      steps.return(undefined);
+    }
+    const after = readSet();
+    if (
+      !history ||
+      !after ||
+      !isDeepStrictEqual(before.descriptors, after.descriptors) ||
+      !isDeepStrictEqual(originalIdentity, identity(history.metadata)) ||
+      !isDeepStrictEqual(originalIdentity, identity(after.snapshot.record))
+    )
+      throw new Error('Native Turn history changed during preparation.');
+    const items = structuredClone(history.turn.items);
+    return Object.freeze({
+      readCurrent(): Turn {
+        if (!sqlite.open) throw new Error('Native Turn history borrowed connection is closed.');
+        const current = readSet();
+        if (
+          !current ||
+          !isDeepStrictEqual(originalIdentity, identity(current.snapshot.record)) ||
+          !isDeepStrictEqual(before.descriptors, current.descriptors)
+        )
+          throw new Error('Native Turn history prepared read set changed.');
+        // Metadata revisions can advance without changing the verified immutable history.
+        return nativeTurnWithVerifiedItems(current.snapshot.record, structuredClone(items));
+      },
+    });
+  } catch (error) {
+    reader.close();
+    throw error;
+  }
 }
 
 /** Reads complete ordered native transcript history and validates retained lineage. */

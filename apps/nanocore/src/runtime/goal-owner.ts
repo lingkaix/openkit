@@ -326,7 +326,7 @@ export function readGoalView(_store: FsStore, db: WorkspaceDb, goalId: string): 
   return readNativeGoalView(db, goalId);
 }
 /** Derives admission and state from ordinary native Task Turns, without file or cache fallback. */
-function readNativeGoalView(db: WorkspaceDb, goalId: string): GoalView {
+export function readNativeGoalView(db: WorkspaceDb, goalId: string): GoalView {
   const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (!goal) return { goal: null, cards: [], versions: [], tasks: [], requests: [] };
   const rows = <T>(table: string, schema: z.ZodType<T>) =>
@@ -428,7 +428,7 @@ export function requireCoordinatorGoal(
   return requireNativeCoordinatorGoal(db, binding);
 }
 /** Validates the native Goal/Thread/Turn tuple without a Main Store dependency. */
-function requireNativeCoordinatorGoal(
+export function requireNativeCoordinatorGoal(
   db: WorkspaceDb,
   binding: { actor: Actor; goalId: string; workspaceId: string; threadId: string; turnId: string }
 ): GoalRecord {

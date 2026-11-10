@@ -40,6 +40,7 @@ import {
   nextNativeThreadLogin,
 } from './native-thread-login.js';
 import { THREAD_REQUIRED_FEATURES } from './retained-work-events-v1.js';
+import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import {
   type AdvanceActiveVaultReferenceVersionInput,
   assertAllowedInjectionPaths,
@@ -84,6 +85,7 @@ import {
   type VaultUseDb,
   type VaultUseRecord,
 } from './vault-native-codecs.js';
+import type { PreparedControlVaultRead } from './vault-policy-read.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from './workspace-import-authority.js';
 
@@ -703,10 +705,27 @@ function revokeVaultInjectionReceipts(coreDb: CoreDb, target: ReceiptRevocationT
 /** Runs one original Vault SQL stage inside its admitted savepoint; no material or external effect is owned here. */
 export function applyControlVault(
   db: CoreDb | WorkspaceDb,
-  input: ControlVaultInput
+  input: ControlVaultInput,
+  nativeRead?: {
+    readonly prepared: PreparedControlVaultRead | undefined;
+    readonly policyState: NativeRuntimePolicyPublication | undefined;
+  }
 ): ControlVaultResult {
   assertControlProductWriter(db.sqlite);
   const request = ControlVaultInputSchema.parse(input);
+  // The original input identity and live owner state are checked in this savepoint;
+  // the preparation carries verified reads, never an allowing decision.
+  let initialWorkspace: WorkspaceDb | undefined;
+  let initialPackage: PreparedControlVaultRead['consumerPackage'] | undefined;
+  if (
+    (request.kind === 'reference-advance' || request.kind === 'receipt-create') &&
+    request.record.loginBinding
+  ) {
+    if (db.scope !== 'core' || !nativeRead?.prepared) throw new ControlProductPreconditionError();
+    nativeRead.prepared.assertCurrent(db, input, nativeRead.policyState);
+    initialWorkspace = nativeRead.prepared.workspaceDb;
+    initialPackage = nativeRead.prepared.consumerPackage;
+  }
   if (
     request.kind !== 'use-create' &&
     request.kind !== 'audit-insert' &&
@@ -880,7 +899,7 @@ export function applyControlVault(
       case 'reference-advance':
         if (request.record.loginBinding) {
           const authority = request.record.loginBinding;
-          requireInitialLoginBinding(db, authority);
+          requireInitialLoginBinding(db, authority, initialWorkspace, initialPackage);
           if (
             request.record.referenceId !== authority.reference.referenceId ||
             request.record.currentVersion !== authority.binding.materialVersion + 1 ||
@@ -944,7 +963,12 @@ export function applyControlVault(
           if (reference.login !== undefined || request.record.loginBinding) {
             const authority = request.record.loginBinding;
             if (!authority) throw new ControlProductPreconditionError();
-            const current = requireInitialLoginBinding(db, authority);
+            const current = requireInitialLoginBinding(
+              db,
+              authority,
+              initialWorkspace,
+              initialPackage
+            );
             if (
               request.record.planId !== authority.planId ||
               request.record.receiptId !== authority.receiptId ||
@@ -1274,7 +1298,9 @@ function requireInitialLoginBinding(
   db: CoreDb,
   authority: NonNullable<
     Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
-  >
+  >,
+  workspaceDb: WorkspaceDb | undefined,
+  preparedPackage: PreparedControlVaultRead['consumerPackage'] | undefined
 ) {
   const { binding, reference, requester, attemptId, planId, receiptId } = authority;
   const { consumer, declaration, materialVersion } = binding;
@@ -1308,55 +1334,48 @@ function requireInitialLoginBinding(
     receiptId !== `receipt_${consumer.snapshotId}_${declaration.id}`
   )
     throw new ControlProductPreconditionError();
-  const scope = nativeProductScope(db.dataRoot, {
-    kind: 'workspace',
-    workspaceId: consumer.scope.workspaceId,
-  });
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
-  try {
-    if (!reader.get('workspace', consumer.scope.workspaceId))
-      throw new ControlProductPreconditionError();
-    const workspaceDb = bindWorkspaceSqlite(reader.sqlite, db.dataRoot, consumer.scope.workspaceId);
-    const snapshot = AgentEnvironmentPackageSchema.parse(
-      requireAgentEnvironmentPackageSnapshot(
-        workspaceDb,
-        consumer.scope.workspaceId,
-        consumer.snapshotId
-      ).snapshot
-    );
-    if (
-      snapshot.schemaVersion !== 4 ||
-      snapshot.llm.mode !== 'harness' ||
-      !isDeepStrictEqual(snapshot.scope, consumer.scope) ||
-      snapshot.agent.agentId !== consumer.agent.agentId ||
-      snapshot.credentials.declarations.filter((value) => value.id === declaration.id).length !==
-        1 ||
-      !isDeepStrictEqual(
-        snapshot.credentials.declarations.find((value) => value.id === declaration.id),
-        declaration
-      )
+  if (
+    !workspaceDb ||
+    workspaceDb.workspaceId !== consumer.scope.workspaceId ||
+    workspaceDb.dataRoot !== db.dataRoot ||
+    !readProduct(
+      workspaceDb.sqlite,
+      { kind: 'workspace', workspaceId: consumer.scope.workspaceId },
+      'workspace',
+      consumer.scope.workspaceId
     )
-      throw new ControlProductPreconditionError();
-    const use = workspaceDb.sqlite
-      .prepare(`SELECT 1 FROM vault_use_records u JOIN audit_events a ON a.audit_event_id=u.audit_event_id
+  )
+    throw new ControlProductPreconditionError();
+  const snapshot = AgentEnvironmentPackageSchema.parse(preparedPackage);
+  if (
+    snapshot.schemaVersion !== 4 ||
+    snapshot.llm.mode !== 'harness' ||
+    !isDeepStrictEqual(snapshot.scope, consumer.scope) ||
+    snapshot.agent.agentId !== consumer.agent.agentId ||
+    snapshot.credentials.declarations.filter((value) => value.id === declaration.id).length !== 1 ||
+    !isDeepStrictEqual(
+      snapshot.credentials.declarations.find((value) => value.id === declaration.id),
+      declaration
+    )
+  )
+    throw new ControlProductPreconditionError();
+  const use = workspaceDb.sqlite
+    .prepare(`SELECT 1 FROM vault_use_records u JOIN audit_events a ON a.audit_event_id=u.audit_event_id
       WHERE u.owner_scope='workspace' AND u.workspace_id=? AND u.vault_reference_id=? AND u.material_version=?
       AND u.grant_id=? AND u.plan_id=? AND u.receipt_id=? AND u.agent_session_id=? AND u.outcome='succeeded'
       AND a.workspace_id=? AND a.action='vault.resolve' AND a.outcome='succeeded' LIMIT 1`)
-      .get(
-        consumer.scope.workspaceId,
-        reference.referenceId,
-        materialVersion,
-        current.grant.grantId,
-        planId,
-        receiptId,
-        consumer.scope.agentSessionId,
-        consumer.scope.workspaceId
-      );
-    if (!use) throw new ControlProductPreconditionError();
-    return current;
-  } finally {
-    reader.close();
-  }
+    .get(
+      consumer.scope.workspaceId,
+      reference.referenceId,
+      materialVersion,
+      current.grant.grantId,
+      planId,
+      receiptId,
+      consumer.scope.agentSessionId,
+      consumer.scope.workspaceId
+    );
+  if (!use) throw new ControlProductPreconditionError();
+  return current;
 }
 
 type Effect = Extract<

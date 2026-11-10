@@ -1,9 +1,11 @@
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import type { PolicyResourceV1Schema, PolicySubjectV1Schema } from '@openkit/protocol';
 import type { z } from 'zod';
-import type { FsStore } from '../lib/store.js';
-import { readGoalView } from '../runtime/goal-owner.js';
-import { readGoalTaskPolicyContext } from '../runtime/goal-task-policy-context.js';
+import { readNativeGoalView } from '../runtime/goal-owner.js';
+import {
+  type GoalTaskPolicyReadPort,
+  readGoalTaskPolicyContext,
+} from '../runtime/goal-task-policy-context.js';
 import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { GoalDomainPolicyService } from './goal-domains.js';
@@ -24,8 +26,8 @@ export interface GoalTaskEvaluationInput {
 /** Joins the canonical Task reader and current Policy owner without retaining another envelope. */
 export function createGoalTaskPolicyService(deps: {
   readonly coreDb: CoreDb;
-  readonly store: FsStore;
-  readonly domains: GoalDomainPolicyService;
+  readonly store: GoalTaskPolicyReadPort;
+  readonly domains: Pick<GoalDomainPolicyService, 'read' | 'readForDecision' | 'readPermissions'>;
 }) {
   function evaluate(input: GoalTaskEvaluationInput, decision?: PolicyUseDecision) {
     const context = readGoalTaskPolicyContext({
@@ -99,7 +101,7 @@ export function createGoalTaskPolicyService(deps: {
       readonly humanKernel: PolicyDecision;
     }) {
       const workspaceId = input.workspaceDb.workspaceId;
-      const goal = readGoalView(deps.store, input.workspaceDb, input.goalId).goal;
+      const goal = readNativeGoalView(input.workspaceDb, input.goalId).goal;
       if (
         !goal ||
         goal.disposition ||

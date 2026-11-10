@@ -2299,6 +2299,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           planId: plan.planId,
           receiptId,
           reference,
+          ...(input.policyProof ? { policyProof: input.policyProof } : {}),
         });
         await check();
         const refreshCancellation = new AbortController();

@@ -6,18 +6,33 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-
 import {
   evaluateThreadAuthorization,
   type ResourcePolicyActor,
 } from '../policy/workspace-resource-access.js';
+import type { CoreDb } from '../storage/db.js';
+import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 
+/** Canonical product and loaded-Policy reads used by both Main and native visibility checks. */
+export type ThreadVisibilityReadPort = Pick<
+  FsStore,
+  'getWorkspaceResourceAccess' | 'getDataRoot' | 'getThread'
+> & {
+  /** Visibility needs canonical Workspace kind, not aggregate product counts. */
+  getWorkspace(workspaceId: string): Pick<ReturnType<FsStore['getWorkspace']>, 'kind'>;
+  /** Native readers borrow the actual Core instead of opening it inside their deciding SQL. */
+  readonly personalWorkspaceCore?: Pick<CoreDb, 'sqlite'>;
+};
+
 /** Unique Thread audience predicate after Workspace eligibility; administrator eligibility must come from the current credential owner. */
 export function isThreadVisible(
-  store: Pick<FsStore, 'getWorkspace' | 'getWorkspaceResourceAccess' | 'getDataRoot'>,
+  store: Pick<
+    ThreadVisibilityReadPort,
+    'getWorkspace' | 'getWorkspaceResourceAccess' | 'getDataRoot' | 'personalWorkspaceCore'
+  >,
   thread: Thread,
   userId: string | undefined,
   administratorEligible = false,
@@ -37,7 +52,9 @@ export function isThreadVisible(
         administrator: administratorEligible,
         personalWorkspaceId:
           workspace.kind === 'personal'
-            ? quickChatWorkspaceIdForUser(userId, store.getDataRoot())
+            ? store.personalWorkspaceCore
+              ? resolvePersonalWorkspaceIdInDb(store.personalWorkspaceCore, userId)
+              : quickChatWorkspaceIdForUser(userId, store.getDataRoot())
             : undefined,
         operation,
         policy: store.getWorkspaceResourceAccess(workspaceId),
@@ -62,7 +79,7 @@ export function isThreadVisible(
  * @returns True only when the Thread exists in that Workspace and the viewer may see it.
  */
 export function isThreadIdVisible(
-  store: FsStore,
+  store: ThreadVisibilityReadPort,
   workspaceId: string,
   threadId: string,
   userId: string | undefined,

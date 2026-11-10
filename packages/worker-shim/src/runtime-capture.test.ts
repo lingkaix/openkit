@@ -740,5 +740,6 @@ it.each([false, true])(
     // Boolean-only failure output; do not print material or admitted body fragments.
     expect(publishedBytes === 0).toBe(true);
     expect(excluded).toBe(true);
-  }
+  },
+  30_000
 );

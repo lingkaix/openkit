@@ -36,7 +36,11 @@ import {
 } from '../operation-contract.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
-import type { InterceptionDecision, InterceptionInput } from '../policy/interception.js';
+import {
+  type InterceptionDecision,
+  type InterceptionInput,
+  PolicyInterception,
+} from '../policy/interception.js';
 import { type PolicyProposal, policyDigest } from '../policy/statements.js';
 import { readVaultReferenceId } from '../providers/vault-credential-resolver.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -51,10 +55,14 @@ import {
 import type { WorkspaceDb } from '../storage/db.js';
 import type {
   ControlVaultMainInputMap,
+  VaultBindingPolicyProof,
   VaultBindingRequester,
   VaultReferenceRecord,
 } from '../storage/vault-native-codecs.js';
-import { getWithdrawableUserVaultGrant } from '../storage/vault-native-codecs.js';
+import {
+  getWithdrawableUserVaultGrant,
+  VaultBindingPolicyProofSchema,
+} from '../storage/vault-native-codecs.js';
 import {
   getVaultInjectionPlan,
   listExportableVaultInjectionPlans,
@@ -249,7 +257,11 @@ export function createVaultOperationImplementations(
     readFacts: () => unknown,
     references: PolicyProposal['inputReferences'],
     attributes: PolicyProposal['inputAttributes'],
-    run: (recheckAuthority: () => Promise<void>, decisionId: string) => Promise<T> | T,
+    run: (
+      recheckAuthority: () => Promise<void>,
+      decisionId: string,
+      policyProof?: VaultBindingPolicyProof
+    ) => Promise<T> | T,
     lineage?: Pick<InterceptionInput, 'decisionLineage' | 'contextSummary'>
   ): Promise<T> {
     if (
@@ -344,57 +356,24 @@ export function createVaultOperationImplementations(
       const taskPolicy = taskContext ? dependencies.goalTaskPolicy?.(db, responsibleHumanId) : null;
       if (taskContext && !taskPolicy) throw new Error('Goal Task Policy is unavailable.');
       let ownDecision: InterceptionDecision | undefined;
-      const currentAuthority = (
-        consumed = false
-      ): {
-        kernel: import('@openkit/policy-kernel').PolicyDecision;
-        goal: import('../policy/goal-task-access.js').GoalTaskAccessResult | null;
-        revision: string;
-        authorizationUses: InterceptionInput['authorizationUses'];
-      } => {
-        const evaluated = readVaultRequesterAuthority(
+      const currentAuthority = (consumed = false) =>
+        PolicyInterception.readVaultAuthority({
           coreDb,
-          input.workspaceId,
-          vaultRequesterForContext(context),
-          definition.policyOperation,
-          definition.mutating
-        );
-        const currentCoordinator =
-          context.kind === 'coordinator' ? requireCoordinatorGoal(store, db, context) : null;
-        const goalInput =
-          context.kind === 'worker'
-            ? {
-                workspaceDb: db,
-                lineage: context.lineage,
-                subject,
-                operation: definition.policyOperation,
-                resource,
-                humanKernel: evaluated.decision,
-              }
-            : null;
-        let goal: import('../policy/goal-task-access.js').GoalTaskAccessResult | null = null;
-        let authorizationUses: InterceptionInput['authorizationUses'] = [];
-        if (taskPolicy && goalInput) {
-          if (consumed && ownDecision)
-            goal = taskPolicy.readTaskDecision({ ...goalInput, decision: ownDecision });
-          else {
-            const evaluatedTask = taskPolicy.evaluateTask(goalInput);
-            goal = evaluatedTask;
-            authorizationUses = evaluatedTask?.authorizationUses ?? [];
-          }
-        }
-        if (taskContext && !goal) throw new Error('Current Goal Task authority is unavailable.');
-        return {
-          kernel: goal?.kernel ?? evaluated.decision,
-          goal,
-          revision: policyDigest({
-            caller: evaluated,
-            goalTask: goal?.authorizationRevision ?? null,
-            coordinator: currentCoordinator,
-          }),
-          authorizationUses,
-        };
-      };
+          workspaceDb: db,
+          workspaceId: input.workspaceId,
+          requester: vaultRequesterForContext(context),
+          coordinator: context.kind === 'coordinator' ? context : null,
+          worker:
+            context.kind === 'worker'
+              ? { lineage: context.lineage, goalLinked: taskContext !== null }
+              : null,
+          subject,
+          resource,
+          operation: definition.policyOperation,
+          mutating: definition.mutating,
+          taskPolicy,
+          ...(consumed && ownDecision ? { decision: ownDecision } : {}),
+        });
       const initial = currentAuthority();
       const authorCurrent = (userId: string) =>
         !!currentWorkspaceAuthority(
@@ -449,7 +428,34 @@ export function createVaultOperationImplementations(
         if (!interceptionInput.stillCurrent()) vaultWorkspaceAccessDenied();
       };
       await recheckAuthority();
-      const result = await run(recheckAuthority, ownDecision.decisionId);
+      const policyProof = operation.startsWith('vault.binding-')
+        ? VaultBindingPolicyProofSchema.parse({
+            proposal,
+            decision: {
+              decisionId: ownDecision.decisionId,
+              proposalDigest: ownDecision.proposalDigest,
+              policyRevision: ownDecision.policyRevision,
+              authorizationRevision: ownDecision.authorizationRevision,
+            },
+            document,
+            workspaceDocument: store.getWorkspaceResourceAccess(input.workspaceId),
+            caller:
+              context.kind === 'coordinator'
+                ? {
+                    kind: 'coordinator',
+                    actor: context.actor,
+                    actorRef: context.actorRef,
+                    workspaceId: context.workspaceId,
+                    goalId: context.goalId,
+                    threadId: context.threadId,
+                    turnId: context.turnId,
+                  }
+                : context.kind === 'worker'
+                  ? { ...vaultRequesterForContext(context), goalLinked: taskContext !== null }
+                  : vaultRequesterForContext(context),
+          })
+        : undefined;
+      const result = await run(recheckAuthority, ownDecision.decisionId, policyProof);
       // Reviewed issuance publishes its exact grant-linked Core Audit in the native effect.
       if (operation !== 'vault.grant-issue')
         await recordVaultAuditEvent({
@@ -621,11 +627,12 @@ export function createVaultOperationImplementations(
           excludedFromCapture: true,
           excludedFromExport: true,
         },
-        (recheckAuthority) =>
+        (recheckAuthority, _decisionId, policyProof) =>
           dependencies.turnExecutor!.credentialBindingOperation!(
             dependencies.store!,
             {
               action,
+              ...(policyProof ? { policyProof } : {}),
               coreAuthority: {
                 workspaceId: input.workspaceId,
                 requester: vaultRequesterForContext(context),

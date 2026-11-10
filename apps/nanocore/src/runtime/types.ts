@@ -137,6 +137,8 @@ export interface TurnExecutor {
       readonly action: 'deliver' | 'replace' | 'revoke';
       /** Original request identity/current Core evaluation, never a permission grant. */
       readonly coreAuthority: import('../storage/vault-native-codecs.js').VaultBindingCoreAuthority;
+      /** Original mediated facts for native same-effect readback, never an independent grant. */
+      readonly policyProof?: import('../storage/vault-native-codecs.js').VaultBindingPolicyProof;
       readonly workspaceId: string;
       readonly threadId: string;
       readonly planId: string;

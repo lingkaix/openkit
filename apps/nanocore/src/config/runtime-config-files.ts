@@ -204,23 +204,14 @@ export class RuntimeConfigFileService {
    */
   public readFile(id: string): RuntimeConfigFileReadResponse {
     const spec = this.resolveFileSpec(id);
-
-    if (!existsSync(spec.absolutePath)) {
-      throw new RuntimeConfigFileServiceError('config_file_not_found', `${id} was not found.`, 404);
-    }
-
-    if (isWorkspaceScopedKind(spec.kind)) {
-      this.assertInsideWorkspaceConfigRoot(spec.workspaceId ?? '', spec.absolutePath);
-    } else if (spec.kind === 'user') {
-      this.assertInsideUserConfigRoot(spec.userId ?? '', spec.absolutePath);
-    } else {
-      this.assertInsideConfigRoot(spec.absolutePath);
-    }
-
-    const content = readFileSync(spec.absolutePath, 'utf8');
-    return RuntimeConfigFileReadResponseSchema.parse({
-      file: this.summaryForSpec(spec, content),
-      content,
+    return readRuntimeConfigFileSpec(spec, () => {
+      if (isWorkspaceScopedKind(spec.kind)) {
+        this.assertInsideWorkspaceConfigRoot(spec.workspaceId ?? '', spec.absolutePath);
+      } else if (spec.kind === 'user') {
+        this.assertInsideUserConfigRoot(spec.userId ?? '', spec.absolutePath);
+      } else {
+        this.assertInsideConfigRoot(spec.absolutePath);
+      }
     });
   }
 
@@ -605,18 +596,7 @@ export class RuntimeConfigFileService {
    * @returns Runtime config file summary.
    */
   private summaryForSpec(spec: RuntimeConfigFileSpec, content?: string): RuntimeConfigFileSummary {
-    const exists = existsSync(spec.absolutePath);
-    const stat = exists ? statSync(spec.absolutePath) : null;
-    const source = content ?? (exists ? readFileSync(spec.absolutePath, 'utf8') : undefined);
-
-    return {
-      id: spec.relativePath,
-      kind: spec.kind,
-      path: spec.relativePath,
-      exists,
-      revision: source !== undefined ? contentRevision(source) : null,
-      updatedAt: stat ? stat.mtime.toISOString() : null,
-    };
+    return runtimeConfigFileSummary(spec, content);
   }
 
   /**
@@ -1222,16 +1202,6 @@ export class RuntimeConfigFileService {
     );
   }
 
-  /**
-   * Returns the canonical workspace config root.
-   *
-   * @param workspaceId Workspace id to resolve.
-   * @returns Workspace config directory path.
-   */
-  private workspaceConfigRoot(workspaceId: string): string {
-    return join(this.dataRoot, 'workspaces', workspaceId, 'config');
-  }
-
   /** Returns the canonical personal User config path. */
   private userConfigPath(userId: string): string {
     return join(this.dataRoot, 'users', userId, 'config', 'user.jsonc');
@@ -1260,61 +1230,13 @@ export class RuntimeConfigFileService {
   }
 
   /**
-   * Resolves the real config root path, optionally allowing a missing root before first create.
-   *
-   * @param allowMissing Whether DATA_ROOT/config may not exist yet.
-   * @returns Real or resolved config root path.
-   */
-  private configRootPath(allowMissing: boolean): string {
-    if (existsSync(this.configRoot())) {
-      return realpathSync(this.configRoot());
-    }
-
-    if (allowMissing) {
-      return resolve(this.configRoot());
-    }
-
-    throw new RuntimeConfigFileServiceError(
-      'config_root_not_found',
-      'DATA_ROOT/config does not exist.',
-      404
-    );
-  }
-
-  /**
    * Ensures one path is inside DATA_ROOT/config and not a symlink escape.
    *
    * @param path Path to validate.
    * @param allowMissing Whether the path may not exist yet.
    */
   private assertInsideConfigRoot(path: string, allowMissing = false): void {
-    const root = this.configRootPath(allowMissing);
-    const realPath = existsSync(path)
-      ? realpathSync(path)
-      : allowMissing
-        ? resolve(root, relative(resolve(this.configRoot()), resolve(path)))
-        : path;
-    const relativePath = relative(root, realPath);
-
-    if (
-      relativePath.startsWith('..') ||
-      relativePath === '..' ||
-      relativePath.startsWith(`..${sep}`)
-    ) {
-      throw new RuntimeConfigFileServiceError(
-        'config_path_not_allowed',
-        'Runtime config paths must stay inside DATA_ROOT/config.',
-        400
-      );
-    }
-
-    if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
-      throw new RuntimeConfigFileServiceError(
-        'config_symlink_not_allowed',
-        'Runtime config files cannot be symlinks.',
-        400
-      );
-    }
+    assertInsideRuntimeConfigRoot(this.dataRoot, path, allowMissing);
   }
 
   /**
@@ -1329,35 +1251,190 @@ export class RuntimeConfigFileService {
     path: string,
     allowMissing = false
   ): void {
-    const root = existsSync(this.workspaceConfigRoot(workspaceId))
-      ? realpathSync(this.workspaceConfigRoot(workspaceId))
-      : resolve(this.workspaceConfigRoot(workspaceId));
-    const realPath = existsSync(path)
-      ? realpathSync(path)
-      : allowMissing
-        ? resolve(root, relative(resolve(this.workspaceConfigRoot(workspaceId)), resolve(path)))
-        : path;
-    const relativePath = relative(root, realPath);
+    assertInsideWorkspaceConfigSourceRoot(this.dataRoot, workspaceId, path, allowMissing);
+  }
+}
 
-    if (
-      relativePath.startsWith('..') ||
-      relativePath === '..' ||
-      relativePath.startsWith(`..${sep}`)
-    ) {
-      throw new RuntimeConfigFileServiceError(
-        'config_path_not_allowed',
-        'Workspace config paths must stay inside the workspace config root.',
-        400
-      );
-    }
+/** Exact config-source selectors; native callers cannot choose a path or a User preference file. */
+export type RuntimeConfigPolicySourceOwner =
+  | { readonly kind: 'server' }
+  | { readonly kind: 'workspace'; readonly workspaceId: string };
 
-    if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
-      throw new RuntimeConfigFileServiceError(
-        'config_symlink_not_allowed',
-        'Workspace config files cannot be symlinks.',
-        400
+/**
+ * Reads the original path-checked Server or Workspace source without constructing a runtime manager.
+ * This is source inspection only; schemas, current loaded identity and authorization keep their owners.
+ * @param dataRoot Actual bound product data root.
+ * @param owner Exact Server or Workspace source owner.
+ * @returns Original source bytes and their existing file revision projection.
+ */
+export function readRuntimeConfigPolicySource(
+  dataRoot: string,
+  owner: RuntimeConfigPolicySourceOwner
+): RuntimeConfigFileReadResponse {
+  if (!dataRoot) {
+    throw new RuntimeConfigFileServiceError(
+      'config_data_root_required',
+      'Runtime config file management requires a data root.',
+      400
+    );
+  }
+  const id =
+    owner.kind === 'server'
+      ? 'server.jsonc'
+      : owner.kind === 'workspace'
+        ? `workspaces/${owner.workspaceId}/workspace.jsonc`
+        : null;
+  if (id === null) throw invalidPathError('unsupported config source');
+  const parsed = parseFileId(id);
+  const spec: RuntimeConfigFileSpec = {
+    ...parsed,
+    absolutePath:
+      parsed.kind === 'workspace'
+        ? join(dataRoot, 'workspaces', parsed.workspaceId!, 'config', 'workspace.jsonc')
+        : resolve(join(dataRoot, CONFIG_ROOT), parsed.relativePath),
+  };
+  const assertPath = (allowMissing = false) => {
+    if (parsed.kind === 'workspace') {
+      assertInsideWorkspaceConfigSourceRoot(
+        dataRoot,
+        parsed.workspaceId!,
+        spec.absolutePath,
+        allowMissing
       );
+    } else {
+      assertInsideRuntimeConfigRoot(dataRoot, spec.absolutePath, allowMissing);
     }
+  };
+  // Preserve the service's resolution check before its original missing-file/read check.
+  assertPath(true);
+  return readRuntimeConfigFileSpec(spec, assertPath);
+}
+
+/** One source-read body shared by the file service and closed native source selector. */
+function readRuntimeConfigFileSpec(
+  spec: RuntimeConfigFileSpec,
+  assertPath: () => void
+): RuntimeConfigFileReadResponse {
+  if (!existsSync(spec.absolutePath)) {
+    throw new RuntimeConfigFileServiceError(
+      'config_file_not_found',
+      `${spec.relativePath} was not found.`,
+      404
+    );
+  }
+  assertPath();
+  const content = readFileSync(spec.absolutePath, 'utf8');
+  return RuntimeConfigFileReadResponseSchema.parse({
+    file: runtimeConfigFileSummary(spec, content),
+    content,
+  });
+}
+
+/** Existing content-bound file summary; no loaded-state or authorization inference. */
+function runtimeConfigFileSummary(
+  spec: RuntimeConfigFileSpec,
+  content?: string
+): RuntimeConfigFileSummary {
+  const exists = existsSync(spec.absolutePath);
+  const stat = exists ? statSync(spec.absolutePath) : null;
+  const source = content ?? (exists ? readFileSync(spec.absolutePath, 'utf8') : undefined);
+
+  return {
+    id: spec.relativePath,
+    kind: spec.kind,
+    path: spec.relativePath,
+    exists,
+    revision: source !== undefined ? contentRevision(source) : null,
+    updatedAt: stat ? stat.mtime.toISOString() : null,
+  };
+}
+
+/** Resolves the original physical config root without loading or publishing configuration. */
+function runtimeConfigRootPath(dataRoot: string, allowMissing: boolean): string {
+  if (existsSync(join(dataRoot, CONFIG_ROOT))) {
+    return realpathSync(join(dataRoot, CONFIG_ROOT));
+  }
+
+  if (allowMissing) {
+    return resolve(join(dataRoot, CONFIG_ROOT));
+  }
+
+  throw new RuntimeConfigFileServiceError(
+    'config_root_not_found',
+    'DATA_ROOT/config does not exist.',
+    404
+  );
+}
+
+/** Original Server containment and symlink check shared by reads and writes. */
+function assertInsideRuntimeConfigRoot(dataRoot: string, path: string, allowMissing = false): void {
+  const root = runtimeConfigRootPath(dataRoot, allowMissing);
+  const realPath = existsSync(path)
+    ? realpathSync(path)
+    : allowMissing
+      ? resolve(root, relative(resolve(join(dataRoot, CONFIG_ROOT)), resolve(path)))
+      : path;
+  const relativePath = relative(root, realPath);
+
+  if (
+    relativePath.startsWith('..') ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`)
+  ) {
+    throw new RuntimeConfigFileServiceError(
+      'config_path_not_allowed',
+      'Runtime config paths must stay inside DATA_ROOT/config.',
+      400
+    );
+  }
+
+  if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+    throw new RuntimeConfigFileServiceError(
+      'config_symlink_not_allowed',
+      'Runtime config files cannot be symlinks.',
+      400
+    );
+  }
+}
+
+/** Original Workspace containment and symlink check shared by reads and writes. */
+function assertInsideWorkspaceConfigSourceRoot(
+  dataRoot: string,
+  workspaceId: string,
+  path: string,
+  allowMissing = false
+): void {
+  const root = existsSync(join(dataRoot, 'workspaces', workspaceId, 'config'))
+    ? realpathSync(join(dataRoot, 'workspaces', workspaceId, 'config'))
+    : resolve(join(dataRoot, 'workspaces', workspaceId, 'config'));
+  const realPath = existsSync(path)
+    ? realpathSync(path)
+    : allowMissing
+      ? resolve(
+          root,
+          relative(resolve(join(dataRoot, 'workspaces', workspaceId, 'config')), resolve(path))
+        )
+      : path;
+  const relativePath = relative(root, realPath);
+
+  if (
+    relativePath.startsWith('..') ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`)
+  ) {
+    throw new RuntimeConfigFileServiceError(
+      'config_path_not_allowed',
+      'Workspace config paths must stay inside the workspace config root.',
+      400
+    );
+  }
+
+  if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+    throw new RuntimeConfigFileServiceError(
+      'config_symlink_not_allowed',
+      'Workspace config files cannot be symlinks.',
+      400
+    );
   }
 }
 

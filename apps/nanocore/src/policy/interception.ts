@@ -1,6 +1,14 @@
+import { isDeepStrictEqual } from 'node:util';
+import {
+  type RuntimeConfigFileReadResponse,
+  VAULT_OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
+  isSealedTurnTerminal,
+  POLICY_OPERATION_REFERENCE_INPUT_V1,
   PolicyAgentGateOutputV1Schema,
   type PolicyApprovalBindingV1Schema,
   type PolicyBindingV1,
@@ -8,22 +16,54 @@ import {
   type PolicyDocumentV1,
   type PolicyInvocationV1,
   type PolicyPermissionV1Schema,
+  PolicySubjectV1Schema,
+  responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
 import {
+  currentWorkspaceAuthority,
+  readCurrentWorkspacePolicy,
+} from '../auth/operation-authorizer.js';
+import type { ThreadVisibilityReadPort } from '../auth/thread-visibility.js';
+import { parseJsoncObject } from '../config/jsonc.js';
+import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
+import type { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { GoalCommandError } from '../runtime/goal-error.js';
+import { requireNativeCoordinatorGoal } from '../runtime/goal-owner.js';
+import {
+  type GoalTaskPolicyReadPort,
+  readGoalTaskPolicyContext,
+} from '../runtime/goal-task-policy-context.js';
+import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
+import type { SchedulerExecutionLineage } from '../scheduler-records.js';
+import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
+import {
   getControlStoreWorkerClient,
   nativeUserDatabasePath,
 } from '../storage/control-store-worker-client.js';
-import type { UserDb, WorkspaceDb } from '../storage/db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
+import type { NativeRuntimePolicyPublication } from '../storage/runtime-policy-publication.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
+import type {
+  ControlVaultInput,
+  VaultBindingPolicyProof,
+  VaultBindingRequester,
+} from '../storage/vault-native-codecs.js';
+import { readAdmittedPolicyDocument } from './configuration.js';
+import { createGoalDomainPolicyService } from './goal-domains.js';
 import type { GoalTaskAccessResult } from './goal-task-access.js';
+import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import {
+  type PolicyUseDecision,
+  policyStatementUsedByDecision,
   type RecordProductPermissionDecisionInput,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
+import { readAuditEventRowV1, readPermissionDecisionRowV1 } from './retained-records-v1.js';
 import {
+  EMPTY_POLICY_DOCUMENT,
   type PolicyProposal,
   policyDigest,
   policyOperationDefinition,
@@ -124,6 +164,463 @@ export class PolicyInterception {
     private readonly participant?: DeterministicPolicyParticipant,
     private readonly agentParticipant?: AgentPolicyParticipant
   ) {}
+
+  /** Repeats the actual caller, Coordinator and optional Task composition for all governed Vault operations. */
+  static readVaultAuthority(input: {
+    readonly coreDb: CoreDb;
+    readonly workspaceDb: WorkspaceDb;
+    readonly workspaceId: string;
+    readonly requester: VaultBindingRequester;
+    readonly coordinator: Parameters<typeof requireNativeCoordinatorGoal>[1] | null;
+    readonly worker: {
+      readonly lineage: SchedulerExecutionLineage;
+      readonly goalLinked: boolean;
+    } | null;
+    readonly subject: PolicyProposal['subject'];
+    readonly resource: PolicyProposal['resource'];
+    readonly operation: string;
+    readonly mutating: boolean;
+    readonly taskPolicy:
+      | Pick<ReturnType<typeof createGoalTaskPolicyService>, 'evaluateTask' | 'readTaskDecision'>
+      | null
+      | undefined;
+    readonly decision?: PolicyUseDecision;
+  }): {
+    kernel: PolicyDecision;
+    goal: GoalTaskAccessResult | null;
+    revision: string;
+    authorizationUses: InterceptionInput['authorizationUses'];
+    callerRevision: string;
+    coordinator: ReturnType<typeof requireNativeCoordinatorGoal> | null;
+  } {
+    const evaluated = readVaultRequesterAuthority(
+      input.coreDb,
+      input.workspaceId,
+      input.requester,
+      input.operation,
+      input.mutating
+    );
+    const currentCoordinator = input.coordinator
+      ? requireNativeCoordinatorGoal(input.workspaceDb, input.coordinator)
+      : null;
+    const goalInput = input.worker
+      ? {
+          workspaceDb: input.workspaceDb,
+          lineage: input.worker.lineage,
+          subject: input.subject,
+          operation: input.operation,
+          resource: input.resource,
+          humanKernel: evaluated.decision,
+        }
+      : null;
+    let goal: GoalTaskAccessResult | null = null;
+    let authorizationUses: InterceptionInput['authorizationUses'] = [];
+    if (input.taskPolicy && goalInput) {
+      if (input.decision)
+        goal = input.taskPolicy.readTaskDecision({ ...goalInput, decision: input.decision });
+      else {
+        const evaluatedTask = input.taskPolicy.evaluateTask(goalInput);
+        goal = evaluatedTask;
+        authorizationUses = evaluatedTask?.authorizationUses ?? [];
+      }
+    }
+    if (input.worker?.goalLinked && !goal)
+      throw new Error('Current Goal Task authority is unavailable.');
+    return {
+      kernel: goal?.kernel ?? evaluated.decision,
+      goal,
+      revision: policyDigest({
+        caller: evaluated,
+        goalTask: goal?.authorizationRevision ?? null,
+        coordinator: currentCoordinator,
+      }),
+      authorizationUses,
+      callerRevision: policyDigest(evaluated),
+      coordinator: currentCoordinator,
+    };
+  }
+
+  /** Reads the original initial Login intent before native physical preparation, without granting an effect. */
+  static readVaultBindingIntent(
+    kind: 'reference-advance' | 'receipt-create',
+    binding: NonNullable<
+      Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
+    >
+  ): { proof: VaultBindingPolicyProof; requester: VaultBindingRequester } {
+    const proof = binding.policyProof;
+    if (
+      !proof ||
+      binding.binding.declaration.visibility !== 'runtime-token' ||
+      binding.binding.declaration.consumer !== 'codex-login'
+    )
+      throw new ControlProductPreconditionError();
+    const consumer = binding.binding.consumer;
+    const workspaceId = consumer.scope.workspaceId;
+    const caller = proof.caller;
+    const requester: VaultBindingRequester =
+      caller.kind === 'worker'
+        ? { kind: 'worker', actor: caller.actor, lineage: caller.lineage }
+        : { kind: 'public', actor: caller.actor, actorRef: caller.actorRef };
+    const proposal = proof.proposal;
+    const originalVersion = proposal.inputAttributes.materialVersion;
+    const successorOffset = kind === 'receipt-create' ? 1 : 0;
+    // Both native stages retain the same original receipt and exactly this refresh successor.
+    if (
+      typeof originalVersion !== 'number' ||
+      !Number.isSafeInteger(originalVersion) ||
+      originalVersion < 1 ||
+      !Number.isSafeInteger(originalVersion + successorOffset) ||
+      originalVersion + successorOffset !== binding.binding.materialVersion
+    )
+      throw new ControlProductPreconditionError();
+    if (
+      proof.proposal.operation !== 'vault.binding-deliver' ||
+      proposal.workspaceId !== workspaceId ||
+      binding.requester.workspaceId !== workspaceId ||
+      !isDeepStrictEqual(requester, binding.requester.requester) ||
+      proposal.resource.kind !== 'container' ||
+      proposal.resource.container.kind !== 'workspace' ||
+      proposal.resource.container.owner.kind !== 'workspace' ||
+      proposal.resource.container.owner.workspaceId !== workspaceId ||
+      proposal.resource.container.id !== workspaceId ||
+      proposal.inputReferences.planId !== binding.planId ||
+      proposal.inputReferences.grantId !== binding.binding.declaration.vaultGrantId ||
+      proposal.inputReferences.receiptId !== binding.receiptId ||
+      proposal.inputReferences.packageSnapshotId !== consumer.snapshotId ||
+      proposal.inputAttributes.contract !== POLICY_OPERATION_REFERENCE_INPUT_V1 ||
+      proposal.inputAttributes.format !== 'chatgptAuthTokens' ||
+      proposal.inputAttributes.access !== 'access-token-only' ||
+      proposal.inputAttributes.ephemeral !== true ||
+      proposal.inputAttributes.outsideRetainedStorage !== true ||
+      proposal.capabilityCallId !== null
+    )
+      throw new ControlProductPreconditionError();
+    return { proof, requester };
+  }
+
+  /** Repeats Policy meaning from actual native read ports; never invokes participants or records another decision. */
+  static assertVaultRead(input: {
+    readonly coreDb: CoreDb;
+    readonly workspaceDb: WorkspaceDb;
+    readonly kind: 'reference-advance' | 'receipt-create';
+    readonly binding: NonNullable<
+      Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
+    >;
+    readonly callerPackage:
+      | ReturnType<typeof requireAgentEnvironmentPackageSnapshot>['snapshot']
+      | null;
+    readonly store: GoalTaskPolicyReadPort &
+      Omit<ThreadVisibilityReadPort, 'getWorkspaceResourceAccess'> & {
+        getTurnById(
+          turnId: string
+        ): Pick<
+          ReturnType<GoalTaskPolicyReadPort['getTurnMetadata']>,
+          'owner' | 'threadId' | 'status'
+        >;
+      };
+    readonly sampled: {
+      readonly server:
+        | { readonly value: RuntimeConfigFileReadResponse }
+        | { readonly error: unknown };
+      readonly workspace:
+        | { readonly value: RuntimeConfigFileReadResponse }
+        | { readonly error: unknown };
+    };
+    readonly policyState: NativeRuntimePolicyPublication | undefined;
+  }): void {
+    const { coreDb: actualCore, workspaceDb, callerPackage, sampled, policyState, binding } = input;
+    const { proof, requester } = PolicyInterception.readVaultBindingIntent(input.kind, binding);
+    const consumer = binding.binding.consumer;
+    const workspaceId = consumer.scope.workspaceId;
+    const caller = proof.caller;
+    const proposal = proof.proposal;
+    if (
+      policyState?.state !== 'active' ||
+      !policyState.identity ||
+      policyState.identity.serverRevision !== policyDigest(proof.document)
+    )
+      throw new ControlProductPreconditionError();
+    const workspaceRevision = policyState.identity.workspaceRevisions.find(
+      (entry) => entry.workspaceId === workspaceId
+    );
+    if (workspaceRevision) {
+      if (workspaceRevision.revision !== policyDigest(proof.workspaceDocument))
+        throw new ControlProductPreconditionError();
+    } else {
+      if (policyDigest(proof.workspaceDocument) !== policyDigest(EMPTY_POLICY_DOCUMENT))
+        throw new ControlProductPreconditionError();
+      if ('error' in sampled.workspace) {
+        if (
+          !(sampled.workspace.error instanceof RuntimeConfigFileServiceError) ||
+          sampled.workspace.error.code !== 'config_file_not_found'
+        )
+          throw sampled.workspace.error;
+      } else {
+        const authored = WorkspaceConfigSchema.parse(
+          parseJsoncObject(sampled.workspace.value.content, sampled.workspace.value.file.id)
+        );
+        if ((authored.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT).statements.length)
+          throw new ControlProductPreconditionError();
+      }
+    }
+    readCurrentWorkspacePolicy({
+      coreDb: actualCore,
+      workspaceId,
+      policy: proof.workspaceDocument,
+    });
+    const document = readAdmittedPolicyDocument(actualCore, proof.document);
+    const original = PolicyInterception.originalVaultDecision(workspaceDb, proof);
+    const store = {
+      ...input.store,
+      getWorkspaceResourceAccess(id: string) {
+        if (id !== workspaceId) throw new ControlProductPreconditionError();
+        return readCurrentWorkspacePolicy({
+          coreDb: actualCore,
+          workspaceId,
+          policy: proof.workspaceDocument,
+        });
+      },
+    };
+    const context =
+      caller.kind === 'worker'
+        ? readGoalTaskPolicyContext({
+            coreDb: actualCore,
+            db: workspaceDb,
+            store,
+            lineage: caller.lineage,
+          })
+        : null;
+    if (caller.kind === 'worker' && caller.goalLinked !== (context !== null))
+      throw new ControlProductPreconditionError();
+    const responsibleHumanId =
+      context?.responsibleUserId ??
+      responsibleUserIdForActor(caller.kind === 'worker' ? caller.actor : caller.actorRef);
+    if (!responsibleHumanId) throw new ControlProductPreconditionError();
+    const agentId =
+      context?.agentId ??
+      (caller.kind === 'coordinator' ? 'goal-coordinator' : callerPackage?.agent.agentId);
+    const subject = PolicySubjectV1Schema.parse({
+      principal: context
+        ? { kind: 'agent', id: agentId }
+        : { kind: 'human', id: responsibleHumanId },
+      onBehalfOf: null,
+      actor: agentId
+        ? { kind: 'agent', id: agentId, responsibleUserId: responsibleHumanId }
+        : caller.kind === 'worker'
+          ? caller.actor
+          : caller.actorRef,
+      process:
+        caller.kind === 'worker'
+          ? {
+              workspaceId: caller.lineage.workspaceId,
+              threadId: caller.lineage.threadId,
+              turnId: caller.lineage.turnId,
+            }
+          : caller.kind === 'coordinator'
+            ? {
+                workspaceId: caller.workspaceId,
+                threadId: caller.threadId,
+                turnId: caller.turnId,
+              }
+            : null,
+      credentialKind: caller.kind === 'worker' ? 'worker-package' : caller.actor.kind,
+      responsibleHumanId,
+    });
+    if (!isDeepStrictEqual(subject, proof.proposal.subject))
+      throw new ControlProductPreconditionError();
+    const domains = context
+      ? createGoalDomainPolicyService({
+          mode: 'read',
+          coreDb: actualCore,
+          store,
+          repositoryWorkspaceDb(id) {
+            if (id !== workspaceId) throw new ControlProductPreconditionError();
+            return workspaceDb;
+          },
+          files: {
+            readFile(id) {
+              if (id !== 'server.jsonc') throw new ControlProductPreconditionError();
+              if ('error' in sampled.server) throw sampled.server.error;
+              return structuredClone(sampled.server.value);
+            },
+          },
+          currentPolicy: () => document,
+        })
+      : null;
+    const coordinatorBinding =
+      caller.kind === 'coordinator'
+        ? {
+            ...caller,
+            actor: {
+              kind: caller.actor.kind,
+              userId: caller.actor.userId,
+              ...(caller.actor.sessionId !== undefined
+                ? { sessionId: caller.actor.sessionId }
+                : {}),
+              ...(caller.actor.tokenId !== undefined ? { tokenId: caller.actor.tokenId } : {}),
+              ...(caller.actor.tokenScope !== undefined
+                ? { tokenScope: caller.actor.tokenScope }
+                : {}),
+              ...(caller.actor.tokenWorkspaceIds !== undefined
+                ? { tokenWorkspaceIds: caller.actor.tokenWorkspaceIds }
+                : {}),
+              ...(caller.actor.adminTokenId !== undefined
+                ? { adminTokenId: caller.actor.adminTokenId }
+                : {}),
+            },
+          }
+        : null;
+    const definition = VAULT_OPERATION_DEFINITIONS['vault.binding-deliver'];
+    let authority: ReturnType<typeof PolicyInterception.readVaultAuthority>;
+    try {
+      authority = PolicyInterception.readVaultAuthority({
+        coreDb: actualCore,
+        workspaceDb,
+        workspaceId,
+        requester,
+        coordinator: coordinatorBinding,
+        worker:
+          caller.kind === 'worker'
+            ? { lineage: caller.lineage, goalLinked: caller.goalLinked }
+            : null,
+        subject,
+        resource: proposal.resource,
+        operation: definition.policyOperation,
+        mutating: definition.mutating,
+        taskPolicy:
+          context && domains
+            ? createGoalTaskPolicyService({ coreDb: actualCore, store, domains })
+            : null,
+        decision: proof.decision,
+      });
+    } catch (error) {
+      // Current Goal authority loss is a native precondition refusal, not an SQL failure.
+      if (
+        error instanceof GoalCommandError &&
+        ['coordinator_authority_denied', 'goal_closed', 'not_found'].includes(error.code)
+      )
+        throw new ControlProductPreconditionError();
+      throw error;
+    }
+    const coordinator = authority.coordinator;
+    if (coordinator) {
+      const target = readGoalTaskPolicyContext({
+        coreDb: actualCore,
+        db: workspaceDb,
+        store,
+        lineage: { ...consumer.scope, packageSnapshotId: consumer.snapshotId },
+      });
+      if (
+        !target ||
+        target.goalId !== coordinator.goalId ||
+        target.planVersionId !== coordinator.activePlanVersionId ||
+        target.responsibleUserId !== coordinator.responsibleUserId ||
+        target.taskThreadId !== consumer.scope.threadId
+      )
+        throw new ControlProductPreconditionError();
+    }
+    if (
+      (context && !authority.goal) ||
+      authority.kernel.effect !== 'allow' ||
+      authority.callerRevision !== binding.requester.revision ||
+      authority.revision !== proof.decision.authorizationRevision
+    )
+      throw new ControlProductPreconditionError();
+    const authorCurrent = (userId: string) =>
+      !!currentWorkspaceAuthority(
+        actualCore,
+        workspaceId,
+        { kind: 'user', id: userId },
+        'vault.use',
+        true,
+        undefined,
+        { retainedPolicyAuthor: true, dependencyFailure: 'throw', mutating: true }
+      );
+    const bindings = selectPolicyBindings({
+      document,
+      proposal,
+      stage: 'decide',
+      now: Date.now(),
+      authorCurrent,
+      anchorCurrent(anchor) {
+        if (anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== workspaceId)
+          return false;
+        if (anchor.kind === 'workspace') return anchor.id === workspaceId;
+        return anchor.kind === 'turn' && !isSealedTurnTerminal(store.getTurnById(anchor.id).status);
+      },
+    });
+    for (const reference of original.consumedStatements) {
+      const statement = document.statements.find(
+        (value) => value.id === reference.id && policyDigest(value) === reference.digest
+      );
+      if (
+        !statement ||
+        statement.state !== 'active' ||
+        statement.lifetime.uses === undefined ||
+        (statement.lifetime.notAfter && Date.parse(statement.lifetime.notAfter) <= Date.now()) ||
+        !policyStatementUsedByDecision(workspaceDb, reference, proof.decision) ||
+        readPolicyStatementUseCount(workspaceDb, reference) - 1 >= statement.lifetime.uses ||
+        (statement.kind === 'binding' &&
+          !bindings.some(
+            (value) => value.id === statement.id && policyDigest(value) === reference.digest
+          ))
+      )
+        throw new ControlProductPreconditionError();
+    }
+  }
+
+  /** Reads the existing original final allow and linked Audit on their actual Workspace connection. */
+  private static originalVaultDecision(db: WorkspaceDb, proof: VaultBindingPolicyProof) {
+    const row = db.sqlite
+      .prepare(
+        "SELECT * FROM permission_decisions WHERE decision_id=? AND owner_scope='workspace' AND workspace_id=?"
+      )
+      .get(proof.decision.decisionId, db.workspaceId);
+    if (!row) throw new ControlProductPreconditionError();
+    const decision = readPermissionDecisionRowV1(row);
+    const mediation = decision.mediation;
+    const proposal = proof.proposal;
+    const definition = VAULT_OPERATION_DEFINITIONS['vault.binding-deliver'];
+    const context = decision.contextSummary as Record<string, unknown> | null;
+    const resource = decision.resourceSummary as Record<string, unknown> | null;
+    if (
+      decision.result !== 'allow' ||
+      decision.action !== definition.policyOperation ||
+      decision.policySnapshotId !== proof.decision.policyRevision ||
+      mediation?.role !== 'final' ||
+      mediation.stage !== 'decide' ||
+      mediation.operation !== proposal.operation ||
+      mediation.kernel?.effect !== 'allow' ||
+      mediation.proposalDigest !== proof.decision.proposalDigest ||
+      mediation.authorizationRevision !== proof.decision.authorizationRevision ||
+      !isDeepStrictEqual(mediation.subject, proposal.subject) ||
+      policyProposalDigest(proposal) !== proof.decision.proposalDigest ||
+      policyDigest(proof.document) !== proof.decision.policyRevision ||
+      resource?.selectionDigest !== proposal.inputReferences.selectionDigest ||
+      context?.requestId !== proposal.inputReferences.requestId ||
+      context?.capabilityCallId !== proposal.capabilityCallId
+    )
+      throw new ControlProductPreconditionError();
+    const auditRow = db.sqlite
+      .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
+      .get(decision.auditEventId);
+    if (!auditRow) throw new ControlProductPreconditionError();
+    const audit = readAuditEventRowV1(auditRow);
+    if (
+      audit.permissionDecisionId !== decision.decisionId ||
+      audit.workspaceId !== db.workspaceId ||
+      audit.action !== 'permission.decision' ||
+      audit.outcome !== 'succeeded' ||
+      audit.resource !== `permission:${decision.action}` ||
+      audit.capabilityCallId !== proposal.capabilityCallId ||
+      !isDeepStrictEqual(audit.actor, proposal.subject.actor) ||
+      (proposal.subject.process !== null &&
+        (audit.threadId !== proposal.subject.process.threadId ||
+          audit.turnId !== proposal.subject.process.turnId))
+    )
+      throw new ControlProductPreconditionError();
+    return mediation;
+  }
 
   /** Shares exact invocation validation between synchronous and awaited decision entry points. */
   private prepareDecision(input: InterceptionInput) {

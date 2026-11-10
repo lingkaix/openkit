@@ -7,6 +7,10 @@ import {
   ActorRefSchema,
   AuditEventSchema,
   isEntityId,
+  PolicyDigestV1Schema,
+  PolicyDocumentV1Schema,
+  PolicyResourceV1Schema,
+  PolicySubjectV1Schema,
   RequestIdSchema,
   readRetainedV1,
 } from '@openkit/protocol';
@@ -1793,6 +1797,52 @@ export const VaultBindingCoreAuthoritySchema = z
   .object({ workspaceId: z.string(), requester: VaultBindingRequesterSchema, revision: z.string() })
   .strict();
 export type VaultBindingCoreAuthority = z.infer<typeof VaultBindingCoreAuthoritySchema>;
+/** Original governed facts for same-effect native readback; no carried allow or material. */
+export const VaultBindingPolicyProofSchema = z
+  .object({
+    proposal: z
+      .object({
+        operation: z.string().min(1),
+        workspaceId: z.string().nullable(),
+        resource: PolicyResourceV1Schema,
+        inputReferences: z.record(z.string(), z.string().nullable()),
+        inputAttributes: z.record(
+          z.string(),
+          z.union([z.string(), z.number(), z.boolean(), z.null()])
+        ),
+        capabilityCallId: z.string().nullable(),
+        subject: PolicySubjectV1Schema,
+      })
+      .strict(),
+    decision: z
+      .object({
+        decisionId: z.string().min(1),
+        proposalDigest: PolicyDigestV1Schema,
+        policyRevision: PolicyDigestV1Schema,
+        authorizationRevision: PolicyDigestV1Schema,
+      })
+      .strict(),
+    document: PolicyDocumentV1Schema,
+    workspaceDocument: PolicyDocumentV1Schema,
+    caller: z.discriminatedUnion('kind', [
+      VaultBindingRequesterSchema.options[0],
+      VaultBindingRequesterSchema.options[1].extend({ goalLinked: z.boolean() }),
+      z
+        .object({
+          kind: z.literal('coordinator'),
+          actor: vaultActor,
+          actorRef: ActorRefSchema,
+          workspaceId: z.string(),
+          goalId: z.string(),
+          threadId: z.string(),
+          turnId: z.string(),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+/** References the original decision and documents; native current owners still decide. */
+export type VaultBindingPolicyProof = z.infer<typeof VaultBindingPolicyProofSchema>;
 /** Transient deciding facts for one initial access-only delivery; never retained or Worker-authored. */
 const loginBindingAuthority = z
   .object({
@@ -1802,6 +1852,7 @@ const loginBindingAuthority = z
     planId: z.string().min(1),
     receiptId: z.string().min(1),
     reference: VaultReferenceRecordSchema,
+    policyProof: VaultBindingPolicyProofSchema.optional(),
   })
   .strict();
 
