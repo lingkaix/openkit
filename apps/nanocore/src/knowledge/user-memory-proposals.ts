@@ -11,10 +11,11 @@ import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
-import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
+import type { FsStore } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb, UserDb } from '../storage/db.js';
+import { knowledgeProposalId } from '../storage/knowledge-proposal-codecs.js';
 import {
   ActorRefReaderSchema,
   preserveDescriptiveRecord,
@@ -113,10 +114,7 @@ export async function createUserMemoryProposal(
     edit,
     revalidate: (files, paths) => context.revalidate(files, paths),
   });
-  const id = knowledgeAuthorityId('kp_', {
-    ownerScope: `user:${context.userDb.userId}`,
-    requestId: edit.requestId,
-  });
+  const id = knowledgeProposalId({ kind: 'user', userId: context.userDb.userId }, edit.requestId);
   if (existsSync(proposalPath(context, id))) throw new NotebookError('conflict');
   const candidateRevision = retainNotebookProposalCandidate({
     notebook: git,
@@ -178,6 +176,7 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
     proposal.contentDigest !== digest(JSON.stringify(changes)) ||
     candidate.metadata.authority.kind !== 'proposal' ||
     candidate.metadata.authority.proposalId !== id ||
+    knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !== id ||
     git.retainedCandidate(id).revision !== candidate.revision
   )
     throw new NotebookError('recovery_required');

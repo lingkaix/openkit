@@ -196,12 +196,30 @@ describe('knowledge proposal authority', () => {
       expect(currentNotebookRevision(f)).toBe(revision);
       expect(f.notebook.readRevision(revision)).toEqual(history);
 
+      const decisions = JSON.parse(laterReviewBytes);
+      const envelope = {
+        proposalId: later.id,
+        ownerScope: { kind: 'workspace', workspaceId: f.workspaceId },
+        decisions,
+      };
+      expect(KnowledgeProposalReviewFileSchema.safeParse(envelope).success).toBe(true);
+      expect(
+        KnowledgeProposalReviewFileSchema.safeParse({
+          proposalId: later.id,
+          workspaceId: f.workspaceId,
+          decisions,
+        }).success
+      ).toBe(false);
+      expect(
+        KnowledgeProposalReviewFileSchema.safeParse({ ...envelope, ownerScope: { kind: 'server' } })
+          .success
+      ).toBe(false);
       const changed = JSON.parse(laterReviewBytes);
       changed[0].changedPageIds = ['review/inventory-foreign'];
       expect(
         KnowledgeProposalReviewFileSchema.safeParse({
           proposalId: later.id,
-          workspaceId: f.workspaceId,
+          ownerScope: { kind: 'workspace', workspaceId: f.workspaceId },
           decisions: changed,
         }).success
       ).toBe(true);

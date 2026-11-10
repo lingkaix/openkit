@@ -76,7 +76,6 @@ import {
   commandRequestKey,
   type FsStore,
   KnowledgeProposalAuthorityError,
-  knowledgeAuthorityId,
   knowledgeProposalAuthorityError as knowledgeProposalAuthorityFailure,
   StoreRecordNotFoundError,
 } from './lib/store.js';
@@ -111,7 +110,10 @@ import {
   readWorkspaceKnowledgeDerivedIndexes,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
-import { knowledgeProposalDocumentDigest } from './storage/knowledge-proposal-codecs.js';
+import {
+  knowledgeProposalDocumentDigest,
+  knowledgeProposalId,
+} from './storage/knowledge-proposal-codecs.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 
 /** Projects known Knowledge command, record and decoder refusals; arbitrary exceptions escape. */
@@ -1212,10 +1214,10 @@ export function createKnowledgeOperationImplementations(
 
       try {
         const producer: ActorRef = actor;
-        const proposalId = knowledgeAuthorityId('kp_', {
-          workspaceId,
-          requestId: commandInput.requestId,
-        });
+        const proposalId = knowledgeProposalId(
+          { kind: 'workspace', workspaceId },
+          commandInput.requestId
+        );
         const scope = { workspaceId };
         const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
         let proposal: Awaited<ReturnType<FsStore['createKnowledgeProposal']>>;

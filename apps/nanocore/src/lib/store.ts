@@ -30,6 +30,7 @@ import { readImmutableContentBytes } from '../storage/immutable-content-read.js'
 import {
   ActorRefReaderSchema,
   knowledgeProposalDocumentDigest,
+  knowledgeProposalId,
 } from '../storage/knowledge-proposal-codecs.js';
 import type {
   WorkspaceFrozenAdmission,
@@ -1022,20 +1023,6 @@ export function knowledgeProposalAuthorityError(
  */
 function contentDigest(content: string): string {
   return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`;
-}
-
-/**
- * Derives one Knowledge-owned Proposal id from its canonical tuple; entity Review ids use Protocol.
- *
- * @param prefix Closed owner-family prefix.
- * @param tuple Canonical tuple with fields already in required order.
- * @returns Stable owner id.
- */
-export function knowledgeAuthorityId(
-  prefix: 'kp_',
-  tuple: Readonly<Record<string, string>>
-): string {
-  return `${prefix}${createHash('sha256').update(JSON.stringify(tuple), 'utf8').digest('hex')}`;
 }
 
 /**
@@ -2352,10 +2339,8 @@ export class FsStore {
         !isDeepStrictEqual(candidate.metadata.producer, proposal.producer) ||
         candidate.metadata.summary !== proposal.rationale ||
         !isDeepStrictEqual(candidate.metadata.sourceReferences, proposal.sourceReferences) ||
-        knowledgeAuthorityId('kp_', {
-          workspaceId: proposal.workspaceId,
-          requestId: candidate.metadata.changeRequest.requestId,
-        }) !== proposal.id
+        knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !==
+          proposal.id
       )
         throw knowledgeProposalAuthorityError('recovery_required');
       return actual;
@@ -2423,13 +2408,13 @@ export class FsStore {
       if (!selected) throw knowledgeProposalAuthorityError('recovery_required');
       const retained = {
         proposalId: proposal.id,
-        workspaceId: proposal.workspaceId,
+        ownerScope: proposal.ownerScope,
         decisions: selected.reviews,
       };
       if (
         !isDeepStrictEqual(retained, {
           proposalId: proposal.id,
-          workspaceId: proposal.workspaceId,
+          ownerScope: proposal.ownerScope,
           decisions,
         })
       ) {
@@ -7670,10 +7655,10 @@ export class FsStore {
             rationale: input.rationale,
             confidence: input.confidence,
           });
-    const id = knowledgeAuthorityId('kp_', {
-      workspaceId: input.workspaceId,
-      requestId: request.requestId,
-    });
+    const id = knowledgeProposalId(
+      { kind: 'workspace', workspaceId: input.workspaceId },
+      request.requestId
+    );
     const existing = this.knowledgeProposals.get(id);
     if (existing) throw knowledgeProposalAuthorityError('conflict');
     const proposal = KnowledgeProposalRecordSchema.parse({

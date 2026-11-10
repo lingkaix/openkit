@@ -655,9 +655,10 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       },
       { kind: 'workspace', workspaceId: workspace.id }
     );
+    const proposalRequestId = randomUUID();
     const proposal = await ctx.store.createKnowledgeProposal({
       workspaceId: workspace.id,
-      requestId: randomUUID(),
+      requestId: proposalRequestId,
       baseRevision: proposalSelection.head.notebookCommit,
       changes: [{ path: 'candidate.md', content: candidatePage }],
       sourceReferences: [],
@@ -666,6 +667,12 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       createdAt: FIXTURE.at,
       verifiedExternalReferences: [],
     });
+    const proposalOwner = { kind: 'workspace', workspaceId: workspace.id };
+    if (
+      proposal.id !==
+      `kp_${sha256(JSON.stringify({ ownerScope: proposalOwner, requestId: proposalRequestId }))}`
+    )
+      throw new Error('Corpus Proposal id does not bind the complete owner and request.');
     selectors.proposalId = proposal.id;
     const retainedProposalDb = o.db.openWorkspaceDb(r.data, workspace.id);
     const retainedProposal = o.controlKnowledge.readControlKnowledgeProposal(

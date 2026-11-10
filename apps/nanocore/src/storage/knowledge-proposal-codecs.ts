@@ -8,9 +8,10 @@ import {
   ActorRefSchema,
   deriveEntityId,
   entityIdPattern,
+  type KnowledgeOwnerScope,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
-import { sha256Hex } from '@openkit/protocol/digest';
+import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import { z } from 'zod';
 import type { KnowledgeProposalRecord } from '../lib/store.js';
 
@@ -86,6 +87,11 @@ export function knowledgeProposalDocumentDigest(proposal: KnowledgeProposalRecor
   return `sha256:${sha256Hex(serializeKnowledgeProposalRecord(proposal))}`;
 }
 
+/** Derives the retained Proposal identity from the complete admitted scope and exact request id. */
+export function knowledgeProposalId(ownerScope: KnowledgeOwnerScope, requestId: string): string {
+  return `kp_${sha256CanonicalJson({ ownerScope, requestId })}`;
+}
+
 /** Existing ordered Review codecs, below file and SQL selection consumers. */
 export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.safeExtend({
   reviewId: z.string().regex(entityIdPattern('kr')),
@@ -110,7 +116,7 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
 export const KnowledgeProposalReviewFileSchema = z
   .object({
     proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
-    workspaceId: WorkspaceIdSchema,
+    ownerScope: z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }).strict(),
     decisions: z.array(KnowledgeProposalReviewRecordSchema).min(1),
   })
   .strip()
@@ -121,13 +127,14 @@ export const KnowledgeProposalReviewFileSchema = z
 
     for (const [index, review] of file.decisions.entries()) {
       const expectedReviewId = deriveEntityId('kr', {
-        ownerScope: { kind: 'workspace', workspaceId: file.workspaceId },
+        ownerScope: file.ownerScope,
         proposalId: file.proposalId,
         requestId: review.requestId,
       });
       if (
         review.proposalId !== file.proposalId ||
-        review.workspaceId !== file.workspaceId ||
+        review.workspaceId !== file.ownerScope.workspaceId ||
+        !isDeepStrictEqual(review.ownerScope, file.ownerScope) ||
         review.reviewId !== expectedReviewId ||
         requestIds.has(review.requestId) ||
         reviewIds.has(review.reviewId) ||

@@ -294,7 +294,7 @@ export function validateProposalReviews(
 ): KnowledgeProposalReviewRecord[] {
   if (decisions.length === 0) return [];
   const { decisions: reviews } = KnowledgeProposalReviewFileSchema.parse({
-    workspaceId: proposal.workspaceId,
+    ownerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
     proposalId: proposal.proposalId,
     decisions,
   });

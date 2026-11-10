@@ -12,10 +12,11 @@ import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
-import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
+import type { FsStore } from '../lib/store.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb } from '../storage/db.js';
+import { knowledgeProposalId } from '../storage/knowledge-proposal-codecs.js';
 import {
   ActorRefReaderSchema,
   preserveDescriptiveRecord,
@@ -98,7 +99,7 @@ export function createServerNotebookProposal(
     edit,
     revalidate: (files) => context.revalidate(files),
   });
-  const id = knowledgeAuthorityId('kp_', { ownerScope: 'server', requestId: edit.requestId });
+  const id = knowledgeProposalId({ kind: 'server' }, edit.requestId);
   if (existsSync(proposalPath(context.coreDb, id))) throw new NotebookError('conflict');
   const candidateRevision = retainNotebookProposalCandidate({
     notebook: git,
@@ -156,6 +157,7 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
     JSON.stringify(proposal.producer) !== JSON.stringify(candidate.metadata.producer) ||
     candidate.metadata.authority.kind !== 'proposal' ||
     candidate.metadata.authority.proposalId !== id ||
+    knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !== id ||
     git.retainedCandidate(id).revision !== candidate.revision
   )
     throw new NotebookError('recovery_required');

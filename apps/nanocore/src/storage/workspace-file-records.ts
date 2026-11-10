@@ -52,6 +52,7 @@ import {
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
   KnowledgeProposalReviewRecordSchema,
+  knowledgeProposalId,
   retainedProposal,
   serializeKnowledgeProposalRecord,
 } from './knowledge-proposal-codecs.js';
@@ -590,7 +591,11 @@ export function parseCanonicalWorkspaceHistory(input: {
     ]);
   }
   for (const [proposalId, decisions] of proposalReviewsById) {
-    KnowledgeProposalReviewFileSchema.parse({ proposalId, workspaceId: workspace.id, decisions });
+    KnowledgeProposalReviewFileSchema.parse({
+      proposalId,
+      ownerScope: { kind: 'workspace', workspaceId: workspace.id },
+      decisions,
+    });
   }
   for (const source of knowledgeSources) {
     claimGlobalId(sourceIds, source.id, 'knowledge source');
@@ -2347,7 +2352,11 @@ export function parseWorkspaceKnowledgeProposalDocument(
     candidate.revision !== candidateRevision ||
     candidate.parentRevision !== baseRevision ||
     candidate.metadata.authority.kind !== 'proposal' ||
-    candidate.metadata.authority.proposalId !== id
+    candidate.metadata.authority.proposalId !== id ||
+    knowledgeProposalId(
+      { kind: 'workspace', workspaceId },
+      candidate.metadata.changeRequest.requestId
+    ) !== id
   )
     throw new Error('Knowledge Proposal retained candidate is unavailable.');
   const baseFiles = notebook.readContent(baseRevision);
@@ -2428,7 +2437,7 @@ function loadKnowledgeProposalReviews(
 
       if (
         fileName !== `${reviewFile.proposalId}.json` ||
-        reviewFile.workspaceId !== workspaceId ||
+        reviewFile.ownerScope.workspaceId !== workspaceId ||
         !proposal
       ) {
         throw new Error(`Knowledge proposal review ${fileName} has invalid lineage.`);

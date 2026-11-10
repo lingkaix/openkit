@@ -61,7 +61,7 @@ function decodeRetainedReviews(f: Fixture) {
   );
   return KnowledgeProposalReviewFileSchema.parse({
     proposalId: f.proposal.id,
-    workspaceId: f.workspaceId,
+    ownerScope: { kind: 'workspace', workspaceId: f.workspaceId },
     decisions,
   }).decisions;
 }
@@ -197,7 +197,7 @@ describe('knowledge proposal authority', () => {
       id: `kp_${createHash('sha256')
         .update(
           JSON.stringify({
-            workspaceId: f.workspaceId,
+            ownerScope: { kind: 'workspace', workspaceId: f.workspaceId },
             requestId: authorityRequestId('proposal-authority-draft'),
           })
         )
