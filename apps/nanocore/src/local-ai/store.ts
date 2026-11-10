@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { ensureCanonicalDirectory, readCanonicalTextFile } from '@openkit/storage';
+import { ensureCanonicalDirectory, readCanonicalFile } from '@openkit/storage';
 import { z } from 'zod';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 
@@ -38,24 +38,56 @@ export function localAiRoot(dataRoot: string): string {
   return join(dataRoot, 'server', 'files', 'local-ai');
 }
 
-/** Reads state.json. A missing or unreadable file is disabled. */
-export function readLocalAiState(dataRoot: string): LocalAiState {
-  try {
-    const parsed = LocalAiStateSchema.safeParse(
-      JSON.parse(readCanonicalTextFile(join(localAiRoot(dataRoot), 'state.json')))
+/** A retained file could not be admitted; callers must not substitute disabled defaults. */
+export class LocalAiStateError extends Error {
+  public constructor(
+    public readonly code:
+      | 'local_ai_state_unsupported'
+      | 'local_ai_state_corrupt'
+      | 'local_ai_state_unreadable',
+    options?: ErrorOptions
+  ) {
+    super(
+      `Local AI state could not be admitted (${code}); retained state.json is preserved.`,
+      options
     );
-    if (parsed.success) return parsed.data;
-  } catch {
-    // Absent state is disabled.
+    this.name = 'LocalAiStateError';
   }
-  return { schemaVersion: 1, backends: {} };
 }
 
-/** Replaces state.json. */
+/** Reads retained enablement; only an absent initial file means all backends are disabled. */
+export function readLocalAiState(dataRoot: string): LocalAiState {
+  let bytes: Buffer;
+  try {
+    bytes = readCanonicalFile(join(localAiRoot(dataRoot), 'state.json'));
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      return { schemaVersion: 1, backends: {} };
+    throw new LocalAiStateError('local_ai_state_unreadable', { cause: error });
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+  } catch {
+    // Parser diagnostics can contain retained bytes; report only the bounded classification.
+    throw new LocalAiStateError('local_ai_state_corrupt');
+  }
+  if (value && typeof value === 'object' && 'schemaVersion' in value && value.schemaVersion !== 1)
+    throw new LocalAiStateError('local_ai_state_unsupported');
+  const parsed = LocalAiStateSchema.safeParse(value);
+  if (!parsed.success) throw new LocalAiStateError('local_ai_state_corrupt');
+  return parsed.data;
+}
+
+/** Replace valid settings only after admitting any retained predecessor. */
 export function writeLocalAiState(dataRoot: string, state: LocalAiState): void {
+  const parsed = LocalAiStateSchema.safeParse(state);
+  if (!parsed.success) throw new LocalAiStateError('local_ai_state_corrupt');
+  // Prevent a caller holding old/default settings from overwriting corrupt or newer state.
+  readLocalAiState(dataRoot);
   const root = localAiRoot(dataRoot);
   ensureCanonicalDirectory(root);
-  writeFileAtomic(join(root, 'state.json'), `${JSON.stringify(state)}\n`);
+  writeFileAtomic(join(root, 'state.json'), `${JSON.stringify(parsed.data)}\n`);
 }
 
 /** One backend record, or undefined when that backend has never been enabled. */
