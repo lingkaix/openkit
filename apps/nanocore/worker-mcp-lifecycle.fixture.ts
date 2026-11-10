@@ -66,6 +66,7 @@ import { admitTestMcpApproval } from './src/test-support/mcp-tool-policy.js';
 import { admitTestNativeEnvironment } from './src/test-support/native-environment.js';
 import { observeNativeTaskStartup } from './src/test-support/native-task-admission.js';
 import { operationRequest } from './src/test-support/operation-request.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from './src/test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from './src/workspace-membership.js';
 import { WorkspaceMutationAdmission } from './src/workspace-mutation-admission.js';
 
@@ -246,6 +247,7 @@ export async function assertCapturedOutcome(
       if (request.kind === 'image.inspect') {
         return {
           digest: request.input.imageDigest,
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           environmentDefaults: {
             defaultsDigest:
               'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
@@ -344,6 +346,7 @@ export async function assertCapturedOutcome(
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const startup = observeNativeTaskStartup(store);
   const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     fileAdmission,
     coreDb,
     readRuntimeConfig: () => runtimeConfigManager.current(),
@@ -373,6 +376,7 @@ export async function assertCapturedOutcome(
       return publication;
     });
   const app = createApp({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     fileAdmission,
     coreDb,
     dataRoot,
