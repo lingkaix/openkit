@@ -71,7 +71,7 @@ it.each([false, true])(
 it('keeps exception text and paths out of model and process failure diagnostics', async () => {
   const f = await fixture();
   const marker = 'PRIVATE-EXCEPTION-CONTENT';
-  const prepare = vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementation(() => {
+  const prepare = vi.spyOn(KnowledgeNotebook.prototype, 'prepareAsync').mockImplementation(() => {
     throw new TypeError(`${marker} ${f.dataRoot}`);
   });
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

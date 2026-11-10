@@ -2180,7 +2180,11 @@ export function parseWorkspaceKnowledgeProposalDocument(
   workspaceRoot: string,
   workspaceId: string,
   id: string,
-  content: string
+  content: string,
+  prepared?: {
+    readonly notebook: KnowledgeNotebook;
+    readonly candidate: Awaited<ReturnType<KnowledgeNotebook['retainedCandidateAsync']>>;
+  }
 ): KnowledgeProposalRecord {
   const fileName = `${id}.md`;
   const path = join(workspaceRoot, 'knowledge', 'proposals', fileName);
@@ -2205,9 +2209,11 @@ export function parseWorkspaceKnowledgeProposalDocument(
     throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
   }
 
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  const notebook =
+    prepared?.notebook ??
+    new KnowledgeNotebook({
+      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+    });
   const candidateRevision = requiredFrontmatterString(parsed.document, 'candidate_revision', path);
   const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
   const changedMetadata = parsed.document.frontmatter.changes;
@@ -2221,7 +2227,7 @@ export function parseWorkspaceKnowledgeProposalDocument(
     changedMetadata === undefined
       ? requiredFrontmatterString(parsed.document, 'knowledge_page_id', path)
       : undefined;
-  const candidate = notebook.retainedCandidate(id);
+  const candidate = prepared?.candidate ?? notebook.retainedCandidate(id);
   if (
     candidate.revision !== candidateRevision ||
     candidate.parentRevision !== baseRevision ||

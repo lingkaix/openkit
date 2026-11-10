@@ -1014,12 +1014,36 @@ export class KnowledgeNotebook {
     ]);
   }
 
+  /** Retains the same exact create-only Proposal ref without blocking Main on Git. */
+  async retainCandidateAsync(
+    input: Parameters<KnowledgeNotebook['retainCandidate']>[0]
+  ): Promise<void> {
+    if (!/^[A-Za-z0-9_-]+$/.test(input.proposalId)) throw new NotebookError('invalid_request');
+    const candidate = await this.inspectRevisionAsync(input.candidateRevision);
+    if (!candidate.parentRevision) throw new NotebookError('invalid_request');
+    await this.gitAsync([
+      'update-ref',
+      `refs/proposals/${input.proposalId}`,
+      input.candidateRevision,
+      '0'.repeat(input.candidateRevision.length),
+    ]);
+  }
+
   /** Reads the service-owned retained Proposal ref without changing publication or reconstructing content. */
   retainedCandidate(proposalId: string): Omit<NotebookRevision, 'files'> {
     if (!/^[A-Za-z0-9_-]+$/.test(proposalId)) throw new NotebookError('invalid_request');
     return this.inspectRevision(
       this.git(['rev-parse', '--verify', `refs/proposals/${proposalId}`]).trim()
     );
+  }
+
+  /** Reads the service-owned ref asynchronously, then verifies its exact immutable candidate. */
+  async retainedCandidateAsync(proposalId: string): Promise<Omit<NotebookRevision, 'files'>> {
+    if (!/^[A-Za-z0-9_-]+$/.test(proposalId)) throw new NotebookError('invalid_request');
+    const revision = (
+      await this.gitAsync(['rev-parse', '--verify', `refs/proposals/${proposalId}`])
+    ).trim();
+    return this.inspectRevisionAsync(revision);
   }
 
   /** Returns a bounded metadata page from published ancestry without loading page bodies. */

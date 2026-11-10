@@ -1279,7 +1279,7 @@ export function createKnowledgeOperationImplementations(
                     });
                     if (selected.head.notebookCommit !== commandInput.baseRevision)
                       throw new NotebookError('conflict');
-                    const proposal = store.prepareKnowledgeProposal({
+                    const proposal = await store.prepareKnowledgeProposal({
                       ...commandInput,
                       workspaceId,
                       producer,
