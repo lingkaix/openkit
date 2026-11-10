@@ -61,6 +61,7 @@ import {
   NANO_HOST_HARNESS_RESULT_BUDGET_MS,
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
+  type NanoHostHarnessResultSettlement,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness.js';
 import {
@@ -536,7 +537,10 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
     | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
   readonly harnessResultSettled?:
-    | ((result: NanoHostHarnessResult) => void | Promise<void>)
+    | ((
+        result: NanoHostHarnessResult,
+        settlement?: NanoHostHarnessResultSettlement
+      ) => void | Promise<void>)
     | undefined;
   /** Releases the exact live waiter into cleanup after incomplete-delivery fencing or storage failure. */
   readonly harnessCommandDeliveryFailed?:
@@ -2319,15 +2323,21 @@ export function registerNanoHostSessionSemanticRoutes(
           return context.body(wire, 200, { 'content-type': 'application/json' });
         }
         const result = value as unknown as NanoHostHarnessResult;
-        await settleNanoHostHarnessOperation(input.coreDb, {
+        const completedAt = new Date().toISOString();
+        const settlement = await settleNanoHostHarnessOperation(input.coreDb, {
           sandboxIntegrationBindingRef,
           result,
-          timestamp: new Date().toISOString(),
+          timestamp: completedAt,
         });
         if (!input.harnessResultSettled)
           throw new Error('NanoHost Harness native result consumer is unavailable.');
         // Exact result replay must cross the same durable consumer boundary before HTTP ACK.
-        await input.harnessResultSettled(result);
+        await input.harnessResultSettled(
+          result,
+          settlement === 'settled'
+            ? { disposition: 'settled', completedAt }
+            : { disposition: 'replayed' }
+        );
         const settledDelivery = deliveries.get(result.harnessInstanceId);
         if (settledDelivery?.command.operationId === result.operationId)
           releaseDelivery(settledDelivery);

@@ -20,13 +20,25 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { FsStore } from '../lib/store.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { queueTestPreparedHarnessOperation } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
+import {
+  acknowledgeNanoHostHarnessResult,
+  createNanoHostHarnessRuntime,
+  dispatchNanoHostHarnessOperation,
+  type NanoHostHarnessResult,
+  type NanoHostHarnessResultSettlement,
+  openNanoHostAgentSessionBinding,
+  readConsumedNanoHostHarnessResult,
+  readNanoHostIdleCloseConsumerReceipt,
+} from './nanohost-harness.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
@@ -3018,8 +3030,13 @@ describe('authoritative NanoHost session dispatch', () => {
   });
 });
 
-/** Real H2/readiness composition for private routing only; the installed handler always denies. */
-async function privateLoginDispatchFixture() {
+/** Real H2/readiness composition; Login defaults to denial, with an optional real result consumer. */
+async function privateLoginDispatchFixture(
+  options: Pick<
+    Parameters<typeof registerNanoHostSessionSemanticRoutes>[0],
+    'harnessResultSettled'
+  > = {}
+) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-private-login-dispatch-'));
   const coreDb = openCoreDb(root);
   const authority = createNanoHostTransportSessionAuthority();
@@ -3041,6 +3058,7 @@ async function privateLoginDispatchFixture() {
     coreDb,
     dispatch,
     nanoHostConfig: target,
+    ...(options.harnessResultSettled ? { harnessResultSettled: options.harnessResultSettled } : {}),
   });
   const listener = getRequestListener(app.fetch);
   let physicalConnection: object | undefined;
@@ -3081,7 +3099,12 @@ async function privateLoginDispatchFixture() {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Missing H2 fixture address.');
     client = connectHttp2(`http://127.0.0.1:${address.port}`);
-    const post = async (path: string, body: string, signal?: AbortSignal) => {
+    const post = async (
+      path: string,
+      body: string,
+      signal?: AbortSignal,
+      headers?: Record<string, string | undefined>
+    ) => {
       if (!client) throw new Error('Private Login fixture client is unavailable.');
       const stream = client.request({
         ':method': 'POST',
@@ -3089,6 +3112,7 @@ async function privateLoginDispatchFixture() {
         authorization: 'Bearer synthetic-dispatch-denial',
         'content-type': 'application/json',
         'x-private-fixture': 'request-preserved',
+        ...headers,
       });
       const response = once(stream, 'response');
       const closed = signal
@@ -3118,6 +3142,7 @@ async function privateLoginDispatchFixture() {
     return {
       authority,
       close,
+      coreDb,
       dispatch,
       epoch,
       forwarded: () => forwarded,
@@ -3310,5 +3335,118 @@ it('carries real private semantic H2 request cancellation into the bound handler
     abort.abort();
     await f.close();
     await pending?.catch(() => undefined);
+  }
+});
+
+// The outside close result is modeled. Real H2, native Core settlement and idle consumption are not.
+it('forwards the original Core close settlement clock once and no replacement clock on H2 replay', async () => {
+  let f: Awaited<ReturnType<typeof privateLoginDispatchFixture>> | undefined;
+  let consumerReceipt: string | null = null;
+  const settlements: NanoHostHarnessResultSettlement[] = [];
+  const harnessInstanceId = 'departure-clock-harness';
+  const harnessBindingRef = 'departure-clock-harness-binding';
+  const integrationRef = 'departure-clock-integration';
+  try {
+    f = await privateLoginDispatchFixture({
+      harnessResultSettled: async (result, settlement) => {
+        if (!f || !consumerReceipt || !settlement)
+          throw new Error('Actual close callback lacks its Core settlement evidence.');
+        expect(readConsumedNanoHostHarnessResult(f.coreDb, result)).not.toBeNull();
+        await acknowledgeNanoHostHarnessResult(f.coreDb, {
+          result,
+          harnessBindingRef,
+          consumerReceipt,
+          timestamp: new Date().toISOString(),
+        });
+        settlements.push(settlement);
+      },
+    });
+    await createNanoHostHarnessRuntime(f.coreDb, {
+      adapterId: 'codex',
+      adapterVersion: '0.153.4',
+      harnessBindingRef,
+      harnessCompatibilityKey: 'd'.repeat(64),
+      harnessInstanceId,
+      imageDigest: `sha256:${'f'.repeat(64)}`,
+      originPhysicalEpoch: f.epoch,
+      runtimeTargetId: f.target.targetId,
+      sandboxBindingRef: 'departure-clock-sandbox-binding',
+      sandboxCompatibilityKey: 'a'.repeat(64),
+      sandboxIntegrationBindingRef: integrationRef,
+      sandboxRuntimeId: 'departure-clock-sandbox',
+      timestamp: new Date().toISOString(),
+    });
+    const receiver = {
+      agentSessionId: testEntityId('as', 'departure-clock-session'),
+      agentSessionRuntimeBindingId: 'departure-clock-binding',
+      harnessInstanceId,
+      harnessBindingRef,
+    };
+    await openNanoHostAgentSessionBinding(f.coreDb, {
+      agentSessionId: receiver.agentSessionId,
+      agentSessionRuntimeBindingId: receiver.agentSessionRuntimeBindingId,
+      harnessInstanceId,
+      agentSessionCompatibilityKey: 'b'.repeat(64),
+      effectiveSetupGeneration: 1,
+      threadId: testEntityId('th', 'departure-clock-thread'),
+      workspaceId: testEntityId('ws', 'departure-clock-workspace'),
+      timestamp: new Date().toISOString(),
+    });
+    consumerReceipt = readNanoHostIdleCloseConsumerReceipt(f.coreDb, receiver);
+    expect(consumerReceipt).not.toBeNull();
+    await queueTestPreparedHarnessOperation(f.coreDb, {
+      harnessInstanceId,
+      operation: 'session.close',
+      body: {
+        agentSessionId: receiver.agentSessionId,
+        agentSessionRuntimeBindingId: receiver.agentSessionRuntimeBindingId,
+      },
+      timestamp: new Date().toISOString(),
+    });
+    const command = await dispatchNanoHostHarnessOperation(f.coreDb, {
+      sandboxIntegrationBindingRef: integrationRef,
+    });
+    if (!command) throw new Error('Real Core close command was not dispatched.');
+    const result: NanoHostHarnessResult = {
+      schemaVersion: 2,
+      harnessInstanceId,
+      operationId: command.operationId,
+      sequence: command.sequence,
+      disposition: 'succeeded',
+      body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+    };
+    const headers = { authorization: undefined, 'x-openkit-integration-binding': integrationRef };
+    expect(
+      (await f.post('/worker-control/harness/result', JSON.stringify(result), undefined, headers))[
+        ':status'
+      ]
+    ).toBe(204);
+    const first = settlements[0];
+    expect(first?.disposition).toBe('settled');
+    if (first?.disposition !== 'settled')
+      throw new Error('Actual first Core settlement is missing.');
+    expect(
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT updated_at AS completedAt FROM harness_instance_records WHERE harness_instance_id = ?'
+        )
+        .get(harnessInstanceId)
+    ).toEqual({ completedAt: first.completedAt });
+    expect(
+      (await f.post('/worker-control/harness/result', JSON.stringify(result), undefined, headers))[
+        ':status'
+      ]
+    ).toBe(204);
+    expect(settlements).toEqual([first, { disposition: 'replayed' }]);
+    expect(
+      f.coreDb.sqlite
+        .prepare(
+          'SELECT updated_at AS completedAt FROM harness_instance_records WHERE harness_instance_id = ?'
+        )
+        .get(harnessInstanceId)
+    ).toEqual({ completedAt: first.completedAt });
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    await f?.close();
   }
 });

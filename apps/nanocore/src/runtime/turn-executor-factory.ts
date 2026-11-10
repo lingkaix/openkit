@@ -18,6 +18,7 @@ import {
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import {
+  isEntityId,
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
@@ -55,7 +56,9 @@ import type { FileStorageAdmission } from '../storage/artifacts/file-admission.j
 import {
   decode as decodeControlProduct,
   openControlStoreProductReadHandle,
+  readProduct,
 } from '../storage/control-store-product-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -64,6 +67,11 @@ import {
   type WorkspaceDb,
 } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import {
+  NATIVE_THREAD_LOGIN_FEATURE,
+  type NativeThreadLogin,
+  NativeThreadLoginSchema,
+} from '../storage/native-thread-login.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import {
   AgentSessionRecordSchema,
@@ -147,7 +155,6 @@ import {
   drainNanoHostSandboxAdmission,
   expireNanoHostHarnessQueuedOperation,
   fenceNanoHostSandboxRuntime,
-  hasConsumedNanoHostHarnessResult,
   initializeNanoHostRuntimeCheckVersions,
   inspectNanoHostAgentSessionContinuity,
   markNanoHostHarnessOperationUnknown,
@@ -156,10 +163,13 @@ import {
   type NanoHostHarnessCommand,
   type NanoHostHarnessOperation,
   type NanoHostHarnessResult,
+  type NanoHostHarnessResultSettlement,
   openNanoHostAgentSessionBinding,
   type PreparedNanoHostHarnessOperation,
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
+  readConsumedNanoHostHarnessResult,
+  readNanoHostHarnessCloseReceiver,
   readNanoHostIdleCloseConsumerReceipt,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
@@ -368,7 +378,10 @@ export interface ConfiguredWorkerLifecycleRuntime {
     command: NanoHostHarnessCommand
   ) => Promise<NanoHostHarnessCommand | null>;
   /** Advances one exact live producer after its durable Harness result settles. */
-  readonly acceptNanoHostHarnessResult: (result: NanoHostHarnessResult) => Promise<void>;
+  readonly acceptNanoHostHarnessResult: (
+    result: NanoHostHarnessResult,
+    settlement?: NanoHostHarnessResultSettlement
+  ) => Promise<void>;
   /** Rejects the exact live waiter after its dispatched response is durably fenced as incomplete. */
   readonly failNanoHostHarnessDelivery: (
     command: Pick<NanoHostHarnessCommand, 'harnessInstanceId' | 'operationId'>,
@@ -580,7 +593,8 @@ function createNanoHostWorkerLifecycleRuntime(
     isTurnExecutionActive: (turnId) => turnExecutor.isTurnExecutionActive(turnId),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
     acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
-    acceptNanoHostHarnessResult: (result) => backend.acceptHarnessResult(result),
+    acceptNanoHostHarnessResult: (result, settlement) =>
+      backend.acceptHarnessResult(result, settlement),
     failNanoHostHarnessDelivery: (command, failure) =>
       backend.failHarnessDelivery(command, failure),
     runtimeTargetKind: 'nanohost',
@@ -744,6 +758,21 @@ interface PendingNanoHostHarnessOperation {
   readonly admittedUnixMs: number;
   deadlineUnixMs: number;
   deadlineMonotonicMs: number;
+  /** Pre-queue receiver and affinity, plus one non-retrying Workspace departure publication. */
+  closeDeparture?: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+    readonly harnessBindingRef: string;
+    readonly originPhysicalEpoch: string;
+    readonly runtimeTargetId: string;
+    readonly expectedReferenceId: NativeThreadLogin['referenceId'];
+    completedAt?: string;
+    settlement?: Promise<void>;
+    failure?: Error;
+    fence?: Promise<void>;
+  };
   /** Existing public receipt producer; no prompt or extra durable state is retained here. */
   steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl };
   /** Positive Core idle binding owner; it does not authorize active or closing Turn cleanup. */
@@ -761,6 +790,17 @@ interface PendingNanoHostHarnessOperation {
     consumerReceipt?: string;
     settlement?: Promise<void>;
   };
+}
+
+/** Keeps an actual Login close failure from restoring physical admission during retirement. */
+class NanoHostLoginDepartureIncompleteError extends Error {
+  readonly reasonCode: unknown;
+
+  constructor(failure: Error) {
+    super('NanoHost Login close requires inspection.', { cause: failure });
+    // Preserve an actual resident cleanup refusal; this class never creates that permission.
+    this.reasonCode = 'reasonCode' in failure ? failure.reasonCode : undefined;
+  }
 }
 
 /** Pre-lease close owner reconstructed from one exact durable AgentSession binding. */
@@ -789,6 +829,15 @@ interface NanoHostSharedHarness {
   readonly harnessCompatibilityKey: string;
   readonly harnessInstanceId: string;
   readonly sandbox: NanoHostSharedSandbox;
+  /** One known native removal ACK, retained only through its current result window and this owner. */
+  knownLoginClose?: {
+    readonly operationId: string;
+    readonly sequence: number;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+  };
 }
 
 /** One compatible physical Sandbox and its single retained Integration bridge. */
@@ -983,6 +1032,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       throw new Error('NanoHost dispatched operation does not match its live producer.');
     }
+    const sharedHarness =
+      session?.sharedHarness ??
+      [...this.sharedHarnesses.values()].find(
+        (harness) => harness.harnessInstanceId === command.harnessInstanceId
+      );
     if (pending.coreIdleClose) {
       const prepared = pending.coreIdleClose.prepared;
       if (
@@ -1022,6 +1076,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           'NanoHost idle close Core binding or original cleanup allowance is unavailable.'
         );
       readRetainedV1(dispatched, () => dispatched);
+      if (
+        sharedHarness?.knownLoginClose &&
+        (sharedHarness.knownLoginClose.operationId !== command.operationId ||
+          sharedHarness.knownLoginClose.sequence !== command.sequence)
+      )
+        delete sharedHarness.knownLoginClose;
       return { ...command, body: prepared.wireBody };
     }
     const journal = pending.journal;
@@ -1057,6 +1117,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost dispatched command conflicts with its exact prepared carriage.');
     // Core has already committed its redacted dispatch. Retain that fact even if proof fails.
     pending.operationId = command.operationId;
+    if (
+      sharedHarness?.knownLoginClose &&
+      (sharedHarness.knownLoginClose.operationId !== command.operationId ||
+        sharedHarness.knownLoginClose.sequence !== command.sequence)
+    )
+      delete sharedHarness.knownLoginClose;
     if (pending.steer) {
       try {
         await pending.steer.control.recheck();
@@ -1330,6 +1396,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       : undefined;
     const pending = session?.pendingHarnessOperation ?? closeOwner?.pending;
     if (!pending) return;
+    if (
+      pending.closeDeparture?.expectedReferenceId !== undefined &&
+      pending.closeDeparture.expectedReferenceId !== null
+    ) {
+      // The result waiter retains the slot until its existing physical admission fence settles.
+      pending.reject(
+        new Error('NanoHost Login close delivery requires inspection.', { cause: failure })
+      );
+      return;
+    }
     if (pending.timeout) clearTimeout(pending.timeout);
     if (session?.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
     if (closeOwner?.pending === pending) {
@@ -1348,7 +1424,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Acknowledges actual native consumption before resolving the live producer or slot. */
-  public async acceptHarnessResult(result: NanoHostHarnessResult): Promise<void> {
+  public async acceptHarnessResult(
+    result: NanoHostHarnessResult,
+    settlement?: NanoHostHarnessResultSettlement
+  ): Promise<void> {
     const session = [...this.sessions.values()].find(
       (candidate) =>
         candidate.harnessInstanceId === result.harnessInstanceId &&
@@ -1362,9 +1441,78 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         )
       : undefined;
     const pending = session?.pendingHarnessOperation ?? closeOwner?.pending;
+    const sharedHarness =
+      session?.sharedHarness ??
+      [...this.sharedHarnesses.values()].find(
+        (harness) => harness.harnessInstanceId === result.harnessInstanceId
+      );
     if (!pending) {
-      if (hasConsumedNanoHostHarnessResult(this.coreDb, result)) return;
+      const consumed = readConsumedNanoHostHarnessResult(this.coreDb, result);
+      const known = sharedHarness?.knownLoginClose;
+      if (
+        !consumed &&
+        sharedHarness &&
+        known?.operationId === result.operationId &&
+        known.sequence === result.sequence
+      )
+        delete sharedHarness.knownLoginClose;
+      if (consumed) {
+        if (!consumed.operations.includes('session.close')) return;
+        // Validate every replay against the retained normalized result before using the one warm ACK.
+        // A queued successor may retain this prior result while replacing the original command.
+        if (
+          known &&
+          known.operationId === result.operationId &&
+          known.sequence === result.sequence &&
+          consumed.receiver?.workspaceId === known.workspaceId &&
+          consumed.receiver.threadId === known.threadId &&
+          (consumed.close === null ||
+            (consumed.close.agentSessionId === known.agentSessionId &&
+              consumed.close.agentSessionRuntimeBindingId === known.agentSessionRuntimeBindingId))
+        )
+          return;
+        // A cleared private Login is not evidence that its departure ACK was received.
+        // Only a validated ordinary Thread can acknowledge cold close without that live proof.
+        if (consumed.receiver) {
+          const db = openBootVerifiedWorkspaceDb(
+            this.coreDb.dataRoot,
+            consumed.receiver.workspaceId
+          );
+          try {
+            const thread = readProduct(
+              db.sqlite,
+              { kind: 'workspace', workspaceId: consumed.receiver.workspaceId },
+              'thread',
+              consumed.receiver.threadId
+            );
+            if (
+              thread &&
+              !Object.hasOwn(thread.record, 'login') &&
+              (!Array.isArray(thread.record.requiredFeatures) ||
+                !thread.record.requiredFeatures.includes(NATIVE_THREAD_LOGIN_FEATURE))
+            )
+              return;
+          } finally {
+            db.sqlite.close();
+          }
+        }
+        throw new Error(
+          'NanoHost Login close replay requires its original live departure acknowledgement.'
+        );
+      }
       throw new Error('NanoHost Harness result has no available exact consumer.');
+    }
+    if (
+      pending.closeDeparture &&
+      pending.sequence === result.sequence &&
+      settlement?.disposition === 'settled'
+    ) {
+      if (
+        pending.closeDeparture.completedAt !== undefined &&
+        pending.closeDeparture.completedAt !== settlement.completedAt
+      )
+        throw new Error('NanoHost Login close settlement clock conflicts.');
+      pending.closeDeparture.completedAt = settlement.completedAt;
     }
     if (pending.coreIdleClose) {
       if (
@@ -1400,6 +1548,25 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw error;
       });
       await journal.settlement;
+    }
+    await this.completeHarnessLoginDeparture(pending, result);
+    const departure = pending.closeDeparture;
+    if (
+      sharedHarness &&
+      departure?.expectedReferenceId != null &&
+      departure.settlement &&
+      !departure.failure &&
+      result.disposition === 'succeeded'
+    ) {
+      // Retain only nonmaterial ACK correlation on the existing owner, never the completed waiter.
+      sharedHarness.knownLoginClose = {
+        operationId: result.operationId,
+        sequence: result.sequence,
+        workspaceId: departure.workspaceId,
+        threadId: departure.threadId,
+        agentSessionId: departure.agentSessionId,
+        agentSessionRuntimeBindingId: departure.agentSessionRuntimeBindingId,
+      };
     }
     if (pending.timeout) clearTimeout(pending.timeout);
     if (session?.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
@@ -1444,6 +1611,129 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       )
     );
+  }
+
+  /** Captures the original receiver and canonical affinity before its close command exists. */
+  private captureHarnessLoginDeparture(
+    session: NanoHostBackendTurnSession,
+    body: Readonly<Record<string, unknown>>
+  ): NonNullable<PendingNanoHostHarnessOperation['closeDeparture']> {
+    if (
+      body.agentSessionId !== session.environmentPackage.scope.agentSessionId ||
+      body.agentSessionRuntimeBindingId !== session.agentSessionRuntimeBindingId
+    )
+      throw new Error('NanoHost Login close receiver conflicts with its session.');
+    const receiver = readNanoHostHarnessCloseReceiver(this.coreDb, {
+      harnessInstanceId: session.harnessInstanceId,
+      harnessBindingRef: session.harnessBindingRef,
+      agentSessionId: session.environmentPackage.scope.agentSessionId,
+      agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+    });
+    if (
+      receiver.workspaceId !== session.environmentPackage.scope.workspaceId ||
+      receiver.threadId !== session.environmentPackage.scope.threadId
+    )
+      throw new Error('NanoHost Login close receiver scope conflicts.');
+    const db = openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, receiver.workspaceId);
+    try {
+      const thread = readProduct(
+        db.sqlite,
+        { kind: 'workspace', workspaceId: receiver.workspaceId },
+        'thread',
+        receiver.threadId
+      );
+      if (!thread) throw new Error('NanoHost Login close Thread is unavailable.');
+      const login = Object.hasOwn(thread.record, 'login')
+        ? NativeThreadLoginSchema.parse(thread.record.login)
+        : undefined;
+      return {
+        ...receiver,
+        agentSessionId: session.environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+        harnessBindingRef: session.harnessBindingRef,
+        originPhysicalEpoch: session.sharedHarness.sandbox.originPhysicalEpoch,
+        runtimeTargetId: session.sharedHarness.sandbox.runtimeTargetId,
+        expectedReferenceId: login?.referenceId ?? null,
+      };
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
+  /** Stops admission to the affected Harness after terminal failure; no departure is retried. */
+  private fenceHarnessLoginDeparture(
+    departure: NonNullable<PendingNanoHostHarnessOperation['closeDeparture']>
+  ): Promise<void> {
+    // Failure is latched before this fence. Its fresh clock may invalidate a late removal,
+    // but cannot authorize a retry or turn an already submitted effect into non-execution.
+    departure.fence ??= drainNanoHostHarnessAdmission(this.coreDb, {
+      harnessBindingRef: departure.harnessBindingRef,
+      timestamp: new Date().toISOString(),
+    });
+    return departure.fence;
+  }
+
+  /** Joins one native removal only after the original ordinary or idle consumer has acknowledged. */
+  private async completeHarnessLoginDeparture(
+    pending: PendingNanoHostHarnessOperation,
+    result: NanoHostHarnessResult
+  ): Promise<void> {
+    const departure = pending.closeDeparture;
+    if (!departure || departure.expectedReferenceId === null || result.disposition !== 'succeeded')
+      return;
+    departure.settlement ??= (async () => {
+      const current = () => {
+        if (
+          departure.failure ||
+          pending.sequence !== result.sequence ||
+          pending.operationId !== result.operationId ||
+          Date.now() < pending.admittedUnixMs ||
+          Date.now() >= pending.deadlineUnixMs ||
+          performance.now() >= pending.deadlineMonotonicMs ||
+          this.requireCurrentPhysicalEpoch(departure.runtimeTargetId) !==
+            departure.originPhysicalEpoch
+        )
+          throw new Error('NanoHost Login departure requires inspection.');
+      };
+      let db: WorkspaceDb | undefined;
+      try {
+        const completedAt = departure.completedAt;
+        if (!completedAt) throw new Error('NanoHost Login close has no first settlement clock.');
+        current();
+        const expectedReferenceId = departure.expectedReferenceId;
+        if (expectedReferenceId !== null && !isEntityId('vault', expectedReferenceId))
+          throw new Error('NanoHost Login departure reference is invalid.');
+        db =
+          pending.journal?.workspaceDb ??
+          openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, departure.workspaceId);
+        await getControlStoreWorkerClient().vault(
+          db,
+          'thread-login-remove',
+          {
+            workspaceId: departure.workspaceId,
+            threadId: departure.threadId,
+            agentSessionId: departure.agentSessionId,
+            agentSessionRuntimeBindingId: departure.agentSessionRuntimeBindingId,
+            harnessInstanceId: result.harnessInstanceId,
+            operationId: result.operationId,
+            sequence: result.sequence,
+            completedAt,
+            expectedReferenceId,
+          },
+          current
+        );
+        current();
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error('NanoHost Login departure failed.');
+        departure.failure ??= failure;
+        pending.reject(failure);
+        throw failure;
+      } finally {
+        if (db && db !== pending.journal?.workspaceDb) db.sqlite.close();
+      }
+    })();
+    await departure.settlement;
   }
 
   /** Builds local receipt progress from the exact native child, without admitting another effect. */
@@ -2025,6 +2315,23 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public async prepareAgentSessionContinuity(
     input: WorkerGovernanceAgentSessionContinuityInput
   ): Promise<WorkerGovernanceAgentSessionContinuityDisposition> {
+    const closing =
+      [...this.sessions.values()].some(
+        (session) =>
+          session.pendingHarnessOperation?.closeDeparture?.expectedReferenceId != null &&
+          session.environmentPackage.scope.workspaceId === input.workspaceId &&
+          session.environmentPackage.scope.threadId === input.threadId
+      ) ||
+      [...this.agentSessionCloseOwners.values()].some(
+        (owner) =>
+          owner.pending?.closeDeparture?.expectedReferenceId != null &&
+          owner.pending.closeDeparture.workspaceId === input.workspaceId &&
+          owner.pending.closeDeparture.threadId === input.threadId
+      );
+    if (closing)
+      throw new WorkerGovernanceCapacityUnavailableError(
+        'The original Login close still owns Thread admission.'
+      );
     const runtimeTargets = this.coreDb.sqlite
       .prepare(
         `SELECT predecessor_fenced AS predecessorFenced, ready, fresh_empty AS freshEmpty
@@ -3094,6 +3401,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.sharedSandboxes.delete(sandboxCompatibilityKey);
     for (const [key, harness] of this.sharedHarnesses) {
       if (harness.sandbox.sandboxCompatibilityKey === sandboxCompatibilityKey) {
+        delete harness.knownLoginClose;
         this.sharedHarnesses.delete(key);
       }
     }
@@ -3754,7 +4062,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } catch (error) {
       // A drain claim is reversible when no uncertain cleanup or failed Harness owns a fence.
       // The effect owner fences its exact target after dispatch; a pre-dispatch failure cannot.
-      if (!(error instanceof WorkspaceCaptureRecoveryRequired))
+      if (
+        !(error instanceof WorkspaceCaptureRecoveryRequired) &&
+        !(error instanceof NanoHostLoginDepartureIncompleteError)
+      )
         await restoreNanoHostSandboxAdmissionIfSafe(this.coreDb, {
           sandboxRuntimeId: eviction.sandboxRuntimeId,
         });
@@ -4468,6 +4779,31 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           'NanoHost session.open requires its AgentSession recorder before dispatch.'
         );
       }
+      const receiver = {
+        workspaceId: session.environmentPackage.scope.workspaceId,
+        threadId: session.environmentPackage.scope.threadId,
+      };
+      const thread = readProduct(
+        workspaceDb.sqlite,
+        { kind: 'workspace', workspaceId: receiver.workspaceId },
+        'thread',
+        receiver.threadId
+      );
+      if (!thread) throw new Error('NanoHost session.open Thread is unavailable.');
+      const login = Object.hasOwn(thread.record, 'login')
+        ? NativeThreadLoginSchema.parse(thread.record.login)
+        : undefined;
+      // Refuse orphaned active affinity; this read does not recover an unknown close ACK.
+      // A deliberate new request after owned cleanup still needs current continuity and the
+      // canonical selection/cooldown checks. A cleared private Thread remains private.
+      if (
+        login?.referenceId != null &&
+        readNanoHostThreadAgentSessionBinding(this.coreDb, receiver)?.agentSessionId !==
+          session.environmentPackage.scope.agentSessionId
+      )
+        throw new WorkerGovernanceCapacityUnavailableError(
+          'The active Thread Login has no current native binding; inspection is required.'
+        );
       await openNanoHostAgentSessionBinding(this.coreDb, {
         nativeEnvironment: session.environmentPackage.runtime.environment
           ? {
@@ -8081,7 +8417,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sequence: null,
       operationId: null,
       reject: (error) => {
-        rejectResult(error);
+        if (pending.closeDeparture?.expectedReferenceId != null && pending.operationId !== null) {
+          pending.closeDeparture.failure ??= error;
+          const failure = new NanoHostLoginDepartureIncompleteError(error);
+          // Expiry stops departure effects immediately. Join the existing admission fence before
+          // releasing the bounded caller; a lost fence ACK remains unknown and cannot restore it.
+          void this.fenceHarnessLoginDeparture(pending.closeDeparture).then(
+            () => rejectResult(failure),
+            (fenceError: unknown) =>
+              rejectResult(
+                new NanoHostLoginDepartureIncompleteError(
+                  new AggregateError(
+                    [error, fenceError],
+                    'NanoHost Login departure admission fence is unknown.'
+                  )
+                )
+              )
+          );
+        } else rejectResult(error);
         if (session.initialHarnessLogin?.pending === pending) this.failInitialHarnessLogin(session);
       },
       resolve: resolveResult,
@@ -8090,6 +8443,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       deadlineUnixMs,
       deadlineMonotonicMs: admittedMonotonicMs + Math.max(0, deadlineUnixMs - admittedUnixMs),
     };
+    if (operation === 'session.close')
+      pending.closeDeparture = this.captureHarnessLoginDeparture(session, body);
     const closeOwner = this.agentSessionCloseOwners.get(session.agentSessionRuntimeBindingId);
     if (operation === 'session.close' && attempt.phase === 'closed') {
       const identity = {
@@ -8358,8 +8713,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           (value) => value.initialHarnessLogin?.pending === pending
         );
         if (session) this.failInitialHarnessLogin(session);
-        clearOwner();
-        const retainedResult = pending.journal?.resultFingerprint !== undefined;
+        // A Login close keeps its live admission owner until the rejection's physical fence joins.
+        if (pending.closeDeparture?.expectedReferenceId == null) clearOwner();
+        if (pending.closeDeparture?.expectedReferenceId != null)
+          pending.closeDeparture.failure ??= new Error(
+            'NanoHost Login close original allowance expired.'
+          );
+        const retainedResult =
+          pending.journal?.resultFingerprint !== undefined ||
+          (pending.closeDeparture?.expectedReferenceId != null &&
+            pending.closeDeparture.completedAt !== undefined);
         const phase = retainedResult
           ? 'awaiting-durable-consumption'
           : pending.operationId

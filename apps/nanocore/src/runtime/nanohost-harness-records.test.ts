@@ -28,12 +28,13 @@ import {
   drainNanoHostSandboxAdmission,
   expireNanoHostHarnessQueuedOperation,
   fenceNanoHostSandboxRuntime,
-  hasConsumedNanoHostHarnessResult,
   inspectNanoHostAgentSessionContinuity,
   listNanoHostMeasuredHarnessIdentities,
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
+  readConsumedNanoHostHarnessResult,
+  readNanoHostHarnessCloseReceiver,
   readNanoHostMeasuredHarnessIdentity,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
@@ -2237,14 +2238,14 @@ describe('private NanoHost Harness records', () => {
         lifecycleState: 'open',
       });
       // DX Physical Receipt Consumption: idle close consumes through Core, without a Turn.
-      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(true);
+      expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
       const retained = coreDb.sqlite
         .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
         .get() as { result_json: string; result_fingerprint: string };
       const root = coreDb.dataRoot;
       coreDb.sqlite.close();
       coreDb = openCoreDb(root);
-      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(true);
+      expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
       expect(await settle()).toBe('replayed');
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
@@ -2269,10 +2270,10 @@ describe('private NanoHost Harness records', () => {
       };
       // Both false and a refusal exception mean the invalid receipt was not acknowledged.
       const consumed = (
-        incoming: Parameters<typeof hasConsumedNanoHostHarnessResult>[1] = result
+        incoming: Parameters<typeof readConsumedNanoHostHarnessResult>[1] = result
       ) => {
         try {
-          return hasConsumedNanoHostHarnessResult(coreDb, incoming);
+          return readConsumedNanoHostHarnessResult(coreDb, incoming) !== null;
         } catch {
           return false;
         }
@@ -2362,7 +2363,9 @@ describe('private NanoHost Harness records', () => {
         });
         // Session 1 still owns Turn occupancy; session 2 is idle and consumes in the Core transaction.
         expect(consumption !== undefined).toBe(closedSession === 2);
-        expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(closedSession === 2);
+        expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(
+          closedSession === 2
+        );
         expect(stored.result_fingerprint).toBe(
           createHash('sha256').update(stored.result_json).digest('hex')
         );
@@ -4086,6 +4089,16 @@ describe('private Login removal Core receipt boundary', () => {
     onTestFinished(() => rmSync(coreDb.dataRoot, { recursive: true, force: true }));
     try {
       recordFinalStatus(coreDb, 'failed', 'error');
+      const receiver = {
+        harnessInstanceId: 'harness-1',
+        harnessBindingRef: 'harness-binding-1',
+        agentSessionId: testEntityId('as', 'agent-session-1'),
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+      };
+      expect(readNanoHostHarnessCloseReceiver(coreDb, receiver)).toEqual({
+        workspaceId: testEntityId('ws', 'workspace-1'),
+        threadId: testEntityId('th', 'thread-1'),
+      });
       await queueNanoHostHarnessOperation(coreDb, {
         body: {
           agentSessionId: testEntityId('as', 'agent-session-1'),
@@ -4125,10 +4138,19 @@ describe('private Login removal Core receipt boundary', () => {
         completedAt: settlement.timestamp,
       };
       expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)).toBeNull();
-      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(false);
+      expect(() => readNanoHostHarnessCloseReceiver(coreDb, receiver)).toThrow();
+      expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(false);
       expect(() => requireNanoHostLoginRemoval(coreDb, removal)).toThrow();
       await consumeFixtureWorkspaceResult(coreDb);
-      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(true);
+      expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
+      expect(readConsumedNanoHostHarnessResult(coreDb, result)).toEqual({
+        operations: ['session.close'],
+        receiver: { workspaceId: removal.workspaceId, threadId: removal.threadId },
+        close: {
+          agentSessionId: removal.agentSessionId,
+          agentSessionRuntimeBindingId: removal.agentSessionRuntimeBindingId,
+        },
+      });
       expect(requireNanoHostLoginRemoval(coreDb, removal)).toBe(settlement.timestamp);
       expect(() =>
         requireNanoHostLoginRemoval(coreDb, {
@@ -4199,7 +4221,7 @@ describe('private Login removal Core receipt boundary', () => {
         sequence: command.sequence,
         completedAt: settlement.timestamp,
       };
-      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(true);
+      expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(true);
       expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)).toBeNull();
       expect(requireNanoHostLoginRemoval(coreDb, removal)).toBe(settlement.timestamp);
       await openNanoHostAgentSessionBinding(coreDb, {

@@ -467,13 +467,19 @@ export async function createNativeTaskAdmissionFixture(
             if (options.actualWorker) {
               turn = executions.get(String(command.body.turnId));
               const result = await options.actualWorker.handle(wire, integrationRef);
-              await settleNanoHostHarnessOperation(coreDb, {
+              const completedAt = new Date().toISOString();
+              const settlement = await settleNanoHostHarnessOperation(coreDb, {
                 result,
                 sandboxIntegrationBindingRef: integrationRef,
-                timestamp: new Date().toISOString(),
+                timestamp: completedAt,
               });
               commandSettled = true;
-              await runtime.acceptNanoHostHarnessResult(result);
+              await runtime.acceptNanoHostHarnessResult(
+                result,
+                settlement === 'settled'
+                  ? { disposition: 'settled', completedAt }
+                  : { disposition: 'replayed' }
+              );
               if (command.operation === 'turn.start' && result.disposition === 'succeeded') {
                 if (!turn?.started || !turn.ownerStore || turn.acceptedStart)
                   throw new Error('Actual Worker start lacks its unique entered Core execution.');
@@ -650,13 +656,19 @@ export async function createNativeTaskAdmissionFixture(
               disposition: closeRefusal ? ('refused' as const) : ('succeeded' as const),
               body: closeRefusal ? { reasonCode: closeRefusal } : body,
             };
-            await settleNanoHostHarnessOperation(coreDb, {
+            const completedAt = new Date().toISOString();
+            const settlement = await settleNanoHostHarnessOperation(coreDb, {
               result,
               sandboxIntegrationBindingRef: integrationRef,
-              timestamp: new Date().toISOString(),
+              timestamp: completedAt,
             });
             commandSettled = true;
-            await runtime.acceptNanoHostHarnessResult(result);
+            await runtime.acceptNanoHostHarnessResult(
+              result,
+              settlement === 'settled'
+                ? { disposition: 'settled', completedAt }
+                : { disposition: 'replayed' }
+            );
             if (command.operation === 'turn.start') {
               turn!.acceptedStart = true;
               // Export history retains peer data, without the stopped controller's gates or callbacks.

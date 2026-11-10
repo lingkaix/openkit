@@ -29,7 +29,13 @@ import {
   WorkerSandboxAccessSchema,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
-import { ENTITY_KINDS, entityIdPattern, isEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  ENTITY_KINDS,
+  entityIdPattern,
+  isEntityId,
+  isRecord,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import {
   WORKER_OBSERVATION_SOURCE_MAX_BYTES,
   WorkerCanonicalEventRecordSchema,
@@ -84,7 +90,10 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { NativeThreadLoginSchema } from '../storage/native-thread-login.js';
+import {
+  NATIVE_THREAD_LOGIN_FEATURE,
+  NativeThreadLoginSchema,
+} from '../storage/native-thread-login.js';
 import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1.js';
 import type { ControlSchedulerAdmission } from '../storage/scheduler-admission-codecs.js';
 import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
@@ -3482,13 +3491,13 @@ describe('createConfiguredTurnExecutor', () => {
       const acceptResult = native.runtime.acceptNanoHostHarnessResult;
       const received = vi
         .spyOn(native.runtime, 'acceptNanoHostHarnessResult')
-        .mockImplementation(async (result) => {
+        .mockImplementation(async (result, ...settlement) => {
           expect(result).toMatchObject({
             harnessInstanceId: commands.at(-1)!.harnessInstanceId,
             operationId: commands.at(-1)!.operationId,
             sequence: commands.at(-1)!.sequence,
           });
-          await acceptResult(result);
+          await acceptResult(result, ...settlement);
           results.push(result);
         });
       const cleanup = backend.cleanupSession.bind(backend);
@@ -7357,8 +7366,8 @@ describe('createConfiguredTurnExecutor', () => {
     const acceptResult = native.runtime.acceptNanoHostHarnessResult;
     const resultObservation = vi
       .spyOn(native.runtime, 'acceptNanoHostHarnessResult')
-      .mockImplementation(async (result) => {
-        await acceptResult(result);
+      .mockImplementation(async (result, ...settlement) => {
+        await acceptResult(result, ...settlement);
         results.push(result);
       });
     const accept = native.runtime.acceptNanoHostHarnessCommand;
@@ -13855,9 +13864,9 @@ describe('createConfiguredTurnExecutor', () => {
         const acceptResult = native.runtime.acceptNanoHostHarnessResult;
         const result = vi
           .spyOn(native.runtime, 'acceptNanoHostHarnessResult')
-          .mockImplementation(async (value) => {
-            await acceptResult(value);
-            results.push(value);
+          .mockImplementation(async (...args) => {
+            await acceptResult(...args);
+            results.push(args[0]);
           });
         observations.push(() => {
           command.mockRestore();
@@ -14524,6 +14533,60 @@ describe('createConfiguredTurnExecutor', () => {
         }
         const retainedBytes = readFileSync(snapshotPath, 'utf8');
         await restart();
+        if (scenario === 'cross-thread-closed-handoff') {
+          // The old consumer and waiter are gone; only receiver-owned durable facts remain.
+          // This peer models external close, so replay proves Core bookkeeping, not native absence.
+          const close = commands.find(
+            (command) =>
+              command.operation === 'session.close' && command.body.agentSessionId === original.id
+          );
+          const result = close && results.find((value) => value.operationId === close.operationId);
+          if (!close || !result) throw new Error('Ordinary consumed close evidence is missing.');
+          expect(harnessRecords.readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(
+            true
+          );
+          const retained = coreDb.sqlite
+            .prepare(
+              'SELECT result_json AS resultJson FROM harness_instance_records WHERE harness_instance_id = ?'
+            )
+            .get(result.harnessInstanceId);
+          if (!isRecord(retained) || typeof retained.resultJson !== 'string')
+            throw new Error('Ordinary close receiver receipt is unavailable.');
+          const receipt = JSON.parse(retained.resultJson);
+          expect(receipt.consumerContext).toEqual({ workspaceId, threadId: original.threadId });
+          expect(receipt.consumption).toMatchObject({
+            operationId: close.operationId,
+            sequence: close.sequence,
+          });
+          const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+          try {
+            const owner = { kind: 'workspace' as const, workspaceId };
+            const ordinary = readProduct(workspaceDb.sqlite, owner, 'thread', original.threadId);
+            expect(ordinary?.record.id).toBe(original.threadId);
+            if (!ordinary) throw new Error('Canonical ordinary Thread is unavailable.');
+            expect(Object.hasOwn(ordinary.record, 'login')).toBe(false);
+            expect(ordinary.record.requiredFeatures ?? []).not.toContain(
+              NATIVE_THREAD_LOGIN_FEATURE
+            );
+            const effectsBeforeReplay = [...outside.effects];
+            await expect(
+              native.runtime.acceptNanoHostHarnessResult(result)
+            ).resolves.toBeUndefined();
+            expect(outside.effects).toEqual(effectsBeforeReplay);
+            expect(readProduct(workspaceDb.sqlite, owner, 'thread', original.threadId)).toEqual(
+              ordinary
+            );
+            expect(
+              coreDb.sqlite
+                .prepare(
+                  'SELECT result_json AS resultJson FROM harness_instance_records WHERE harness_instance_id = ?'
+                )
+                .get(result.harnessInstanceId)
+            ).toEqual(retained);
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        }
         if (scenario === 'ignored-package-proof-handoff') {
           // AEP Restart And Recovery: prove each authority refusal through public cold restoration.
           // Faults follow real admission; original keys, proof and attachment are never regenerated.
@@ -22300,7 +22363,7 @@ async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
 }
 
 // Real Core/module composition. Image, storage and session.open are the existing external peer.
-// The original dispatched turn.start is never acknowledged in this measured Login exchange.
+// Initial exchange checks leave turn.start pending; departure-only tails then use the modeled peer.
 describe('inert initial private Login exchange through the concrete backend session', () => {
   it.each([
     'completed',
@@ -22308,6 +22371,13 @@ describe('inert initial private Login exchange through the concrete backend sess
     'cancelled-during-refresh',
     'physical-loss-during-refresh',
     'physical-loss-before-complete',
+    'departure-ordinary',
+    'departure-idle',
+    'departure-prepublication',
+    'departure-lost-ack',
+    'departure-warm-replay',
+    'departure-missing-clock',
+    'departure-timer',
   ] as const)(
     'joins authenticated acquire and complete without completing startup (%s)',
     async (ending) => {
@@ -22347,6 +22417,20 @@ describe('inert initial private Login exchange through the concrete backend sess
       const refreshAborted = Promise.withResolvers<void>();
       const startEntered = Promise.withResolvers<harnessRecords.NanoHostHarnessCommand>();
       const stopStart = Promise.withResolvers<void>();
+      const departure = ending.startsWith('departure-');
+      const removalEntered = Promise.withResolvers<void>();
+      const releaseRemoval = Promise.withResolvers<void>();
+      const removalCommitted = Promise.withResolvers<void>();
+      const replayCallbackEntered = Promise.withResolvers<void>();
+      let removalCalls = 0;
+      let closeResult: harnessRecords.NanoHostHarnessResult | undefined;
+      let closeSettlement: harnessRecords.NanoHostHarnessResultSettlement | undefined;
+      let closeCallback: Promise<void> | undefined;
+      let removalRecord: unknown;
+      let modeledDepartureEntered = false;
+      let departureCloseout: Promise<unknown> | undefined;
+      let departureTimers = false;
+      let observeClose: { mockRestore(): void } | undefined;
       const startDeliveryFailed = Promise.withResolvers<void>();
       let heldStart: harnessRecords.NanoHostHarnessCommand | undefined;
       const acquireAbort = new AbortController();
@@ -22694,8 +22778,12 @@ describe('inert initial private Login exchange through the concrete backend sess
               heldStart = wire;
               startEntered.resolve(wire);
               await stopStart.promise;
-              // External peer refuses delivery on disposal; it never returns a fabricated start success.
-              throw new Error('Module peer did not complete the original pending startup.');
+              // Only additive departure rows enter the existing explicitly modeled peer start.
+              // The five initial rows retain their original unknown-start disposal.
+              if (!modeledDepartureEntered) {
+                // External peer refuses delivery on disposal; it never returns a fabricated start success.
+                throw new Error('Module peer did not complete the original pending startup.');
+              }
             }
             return wire;
           });
@@ -22803,6 +22891,36 @@ describe('inert initial private Login exchange through the concrete backend sess
         const vaultClient = getControlStoreWorkerClient();
         const nativeVault = vaultClient.vault.bind(vaultClient);
         nativePublication = vi.spyOn(vaultClient, 'vault').mockImplementation(async (...args) => {
+          if (departure && args[1] === 'thread-login-remove') {
+            removalCalls += 1;
+            removalRecord = args[2];
+            if (!closeResult || closeSettlement?.disposition !== 'settled')
+              throw new Error('Departure lacks its actual original consumed close.');
+            expect(
+              harnessRecords.readConsumedNanoHostHarnessResult(coreDb, closeResult)
+            ).toMatchObject({
+              operations: ['session.close'],
+              receiver: { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id },
+              close: { agentSessionId },
+            });
+            expect(
+              isRecord(removalRecord) && removalRecord.completedAt === closeSettlement.completedAt
+            ).toBe(true);
+            removalEntered.resolve();
+            if (
+              ending === 'departure-prepublication' ||
+              ending === 'departure-warm-replay' ||
+              ending === 'departure-timer'
+            )
+              await releaseRemoval.promise;
+            const removed = await nativeVault(...args);
+            removalCommitted.resolve();
+            if (ending === 'departure-lost-ack') {
+              await releaseRemoval.promise;
+              throw new Error('Module observation loses the committed departure ACK.');
+            }
+            return removed;
+          }
           const result = await nativeVault(...args);
           if (args[1] === 'receipt-create' || args[1] === 'thread-login-activate')
             publications.push(args[1]);
@@ -22994,17 +23112,220 @@ describe('inert initial private Login exchange through the concrete backend sess
               !JSON.stringify({ receipts, affinity: privateThread().login }).includes(value)
           )
         ).toBe(true);
+        if (departure) {
+          // This continuation models the outside start/terminal/close, never native private absence.
+          const acceptResult = native.runtime.acceptNanoHostHarnessResult.bind(native.runtime);
+          observeClose = vi
+            .spyOn(native.runtime, 'acceptNanoHostHarnessResult')
+            .mockImplementation((...args) => {
+              if (args[0].body.state === 'closed') {
+                closeResult = args[0];
+                closeSettlement ??= args[1];
+                closeCallback = acceptResult(
+                  args[0],
+                  ending === 'departure-missing-clock' ? undefined : args[1]
+                );
+                return closeCallback;
+              }
+              return acceptResult(...args);
+            });
+          const replayClose = async () => {
+            if (!closeResult || closeSettlement?.disposition !== 'settled')
+              throw new Error('Replay lacks its original actual close settlement.');
+            const integration = coreDb.sqlite
+              .prepare(
+                `SELECT s.sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records s
+                 JOIN harness_instance_records h ON h.sandbox_runtime_id = s.sandbox_runtime_id
+                 WHERE h.harness_instance_id = ?`
+              )
+              .get(closeResult.harnessInstanceId);
+            if (!isRecord(integration) || typeof integration.ref !== 'string')
+              throw new Error('Actual close Integration owner is unavailable.');
+            // A later replay-call timestamp is not a replacement for the first Core ACK clock.
+            const disposition = await settleNanoHostHarnessOperation(coreDb, {
+              result: closeResult,
+              sandboxIntegrationBindingRef: integration.ref,
+              timestamp: new Date(Date.parse(closeSettlement.completedAt) + 1).toISOString(),
+            });
+            expect(disposition).toBe('replayed');
+            if (disposition !== 'replayed') throw new Error('Core did not validate exact replay.');
+            const replay = acceptResult(closeResult, { disposition });
+            replayCallbackEntered.resolve();
+            await replay;
+          };
+          modeledDepartureEntered = true;
+          stopStart.resolve();
+          await native.executor.launched.promise;
+          if (ending === 'departure-ordinary') {
+            // Existing outside failure controls require real ordinary closeout before release.
+            native.peerFaults.failedFinal = true;
+            native.peerFaults.failFileExport = true;
+          }
+          native.executor.completion.resolve();
+          let closeout: Promise<unknown>;
+          if (ending === 'departure-ordinary') {
+            closeout = startup;
+          } else {
+            await startup;
+            expect(store.getTurnById(turn.id).status).toBe('completed');
+            expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe(
+              'closed'
+            );
+            if (!backend.prepareAgentSessionContinuity)
+              throw new Error('Actual continuity close owner is unavailable.');
+            if (ending === 'departure-timer') {
+              vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+              departureTimers = true;
+            }
+            closeout = backend.prepareAgentSessionContinuity({
+              agentSessionId,
+              workspaceId: DEMO_WORKSPACE_ID,
+              threadId: thread.id,
+              reuseAllowed: false,
+            });
+          }
+          departureCloseout = closeout;
+          let closeoutSettled = false;
+          const outcome = closeout
+            .then(
+              (value) => ({ kind: 'succeeded' as const, value }),
+              () => ({ kind: 'refused' as const })
+            )
+            .finally(() => {
+              closeoutSettled = true;
+            });
+          if (ending === 'departure-missing-clock') {
+            expect((await outcome).kind).toBe('refused');
+            expect(removalCalls).toBe(0);
+            expect(NativeThreadLoginSchema.parse(privateThread().login).referenceId).toBe(
+              login.referenceId
+            );
+            if (!closeResult)
+              throw new Error('Missing-clock fault did not reach real close consumption.');
+            expect(
+              harnessRecords.readConsumedNanoHostHarnessResult(coreDb, closeResult)
+            ).not.toBeNull();
+            await expect(replayClose()).rejects.toThrow();
+            expect(removalCalls).toBe(0);
+          } else {
+            expect(
+              await Promise.race([
+                removalEntered.promise.then(() => 'removal-entered'),
+                outcome.then(() => 'returned'),
+              ])
+            ).toBe('removal-entered');
+            if (!closeResult || closeSettlement?.disposition !== 'settled')
+              throw new Error('Actual first close settlement evidence is unavailable.');
+            const consumed = harnessRecords.readConsumedNanoHostHarnessResult(coreDb, closeResult);
+            expect(consumed).not.toBeNull();
+            const row = coreDb.sqlite
+              .prepare(
+                'SELECT result_json AS resultJson FROM harness_instance_records WHERE harness_instance_id = ?'
+              )
+              .get(closeResult.harnessInstanceId);
+            if (!isRecord(row) || typeof row.resultJson !== 'string')
+              throw new Error('Actual close consumer receipt is unavailable.');
+            const receipt = JSON.parse(row.resultJson);
+            const consumer = JSON.parse(receipt.consumption.consumerReceipt);
+            expect(Object.keys(consumer).sort()).toEqual(
+              ending === 'departure-ordinary'
+                ? ['executionId', 'stepId', 'turnId', 'workspaceId']
+                : ['agentSessionId', 'agentSessionRuntimeBindingId', 'threadId', 'workspaceId']
+            );
+            if (
+              ending === 'departure-prepublication' ||
+              ending === 'departure-warm-replay' ||
+              ending === 'departure-timer'
+            ) {
+              expect(closeoutSettled).toBe(false);
+              expect(NativeThreadLoginSchema.parse(privateThread().login).referenceId).toBe(
+                login.referenceId
+              );
+              if (ending === 'departure-timer') {
+                await vi.advanceTimersByTimeAsync(
+                  harnessRecords.NANO_HOST_HARNESS_RESULT_BUDGET_MS
+                );
+                expect((await outcome).kind).toBe('refused');
+                expect(
+                  coreDb.sqlite
+                    .prepare(
+                      'SELECT drain_state AS drainState FROM harness_instance_records WHERE harness_instance_id = ?'
+                    )
+                    .get(closeResult.harnessInstanceId)
+                ).toEqual({ drainState: 'draining' });
+                vi.useRealTimers();
+                departureTimers = false;
+                releaseRemoval.resolve();
+                await closeCallback?.catch(() => undefined);
+                expect(NativeThreadLoginSchema.parse(privateThread().login).referenceId).toBe(
+                  login.referenceId
+                );
+                expect(removalCalls).toBe(1);
+                return;
+              }
+              if (ending === 'departure-warm-replay') {
+                let replaySettled = false;
+                const replay = replayClose().finally(() => {
+                  replaySettled = true;
+                });
+                void replay.catch(() => undefined);
+                expect(
+                  await Promise.race([
+                    replayCallbackEntered.promise.then(() => 'callback-entered'),
+                    replay.then(() => 'returned'),
+                  ])
+                ).toBe('callback-entered');
+                expect(replaySettled).toBe(false);
+                expect(removalCalls).toBe(1);
+                releaseRemoval.resolve();
+                await replay;
+              } else releaseRemoval.resolve();
+            }
+            if (ending === 'departure-lost-ack') {
+              await removalCommitted.promise;
+              expect(NativeThreadLoginSchema.parse(privateThread().login)).toEqual({
+                referenceId: null,
+                lastLeftAt: { [login.referenceId]: closeSettlement.completedAt },
+              });
+              expect(closeoutSettled).toBe(false);
+              releaseRemoval.resolve();
+              expect((await outcome).kind).toBe('refused');
+              await expect(replayClose()).rejects.toThrow();
+            } else {
+              const finished = await outcome;
+              if (ending !== 'departure-ordinary')
+                expect(finished).toEqual({ kind: 'succeeded', value: 'closed' });
+              await closeCallback;
+              if (ending === 'departure-warm-replay') {
+                // The original callback and Workspace FULL ACK are both known, not uncertain.
+                await expect(replayClose()).resolves.toBeUndefined();
+                expect(removalCalls).toBe(1);
+              }
+              expect(NativeThreadLoginSchema.parse(privateThread().login)).toEqual({
+                referenceId: null,
+                lastLeftAt: { [login.referenceId]: closeSettlement.completedAt },
+              });
+            }
+            expect(removalCalls).toBe(1);
+          }
+        }
       } finally {
+        if (departureTimers) vi.useRealTimers();
+        releaseRemoval.resolve();
         acquireAbort.abort();
         releaseRefresh.resolve();
         await acquisition?.catch(() => undefined);
         stopStart.resolve();
+        if (modeledDepartureEntered) native?.executor.completion.resolve();
+        await departureCloseout?.catch(() => undefined);
+        await closeCallback?.catch(() => undefined);
         // Keep the peer alive for its actual unknown-result FULL and delivery-failure callback.
         // A startup already settled through real cancellation needs no second failure delivery.
         if (heldStart && startup)
           await Promise.race([startDeliveryFailed.promise, startup.catch(() => undefined)]);
         await startup?.catch(() => undefined);
         await native?.restore().catch(() => undefined);
+        observeClose?.mockRestore();
         acceptStart?.mockRestore();
         observeDeliveryFailure?.mockRestore();
         nativePublication?.mockRestore();

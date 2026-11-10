@@ -52,6 +52,11 @@ export interface NanoHostHarnessResult {
   readonly body: Readonly<Record<string, unknown>>;
 }
 
+/** First Core settlement acknowledgement, or replay without a replacement completion clock. */
+export type NanoHostHarnessResultSettlement =
+  | { readonly disposition: 'settled'; readonly completedAt: string }
+  | { readonly disposition: 'replayed' };
+
 /** Input for adding one Harness Instance to a Sandbox runtime projection. */
 export interface CreateNanoHostHarnessRuntimeInput {
   /** Authored operating bound for new Sandbox/Harness declarations; defaults to 20. */
@@ -1954,16 +1959,41 @@ export function readNanoHostIdleCloseConsumerReceipt(
   });
 }
 
+/** Captures the existing exact Core receiver before its original close is queued. */
+export function readNanoHostHarnessCloseReceiver(
+  coreDb: CoreDb,
+  input: {
+    readonly harnessInstanceId: string;
+    readonly harnessBindingRef: string;
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+  }
+): { readonly workspaceId: string; readonly threadId: string } {
+  const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
+  if (harness.harness_instance_id !== input.harnessInstanceId)
+    throw new Error('NanoHost close receiver Harness binding conflicts.');
+  const command = requireDurableHarnessBody('session.close', {
+    agentSessionId: input.agentSessionId,
+    agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
+  });
+  return readHarnessConsumerContext(coreDb, harness, command);
+}
+
 /** Reads exact Workspace/Thread context before session.close removes the binding. */
 function readHarnessConsumerContext(
   coreDb: CoreDb,
-  harness: HarnessRow
+  harness: HarnessRow,
+  suppliedCommand?: Readonly<Record<string, unknown>>
 ): {
   readonly workspaceId: string;
   readonly threadId: string;
 } {
-  if (!harness.command_body_json) throw new Error('NanoHost Harness consumer command is missing.');
-  const command = readJsonObject(harness.command_body_json);
+  let command = suppliedCommand;
+  if (command === undefined) {
+    if (!harness.command_body_json)
+      throw new Error('NanoHost Harness consumer command is missing.');
+    command = readJsonObject(harness.command_body_json);
+  }
   const binding = coreDb.sqlite
     .prepare(`SELECT schema_version AS schemaVersion, workspace_id AS workspaceId,
       thread_id AS threadId, agent_session_id AS agentSessionId
@@ -2087,20 +2117,27 @@ export function requireNanoHostLoginRemoval(
   return input.completedAt;
 }
 
-/** Confirms an exact already-acknowledged replay after its live Workspace consumer has left. */
-export function hasConsumedNanoHostHarnessResult(
+/** Reads validated consumed replay provenance without reconstructing its original settlement clock. */
+export function readConsumedNanoHostHarnessResult(
   coreDb: CoreDb,
   result: NanoHostHarnessResult
-): boolean {
+): {
+  readonly operations: readonly NanoHostHarnessOperation[];
+  readonly receiver: { readonly workspaceId: string; readonly threadId: string } | null;
+  readonly close: {
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+  } | null;
+} | null {
   const incoming = HarnessResultEnvelopeReaderSchema.parse(result);
   const harness = requireHarness(coreDb, incoming.harnessInstanceId);
   const receipt = readHarnessResultReceipt(harness);
-  if (!receipt || receipt.retained.consumption === undefined) return false;
+  if (!receipt || receipt.retained.consumption === undefined) return null;
   if (
     incoming.operationId !== receipt.result.operationId ||
     incoming.sequence !== receipt.result.sequence
   )
-    return false;
+    return null;
   requireConsumedHarnessResult(harness);
   const operations =
     harness.operation_id === incoming.operationId && harness.operation
@@ -2133,7 +2170,44 @@ export function hasConsumedNanoHostHarnessResult(
     )
       throw new Error('NanoHost Harness consumed result replay conflicts.');
   }
-  return true;
+  const context = receipt.retained.consumerContext;
+  let receiver: { readonly workspaceId: string; readonly threadId: string } | null = null;
+  if (context !== undefined) {
+    if (
+      !context ||
+      typeof context !== 'object' ||
+      Array.isArray(context) ||
+      Object.keys(context).sort().join(',') !== 'threadId,workspaceId'
+    )
+      throw new Error('NanoHost Harness retained close receiver is invalid.');
+    receiver = {
+      workspaceId: requireIdentity(Reflect.get(context, 'workspaceId'), 'consumer Workspace'),
+      threadId: requireIdentity(Reflect.get(context, 'threadId'), 'consumer Thread'),
+    };
+  }
+  let close: {
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+  } | null = null;
+  if (harness.operation_id === incoming.operationId && harness.operation === 'session.close') {
+    if (
+      !harness.command_body_json ||
+      sha256Hex(harness.command_body_json) !== harness.command_fingerprint
+    )
+      throw new Error('NanoHost Harness retained close command conflicts.');
+    const command = requireDurableHarnessBody(
+      'session.close',
+      readJsonObject(harness.command_body_json)
+    );
+    close = {
+      agentSessionId: requireIdentity(command.agentSessionId, 'consumer AgentSession'),
+      agentSessionRuntimeBindingId: requireIdentity(
+        command.agentSessionRuntimeBindingId,
+        'consumer binding'
+      ),
+    };
+  }
+  return { operations, receiver, close };
 }
 
 /**
