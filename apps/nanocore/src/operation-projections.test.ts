@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
@@ -21,10 +23,15 @@ import {
 import { createBetterAuth } from './auth/better-auth.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
+import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from './auth/nanohost-transport-session.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import * as commands from './generative-kernel/commands.js';
 import { createLightApp, listRecords, updateRecord } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
+import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
 import { createAppOpenApiDocument, getRegisteredAppApiOperationIds } from './openapi.js';
 import * as invocation from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
@@ -2670,4 +2677,217 @@ it('keeps human acquisition absent from the real Worker Tool surface before any 
     await shutdownControlStoreWorkerClient();
     f.coreDb.sqlite.close();
   }
+});
+
+// The engine consumes a trusted currentness port; native H2 identity and real admission own its facts.
+// This module fixture qualifies no deployed NanoHost, Worker readiness, or Login material effect.
+describe('trusted entry currentness through real operation admission', () => {
+  it.each([
+    'current',
+    'before-initial-admission',
+    'after-initial-admission',
+    'before-repeated-admission',
+    'after-repeated-admission',
+  ] as const)('preserves real authority and releases admitted ownership (%s)', async (loss) => {
+    const f = await operationFixture();
+    const authority = createNanoHostTransportSessionAuthority();
+    const identityId = randomUUID();
+    const connected = Promise.withResolvers<object>();
+    const server = createHttp2Server((request, response) => {
+      const physical = readNanoHostPhysicalConnectionContext(request);
+      if (!physical) {
+        connected.reject(new Error('Native H2 connection identity is unavailable.'));
+        response.end();
+        return;
+      }
+      authority.admit({ identityId, connectionGeneration: 1, physicalConnection: physical });
+      connected.resolve(physical);
+      response.end();
+    });
+    const admission = new WorkspaceMutationAdmission();
+    const handlerEntered = Promise.withResolvers<void>();
+    const releaseHandler = Promise.withResolvers<void>();
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    let pending: Promise<unknown> | undefined;
+    let entries = 0;
+    let effectEntered = false;
+    let observedHandler = false;
+    const enter = admission.enter.bind(admission);
+    const enteredAdmission = vi.spyOn(admission, 'enter').mockImplementation((...args) => {
+      const release = enter(...args);
+      if (release) {
+        entries += 1;
+        if (
+          (loss === 'after-initial-admission' && entries === 1) ||
+          (loss === 'after-repeated-admission' && entries === 2)
+        )
+          authority.fenceAuthoritative(identityId);
+      }
+      return release;
+    });
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('H2 fixture has no address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const stream = client.request({ ':method': 'GET', ':path': '/' });
+      const ended = once(stream, 'end');
+      stream.resume();
+      stream.end();
+      const physical = await connected.promise;
+      await ended;
+      expect(authority.mayCarryWork(physical)).toBe(true);
+      const unavailable = new Error('Authenticated physical entry is no longer current.');
+      const recheckEntry = () => {
+        if (!authority.mayCarryWork(physical)) throw unavailable;
+      };
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.command.actor.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const actor: Actor = {
+        kind: 'token',
+        userId: f.command.actor.id,
+        tokenId: issued.record.tokenId,
+        tokenScope: 'server-admin',
+        tokenWorkspaceIds: [],
+      };
+      const family = createKernelOperationImplementations({
+        coreDb: f.coreDb,
+        store: f.store,
+        inflightCommands: new WeakMap(),
+      });
+      const invoke = createOperationEngine(
+        {
+          'kernel.records.create': async (input, context) => {
+            observedHandler = true;
+            handlerEntered.resolve();
+            await releaseHandler.promise;
+            if (!context.recheckAdmission)
+              throw new Error('Actual engine repeated admission is unavailable.');
+            await context.recheckAdmission();
+            effectEntered = true;
+            return family['kernel.records.create'](input, context);
+          },
+        },
+        { coreDb: f.coreDb, store: f.store, workspaceMutationAdmission: admission }
+      );
+      if (loss === 'before-initial-admission') authority.fenceAuthoritative(identityId);
+      if (loss === 'before-initial-admission' || loss === 'after-initial-admission')
+        releaseHandler.resolve();
+      const result = invoke(
+        'kernel.records.create',
+        {
+          workspaceId: f.command.workspaceId,
+          appId: f.appRecord.appId,
+          collection: 'entries',
+          schemaRevision: 1,
+          requestId: randomUUID(),
+          data: { note: 'Current trusted entry only' },
+        },
+        { kind: 'public', actor, recheckEntry }
+      ).then(
+        (value) => ({ kind: 'succeeded' as const, value }),
+        (error: unknown) => ({ kind: 'refused' as const, error })
+      );
+      pending = result;
+      if (
+        loss === 'current' ||
+        loss === 'before-repeated-admission' ||
+        loss === 'after-repeated-admission'
+      ) {
+        expect(
+          await Promise.race([
+            handlerEntered.promise.then(() => 'handler-entered'),
+            result.then(() => 'returned'),
+          ])
+        ).toBe('handler-entered');
+        expect(admission.tryFreeze(f.command.workspaceId, () => [])).toEqual({ status: 'busy' });
+        if (loss === 'before-repeated-admission') authority.fenceAuthoritative(identityId);
+        releaseHandler.resolve();
+      }
+      const outcome = await result;
+      expect(observedHandler).toBe(
+        loss === 'current' ||
+          loss === 'before-repeated-admission' ||
+          loss === 'after-repeated-admission'
+      );
+      expect(entries).toBe(
+        loss === 'before-initial-admission'
+          ? 0
+          : loss === 'after-initial-admission' || loss === 'before-repeated-admission'
+            ? 1
+            : 2
+      );
+      expect(effectEntered).toBe(loss === 'current');
+      if (loss === 'current') expect(outcome.kind).toBe('succeeded');
+      else expect(outcome).toEqual({ kind: 'refused', error: unavailable });
+      expect(
+        listRecords(f.command.dataRoot, f.command.workspaceId, f.appRecord.appId, 'entries', {
+          schemaRevision: 1,
+        }).totalItems
+      ).toBe(loss === 'current' ? 1 : 0);
+      // The real gate can freeze only after every initial/repeated admission has released.
+      const frozen = admission.tryFreeze(f.command.workspaceId, () => []);
+      expect(frozen.status).toBe('frozen');
+      if (frozen.status === 'frozen') frozen.release();
+    } finally {
+      releaseHandler.resolve();
+      await pending?.catch(() => undefined);
+      enteredAdmission.mockRestore();
+      client?.destroy();
+      await authority.closeAllPhysicalConnections();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('does not accept an entry callback from submitted operation input', async () => {
+    const f = await operationFixture();
+    let submittedCallbackEntered = false;
+    const admission = new WorkspaceMutationAdmission();
+    const invoke = createOperationInvocation({
+      ...f.command,
+      coreDb: f.coreDb,
+      workspaceMutationAdmission: admission,
+    });
+    try {
+      for (const supplied of [
+        'caller-controlled',
+        () => {
+          submittedCallbackEntered = true;
+        },
+      ]) {
+        await expect(
+          invoke(
+            'kernel.records.create',
+            {
+              workspaceId: f.command.workspaceId,
+              appId: f.appRecord.appId,
+              collection: 'entries',
+              schemaRevision: 1,
+              requestId: randomUUID(),
+              data: { note: 'Untrusted callback field' },
+              recheckEntry: supplied,
+            },
+            { kind: 'public', actor: { kind: 'local', userId: f.command.actor.id } }
+          )
+        ).rejects.toMatchObject({ code: 'invalid_request' });
+      }
+      expect(submittedCallbackEntered).toBe(false);
+      expect(
+        listRecords(f.command.dataRoot, f.command.workspaceId, f.appRecord.appId, 'entries', {
+          schemaRevision: 1,
+        }).totalItems
+      ).toBe(0);
+      const frozen = admission.tryFreeze(f.command.workspaceId, () => []);
+      expect(frozen.status).toBe('frozen');
+      if (frozen.status === 'frozen') frozen.release();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
 });

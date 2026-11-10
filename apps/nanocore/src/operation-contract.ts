@@ -11,6 +11,8 @@ import { OperationError } from './operation-error.js';
 import type { SchedulerExecutionLineage } from './scheduler-records.js';
 /** Request-local facts supplied only by trusted entry assembly. */
 export interface OperationRequestFacts {
+  /** Trusted transport currentness repeated around admission waits; never operation JSON. */
+  readonly recheckEntry?: () => void | Promise<void>;
   /** Core-only, invocation-scoped refresh failure; operation JSON never supplies this fact. */
   readonly coreConfirmedLoginFailure?: object;
   /** Existing querying lineage supplied by internal assembly, never an operation payload. */

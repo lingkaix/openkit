@@ -42,15 +42,23 @@ export function createOperationEngine<const T extends Partial<OperationImplement
     const definition = OPERATION_DEFINITIONS[id];
     if (definition.binding !== 'json')
       throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
+    const recheckEntry = entry.recheckEntry;
     return withMainLoopOperation(id, async () => {
+      if (recheckEntry) await recheckEntry();
       const admitted = await admitOperation(definition, value, entry, dependencies);
       try {
+        if (recheckEntry) await recheckEntry();
         const implementation = implementations[id] as OperationImplementations[K];
         const context = {
           ...admitted.context,
           recheckAdmission: async () => {
+            if (recheckEntry) await recheckEntry();
             const current = await admitOperation(definition, admitted.input, entry, dependencies);
-            current.release?.();
+            try {
+              if (recheckEntry) await recheckEntry();
+            } finally {
+              current.release?.();
+            }
           },
         };
         return (await invokeDefinedOperation(definition, () =>

@@ -2362,6 +2362,7 @@ export function registerNanoHostSessionSemanticRoutes(
             body: bodyBuffer,
             headers: request.headers,
             method: 'POST',
+            signal: request.signal,
           })
         );
       }

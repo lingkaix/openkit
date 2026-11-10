@@ -38,6 +38,7 @@ import {
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -62,9 +63,11 @@ import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
+import { resolveHarnessLogicalModelCatalog } from '../llm/logical-models.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import { PolicyInterception } from '../policy/interception.js';
+import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as attemptActionOwners from '../scheduler-records.js';
 import {
@@ -72,6 +75,7 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import { FileAdmissionError, FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { readProduct } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -80,9 +84,11 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { NativeThreadLoginSchema } from '../storage/native-thread-login.js';
 import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1.js';
 import type { ControlSchedulerAdmission } from '../storage/scheduler-admission-codecs.js';
 import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
+import { HarnessLoginContextSchema } from '../storage/vault-native-codecs.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import {
   isCurrentAgentSessionStatus,
@@ -116,6 +122,7 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { createTestUserDb } from '../test-support/store.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import {
@@ -150,6 +157,7 @@ import {
 import * as journalOwners from './execution-journal.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionInvocation, ExecutionJournalRef } from './execution-step-journal.js';
+import { createHarnessLoginExchange } from './harness-login-exchange.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
   bindNanoHostAttemptPreparation,
@@ -22290,3 +22298,728 @@ async function buildRetirementCheckpoint(): Promise<RetirementCheckpoint> {
     effects,
   };
 }
+
+// Real Core/module composition. Image, storage and session.open are the existing external peer.
+// The original dispatched turn.start is never acknowledged in this measured Login exchange.
+describe('inert initial private Login exchange through the concrete backend session', () => {
+  it.each([
+    'completed',
+    'duplicate',
+    'cancelled-during-refresh',
+    'physical-loss-during-refresh',
+    'physical-loss-before-complete',
+  ] as const)(
+    'joins authenticated acquire and complete without completing startup (%s)',
+    async (ending) => {
+      const coreDb = createFactoryCoreDb();
+      const ownerUserId = ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+      const mutation = new WorkspaceMutationAdmission();
+      store.setWorkspaceMutationAdmission(mutation);
+      const interception = new PolicyInterception();
+      const vault = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(coreDb.dataRoot, 'vault'),
+      });
+      vault.unlock({
+        masterKey: Buffer.from(
+          randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+          'hex'
+        ),
+      });
+      const accountId = randomUUID();
+      const refreshMaterials = [randomUUID(), randomUUID(), randomUUID()];
+      const accessMaterials = refreshMaterials.map((_, generation) =>
+        [
+          Buffer.from('{}').toString('base64'),
+          Buffer.from(
+            JSON.stringify({
+              generation,
+              'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+            })
+          ).toString('base64'),
+          'synthetic-signature',
+        ].join('.')
+      );
+      const refreshEntered = Promise.withResolvers<void>();
+      const releaseRefresh = Promise.withResolvers<void>();
+      const refreshAborted = Promise.withResolvers<void>();
+      const startEntered = Promise.withResolvers<harnessRecords.NanoHostHarnessCommand>();
+      const stopStart = Promise.withResolvers<void>();
+      const startDeliveryFailed = Promise.withResolvers<void>();
+      let heldStart: harnessRecords.NanoHostHarnessCommand | undefined;
+      const acquireAbort = new AbortController();
+      let refreshCalls = 0;
+      let acquireSettled = false;
+      let startupSettled = false;
+      let startup: Promise<void> | undefined;
+      let acquisition: Promise<Response> | undefined;
+      let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+      let acceptStart: { mockRestore(): void } | undefined;
+      let observeDeliveryFailure: { mockRestore(): void } | undefined;
+      let nativePublication: { mockRestore(): void } | undefined;
+      let client: ReturnType<typeof connectHttp2> | undefined;
+      const authority = createNanoHostTransportSessionAuthority();
+      const connected = Promise.withResolvers<object>();
+      const server = createHttp2Server((request, response) => {
+        const physical = readNanoHostPhysicalConnectionContext(request);
+        if (!physical) connected.reject(new Error('Actual native H2 identity is unavailable.'));
+        else connected.resolve(physical);
+        response.writeHead(204).end();
+      });
+      const handles: ReturnType<typeof openWorkspaceDb>[] = [];
+      const userHandles: ReturnType<typeof createTestUserDb>[] = [];
+      const upstream = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const request = new Request(input, init);
+        expect(request.url === 'https://auth.openai.com/oauth/token').toBe(true);
+        expect(request.method).toBe('POST');
+        const form = new URLSearchParams(await request.text());
+        expect(form.get('grant_type') === 'refresh_token').toBe(true);
+        expect(form.get('refresh_token') === refreshMaterials[refreshCalls]).toBe(true);
+        refreshCalls += 1;
+        if (refreshCalls > 2) throw new Error('Unexpected extra stock Login refresh.');
+        if (
+          refreshCalls === 2 &&
+          (ending === 'cancelled-during-refresh' || ending === 'physical-loss-during-refresh')
+        ) {
+          const aborted = () => refreshAborted.resolve();
+          request.signal.addEventListener('abort', aborted, { once: true });
+          if (request.signal.aborted) aborted();
+          refreshEntered.resolve();
+          try {
+            // Hold the real upstream call even through abort; Core must join it before settling.
+            await releaseRefresh.promise;
+            if (request.signal.aborted)
+              throw new DOMException('Synthetic refresh aborted.', 'AbortError');
+          } finally {
+            request.signal.removeEventListener('abort', aborted);
+          }
+        }
+        return Response.json({
+          access_token: accessMaterials[refreshCalls],
+          refresh_token: refreshMaterials[refreshCalls],
+          expires_in: 3600,
+        });
+      });
+      try {
+        const repositoryWorkspaceDb = (workspaceId: string) => {
+          const db = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+          applyScopedMigrations(db);
+          handles.push(db);
+          return db;
+        };
+        const repositoryUserDb = (userId: string) => {
+          const handle = createTestUserDb(coreDb.dataRoot, userId);
+          userHandles.push(handle);
+          return handle.userDb;
+        };
+        const manager = createRuntimeConfigManager({ dataRoot: coreDb.dataRoot });
+        const inflightCommands = new WeakMap();
+        const operations = {
+          coreDb,
+          dataRoot: coreDb.dataRoot,
+          store,
+          repositoryWorkspaceDb,
+          repositoryUserDb,
+          runtimeConfigManager: manager,
+          policyInterception: interception,
+          vaultUnlockState: vault,
+          workspaceMutationAdmission: mutation,
+          inflightCommands,
+          pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
+        };
+        const invoke = createOperationInvocation(operations);
+        const entry = {
+          kind: 'public' as const,
+          actor: { kind: 'local' as const, userId: ownerUserId },
+        };
+        const login = await invoke(
+          'vault.bootstrap-codex-auth',
+          {
+            authJsonBase64: Buffer.from(
+              JSON.stringify({
+                tokens: {
+                  access_token: accessMaterials[0],
+                  refresh_token: refreshMaterials[0],
+                  account_id: accountId,
+                },
+              })
+            ).toString('base64'),
+          },
+          entry
+        );
+        expect(refreshCalls).toBe(1);
+        expect(getVaultReference(coreDb, login.referenceId)).toMatchObject({
+          ownerScope: 'user',
+          userId: ownerUserId,
+          currentVersion: 1,
+        });
+        const consent = await store.createThread(DEMO_WORKSPACE_ID, 'Review private Login consent');
+        const requested = await invoke(
+          'vault.grant-request',
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: consent.id,
+            requestId: randomUUID(),
+            terms: {
+              referenceId: login.referenceId,
+              ownerScope: 'workspace',
+              lifetime: 'workspace',
+              injectionPath: 'runtime-token',
+              expiresAt: '2099-01-01T00:00:00.000Z',
+            },
+          },
+          entry
+        );
+        await invoke(
+          'approval.respond',
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: requested.threadId,
+            turnId: requested.raisingTurnId,
+            approvalRequestId: requested.approvalRequestId,
+            decision: 'granted',
+            requestId: randomUUID(),
+          },
+          entry
+        );
+        const issued = await invoke(
+          'vault.grant-issue',
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: requested.threadId,
+            approvalRequestId: requested.approvalRequestId,
+          },
+          entry
+        );
+        expect(getVaultGrant(coreDb, issued.grantId)).toMatchObject({
+          vaultReferenceId: login.referenceId,
+          issuance: 'target',
+          allowedInjectionPaths: ['runtime-token'],
+          status: 'active',
+        });
+        const privateRoute = {
+          providerProfileId: 'native-login-metadata',
+          providerModel: 'gpt-5.1-codex',
+        };
+        const setup = createTestAgentSetup({
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+          privateRoute,
+          credentialDeclarations: [
+            {
+              id: 'reviewed-login',
+              requirementId: 'reviewed-login',
+              vaultGrantId: issued.grantId,
+              visibility: 'runtime-token',
+              consumer: 'codex-login',
+            },
+          ],
+        });
+        const providerRegistry = new ProviderRegistry([
+          {
+            id: privateRoute.providerProfileId,
+            displayName: 'Module-only Codex model metadata',
+            kind: 'oauth',
+            vendor: 'openai-codex',
+            models: [privateRoute.providerModel],
+            modelMetadata: {
+              [privateRoute.providerModel]: {
+                limit: { context: 128_000, output: 16_000 },
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                reasoning: true,
+                tool_call: true,
+              },
+            },
+          },
+        ]);
+        setup.logicalModels.allowed = resolveHarnessLogicalModelCatalog(
+          createTestGatewayConfig({ privateRoute }),
+          providerRegistry,
+          setup.logicalModels.allowed.map((model) => model.id)
+        );
+        const localInferenceSetup = createTestAgentSetup({
+          privateRoute,
+          requiredCapabilities: ['backend-local-inference'],
+          credentialDeclarations: setup.manifest.sandbox!.credentialDeclarations,
+        });
+        localInferenceSetup.logicalModels.allowed = resolveHarnessLogicalModelCatalog(
+          createTestGatewayConfig({ privateRoute }),
+          providerRegistry,
+          localInferenceSetup.logicalModels.allowed.map((model) => model.id)
+        );
+        admitTestNativeEnvironment(coreDb, setup.manifest);
+        const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Pending native Login startup');
+        const turn = await store.createTurn(
+          DEMO_WORKSPACE_ID,
+          thread.id,
+          'Prepare initial Login',
+          { kind: 'user', id: ownerUserId },
+          null,
+          {
+            executorKind: 'worker',
+            agentId: setup.manifest.id,
+            captureCoverage: { scope: 'server', value: 'off' },
+          }
+        );
+        const agentSessionId = testEntityId('as', randomUUID());
+        const requestId = randomUUID();
+        const attemptId = testEntityId('attempt', randomUUID());
+        const admissionEntry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${turn.id}`,
+          requestId,
+          requestedAgentId: setup.manifest.id,
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: thread.id,
+          turnId: turn.id,
+          turnInput: 'Prepare initial Login',
+          triggerActor: turn.triggerActor,
+        });
+        const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+        native = await createNativeTaskAdmissionFixture(coreDb, store, {
+          readRuntimeConfig: () => manager.current(),
+          vaultBackend: () => vault.backend(),
+          policyInterception: () => interception,
+          workspaceMutationAdmission: mutation,
+          nanoHostSessionDispatch: dispatch,
+        });
+        expect(native.sessionDispatch).toBe(dispatch);
+        expect(dispatch.supportsHarnessLogin?.()).toBe(false);
+        const backend = native.executor.executionBackend;
+        if (
+          !backend ||
+          !('validatePackage' in backend) ||
+          typeof backend.validatePackage !== 'function'
+        )
+          throw new Error('Actual backend package validation is unavailable.');
+        const preview = resolveAgentEnvironmentPackageMetadata({
+          coreDb,
+          agentSetup: setup,
+          agentSessionId,
+          backend: { kind: 'openshell' },
+          captureCoverage: { scope: 'server', value: 'off' },
+          turn,
+          triggerActor: turn.triggerActor,
+          requestId,
+          workspaceRoots: [],
+        });
+        expect(preview.llm.mode).toBe('harness');
+        expect(await backend.validatePackage(preview)).toContainEqual(
+          expect.objectContaining({
+            code: 'backend_missing_required_capability',
+            path: '$.credentials.declarations',
+          })
+        );
+        const handler = createHarnessLoginExchange({
+          operations,
+          gateway: native.workerControlGateway,
+          runtime: native.runtime,
+        });
+        if (!dispatch.bindHarnessLogin || !dispatch.harnessLogin || !dispatch.readiness)
+          throw new Error('Actual private dispatcher binding is unavailable.');
+        dispatch.bindHarnessLogin(handler);
+        expect(dispatch.supportsHarnessLogin?.()).toBe(true);
+        expect(await backend.validatePackage(preview)).toEqual([]);
+        const localInferencePreview = resolveAgentEnvironmentPackageMetadata({
+          coreDb,
+          agentSetup: localInferenceSetup,
+          agentSessionId,
+          backend: { kind: 'openshell' },
+          captureCoverage: { scope: 'server', value: 'off' },
+          turn,
+          triggerActor: turn.triggerActor,
+          requestId,
+          workspaceRoots: [],
+        });
+        expect(localInferencePreview.llm.mode).toBe('harness');
+        expect(localInferencePreview.credentials.declarations).toEqual(
+          preview.credentials.declarations
+        );
+        expect(localInferencePreview.backend.requiredCapabilities).toContain(
+          'backend-local-inference'
+        );
+        expect(await backend.validatePackage(localInferencePreview)).toContainEqual(
+          expect.objectContaining({
+            code: 'backend_missing_required_capability',
+            path: '$.backend.requiredCapabilities',
+            message: expect.stringContaining('backend-local-inference'),
+          })
+        );
+        await manager.bindNativePolicyPublication(coreDb);
+        const target = await recordTestNativeRuntimeTarget(coreDb);
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('H2 fixture has no address.');
+        client = connectHttp2(`http://127.0.0.1:${address.port}`);
+        const stream = client.request({ ':method': 'POST', ':path': '/' });
+        const ended = once(stream, 'end');
+        stream.resume();
+        stream.end();
+        const physical = await connected.promise;
+        await ended;
+        authority.admit({
+          identityId: target.identityId,
+          connectionGeneration: target.connectionGeneration,
+          physicalConnection: physical,
+        });
+        await dispatch.readiness(
+          physical,
+          Buffer.from(JSON.stringify({ physicalEpoch: target.physicalEpoch })),
+          {
+            coreDb,
+            targetId: target.targetId,
+            deploymentId: target.deploymentId,
+            identityId: target.identityId,
+          }
+        );
+        const accept = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
+        const failDelivery = native.runtime.failNanoHostHarnessDelivery.bind(native.runtime);
+        observeDeliveryFailure = vi
+          .spyOn(native.runtime, 'failNanoHostHarnessDelivery')
+          .mockImplementation((...args) => {
+            failDelivery(...args);
+            if (
+              heldStart?.harnessInstanceId === args[0].harnessInstanceId &&
+              heldStart.operationId === args[0].operationId
+            )
+              startDeliveryFailed.resolve();
+          });
+        acceptStart = vi
+          .spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
+          .mockImplementation(async (command) => {
+            const wire = await accept(command);
+            if (wire?.operation === 'turn.start' && wire.body.turnId === turn.id) {
+              heldStart = wire;
+              startEntered.resolve(wire);
+              await stopStart.promise;
+              // External peer refuses delivery on disposal; it never returns a fabricated start success.
+              throw new Error('Module peer did not complete the original pending startup.');
+            }
+            return wire;
+          });
+        const preparation = {
+          agentSetup: setup,
+          freshAgentSessionId: agentSessionId,
+          requestId,
+          turn,
+          turnInput: 'Prepare initial Login',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        };
+        if (!native.executor.prepareAgentSessionForTurn)
+          throw new Error('Actual AgentSession preparation is unavailable.');
+        const prepared = await native.executor.prepareAgentSessionForTurn(store, preparation);
+        const attempt = recordTestExecutionAttempt(coreDb, {
+          entry: admissionEntry,
+          attemptId,
+          agentSessionId,
+          inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
+          bindingRef: `attempt-binding:${attemptId}`,
+          sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+          now: () => new Date().toISOString(),
+        });
+        startup = native.executor
+          .startTurn(store, turn.id, 'Prepare initial Login', {
+            attemptId,
+            agentSessionId,
+            agentSetup: setup,
+            workspaceRoots: [],
+            workspaceCwd: '/workspace',
+            sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+            requestId,
+            triggerActor: turn.triggerActor,
+          })
+          .finally(() => {
+            startupSettled = true;
+          });
+        void startup.catch(() => undefined);
+        const crossing = await Promise.race([
+          startEntered.promise.then((wire) => ({ kind: 'pending-start' as const, wire })),
+          startup.then(
+            () => ({ kind: 'returned' as const }),
+            () => ({ kind: 'refused' as const })
+          ),
+        ]);
+        expect(crossing.kind).toBe('pending-start');
+        if (crossing.kind !== 'pending-start')
+          throw new Error('Setup did not reach a real pending start.');
+        const wire = crossing.wire;
+        expect(startupSettled).toBe(false);
+        expect(native.runtime.isTurnExecutionActive(turn.id)).toBe(true);
+        const db = repositoryWorkspaceDb(DEMO_WORKSPACE_ID);
+        const pkg = requireAgentEnvironmentPackageSnapshot(
+          db,
+          DEMO_WORKSPACE_ID,
+          String(wire.body.packageSnapshotId)
+        ).snapshot;
+        expect(pkg.schemaVersion).toBe(4);
+        expect(pkg.llm.mode).toBe('harness');
+        expect(pkg.scope).toMatchObject({
+          workspaceId: DEMO_WORKSPACE_ID,
+          threadId: thread.id,
+          turnId: turn.id,
+          agentSessionId,
+        });
+        expect(attempt.inputRef).toBe(pkg.snapshotId);
+        const plans = listVaultInjectionPlans(coreDb).filter(
+          (plan) => plan.packageSnapshotId === pkg.snapshotId
+        );
+        expect(plans).toHaveLength(1);
+        expect(plans[0]).toMatchObject({
+          grantId: issued.grantId,
+          injectionVisibility: 'runtime-token',
+        });
+        const context = HarnessLoginContextSchema.parse({
+          workspaceId: wire.body.workspaceId,
+          threadId: wire.body.threadId,
+          agentSessionId: wire.body.agentSessionId,
+          agentSessionRuntimeBindingId: wire.body.agentSessionRuntimeBindingId,
+          packageSnapshotId: wire.body.packageSnapshotId,
+          turnId: wire.body.turnId,
+          leaseId: wire.body.leaseId,
+          turnSequence: wire.body.turnSequence,
+          runtimeTargetId: target.targetId,
+          physicalEpoch: target.physicalEpoch,
+          connectionGeneration: target.connectionGeneration,
+        });
+        const {
+          runtimeTargetId: _runtimeTargetId,
+          physicalEpoch: _physicalEpoch,
+          connectionGeneration: _connectionGeneration,
+          ...bodyLineage
+        } = context;
+        const privateThread = () =>
+          readProduct(
+            db.sqlite,
+            { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+            'thread',
+            thread.id
+          )!.record;
+        expect(privateThread().login).toBeUndefined();
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        const publications: string[] = [];
+        const vaultClient = getControlStoreWorkerClient();
+        const nativeVault = vaultClient.vault.bind(vaultClient);
+        nativePublication = vi.spyOn(vaultClient, 'vault').mockImplementation(async (...args) => {
+          const result = await nativeVault(...args);
+          if (args[1] === 'receipt-create' || args[1] === 'thread-login-activate')
+            publications.push(args[1]);
+          return result;
+        });
+        const call = (body: Record<string, unknown>, signal?: AbortSignal) =>
+          dispatch.harnessLogin!(
+            physical,
+            new Request('http://module.invalid/worker-control/harness/login', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${String(wire.body.workerControlToken)}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({ ...bodyLineage, ...body }),
+              ...(signal ? { signal } : {}),
+            })
+          );
+        acquisition = call({ kind: 'acquire', reason: 'activate' }, acquireAbort.signal).finally(
+          () => {
+            acquireSettled = true;
+          }
+        );
+        void acquisition.catch(() => undefined);
+        if (ending === 'cancelled-during-refresh' || ending === 'physical-loss-during-refresh') {
+          expect(
+            await Promise.race([
+              refreshEntered.promise.then(() => 'stock-refresh-held'),
+              acquisition.then(
+                () => 'returned',
+                () => 'refused'
+              ),
+            ])
+          ).toBe('stock-refresh-held');
+          if (ending === 'cancelled-during-refresh') {
+            acquireAbort.abort();
+            await refreshAborted.promise;
+            expect(acquireSettled).toBe(false);
+          } else {
+            await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+              targetId: target.targetId,
+              identityId: target.identityId,
+              deploymentId: target.deploymentId,
+              observedAt: new Date().toISOString(),
+            });
+          }
+          releaseRefresh.resolve();
+          if (ending === 'cancelled-during-refresh') expect((await acquisition).ok).toBe(false);
+          else await expect(acquisition).rejects.toThrow();
+          expect(refreshCalls).toBe(2);
+          expect(getVaultReference(coreDb, login.referenceId)?.currentVersion).toBe(
+            login.currentVersion
+          );
+          expect(
+            vault.backend().listReferences({ referenceId: login.referenceId })[0]?.currentVersion
+          ).toBe(login.currentVersion);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(privateThread().login).toBeUndefined();
+          expect(publications).toEqual([]);
+          // A cancelled or invalidated exchange may fail its original startup; no start ACK is supplied.
+          return;
+        }
+        const acquired = await acquisition;
+        expect(acquired.status).toBe(200);
+        expect(acquired.headers.get('cache-control')).toBe('no-store');
+        const access = (await acquired.json()) as {
+          accessToken: string;
+          accountId: string;
+          planType: string | null;
+          receiptId: string;
+          materialGeneration: number;
+        };
+        expect(Object.keys(access).sort()).toEqual([
+          'accessToken',
+          'accountId',
+          'materialGeneration',
+          'planType',
+          'receiptId',
+        ]);
+        expect(access.accessToken === accessMaterials[2] && access.accountId === accountId).toBe(
+          true
+        );
+        expect(access.materialGeneration).toBe(login.currentVersion + 1);
+        expect(access.receiptId).toBe(`receipt_${pkg.snapshotId}_reviewed-login`);
+        expect(refreshCalls).toBe(2);
+        expect(getVaultReference(coreDb, login.referenceId)?.currentVersion).toBe(
+          access.materialGeneration
+        );
+        const uses = listVaultUseRecords(db).filter(
+          (use) =>
+            use.receiptId === access.receiptId &&
+            use.materialVersion === access.materialGeneration &&
+            use.outcome === 'succeeded'
+        );
+        expect(uses.length > 0).toBe(true);
+        expect(
+          uses.every(
+            (use) =>
+              use.grantId === issued.grantId &&
+              use.planId === plans[0]!.planId &&
+              use.agentSessionId === agentSessionId
+          )
+        ).toBe(true);
+        const audits = listWorkspaceAuditEvents(db, DEMO_WORKSPACE_ID, coreDb);
+        expect(
+          uses.every((use) =>
+            audits.some(
+              (audit) =>
+                audit.id === use.auditEventId &&
+                audit.action === 'vault.resolve' &&
+                audit.outcome === 'succeeded'
+            )
+          )
+        ).toBe(true);
+        const decisions = listExportableWorkspacePermissionDecisions(db, DEMO_WORKSPACE_ID).filter(
+          (decision) =>
+            decision.enforcementPoint === 'vault.binding-deliver@decide' &&
+            decision.mediation?.role === 'final'
+        );
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]?.result).toBe('allow');
+        expect(audits.some((audit) => audit.id === decisions[0]?.auditEventId)).toBe(true);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(privateThread().login).toBeUndefined();
+        expect(publications).toEqual([]);
+        expect(startupSettled).toBe(false);
+        const completionBody = {
+          kind: 'complete',
+          receiptId: access.receiptId,
+          materialGeneration: access.materialGeneration,
+        };
+        if (ending === 'physical-loss-before-complete') {
+          await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+            targetId: target.targetId,
+            identityId: target.identityId,
+            deploymentId: target.deploymentId,
+            observedAt: new Date().toISOString(),
+          });
+          await expect(call(completionBody)).rejects.toThrow();
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(privateThread().login).toBeUndefined();
+          expect(publications).toEqual([]);
+          expect(startupSettled).toBe(false);
+          // Access was already disclosed. Refusal makes no rollback or non-exposure claim.
+          return;
+        }
+        if (ending === 'duplicate') {
+          expect((await call({ kind: 'acquire', reason: 'activate' })).ok).toBe(false);
+          expect(refreshCalls).toBe(2);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(privateThread().login).toBeUndefined();
+          const completed = await Promise.all([call(completionBody), call(completionBody)]);
+          expect(completed.map((response) => response.status)).toEqual([204, 204]);
+        } else expect((await call(completionBody)).status).toBe(204);
+        expect(publications).toEqual(['receipt-create', 'thread-login-activate']);
+        const receipts = listVaultInjectionReceipts(coreDb).filter(
+          (receipt) => receipt.receiptId === access.receiptId
+        );
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0]).toMatchObject({
+          planId: plans[0]!.planId,
+          grantId: issued.grantId,
+          agentSessionId,
+        });
+        expect(NativeThreadLoginSchema.parse(privateThread().login)).toEqual({
+          referenceId: login.referenceId,
+          lastLeftAt: {},
+        });
+        expect(
+          listExportableWorkspacePermissionDecisions(db, DEMO_WORKSPACE_ID).filter(
+            (decision) =>
+              decision.enforcementPoint === 'vault.binding-deliver@decide' &&
+              decision.mediation?.role === 'final'
+          )
+        ).toHaveLength(1);
+        expect(refreshCalls).toBe(2);
+        expect(startupSettled).toBe(false);
+        expect(native.runtime.isTurnExecutionActive(turn.id)).toBe(true);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT operation, operation_state FROM harness_instance_records WHERE harness_instance_id = ?'
+            )
+            .get(wire.harnessInstanceId)
+        ).toEqual({ operation: 'turn.start', operation_state: 'dispatched' });
+        expect(
+          [accountId, ...accessMaterials, ...refreshMaterials].every(
+            (value) =>
+              !JSON.stringify({ receipts, affinity: privateThread().login }).includes(value)
+          )
+        ).toBe(true);
+      } finally {
+        acquireAbort.abort();
+        releaseRefresh.resolve();
+        await acquisition?.catch(() => undefined);
+        stopStart.resolve();
+        // Keep the peer alive for its actual unknown-result FULL and delivery-failure callback.
+        // A startup already settled through real cancellation needs no second failure delivery.
+        if (heldStart && startup)
+          await Promise.race([startDeliveryFailed.promise, startup.catch(() => undefined)]);
+        await startup?.catch(() => undefined);
+        await native?.restore().catch(() => undefined);
+        acceptStart?.mockRestore();
+        observeDeliveryFailure?.mockRestore();
+        nativePublication?.mockRestore();
+        upstream.mockRestore();
+        client?.destroy();
+        await authority.closeAllPhysicalConnections();
+        if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+        for (const db of handles) if (db.sqlite.open) db.sqlite.close();
+        vault.lock();
+        try {
+          await shutdownControlStoreWorkerClient();
+        } finally {
+          for (const handle of userHandles) handle.close();
+        }
+      }
+    }
+  );
+});

@@ -55,6 +55,7 @@ export async function createNativeTaskAdmissionFixture(
     | 'workspaceMutationAdmission'
     | 'policyInterception'
     | 'goalTaskPolicy'
+    | 'nanoHostSessionDispatch'
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
@@ -159,6 +160,144 @@ export async function createNativeTaskAdmissionFixture(
     });
   void launched.promise.catch(() => undefined);
   const unsupported = () => Promise.reject(new Error('Native peer operation is not admitted.'));
+  // Only placement effects are modeled. Supplied private routing and physical checks remain real.
+  const peerDispatch: NanoHostSessionDispatch = {
+    async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
+      if (stopped) throw new Error('Native peer is stopped.');
+      const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+      effects.push(request);
+      if (options.actualWorker) {
+        const result = await options.actualWorker.effect(request);
+        // Command polling needs the Core-selected bridge locator, even when
+        // a real component owns connection establishment and its result.
+        if (request.kind === 'bridge.open') {
+          const ref = request.input.sandboxIntegrationBindingRef;
+          if (typeof ref !== 'string' || !ref)
+            throw new Error('Actual bridge lacks its Core-selected Integration binding.');
+          outside.integrationBindingRef = ref;
+          available.resolve();
+        } else if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+          outside.integrationBindingRef = undefined;
+        }
+        return result;
+      }
+      if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
+      if (request.kind === 'image.inspect')
+        return {
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          digest: request.input.imageDigest,
+          environmentDefaults: {
+            defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+            values: {},
+          },
+          platform: { architecture: 'amd64', os: 'linux' },
+          storageLayout: {
+            family: 'openkit-worker',
+            gid: 1000,
+            uid: 1000,
+            version: '1',
+            workingDirectory: '/tmp/openkit-bootstrap',
+            targets: ['/openkit/threads', '/sandbox', '/workspace'].map((target) => ({ target })),
+          },
+        };
+      if (request.kind === 'sandbox.create') {
+        const storage = request.input.storage as { targets: object[] };
+        return {
+          sandboxId: request.input.sandboxId,
+          state: 'created',
+          storage: {
+            ...storage,
+            targets: storage.targets.map((target) => ({ ...target, initialized: true })),
+          },
+        };
+      }
+      if (request.kind === 'bridge.open') {
+        const ref = request.input.sandboxIntegrationBindingRef;
+        if (typeof ref !== 'string' || !ref)
+          throw new Error('Native bridge request lacks its actual Integration binding.');
+        outside.integrationBindingRef = ref;
+        return { accepted: true, integrationReady: true, state: 'open' };
+      }
+      if (request.kind === 'reference.import')
+        return {
+          state: 'imported',
+          ...(request.input.slot === 'runtime-credential' ||
+          request.input.slot === 'runtime-credential-replace'
+            ? {
+                credentialProtection: {
+                  ephemeral: true,
+                  outsideRetainedStorage: true,
+                  excludedFromCapture: true,
+                  excludedFromExport: true,
+                },
+              }
+            : {}),
+        };
+      if (request.kind === 'workspace.collect')
+        return request.input.mode === 'baseline'
+          ? {
+              requestId: request.requestId,
+              outcome: 'baseline',
+              head: {
+                tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+              },
+            }
+          : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+      if (request.kind === 'file.export') {
+        const transcript = [...transcripts.values()].find(
+          (candidate) => candidate.lineage.packageSnapshotId === request.input.packageSnapshotId
+        );
+        if (!transcript) throw new Error('Native trial has no submitted Turn.');
+        const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = transcript;
+        if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
+          peerFaults.failedExportPaths.push(String(request.input.relativePath));
+          throw new Error('Controlled required native export loss.');
+        }
+        const relativePath = String(request.input.relativePath);
+        const records = relativePath.endsWith('/events.jsonl')
+          ? nativeEvents
+          : relativePath.endsWith('/items.jsonl')
+            ? [
+                {
+                  schemaVersion: 1,
+                  kind: 'item',
+                  sequence: 1,
+                  lineage: nativeLineage,
+                  item: { type: 'assistant-message', status: 'completed', text: nativeInput },
+                },
+              ]
+            : undefined;
+        if (!records) throw new Error('Unexpected native trial export.');
+        const bytes = Buffer.from(`${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
+        const stagingPath = join(mkdtempSync(join(coreDb.dataRoot, 'peer-')), 'capture');
+        fs.writeFileSync(stagingPath, bytes);
+        return {
+          stagingPath,
+          byteLength: bytes.length,
+          sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        };
+      }
+      if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+        if (request.kind === 'sandbox.delete' && peerFaults.failSandboxDelete)
+          throw new Error('Controlled native Sandbox deletion result loss.');
+        if (request.kind === 'sandbox.delete')
+          for (const harness of bindings.values())
+            for (const binding of harness.values()) binding.state = 'closed';
+        outside.integrationBindingRef = undefined;
+        return { state: 'deleted' };
+      }
+      throw new Error(`Unexpected native Mode trial effect: ${request.kind}`);
+    },
+    poll: async () => null,
+    async result() {},
+    route: options.actualWorker?.route ?? unsupported,
+    fileExportResult: unsupported,
+    workspaceCollectResult: unsupported,
+    imageBuildInput: unsupported,
+  };
+  const sessionDispatch = options.nanoHostSessionDispatch ?? peerDispatch;
+  if (options.nanoHostSessionDispatch) sessionDispatch.effect = peerDispatch.effect;
   const runtime = createConfiguredWorkerLifecycleRuntime({
     releaseIdentity: options.releaseIdentity ?? TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
@@ -179,141 +318,7 @@ export async function createNativeTaskAdmissionFixture(
           dataRoot: coreDb.dataRoot,
           workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
         })),
-    nanoHostSessionDispatch: {
-      async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
-        if (stopped) throw new Error('Native peer is stopped.');
-        const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
-        effects.push(request);
-        if (options.actualWorker) {
-          const result = await options.actualWorker.effect(request);
-          // Command polling needs the Core-selected bridge locator, even when
-          // a real component owns connection establishment and its result.
-          if (request.kind === 'bridge.open') {
-            const ref = request.input.sandboxIntegrationBindingRef;
-            if (typeof ref !== 'string' || !ref)
-              throw new Error('Actual bridge lacks its Core-selected Integration binding.');
-            outside.integrationBindingRef = ref;
-            available.resolve();
-          } else if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
-            outside.integrationBindingRef = undefined;
-          }
-          return result;
-        }
-        if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
-        if (request.kind === 'image.inspect')
-          return {
-            releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
-            digest: request.input.imageDigest,
-            environmentDefaults: {
-              defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
-              values: {},
-            },
-            platform: { architecture: 'amd64', os: 'linux' },
-            storageLayout: {
-              family: 'openkit-worker',
-              gid: 1000,
-              uid: 1000,
-              version: '1',
-              workingDirectory: '/tmp/openkit-bootstrap',
-              targets: ['/openkit/threads', '/sandbox', '/workspace'].map((target) => ({ target })),
-            },
-          };
-        if (request.kind === 'sandbox.create') {
-          const storage = request.input.storage as { targets: object[] };
-          return {
-            sandboxId: request.input.sandboxId,
-            state: 'created',
-            storage: {
-              ...storage,
-              targets: storage.targets.map((target) => ({ ...target, initialized: true })),
-            },
-          };
-        }
-        if (request.kind === 'bridge.open') {
-          const ref = request.input.sandboxIntegrationBindingRef;
-          if (typeof ref !== 'string' || !ref)
-            throw new Error('Native bridge request lacks its actual Integration binding.');
-          outside.integrationBindingRef = ref;
-          return { accepted: true, integrationReady: true, state: 'open' };
-        }
-        if (request.kind === 'reference.import')
-          return {
-            state: 'imported',
-            ...(request.input.slot === 'runtime-credential' ||
-            request.input.slot === 'runtime-credential-replace'
-              ? {
-                  credentialProtection: {
-                    ephemeral: true,
-                    outsideRetainedStorage: true,
-                    excludedFromCapture: true,
-                    excludedFromExport: true,
-                  },
-                }
-              : {}),
-          };
-        if (request.kind === 'workspace.collect')
-          return request.input.mode === 'baseline'
-            ? {
-                requestId: request.requestId,
-                outcome: 'baseline',
-                head: {
-                  tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-                  manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
-                },
-              }
-            : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
-        if (request.kind === 'file.export') {
-          const transcript = [...transcripts.values()].find(
-            (candidate) => candidate.lineage.packageSnapshotId === request.input.packageSnapshotId
-          );
-          if (!transcript) throw new Error('Native trial has no submitted Turn.');
-          const { lineage: nativeLineage, events: nativeEvents, input: nativeInput } = transcript;
-          if (peerFaults.failFileExport && readFinal(coreDb, nativeLineage)?.status === 'failed') {
-            peerFaults.failedExportPaths.push(String(request.input.relativePath));
-            throw new Error('Controlled required native export loss.');
-          }
-          const relativePath = String(request.input.relativePath);
-          const records = relativePath.endsWith('/events.jsonl')
-            ? nativeEvents
-            : relativePath.endsWith('/items.jsonl')
-              ? [
-                  {
-                    schemaVersion: 1,
-                    kind: 'item',
-                    sequence: 1,
-                    lineage: nativeLineage,
-                    item: { type: 'assistant-message', status: 'completed', text: nativeInput },
-                  },
-                ]
-              : undefined;
-          if (!records) throw new Error('Unexpected native trial export.');
-          const bytes = Buffer.from(`${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
-          const stagingPath = join(mkdtempSync(join(coreDb.dataRoot, 'peer-')), 'capture');
-          fs.writeFileSync(stagingPath, bytes);
-          return {
-            stagingPath,
-            byteLength: bytes.length,
-            sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-          };
-        }
-        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
-          if (request.kind === 'sandbox.delete' && peerFaults.failSandboxDelete)
-            throw new Error('Controlled native Sandbox deletion result loss.');
-          if (request.kind === 'sandbox.delete')
-            for (const harness of bindings.values())
-              for (const binding of harness.values()) binding.state = 'closed';
-          outside.integrationBindingRef = undefined;
-          return { state: 'deleted' };
-        }
-        throw new Error(`Unexpected native Mode trial effect: ${request.kind}`);
-      },
-      poll: async () => null,
-      async result() {},
-      route: options.actualWorker?.route ?? unsupported,
-      fileExportResult: unsupported,
-      workspaceCollectResult: unsupported,
-      imageBuildInput: unsupported,
-    },
+    nanoHostSessionDispatch: sessionDispatch,
   });
   const executionBackend = runtime.turnExecutor.executionBackend;
   if (!executionBackend) throw new Error('Native admission fixture requires its actual backend.');
@@ -712,6 +717,7 @@ export async function createNativeTaskAdmissionFixture(
     peerFaults,
     workerControlGateway,
     runtime,
+    sessionDispatch,
     waitForStartup: startup.waitFor,
     executionFor(turnId: string) {
       const turn = executionFor(turnId);

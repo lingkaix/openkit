@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
+import {
+  connect as connectHttp2,
+  createServer as createHttp2Server,
+  constants as http2Constants,
+} from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
@@ -3077,7 +3081,7 @@ async function privateLoginDispatchFixture() {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Missing H2 fixture address.');
     client = connectHttp2(`http://127.0.0.1:${address.port}`);
-    const post = async (path: string, body: string) => {
+    const post = async (path: string, body: string, signal?: AbortSignal) => {
       if (!client) throw new Error('Private Login fixture client is unavailable.');
       const stream = client.request({
         ':method': 'POST',
@@ -3087,12 +3091,24 @@ async function privateLoginDispatchFixture() {
         'x-private-fixture': 'request-preserved',
       });
       const response = once(stream, 'response');
-      stream.end(body);
-      const [headers] = await response;
-      for await (const _chunk of stream) {
-        // Drain only; this fixture does not retain response bodies or credential material.
+      const closed = signal
+        ? once(stream, 'close').then(() => {
+            throw new Error('Original private Login H2 request closed.');
+          })
+        : undefined;
+      const abort = () => stream.close(http2Constants.NGHTTP2_CANCEL);
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        stream.end(body);
+        if (signal?.aborted) abort();
+        const [headers] = await (closed ? Promise.race([response, closed]) : response);
+        for await (const _chunk of stream) {
+          // Drain only; this fixture does not retain response bodies or credential material.
+        }
+        return headers;
+      } finally {
+        signal?.removeEventListener('abort', abort);
       }
-      return headers;
     };
     const readiness = await post(
       '/api/nanohost/transport/session/readiness',
@@ -3248,4 +3264,51 @@ describe('private native Login dispatch plumbing, not Core permission', () => {
       }
     }
   });
+});
+
+it('carries real private semantic H2 request cancellation into the bound handler', async () => {
+  const f = await privateLoginDispatchFixture();
+  const abort = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  const cancelled = Promise.withResolvers<void>();
+  let receivedSignal: AbortSignal | undefined;
+  let pending: Promise<unknown> | undefined;
+  try {
+    if (!f.dispatch.bindHarnessLogin)
+      throw new Error('Actual private Login handler binding is unavailable.');
+    f.dispatch.bindHarnessLogin(async (request, physical) => {
+      physical.assertCurrent();
+      receivedSignal = request.signal;
+      expect(receivedSignal.aborted).toBe(false);
+      const onAbort = () => cancelled.resolve();
+      receivedSignal.addEventListener('abort', onAbort, { once: true });
+      entered.resolve();
+      try {
+        await cancelled.promise;
+        expect(receivedSignal.aborted).toBe(true);
+        physical.assertCurrent();
+        return new Response(null, { status: 204 });
+      } finally {
+        receivedSignal.removeEventListener('abort', onAbort);
+      }
+    });
+    pending = f.post('/worker-control/harness/login', '{"kind":"acquire"}', abort.signal).then(
+      () => 'returned',
+      () => 'closed'
+    );
+    expect(await Promise.race([entered.promise.then(() => 'handler-entered'), pending])).toBe(
+      'handler-entered'
+    );
+    expect(receivedSignal?.aborted).toBe(false);
+    abort.abort();
+    await cancelled.promise;
+    expect(receivedSignal?.aborted).toBe(true);
+    await pending;
+    expect(f.forwarded()).toBe(0);
+    expect(f.authority.mayCarryWork(f.physical())).toBe(true);
+  } finally {
+    abort.abort();
+    await f.close();
+    await pending?.catch(() => undefined);
+  }
 });
