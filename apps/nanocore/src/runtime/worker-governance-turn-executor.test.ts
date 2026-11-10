@@ -74,12 +74,17 @@ import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
-import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
+import {
+  listServerAuditEvents,
+  listSqliteAuditEvents,
+  listWorkspaceAuditEvents,
+} from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   getOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { createBetterAuth } from '../auth/better-auth.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -112,12 +117,14 @@ import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
 } from '../llm/provider-dispatcher.js';
+import type { OperationInvocationContext } from '../operation-contract.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from '../policy/interception.js';
 import {
   listExportableWorkspacePermissionDecisions,
+  listUserPermissionDecisions,
   readPolicyStatementUseCount,
 } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
@@ -181,9 +188,10 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
-import { closeTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
+import { closeTestCoreDb, createTestUserDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
+import * as credentialAuthority from '../vault/codex-login-refresh.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
 import {
@@ -18645,9 +18653,45 @@ describe('Login publication under the original Goal Task decision', () => {
     'approver-credential-before-successor',
     'coordinator-completed',
     'coordinator-ended-before-receipt',
+    'permanent-other-owner',
+    'transient-other-owner',
+    'cancelled-other-owner',
+    'grant-lost-other-owner',
+    'generation-lost-other-owner',
+    'actor-lost-other-owner',
+    'forged-proof-other-owner',
+    'proof-replay-other-owner',
+    'native-grant-lost-other-owner',
+    'native-user-decision-mismatch-other-owner',
+    'policy-denied-other-owner',
   ] as const)(
     'repeats the original consumed Task decision after an acknowledged cross-owner Plan change (%s)',
     async (ending) => {
+      const otherOwnerCase = ending.endsWith('other-owner');
+      const heldRefresh =
+        ending === 'cancelled-other-owner' ||
+        ending === 'grant-lost-other-owner' ||
+        ending === 'generation-lost-other-owner' ||
+        ending === 'actor-lost-other-owner';
+      const refreshEntered = Promise.withResolvers<void>();
+      const refreshRelease = Promise.withResolvers<void>();
+      const cancellation = new AbortController();
+      let providerObservedCancellation = false;
+      let realFailureWitness: object | undefined;
+      let witnessMismatchEntered = false;
+      let witnessReplayEntered = false;
+      let refreshProbe: { mockRestore(): void } | undefined;
+      let witnessProbe: { mockRestore(): void } | undefined;
+      let retainedQuarantineEntry:
+        | Extract<OperationInvocationContext, { kind: 'worker' }>
+        | undefined;
+      let quarantinePending: Promise<unknown> | undefined;
+      let quarantineDenyCalls = 0;
+      let nativeQuarantineCode: string | undefined;
+      let nativeGrantRevocationAcknowledged = false;
+      let originalQuarantineDigest: string | undefined;
+      let alteredQuarantineDigest: string | undefined;
+      let quarantineWireDifferenceExact = false;
       const coordinatorCase =
         ending === 'coordinator-completed' || ending === 'coordinator-ended-before-receipt';
       let coordinatorEndAcknowledged = false;
@@ -18659,6 +18703,8 @@ describe('Login publication under the original Goal Task decision', () => {
       const workspaceId = workspaceIdForOwner(fixture.turn.owner);
       const db = createTestWorkspaceDb(coreDb.dataRoot, workspaceId);
       const operationHandles: WorkspaceDb[] = [];
+      const userHandles: ReturnType<typeof createTestUserDb>[] = [];
+      let loginOwnerId: string = LOCAL_USER_ID;
       const actor = { kind: 'local' as const, userId: LOCAL_USER_ID };
       const triggerActor = { kind: 'user' as const, id: LOCAL_USER_ID };
       const agentId = 'agent_codex_host';
@@ -18713,6 +18759,35 @@ describe('Login publication under the original Goal Task decision', () => {
         expect(form.get('refresh_token') === refreshTokens[refreshCalls]).toBe(true);
         refreshCalls += 1;
         if (refreshCalls > 2) throw new Error('Unexpected stock refresh retry.');
+        if (ending === 'permanent-other-owner' && refreshCalls === 2) {
+          expect(request.signal.aborted).toBe(false);
+          return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        }
+        if (otherOwnerCase && refreshCalls === 2) {
+          if (ending === 'transient-other-owner')
+            return Response.json({ error: 'temporarily_unavailable' }, { status: 503 });
+          if (heldRefresh) {
+            refreshEntered.resolve();
+            if (ending === 'cancelled-other-owner') {
+              await Promise.race([
+                refreshRelease.promise,
+                new Promise<void>((resolve) => {
+                  request.signal.addEventListener(
+                    'abort',
+                    () => {
+                      providerObservedCancellation = true;
+                      resolve();
+                    },
+                    { once: true }
+                  );
+                }),
+              ]);
+              if (request.signal.aborted)
+                throw new DOMException('Synthetic refresh aborted.', 'AbortError');
+            } else await refreshRelease.promise;
+          }
+          return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        }
         return Response.json({
           access_token: accessTokens[refreshCalls],
           refresh_token: refreshTokens[refreshCalls],
@@ -18760,13 +18835,82 @@ describe('Login publication under the original Goal Task decision', () => {
           workspaceMutationAdmission: admission,
           runtimeConfigManager: manager,
         });
-        const bootstrap = await app.request(
+        let loginApp = app;
+        const loginHeaders: Record<string, string> = { 'content-type': 'application/json' };
+        if (otherOwnerCase) {
+          const auth = createBetterAuth(coreDb, { mode: 'local', env: {} });
+          const signup = await auth.api.signUpEmail({
+            body: {
+              name: 'Other reviewed Login owner',
+              email: `${randomUUID()}@example.invalid`,
+              password: randomUUID(),
+            },
+            asResponse: true,
+          });
+          expect(signup.status).toBe(200);
+          const registered = (await signup.json()) as { user: { id: string; email: string } };
+          loginOwnerId = registered.user.id;
+          expect(loginOwnerId === LOCAL_USER_ID).toBe(false);
+          const cookie = signup.headers
+            .getSetCookie()
+            .map((value) => value.split(';')[0])
+            .join('; ');
+          expect(cookie.length > 0).toBe(true);
+          if (!cookie) throw new Error('Other-owner Session was not issued.');
+          loginHeaders.cookie = cookie;
+          loginApp = createApp({
+            coreDb,
+            dataRoot: coreDb.dataRoot,
+            store,
+            mode: 'server',
+            auth,
+            vaultUnlockState: vault,
+            workspaceMutationAdmission: admission,
+            runtimeConfigManager: manager,
+          });
+          const invited = await app.request(
+            ...operationRequest(
+              'workspace.invitation-create',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  workspaceId,
+                  inviteeEmail: registered.user.email,
+                  requestId: randomUUID(),
+                }),
+              }
+            )
+          );
+          expect(invited.status).toBe(201);
+          const invitation = (await invited.json()) as {
+            invitation: { invitationId: string; revision: number };
+          };
+          const accepted = await loginApp.request(
+            ...operationRequest(
+              'workspace.my-invitation-accept',
+              {},
+              {
+                method: 'POST',
+                headers: loginHeaders,
+                body: JSON.stringify({
+                  invitationId: invitation.invitation.invitationId,
+                  expectedRevision: invitation.invitation.revision,
+                  requestId: randomUUID(),
+                }),
+              }
+            )
+          );
+          expect(accepted.status).toBe(200);
+        }
+        const bootstrap = await loginApp.request(
           ...operationRequest(
             'vault.bootstrap-codex-auth',
             {},
             {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: loginHeaders,
               body: JSON.stringify({
                 authJsonBase64: Buffer.from(
                   JSON.stringify({
@@ -18785,15 +18929,24 @@ describe('Login publication under the original Goal Task decision', () => {
         const login = (await bootstrap.json()) as { referenceId: string; currentVersion: number };
         const referenceId = login.referenceId;
         const generation = login.currentVersion;
+        const originalReference = otherOwnerCase ? getVaultReference(coreDb, referenceId) : null;
+        if (otherOwnerCase) {
+          expect(
+            originalReference?.ownerScope === 'user' &&
+              originalReference.userId === loginOwnerId &&
+              originalReference.login?.accountId === accountId &&
+              originalReference.login.quarantined === false
+          ).toBe(true);
+        }
         expect(generation).toBe(1);
         const consentThread = await store.createThread(workspaceId, 'Review Task Login');
-        const requested = await app.request(
+        const requested = await loginApp.request(
           ...operationRequest(
             'vault.grant-request',
             {},
             {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: loginHeaders,
               body: JSON.stringify({
                 workspaceId,
                 threadId: consentThread.id,
@@ -18815,13 +18968,13 @@ describe('Login publication under the original Goal Task decision', () => {
           raisingTurnId: string;
           approvalRequestId: string;
         };
-        const approved = await app.request(
+        const approved = await loginApp.request(
           ...operationRequest(
             'approval.respond',
             {},
             {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: loginHeaders,
               body: JSON.stringify({
                 workspaceId,
                 threadId: review.threadId,
@@ -18834,13 +18987,13 @@ describe('Login publication under the original Goal Task decision', () => {
           )
         );
         expect(approved.status).toBe(200);
-        const issued = await app.request(
+        const issued = await loginApp.request(
           ...operationRequest(
             'vault.grant-issue',
             {},
             {
               method: 'POST',
-              headers: { 'content-type': 'application/json' },
+              headers: loginHeaders,
               body: JSON.stringify({
                 workspaceId,
                 threadId: review.threadId,
@@ -19260,9 +19413,125 @@ describe('Login publication under the original Goal Task decision', () => {
         expect(readGoalView(store, db, goal.goalId).goal!.activePlanVersionId).toBe(
           plan.planVersionId
         );
+        if (ending === 'policy-denied-other-owner') {
+          const personal = await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+          recordWorkspaceOwnerMembership({
+            coreDb,
+            workspaceId: personal.id,
+            ownerUserId: LOCAL_USER_ID,
+          });
+          const adminThread = await store.createThread(
+            personal.id,
+            'Review quarantine restriction',
+            undefined,
+            'administration',
+            { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+          );
+          const adminTurn = await store.createTurn(
+            personal.id,
+            adminThread.id,
+            'Deny automatic quarantine',
+            triggerActor
+          );
+          const administrationFiles = new RuntimeConfigFileService({
+            dataRoot: coreDb.dataRoot,
+            userId: LOCAL_USER_ID,
+            workspaceIds: [workspaceId, personal.id],
+            runtimeConfigManager: manager,
+            readRuntimeConfigStatus: () => manager.status(),
+          });
+          const configuration = createAdministrationConfiguration({
+            actor,
+            coreDb,
+            store,
+            files: administrationFiles,
+            runtimeConfig: () => manager.current(),
+            reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+            repositoryWorkspaceDb: (id) => {
+              const handle = createTestWorkspaceDb(coreDb.dataRoot, id);
+              operationHandles.push(handle);
+              return handle;
+            },
+            inflightCommands: new WeakMap(),
+          });
+          const resource = {
+            kind: 'container' as const,
+            container: {
+              owner: { kind: 'user' as const, userId: loginOwnerId },
+              kind: 'user',
+              id: loginOwnerId,
+            },
+          };
+          const scope = {
+            subjects: [{ kind: 'agent' as const, id: agentId }],
+            actions: ['vault.admin'],
+            resources: [resource],
+          };
+          const currentDocument =
+            manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+          const proposed = await configuration.propose(
+            {
+              targetFamily: 'policy',
+              targetId: 'server',
+              expectedRevision: administrationFiles.readFile('server.jsonc').file.revision!,
+              changes: {
+                rationale:
+                  'Deny only this User quarantine without changing the Task vault.use domain.',
+                proposed: {
+                  ...currentDocument,
+                  statements: [
+                    ...currentDocument.statements,
+                    {
+                      id: 'other-owner-quarantine-denial',
+                      kind: 'binding',
+                      author: { kind: 'human', id: LOCAL_USER_ID },
+                      authority: { kind: 'human', userId: LOCAL_USER_ID },
+                      authoredAt: new Date().toISOString(),
+                      state: 'active',
+                      scope,
+                      lifetime: { anchor: resource.container },
+                      operation: 'vault.login-quarantine',
+                      stage: 'decide',
+                      mode: 'gate',
+                      participant: {
+                        kind: 'deterministic',
+                        id: 'other-owner-quarantine-denial',
+                        version: `sha256:${'3'.repeat(64)}`,
+                      },
+                      inputDisclosure: scope,
+                      order: 0,
+                      timeoutMs: 5000,
+                      failure: 'error',
+                      circuit: { failures: 1, recoveryAfterMs: 60000 },
+                    },
+                  ],
+                },
+              },
+            },
+            { threadId: adminThread.id, turnId: adminTurn.id, requestId: randomUUID() }
+          );
+          expect(
+            await configuration.apply({
+              requestId: randomUUID(),
+              candidate: proposed.candidate,
+              confirmation: proposed.confirmation,
+            })
+          ).toMatchObject({ persisted: true, reload: 'applied' });
+        }
         // Actual loaded Policy readiness is a prerequisite; it supplies no Goal permission.
         await manager.bindNativePolicyPublication(coreDb);
-        const interception = new PolicyInterception();
+        const interception =
+          ending === 'policy-denied-other-owner'
+            ? new PolicyInterception({
+                id: 'other-owner-quarantine-denial',
+                version: `sha256:${'3'.repeat(64)}`,
+                invoke: async (input) => {
+                  expect(input.proposal.operation).toBe('vault.login-quarantine');
+                  quarantineDenyCalls += 1;
+                  return { decision: 'deny' };
+                },
+              })
+            : new PolicyInterception();
         const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
           async deliverCredentialAccess(
             _input: { receiptId: string; expectedMaterialVersion: number },
@@ -19344,6 +19613,11 @@ describe('Login publication under the original Goal Task decision', () => {
             operationHandles.push(handle);
             return handle;
           },
+          repositoryUserDb: (id: string) => {
+            const handle = createTestUserDb(coreDb.dataRoot, id);
+            userHandles.push(handle);
+            return handle.userDb;
+          },
           goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store, domains }),
         };
         const invoke = createOperationEngine(
@@ -19360,6 +19634,7 @@ describe('Login publication under the original Goal Task decision', () => {
         if (
           !coordinatorCase &&
           ending !== 'last-allocation' &&
+          !otherOwnerCase &&
           ending !== 'approver-credential-before-successor'
         ) {
           const client = getControlStoreWorkerClient();
@@ -19863,8 +20138,241 @@ describe('Login publication under the original Goal Task decision', () => {
               }
             });
         }
+        if (
+          ending === 'native-grant-lost-other-owner' ||
+          ending === 'native-user-decision-mismatch-other-owner'
+        ) {
+          type StateInput =
+            import('../storage/vault-native-codecs.js').ControlVaultMainInputMap['reference-login-state'];
+          const client = getControlStoreWorkerClient();
+          const nativeVault = client.vault.bind(client);
+          const originalPost = NativeWorker.prototype.postMessage;
+          nativePosting = vi
+            .spyOn(NativeWorker.prototype, 'postMessage')
+            .mockImplementation(function (
+              this: NativeWorker,
+              ...args: Parameters<NativeWorker['postMessage']>
+            ) {
+              originalPost.apply(this, args);
+              const frame = args[0] as {
+                operation?: string;
+                database?: string;
+                input?: { kind?: string; record?: StateInput };
+              };
+              if (
+                frame.operation === 'vault' &&
+                frame.input?.kind === 'reference-login-state' &&
+                frame.input.record?.referenceId === referenceId &&
+                frame.input.record.quarantined
+              ) {
+                targetDatabase = frame.database;
+                targetPosted = true;
+                if (ending === 'native-user-decision-mismatch-other-owner') {
+                  const postedRecord = frame.input.record;
+                  expect('coreConfirmedQuarantine' in postedRecord).toBe(true);
+                  if (!('coreConfirmedQuarantine' in postedRecord))
+                    throw new Error('Actual native quarantine proof was not posted.');
+                  expect(
+                    postedRecord.coreConfirmedQuarantine.quarantine.decision.proposalDigest
+                  ).toBe(alteredQuarantineDigest);
+                }
+              }
+            });
+          nativeStage = vi.spyOn(client, 'vault').mockImplementation((async (
+            selectedDb,
+            kind,
+            record,
+            beforeSubmit
+          ) => {
+            if (
+              kind !== 'reference-login-state' ||
+              (record as StateInput).referenceId !== referenceId
+            )
+              return nativeVault(selectedDb, kind, record, beforeSubmit);
+            const original = canonicalJsonText(record);
+            try {
+              if (ending === 'native-user-decision-mismatch-other-owner') {
+                expect(typeof beforeSubmit).toBe('function');
+                await beforeSubmit?.();
+                originalAdmissionCompleted = true;
+                const state = record as StateInput;
+                if (!('coreConfirmedQuarantine' in state))
+                  throw new Error('Core did not produce separate User quarantine proof.');
+                const authority = state.coreConfirmedQuarantine;
+                originalQuarantineDigest = authority.quarantine.decision.proposalDigest;
+                alteredQuarantineDigest = authority.binding.policyProof.decision.proposalDigest;
+                expect(alteredQuarantineDigest === originalQuarantineDigest).toBe(false);
+                const altered: StateInput = {
+                  ...state,
+                  coreConfirmedQuarantine: {
+                    ...authority,
+                    quarantine: {
+                      ...authority.quarantine,
+                      decision: {
+                        ...authority.quarantine.decision,
+                        proposalDigest: alteredQuarantineDigest,
+                      },
+                    },
+                  },
+                };
+                quarantineWireDifferenceExact =
+                  canonicalJsonText({
+                    ...altered,
+                    coreConfirmedQuarantine: {
+                      ...altered.coreConfirmedQuarantine,
+                      quarantine: {
+                        ...altered.coreConfirmedQuarantine.quarantine,
+                        decision: {
+                          ...altered.coreConfirmedQuarantine.quarantine.decision,
+                          proposalDigest: originalQuarantineDigest,
+                        },
+                      },
+                    },
+                  }) === original;
+                expect(quarantineWireDifferenceExact).toBe(true);
+                expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+                expect(
+                  canonicalJsonText(getVaultReference(coreDb, referenceId)) ===
+                    canonicalJsonText(originalReference)
+                ).toBe(true);
+                const value = await nativeVault(
+                  selectedDb,
+                  'reference-login-state',
+                  altered,
+                  () => {
+                    targetRecordUnchanged = canonicalJsonText(record) === original;
+                    expect(targetRecordUnchanged).toBe(true);
+                  }
+                );
+                targetCommitted = true;
+                return value;
+              }
+              const value = await nativeVault(selectedDb, kind, record, async () => {
+                expect(typeof beforeSubmit).toBe('function');
+                await beforeSubmit?.();
+                originalAdmissionCompleted = true;
+                await revokeVaultGrant(coreDb, { grantId });
+                nativeGrantRevocationAcknowledged = true;
+                expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked');
+                targetRecordUnchanged = canonicalJsonText(record) === original;
+                expect(targetRecordUnchanged).toBe(true);
+              });
+              targetCommitted = true;
+              return value;
+            } catch (error) {
+              const nativeError =
+                error instanceof ControlStoreWorkerError
+                  ? error
+                  : error instanceof Error && error.cause instanceof ControlStoreWorkerError
+                    ? error.cause
+                    : undefined;
+              nativeQuarantineCode = nativeError?.code;
+              nativeRefusal = targetPosted && nativeError?.commit === 'not-committed';
+              throw error;
+            }
+          }) as typeof client.vault);
+        }
+        const originalBackendMetadata = otherOwnerCase
+          ? canonicalJsonText(vault.backend().listReferences({ referenceId }))
+          : undefined;
         const operationRequestId = randomUUID();
-        const result = await invoke(
+        const workerEntry: Extract<OperationInvocationContext, { kind: 'worker' }> = {
+          kind: 'worker',
+          actor: triggerActor,
+          lineage,
+          requestId: operationRequestId,
+          bindings: { workspaceId, bindingThreadId: thread.id, requestId: operationRequestId },
+          ...(ending === 'cancelled-other-owner' ? { signal: cancellation.signal } : {}),
+        };
+        if (ending === 'forged-proof-other-owner') {
+          const forged = { ...workerEntry, coreConfirmedLoginFailure: {} };
+          expect(
+            credentialAuthority.readCoreConfirmedLoginQuarantine(coreDb, forged, referenceId)
+          ).toBeUndefined();
+          expect(
+            await credentialAuthority.recheckCoreConfirmedLoginQuarantine(
+              coreDb,
+              forged,
+              referenceId
+            )
+          ).toBeUndefined();
+          await expect(
+            credentialAuthority.withCoreConfirmedLoginQuarantine(
+              coreDb,
+              {},
+              workerEntry,
+              async () => {
+                witnessMismatchEntered = true;
+              }
+            )
+          ).rejects.toBeDefined();
+          expect(witnessMismatchEntered).toBe(false);
+          await expect(
+            invoke('vault.login-quarantine', { referenceId }, forged)
+          ).rejects.toBeDefined();
+          expect(
+            canonicalJsonText(getVaultReference(coreDb, referenceId)) ===
+              canonicalJsonText(originalReference)
+          ).toBe(true);
+          expect(refreshCalls).toBe(1);
+          expect(listVaultUseRecords(db)).toEqual([]);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(accessDisclosed || externalCompleted).toBe(false);
+          return;
+        }
+        if (ending === 'proof-replay-other-owner') {
+          const withFailure = credentialAuthority.withCoreConfirmedLoginQuarantine;
+          witnessProbe = vi
+            .spyOn(credentialAuthority, 'withCoreConfirmedLoginQuarantine')
+            .mockImplementation(
+              <T>(
+                selectedDb: CoreDb,
+                witness: object,
+                context: OperationInvocationContext,
+                run: (entry: Extract<OperationInvocationContext, { kind: 'worker' }>) => Promise<T>
+              ) =>
+                withFailure(selectedDb, witness, context, async (entry) => {
+                  retainedQuarantineEntry = entry;
+                  expect(
+                    credentialAuthority.readCoreConfirmedLoginQuarantine(coreDb, entry, referenceId)
+                      ?.failureClass
+                  ).toBe('invalid-grant');
+                  expect(
+                    credentialAuthority.readCoreConfirmedLoginQuarantine(
+                      coreDb,
+                      entry,
+                      allocateEntityId('vault')
+                    )
+                  ).toBeUndefined();
+                  return run(entry);
+                })
+            );
+          const refresh = credentialAuthority.refreshWorkerCodexLogin;
+          refreshProbe = vi
+            .spyOn(credentialAuthority, 'refreshWorkerCodexLogin')
+            .mockImplementation((selectedDb, input) =>
+              refresh(selectedDb, {
+                ...input,
+                onPermanentFailure: async (witness) => {
+                  expect(typeof input.onPermanentFailure).toBe('function');
+                  realFailureWitness = witness;
+                  await expect(
+                    credentialAuthority.withCoreConfirmedLoginQuarantine(
+                      coreDb,
+                      witness,
+                      { ...workerEntry, requestId: randomUUID() },
+                      async () => {
+                        witnessMismatchEntered = true;
+                      }
+                    )
+                  ).rejects.toBeDefined();
+                  expect(witnessMismatchEntered).toBe(false);
+                  await input.onPermanentFailure!(witness);
+                },
+              })
+            );
+        }
+        const pending = invoke(
           'vault.binding-deliver',
           {
             workspaceId,
@@ -19882,21 +20390,366 @@ describe('Login publication under the original Goal Task decision', () => {
                 turnId: coordinator.id,
                 requestId: operationRequestId,
               }
-            : {
-                kind: 'worker',
-                actor: triggerActor,
-                lineage,
-                requestId: operationRequestId,
-                bindings: {
-                  workspaceId,
-                  bindingThreadId: thread.id,
-                  requestId: operationRequestId,
-                },
-              }
+            : workerEntry
         ).then(
           (value) => ({ kind: 'completed' as const, value }),
           () => ({ kind: 'refused' as const })
         );
+        quarantinePending = pending;
+        if (heldRefresh) {
+          const crossing = await Promise.race([
+            refreshEntered.promise.then(() => 'refresh-held' as const),
+            pending.then(() => 'returned' as const),
+          ]);
+          expect(crossing).toBe('refresh-held');
+          if (ending === 'cancelled-other-owner') cancellation.abort();
+          else if (ending === 'grant-lost-other-owner') {
+            await revokeVaultGrant(coreDb, { grantId });
+            expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked');
+          } else if (ending === 'generation-lost-other-owner') {
+            const unrelated = vault.backend().rotate({ referenceId, material: randomUUID() });
+            expect(unrelated.currentVersion).toBe(generation + 1);
+            await advanceActiveVaultReferenceVersion(coreDb, {
+              referenceId,
+              currentVersion: unrelated.currentVersion,
+            });
+            expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(generation + 1);
+          } else if (ending === 'actor-lost-other-owner') {
+            coreDb.sqlite.transaction(() => disableCanonicalUser(coreDb, LOCAL_USER_ID))();
+            expect(() =>
+              assertCurrentWorkerCredentialAuthority(
+                coreDb,
+                pkg,
+                () => new Date().toISOString(),
+                pkg.credentials.declarations[0]!
+              )
+            ).toThrow();
+          }
+          refreshRelease.resolve();
+        }
+        const result = await pending;
+        if (
+          otherOwnerCase &&
+          ending !== 'permanent-other-owner' &&
+          ending !== 'proof-replay-other-owner'
+        ) {
+          expect(refreshCalls).toBe(2);
+          expect(result.kind).toBe('refused');
+          const original = decisionRows();
+          expect(original).toHaveLength(1);
+          expect(original[0]?.result).toBe('allow');
+          expect(readPolicyStatementUseCount(db, domainReference)).toBe(1);
+          expect(accessDisclosed || externalCompleted).toBe(false);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(
+            readNativeProduct(
+              nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+              'thread',
+              thread.id
+            )?.record.login
+          ).toBeUndefined();
+          const uses = listVaultUseRecords(db).filter(
+            (use) => use.vaultReferenceId === referenceId
+          );
+          expect(uses.length > 0).toBe(true);
+          expect(
+            uses.every((use) => use.materialVersion === generation && use.outcome === 'succeeded')
+          ).toBe(true);
+          const audit = listWorkspaceAuditEvents(db, workspaceId, coreDb);
+          expect(
+            uses.every((use) =>
+              audit.some(
+                (event) =>
+                  event.id === use.auditEventId &&
+                  event.action === 'vault.resolve' &&
+                  event.outcome === 'succeeded'
+              )
+            )
+          ).toBe(true);
+          expect(
+            audit.some(
+              (event) =>
+                event.action === 'vault.binding-deliver' &&
+                event.requestId === operationRequestId &&
+                event.outcome === 'failed'
+            )
+          ).toBe(true);
+
+          const intentionalGeneration =
+            ending === 'generation-lost-other-owner' ? generation + 1 : generation;
+          expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(
+            intentionalGeneration
+          );
+          expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(
+            intentionalGeneration
+          );
+          if (ending === 'cancelled-other-owner') expect(providerObservedCancellation).toBe(true);
+          const ownerHome = createTestUserDb(coreDb.dataRoot, loginOwnerId);
+          userHandles.push(ownerHome);
+          const quarantine = listUserPermissionDecisions(ownerHome.userDb).filter(
+            (decision) =>
+              decision.enforcementPoint === 'vault.login-quarantine@decide' &&
+              decision.mediation?.role === 'final'
+          );
+          if (
+            ending === 'native-grant-lost-other-owner' ||
+            ending === 'native-user-decision-mismatch-other-owner'
+          ) {
+            expect(originalAdmissionCompleted).toBe(true);
+            if (ending === 'native-grant-lost-other-owner')
+              expect(nativeGrantRevocationAcknowledged).toBe(true);
+            else {
+              expect(quarantineWireDifferenceExact).toBe(true);
+              expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+              expect(quarantine[0]?.mediation?.proposalDigest).toBe(originalQuarantineDigest);
+            }
+            expect(targetPosted).toBe(true);
+            expect(targetDatabase).toBe(
+              `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`
+            );
+            expect(targetRecordUnchanged).toBe(true);
+            expect(targetCommitted).toBe(false);
+            expect(nativeRefusal).toBe(true);
+            expect(nativeQuarantineCode).toBe('precondition');
+            expect(quarantine).toHaveLength(1);
+            expect(quarantine[0]?.result).toBe('allow');
+          } else if (ending === 'policy-denied-other-owner') {
+            expect(quarantineDenyCalls).toBe(1);
+            expect(quarantine).toHaveLength(1);
+            expect(quarantine[0]?.result).toBe('deny');
+            expect(quarantine[0]?.mediation?.kernel?.effect).toBe('allow');
+          } else expect(quarantine).toEqual([]);
+          // Establish the real decision/native crossing before deciding nonpublication.
+          expect(getVaultReference(coreDb, referenceId)?.login?.quarantined).toBe(false);
+          const currentReference = getVaultReference(coreDb, referenceId);
+          expect(
+            canonicalJsonText(currentReference) ===
+              canonicalJsonText(
+                ending === 'generation-lost-other-owner'
+                  ? {
+                      ...originalReference,
+                      currentVersion: intentionalGeneration,
+                      updatedAt: currentReference!.updatedAt,
+                    }
+                  : originalReference
+              )
+          ).toBe(true);
+          if (ending !== 'grant-lost-other-owner' && ending !== 'native-grant-lost-other-owner')
+            expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+          expect(
+            canonicalJsonText(
+              requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+            ) === canonicalJsonText(pkg)
+          ).toBe(true);
+          expect(
+            listSqliteAuditEvents(ownerHome.userDb.sqlite).filter(
+              (event) => event.action === 'vault.login-quarantine' && event.outcome === 'succeeded'
+            )
+          ).toEqual([]);
+          return;
+        }
+        if (ending === 'permanent-other-owner' || ending === 'proof-replay-other-owner') {
+          // This is an actual stock failure after Core's legitimate original-generation resolution.
+          expect(refreshCalls).toBe(2);
+          expect(result.kind).toBe('refused');
+          const bindingDecisions = decisionRows();
+          expect(bindingDecisions).toHaveLength(1);
+          const bindingDecision = bindingDecisions[0]!;
+          expect(bindingDecision.result).toBe('allow');
+          expect(bindingDecision.mediation?.subject).toMatchObject({
+            principal: { kind: 'agent', id: agentId },
+            actor: { kind: 'agent', id: agentId, responsibleUserId: LOCAL_USER_ID },
+            responsibleHumanId: LOCAL_USER_ID,
+            credentialKind: 'worker-package',
+            process: { workspaceId, threadId: thread.id, turnId: turn.id },
+          });
+          expect(bindingDecision.mediation?.consumedStatements).toEqual([{ ...domainReference }]);
+          expect(readPolicyStatementUseCount(db, domainReference)).toBe(1);
+          const originalUses = listVaultUseRecords(db).filter(
+            (use) => use.vaultReferenceId === referenceId
+          );
+          expect(originalUses.length > 0).toBe(true);
+          expect(
+            originalUses.every(
+              (use) =>
+                use.ownerScope === 'workspace' &&
+                use.workspaceId === workspaceId &&
+                use.materialVersion === generation &&
+                use.outcome === 'succeeded' &&
+                use.grantId === grantId &&
+                use.planId === injection.planId &&
+                use.receiptId === receiptId &&
+                use.agentSessionId === agentSessionId
+            )
+          ).toBe(true);
+          const workspaceAudit = listWorkspaceAuditEvents(db, workspaceId, coreDb);
+          expect(
+            originalUses.every((use) =>
+              workspaceAudit.some(
+                (event) =>
+                  event.id === use.auditEventId &&
+                  event.action === 'vault.resolve' &&
+                  event.outcome === 'succeeded'
+              )
+            )
+          ).toBe(true);
+          expect(
+            workspaceAudit.some(
+              (event) =>
+                event.action === 'vault.binding-deliver' &&
+                event.requestId === operationRequestId &&
+                event.outcome === 'failed'
+            )
+          ).toBe(true);
+          expect(accessDisclosed).toBe(false);
+          expect(externalCompleted).toBe(false);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(
+            readNativeProduct(
+              nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId }),
+              'thread',
+              thread.id
+            )?.record.login
+          ).toBeUndefined();
+          expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(generation);
+          expect(
+            canonicalJsonText(vault.backend().listReferences({ referenceId })) ===
+              originalBackendMetadata
+          ).toBe(true);
+          expect(getVaultGrant(coreDb, grantId)).toEqual(originalGrant);
+          expect(
+            requireAgentEnvironmentPackageSnapshot(db, workspaceId, pkg.snapshotId).snapshot
+          ).toEqual(pkg);
+          // The deciding OLD is missing actual quarantine, not a missing wrapper/export or a raw Worker report.
+          const restricted = getVaultReference(coreDb, referenceId);
+          expect(restricted?.login?.quarantined).toBe(true);
+          expect(
+            canonicalJsonText(restricted) ===
+              canonicalJsonText({
+                ...originalReference,
+                login: { ...originalReference!.login, quarantined: true },
+                updatedAt: restricted!.updatedAt,
+              })
+          ).toBe(true);
+          const ownerHome = createTestUserDb(coreDb.dataRoot, loginOwnerId);
+          const callerHome = createTestUserDb(coreDb.dataRoot, LOCAL_USER_ID);
+          userHandles.push(ownerHome, callerHome);
+          const quarantineDecisions = listUserPermissionDecisions(ownerHome.userDb).filter(
+            (decision) =>
+              decision.enforcementPoint === 'vault.login-quarantine@decide' &&
+              decision.mediation?.role === 'final'
+          );
+          expect(quarantineDecisions).toHaveLength(1);
+          const quarantine = quarantineDecisions[0]!;
+          const ownerAudit = listSqliteAuditEvents(ownerHome.userDb.sqlite);
+          const ownerEvidence = canonicalJsonText([quarantine, ownerAudit]);
+          expect(
+            [accountId, ...accessTokens, ...refreshTokens].every(
+              (value) => !ownerEvidence.includes(value)
+            )
+          ).toBe(true);
+          expect(quarantine).toMatchObject({
+            ownerScope: 'user',
+            workspaceId: null,
+            action: 'vault.admin',
+            result: 'allow',
+          });
+          expect(quarantine.mediation).toMatchObject({
+            operation: 'vault.login-quarantine',
+            stage: 'decide',
+            role: 'final',
+            kernel: { effect: 'allow' },
+          });
+          expect(quarantine.mediation?.subject).toEqual(bindingDecision.mediation?.subject);
+          expect(quarantine.decisionId === bindingDecision.decisionId).toBe(false);
+          expect(quarantine.resourceSummary).toMatchObject({ referenceId, grantId });
+          expect(
+            ownerAudit.some(
+              (event) =>
+                event.id === quarantine.auditEventId &&
+                event.workspaceId === null &&
+                canonicalJsonText(event.actor) ===
+                  canonicalJsonText(bindingDecision.mediation!.subject.actor)
+            )
+          ).toBe(true);
+          const completion = ownerAudit.filter(
+            (event) =>
+              event.action === 'vault.login-quarantine' &&
+              event.outcome === 'succeeded' &&
+              event.permissionDecisionId === quarantine.decisionId
+          );
+          expect(completion).toHaveLength(1);
+          expect(completion[0]).toMatchObject({
+            workspaceId: null,
+            vaultGrantId: grantId,
+            resource: `vault-reference:${referenceId}`,
+            resourceRevision: generation,
+            requestId: operationRequestId,
+            threadId: thread.id,
+            turnId: turn.id,
+            agentId,
+            agentSessionId,
+            actor: { kind: 'agent', id: agentId, responsibleUserId: LOCAL_USER_ID },
+          });
+          expect(
+            listUserPermissionDecisions(callerHome.userDb).filter(
+              (decision) => decision.enforcementPoint === 'vault.login-quarantine@decide'
+            )
+          ).toEqual([]);
+          expect(
+            listSqliteAuditEvents(callerHome.userDb.sqlite).filter(
+              (event) => event.action === 'vault.login-quarantine'
+            )
+          ).toEqual([]);
+          if (ending === 'proof-replay-other-owner') {
+            expect(realFailureWitness).toBeDefined();
+            if (!realFailureWitness)
+              throw new Error('Actual stock refresh did not issue a live failure witness.');
+            const beforeReplay = canonicalJsonText(getVaultReference(coreDb, referenceId));
+            const beforeDecisions = canonicalJsonText(
+              listUserPermissionDecisions(ownerHome.userDb)
+            );
+            const beforeAudit = canonicalJsonText(listSqliteAuditEvents(ownerHome.userDb.sqlite));
+            await expect(
+              credentialAuthority.withCoreConfirmedLoginQuarantine(
+                coreDb,
+                realFailureWitness,
+                workerEntry,
+                async () => {
+                  witnessReplayEntered = true;
+                }
+              )
+            ).rejects.toBeDefined();
+            expect(witnessReplayEntered).toBe(false);
+            expect(retainedQuarantineEntry).toBeDefined();
+            if (!retainedQuarantineEntry)
+              throw new Error('Actual quarantine engine entry was not observed.');
+            expect(
+              credentialAuthority.readCoreConfirmedLoginQuarantine(
+                coreDb,
+                retainedQuarantineEntry,
+                referenceId
+              )
+            ).toBeUndefined();
+            expect(
+              await credentialAuthority.recheckCoreConfirmedLoginQuarantine(
+                coreDb,
+                retainedQuarantineEntry,
+                referenceId
+              )
+            ).toBeUndefined();
+            expect(canonicalJsonText(getVaultReference(coreDb, referenceId)) === beforeReplay).toBe(
+              true
+            );
+            expect(
+              canonicalJsonText(listUserPermissionDecisions(ownerHome.userDb)) === beforeDecisions
+            ).toBe(true);
+            expect(
+              canonicalJsonText(listSqliteAuditEvents(ownerHome.userDb.sqlite)) === beforeAudit
+            ).toBe(true);
+          }
+          return;
+        }
         if (predecessor) await predecessor;
         const decisions = decisionRows();
         expect(decisions).toHaveLength(1);
@@ -20142,12 +20995,17 @@ describe('Login publication under the original Goal Task decision', () => {
           );
         }
       } finally {
+        refreshRelease.resolve();
+        await quarantinePending?.catch(() => {});
+        refreshProbe?.mockRestore();
+        witnessProbe?.mockRestore();
         if (predecessor) await predecessor.catch(() => {});
         nativeStage?.mockRestore();
         nativePosting?.mockRestore();
         http.mockRestore();
         await shutdownControlStoreWorkerClient();
         vault.lock();
+        for (const handle of userHandles) handle.close();
         for (const handle of operationHandles) closeTestCoreDb(handle);
         closeTestCoreDb(db);
         closeTestCoreDb(coreDb);

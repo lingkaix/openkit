@@ -23,6 +23,8 @@ import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
 import {
   currentWorkspaceAuthority,
+  evaluateCoreConfirmedLoginQuarantine,
+  isCurrentServerPolicyAuthor,
   readCurrentWorkspacePolicy,
 } from '../auth/operation-authorizer.js';
 import type { ThreadVisibilityReadPort } from '../auth/thread-visibility.js';
@@ -242,7 +244,7 @@ export class PolicyInterception {
 
   /** Reads the original initial Login intent before native physical preparation, without granting an effect. */
   static readVaultBindingIntent(
-    kind: 'reference-advance' | 'receipt-create',
+    kind: 'reference-advance' | 'receipt-create' | 'reference-login-state',
     binding: NonNullable<
       Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
     >
@@ -250,6 +252,7 @@ export class PolicyInterception {
     const proof = binding.policyProof;
     if (
       !proof ||
+      (kind === 'reference-login-state' && proof.caller.kind !== 'worker') ||
       binding.binding.declaration.visibility !== 'runtime-token' ||
       binding.binding.declaration.consumer !== 'codex-login'
     )
@@ -264,7 +267,7 @@ export class PolicyInterception {
     const proposal = proof.proposal;
     const originalVersion = proposal.inputAttributes.materialVersion;
     const successorOffset = kind === 'receipt-create' ? 1 : 0;
-    // Both native stages retain the same original receipt and exactly this refresh successor.
+    // Delivery stages retain their original receipt; failed refresh remains at original X.
     if (
       typeof originalVersion !== 'number' ||
       !Number.isSafeInteger(originalVersion) ||
@@ -302,7 +305,7 @@ export class PolicyInterception {
   static assertVaultRead(input: {
     readonly coreDb: CoreDb;
     readonly workspaceDb: WorkspaceDb;
-    readonly kind: 'reference-advance' | 'receipt-create';
+    readonly kind: 'reference-advance' | 'receipt-create' | 'reference-login-state';
     readonly binding: NonNullable<
       Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
     >;
@@ -327,6 +330,12 @@ export class PolicyInterception {
         | { readonly error: unknown };
     };
     readonly policyState: NativeRuntimePolicyPublication | undefined;
+    /** Actual owner User reader and distinct decision for the failed-refresh stage only. */
+    readonly userDb?: UserDb;
+    readonly quarantine?: Extract<
+      Extract<ControlVaultInput, { kind: 'reference-login-state' }>['record'],
+      { coreConfirmedQuarantine: unknown }
+    >['coreConfirmedQuarantine'];
   }): void {
     const { coreDb: actualCore, workspaceDb, callerPackage, sampled, policyState, binding } = input;
     const { proof, requester } = PolicyInterception.readVaultBindingIntent(input.kind, binding);
@@ -567,20 +576,121 @@ export class PolicyInterception {
       )
         throw new ControlProductPreconditionError();
     }
+    if (input.kind === 'reference-login-state') {
+      const { quarantine, userDb } = input;
+      if (!quarantine || !userDb || !isDeepStrictEqual(quarantine.binding, binding))
+        throw new ControlProductPreconditionError();
+      PolicyInterception.assertLoginQuarantineDecision(actualCore, userDb, quarantine);
+    }
   }
 
-  /** Reads the existing original final allow and linked Audit on their actual Workspace connection. */
-  private static originalVaultDecision(db: WorkspaceDb, proof: VaultBindingPolicyProof) {
-    const row = db.sqlite
-      .prepare(
-        "SELECT * FROM permission_decisions WHERE decision_id=? AND owner_scope='workspace' AND workspace_id=?"
+  /** Reads the distinct User decision without deciding, consuming or invoking Policy again. */
+  private static assertLoginQuarantineDecision(
+    coreDb: CoreDb,
+    userDb: UserDb,
+    authority: Extract<
+      Extract<ControlVaultInput, { kind: 'reference-login-state' }>['record'],
+      { coreConfirmedQuarantine: unknown }
+    >['coreConfirmedQuarantine']
+  ): void {
+    const { binding, quarantine, failureClass } = authority;
+    const originalProof = binding.policyProof;
+    const selected = evaluateCoreConfirmedLoginQuarantine(coreDb, { binding, failureClass });
+    const userId = selected.reference.userId;
+    const proposal = quarantine.proposal;
+    if (
+      !userId ||
+      userDb.scope !== 'user' ||
+      userDb.userId !== userId ||
+      userDb.dataRoot !== coreDb.dataRoot ||
+      !userDb.sqlite.open ||
+      proposal.operation !== 'vault.login-quarantine' ||
+      proposal.workspaceId !== null ||
+      proposal.capabilityCallId !== null ||
+      proposal.resource.kind !== 'container' ||
+      proposal.resource.container.kind !== 'user' ||
+      proposal.resource.container.id !== userId ||
+      proposal.resource.container.owner.kind !== 'user' ||
+      proposal.resource.container.owner.userId !== userId ||
+      !isDeepStrictEqual(proposal.subject, originalProof.proposal.subject) ||
+      proposal.inputReferences.referenceId !== selected.reference.referenceId ||
+      proposal.inputReferences.grantId !== selected.grant.grantId ||
+      proposal.inputReferences.bindingDecisionId !== originalProof.decision.decisionId ||
+      proposal.inputAttributes.contract !== POLICY_OPERATION_REFERENCE_INPUT_V1 ||
+      proposal.inputAttributes.materialVersion !== binding.binding.materialVersion ||
+      proposal.inputAttributes.failureClass !== failureClass ||
+      policyDigest(quarantine.document) !== policyDigest(originalProof.document) ||
+      quarantine.decision.authorizationRevision !== policyDigest({ ...selected, items: null }) ||
+      selected.kernel.effect !== 'allow'
+    )
+      throw new ControlProductPreconditionError();
+    const document = readAdmittedPolicyDocument(coreDb, quarantine.document);
+    const decision = PolicyInterception.originalVaultDecision(userDb, quarantine);
+    if (
+      !isDeepStrictEqual(decision.kernel, {
+        effect: selected.kernel.effect,
+        reason: selected.kernel.reasons[0]?.code ?? 'not_granted',
+      })
+    )
+      throw new ControlProductPreconditionError();
+    const bindings = selectPolicyBindings({
+      document,
+      proposal,
+      stage: 'decide',
+      now: Date.now(),
+      // The selected owner is already canonically active in the shared Auth read.
+      authorCurrent: (id) => id === userId || isCurrentServerPolicyAuthor(coreDb, id),
+      anchorCurrent: (anchor) =>
+        anchor.owner.kind === 'user' &&
+        anchor.owner.userId === userId &&
+        anchor.kind === 'user' &&
+        anchor.id === userId,
+    });
+    for (const reference of decision.consumedStatements) {
+      const statement = document.statements.find(
+        (value) => value.id === reference.id && policyDigest(value) === reference.digest
+      );
+      if (
+        !statement ||
+        statement.state !== 'active' ||
+        statement.lifetime.uses === undefined ||
+        (statement.lifetime.notAfter && Date.parse(statement.lifetime.notAfter) <= Date.now()) ||
+        readPolicyStatementUseCount(userDb, reference) - 1 >= statement.lifetime.uses ||
+        (statement.kind === 'binding' &&
+          !bindings.some(
+            (value) => value.id === statement.id && policyDigest(value) === reference.digest
+          ))
       )
-      .get(proof.decision.decisionId, db.workspaceId);
+        throw new ControlProductPreconditionError();
+    }
+  }
+
+  /** Reads an existing final allow and linked Audit on its actual Workspace or owner User connection. */
+  private static originalVaultDecision(
+    db: WorkspaceDb | UserDb,
+    proof: Pick<VaultBindingPolicyProof, 'proposal' | 'decision' | 'document'>
+  ) {
+    const workspaceId = db.scope === 'workspace' ? db.workspaceId : null;
+    const row =
+      db.scope === 'workspace'
+        ? db.sqlite
+            .prepare(
+              "SELECT * FROM permission_decisions WHERE decision_id=? AND owner_scope='workspace' AND workspace_id=?"
+            )
+            .get(proof.decision.decisionId, workspaceId)
+        : db.sqlite
+            .prepare(
+              "SELECT * FROM permission_decisions WHERE decision_id=? AND owner_scope='user' AND workspace_id IS NULL"
+            )
+            .get(proof.decision.decisionId);
     if (!row) throw new ControlProductPreconditionError();
     const decision = readPermissionDecisionRowV1(row);
     const mediation = decision.mediation;
     const proposal = proof.proposal;
-    const definition = VAULT_OPERATION_DEFINITIONS['vault.binding-deliver'];
+    const definition =
+      VAULT_OPERATION_DEFINITIONS[
+        db.scope === 'workspace' ? 'vault.binding-deliver' : 'vault.login-quarantine'
+      ];
     const context = decision.contextSummary as Record<string, unknown> | null;
     const resource = decision.resourceSummary as Record<string, unknown> | null;
     if (
@@ -596,8 +706,12 @@ export class PolicyInterception {
       !isDeepStrictEqual(mediation.subject, proposal.subject) ||
       policyProposalDigest(proposal) !== proof.decision.proposalDigest ||
       policyDigest(proof.document) !== proof.decision.policyRevision ||
-      resource?.selectionDigest !== proposal.inputReferences.selectionDigest ||
-      context?.requestId !== proposal.inputReferences.requestId ||
+      (db.scope === 'workspace'
+        ? resource?.selectionDigest !== proposal.inputReferences.selectionDigest ||
+          context?.requestId !== proposal.inputReferences.requestId
+        : !isDeepStrictEqual(resource, proposal.inputReferences) ||
+          context?.threadId !== proposal.subject.process?.threadId ||
+          context?.turnId !== proposal.subject.process?.turnId) ||
       context?.capabilityCallId !== proposal.capabilityCallId
     )
       throw new ControlProductPreconditionError();
@@ -608,7 +722,7 @@ export class PolicyInterception {
     const audit = readAuditEventRowV1(auditRow);
     if (
       audit.permissionDecisionId !== decision.decisionId ||
-      audit.workspaceId !== db.workspaceId ||
+      audit.workspaceId !== workspaceId ||
       audit.action !== 'permission.decision' ||
       audit.outcome !== 'succeeded' ||
       audit.resource !== `permission:${decision.action}` ||

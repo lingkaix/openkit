@@ -1311,9 +1311,13 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       );
       break;
     case 'vault': {
-      if (request.input.kind !== 'reference-advance' && request.input.kind !== 'receipt-create')
-        break;
-      const authority = request.input.record.loginBinding;
+      const authority =
+        request.input.kind === 'reference-login-state' &&
+        'coreConfirmedQuarantine' in request.input.record
+          ? request.input.record.coreConfirmedQuarantine.binding
+          : request.input.kind === 'reference-advance' || request.input.kind === 'receipt-create'
+            ? request.input.record.loginBinding
+            : undefined;
       if (!authority) break;
       lanes.add(authority.binding.consumer.scope.turnId);
       lanes.add(`session:${authority.binding.consumer.scope.agentSessionId}`);
@@ -4341,8 +4345,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             }
             if (
               value.operation === 'vault' &&
-              (value.input.kind === 'reference-advance' || value.input.kind === 'receipt-create') &&
-              value.input.record.loginBinding
+              (((value.input.kind === 'reference-advance' ||
+                value.input.kind === 'receipt-create') &&
+                value.input.record.loginBinding) ||
+                (value.input.kind === 'reference-login-state' &&
+                  'coreConfirmedQuarantine' in value.input.record))
             ) {
               await prepareAfterPredecessors(owner, queued, earlier);
               if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();

@@ -103,7 +103,7 @@ import {
   isCurrentAgentSessionStatus,
 } from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
-import { refreshCodexLoginMaterial } from '../vault/codex-login-refresh.js';
+import { refreshWorkerCodexLogin } from '../vault/codex-login-refresh.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
@@ -2224,7 +2224,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             'Login material version changed.',
             409
           );
-        const accountId = expectedReference.login.accountId;
         const family = `${coreDb.dataRoot}\0${expectedReference.referenceId}`;
         let supplyStarted = false;
         let supplyOpen = true;
@@ -2341,11 +2340,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                     })
                   );
                   await check(expectedReference.currentVersion, true);
-                  const refreshed = await refreshCodexLoginMaterial(
-                    originalMaterial,
-                    refreshCancellation.signal,
-                    accountId
-                  );
+                  const refreshed = await refreshWorkerCodexLogin(coreDb, {
+                    binding: nativeBinding(expectedReference),
+                    material: originalMaterial,
+                    signal: refreshCancellation.signal,
+                    now: () => this.currentTime(),
+                    recheck: () => check(expectedReference.currentVersion, true),
+                    ...(input.onPermanentLoginRefreshFailure
+                      ? { onPermanentFailure: input.onPermanentLoginRefreshFailure }
+                      : {}),
+                  });
                   await check(expectedReference.currentVersion, true);
                   if (!supplyOpen) throw new Error('Login supply is closed.');
                   const rotated = backend.rotate({

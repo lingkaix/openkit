@@ -1860,6 +1860,19 @@ const loginBindingAuthority = z
   })
   .strict();
 
+/** Core-only failure correlation and separate User decision; neither carries an allow result. */
+const coreConfirmedQuarantineAuthority = z
+  .object({
+    binding: loginBindingAuthority.extend({ policyProof: VaultBindingPolicyProofSchema }),
+    failureClass: z.literal('invalid-grant'),
+    quarantine: VaultBindingPolicyProofSchema.pick({
+      proposal: true,
+      decision: true,
+      document: true,
+    }),
+  })
+  .strict();
+
 /** Original canonical execution coordinates; no header, token, material or carried allow decision. */
 export const HarnessLoginContextSchema = z
   .object({
@@ -2077,17 +2090,27 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('reference-login-state'),
-      record: z
-        .object({
-          referenceId: z.string(),
-          quarantined: z.boolean(),
-          now: clock,
-          publicMutation: publicMutationAuthority.extend({
-            reference: VaultReferenceRecordSchema,
-            workspaceId: z.never().optional(),
-          }),
-        })
-        .strict(),
+      record: z.union([
+        z
+          .object({
+            referenceId: z.string(),
+            quarantined: z.boolean(),
+            now: clock,
+            publicMutation: publicMutationAuthority.extend({
+              reference: VaultReferenceRecordSchema,
+              workspaceId: z.never().optional(),
+            }),
+          })
+          .strict(),
+        z
+          .object({
+            referenceId: z.string(),
+            quarantined: z.literal(true),
+            now: clock,
+            coreConfirmedQuarantine: coreConfirmedQuarantineAuthority,
+          })
+          .strict(),
+      ]),
     })
     .strict(),
   z
@@ -2252,6 +2275,11 @@ export interface ControlVaultResultMap {
   'receipt-create': VaultInjectionReceiptRecord;
 }
 
+/** Replaces the wire clock without collapsing closed authority alternatives. */
+type MainVaultClock<Record> = Record extends unknown
+  ? Omit<Record, 'now'> & { readonly now?: () => string }
+  : never;
+
 /** Existing Main call inputs; their optional clock callbacks are evaluated before private-wire admission. */
 export interface ControlVaultMainInputMap {
   'thread-login-remove': Extract<ControlVaultInput, { kind: 'thread-login-remove' }>['record'];
@@ -2307,10 +2335,9 @@ export interface ControlVaultMainInputMap {
   'reference-revoke': RevokeVaultReferenceInput &
     ServerMcpAuthorityInput &
     PublicMutationAuthorityInput;
-  'reference-login-state': Omit<
-    Extract<ControlVaultInput, { kind: 'reference-login-state' }>['record'],
-    'now'
-  > & { readonly now?: () => string };
+  'reference-login-state': MainVaultClock<
+    Extract<ControlVaultInput, { kind: 'reference-login-state' }>['record']
+  >;
   'reference-rebind': RebindWorkspaceVaultReferenceInput & PublicMutationAuthorityInput;
   'grant-create': CreateVaultGrantInput & ServerMcpAuthorityInput & PublicMutationAuthorityInput;
   'grant-revoke': RevokeVaultGrantInput & ServerMcpAuthorityInput & PublicMutationAuthorityInput;

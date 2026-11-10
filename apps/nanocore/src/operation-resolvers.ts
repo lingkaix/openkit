@@ -4,7 +4,7 @@ import type {
   OperationMutationTarget,
   OperationTarget,
 } from '@openkit/app-api-schemas';
-import { operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { HTTPException } from 'hono/http-exception';
@@ -13,6 +13,7 @@ import {
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
   DeploymentAdminRequiredError,
+  evaluateCoreConfirmedLoginQuarantine,
   evaluateProductAuthorization,
   hasWorkspaceDeletionRetryAuthority,
   isCanonicalUserOperationAuthorized,
@@ -42,6 +43,7 @@ import { evaluateThreadAuthorization } from './policy/workspace-resource-access.
 import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
+import { recheckCoreConfirmedLoginQuarantine } from './vault/codex-login-refresh.js';
 import {
   ensureUserQuickChatWorkspace,
   WorkspaceOwnerMembershipRemovedError,
@@ -184,7 +186,17 @@ export async function admitOperation(
             : entry.actor.tokenScope === 'server-admin'
               ? 'deployment-administrator'
               : 'user-bearer';
-  if (!(definition.credentials as readonly string[]).includes(credential)) {
+  const confirmedQuarantine =
+    definition === OPERATION_DEFINITIONS['vault.login-quarantine'] &&
+    entry.kind === 'worker' &&
+    dependencies.coreDb
+      ? await recheckCoreConfirmedLoginQuarantine(
+          dependencies.coreDb,
+          entry,
+          selector(input, 'referenceId')
+        )
+      : undefined;
+  if (!(definition.credentials as readonly string[]).includes(credential) && !confirmedQuarantine) {
     if (definition.scope.kind === 'server')
       throw new OperationError(
         'deployment_admin_required',
@@ -201,6 +213,15 @@ export async function admitOperation(
   let mutationWorkspaceId: string | undefined;
   switch (definition.scope.kind) {
     case 'user':
+      if (confirmedQuarantine && coreDb) {
+        if (
+          evaluateCoreConfirmedLoginQuarantine(coreDb, confirmedQuarantine).kernel.effect !==
+          'allow'
+        )
+          throw denied();
+        scope = { kind: 'user' };
+        break;
+      }
       if (
         entry.kind !== 'public' ||
         !coreDb ||

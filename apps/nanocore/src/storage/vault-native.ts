@@ -718,8 +718,9 @@ export function applyControlVault(
   let initialWorkspace: WorkspaceDb | undefined;
   let initialPackage: PreparedControlVaultRead['consumerPackage'] | undefined;
   if (
-    (request.kind === 'reference-advance' || request.kind === 'receipt-create') &&
-    request.record.loginBinding
+    ((request.kind === 'reference-advance' || request.kind === 'receipt-create') &&
+      request.record.loginBinding) ||
+    (request.kind === 'reference-login-state' && 'coreConfirmedQuarantine' in request.record)
   ) {
     if (db.scope !== 'core' || !nativeRead?.prepared) throw new ControlProductPreconditionError();
     nativeRead.prepared.assertCurrent(db, input, nativeRead.policyState);
@@ -916,6 +917,16 @@ export function applyControlVault(
         result = { kind: request.kind, value: revokeVaultReference(db, withClock(request.record)) };
         break;
       case 'reference-login-state': {
+        if ('coreConfirmedQuarantine' in request.record) {
+          const authority = request.record.coreConfirmedQuarantine;
+          if (
+            authority.binding.reference.referenceId !== request.record.referenceId ||
+            authority.binding.policyProof.caller.kind !== 'worker' ||
+            getVaultInjectionReceipt(db, authority.binding.receiptId)
+          )
+            throw new ControlProductPreconditionError();
+          requireInitialLoginBinding(db, authority.binding, initialWorkspace, initialPackage);
+        }
         const reference = requireVaultReference(db, request.record.referenceId);
         if (reference.login!.quarantined !== request.record.quarantined)
           db.sqlite

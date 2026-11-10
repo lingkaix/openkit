@@ -49,11 +49,20 @@ export interface ProductAccessFacts {
   readonly userId: string;
   readonly activeUser: boolean;
   readonly administrator: boolean;
+  /** Core-only exact failure correlation; authored Policy and operation input cannot supply it. */
+  readonly coreConfirmedLoginQuarantine?: {
+    readonly operation: 'vault.login-quarantine';
+    readonly ownerUserId: string;
+    readonly referenceId: string;
+    readonly grantId: string;
+    readonly materialVersion: number;
+    readonly failureClass: 'invalid-grant';
+  };
   readonly credential: {
     readonly current: boolean;
     readonly workspaceBound: boolean;
     readonly readOnly: boolean;
-    readonly kind: 'local' | 'session' | 'token' | 'retained-author';
+    readonly kind: 'local' | 'session' | 'token' | 'retained-author' | 'worker-package';
   };
 }
 
@@ -181,6 +190,20 @@ export function evaluateProductAccess(input: {
       )
         bind(member, IDENTITY_OPERATIONS, 'assoc:user-authenticated');
       if (facts.administrator) bind(administrator, IDENTITY_OPERATIONS, 'assoc:user-administrator');
+      const failure = facts.coreConfirmedLoginQuarantine;
+      if (
+        facts.credential.kind === 'worker-package' &&
+        failure?.operation === 'vault.login-quarantine' &&
+        failure.failureClass === 'invalid-grant' &&
+        scope.userId === failure.ownerUserId &&
+        failure.referenceId.length > 0 &&
+        failure.grantId.length > 0 &&
+        Number.isSafeInteger(failure.materialVersion) &&
+        failure.materialVersion > 0 &&
+        input.operation === 'vault.admin' &&
+        input.mutating
+      )
+        bind(member, ['vault.admin'], 'assoc:user-core-confirmed-login-quarantine');
     } else if (facts.administrator && family && Object.hasOwn(SERVER_FAMILY_OPERATIONS, family)) {
       bind(
         administrator,

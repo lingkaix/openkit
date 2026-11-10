@@ -15,7 +15,14 @@ import {
   ControlProductPreconditionError,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
-import { bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import {
+  bindWorkspaceSqlite,
+  type CoreDb,
+  openUserReadDb,
+  type UserDb,
+  type WorkspaceDb,
+} from './db.js';
+import { userDbPath } from './fs-layout.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { type ControlVaultInput, ControlVaultInputSchema } from './vault-native-codecs.js';
@@ -72,7 +79,7 @@ function databaseIdentity(path: string, sqlite?: CoreDb['sqlite']): string {
 }
 
 /**
- * Prepares only existing initial Login stages. Missing Policy proof on a Login binding refuses;
+ * Prepares initial Login stages and exact Core-confirmed quarantine. Missing Login Policy proof refuses;
  * absent Login binding remains with the canonical native Login discriminator and its ordinary refusal.
  * All immutable history and source I/O ends before assertCurrent. No snapshot supplies loaded authority.
  */
@@ -81,10 +88,25 @@ export async function prepareControlVaultRead(
   input: ControlVaultInput
 ): Promise<PreparedControlVaultRead | undefined> {
   const parsed = ControlVaultInputSchema.parse(input);
-  if (parsed.kind !== 'reference-advance' && parsed.kind !== 'receipt-create') return undefined;
-  const binding = parsed.record.loginBinding;
+  const quarantine =
+    parsed.kind === 'reference-login-state' && 'coreConfirmedQuarantine' in parsed.record
+      ? parsed.record.coreConfirmedQuarantine
+      : undefined;
+  const kind = parsed.kind;
+  const binding =
+    kind === 'reference-advance' || kind === 'receipt-create'
+      ? parsed.record.loginBinding
+      : quarantine?.binding;
   if (!binding) return undefined;
-  const { proof } = PolicyInterception.readVaultBindingIntent(parsed.kind, binding);
+  if (
+    quarantine &&
+    parsed.kind === 'reference-login-state' &&
+    parsed.record.referenceId !== binding.reference.referenceId
+  )
+    throw new ControlProductPreconditionError();
+  if (kind !== 'reference-advance' && kind !== 'receipt-create' && kind !== 'reference-login-state')
+    throw new ControlProductPreconditionError();
+  const { proof } = PolicyInterception.readVaultBindingIntent(kind, binding);
   const connection = coreDb.sqlite;
   const dataRoot = coreDb.dataRoot;
   if (coreDb.scope !== 'core' || !connection.open || connection.inTransaction)
@@ -100,19 +122,25 @@ export async function prepareControlVaultRead(
   const scope = { ...located, sqlite: reader.sqlite };
   const histories: Array<{ turnId: string; read: PreparedNativeTurnHistoryRead }> = [];
   let closed = false;
+  let userRead: { db: UserDb; path: string; identity: string } | undefined;
   let head: { server: SourceSample; workspace: SourceSample } | undefined;
   const close = () => {
     if (closed) return;
     closed = true;
     head = undefined;
     histories.length = 0;
-    reader.close();
+    try {
+      userRead?.db.sqlite.close();
+    } finally {
+      reader.close();
+    }
   };
   const assertOpen = () => {
     if (
       closed ||
       !connection.open ||
       !reader.sqlite.open ||
+      (userRead !== undefined && !userRead.db.sqlite.open) ||
       coreDb.scope !== 'core' ||
       coreDb.sqlite !== connection ||
       coreDb.dataRoot !== dataRoot
@@ -166,6 +194,21 @@ export async function prepareControlVaultRead(
     },
   };
   try {
+    if (quarantine) {
+      const ownerId = binding.reference.userId;
+      if (!ownerId || binding.reference.ownerScope !== 'user')
+        throw new ControlProductPreconditionError();
+      const path = userDbPath(dataRoot, ownerId);
+      const identity = databaseIdentity(path);
+      const db = openUserReadDb(dataRoot, ownerId);
+      userRead = { db, path, identity };
+      if (
+        databaseIdentity(path, db.sqlite) !== identity ||
+        !db.sqlite.readonly ||
+        db.sqlite.pragma('query_only', { simple: true }) !== 1
+      )
+        throw new ControlProductPreconditionError();
+    }
     if (
       databaseIdentity(located.path, reader.sqlite) !== workspaceIdentity ||
       !reader.get('workspace', workspaceId)
@@ -228,6 +271,9 @@ export async function prepareControlVaultRead(
         if (
           connection.inTransaction ||
           reader.sqlite.inTransaction ||
+          (userRead !== undefined &&
+            (userRead.db.sqlite.inTransaction ||
+              databaseIdentity(userRead.path, userRead.db.sqlite) !== userRead.identity)) ||
           databaseIdentity(corePath, connection) !== coreIdentity ||
           databaseIdentity(located.path, reader.sqlite) !== workspaceIdentity
         )
@@ -255,7 +301,9 @@ export async function prepareControlVaultRead(
           throw new ControlProductPreconditionError();
         if (
           databaseIdentity(corePath, connection) !== coreIdentity ||
-          databaseIdentity(located.path, reader.sqlite) !== workspaceIdentity
+          databaseIdentity(located.path, reader.sqlite) !== workspaceIdentity ||
+          (userRead !== undefined &&
+            databaseIdentity(userRead.path, userRead.db.sqlite) !== userRead.identity)
         )
           throw new ControlProductPreconditionError();
         head = { server, workspace };
@@ -281,8 +329,9 @@ export async function prepareControlVaultRead(
         PolicyInterception.assertVaultRead({
           coreDb: actualCore,
           workspaceDb,
-          kind: parsed.kind,
+          kind,
           binding,
+          ...(quarantine && userRead ? { quarantine, userDb: userRead.db } : {}),
           callerPackage,
           store,
           sampled,

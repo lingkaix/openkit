@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import { type ActorRef, responsibleUserIdForActor, WorkspaceIdSchema } from '@openkit/protocol';
@@ -8,6 +9,7 @@ import { apiErrorPayload, asApiError } from '../api-errors.js';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { getAppApiRouteDefinition } from '../openapi.js';
+import { TurnStartValidationError } from '../operation-error.js';
 import {
   evaluateProductAccess,
   type ProductAccessTarget,
@@ -17,13 +19,17 @@ import {
   evaluateThreadAuthorization,
   parseWorkspacePolicy,
 } from '../policy/workspace-resource-access.js';
+import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import {
   findSchedulerAdmissionForTurn,
   findSchedulerAdmissionForWorkerLineage,
   type SchedulerAdmissionEntryRecord,
   type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
+import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
 import type { CoreDb } from '../storage/db.js';
+import type { ControlVaultInput } from '../storage/vault-native-codecs.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -804,6 +810,114 @@ export function evaluateOwnedUserOperation(
     operation,
     mutating
   );
+}
+
+/**
+ * Projects the current exact Core refresh-failure tuple through the User Kernel rule.
+ * Main must separately authenticate its invocation-scoped witness; native repeats the original
+ * Workspace and separate User decisions. A cause value alone never authenticates a caller.
+ */
+export function evaluateCoreConfirmedLoginQuarantine(
+  coreDb: CoreDb,
+  input: {
+    readonly binding: NonNullable<
+      Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
+    >;
+    readonly failureClass: 'invalid-grant';
+  }
+) {
+  const { binding, failureClass } = input;
+  const { consumer, declaration, materialVersion } = binding.binding;
+  const proof = binding.policyProof;
+  const caller = proof?.caller;
+  if (
+    failureClass !== 'invalid-grant' ||
+    !proof ||
+    caller?.kind !== 'worker' ||
+    binding.requester.requester.kind !== 'worker' ||
+    declaration.visibility !== 'runtime-token' ||
+    declaration.consumer !== 'codex-login' ||
+    binding.requester.workspaceId !== consumer.scope.workspaceId ||
+    caller.lineage.workspaceId !== consumer.scope.workspaceId ||
+    !isDeepStrictEqual(binding.requester.requester, {
+      kind: 'worker',
+      actor: caller.actor,
+      lineage: caller.lineage,
+    }) ||
+    !Number.isSafeInteger(materialVersion) ||
+    materialVersion < 1
+  )
+    throw new ControlProductPreconditionError();
+  const responsibleUserId = responsibleUserIdForActor(caller.actor);
+  if (
+    !responsibleUserId ||
+    proof.proposal.subject.responsibleHumanId !== responsibleUserId ||
+    proof.proposal.subject.credentialKind !== 'worker-package' ||
+    !isDeepStrictEqual(proof.proposal.subject.process, {
+      workspaceId: caller.lineage.workspaceId,
+      threadId: caller.lineage.threadId,
+      turnId: caller.lineage.turnId,
+    }) ||
+    !currentWorkerLineageWorkspaceAuthority(
+      coreDb,
+      { ...caller.lineage, triggerActor: caller.actor },
+      'vault.use',
+      true,
+      { dependencyFailure: 'throw', mutating: true }
+    )
+  )
+    throw new ControlProductPreconditionError();
+  const selected = (() => {
+    try {
+      // The existing credential owner supplies the real reviewed grant and exact current family.
+      return assertCurrentWorkerCredentialAuthority(
+        coreDb,
+        consumer,
+        () => new Date().toISOString(),
+        declaration
+      );
+    } catch (error) {
+      if (error instanceof TurnStartValidationError) throw new ControlProductPreconditionError();
+      throw error;
+    }
+  })();
+  const { reference, grant } = selected;
+  if (
+    !reference.userId ||
+    !isCanonicalUserActive(coreDb, reference.userId) ||
+    !isDeepStrictEqual(reference, binding.reference) ||
+    reference.currentVersion !== materialVersion ||
+    grant.issuance !== 'target' ||
+    !isTargetIssuedEffectAuthority(grant.approvalId) ||
+    grant.policyDecisionId === null
+  )
+    throw new ControlProductPreconditionError();
+  const kernel = evaluateProductAccess({
+    facts: {
+      userId: responsibleUserId,
+      activeUser: isCanonicalUserActive(coreDb, responsibleUserId),
+      administrator: false,
+      // Both current mutating Worker-use reads above established this credential posture.
+      credential: {
+        kind: 'worker-package',
+        current: true,
+        workspaceBound: true,
+        readOnly: false,
+      },
+      coreConfirmedLoginQuarantine: {
+        operation: 'vault.login-quarantine',
+        ownerUserId: reference.userId,
+        referenceId: reference.referenceId,
+        grantId: grant.grantId,
+        materialVersion,
+        failureClass,
+      },
+    },
+    target: { kind: 'user', userId: reference.userId, active: true },
+    operation: OPERATION_DEFINITIONS['vault.login-quarantine'].policyOperation,
+    mutating: OPERATION_DEFINITIONS['vault.login-quarantine'].mutating,
+  });
+  return { kernel, reference, grant };
 }
 
 /** Current canonical User admission is the primary Kernel result; dependency failures remain caller-owned. */

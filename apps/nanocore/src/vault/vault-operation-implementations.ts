@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { type Actor, isDeploymentAdminActor } from '../auth/identity.js';
 import {
   currentWorkspaceAuthority,
+  evaluateCoreConfirmedLoginQuarantine,
   evaluateOwnedUserOperation,
   isCanonicalUserActive,
   isCurrentServerPolicyAuthor,
@@ -35,6 +36,7 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
+import { createOperationEngine } from '../operation-invocation.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import {
   type InterceptionDecision,
@@ -72,7 +74,12 @@ import {
   listExportableVaultInjectionReceipts,
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
-import { refreshCodexLoginMaterial } from './codex-login-refresh.js';
+import {
+  readCoreConfirmedLoginQuarantine,
+  recheckCoreConfirmedLoginQuarantine,
+  refreshCodexLoginMaterial,
+  withCoreConfirmedLoginQuarantine,
+} from './codex-login-refresh.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
 import {
   prepareVaultAdminAudit,
@@ -633,6 +640,39 @@ export function createVaultOperationImplementations(
             {
               action,
               ...(policyProof ? { policyProof } : {}),
+              ...(context.kind === 'worker' &&
+              action === 'deliver' &&
+              plan.injectionVisibility === 'runtime-token'
+                ? {
+                    onPermanentLoginRefreshFailure: async (witness: object) => {
+                      await withCoreConfirmedLoginQuarantine(
+                        coreDb,
+                        witness,
+                        context,
+                        async (entry) => {
+                          const failure = readCoreConfirmedLoginQuarantine(coreDb, entry);
+                          if (!failure) vaultWorkspaceAccessDenied();
+                          const invoke = createOperationEngine(
+                            { 'vault.login-quarantine': quarantineLogin },
+                            {
+                              coreDb,
+                              dataRoot: dataRoot ?? coreDb.dataRoot,
+                              ...(dependencies.store ? { store: dependencies.store } : {}),
+                              ...(dependencies.repositoryWorkspaceDb
+                                ? { repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb }
+                                : {}),
+                            }
+                          );
+                          await invoke(
+                            'vault.login-quarantine',
+                            { referenceId: failure.binding.reference.referenceId },
+                            entry
+                          );
+                        }
+                      );
+                    },
+                  }
+                : {}),
               coreAuthority: {
                 workspaceId: input.workspaceId,
                 requester: vaultRequesterForContext(context),
@@ -960,19 +1000,41 @@ export function createVaultOperationImplementations(
       | 'vault.login-release'
       | 'vault.grant-issue',
     context: AdmittedOperationContext,
-    readFacts: (actor: Actor) => F,
+    readFacts:
+      | ((actor: Actor) => F)
+      | {
+          /** Only the existing Core-confirmed Worker quarantine supplies this User source. */
+          readonly kind: 'core-confirmed-quarantine';
+          readonly ownerUserId: string;
+          readonly subject: PolicyProposal['subject'];
+          readonly attributes: PolicyProposal['inputAttributes'];
+          readonly read: () => F;
+          readonly run: (
+            selected: F,
+            beforeSubmit: () => Promise<void>,
+            proof: Pick<VaultBindingPolicyProof, 'proposal' | 'decision' | 'document'>
+          ) => Promise<T>;
+        },
     references: (selected: F) => Record<string, string>,
-    effect: (
-      selected: F,
-      actor: Actor,
-      beforeSubmit: () => Promise<void>,
-      decisionId: string
-    ) => Promise<T>,
+    effect:
+      | ((
+          selected: F,
+          actor: Actor,
+          beforeSubmit: () => Promise<void>,
+          decisionId: string
+        ) => Promise<T>)
+      | undefined,
     lineage?: Pick<InterceptionInput, 'decisionLineage' | 'contextSummary'>
   ): Promise<T> {
     const withdrawal = operation === 'vault.grant-withdraw';
+    const confirmedWorker =
+      operation === 'vault.login-quarantine' &&
+      context.kind === 'worker' &&
+      typeof readFacts !== 'function' &&
+      readFacts.kind === 'core-confirmed-quarantine' &&
+      effect === undefined;
     if (
-      context.kind !== 'public' ||
+      (context.kind !== 'public' && !confirmedWorker) ||
       !coreDb ||
       !dependencies.repositoryUserDb ||
       !dependencies.policyInterception ||
@@ -984,17 +1046,91 @@ export function createVaultOperationImplementations(
         withdrawal ? 'Vault withdrawal is unavailable.' : 'Login metadata is unavailable.',
         503
       );
-    const actor = publicOperationActor(context);
-    const currentFacts = () => readFacts(actor);
+    // Public callers keep their real Actor. The restricted Worker supplies its actual
+    // subject and owner resource separately; no owner Actor is constructed.
+    const caller = ((): {
+      readonly userId: string;
+      readonly subject: PolicyProposal['subject'];
+      readonly attributes: PolicyProposal['inputAttributes'];
+      readonly read: () => F;
+      readonly run: (
+        selected: F,
+        beforeSubmit: () => Promise<void>,
+        decision: InterceptionDecision,
+        document: VaultBindingPolicyProof['document'],
+        proposal: PolicyProposal
+      ) => Promise<T>;
+    } => {
+      if (typeof readFacts === 'function') {
+        if (context.kind !== 'public' || !effect) vaultWorkspaceAccessDenied();
+        const actor = publicOperationActor(context);
+        return {
+          userId: actor.userId,
+          subject: PolicySubjectV1Schema.parse({
+            principal: { kind: 'human', id: actor.userId },
+            onBehalfOf: null,
+            actor: context.actorRef,
+            process: null,
+            credentialKind: actor.kind,
+            responsibleHumanId: actor.userId,
+          }),
+          attributes: {},
+          read: () => readFacts(actor),
+          run: (selected, beforeSubmit, decision) =>
+            effect(selected, actor, beforeSubmit, decision.decisionId),
+        };
+      }
+      if (!confirmedWorker) vaultWorkspaceAccessDenied();
+      return {
+        userId: readFacts.ownerUserId,
+        subject: PolicySubjectV1Schema.parse(readFacts.subject),
+        attributes: readFacts.attributes,
+        read: readFacts.read,
+        run: (selected, beforeSubmit, decision, document, proposal) =>
+          readFacts.run(selected, beforeSubmit, {
+            proposal,
+            document,
+            decision: {
+              decisionId: decision.decisionId,
+              proposalDigest: decision.proposalDigest,
+              policyRevision: decision.policyRevision,
+              authorizationRevision: decision.authorizationRevision,
+            },
+          }),
+      };
+    })();
+    const currentFacts = caller.read;
     const selected = currentFacts();
     const inputReferences = references(selected);
-    const resource = inputReferences.grantId
-      ? `vault-grant:${inputReferences.grantId}`
-      : inputReferences.referenceId
+    const resource =
+      operation === 'vault.login-quarantine' && inputReferences.referenceId
         ? `vault-reference:${inputReferences.referenceId}`
-        : `user:${actor.userId}:vault-logins`;
+        : inputReferences.grantId
+          ? `vault-grant:${inputReferences.grantId}`
+          : inputReferences.referenceId
+            ? `vault-reference:${inputReferences.referenceId}`
+            : `user:${caller.userId}:vault-logins`;
     const auditGrant = inputReferences.grantId ? { vaultGrantId: inputReferences.grantId } : {};
-    const userId = actor.userId;
+    const auditActor = confirmedWorker ? caller.subject.actor : context.actorRef;
+    const auditLineage = (() => {
+      if (!confirmedWorker || context.kind !== 'worker') return {};
+      const generation = caller.attributes.materialVersion;
+      if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1)
+        vaultWorkspaceAccessDenied();
+      return {
+        threadId: context.lineage.threadId,
+        turnId: context.lineage.turnId,
+        agentId: caller.subject.actor.kind === 'agent' ? caller.subject.actor.id : null,
+        agentSessionId: context.lineage.agentSessionId,
+        requestId: context.requestId,
+        resourceRevision: generation,
+      };
+    })();
+    const quarantineSummary =
+      confirmedWorker && context.kind === 'worker'
+        ? `Core-confirmed Login quarantine; Workspace ${context.lineage.workspaceId}; generation ${caller.attributes.materialVersion}; failure invalid-grant.`
+        : null;
+    const userId = caller.userId;
     const userDb = dependencies.repositoryUserDb(userId);
     try {
       // Finite Policy reads need the existing native User migrations before first use.
@@ -1022,16 +1158,9 @@ export function createVaultOperationImplementations(
           kind: 'container',
           container: { kind: 'user', id: userId, owner: { kind: 'user', userId } },
         },
-        subject: PolicySubjectV1Schema.parse({
-          principal: { kind: 'human', id: actor.userId },
-          onBehalfOf: null,
-          actor: context.actorRef,
-          process: null,
-          credentialKind: actor.kind,
-          responsibleHumanId: actor.userId,
-        }),
+        subject: caller.subject,
         inputReferences,
-        inputAttributes: { contract: POLICY_OPERATION_REFERENCE_INPUT_V1 },
+        inputAttributes: { contract: POLICY_OPERATION_REFERENCE_INPUT_V1, ...caller.attributes },
       };
       const policyInput: InterceptionInput = {
         userDb,
@@ -1067,20 +1196,23 @@ export function createVaultOperationImplementations(
         await context.recheckAdmission!();
         if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
       };
-      const result = await effect(selected, actor, beforeSubmit, decision.decisionId);
+      const result = await caller.run(selected, beforeSubmit, decision, document, proposal);
       await recordVaultAuditEvent({
         userDb,
-        actor: context.actorRef,
+        actor: auditActor,
+        ...auditLineage,
         action: operation,
         outcome: 'succeeded',
         resource,
         ...auditGrant,
         permissionDecisionId: decision.decisionId,
-        summary: withdrawal
-          ? 'Personal credential grant withdrawal completed.'
-          : operation === 'vault.grant-issue'
-            ? 'Personal Login sharing completed.'
-            : 'Personal Login metadata operation completed.',
+        summary:
+          quarantineSummary ??
+          (withdrawal
+            ? 'Personal credential grant withdrawal completed.'
+            : operation === 'vault.grant-issue'
+              ? 'Personal Login sharing completed.'
+              : 'Personal Login metadata operation completed.'),
       });
       await dependencies.policyInterception
         .observe({
@@ -1096,14 +1228,17 @@ export function createVaultOperationImplementations(
       try {
         await recordVaultAuditEvent({
           userDb,
-          actor: context.actorRef,
+          actor: auditActor,
+          ...auditLineage,
           action: operation,
           outcome: 'failed',
           resource,
           ...auditGrant,
-          summary: withdrawal
-            ? 'Personal credential grant withdrawal did not complete.'
-            : 'Personal Login metadata operation did not complete.',
+          summary: quarantineSummary
+            ? `${quarantineSummary} Completion was not established.`
+            : withdrawal
+              ? 'Personal credential grant withdrawal did not complete.'
+              : 'Personal Login metadata operation did not complete.',
         });
       } catch (auditFailure) {
         throw new OperationError(
@@ -1239,12 +1374,92 @@ export function createVaultOperationImplementations(
     );
   }
 
+  /** One implementation for both the existing public table and the scoped Core engine call. */
+  const quarantineLogin: FamilyImplementations<
+    typeof VAULT_OPERATION_DEFINITIONS
+  >['vault.login-quarantine'] = (input, context) =>
+    personalLoginOperation('vault.login-quarantine', input, context);
+
+  function personalLoginOperation(
+    operation: 'vault.login-list',
+    input: { referenceId?: string },
+    context: AdmittedOperationContext
+  ): Promise<OperationOutput<'vault.login-list'>>;
+  function personalLoginOperation(
+    operation: 'vault.login-quarantine' | 'vault.login-release',
+    input: { referenceId?: string },
+    context: AdmittedOperationContext
+  ): Promise<VaultLoginView>;
   /** Uses the same User governance for own-only inventory and exact owner/admin Login restrictions. */
   async function personalLoginOperation(
     operation: 'vault.login-list' | 'vault.login-quarantine' | 'vault.login-release',
     input: { referenceId?: string },
     context: AdmittedOperationContext
   ) {
+    if (context.kind === 'worker') {
+      if (operation !== 'vault.login-quarantine' || !coreDb || !input.referenceId)
+        vaultWorkspaceAccessDenied();
+      const failure = readCoreConfirmedLoginQuarantine(coreDb, context, input.referenceId);
+      if (!failure || !failure.binding.reference.userId) vaultWorkspaceAccessDenied();
+      const { binding, failureClass } = failure;
+      return governedUserVaultOperation<
+        ReturnType<typeof evaluateCoreConfirmedLoginQuarantine> & { items: null },
+        VaultLoginView
+      >(
+        operation,
+        context,
+        {
+          kind: 'core-confirmed-quarantine',
+          ownerUserId: failure.binding.reference.userId,
+          subject: binding.policyProof.proposal.subject,
+          attributes: { materialVersion: binding.binding.materialVersion, failureClass },
+          read() {
+            const current = readCoreConfirmedLoginQuarantine(coreDb, context, input.referenceId);
+            if (!current || !isDeepStrictEqual(current, failure)) vaultWorkspaceAccessDenied();
+            const selected = evaluateCoreConfirmedLoginQuarantine(coreDb, current);
+            if (selected.kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+            return { ...selected, items: null };
+          },
+          async run(_selected, beforeSubmit, quarantine) {
+            const current = await recheckCoreConfirmedLoginQuarantine(
+              coreDb,
+              context,
+              input.referenceId
+            );
+            if (!current || !isDeepStrictEqual(current, failure)) vaultWorkspaceAccessDenied();
+            const reference = await getControlStoreWorkerClient().vault(
+              coreDb,
+              'reference-login-state',
+              {
+                referenceId: binding.reference.referenceId,
+                quarantined: true,
+                coreConfirmedQuarantine: { binding, failureClass, quarantine },
+              },
+              beforeSubmit
+            );
+            return projectLogin(reference);
+          },
+        },
+        () => ({
+          referenceId: binding.reference.referenceId,
+          grantId: binding.binding.declaration.vaultGrantId,
+          bindingDecisionId: binding.policyProof.decision.decisionId,
+        }),
+        undefined,
+        {
+          contextSummary: {
+            requestId: context.requestId,
+            workspaceId: binding.binding.consumer.scope.workspaceId,
+            grantId: binding.binding.declaration.vaultGrantId,
+            materialVersion: binding.binding.materialVersion,
+            failureClass,
+            bindingDecisionId: binding.policyProof.decision.decisionId,
+            consumerPackageSnapshotId: binding.binding.consumer.snapshotId,
+            consumerAgentSessionId: binding.binding.consumer.scope.agentSessionId,
+          },
+        }
+      );
+    }
     return governedUserVaultOperation(
       operation,
       context,
@@ -2193,10 +2408,7 @@ export function createVaultOperationImplementations(
       personalLoginOperation('vault.login-list', input, c) as Promise<
         OperationOutput<'vault.login-list'>
       >,
-    'vault.login-quarantine': (input, c) =>
-      personalLoginOperation('vault.login-quarantine', input, c) as Promise<
-        OperationOutput<'vault.login-quarantine'>
-      >,
+    'vault.login-quarantine': quarantineLogin,
     'vault.login-release': (input, c) =>
       personalLoginOperation('vault.login-release', input, c) as Promise<
         OperationOutput<'vault.login-release'>

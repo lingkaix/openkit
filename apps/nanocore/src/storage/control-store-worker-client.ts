@@ -1860,9 +1860,10 @@ class ControlStoreWorkerClient {
     )!.shape.record;
     const input = ControlVaultInputSchema.parse({
       kind,
-      record: recordSchema
-        .strip()
-        .parse({ ...facts, ...(now === undefined ? {} : { now: now() }) }),
+      record: ('strip' in recordSchema ? recordSchema.strip() : recordSchema).parse({
+        ...facts,
+        ...(now === undefined ? {} : { now: now() }),
+      }),
     });
     const scope = nativeProductScope(
       db.dataRoot,

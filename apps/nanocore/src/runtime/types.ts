@@ -139,6 +139,8 @@ export interface TurnExecutor {
       readonly coreAuthority: import('../storage/vault-native-codecs.js').VaultBindingCoreAuthority;
       /** Original mediated facts for native same-effect readback, never an independent grant. */
       readonly policyProof?: import('../storage/vault-native-codecs.js').VaultBindingPolicyProof;
+      /** Core binding-family consequence only; placements never receive this callback or witness. */
+      readonly onPermanentLoginRefreshFailure?: (witness: object) => Promise<void>;
       readonly workspaceId: string;
       readonly threadId: string;
       readonly planId: string;
