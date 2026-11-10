@@ -101,3 +101,11 @@ The offline SQL Context sample drives actual native Task admission, accepted ter
 The stopped SQL corpus keeps `corpusProducer` as invocation metadata for the selected executing runtime. The guest emits `historical` for previous-code phases and `current` for candidate-code phases, including candidate reads of historical data. Only the two membership resolver consumers select the matching existing reader owner; shared loaders, retained selectors, byte oracles and product exports stay unchanged.
 
 The SQL channel corpus awaits pairing and Attention enqueue before it reads their results. Fresh synthetic channel evidence needs no startup reconciliation. Its stopped synthetic owner retains the fixed fixture clock; the deliberately failed model terminal sample remains unchanged. Storage cuts run `node --test tests/upgrade-from-previous*.test.mjs` after the NanoCore build, in addition to affected owner/caller tests and repository checks. Root Node tests are separate from Vitest related selection.
+
+## Main synchronous API ratchet
+
+`validate-main-sync-apis.mjs`, run by `check:repo`, follows runtime imports from NanoCore `src/index.ts`, including literal dynamic imports, local `require` aliases and declared workspace runtime exports. It checks new and untracked reachable source files. Erased type-only imports and Worker URL entrypoints do not add Main edges; a Worker module also imported by Main is inspected.
+
+The explicit `main-sync-api-allowlist.json` records existing native synchronous filesystem, child-process, SQLite constructor, crypto/compression and `Atomics.wait` expressions. New expressions and duplicate count increases fail. Removed expressions must be deleted with `node scripts/validate-main-sync-apis.mjs --refresh-shrink`; that command refuses growth and cannot initialize an inventory. The allowance is debt, not evidence that a call meets the Main-loop budget.
+
+This bounded AST census does not resolve dynamic code, external dependency internals, cross-module native alias exports, or extra invocations of an existing synchronous wrapper. It is a regression guard, not a function-level placement proof or latency qualification. Runtime long-task observations and reference-load acceptance cover the remaining risk. `tests/main-sync-api-ratchet.test.mjs` owns alias, runtime-graph and shrink-only behavior.

@@ -12,6 +12,7 @@ import {
 } from '@opentelemetry/sdk-trace';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withMainLoopOperation } from './main-loop-observer.js';
 import {
   captureTelemetryContext,
   createHttpTelemetryMiddleware,
@@ -116,6 +117,22 @@ describe('process.telemetry configuration', () => {
 });
 
 describe('telemetry lifecycle', () => {
+  it('starts the internal Main-loop observer and stops it with telemetry ownership', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    startTelemetry({ bootId: TEST_BOOT_ID, env: {} });
+    withMainLoopOperation('thread.read', () => {
+      const end = performance.now() + 110;
+      while (performance.now() < end) {}
+    });
+    await shutdownTelemetry();
+    expect(warn.mock.calls.map(([message]) => String(message))).toContainEqual(
+      expect.stringContaining('"event":"main_loop_long_task"')
+    );
+    const count = warn.mock.calls.length;
+    withMainLoopOperation('thread.read', () => 'after shutdown');
+    expect(warn).toHaveBeenCalledTimes(count);
+  });
+
   it('keeps ended Turn initiation context through deferred work without inheriting a later poll', async () => {
     const exporter = new InMemorySpanExporter();
     vi.spyOn(console, 'info').mockImplementation(() => {});

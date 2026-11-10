@@ -29,6 +29,7 @@ import {
   TracerProvider,
 } from '@opentelemetry/sdk-trace';
 import type { MiddlewareHandler } from 'hono';
+import { type MainLoopObserver, startMainLoopObserver } from './main-loop-observer.js';
 import { createLocalTraceExporter } from './telemetry-local-exporter.js';
 
 /** Nested process.telemetry flags describing local configuration only. */
@@ -65,6 +66,7 @@ const INVALID_ENDPOINT_DIAGNOSTIC =
   'Telemetry export is disabled because OTEL_EXPORTER_OTLP_ENDPOINT is not a valid HTTP(S) URL.';
 const START_FAILURE_DIAGNOSTIC = 'Telemetry export could not start; product boot continues.';
 
+let activeMainLoopObserver: MainLoopObserver | undefined;
 let activeProvider: TracerProvider | null = null;
 let activeMeterProvider: MeterProvider | null = null;
 let stageDuration: Histogram | null = null;
@@ -129,6 +131,7 @@ export function startTelemetry(options: {
     console.warn(`Telemetry export is disabled because ${unsupportedHeader} is unsupported.`);
   }
   if (!configuration.enabled) return configuration;
+  activeMainLoopObserver ??= startMainLoopObserver();
 
   const processors: (SimpleSpanProcessor | BatchSpanProcessor)[] = [];
   const metricExporters: PushMetricExporter[] = [];
@@ -239,6 +242,8 @@ export function startTelemetry(options: {
  * Exporter failure does not throw.
  */
 export async function shutdownTelemetry(): Promise<void> {
+  activeMainLoopObserver?.stop();
+  activeMainLoopObserver = undefined;
   const provider = activeProvider;
   const meterProvider = activeMeterProvider;
   const contextManager = activeContextManager;

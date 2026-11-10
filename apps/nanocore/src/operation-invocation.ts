@@ -5,6 +5,7 @@ import {
   type OperationOutput,
 } from '@openkit/app-api-schemas';
 import type { z } from 'zod';
+import { withMainLoopOperation } from './main-loop-observer.js';
 import type {
   AssistantOperationInvocationContext,
   InternalOperationDefinition,
@@ -41,25 +42,27 @@ export function createOperationEngine<const T extends Partial<OperationImplement
     const definition = OPERATION_DEFINITIONS[id];
     if (definition.binding !== 'json')
       throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
-    const admitted = await admitOperation(definition, value, entry, dependencies);
-    try {
-      const implementation = implementations[id] as OperationImplementations[K];
-      const context = {
-        ...admitted.context,
-        recheckAdmission: async () => {
-          const current = await admitOperation(definition, admitted.input, entry, dependencies);
-          current.release?.();
-        },
-      };
-      return (await invokeDefinedOperation(definition, () =>
-        implementation(
-          admitted.input as OperationInput<K>,
-          context as Parameters<OperationImplementations[K]>[1]
-        )
-      )) as OperationOutput<K>;
-    } finally {
-      admitted.release?.();
-    }
+    return withMainLoopOperation(id, async () => {
+      const admitted = await admitOperation(definition, value, entry, dependencies);
+      try {
+        const implementation = implementations[id] as OperationImplementations[K];
+        const context = {
+          ...admitted.context,
+          recheckAdmission: async () => {
+            const current = await admitOperation(definition, admitted.input, entry, dependencies);
+            current.release?.();
+          },
+        };
+        return (await invokeDefinedOperation(definition, () =>
+          implementation(
+            admitted.input as OperationInput<K>,
+            context as Parameters<OperationImplementations[K]>[1]
+          )
+        )) as OperationOutput<K>;
+      } finally {
+        admitted.release?.();
+      }
+    });
   };
 }
 
