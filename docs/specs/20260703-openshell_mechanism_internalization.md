@@ -115,13 +115,27 @@ Rules:
 
 ### Generic HTTP Bearer Release Scope
 
-The accepted v0.1.0 scope includes the Provider placeholder channel and Gateway-delegated refresh for generic HTTP bearer credentials. These capabilities are not yet implemented. The earlier [disabled-backend decision supplement](../decisions/20261016-disabled_backend_provider_refresh_scope.md#accepted-v010-scope-supplement) ceases to exclude them when their accepted prerequisites land together.
+The accepted v0.1.0 scope includes the Provider placeholder channel and Gateway-delegated refresh for generic HTTP bearer credentials. NanoHost contains dormant native projection, strict effective-policy comparison, bounded evidence normalization and stock-SDK refresh adapters. No production dispatcher reaches them; Provider materialization remains refused and Sandbox creation still supplies an empty Provider list. These component adapters do not enable or qualify the capability. The earlier [disabled-backend decision supplement](../decisions/20261016-disabled_backend_provider_refresh_scope.md#accepted-v010-scope-supplement) ceases to exclude them when their accepted prerequisites land together.
 
 Enablement must retain existing grants, explicit approval-gated delegation, exact effective-policy equality, secret redaction and canonical receipt, VaultUse and Audit evidence. Every lifecycle action uses the existing governed Vault operation family and standard Policy insertion points. Backend-native attachments, refresh strategy and evidence remain derived realization details, never Core authority or public schema.
 
 This scope adds no subscription token responder. Codex uses its host-managed token channel, and existing LLM Gateway subscription accounts are unchanged. On-demand credential helpers and the restricted SSH agent facade use outbound Worker carriage under [Worker Credential Access Declarations](20260709-worker_credential_access_declarations.md#on-demand-credential-channels); they do not require a metadata listener or Docker socket.
 
 For a profile's required token endpoint, the selected official OpenShell must support endpoint override or a qualified interception facility. If neither exists, stop that profile and obtain the engineer's disposition. Do not fork OpenShell or silently weaken endpoint or policy checks.
+
+### Dormant Slice And Remaining Integration Obligations
+
+The dormant NanoHost cut has no production command, route, capability advertisement, timer, automatic SDK invocation or native log poller. It does not change the pinned OpenShell release. Its comparison covers the complete typed policy, including the base and all Provider layers; an unsupported nondefault native authority field refuses before normalization. The existing strict native parser continues to own malformed or unknown authored policy fields. Native evidence summaries retain only allowlisted status, strategy, bounded times and counts; native identifiers, account data, material and arbitrary error text are never accepted as ordinary evidence. Missing native observations remain incomplete.
+
+Activation requires a later authorized integration through the existing owners, with these obligations resolved and tested:
+
+- **Delegation:** The existing Vault operation and Policy/PermissionDecision chain must authorize the exact NanoHost, Gateway, strategy and material keys. The native adapter cannot establish this authority. The accepted generic bearer strategies do not use the Codex refresher or a harness lease/write-back protocol.
+- **Predecessor fencing:** Before replacing native profile, instance or refresh configuration, the existing Runtime Epoch owner must prove which predecessor can still use or mint material. Native creation or a successful status read is not fencing proof.
+- **Rotation acceptance:** NanoCore must accept the exact authorized Vault generation, grant and lineage into its existing receipt, VaultUse and Audit owners after completed native effects. A native status or profile import alone is not a canonical receipt, and no native name can select a Vault reference.
+- **Revocation:** Revoking the grant or delegation must revoke package authority, terminate the affected Sandbox, and fence the complete Epoch when removal is unproved. Refresh deletion, detach, or a missing status alone cannot prove revocation or release capacity.
+- **Upstream qualification:** The exact installed release must prove Provider enablement, the required token endpoint facility and the full effective-policy observation. Delegated refresh additionally requires an observable stock status surface. Unknown or absent required facilities refuse the profile. A missing stable refresh-log surface leaves that observation incomplete; no invented log reader or second poller is permitted. Real placeholder rewrite, expiry, delegated mint and teardown observations remain required before activation.
+
+These are open integration obligations, not new Core records, operations, authorization paths or retained formats. This dormant cut does not settle them.
 
 ### Credential Injection Semantics
 

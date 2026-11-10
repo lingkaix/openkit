@@ -18,6 +18,15 @@ mod live_inspection;
 mod nanocore_session;
 mod openshell_client;
 mod openshell_policy;
+// Dormant #604 Slice 4: no production dispatch or SDK effects reach these adapters.
+#[allow(dead_code)]
+mod openshell_provider;
+#[allow(dead_code)]
+mod openshell_provider_evidence;
+#[allow(dead_code)]
+mod openshell_provider_policy;
+#[allow(dead_code)]
+mod openshell_provider_refresh;
 
 use openshell_policy::render_sandbox_policy;
 mod openshell_release;
@@ -1553,6 +1562,8 @@ fn note_readiness_commit_boundary() {
 
 #[cfg(test)]
 mod credential_carrier_acceptance_tests;
+#[cfg(test)]
+mod openshell_provider_tests;
 #[cfg(test)]
 mod openshell_upgrade_tests;
 

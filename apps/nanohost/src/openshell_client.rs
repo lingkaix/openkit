@@ -1287,6 +1287,165 @@ where
     })
 }
 
+// #604 Slice 4 is dormant. These stock-SDK adapters have no production caller.
+// Core authority, exact effective-policy acceptance and canonical receipts must
+// be integrated before any dispatcher can reach them. Never log SDK payloads.
+
+/// Imports an already-projected non-secret profile through the pinned SDK only.
+#[allow(dead_code)]
+pub(crate) async fn dormant_provider_import(
+    client: &OpenShellClient,
+    deployment: &str,
+    profile: openshell_sdk::raw::proto::ProviderProfile,
+) -> Result<(), crate::openshell_provider::ProviderRefusal> {
+    use crate::openshell_provider::ProviderRefusal::NativeUnproved;
+    use openshell_sdk::raw::proto::{ImportProviderProfilesRequest, ProviderProfileImportItem};
+    if !crate::openshell_provider::identity_part(deployment)
+        || !profile.id.starts_with(&format!("okp-{deployment}-"))
+    {
+        return Err(NativeUnproved);
+    }
+    let response = client
+        .raw_grpc()
+        .import_provider_profiles(ImportProviderProfilesRequest {
+            profiles: vec![ProviderProfileImportItem {
+                profile: Some(profile.clone()),
+                source: String::new(),
+            }],
+            workspace: String::new(),
+        })
+        .await
+        .map_err(|_| NativeUnproved)?
+        .into_inner();
+    let mut observed = response.profiles.first().cloned().ok_or(NativeUnproved)?;
+    observed.resource_version = profile.resource_version;
+    observed.source = profile.source.clone();
+    observed.scope = profile.scope.clone();
+    if observed != profile
+        || !response.imported
+        || !response.diagnostics.is_empty()
+        || response.profiles.len() != 1
+        || response.profiles[0].id != profile.id
+    {
+        return Err(NativeUnproved);
+    }
+    Ok(())
+}
+
+/// Supplies transient credential material directly to native instance creation.
+#[allow(dead_code)]
+pub(crate) async fn dormant_provider_create(
+    client: &OpenShellClient,
+    deployment: &str,
+    provider: openshell_sdk::raw::proto::Provider,
+) -> Result<serde_json::Value, crate::openshell_provider::ProviderRefusal> {
+    use crate::openshell_provider::ProviderRefusal::NativeUnproved;
+    let expected_name = provider
+        .metadata
+        .as_ref()
+        .ok_or(NativeUnproved)?
+        .name
+        .clone();
+    let expected_type = provider.r#type.clone();
+    if !crate::openshell_provider::identity_part(deployment)
+        || !expected_name.starts_with(&format!("oki-{deployment}-"))
+        || !expected_type.starts_with(&format!("okp-{deployment}-"))
+    {
+        return Err(NativeUnproved);
+    }
+    let response = client
+        .raw_grpc()
+        .create_provider(openshell_sdk::raw::proto::CreateProviderRequest {
+            provider: Some(provider),
+            workspace: "default".into(),
+        })
+        .await
+        .map_err(|_| NativeUnproved)?
+        .into_inner();
+    let observed = response.provider.ok_or(NativeUnproved)?;
+    if observed.r#type != expected_type
+        || !observed
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.name == expected_name)
+    {
+        return Err(NativeUnproved);
+    }
+    crate::openshell_provider_evidence::normalize_provider(&observed)
+}
+
+/// Configures the stock Gateway refresher; it starts no NanoHost refresh engine.
+#[allow(dead_code)]
+pub(crate) async fn dormant_provider_configure_refresh(
+    client: &OpenShellClient,
+    deployment: &str,
+    request: openshell_sdk::raw::proto::ConfigureProviderRefreshRequest,
+) -> Result<serde_json::Value, crate::openshell_provider::ProviderRefusal> {
+    use crate::openshell_provider::ProviderRefusal::NativeUnproved;
+    let expected_provider = request.provider.clone();
+    let expected_key = request.credential_key.clone();
+    let expected_strategy = request.strategy;
+    if !crate::openshell_provider::identity_part(deployment)
+        || !expected_provider.starts_with(&format!("oki-{deployment}-"))
+        || expected_key.is_empty()
+    {
+        return Err(NativeUnproved);
+    }
+    let response = client
+        .raw_grpc()
+        .configure_provider_refresh(request)
+        .await
+        .map_err(|_| NativeUnproved)?
+        .into_inner();
+    let observed = response.status.ok_or(NativeUnproved)?;
+    if observed.provider_name != expected_provider
+        || observed.credential_key != expected_key
+        || observed.strategy != expected_strategy
+    {
+        return Err(NativeUnproved);
+    }
+    crate::openshell_provider_evidence::normalize_refresh_status(&observed)
+}
+
+/// Reads one caller-selected native status without polling or exposing native errors.
+#[allow(dead_code)]
+pub(crate) async fn dormant_provider_refresh_status(
+    client: &OpenShellClient,
+    deployment: &str,
+    request: openshell_sdk::raw::proto::GetProviderRefreshStatusRequest,
+) -> Result<Vec<serde_json::Value>, crate::openshell_provider::ProviderRefusal> {
+    use crate::openshell_provider::ProviderRefusal::NativeUnproved;
+    let expected_provider = request.provider.clone();
+    let expected_key = request.credential_key.clone();
+    if !crate::openshell_provider::identity_part(deployment)
+        || !expected_provider.starts_with(&format!("oki-{deployment}-"))
+        || expected_key.is_empty()
+    {
+        return Err(NativeUnproved);
+    }
+    let response = client
+        .raw_grpc()
+        .get_provider_refresh_status(request)
+        .await
+        .map_err(|_| NativeUnproved)?
+        .into_inner();
+    if expected_provider.is_empty()
+        || expected_key.is_empty()
+        || response.credentials.len() != 1
+        || response
+            .credentials
+            .iter()
+            .any(|s| s.provider_name != expected_provider || s.credential_key != expected_key)
+    {
+        return Err(NativeUnproved);
+    }
+    response
+        .credentials
+        .iter()
+        .map(crate::openshell_provider_evidence::normalize_refresh_status)
+        .collect()
+}
+
 #[cfg(test)]
 impl WorkerBootstrapMonitor {
     /// Creates a real response-task monitor for coordinator lifecycle regressions.

@@ -1,4 +1,4 @@
-//! Unadmitted stock forwarding diagnostic, never a deciding qualification gate.
+//! Stock-release component checks and an unadmitted forwarding diagnostic.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -1164,4 +1164,104 @@ fn openshell_upgrade_peer_output_accepts_arbitrary_event_splits() {
         );
         assert!(output.buffered.is_empty());
     }
+}
+
+/// Compile and projection qualification for the pinned native bearer facilities only.
+/// This does not observe a Gateway, authorize delegation, or activate Provider delivery.
+#[test]
+fn dormant_provider_pinned_refresh_projection_preserves_endpoint_and_secrecy() {
+    use crate::openshell_provider::{profile_digest, project_instance, project_profile};
+    use crate::openshell_provider_refresh::{ProviderFacilities, prepare_delegated_refresh};
+    use openshell_sdk::raw::proto::{
+        NetworkBinary, NetworkEndpoint, ProviderCredentialRefreshStrategy,
+    };
+    let facilities = ProviderFacilities {
+        providers_v2: Some(true),
+        effective_policy: Some(true),
+        endpoint_override: Some(true),
+        refresh_status: Some(true),
+        stable_refresh_logs: None,
+    };
+    let endpoint = NetworkEndpoint {
+        host: "api.example.invalid".into(),
+        port: 443,
+        protocol: "rest".into(),
+        enforcement: "enforce".into(),
+        access: "read-only".into(),
+        ..Default::default()
+    };
+    let mut projection = project_profile(
+        "deployment",
+        "generic",
+        1,
+        "GENERIC_TOKEN",
+        vec![endpoint],
+        vec![NetworkBinary {
+            path: "/usr/bin/curl".into(),
+            ..Default::default()
+        }],
+    )
+    .unwrap();
+    assert_eq!(projection.profile.id, "okp-deployment-generic-v1");
+    assert_eq!(
+        projection.profile.credentials[0].header_name,
+        "Authorization"
+    );
+    let initial_digest = profile_digest(&projection.profile).unwrap();
+    assert_eq!(initial_digest.len(), 64);
+    let instance = project_instance(
+        "deployment",
+        "workspace",
+        "grant",
+        &projection,
+        "GENERIC_TOKEN",
+        "fixture-access".into(),
+        Some(2000000),
+    )
+    .unwrap();
+    assert_eq!(
+        instance.metadata.as_ref().unwrap().name,
+        "oki-deployment-workspace-grant"
+    );
+    assert_eq!(instance.credential_expires_at_ms["GENERIC_TOKEN"], 2000000);
+    let material = HashMap::from([
+        ("client_id".into(), "fixture-account".into()),
+        ("client_secret".into(), "fixture-secret".into()),
+    ]);
+    let request = prepare_delegated_refresh(
+        &instance,
+        &mut projection.profile,
+        ProviderCredentialRefreshStrategy::Oauth2ClientCredentials as i32,
+        "https://tokens.example.invalid/oauth/token",
+        vec!["read".into()],
+        material,
+        &facilities,
+    )
+    .unwrap();
+    assert_ne!(initial_digest, profile_digest(&projection.profile).unwrap());
+    let refresh = projection.profile.credentials[0].refresh.as_ref().unwrap();
+    assert_eq!(
+        refresh.token_url,
+        "https://tokens.example.invalid/oauth/token"
+    );
+    assert_eq!(
+        request.secret_material_keys,
+        vec!["client_id", "client_secret"]
+    );
+    assert!(refresh.material.iter().all(|m| m.secret));
+    assert_eq!(request.credential_key, "GENERIC_TOKEN");
+    assert_eq!(request.expires_at_ms, Some(2000000));
+    assert!(!format!("{refresh:?}").contains("fixture-secret"));
+    let unchanged = projection.profile.clone();
+    let rejected = prepare_delegated_refresh(
+        &instance,
+        &mut projection.profile,
+        ProviderCredentialRefreshStrategy::Oauth2ClientCredentials as i32,
+        "https://user:password@tokens.example.invalid/oauth/token",
+        vec!["read".into()],
+        request.material.clone(),
+        &facilities,
+    );
+    assert!(rejected.is_err());
+    assert_eq!(projection.profile, unchanged);
 }
