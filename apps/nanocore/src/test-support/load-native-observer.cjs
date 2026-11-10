@@ -1,6 +1,8 @@
 /* Test-only scalar native transaction observer. No SQL text, bindings, rows or product mutation. */
 'use strict';
 const { isMainThread, threadId, BroadcastChannel, parentPort } = require('node:worker_threads');
+if (process.env.R2_CLOSE_CHANNEL && process.env.OPENKIT_R2_ATTR_OUTPUT_DIR)
+  require('./load-open-observer.cjs');
 if (!isMainThread && process.env.R2_CLOSE_CHANNEL && process.env.OPENKIT_R2_ATTR_OUTPUT_DIR) {
   const fs = require('node:fs'),
     path = require('node:path');
@@ -149,6 +151,7 @@ if (!isMainThread && process.env.R2_CLOSE_CHANNEL && process.env.OPENKIT_R2_ATTR
       enabled = false;
       const report = {
         threadId,
+        openObservation: globalThis.__lopsOpen?.snapshot() ?? null,
         observerErrors,
         records,
         maxActiveWorkspaceSqlTransactions: maxActive,
@@ -178,7 +181,7 @@ if (!isMainThread && process.env.R2_CLOSE_CHANNEL && process.env.OPENKIT_R2_ATTR
       } finally {
         fs.closeSync(fd);
       }
-      channel.postMessage({ kind: 'finished', threadId });
+      channel.postMessage({ kind: 'finished', threadId, openObservation: report.openObservation });
       channel.close();
     }
   };

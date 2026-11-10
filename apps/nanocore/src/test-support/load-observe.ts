@@ -16,6 +16,38 @@ type HostLoad = { load1: number; load5: number } | null;
 type LoopRecord = Readonly<Record<string, string | number>>;
 const LOOP_RECORD_LIMIT = 64;
 
+type OpenObservation = {
+  entry: { route: 'compiled' | 'temporary' | 'typescript-eval'; sha256: string } | null;
+  groups: Record<
+    string,
+    { count: number; success: number; errors: number; sumMs: number; maxMs: number }
+  >;
+  observerErrors: number;
+};
+
+function openCoverage(observation: OpenObservation | null, requireEntry: boolean) {
+  return {
+    expected: requireEntry ? ['sqlite-constructors', 'worker-entry'] : ['sqlite-constructors'],
+    observed: observation,
+    missing: [
+      ...(!observation || !Object.values(observation.groups).some((group) => group.count > 0)
+        ? ['sqlite-constructors']
+        : []),
+      ...(requireEntry && !observation?.entry ? ['worker-entry'] : []),
+    ],
+  };
+}
+
+/** Read the measurement process itself while it is still alive. */
+export function observeMainOpens() {
+  const observer = (
+    globalThis as typeof globalThis & {
+      __lopsOpen?: { snapshot: () => OpenObservation };
+    }
+  ).__lopsOpen;
+  return openCoverage(observer?.snapshot() ?? null, false);
+}
+
 /** Boundary samples describe host contention; an unavailable sample is never quiet evidence. */
 export function observeHostLoad(): HostLoad {
   try {
@@ -148,6 +180,7 @@ export async function observeNative(lower: number, upper: number) {
   const expected: number[] = [];
   const ready = new Set<number>(),
     finished = new Set<number>();
+  const openReports = new Map<number, OpenObservation>();
   const hr = () => Number(process.hrtime.bigint()) / 1000;
   const all = {
     maxInputBytes: 0,
@@ -170,7 +203,10 @@ export async function observeNative(lower: number, upper: number) {
     value.unref();
     value.onmessage = ({ data }: any) => {
       if (data.kind === 'ready') ready.add(data.threadId);
-      if (data.kind === 'finished') finished.add(data.threadId);
+      if (data.kind === 'finished') {
+        finished.add(data.threadId);
+        if (data.openObservation) openReports.set(data.threadId, data.openObservation);
+      }
     };
     return value;
   });
@@ -246,6 +282,10 @@ export async function observeNative(lower: number, upper: number) {
         limits: CONTROL_WORKER_LIMITS,
         exactClientMutationBoundaryPeaks: observerErrors === 0,
         observerErrors,
+        openCoverage: expected.map((threadId) => ({
+          threadId,
+          ...openCoverage(openReports.get(threadId) ?? null, true),
+        })),
         privateCounterPurpose:
           'Inherited queueBounded count/byte threshold only; no producer/request wrapper',
         countMeaning:

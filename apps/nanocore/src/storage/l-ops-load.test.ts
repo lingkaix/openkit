@@ -17,6 +17,7 @@ import {
   mainLoopBudget,
   observeHostLoad,
   observeMainLoop,
+  observeMainOpens,
   observeNative,
 } from '../test-support/load-observe.js';
 import {
@@ -525,6 +526,12 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
       coreDb.sqlite.close();
     } catch {}
     result.hostLoad.end = observeHostLoad();
+    result.sqliteOpenCoverage = {
+      main: observeMainOpens(),
+      native: (result.clientQueue ?? result.finalObservation)?.openCoverage ?? null,
+      meaning:
+        'Driver constructor calls only, not supported-ledger preflight or owner open time. Main through final teardown; native through observation finish.',
+    };
     if (result.mainLoop) {
       result.mainLoop.budget = mainLoopBudget(
         result.mainLoop,
