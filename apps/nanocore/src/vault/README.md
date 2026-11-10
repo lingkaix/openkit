@@ -1,6 +1,10 @@
 # Vault
 
+For an admitted runtime-token binding, the original governed selection may recognize only the exact reference successor returned by that Core refresh. The version advances by one and every other reference field remains exact except its update clock. All plan, grant, receipt, caller and Policy checks remain on the original decision. The successor must receive its own acknowledged Workspace Use and Audit before access-only disclosure. External completion precedes the canonical receipt; neither preparation nor refresh proves native activation or Thread affinity.
+
 This directory owns NanoCore's encrypted-file Vault backend contract, unlock state, non-secret reference and grant records, audited material resolution, Vault use evidence, and Vault operation implementations.
+
+Login quarantine is visible through the existing redacted Login inventory and User Audit. It has no Attention notification source. [Issue #708](https://github.com/lingkaix/openkit/issues/708) tracks owner notification after v0.1.0; the credential integration adds no notification scope or synthetic Pending Request.
 
 ## Boundaries
 
@@ -82,6 +86,8 @@ Audited resolution authenticates only the addressed reference through the existi
 The existing Workspace grant issuer also admits explicit `runtime-file` injection permission for raw static Worker files. It labels this Worker-visible choice as high risk, refuses capability targeting, and preserves exact current grant/reference authority. The Pending Request preview states Worker-visible risk for both file and environment delivery. Narrowing uses the same grant owner and cannot broaden a file grant into another sink. Delivery still requires exact placement attestation of the required ephemeral protection; possession of a reference or a Gateway-only grant does not authorize it.
 
 The existing injection-plan/receipt list operations and binding deliver/replace/revoke share one local consumer of unified operation definitions, Policy interception, current Kernel/GoalTask admission and Audit. Agent inspection filters immutable AEP-selected declaration, AgentSession/Thread and receipt lineage; Coordinator operations remain within their current Goal active-Plan Tasks. Read actions retain vault.admin; effect actions use vault.use. The same accepted decision is rechecked after awaits without another finite-use consumption. File preparation is reference-only; audited material resolution follows final allow and pinned material generation, and private effect readback runs again before placement delivery.
+
+Runtime-token binding plans enter that same governed lifecycle boundary. Their Policy proposal identifies the host-managed token format and access-only disclosure without claiming a file target. A denial retains the final PermissionDecision and failed operation Audit before the runtime effect or material backend is entered. This admission does not install Login serving support. The executor's optional access-only port supplies the separate Core effect; authenticated private delivery and native completion remain separate requirements. Run the complete `src/vault/vault-use-audited-backend.test.ts` owner for the prepared-plan denial regression and existing material boundaries.
 
 The audited backend retains one actual material resolution over its original native Use and Audit acknowledgements. Before it returns material, it repeats the existing backend's synchronous non-material current-version validation, including exact prior-version grace. This validation shares the material resolver's authenticated key, revocation and expiry predicate and emits no second resolution or Use.
 

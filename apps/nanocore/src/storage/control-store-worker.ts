@@ -251,6 +251,11 @@ import {
   type PreparedResolvedAgentSetup,
   prepareResolvedAgentSetup,
 } from './resolved-agent-setup-native.js';
+import {
+  applyRuntimePolicyPublication,
+  createNativeRuntimePolicyPublication,
+  type NativeRuntimePolicyPublication,
+} from './runtime-policy-publication.js';
 import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
 import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import {
@@ -401,6 +406,7 @@ type WriteCommand = Extract<
       | 'admin-recovery'
       | 'better-auth'
       | 'vault'
+      | 'runtime-policy-publication'
       | 'nanohost-transport'
       | 'worker-control-evidence'
       | 'generative-presentation'
@@ -487,6 +493,8 @@ interface OwnedDatabase {
   readonly publications: ControlContentPreparation['publications'];
   /** Accepted native-local preparation shares this finite scope lifetime, before SQL. */
   readonly preparations: Set<Promise<void>>;
+  /** Readiness belongs to this physical Core opening, not a process-level Policy cache. */
+  readonly runtimePolicy: NativeRuntimePolicyPublication | undefined;
   closing: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   immediate: ReturnType<typeof setImmediate> | null;
@@ -1839,6 +1847,33 @@ function refusePoisonedPending(owner: OwnedDatabase): void {
  */
 function flush(owner: OwnedDatabase): void {
   unschedule(owner);
+  // Publication is a sole FIFO barrier, outside SQL: rollback cannot leave an active memory marker.
+  const policy = effectivePendingHead(owner);
+  if (policy?.operation === 'runtime-policy-publication') {
+    if (!policy.ready) return;
+    let outcome: ControlWorkerReply;
+    try {
+      if (policy.refusal || policy.predecessorFailed || owner.poisoned)
+        throw new ControlProductPreconditionError();
+      if (owner.scopeDb?.scope !== 'core' || !owner.runtimePolicy)
+        throw new ControlProductPreconditionError();
+      outcome = {
+        version: CONTROL_WORKER_VERSION,
+        id: policy.id,
+        status: 'ok',
+        operation: 'runtime-policy-publication',
+        result: applyRuntimePolicyPublication(owner.runtimePolicy, policy.input),
+      };
+      if (!isControlWorkerReply(outcome)) throw new ControlProductPreconditionError();
+    } catch (error) {
+      refuseSuccessors(owner, policy);
+      outcome =
+        policy.refusal ?? failure(policy.id, failureCode(error, [policy.id]), 'not-committed');
+    }
+    complete(owner, policy, outcome);
+    if (readyBatch(owner).length) owner.immediate = setImmediate(() => flush(owner));
+    return;
+  }
   // Reuse only an actual leading prefix after earlier mutation ACKs; never read ahead into a selected batch.
   while (owner.scopeDb?.scope === 'workspace') {
     const first = owner.pending[0];
@@ -3086,6 +3121,8 @@ function flush(owner: OwnedDatabase): void {
               operation: 'project-cleanup',
               result,
             };
+          } else if (request.operation === 'runtime-policy-publication') {
+            throw new ControlProductPreconditionError(); // A publication barrier never joins an SQL batch.
           } else {
             const results = apply(sqlite, request.statements);
             outcome = {
@@ -3620,6 +3657,10 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       pending: [],
       publications: new Map(),
       preparations: new Set(),
+      runtimePolicy:
+        request.productOwner?.kind === 'server'
+          ? createNativeRuntimePolicyPublication()
+          : undefined,
       closing: false,
       timer: null,
       immediate: null,
@@ -3774,6 +3815,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'boot-audit' ||
       value.operation === 'admin-recovery' ||
       value.operation === 'better-auth' ||
+      value.operation === 'runtime-policy-publication' ||
       value.operation === 'vault' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
@@ -3861,6 +3903,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           finish,
           cohort,
           barrier:
+            value.operation === 'runtime-policy-publication' ||
             value.operation === 'recovery-target-registration' ||
             value.operation === 'recovery-target-preparation' ||
             value.operation === 'workspace-capture' ||

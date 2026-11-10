@@ -1,15 +1,23 @@
 // openkit-test-platform: posix
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId, ItemSchema, type TurnSchema, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactReviewError, type ControlReviewCommandInput } from '../artifact-review-codecs.js';
 import { executeControlReviewCommand, getArtifactReview } from '../artifact-reviews.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import {
+  createRuntimeConfigManager,
+  diffRuntimeConfig,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import type { WorkerArtifactCapture } from '../runtime/worker-governance-backend.js';
@@ -31,6 +39,11 @@ import {
 } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { prepareImmutableProductJson } from './immutable-content.js';
+import {
+  type RuntimePolicyPublicationInput,
+  type RuntimePolicyPublicationResult,
+  RuntimePolicyPublicationResultSchema,
+} from './runtime-policy-publication.js';
 import { appendWorkObservation } from './work-observations.js';
 import { nativeProductScope, readNativeProductEntries } from './workspace-file-records.js';
 
@@ -742,4 +755,604 @@ it('prepares an exact native Review decision after its queued Artifact submissio
     db?.sqlite.close();
     coreDb.sqlite.close();
   }
+});
+
+// Runtime Policy publication oracles. No state-inspection case proves Vault refusal.
+// Owner: config identity Reload And Failure Contract; Storage native FIFO.
+// These cases inspect publication only; none claims a Vault effect was refused.
+
+type PolicyClient = ReturnType<typeof getControlStoreWorkerClient>;
+type PolicyAction = RuntimePolicyPublicationInput;
+type PolicyCore = ReturnType<typeof openCoreDb>;
+
+/** Parses only an actual native inspect result with the published closed ABI. */
+async function inspectPublication(client: PolicyClient, db: PolicyCore) {
+  return RuntimePolicyPublicationResultSchema.parse(
+    await client.runtimePolicyPublication(db, { kind: 'inspect' })
+  );
+}
+
+/** Requires a real active Workspace entry; no empty-map or absent-entry fallback qualifies. */
+function selectedWorkspaceRevision(
+  observed: RuntimePolicyPublicationResult,
+  workspaceId: string
+): string {
+  expect(observed.state).toBe('active');
+  const matches =
+    observed.identity?.workspaceRevisions.filter((entry) => entry.workspaceId === workspaceId) ??
+    [];
+  expect(matches).toHaveLength(1);
+  return matches[0]!.revision;
+}
+
+const policyDatabases: PolicyCore[] = [];
+const policyWork: Promise<unknown>[] = [];
+const policyTraffic: ReturnType<typeof observePublicationTraffic>[] = [];
+
+/** Joins original work during cleanup without converting a rejection into successful evidence. */
+function retainPolicyWork<T>(work: Promise<T>): Promise<T> {
+  policyWork.push(work);
+  void work.catch(() => undefined);
+  return work;
+}
+
+/**
+ * Captures actual method arguments and actual Worker requests/replies.
+ * Delays occur only at the existing transport crossing. No ACK is constructed.
+ */
+function observePublicationTraffic(client: PolicyClient) {
+  const calls = new AsyncLocalStorage<{ readonly db: PolicyCore; readonly action: PolicyAction }>();
+  const actions: { readonly db: PolicyCore; readonly action: PolicyAction }[] = [];
+  const frames: {
+    readonly worker: Worker;
+    readonly id: number;
+    readonly action: PolicyAction;
+    forwarded: boolean;
+    acknowledged: boolean;
+    forward: () => void;
+  }[] = [];
+  const heldReplies: { readonly kind: PolicyAction['kind']; deliver: () => void }[] = [];
+  const events: string[] = [];
+  const emission = new Set<Worker>();
+  const faults: { post?: 'close' | 'activate'; ack?: 'close' | 'activate' } = {};
+  const originalCall = client.runtimePolicyPublication.bind(client);
+  vi.spyOn(client, 'runtimePolicyPublication').mockImplementation((db, action) => {
+    if (action.kind !== 'inspect') actions.push({ db, action: structuredClone(action) });
+    return calls.run({ db, action }, () => originalCall(db, action));
+  });
+  const post = Worker.prototype.postMessage;
+  vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+    this: Worker,
+    ...args: Parameters<Worker['postMessage']>
+  ) {
+    const call = calls.getStore();
+    const request = args[0] as {
+      id?: number;
+      database?: string;
+      operation?: string;
+      input?: RuntimePolicyPublicationInput;
+    };
+    if (
+      !call ||
+      request?.operation !== 'runtime-policy-publication' ||
+      request.input?.kind !== call.action.kind
+    ) {
+      post.apply(this, args);
+      return;
+    }
+    const scope = nativeProductScope(call.db.dataRoot, { kind: 'server' });
+    // Match the actual closed family, original input kind and canonical Core target.
+    // Opening, capacity work and unrelated native commands cannot select the ACK.
+    if (request?.database !== `core:${scope.path}` || typeof request.id !== 'number') {
+      post.apply(this, args);
+      return;
+    }
+    const frame: (typeof frames)[number] = {
+      worker: this,
+      id: request.id,
+      action: structuredClone(call.action),
+      forwarded: false,
+      acknowledged: false,
+      forward: () => {
+        if (frame.forwarded) return;
+        frame.forwarded = true;
+        post.apply(this, args);
+      },
+    };
+    frames.push(frame);
+    if (!emission.has(this)) {
+      emission.add(this);
+      const emit = this.emit;
+      vi.spyOn(this, 'emit').mockImplementation((event, ...eventArgs) => {
+        const reply = eventArgs[0] as { id?: number; status?: string } | undefined;
+        const selected =
+          event === 'message'
+            ? frames.find(
+                (candidate) => candidate.worker === frame.worker && candidate.id === reply?.id
+              )
+            : undefined;
+        if (selected && reply?.status === 'ok') events.push(`${selected.action.kind}-native-ack`);
+        if (selected && reply?.status === 'ok' && faults.ack === selected.action.kind) {
+          heldReplies.push({
+            kind: selected.action.kind,
+            deliver: () => {
+              selected.acknowledged = true;
+              emit.call(selected.worker, event, ...eventArgs);
+            },
+          });
+          return true;
+        }
+        if (selected) selected.acknowledged = true;
+        return emit.call(frame.worker, event, ...eventArgs);
+      });
+    }
+    if (faults.post === call.action.kind) {
+      // Select only this original frame. A deliberate replay has its own request
+      // identity and must reach native while the selected frame remains held.
+      delete faults.post;
+    } else frame.forward();
+  });
+  const result = {
+    actions,
+    events,
+    frames,
+    heldReplies,
+    faults,
+    deliverReplies() {
+      delete faults.ack;
+      for (const reply of heldReplies.splice(0)) reply.deliver();
+    },
+    releasePosts() {
+      delete faults.post;
+      for (const frame of frames) frame.forward();
+    },
+  };
+  policyTraffic.push(result);
+  return result;
+}
+
+/** Authored inactive inputs supply distinct revisions and confer no effect authority. */
+function policySource(
+  f: Awaited<ReturnType<typeof fixture>>,
+  revision: 'A' | 'B' | 'C',
+  extra = {}
+) {
+  const workspaceId = f.lanes[0]!.scope.owner;
+  if (workspaceId.kind !== 'workspace') throw new Error('Expected actual fixture Workspace.');
+  const document = {
+    schemaVersion: 1,
+    statements: [
+      {
+        id: `publication-input-${revision}`,
+        kind: 'permission',
+        state: 'inactive',
+        effect: 'prohibit',
+        grant: { kind: 'ordinary' },
+        author: { kind: 'human', id: actor.id },
+        authority: { kind: 'human', userId: actor.id },
+        authoredAt: '2026-11-10T00:00:00.000Z',
+        scope: {
+          subjects: [{ kind: 'human', id: actor.id }],
+          actions: ['vault.use'],
+          resources: [
+            {
+              kind: 'container',
+              container: {
+                owner: workspaceId,
+                kind: 'workspace',
+                id: workspaceId.workspaceId,
+              },
+            },
+          ],
+        },
+        lifetime: {
+          anchor: { owner: workspaceId, kind: 'workspace', id: workspaceId.workspaceId },
+        },
+      },
+    ],
+  };
+  // This is an external authored file consumed by the real loader, not a Policy
+  // admission or a simulated loaded snapshot. No active statement is manufactured.
+  mkdirSync(join(f.root, 'config'), { recursive: true });
+  writeFileSync(
+    join(f.root, 'config/server.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      policy: { mediation: document },
+      ...extra,
+    })
+  );
+  return document;
+}
+
+/** Adds a real Core Turn to the unchanged existing asynchronous file-preparation fixture. */
+async function publicationFixture(initialServerBindPort?: number) {
+  const f = await fixture();
+  const db = openCoreDb(f.root);
+  policyDatabases.push(db);
+  const thread = await f.store.createServerThread('Policy publication predecessor');
+  const turn = await f.store.createServerTurn(thread.id, 'Publish this original Core Item.', actor);
+  const scope = nativeProductScope(f.root, { kind: 'server' });
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  readers.push(reader);
+  const coreLane: Lane = { turn, scope, database: `core:${scope.path}`, reader };
+  const document = policySource(
+    f,
+    'A',
+    initialServerBindPort === undefined
+      ? {}
+      : {
+          server: { bind: { host: '127.0.0.1', port: initialServerBindPort } },
+        }
+  );
+  const workspaceOwner = f.lanes[0]!.turn.owner;
+  if (workspaceOwner.kind !== 'workspace') throw new Error('Expected actual selected Workspace.');
+  const workspaceId = workspaceOwner.workspaceId;
+  const workspaceConfigRoot = join(f.root, 'workspaces', workspaceId, 'config');
+  mkdirSync(workspaceConfigRoot, { recursive: true });
+  // Actual authored Workspace input joins the loaded snapshot; the test does not
+  // rely on the absent-loaded-Workspace EMPTY fallback or claim an active grant.
+  writeFileSync(
+    join(workspaceConfigRoot, 'workspace.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      workspace: {
+        name: f.store.getWorkspace(workspaceId).name,
+        policy: { mediation: EMPTY_POLICY_DOCUMENT },
+      },
+    })
+  );
+  const manager = createRuntimeConfigManager({ dataRoot: f.root });
+  const loadedWorkspace = manager
+    .current()
+    .workspaceConfigs.filter((entry) => entry.workspaceId === workspaceId);
+  expect(loadedWorkspace).toHaveLength(1);
+  expect(policyDigest(loadedWorkspace[0]!.config.workspace.policy!.mediation)).toBe(
+    policyDigest(EMPTY_POLICY_DOCUMENT)
+  );
+  return { ...f, db, coreLane, manager, document, workspaceId };
+}
+
+describe('runtime Policy publication through the actual native FIFO', () => {
+  afterEach(async () => {
+    release(4);
+    release(8);
+    for (const traffic of policyTraffic.splice(0)) {
+      traffic.releasePosts();
+      traffic.deliverReplies();
+    }
+    await Promise.allSettled(policyWork.splice(0));
+    await shutdownControlStoreWorkerClient();
+    for (const db of policyDatabases.splice(0)) if (db.sqlite.open) db.sqlite.close();
+  });
+
+  it('withholds initial binding readiness until the actual native activation ACK', async () => {
+    const f = await publicationFixture();
+    const traffic = observePublicationTraffic(f.client);
+    traffic.faults.ack = 'activate';
+    let ready = false;
+    const binding = retainPolicyWork(
+      f.manager.bindNativePolicyPublication(f.db).then(() => {
+        ready = true;
+      })
+    );
+    await vi.waitFor(() =>
+      expect(traffic.heldReplies.some((reply) => reply.kind === 'activate')).toBe(true)
+    );
+    expect(ready).toBe(false);
+    expect((await inspectPublication(f.client, f.db)).state).toBe('active');
+    traffic.deliverReplies();
+    await binding;
+    expect(ready).toBe(true);
+  });
+
+  it('keeps close behind actual asynchronous Core preparation and observes both closed intervals', async () => {
+    const f = await publicationFixture();
+    const traffic = observePublicationTraffic(f.client);
+    await f.manager.bindNativePolicyPublication(f.db);
+    const before = await inspectPublication(f.client, f.db);
+    expect(before.state).toBe('active');
+    expect(before.identity!.serverRevision).toBe(policyDigest(f.document));
+    expect(selectedWorkspaceRevision(before, f.workspaceId)).toBe(
+      policyDigest(EMPTY_POLICY_DOCUMENT)
+    );
+    traffic.events.length = 0;
+    traffic.frames.length = 0;
+    traffic.faults.ack = 'close';
+    traffic.faults.post = 'close';
+    const one = await f.entry(f.coreLane, 1);
+    const sibling = await f.entry(f.lanes[1]!, 1);
+    const initialSnapshot = f.manager.current();
+    const documentB = policySource(f, 'B');
+    const reload = retainPolicyWork(
+      Promise.resolve(f.manager.reload({ mode: 'safe', dryRun: false }))
+    );
+    // Let the manager's actual inspect finish before delaying its original close frame.
+    // Otherwise that inspect barrier would wait for the held Item before close was posted.
+    await vi.waitFor(() =>
+      expect(
+        traffic.frames.some((frame) => frame.action.kind === 'close' && !frame.forwarded)
+      ).toBe(true)
+    );
+    f.arm(one.input);
+    const first = retainPolicyWork(
+      f.send(f.coreLane, [one.input], () => traffic.events.push('predecessor-ack'))
+    );
+    await f.wait(3);
+    traffic.faults.post = 'activate';
+    const close = traffic.frames.find(
+      (frame) => frame.action.kind === 'close' && !frame.forwarded
+    )!;
+    close.forward();
+    // Actual sibling Workspace service progresses on a different host.
+    // This completion does not establish liveness of the dedicated Core host.
+    expect(await f.send(f.lanes[1]!, [sibling.input])).toEqual({ ok: true });
+    expect(f.manager.current()).toBe(initialSnapshot);
+    expect(
+      traffic.frames.filter((frame) => frame.action.kind === 'close' && frame.acknowledged)
+    ).toEqual([]);
+    expect(f.coreLane.reader.entries(f.coreLane.turn.id, 'item')).toEqual([]);
+    release(4);
+    expect(await first).toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(traffic.heldReplies.some((reply) => reply.kind === 'close')).toBe(true)
+    );
+    expect(f.coreLane.reader.entries(f.coreLane.turn.id, 'item').map(({ id }) => id)).toEqual([
+      one.item.id,
+    ]);
+    // Compare actual arrival order, not the delivery suppressed by this test's ACK hold.
+    expect(traffic.events.indexOf('predecessor-ack')).toBeGreaterThanOrEqual(0);
+    expect(traffic.events.indexOf('close-native-ack')).toBeGreaterThan(
+      traffic.events.indexOf('predecessor-ack')
+    );
+    expect((await inspectPublication(f.client, f.db)).state).toBe('closed');
+    expect(f.manager.current()).toBe(initialSnapshot);
+    traffic.deliverReplies();
+    await vi.waitFor(() =>
+      expect(
+        traffic.frames.some((frame) => frame.action.kind === 'activate' && !frame.forwarded)
+      ).toBe(true)
+    );
+    expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation)).toBe(
+      policyDigest(documentB)
+    );
+    expect((await inspectPublication(f.client, f.db)).state).toBe('closed');
+    traffic.releasePosts();
+    expect((await reload).status).toBe('applied');
+    const after = await inspectPublication(f.client, f.db);
+    expect(after.state).toBe('active');
+    expect(after.identity!.serverRevision).toBe(policyDigest(documentB));
+    // Selected Workspace policy did not change; unrelated snapshot version is not revocation.
+    expect(selectedWorkspaceRevision(after, f.workspaceId)).toBe(
+      selectedWorkspaceRevision(before, f.workspaceId)
+    );
+  });
+
+  it('refuses stale captured close and activate actions without changing the actual current publication', async () => {
+    const f = await publicationFixture();
+    const traffic = observePublicationTraffic(f.client);
+    await f.manager.bindNativePolicyPublication(f.db);
+    traffic.actions.length = 0;
+    traffic.frames.length = 0;
+    traffic.events.length = 0;
+    policySource(f, 'B');
+    expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
+    const previous = traffic.actions.map(({ action }) => action);
+    expect(previous.some((action) => action.kind === 'close')).toBe(true);
+    expect(previous.some((action) => action.kind === 'activate')).toBe(true);
+    traffic.faults.post = 'activate';
+    policySource(f, 'C');
+    const replacement = retainPolicyWork(
+      Promise.resolve(f.manager.reload({ mode: 'safe', dryRun: false }))
+    );
+    await vi.waitFor(() =>
+      expect(
+        traffic.frames.some((frame) => frame.action.kind === 'activate' && !frame.forwarded)
+      ).toBe(true)
+    );
+    const closed = await inspectPublication(f.client, f.db);
+    expect(closed.state).toBe('closed');
+    // A matching closed state for the later transition cannot revive an older packet.
+    for (const kind of ['activate', 'close'] as const) {
+      const action = previous.find((candidate) => candidate.kind === kind)!;
+      const previousFrameCount = traffic.frames.length;
+      await expect(f.client.runtimePolicyPublication(f.db, action)).rejects.toBeDefined();
+      expect(
+        traffic.frames
+          .slice(previousFrameCount)
+          .some((frame) => frame.action.kind === kind && frame.forwarded)
+      ).toBe(true);
+      expect(await inspectPublication(f.client, f.db)).toEqual(closed);
+    }
+    traffic.releasePosts();
+    expect((await replacement).status).toBe('applied');
+    const current = await inspectPublication(f.client, f.db);
+    for (const kind of ['activate', 'close'] as const) {
+      const action = previous.find((candidate) => candidate.kind === kind)!;
+      const previousFrameCount = traffic.frames.length;
+      await expect(f.client.runtimePolicyPublication(f.db, action)).rejects.toBeDefined();
+      expect(
+        traffic.frames
+          .slice(previousFrameCount)
+          .some((frame) => frame.action.kind === kind && frame.forwarded)
+      ).toBe(true);
+      expect(await inspectPublication(f.client, f.db)).toEqual(current);
+    }
+  });
+
+  it.each(['close', 'activate'] as const)(
+    'reports actual loaded state after loss of the original %s ACK',
+    async (phase) => {
+      const f = await publicationFixture(4100);
+      const traffic = observePublicationTraffic(f.client);
+      await f.manager.bindNativePolicyPublication(f.db);
+      traffic.actions.length = 0;
+      traffic.frames.length = 0;
+      traffic.events.length = 0;
+      traffic.faults.ack = phase;
+      const before = f.manager.current();
+      const previousRestart = structuredClone(f.manager.status().pendingRestart);
+      const next = policySource(f, 'B', {
+        server: { bind: { host: '127.0.0.1', port: phase === 'activate' ? 4101 : 4100 } },
+      });
+      const expectedPlan = diffRuntimeConfig(
+        before,
+        loadRuntimeConfig(f.root, { version: before.version + 1 })
+      );
+      if (phase === 'activate')
+        expect(expectedPlan.requiresRestart).toEqual([
+          expect.objectContaining({
+            path: 'server',
+            action: 'requires-restart',
+            category: 'restart-required',
+          }),
+        ]);
+      else expect(expectedPlan.requiresRestart).toEqual([]);
+      const reload = retainPolicyWork(
+        Promise.resolve(f.manager.reload({ mode: 'safe', dryRun: false }))
+      );
+      await vi.waitFor(() =>
+        expect(traffic.heldReplies.some((reply) => reply.kind === phase)).toBe(true)
+      );
+      const observed = await inspectPublication(f.client, f.db);
+      expect(observed.state).toBe(phase === 'close' ? 'closed' : 'active');
+      if (phase === 'close') expect(f.manager.current()).toBe(before);
+      else expect(observed.identity!.serverRevision).toBe(policyDigest(next));
+      const selected = traffic.frames.find(
+        (frame) => frame.action.kind === phase && frame.forwarded
+      )!;
+      const originalFrames = traffic.frames.filter((frame) => frame.action.kind === phase).length;
+      // Original reply existed; no synthetic reply, timeout or graceful shutdown substitutes for loss.
+      traffic.heldReplies.length = 0;
+      await selected.worker.terminate();
+      expect((await reload).status).toBe('failed');
+      expect(f.manager.status().currentVersion).toBe(f.manager.current().version);
+      expect(f.manager.current().version).toBe(before.version + (phase === 'activate' ? 1 : 0));
+      expect(f.manager.current().openKitConfig.server?.bind).toEqual(
+        before.openKitConfig.server?.bind
+      );
+      expect(f.manager.status().pendingRestart).toEqual(
+        phase === 'activate' ? expectedPlan.requiresRestart : previousRestart
+      );
+      expect((await reload).runtimeConfig.pendingRestart).toEqual(
+        f.manager.status().pendingRestart
+      );
+      if (phase === 'close') expect(f.manager.current()).toBe(before);
+      else
+        expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation)).toBe(
+          policyDigest(next)
+        );
+      await expect(
+        f.client.runtimePolicyPublication(f.db, { kind: 'inspect' })
+      ).rejects.toBeDefined();
+      expect(traffic.frames.filter((frame) => frame.action.kind === phase)).toHaveLength(
+        originalFrames
+      );
+    }
+  );
+
+  it.each(['dry-run', 'strict-rejected', 'invalid'] as const)(
+    'does not change loaded publication after %s input',
+    async (mode) => {
+      const f = await publicationFixture();
+      const traffic = observePublicationTraffic(f.client);
+      await f.manager.bindNativePolicyPublication(f.db);
+      const before = await inspectPublication(f.client, f.db);
+      const snapshot = f.manager.current();
+      traffic.actions.length = 0;
+      policySource(
+        f,
+        'B',
+        mode === 'strict-rejected' ? { server: { publicBaseUrl: 'https://openkit.invalid' } } : {}
+      );
+      if (mode === 'invalid') writeFileSync(join(f.root, 'config/server.jsonc'), '{ invalid input');
+      const result = await f.manager.reload({
+        mode: mode === 'strict-rejected' ? 'strict' : 'safe',
+        dryRun: mode === 'dry-run',
+      });
+      expect(result.status).toBe(
+        mode === 'dry-run' ? 'dry-run' : mode === 'invalid' ? 'failed' : 'rejected'
+      );
+      expect(f.manager.current()).toBe(snapshot);
+      expect(await inspectPublication(f.client, f.db)).toEqual(before);
+      expect(traffic.actions).toEqual([]);
+    }
+  );
+
+  it('preserves relevant Policy identity across an unrelated applied snapshot version', async () => {
+    const f = await publicationFixture();
+    await f.manager.bindNativePolicyPublication(f.db);
+    const before = await inspectPublication(f.client, f.db);
+    const version = f.manager.current().version;
+    expect(selectedWorkspaceRevision(before, f.workspaceId)).toBe(
+      policyDigest(EMPTY_POLICY_DOCUMENT)
+    );
+    // Safe reload retains this restart-required Server field; Policy is unchanged.
+    policySource(f, 'A', { server: { publicBaseUrl: 'https://openkit.invalid' } });
+    expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
+    expect(f.manager.current().version).toBeGreaterThan(version);
+    const after = await inspectPublication(f.client, f.db);
+    expect(after.state).toBe('active');
+    expect(after.identity).toEqual(before.identity);
+    expect(selectedWorkspaceRevision(after, f.workspaceId)).toBe(
+      selectedWorkspaceRevision(before, f.workspaceId)
+    );
+  });
+
+  it('keeps distinct actual Core roots separate while one publication is closed', async () => {
+    const first = await publicationFixture();
+    const second = await publicationFixture();
+    const traffic = observePublicationTraffic(first.client);
+    await first.manager.bindNativePolicyPublication(first.db);
+    await second.manager.bindNativePolicyPublication(second.db);
+    const sibling = await inspectPublication(second.client, second.db);
+    traffic.actions.length = 0;
+    traffic.frames.length = 0;
+    traffic.events.length = 0;
+    traffic.faults.ack = 'close';
+    policySource(first, 'B');
+    const reload = retainPolicyWork(
+      Promise.resolve(first.manager.reload({ mode: 'safe', dryRun: false }))
+    );
+    await vi.waitFor(() =>
+      expect(traffic.heldReplies.some((reply) => reply.kind === 'close')).toBe(true)
+    );
+    expect((await inspectPublication(first.client, first.db)).state).toBe('closed');
+    expect(await inspectPublication(second.client, second.db)).toEqual(sibling);
+    traffic.deliverReplies();
+    expect((await reload).status).toBe('applied');
+  });
+
+  it('requires fresh publication after explicit native restart and after a new manager startup', async () => {
+    const f = await publicationFixture();
+    const traffic = observePublicationTraffic(f.client);
+    await f.manager.bindNativePolicyPublication(f.db);
+    const before = await inspectPublication(f.client, f.db);
+    const previousActivation = traffic.actions.find(
+      ({ action }) => action.kind === 'activate'
+    )!.action;
+    await shutdownControlStoreWorkerClient();
+    let client = getControlStoreWorkerClient();
+    const reopened = await inspectPublication(client, f.db);
+    expect(reopened.state).toBe('unavailable');
+    expect(reopened.openingId).not.toBe(before.openingId);
+    await expect(client.runtimePolicyPublication(f.db, previousActivation)).rejects.toBeDefined();
+    await f.manager.bindNativePolicyPublication(f.db);
+    const rebound = await inspectPublication(client, f.db);
+    expect(rebound.identity!.serverRevision).toBe(before.identity!.serverRevision);
+    await expect(client.runtimePolicyPublication(f.db, previousActivation)).rejects.toBeDefined();
+    expect(await inspectPublication(client, f.db)).toEqual(rebound);
+    await shutdownControlStoreWorkerClient();
+    client = getControlStoreWorkerClient();
+    const restartedManager = createRuntimeConfigManager({ dataRoot: f.root });
+    const restartedOpening = await inspectPublication(client, f.db);
+    expect(restartedOpening.state).toBe('unavailable');
+    expect(restartedOpening.openingId).not.toBe(rebound.openingId);
+    await restartedManager.bindNativePolicyPublication(f.db);
+    const current = await inspectPublication(client, f.db);
+    expect(current.state).toBe('active');
+    expect(current.identity!.serverRevision).toBe(
+      policyDigest(restartedManager.current().openKitConfig.policy!.mediation)
+    );
+  });
 });

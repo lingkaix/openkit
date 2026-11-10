@@ -479,7 +479,7 @@ async function recoverOriginalDeletedWorkspace(
       currentAuthority();
     }
     return project(
-      activateWorkspaceRecoveryAtCore(owner, {
+      await activateWorkspaceRecoveryAtCore(owner, {
         requestId,
         store,
         runtimeConfigManager: manager,

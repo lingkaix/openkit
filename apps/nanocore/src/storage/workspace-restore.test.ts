@@ -2616,3 +2616,157 @@ describe('D0-2 same-deployment restore', () => {
     120_000
   );
 });
+
+// Same-Deployment Restore requires current authority and an authoritative open before serving.
+// Use the bound manager and the original native reply; unchanged Policy may elide close/activate.
+describe('Recovery readmission joins bound native Policy publication', () => {
+  it.each(['current-owner', 'revoked-credential', 'released-freeze'] as const)(
+    'keeps serving excluded until publication and fresh ownership: %s',
+    async (fault) => {
+      const f = await readmissionFixture();
+      const core = f.owner.core;
+      const token = createOpenKitAccessTokenRecord(core, {
+        ownerUserId: f.ownerId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const actor = {
+        kind: 'token' as const,
+        userId: token.record.ownerUserId,
+        tokenId: token.tokenId,
+        tokenScope: token.record.scope,
+        tokenWorkspaceIds: token.record.workspaceIds,
+      };
+      let replyReleased = false;
+      let authorityCheckedAfterReply = false;
+      const currentAuthority = () => {
+        requireAdministratorOperation(core, actor, 'api.call');
+        if (replyReleased) authorityCheckedAfterReply = true;
+      };
+      const owner = { ...f.owner, actor, currentAuthority };
+      currentAuthority();
+      const report = await admitWorkspaceBackupAtCore(owner, f.input);
+      expect(report).toMatchObject({ disposition: 'restored', workspaceId });
+      const finished = readRecoveryAdmission(core, f.requestId);
+      expect(finished?.state).toBe('finished');
+      const failures = scopeAdmissionFailures(f.dataRoot);
+      const sibling = f.store.getWorkspace(f.sibling.id);
+      const previous = f.runtimeConfigManager.current();
+      await f.runtimeConfigManager.bindNativePolicyPublication(core);
+      const client = getControlStoreWorkerClient(f.gate);
+      const publish = client.runtimePolicyPublication.bind(client);
+      expect((await publish(core, { kind: 'inspect' })).state).toBe('active');
+      let releaseInspect!: () => void;
+      const release = new Promise<void>((resolve) => {
+        releaseInspect = resolve;
+      });
+      let inspectArrived!: () => void;
+      const inspected = new Promise<void>((resolve) => {
+        inspectArrived = resolve;
+      });
+      let held = false;
+      const publication = vi
+        .spyOn(client, 'runtimePolicyPublication')
+        .mockImplementation(async (db, input) => {
+          // Always await the real native owner. Only its original reply is delayed.
+          const result = await publish(db, input);
+          if (db === core && input.kind === 'inspect' && !held) {
+            held = true;
+            inspectArrived();
+            await release;
+          }
+          return result;
+        });
+      let settled = false;
+      let completion: Promise<unknown> | undefined;
+      try {
+        const pending = Promise.resolve(
+          activateWorkspaceRecoveryAtCore(owner, { ...f.activation, currentAuthority })
+        );
+        const outcome = pending.then(
+          (value) => {
+            settled = true;
+            return { status: 'fulfilled' as const, value };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { status: 'rejected' as const, error };
+          }
+        );
+        completion = outcome;
+        expect(
+          await Promise.race([
+            inspected.then(() => 'native-reply-held'),
+            outcome.then(() => 'recovery-settled'),
+          ])
+        ).toBe('native-reply-held');
+        expect(held).toBe(true);
+        expect(settled).toBe(false);
+        expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+        expect(f.gate.enter(workspaceId)).toBeNull();
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+        expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+        expect(f.runtimeConfigManager.current()).toBe(previous);
+        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
+        expect(f.store.getWorkspace(f.sibling.id)).toEqual(sibling);
+
+        if (fault === 'revoked-credential') revokeOpenKitAccessTokenRecord(core, token.tokenId);
+        if (fault === 'released-freeze') f.freeze.release();
+        replyReleased = true;
+        releaseInspect();
+        const result = await outcome;
+        expect(settled).toBe(true);
+        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(f.store.getWorkspace(f.sibling.id)).toEqual(sibling);
+        if (fault === 'current-owner') {
+          expect(result.status).toBe('fulfilled');
+          if (result.status !== 'fulfilled') throw new Error('Recovery did not complete.');
+          expect(result.value).toEqual(report);
+          expect(authorityCheckedAfterReply).toBe(true);
+          expect(f.runtimeConfigManager.current()).not.toBe(previous);
+          expect(
+            f.runtimeConfigManager
+              .current()
+              .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config.workspace
+              .name
+          ).toBe('Current recovered configuration');
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
+          expect(f.store.getWorkspace(workspaceId).id).toBe(workspaceId);
+          expect(() => f.store.getThread(workspaceId, f.staleThread.id)).toThrow();
+          expect(scopeAdmissionFailures(f.dataRoot)).toEqual(
+            failures.filter(
+              (failure) =>
+                failure.scope !== 'workspace' ||
+                failure.id !== workspaceId ||
+                failure.check !== 'recovery'
+            )
+          );
+          f.freeze.release();
+          const admission = f.gate.enter(workspaceId);
+          expect(admission).toBeTypeOf('function');
+          admission!();
+        } else {
+          // This direct module API propagates owner refusal; it does not map every
+          // rejection to the public source-capture operation's recovery-required code.
+          expect(result.status).toBe('rejected');
+          if (result.status !== 'rejected') throw new Error('Recovery unexpectedly completed.');
+          expect(result.error).toBeInstanceOf(Error);
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+          expect(f.gate.enter(workspaceId)).toBeNull();
+          expect(() => f.store.getWorkspace(workspaceId)).toThrow();
+          expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
+          expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(fault !== 'released-freeze');
+          if (fault === 'released-freeze') {
+            expect(f.runtimeConfigManager.current()).toBe(previous);
+          }
+        }
+      } finally {
+        releaseInspect();
+        await completion;
+        publication.mockRestore();
+      }
+    }
+  );
+});

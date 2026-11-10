@@ -417,7 +417,7 @@ export function activateWorkspaceRecoveryAtCore(
     readonly runtimeConfigManager: RuntimeConfigManager;
     readonly currentAuthority: () => void;
   }
-): WorkspaceRecoveryCliReport {
+): WorkspaceRecoveryCliReport | Promise<WorkspaceRecoveryCliReport> {
   const { core, native } = owner;
   if (!native) refuseRecovery('recovery-required');
   input.currentAuthority();
@@ -465,27 +465,34 @@ export function activateWorkspaceRecoveryAtCore(
   if (failure?.check !== 'recovery') refuseRecovery('recovery-required');
   // Both loaders retain their owning checks and leave public authority refused on any failure.
   input.store.reloadRecoveredWorkspace(workspaceId, native.freeze);
-  input.runtimeConfigManager.reloadRecoveredWorkspace(workspaceId, native.gate, native.freeze);
-  input.currentAuthority();
-  assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
-  if (
-    !isDeepStrictEqual(
-      readWorkspaceRecoveryReadmission(core, input.requestId, native.gate, native.freeze),
-      owned
-    ) ||
-    !scopeAdmissionFailures(core.dataRoot).includes(failure)
-  )
-    refuseRecovery('recovery-required');
-  // Synchronous settlement has no I/O, callback or await between validation and serving admission.
-  input.store.settleRecoveredWorkspacePublication(workspaceId, native.freeze);
-  settleWorkspaceRecoveryScope({
-    dataRoot: core.dataRoot,
-    failure,
-    admission: native.gate,
-    freeze: native.freeze,
-  });
-  native.gate.reopen(workspaceId, 'capture');
-  return owned.proof.result;
+  const ready = input.runtimeConfigManager.reloadRecoveredWorkspace(
+    workspaceId,
+    native.gate,
+    native.freeze
+  );
+  const finish = (): WorkspaceRecoveryCliReport => {
+    input.currentAuthority();
+    assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
+    if (
+      !isDeepStrictEqual(
+        readWorkspaceRecoveryReadmission(core, input.requestId, native.gate, native.freeze),
+        owned
+      ) ||
+      !scopeAdmissionFailures(core.dataRoot).includes(failure)
+    )
+      refuseRecovery('recovery-required');
+    // Synchronous settlement has no I/O, callback or await between validation and serving admission.
+    input.store.settleRecoveredWorkspacePublication(workspaceId, native.freeze);
+    settleWorkspaceRecoveryScope({
+      dataRoot: core.dataRoot,
+      failure,
+      admission: native.gate,
+      freeze: native.freeze,
+    });
+    native.gate.reopen(workspaceId, 'capture');
+    return owned.proof.result;
+  };
+  return ready instanceof Promise ? ready.then(finish) : finish();
 }
 
 /** Reuses original request/manifest identity before either replay or a new lifecycle effect. */
@@ -925,7 +932,7 @@ function activateSourceCapture(
   input: WorkspaceRecoverySelectedInput,
   freeze: WorkspaceFrozenAdmission,
   manager: RuntimeConfigManager
-): void {
+): void | Promise<void> {
   const before = readWorkspaceCaptureRecoveryAtCore(owned.coreDb, input);
   if (
     before.movedOut ||
@@ -940,39 +947,47 @@ function activateSourceCapture(
     (row) => row.scope === 'workspace' && row.id === input.workspaceId && row.check !== 'index'
   );
   if (failure && failure.check !== 'recovery') refuseRecovery('recovery-required');
-  try {
-    owned.store.reloadRecoveredWorkspace(input.workspaceId, freeze);
-    manager.reloadRecoveredWorkspace(input.workspaceId, owned.mutationAdmission, freeze);
-  } catch (error) {
+  let ready: ReturnType<RuntimeConfigManager['reloadRecoveredWorkspace']>;
+  const validationFailed = (error: unknown): never => {
     throw new OperationError(
       'recovery-required',
       'Canonical Workspace validation is unavailable.',
       409,
       { cause: error }
     );
+  };
+  try {
+    owned.store.reloadRecoveredWorkspace(input.workspaceId, freeze);
+    ready = manager.reloadRecoveredWorkspace(input.workspaceId, owned.mutationAdmission, freeze);
+  } catch (error) {
+    return validationFailed(error);
   }
-  owned.currentAuthority();
-  if (
-    !isDeepStrictEqual(before, readWorkspaceCaptureRecoveryAtCore(owned.coreDb, input)) ||
-    failure !==
-      scopeAdmissionFailures(owned.dataRoot).find(
-        (row) => row.scope === 'workspace' && row.id === input.workspaceId && row.check !== 'index'
-      ) ||
-    readWorkspaceRecoveryBlockers(
-      { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
-      { captureId: before.capture.captureId }
-    ).length
-  )
-    refuseRecovery('recovery-required');
-  owned.store.settleRecoveredWorkspacePublication(input.workspaceId, freeze);
-  if (failure)
-    settleWorkspaceRecoveryScope({
-      dataRoot: owned.dataRoot,
-      failure,
-      admission: owned.mutationAdmission,
-      freeze,
-    });
-  owned.mutationAdmission.reopen(input.workspaceId, 'capture');
+  const finish = () => {
+    owned.currentAuthority();
+    if (
+      !isDeepStrictEqual(before, readWorkspaceCaptureRecoveryAtCore(owned.coreDb, input)) ||
+      failure !==
+        scopeAdmissionFailures(owned.dataRoot).find(
+          (row) =>
+            row.scope === 'workspace' && row.id === input.workspaceId && row.check !== 'index'
+        ) ||
+      readWorkspaceRecoveryBlockers(
+        { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
+        { captureId: before.capture.captureId }
+      ).length
+    )
+      refuseRecovery('recovery-required');
+    owned.store.settleRecoveredWorkspacePublication(input.workspaceId, freeze);
+    if (failure)
+      settleWorkspaceRecoveryScope({
+        dataRoot: owned.dataRoot,
+        failure,
+        admission: owned.mutationAdmission,
+        freeze,
+      });
+    owned.mutationAdmission.reopen(input.workspaceId, 'capture');
+  };
+  return ready instanceof Promise ? ready.then(finish, validationFailed) : finish();
 }
 
 /** Completes one original selection under the existing nonwaiting freeze and native drain. */
@@ -1170,7 +1185,7 @@ async function decideWorkspaceRecovery(
             : await abandonWorkspaceRecoveryAtCore(owner, selected);
         owned.currentAuthority();
         if (decision === 'finish' || target.proof.input.command === 'restore')
-          activateWorkspaceRecoveryAtCore(owner, {
+          await activateWorkspaceRecoveryAtCore(owner, {
             requestId: target.admission_id,
             store: owned.store,
             runtimeConfigManager: manager,
@@ -1183,7 +1198,7 @@ async function decideWorkspaceRecovery(
             : await abandonWorkspaceCaptureAtCore(owned, selected, freeze);
         owned.currentAuthority();
         if (!readWorkspaceCaptureRecoveryAtCore(owned.coreDb, selected).movedOut)
-          activateSourceCapture(owned, selected, freeze, manager);
+          await activateSourceCapture(owned, selected, freeze, manager);
       }
       return WorkspaceSnapshotReportSchema.parse(report);
     } catch (error) {
@@ -1418,7 +1433,7 @@ export function createWorkspaceRestoreOperationImplementations(
           };
           await admitWorkspaceBackupAtCore(owner, target);
           owned.currentAuthority();
-          const report = activateWorkspaceRecoveryAtCore(owner, {
+          const report = await activateWorkspaceRecoveryAtCore(owner, {
             requestId: input.requestId,
             store: owned.store,
             runtimeConfigManager: manager,

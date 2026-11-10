@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   OperationOutput,
   VaultAdminWorkspaceReference,
@@ -531,7 +532,11 @@ export function createVaultOperationImplementations(
     const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
     try {
       const plan = getVaultInjectionPlan(coreDb, input.planId);
-      if (!plan?.packageSnapshotId || plan.injectionVisibility !== 'runtime-file')
+      if (
+        !plan?.packageSnapshotId ||
+        (plan.injectionVisibility !== 'runtime-file' &&
+          plan.injectionVisibility !== 'runtime-token')
+      )
         throw new OperationError(
           'credential_binding_not_found',
           'Credential binding not found.',
@@ -553,6 +558,11 @@ export function createVaultOperationImplementations(
           404
         );
       const receiptId = input.expectedReceiptId ?? input.receiptId ?? null;
+      const selectedGrant = getVaultGrant(coreDb, plan.grantId);
+      const selectedReference = selectedGrant
+        ? getVaultReference(coreDb, selectedGrant.vaultReferenceId)
+        : null;
+      let acceptedSuccessor: VaultReferenceRecord | undefined;
       const readFacts = () => {
         let target = null;
         if (context.kind === 'coordinator') {
@@ -574,11 +584,16 @@ export function createVaultOperationImplementations(
         }
         const currentPlan = getVaultInjectionPlan(coreDb, input.planId);
         const grant = currentPlan?.grantId ? getVaultGrant(coreDb, currentPlan.grantId) : null;
+        const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
         return {
           plan: currentPlan,
           grant,
           target,
-          reference: grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null,
+          // Only this call's exact committed successor preserves the original Policy selection.
+          reference:
+            acceptedSuccessor && isDeepStrictEqual(reference, acceptedSuccessor)
+              ? selectedReference
+              : reference,
           receipt: receiptId ? getVaultInjectionReceipt(coreDb, receiptId) : null,
         };
       };
@@ -594,12 +609,13 @@ export function createVaultOperationImplementations(
           receiptId,
           requestId: input.requestId,
           packageSnapshotId: plan.packageSnapshotId,
-          targetDigest: policyDigest(plan.targetPath),
+          targetDigest:
+            plan.injectionVisibility === 'runtime-file' ? policyDigest(plan.targetPath) : null,
         },
         {
           materialVersion: input.materialVersion ?? null,
-          format: 'utf8',
-          access: 'read-only',
+          format: plan.injectionVisibility === 'runtime-token' ? 'chatgptAuthTokens' : 'utf8',
+          access: plan.injectionVisibility === 'runtime-token' ? 'access-token-only' : 'read-only',
           ephemeral: true,
           outsideRetainedStorage: true,
           excludedFromCapture: true,
@@ -630,8 +646,32 @@ export function createVaultOperationImplementations(
               ...(input.receiptId ? { receiptId: input.receiptId } : {}),
               ...(input.expectedReceiptId ? { expectedReceiptId: input.expectedReceiptId } : {}),
               ...(input.materialVersion ? { materialVersion: input.materialVersion } : {}),
+              ...(context.signal ? { signal: context.signal } : {}),
             },
-            recheckAuthority
+            async (successor) => {
+              if (successor) {
+                if (
+                  action !== 'deliver' ||
+                  plan.injectionVisibility !== 'runtime-token' ||
+                  acceptedSuccessor ||
+                  !selectedReference ||
+                  selectedReference.currentVersion !== input.materialVersion ||
+                  !Number.isSafeInteger(successor.currentVersion) ||
+                  !isDeepStrictEqual(successor, {
+                    ...selectedReference,
+                    currentVersion: selectedReference.currentVersion + 1,
+                    updatedAt: successor.updatedAt,
+                  }) ||
+                  !isDeepStrictEqual(
+                    getVaultReference(coreDb, selectedReference.referenceId),
+                    successor
+                  )
+                )
+                  vaultWorkspaceAccessDenied();
+                acceptedSuccessor = structuredClone(successor);
+              }
+              await recheckAuthority();
+            }
           )
       );
     } finally {
@@ -1519,7 +1559,14 @@ export function createVaultOperationImplementations(
     ...createVaultGrantRequestImplementations(dependencies, governReviewedGrantIssue),
     'vault.binding-deliver': async (input, context) => {
       const result = await bindingOperation('deliver', input, context);
-      if (!('realizedProtection' in result))
+      if (
+        !('realizedProtection' in result) &&
+        !(
+          'revocationStatus' in result &&
+          result.planId === input.planId &&
+          getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility === 'runtime-token'
+        )
+      )
         throw new OperationError(
           'recovery_required',
           'Credential binding requires inspection.',

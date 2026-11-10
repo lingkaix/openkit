@@ -144,10 +144,16 @@ export interface TurnExecutor {
       readonly expectedReceiptId?: string;
       readonly materialVersion?: number;
       readonly requestId: string;
+      /** Original operation cancellation; it never supplies authority. */
+      readonly signal?: AbortSignal;
     },
-    recheckAuthority: () => Promise<void>
+    /** Only Core may acknowledge its exact committed reference successor. Placements get a zero-argument check. */
+    recheckAuthority: (
+      successor?: import('../storage/vault-native-codecs.js').VaultReferenceRecord
+    ) => Promise<void>
   ): Promise<
     | import('@openkit/config-schema').WorkerCredentialReceipt
+    | import('@openkit/app-api-schemas').WorkspaceVaultInjectionReceipt
     | {
         readonly planId: string;
         readonly receiptId: string;

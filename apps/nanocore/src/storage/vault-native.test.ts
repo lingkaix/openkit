@@ -29,6 +29,7 @@ import {
 import { createVaultInjectionPlan, getVaultInjectionPlan } from '../vault-injection-plans.js';
 import {
   createVaultInjectionReceipt,
+  getVaultInjectionReceipt,
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -2002,5 +2003,138 @@ describe('retained Login quota metadata codec boundary', () => {
         },
       }).success
     ).toBe(true);
+  });
+});
+
+// A completion receipt cannot be created from a User Login plan without native binding proof.
+// Owners: core/vault.md Injection Contract and Lifecycle And Failure Semantics;
+// specs/20260703-vault_secret_injection.md Harness Subscription Logins.
+describe('User Login native receipt proof', () => {
+  it('refuses a canonical User Codex Login receipt without loginBinding at the native writer', async () => {
+    const f = await nativeLoginShareFixture();
+    try {
+      const issued = await f.issue();
+      expect(issued.status).toBe(200);
+      expect(issued.body).toMatchObject({ disposition: 'approved-executed' });
+      const grant = getVaultGrant(f.db, issued.body.grantId);
+      expect(grant).not.toBeNull();
+      if (!grant) throw new Error('Reviewed Login grant was not published.');
+      expect(grant).toMatchObject({
+        issuance: 'target',
+        vaultReferenceId: f.reference.referenceId,
+        ownerScope: 'workspace',
+        workspaceId: f.workspaceId,
+        allowedInjectionPaths: ['runtime-token'],
+        approvalId: f.request.approvalRequestId,
+      });
+      // Read the family through the stored grant, not eligibility or a secret-kind heuristic.
+      expect(getVaultReference(f.db, grant.vaultReferenceId)).toMatchObject({
+        referenceId: f.reference.referenceId,
+        ownerScope: 'user',
+        userId: f.user.id,
+        login: { provider: 'codex' },
+      });
+
+      // A real metadata Session supplies receipt actor linkage without claiming an
+      // AEP, accepted runtime, physical Login completion or an installed handler.
+      const { FsStore } = await import('../lib/store.js');
+      const store = new FsStore({ dataRoot: f.db.dataRoot });
+      const thread = await store.createThread(f.workspaceId, 'Unproven Login receipt');
+      const timestamp = new Date().toISOString();
+      const session = await store.createAgentSession({
+        id: allocateEntityId('as'),
+        workspaceId: f.workspaceId,
+        threadId: thread.id,
+        agentId: 'agent_codex_host',
+        status: 'ready',
+        message: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      expect(store.getAgentSession(session.id)).toEqual(session);
+      expect(session.environmentPackageSnapshotId).toBeNull();
+      expect(session.nativeHandleDigest).toBeNull();
+      const plan = await createVaultInjectionPlan(f.db, {
+        planId: 'plan_native_user_login_without_proof',
+        grantId: grant.grantId,
+        injectionVisibility: 'runtime-token',
+        expirationBehavior: 'Deny expired use.',
+        revocationBehavior: 'Close the affected binding.',
+        redactionRule: 'Exclude material.',
+        backendCapabilityRequirement: 'runtime-token',
+      });
+      expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
+      expect(plan).toMatchObject({
+        grantId: grant.grantId,
+        injectionVisibility: 'runtime-token',
+        status: 'active',
+      });
+      expect(listVaultInjectionReceipts(f.db)).toEqual([]);
+      const attemptedReceipt = {
+        receiptId: 'receipt_native_user_login_without_proof',
+        planId: plan.planId,
+        grantId: grant.grantId,
+        agentSessionId: session.id,
+        backendSummary: 'Attempted Login receipt without native binding proof.',
+        injectedAt: timestamp,
+        expiresAt: grant.expiresAt,
+        revocationStatus: 'active' as const,
+      };
+      expect(
+        ControlVaultInputSchema.safeParse({
+          kind: 'receipt-create',
+          record: attemptedReceipt,
+        }).success
+      ).toBe(true);
+
+      const { Worker } = await import('node:worker_threads');
+      const posted = vi.spyOn(Worker.prototype, 'postMessage');
+      const beforeSubmissions = f.submissions();
+      const beforeCommits = f.commits();
+      const pending = f.start(() =>
+        getControlStoreWorkerClient().vault(f.db, 'receipt-create', attemptedReceipt)
+      );
+      const outcome = await pending.result;
+      const targetFrames = posted.mock.calls.filter(
+        ([value]) =>
+          isControlWorkerRequest(value) &&
+          value.operation === 'vault' &&
+          value.input.kind === 'receipt-create' &&
+          value.input.record.receiptId === attemptedReceipt.receiptId
+      );
+      expect(targetFrames).toHaveLength(1);
+      const target = targetFrames[0]![0];
+      expect(isControlWorkerRequest(target)).toBe(true);
+      if (
+        !isControlWorkerRequest(target) ||
+        target.operation !== 'vault' ||
+        target.input.kind !== 'receipt-create'
+      ) {
+        throw new Error('The original receipt command was not posted to native.');
+      }
+      expect(target.database).toBe(
+        `core:${nativeProductScope(f.db.dataRoot, { kind: 'server' }).path}`
+      );
+      expect(target.input.record).not.toHaveProperty('loginBinding');
+      expect(target.input.record).toMatchObject(attemptedReceipt);
+      expect(f.submissions() - beforeSubmissions).toBe(1);
+      // A native savepoint refusal still settles under its covering FULL batch;
+      // a parser, Main setup or missing actor-linkage failure does not qualify.
+      expect(Atomics.load(f.gate, 4)).toBe(2);
+      expect(f.commits()).toBe(beforeCommits + 1);
+      // Keep the persisted-state observations visible under the parent's permissive
+      // guard fault: actual accepted receipt publication must make this same test fail.
+      expect.soft(getVaultInjectionReceipt(f.db, attemptedReceipt.receiptId)).toBeNull();
+      expect.soft(listVaultInjectionReceipts(f.db)).toEqual([]);
+      expect(outcome).toMatchObject({
+        ok: false,
+        error: { code: 'precondition', commit: 'not-committed' },
+      });
+      if (outcome.ok)
+        throw new Error('Native accepted a User Login receipt without binding proof.');
+      expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+    } finally {
+      f.unlock.lock();
+    }
   });
 });

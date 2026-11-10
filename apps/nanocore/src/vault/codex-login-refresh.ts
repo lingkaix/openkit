@@ -8,6 +8,43 @@ export class CodexLoginAccountMismatchError extends Error {
   }
 }
 
+/** Only errors actually issued after this module's stock refresh belong to this private witness set. */
+const confirmedPermanentFailures = new WeakSet<object>();
+
+/** A fixed redacted classification; the upstream body is never retained on this error. */
+class CodexLoginPermanentRefreshError extends Error {
+  public constructor() {
+    super('Codex Login refresh requires reauthentication.');
+    this.name = 'CodexLoginPermanentRefreshError';
+  }
+}
+
+/** Returns a Core-observed private failure class, never quarantine permission or a Worker claim. */
+export function readConfirmedCodexLoginRefreshFailure(error: unknown): 'invalid-grant' | null {
+  return typeof error === 'object' && error !== null && confirmedPermanentFailures.has(error)
+    ? 'invalid-grant'
+    : null;
+}
+
+/** The installed stock provider emits this envelope only for an actual non-success refresh response. */
+function isPermanentStockRefreshFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const match = /^OpenAI Codex token refresh failed \((400|401)\): ([\s\S]*)$/.exec(error.message);
+  const body = match?.[2];
+  if (body === undefined || Buffer.byteLength(body, 'utf8') > 4096) return false;
+  try {
+    const payload: unknown = JSON.parse(body);
+    return (
+      typeof payload === 'object' &&
+      payload !== null &&
+      !Array.isArray(payload) &&
+      Reflect.get(payload, 'error') === 'invalid_grant'
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Refreshes private Login material through the stock Core provider, never a Worker callback.
  * Authorization, Use/Audit, canonical generation publication and native delivery remain caller-owned.
@@ -21,7 +58,7 @@ export async function refreshCodexLoginMaterial(
   material: string,
   signal: AbortSignal,
   expectedAccountId?: string
-): Promise<{ material: string; accountId: string }> {
+): Promise<{ material: string; accountId: string; accessToken: string }> {
   try {
     const decoded = z
       .object({
@@ -73,6 +110,7 @@ export async function refreshCodexLoginMaterial(
       throw new Error('Codex Login access cannot be delivered.');
     return {
       accountId: refreshed.accountId,
+      accessToken: refreshed.access,
       material: JSON.stringify({
         ...decoded,
         tokens: {
@@ -86,6 +124,11 @@ export async function refreshCodexLoginMaterial(
     };
   } catch (error) {
     if (error instanceof CodexLoginAccountMismatchError) throw error;
+    if (!signal.aborted && isPermanentStockRefreshFailure(error)) {
+      const failure = new CodexLoginPermanentRefreshError();
+      confirmedPermanentFailures.add(failure);
+      throw failure;
+    }
     // Decoder/provider errors may contain auth JSON or native account data.
     throw new Error('Codex Login refresh failed.');
   }

@@ -514,9 +514,16 @@ describe('retired registry consumers and retained Core migration', () => {
     writeFileSync(join(folder, 'meta', '_journal.json'), JSON.stringify(previous));
     // Pin the retained 0011 fixture to a7a269b7c, so rewriting old migrations cannot mask data loss.
     const retainedSourceDigest = createHash('sha256').update(JSON.stringify(previous.entries));
+    // Current 0005 lost two channel CHECKs in the approved pre-reset F3 rewrite. Keep its
+    // a7a269b7c bytes only in this historical fixture, so the original 0011 schema stays pinned.
+    const historicalSource = new URL('../test-support/fixtures/core-0011/', import.meta.url);
     for (const entry of previous.entries) {
-      retainedSourceDigest.update(readFileSync(new URL(`${entry.tag}.sql`, source)));
-      copyFileSync(new URL(`${entry.tag}.sql`, source), join(folder, `${entry.tag}.sql`));
+      const migrationSource = new URL(
+        `${entry.tag}.sql`,
+        entry.tag === '0005_channel_notifications' ? historicalSource : source
+      );
+      retainedSourceDigest.update(readFileSync(migrationSource));
+      copyFileSync(migrationSource, join(folder, `${entry.tag}.sql`));
     }
     expect(retainedSourceDigest.digest('hex')).toBe(
       '572253024d75f508d143e0731980ebf15ba5dc7a05c28a5b4ba03c957156b70d'

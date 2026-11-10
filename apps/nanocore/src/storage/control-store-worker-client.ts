@@ -64,6 +64,12 @@ import type {
   ControlResolvedAgentSetupRecord,
   ControlResolvedAgentSetupResult,
 } from './resolved-agent-setup-codecs.js';
+import {
+  type RuntimePolicyPublicationInput,
+  RuntimePolicyPublicationInputSchema,
+  type RuntimePolicyPublicationResult,
+  RuntimePolicyPublicationResultSchema,
+} from './runtime-policy-publication.js';
 import type { ControlScopedNotebookSqlInput } from './scoped-notebook-sql-codecs.js';
 import {
   type ControlStandaloneAuditInput,
@@ -1812,6 +1818,31 @@ class ControlStoreWorkerClient {
         throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
       throw error;
     }
+  }
+
+  /** Publishes or inspects only the actual canonical Core owner's disposable loaded-Policy readiness. */
+  async runtimePolicyPublication(
+    db: CoreDb,
+    value: RuntimePolicyPublicationInput
+  ): Promise<RuntimePolicyPublicationResult> {
+    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const input = RuntimePolicyPublicationInputSchema.parse(value);
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    await this.open({
+      database,
+      path: scope.path,
+      create: false,
+      initialize: 'core',
+      dataRoot: db.dataRoot,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const reply = await this.request({ operation: 'runtime-policy-publication', database, input });
+    return RuntimePolicyPublicationResultSchema.parse(
+      (reply as Extract<Success, { operation: 'runtime-policy-publication' }>).result
+    );
   }
 
   /** Opens the exact existing evidence database and publishes one original Vault stage after FULL acknowledgement. */

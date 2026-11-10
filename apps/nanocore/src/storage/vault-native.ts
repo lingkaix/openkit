@@ -17,6 +17,7 @@ import {
 import { OperationError } from '../operation-error.js';
 import { policyDigest } from '../policy/statements.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { requireHarnessLoginBinding } from '../runtime/harness-login-authority.js';
 import { requireNanoHostLoginRemoval } from '../runtime/nanohost-harness-records.js';
 import {
@@ -877,6 +878,16 @@ export function applyControlVault(
         };
         break;
       case 'reference-advance':
+        if (request.record.loginBinding) {
+          const authority = request.record.loginBinding;
+          requireInitialLoginBinding(db, authority);
+          if (
+            request.record.referenceId !== authority.reference.referenceId ||
+            request.record.currentVersion !== authority.binding.materialVersion + 1 ||
+            !Number.isSafeInteger(request.record.currentVersion)
+          )
+            throw new ControlProductPreconditionError();
+        }
         result = {
           kind: request.kind,
           value: advanceActiveVaultReferenceVersion(db, withClock(request.record)),
@@ -921,7 +932,30 @@ export function applyControlVault(
           value: createVaultInjectionPlan(db, withClock(request.record)),
         };
         break;
-      case 'receipt-create':
+      case 'receipt-create': {
+        const plan = getVaultInjectionPlan(db, request.record.planId);
+        if (plan && (plan.injectionVisibility === 'runtime-token' || request.record.loginBinding)) {
+          const grant = getVaultGrant(db, plan.grantId);
+          const reference = grant ? getVaultReference(db, grant.vaultReferenceId) : null;
+          if (!grant || !reference || request.record.grantId !== grant.grantId)
+            throw new ControlProductPreconditionError();
+          // Canonical Login identity selects the proof requirement before eligibility checks.
+          // Ordinary token metadata retains its existing receipt and revocation contract.
+          if (reference.login !== undefined || request.record.loginBinding) {
+            const authority = request.record.loginBinding;
+            if (!authority) throw new ControlProductPreconditionError();
+            const current = requireInitialLoginBinding(db, authority);
+            if (
+              request.record.planId !== authority.planId ||
+              request.record.receiptId !== authority.receiptId ||
+              request.record.grantId !== current.grant.grantId ||
+              request.record.agentSessionId !== authority.binding.consumer.scope.agentSessionId ||
+              request.record.revocationStatus !== 'active' ||
+              (request.record.expiresAt ?? null) !== current.grant.expiresAt
+            )
+              throw new ControlProductPreconditionError();
+          }
+        }
         if (request.record.workerAuthority)
           assertCurrentWorkerCredentialAuthority(
             db,
@@ -936,6 +970,7 @@ export function applyControlVault(
           value: createVaultInjectionReceipt(db, definedFields(request.record)),
         };
         break;
+      }
     }
   }
   // Validate before savepoint release so malformed result facts cannot publish a successful write.
@@ -1232,6 +1267,96 @@ function assertBindingRequester(
     true
   );
   if (policyDigest(current) !== authority.revision) throw new ControlProductPreconditionError();
+}
+
+/** Repeats the initial token delivery's exact current facts inside the native savepoint, after FIFO predecessors. */
+function requireInitialLoginBinding(
+  db: CoreDb,
+  authority: NonNullable<
+    Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
+  >
+) {
+  const { binding, reference, requester, attemptId, planId, receiptId } = authority;
+  const { consumer, declaration, materialVersion } = binding;
+  const now = new Date().toISOString();
+  assertBindingRequester(db, requester);
+  const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+  const current = assertCurrentWorkerCredentialAuthority(db, consumer, () => now, declaration);
+  const plan = getVaultInjectionPlan(db, planId);
+  if (
+    declaration.visibility !== 'runtime-token' ||
+    declaration.consumer !== 'codex-login' ||
+    requester.workspaceId !== consumer.scope.workspaceId ||
+    !Number.isSafeInteger(materialVersion) ||
+    materialVersion < 1 ||
+    !isDeepStrictEqual(current.reference, reference) ||
+    current.reference.currentVersion !== materialVersion ||
+    attempt.phase !== 'open' ||
+    attempt.deadline === null ||
+    attempt.deadline <= now ||
+    attempt.workspaceId !== consumer.scope.workspaceId ||
+    attempt.threadId !== consumer.scope.threadId ||
+    attempt.turnId !== consumer.scope.turnId ||
+    attempt.agentSessionId !== consumer.scope.agentSessionId ||
+    attempt.inputRef !== consumer.snapshotId ||
+    !plan ||
+    plan.status !== 'active' ||
+    plan.injectionVisibility !== 'runtime-token' ||
+    plan.grantId !== current.grant.grantId ||
+    plan.packageSnapshotId !== consumer.snapshotId ||
+    planId !== `plan_${consumer.snapshotId}_${declaration.id}` ||
+    receiptId !== `receipt_${consumer.snapshotId}_${declaration.id}`
+  )
+    throw new ControlProductPreconditionError();
+  const scope = nativeProductScope(db.dataRoot, {
+    kind: 'workspace',
+    workspaceId: consumer.scope.workspaceId,
+  });
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  try {
+    if (!reader.get('workspace', consumer.scope.workspaceId))
+      throw new ControlProductPreconditionError();
+    const workspaceDb = bindWorkspaceSqlite(reader.sqlite, db.dataRoot, consumer.scope.workspaceId);
+    const snapshot = AgentEnvironmentPackageSchema.parse(
+      requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        consumer.scope.workspaceId,
+        consumer.snapshotId
+      ).snapshot
+    );
+    if (
+      snapshot.schemaVersion !== 4 ||
+      snapshot.llm.mode !== 'harness' ||
+      !isDeepStrictEqual(snapshot.scope, consumer.scope) ||
+      snapshot.agent.agentId !== consumer.agent.agentId ||
+      snapshot.credentials.declarations.filter((value) => value.id === declaration.id).length !==
+        1 ||
+      !isDeepStrictEqual(
+        snapshot.credentials.declarations.find((value) => value.id === declaration.id),
+        declaration
+      )
+    )
+      throw new ControlProductPreconditionError();
+    const use = workspaceDb.sqlite
+      .prepare(`SELECT 1 FROM vault_use_records u JOIN audit_events a ON a.audit_event_id=u.audit_event_id
+      WHERE u.owner_scope='workspace' AND u.workspace_id=? AND u.vault_reference_id=? AND u.material_version=?
+      AND u.grant_id=? AND u.plan_id=? AND u.receipt_id=? AND u.agent_session_id=? AND u.outcome='succeeded'
+      AND a.workspace_id=? AND a.action='vault.resolve' AND a.outcome='succeeded' LIMIT 1`)
+      .get(
+        consumer.scope.workspaceId,
+        reference.referenceId,
+        materialVersion,
+        current.grant.grantId,
+        planId,
+        receiptId,
+        consumer.scope.agentSessionId,
+        consumer.scope.workspaceId
+      );
+    if (!use) throw new ControlProductPreconditionError();
+    return current;
+  } finally {
+    reader.close();
+  }
 }
 
 type Effect = Extract<

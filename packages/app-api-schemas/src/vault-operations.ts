@@ -96,7 +96,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
   'vault.binding-deliver': {
     stability: 'release-coupled',
     description:
-      'Deliver one already admitted credential file binding and inspect its realized protection.',
+      'Deliver one admitted credential binding and inspect its realized file protection or access completion receipt.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -110,7 +110,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
         requestId: z.uuid(),
       })
       .strict(),
-    outputSchema: WorkerCredentialReceiptSchema,
+    outputSchema: z.union([WorkerCredentialReceiptSchema, WorkspaceVaultInjectionReceiptSchema]),
     credentials: [
       'local-user',
       'user-session',

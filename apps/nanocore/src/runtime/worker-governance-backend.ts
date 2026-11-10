@@ -1143,6 +1143,32 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
     materialVersion: number,
     recheckAuthority: () => Promise<void>
   ): Promise<import('./execution-backend.js').ExecutionCredentialReceipt>;
+  /** Realizes access-only supply; Core owns refresh, evidence and receipt publication after this acknowledgement. */
+  deliverCredentialAccess?(
+    input: {
+      readonly workspaceId: string;
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly agentSessionId: string;
+      readonly packageSnapshotId: string;
+      readonly attemptId: string;
+      readonly declarationId: string;
+      readonly grantId: string;
+      readonly referenceId: string;
+      readonly planId: string;
+      readonly receiptId: string;
+      readonly expectedMaterialVersion: number;
+      readonly consumer: 'codex-login';
+    },
+    supply: () => Promise<{
+      readonly accessToken: string;
+      readonly accountId: string;
+      readonly planType: string | null;
+      readonly receiptId: string;
+      readonly materialGeneration: number;
+    }>,
+    recheckAuthority: () => Promise<void>
+  ): Promise<{ readonly receiptId: string; readonly materialGeneration: number }>;
   /**
    * Describes backend capabilities before package selection.
    *

@@ -4,14 +4,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { OperationId } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, type PolicyDocumentV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createBetterAuth } from '../auth/better-auth.js';
+import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
+import { resolveHarnessLogicalModelCatalog } from '../llm/logical-models.js';
 import { PolicyInterception } from '../policy/interception.js';
+import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
+import { ProviderRegistry } from '../providers/registry.js';
+import {
+  recordAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
+} from '../runtime/aep-snapshot-ledger.js';
+import { resolveAgentEnvironmentPackage } from '../runtime/agent-environment.js';
+import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -19,9 +31,18 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { getVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
+import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createLockedVaultBackend, VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from './vault-grants.js';
@@ -740,6 +761,10 @@ async function reviewedLoginUseFixture() {
       grantId: issued.grantId,
       backend,
       material,
+      store,
+      runtimeConfigManager,
+      vaultUnlockState,
+      threadId: thread.id,
       call,
       close,
       setTime: (value: string) => {
@@ -777,6 +802,350 @@ function loginUseOutcome(work: Promise<unknown>, material: string) {
 // Owner: Core Vault / Authority And Projection Boundaries; Vault And Secret Injection /
 // Ownership Scopes, Reviewed User Login Sharing, Selection And Activation, Lifecycle And Failure Rules.
 describe('reviewed Workspace grant to User Login material boundary', () => {
+  // Policy Enforcement Mapping / Point And Evaluation Contract; Vault Login / lifecycle:
+  // runtime-token uses the same final denial, retained decision and Audit before any effect.
+  it('denies a reviewed runtime-token binding through governed Policy before material or runtime effects', async () => {
+    const f = await reviewedLoginUseFixture();
+    const resolve = vi.spyOn(f.backend, 'resolve');
+    const storeMaterial = vi.spyOn(f.backend, 'store');
+    const rotate = vi.spyOn(f.backend, 'rotate');
+    const revoke = vi.spyOn(f.backend, 'revoke');
+    let restoreEffect: (() => void) | undefined;
+    const policyDbs = new Map<string, WorkspaceDb>();
+    try {
+      const workspaceId = f.workspaceDb.workspaceId;
+      const turn = await f.store.createTurn(workspaceId, f.threadId, 'Prepare reviewed Login', {
+        kind: 'user',
+        id: f.ownerId,
+      });
+      await f.store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+      const agentSessionId = allocateEntityId('as');
+      const entry = createSchedulerAdmissionEntry(f.coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${turn.id}`,
+        requestedAgentId: 'agent_codex_host',
+        workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        turnInput: 'Prepare reviewed Login',
+        triggerActor: turn.triggerActor,
+        requestId: randomUUID(),
+      });
+      // Existing below-dispatch preparation builder records no backend acceptance or ready result.
+      const attempt = recordTestExecutionAttempt(f.coreDb, {
+        entry,
+        attemptId: allocateEntityId('attempt'),
+        agentSessionId,
+        inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
+        bindingRef: `binding:${randomUUID()}`,
+        sessionCompatibilityKey: 'reviewed-login-policy-preparation',
+        now: () => new Date().toISOString(),
+      });
+      const privateRoute = { providerProfileId: 'native-metadata', providerModel: 'gpt-5.1-codex' };
+      const setup = createTestAgentSetup({
+        privateRoute,
+        credentialDeclarations: [
+          {
+            id: 'reviewed-login',
+            requirementId: 'reviewed-login',
+            vaultGrantId: f.grantId,
+            visibility: 'runtime-token',
+            consumer: 'codex-login',
+          },
+        ],
+      });
+      // Harness routes require the complete descriptor derived by the real metadata owner;
+      // the generic shared setup intentionally supplies only minimal Gateway model fields.
+      setup.logicalModels.allowed = resolveHarnessLogicalModelCatalog(
+        createTestGatewayConfig({ privateRoute }),
+        new ProviderRegistry([
+          {
+            id: privateRoute.providerProfileId,
+            displayName: 'Synthetic Codex model metadata',
+            kind: 'oauth',
+            vendor: 'openai-codex',
+            models: [privateRoute.providerModel],
+            modelMetadata: {
+              [privateRoute.providerModel]: {
+                limit: { context: 128_000, output: 16_000 },
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                reasoning: true,
+                tool_call: true,
+              },
+            },
+          },
+        ]),
+        setup.logicalModels.allowed.map((model) => model.id)
+      );
+      admitTestNativeEnvironment(f.coreDb, setup.manifest);
+      const pkg = await resolveAgentEnvironmentPackage({
+        coreDb: f.coreDb,
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSetup: setup,
+        agentSessionId,
+        backend: { kind: 'openshell' },
+        turn,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+        vaultBackend: () => f.backend,
+      });
+      recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
+        environmentPackage: pkg,
+        createdAt: pkg.createdAt,
+      });
+      expect(pkg.schemaVersion).toBe(4);
+      expect(pkg.llm.mode).toBe('harness');
+      expect(pkg.scope).toMatchObject({
+        workspaceId,
+        threadId: f.threadId,
+        turnId: turn.id,
+        agentSessionId,
+      });
+      expect(pkg.snapshotId).toBe(attempt.inputRef);
+      expect(pkg.credentials.declarations).toEqual(setup.manifest.sandbox!.credentialDeclarations);
+      expect(
+        requireAgentEnvironmentPackageSnapshot(f.workspaceDb, workspaceId, pkg.snapshotId).snapshot
+      ).toEqual(pkg);
+      const plans = listVaultInjectionPlans(f.coreDb);
+      expect(plans).toHaveLength(1);
+      const plan = plans[0]!;
+      expect(getVaultInjectionPlan(f.coreDb, plan.planId)).toMatchObject({
+        grantId: f.grantId,
+        packageSnapshotId: pkg.snapshotId,
+        injectionVisibility: 'runtime-token',
+      });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+      expect(listVaultUseRecords(f.workspaceDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(f.coreDb)).toEqual([]);
+
+      const participant = vi.fn(
+        async (
+          _input: Parameters<
+            import('../policy/interception.js').DeterministicPolicyParticipant['invoke']
+          >[0]
+        ) => ({ decision: 'deny' as const })
+      );
+      const interception = new PolicyInterception({
+        id: 'reviewed-login-binding-denial',
+        version: `sha256:${'3'.repeat(64)}`,
+        invoke: participant,
+      });
+      const resource = {
+        kind: 'container' as const,
+        container: {
+          kind: 'workspace' as const,
+          id: workspaceId,
+          owner: { kind: 'workspace' as const, workspaceId },
+        },
+      };
+      const scope = {
+        subjects: [{ kind: 'human' as const, id: f.ownerId }],
+        actions: ['vault.use'],
+        resources: [resource],
+      };
+      const document: PolicyDocumentV1 = {
+        schemaVersion: 1,
+        statements: [
+          {
+            id: 'reviewed-login-binding-denial',
+            kind: 'binding',
+            author: { kind: 'human', id: f.ownerId },
+            authority: { kind: 'human', userId: f.ownerId },
+            authoredAt: new Date().toISOString(),
+            state: 'active',
+            scope,
+            lifetime: { anchor: resource.container },
+            operation: 'vault.binding-deliver',
+            stage: 'decide',
+            mode: 'gate',
+            participant: {
+              kind: 'deterministic',
+              id: 'reviewed-login-binding-denial',
+              version: `sha256:${'3'.repeat(64)}`,
+            },
+            inputDisclosure: scope,
+            order: 0,
+            timeoutMs: 100,
+            failure: 'error',
+            circuit: { failures: 1, recoveryAfterMs: 60_000 },
+          },
+        ],
+      };
+      const personal = await f.store.ensureQuickChatWorkspace(f.ownerId);
+      recordWorkspaceOwnerMembership({
+        coreDb: f.coreDb,
+        workspaceId: personal.id,
+        ownerUserId: f.ownerId,
+      });
+      const adminThread = await f.store.createThread(
+        personal.id,
+        'Review binding Policy',
+        undefined,
+        'administration',
+        {
+          visibility: 'private',
+          privateOwnerUserId: f.ownerId,
+        }
+      );
+      const adminTurn = await f.store.createTurn(
+        personal.id,
+        adminThread.id,
+        'Confirm binding Policy',
+        { kind: 'user', id: f.ownerId }
+      );
+      const files = new RuntimeConfigFileService({
+        dataRoot: f.dataRoot,
+        userId: f.ownerId,
+        workspaceIds: [workspaceId, personal.id],
+        runtimeConfigManager: f.runtimeConfigManager,
+        readRuntimeConfigStatus: () => f.runtimeConfigManager.status(),
+      });
+      const configuration = createAdministrationConfiguration({
+        actor: { kind: 'local', userId: f.ownerId },
+        coreDb: f.coreDb,
+        store: f.store,
+        files,
+        runtimeConfig: () => f.runtimeConfigManager.current(),
+        reload: () => f.runtimeConfigManager.reload({ mode: 'safe', dryRun: false }),
+        repositoryWorkspaceDb: (id) => {
+          let db = policyDbs.get(id);
+          if (!db) {
+            db = openWorkspaceDb(f.dataRoot, id);
+            policyDbs.set(id, db);
+          }
+          return db;
+        },
+        inflightCommands: new WeakMap(),
+      });
+      const proposed = await configuration.propose(
+        {
+          targetFamily: 'policy',
+          targetId: 'server',
+          expectedRevision: files.readFile('server.jsonc').file.revision!,
+          changes: {
+            proposed: document,
+            rationale: 'Deny reviewed Login delivery before material effects.',
+          },
+        },
+        { threadId: adminThread.id, turnId: adminTurn.id, requestId: randomUUID() }
+      );
+      expect(
+        await configuration.apply({
+          requestId: randomUUID(),
+          candidate: proposed.candidate,
+          confirmation: proposed.confirmation,
+        })
+      ).toMatchObject({ persisted: true, reload: 'applied' });
+
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        env: {},
+        coreDb: f.coreDb,
+        store: f.store,
+        vaultBackend: () => f.backend,
+        readRuntimeConfig: () => f.runtimeConfigManager.current(),
+        policyInterception: () => interception,
+      });
+      const effect = vi.spyOn(runtime.turnExecutor, 'credentialBindingOperation');
+      restoreEffect = () => effect.mockRestore();
+      const app = createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        vaultUnlockState: f.vaultUnlockState,
+        runtimeConfigManager: f.runtimeConfigManager,
+        policyInterception: interception,
+        turnExecutor: runtime.turnExecutor,
+      });
+      const requestId = randomUUID();
+      const response = await app.request(
+        ...operationRequest(
+          'vault.binding-deliver',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId,
+              bindingThreadId: f.threadId,
+              planId: plan.planId,
+              receiptId: `receipt_${pkg.snapshotId}_reviewed-login`,
+              materialVersion: 1,
+              requestId,
+            }),
+          }
+        )
+      );
+      const result = (await response.json()) as { code?: string };
+      expect.soft(response.status).toBe(403);
+      expect.soft(result.code).toBe('workspace_access_denied');
+      expect.soft(participant).toHaveBeenCalledTimes(1);
+      expect.soft(participant.mock.calls[0]?.[0].proposal).toMatchObject({
+        operation: 'vault.binding-deliver',
+        inputReferences: {
+          planId: plan.planId,
+          grantId: f.grantId,
+          packageSnapshotId: pkg.snapshotId,
+        },
+      });
+      const decisions = listExportableWorkspacePermissionDecisions(
+        f.workspaceDb,
+        workspaceId
+      ).filter(
+        (value) =>
+          value.enforcementPoint === 'vault.binding-deliver@decide' &&
+          value.mediation?.role === 'final'
+      );
+      expect.soft(decisions).toEqual([
+        expect.objectContaining({
+          action: 'vault.use',
+          result: 'deny',
+          contextSummary: expect.objectContaining({ requestId }),
+        }),
+      ]);
+      const audits = listWorkspaceAuditEvents(f.workspaceDb, workspaceId, f.coreDb);
+      expect.soft(audits).toContainEqual(
+        expect.objectContaining({
+          action: 'vault.binding-deliver',
+          requestId,
+          outcome: 'failed',
+          actor: { kind: 'user', id: f.ownerId },
+        })
+      );
+      expect
+        .soft(
+          decisions.length === 1 && audits.some((event) => event.id === decisions[0]!.auditEventId)
+        )
+        .toBe(true);
+      expect(effect).not.toHaveBeenCalled();
+      expect(resolve).not.toHaveBeenCalled();
+      expect(storeMaterial).not.toHaveBeenCalled();
+      expect(rotate).not.toHaveBeenCalled();
+      expect(revoke).not.toHaveBeenCalled();
+      expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+      expect(listVaultUseRecords(f.workspaceDb)).toEqual([]);
+      expect(listVaultInjectionReceipts(f.coreDb)).toEqual([]);
+      expect(
+        JSON.stringify({
+          result,
+          decisions,
+          audits,
+          pkg,
+          plan,
+          proposal: participant.mock.calls,
+        }).includes(f.material)
+      ).toBe(false);
+    } finally {
+      restoreEffect?.();
+      resolve.mockRestore();
+      storeMaterial.mockRestore();
+      rotate.mockRestore();
+      revoke.mockRestore();
+      for (const db of policyDbs.values()) db.sqlite.close();
+      await f.close();
+    }
+  });
+
   it.each(['owner', 'shared-member'] as const)(
     'releases to the %s only under the real reviewed cross-scope grant with Workspace evidence',
     async (consumer) => {

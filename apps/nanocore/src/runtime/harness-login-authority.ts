@@ -1,7 +1,102 @@
+import { isDeepStrictEqual } from 'node:util';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { readRetainedV1 } from '@openkit/protocol';
-import type { CoreDb } from '../storage/db.js';
+import { z } from 'zod';
+import { OperationError } from '../operation-error.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
+import { bindWorkspaceSqlite, type CoreDb } from '../storage/db.js';
+import {
+  HarnessLoginContextSchema,
+  HarnessLoginNativeEffectSchema,
+  HarnessLoginObservationsSchema,
+} from '../storage/vault-native-codecs.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
+import type { NanoHostHarnessLoginPhysical } from './nanohost-session-dispatch.js';
+import type { WorkerControlGateway } from './worker-control-gateway.js';
+
+const privateLoginLineage = HarnessLoginContextSchema.omit({
+  runtimeTargetId: true,
+  physicalEpoch: true,
+  connectionGeneration: true,
+});
+const privateLoginReceipt = {
+  receiptId: HarnessLoginNativeEffectSchema.shape.receiptId,
+  materialGeneration: HarnessLoginNativeEffectSchema.shape.materialGeneration,
+};
+const privateLoginRequest = z.discriminatedUnion('kind', [
+  privateLoginLineage.extend({
+    kind: z.literal('acquire'),
+    reason: z.enum(['activate', 'refresh']),
+  }),
+  privateLoginLineage.extend({ kind: z.literal('complete'), ...privateLoginReceipt }),
+  privateLoginLineage.extend({
+    kind: z.literal('observe'),
+    ...privateLoginReceipt,
+    observation: HarnessLoginObservationsSchema.omit({
+      observedAt: true,
+      bindingId: true,
+      materialGeneration: true,
+    }),
+  }),
+]);
+
+/** Reads only the existing bounded private carriage; malformed input never enters diagnostics. */
+async function readPrivateLoginRequest(request: Request) {
+  const invalid = () =>
+    new OperationError('invalid_request', 'Native Login request is invalid.', 400);
+  if (
+    request.method !== 'POST' ||
+    new URL(request.url).pathname !== '/worker-control/harness/login'
+  )
+    throw invalid();
+  const reader = request.body?.getReader();
+  if (!reader) throw invalid();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  request.signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (request.signal.aborted) {
+      cancel();
+      throw invalid();
+    }
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 64 * 1024) {
+        cancel();
+        throw new OperationError(
+          'worker_control_payload_too_large',
+          'Native Login request exceeds its private carriage bound.',
+          413
+        );
+      }
+      chunks.push(chunk.value);
+    }
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    throw invalid();
+  } finally {
+    request.signal.removeEventListener('abort', cancel);
+    reader.releaseLock();
+  }
+  if (request.signal.aborted) throw invalid();
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
+  } catch {
+    throw invalid();
+  }
+  const parsed = privateLoginRequest.safeParse(body);
+  if (!parsed.success) throw invalid();
+  return parsed.data;
+}
 
 /** Original private consumer coordinates, never a permission decision or Worker account hint. */
 export interface HarnessLoginContext {
@@ -19,6 +114,106 @@ export interface HarnessLoginContext {
 }
 
 /**
+ * Authenticates the private Login carriage against its immutable package and current native binding.
+ * This grants no Vault use permission and performs no lifecycle effect. Callers must repeat the
+ * returned check after waits, then enter the existing governed Vault operation before material use.
+ * @param input Actual control gateway, trusted adapter facts and original private HTTP request.
+ * @returns Canonical package, closed request, native context and a current-authority check.
+ * @throws When token family, retained package, consumer, physical authority or request facts disagree.
+ */
+export async function authenticateHarnessLoginRequest(input: {
+  readonly coreDb: CoreDb;
+  readonly gateway: WorkerControlGateway;
+  readonly physical: NanoHostHarnessLoginPhysical;
+  readonly request: Request;
+  readonly now?: () => string;
+}) {
+  const authorization = input.request.headers.get('authorization');
+  const unavailable = (): never => {
+    throw new OperationError(
+      'worker_login_unavailable',
+      'Native Login request is unavailable.',
+      403
+    );
+  };
+  const readCurrentPackage = () => {
+    if (input.request.signal.aborted) return unavailable();
+    input.physical.assertCurrent();
+    const authenticated = input.gateway.authenticatePackageToken(authorization, {
+      tokenFamily: 'worker-control',
+    });
+    const scope = nativeProductScope(input.coreDb.dataRoot, {
+      kind: 'workspace',
+      workspaceId: authenticated.scope.workspaceId,
+    });
+    let reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
+    try {
+      // Authentication reads an existing owner only; a missing scope must never be provisioned.
+      reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+      if (!reader.get('workspace', authenticated.scope.workspaceId)) return unavailable();
+      const db = bindWorkspaceSqlite(
+        reader.sqlite,
+        input.coreDb.dataRoot,
+        authenticated.scope.workspaceId
+      );
+      const retained = requireAgentEnvironmentPackageSnapshot(
+        db,
+        authenticated.scope.workspaceId,
+        authenticated.snapshotId
+      );
+      const environmentPackage = AgentEnvironmentPackageSchema.parse(retained.snapshot);
+      if (
+        !isDeepStrictEqual(authenticated, environmentPackage) ||
+        environmentPackage.llm.mode !== 'harness' ||
+        !environmentPackage.credentials.declarations.some(
+          (declaration) =>
+            declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
+        )
+      )
+        return unavailable();
+      return { environmentPackage, contentDigest: retained.contentDigest };
+    } catch {
+      return unavailable();
+    } finally {
+      reader?.close();
+    }
+  };
+  const original = readCurrentPackage();
+  const request = await readPrivateLoginRequest(input.request);
+  const parsedContext = HarnessLoginContextSchema.safeParse({
+    workspaceId: request.workspaceId,
+    threadId: request.threadId,
+    agentSessionId: request.agentSessionId,
+    agentSessionRuntimeBindingId: request.agentSessionRuntimeBindingId,
+    packageSnapshotId: request.packageSnapshotId,
+    turnId: request.turnId,
+    leaseId: request.leaseId,
+    turnSequence: request.turnSequence,
+    runtimeTargetId: input.physical.runtimeTargetId,
+    physicalEpoch: input.physical.physicalEpoch,
+    connectionGeneration: input.physical.connectionGeneration,
+  });
+  if (!parsedContext.success) return unavailable();
+  const context = Object.freeze(parsedContext.data);
+  const recheck = () => {
+    const current = readCurrentPackage();
+    const pkg = current.environmentPackage;
+    if (
+      current.contentDigest !== original.contentDigest ||
+      pkg.snapshotId !== context.packageSnapshotId ||
+      pkg.scope.workspaceId !== context.workspaceId ||
+      pkg.scope.threadId !== context.threadId ||
+      pkg.scope.turnId !== context.turnId ||
+      pkg.scope.agentSessionId !== context.agentSessionId
+    )
+      return unavailable();
+    requireHarnessLoginBinding(input.coreDb, context, input.now?.() ?? new Date().toISOString());
+  };
+  recheck();
+  return { environmentPackage: original.environmentPackage, context, request, recheck };
+}
+
+/**
  * Joins the original pending native start or live Turn to its current physical Sandbox.
  * The pending branch is necessary before native activation can acknowledge turn.start.
  * @returns The canonical Integration binding, for comparison with the trusted transport carriage.
@@ -31,7 +226,7 @@ export function requireHarnessLoginBinding(
 ): string {
   const row = coreDb.sqlite
     .prepare(`SELECT b.schema_version AS schemaVersion,
-    h.schema_version AS harnessVersion, s.schema_version AS sandboxVersion,
+    h.schema_version AS harnessVersion,
     b.agent_session_id AS agentSessionId, b.workspace_id AS workspaceId, b.thread_id AS threadId,
     b.lifecycle_state AS bindingState, b.current_turn_id AS turnId, b.current_attempt_id AS leaseId,
     b.next_turn_sequence AS nextSequence, b.cleanup_state AS bindingCleanup,
@@ -49,7 +244,6 @@ export function requireHarnessLoginBinding(
     | {
         schemaVersion: number;
         harnessVersion: number;
-        sandboxVersion: number;
         agentSessionId: string;
         workspaceId: string;
         threadId: string;
@@ -77,7 +271,7 @@ export function requireHarnessLoginBinding(
     throw new Error('Native Login consumer binding is unavailable.');
   };
   if (!row) return refuse();
-  for (const schemaVersion of [row.schemaVersion, row.harnessVersion, row.sandboxVersion])
+  for (const schemaVersion of [row.schemaVersion, row.harnessVersion])
     readRetainedV1({ schemaVersion }, () => null);
   const resolution = resolveNanoHostAttemptTokenBinding(coreDb, {
     sandboxBindingRef: row.sandboxBindingRef,

@@ -259,6 +259,12 @@ import {
 } from './resolved-agent-setup-codecs.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
+  type RuntimePolicyPublicationInput,
+  RuntimePolicyPublicationInputSchema,
+  type RuntimePolicyPublicationResult,
+  RuntimePolicyPublicationResultSchema,
+} from './runtime-policy-publication.js';
+import {
   type ControlRuntimeTargetInput,
   ControlRuntimeTargetInputSchema,
   ControlRuntimeTargetRefusalSchema,
@@ -420,7 +426,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 96;
+export const CONTROL_WORKER_VERSION = 97;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -770,6 +776,10 @@ export type ControlWorkerCommand =
       | { readonly operation: 'boot-audit'; readonly input: ControlBootAuditInput }
       | { readonly operation: 'admin-recovery'; readonly input: ControlAdminRecoveryInput }
       | { readonly operation: 'better-auth'; readonly input: ControlBetterAuthInput }
+      | {
+          readonly operation: 'runtime-policy-publication';
+          readonly input: RuntimePolicyPublicationInput;
+        }
       | { readonly operation: 'vault'; readonly input: ControlVaultInput }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
@@ -1183,6 +1193,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'nanohost-transport';
       readonly result: ControlNanoHostTransportResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'runtime-policy-publication';
+      readonly result: RuntimePolicyPublicationResult;
     }
   | { readonly status: 'ok'; readonly operation: 'vault'; readonly result: ControlVaultResult }
   | { readonly status: 'ok'; readonly operation: 'admin-recovery'; readonly auditEventId: string }
@@ -1739,6 +1754,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'runtime-policy-publication')
+    return RuntimePolicyPublicationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'vault') return ControlVaultResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'nanohost-transport')
     return ControlNanoHostTransportResultSchema.safeParse(reply.result).success;
@@ -2271,6 +2288,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'runtime-policy-publication')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      RuntimePolicyPublicationInputSchema.safeParse(value.input).success
+    );
   if (value.operation === 'vault') {
     if (!exactFields(value, [...scoped, 'input'])) return false;
     const parsed = ControlVaultInputSchema.safeParse(value.input);

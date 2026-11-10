@@ -1793,6 +1793,17 @@ export const VaultBindingCoreAuthoritySchema = z
   .object({ workspaceId: z.string(), requester: VaultBindingRequesterSchema, revision: z.string() })
   .strict();
 export type VaultBindingCoreAuthority = z.infer<typeof VaultBindingCoreAuthoritySchema>;
+/** Transient deciding facts for one initial access-only delivery; never retained or Worker-authored. */
+const loginBindingAuthority = z
+  .object({
+    binding: bindingAuthority,
+    requester: VaultBindingCoreAuthoritySchema,
+    attemptId: z.string().min(1),
+    planId: z.string().min(1),
+    receiptId: z.string().min(1),
+    reference: VaultReferenceRecordSchema,
+  })
+  .strict();
 
 /** Original canonical execution coordinates; no header, token, material or carried allow decision. */
 export const HarnessLoginContextSchema = z
@@ -1990,6 +2001,7 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
           now: clock,
           serverMcp: serverMcpAuthority.optional(),
           publicMutation: publicMutationAuthority.optional(),
+          loginBinding: loginBindingAuthority.optional(),
         })
         .strict(),
     })
@@ -2075,6 +2087,7 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
       record: z
         .object({
           ...receiptFields,
+          loginBinding: loginBindingAuthority.optional(),
           workerAuthority: z
             .object({
               consumer: credentialConsumer,
@@ -2233,7 +2246,9 @@ export interface ControlVaultMainInputMap {
     PublicMutationAuthorityInput;
   'reference-advance': AdvanceActiveVaultReferenceVersionInput &
     ServerMcpAuthorityInput &
-    PublicMutationAuthorityInput;
+    PublicMutationAuthorityInput & {
+      readonly loginBinding?: z.infer<typeof loginBindingAuthority>;
+    };
   'reference-revoke': RevokeVaultReferenceInput &
     ServerMcpAuthorityInput &
     PublicMutationAuthorityInput;
@@ -2253,6 +2268,7 @@ export interface ControlVaultMainInputMap {
   'use-create': CreateVaultUseRecordInput;
   'plan-create': CreateVaultInjectionPlanInput;
   'receipt-create': CreateVaultInjectionReceiptInput & {
+    readonly loginBinding?: z.infer<typeof loginBindingAuthority>;
     readonly workerAuthority?: {
       readonly consumer: import('../runtime/worker-credential-authority.js').WorkerCredentialConsumer;
       readonly declarations: readonly import('@openkit/config-schema').AgentEnvironmentCredentialDeclaration[];

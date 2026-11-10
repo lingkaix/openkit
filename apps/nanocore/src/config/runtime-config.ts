@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 import type {
   RuntimeConfigChangeSchema,
@@ -47,6 +48,12 @@ import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import type { CoreDb } from '../storage/db.js';
+import {
+  runtimePolicyIdentityForSnapshot,
+  sameRuntimePolicyIdentity,
+} from '../storage/runtime-policy-publication.js';
 import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
@@ -286,12 +293,14 @@ export interface RuntimeConfigManager {
   getDataRoot(): string | null;
   /** Returns the active runtime config snapshot. */
   current(): RuntimeConfigSnapshot;
+  /** Acknowledges this manager's actual installed Policy on the canonical native Core opening. */
+  bindNativePolicyPublication(coreDb: CoreDb): Promise<void>;
   /** Validates and replaces only a restored target while its exact recovery freeze remains closed. */
   reloadRecoveredWorkspace(
     workspaceId: string,
     admission: WorkspaceMutationAdmission,
     freeze: WorkspaceFrozenAdmission
-  ): RuntimeConfigSnapshot;
+  ): RuntimeConfigSnapshot | Promise<RuntimeConfigSnapshot>;
   /** Reloads runtime config from the configured data root. */
   reload(
     input: RuntimeConfigReloadRequest
@@ -558,10 +567,87 @@ export function createRuntimeConfigManager(
   };
   applyCaptureCoverage(current);
 
+  let publicationBinding: { db: CoreDb; publisherId: string } | undefined;
+  let installation: Promise<void> | undefined;
+
+  /** One bounded handoff excludes competing installers; it does not queue configuration requests. */
+  function installSnapshot(
+    next: RuntimeConfigSnapshot,
+    validate: () => void = () => {},
+    installed: () => void = () => {}
+  ) {
+    if (installation) throw new Error('Runtime Policy publication is still pending.');
+    const previous = current;
+    const install = () => {
+      validate();
+      if (current !== previous)
+        throw new Error('Runtime configuration changed during publication.');
+      if (next !== previous) {
+        current = next;
+        installed();
+        applyCaptureCoverage(current);
+      }
+    };
+    if (!publicationBinding) {
+      install();
+      return;
+    }
+    const { db, publisherId } = publicationBinding;
+    const client = getControlStoreWorkerClient();
+    const identity = runtimePolicyIdentityForSnapshot(next);
+    const handoff = (async () => {
+      const observed = await client.runtimePolicyPublication(db, { kind: 'inspect' });
+      if (observed.publisherId !== null && observed.publisherId !== publisherId)
+        throw new Error('Native Policy publisher is unavailable.');
+      validate();
+      if (current !== previous)
+        throw new Error('Runtime configuration changed during publication.');
+      if (
+        observed.state === 'active' &&
+        observed.identity &&
+        sameRuntimePolicyIdentity(observed.identity, identity) &&
+        sameRuntimePolicyIdentity(runtimePolicyIdentityForSnapshot(previous), identity)
+      ) {
+        install();
+        return;
+      }
+      const transitionId = randomUUID();
+      const target = { openingId: observed.openingId, publisherId, transitionId };
+      await client.runtimePolicyPublication(db, {
+        kind: 'close',
+        ...target,
+        expectedTransitionId: observed.transitionId,
+      });
+      // No awaited operation separates fresh validation from installation of the actual snapshot.
+      install();
+      await client.runtimePolicyPublication(db, { kind: 'activate', ...target, identity });
+    })();
+    const pending = handoff.finally(() => {
+      if (installation === pending) installation = undefined;
+    });
+    installation = pending;
+    // App startup can bind synchronously; consumers still await this original readiness result.
+    void pending.catch(() => {});
+    return pending;
+  }
+
+  async function bindNativePolicyPublication(coreDb: CoreDb): Promise<void> {
+    if (!options.dataRoot || resolve(options.dataRoot) !== resolve(coreDb.dataRoot))
+      throw new Error('Native Policy publication requires the exact manager data root.');
+    if (publicationBinding && resolve(publicationBinding.db.dataRoot) !== resolve(coreDb.dataRoot))
+      throw new Error('Native Policy publication cannot change its data root.');
+    publicationBinding ??= { db: coreDb, publisherId: randomUUID() };
+    publicationBinding.db = coreDb;
+    if (installation) return installation;
+    await installSnapshot(current);
+  }
+
   return {
     current: () => current,
+    bindNativePolicyPublication,
     getDataRoot: () => options.dataRoot,
     reloadRecoveredWorkspace: (workspaceId, admission, freeze) => {
+      if (installation) throw new Error('Runtime Policy publication is still pending.');
       WorkspaceIdSchema.parse(workspaceId);
       if (!admission.ownsFreeze(workspaceId, freeze))
         throw new Error('Workspace recovery freeze is not current.');
@@ -601,17 +687,37 @@ export function createRuntimeConfigManager(
           ...diagnostics,
         ],
       });
-      // No I/O or callback follows validation before publishing the target-only snapshot.
-      if (!admission.ownsFreeze(workspaceId, freeze))
-        throw new Error('Workspace recovery freeze is not current.');
-      current = next;
-      return current;
+      const ready = installSnapshot(next, () => {
+        if (!admission.ownsFreeze(workspaceId, freeze))
+          throw new Error('Workspace recovery freeze is not current.');
+      });
+      return ready instanceof Promise ? ready.then(() => current) : current;
     },
     reload: (input) => {
       const startedAt = new Date().toISOString();
       const nextVersion = current.version + 1;
+      const failed = (error: unknown): RuntimeConfigReloadResponse => {
+        const message = redactRuntimeConfigReloadError(error, options.dataRoot);
+        const plan = failedReloadPlan(current, nextVersion, message);
+
+        lastFailedReload = reloadSummary(
+          startedAt,
+          input,
+          current.version,
+          current.version,
+          'failed',
+          message
+        );
+
+        return {
+          status: 'failed',
+          runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
+          plan,
+        };
+      };
 
       try {
+        if (installation) throw new Error('Runtime Policy publication is still pending.');
         const next = loadRuntimeConfig(requireDataRoot(options.dataRoot), {
           version: nextVersion,
           subscriptionAccounts: options.subscriptionAccounts,
@@ -657,40 +763,27 @@ export function createRuntimeConfigManager(
           };
         }
 
-        current = applySafeRuntimeConfigReload(current, next, plan);
-        applyCaptureCoverage(current);
-        pendingRestart = plan.requiresRestart;
-        lastReload = reloadSummary(
-          startedAt,
-          input,
-          current.version - 1,
-          current.version,
-          'applied'
-        );
-
-        return {
-          status: 'applied',
-          runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
-          plan,
+        const safe = applySafeRuntimeConfigReload(current, next, plan);
+        const ready = installSnapshot(safe, undefined, () => {
+          pendingRestart = plan.requiresRestart;
+        });
+        const complete = (): RuntimeConfigReloadResponse => {
+          lastReload = reloadSummary(
+            startedAt,
+            input,
+            safe.version - 1,
+            current.version,
+            'applied'
+          );
+          return {
+            status: 'applied',
+            runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
+            plan,
+          };
         };
+        return ready instanceof Promise ? ready.then(complete, failed) : complete();
       } catch (error) {
-        const message = redactRuntimeConfigReloadError(error, options.dataRoot);
-        const plan = failedReloadPlan(current, nextVersion, message);
-
-        lastFailedReload = reloadSummary(
-          startedAt,
-          input,
-          current.version,
-          current.version,
-          'failed',
-          message
-        );
-
-        return {
-          status: 'failed',
-          runtimeConfig: createRuntimeConfigStatus(current, pendingRestart),
-          plan,
-        };
+        return failed(error);
       }
     },
     status: () => ({

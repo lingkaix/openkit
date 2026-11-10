@@ -103,9 +103,11 @@ import {
   isCurrentAgentSessionStatus,
 } from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
+import { refreshCodexLoginMaterial } from '../vault/codex-login-refresh.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
+import type { VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { getVaultInjectionPlan } from '../vault-injection-plans.js';
 import {
@@ -1094,6 +1096,11 @@ export interface WorkerGovernanceTurnExecutorOptions {
   workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined;
 }
 
+/** Process-local refresh exclusion across executor instances; no queue or cached material. */
+const activeLoginRefreshes = new Set<string>();
+/** One original initial delivery stays owned through supplier join, publication and uncertain cleanup. */
+const activeLoginDeliveries = new Set<string>();
+
 /**
  * Turn executor that runs one worker through a WorkerGovernanceBackend.
  */
@@ -2026,7 +2033,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   public async credentialBindingOperation(
     store: FsStore,
     input: Parameters<NonNullable<TurnExecutor['credentialBindingOperation']>>[1],
-    recheckAuthority: () => Promise<void>
+    recheckAuthority: (successor?: VaultReferenceRecord) => Promise<void>
   ): ReturnType<NonNullable<TurnExecutor['credentialBindingOperation']>> {
     if (!this.coreDb)
       throw new OperationError(
@@ -2037,7 +2044,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     await recheckAuthority();
     const coreDb = this.coreDb;
     const plan = getVaultInjectionPlan(coreDb, input.planId);
-    if (!plan?.packageSnapshotId || plan.injectionVisibility !== 'runtime-file')
+    if (
+      !plan?.packageSnapshotId ||
+      (plan.injectionVisibility !== 'runtime-file' && plan.injectionVisibility !== 'runtime-token')
+    )
       throw new OperationError(
         'credential_binding_not_found',
         'Credential binding not found.',
@@ -2046,6 +2056,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const db = openWorkspaceDb(coreDb.dataRoot, input.workspaceId);
     let effectAttempt: ReturnType<typeof requireSchedulerExecutionAttempt> | undefined;
     let effectPackage: AgentEnvironmentPackage | undefined;
+    let loginDeliveryKey: string | undefined;
     try {
       const original = requireAgentEnvironmentPackageSnapshot(
         db,
@@ -2061,13 +2072,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           'Credential binding not found.',
           404
         );
-      const declaration = original.credentials.declarations.find(
+      const matchingDeclarations = original.credentials.declarations.filter(
         (value) =>
-          value.visibility === 'runtime-file' &&
           value.vaultGrantId === plan.grantId &&
-          value.targetPath === plan.targetPath
+          ((value.visibility === 'runtime-file' &&
+            plan.injectionVisibility === 'runtime-file' &&
+            value.targetPath === plan.targetPath) ||
+            (value.visibility === 'runtime-token' && plan.injectionVisibility === 'runtime-token'))
       );
-      if (!declaration || declaration.visibility !== 'runtime-file')
+      const declaration = matchingDeclarations[0];
+      if (
+        !declaration ||
+        (declaration.visibility !== 'runtime-file' && declaration.visibility !== 'runtime-token') ||
+        (declaration.visibility === 'runtime-token' && matchingDeclarations.length !== 1)
+      )
         throw new OperationError(
           'credential_binding_not_found',
           'Credential binding not found.',
@@ -2161,6 +2179,268 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           receipt.agentSessionId === original.scope.agentSessionId &&
           receipt.revocationStatus === 'active'
       );
+      if (declaration.visibility === 'runtime-token') {
+        const deliverAccess = this.backend.deliverCredentialAccess?.bind(this.backend);
+        const receiptId = `receipt_${original.snapshotId}_${declaration.id}`;
+        if (
+          input.action !== 'deliver' ||
+          !deliverAccess ||
+          !this.vaultBackend ||
+          consumer.snapshotId !== original.snapshotId ||
+          consumer.schemaVersion !== 4 ||
+          consumer.llm.mode !== 'harness' ||
+          declaration.consumer !== 'codex-login' ||
+          active.length !== 0 ||
+          getVaultInjectionReceipt(coreDb, receiptId) ||
+          input.receiptId !== receiptId
+        )
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Admitted Login access is unavailable.',
+            409
+          );
+        const deliveryKey = `${coreDb.dataRoot}\0${receiptId}`;
+        if (activeLoginDeliveries.has(deliveryKey))
+          throw new OperationError(
+            'credential_binding_changed',
+            'The original Login delivery is still pending.',
+            409
+          );
+        activeLoginDeliveries.add(deliveryKey);
+        loginDeliveryKey = deliveryKey;
+        const backend = this.vaultBackend();
+        const initial = current();
+        let expectedReference = initial.reference;
+        const expectedVersion = input.materialVersion;
+        if (
+          expectedVersion !== expectedReference.currentVersion ||
+          expectedVersion === Number.MAX_SAFE_INTEGER ||
+          !expectedReference.login ||
+          initial.grant.ownerScope !== 'workspace'
+        )
+          throw new OperationError(
+            'credential_material_changed',
+            'Login material version changed.',
+            409
+          );
+        const accountId = expectedReference.login.accountId;
+        const family = `${coreDb.dataRoot}\0${expectedReference.referenceId}`;
+        let supplyStarted = false;
+        let supplyOpen = true;
+        let suppliedGeneration: number | undefined;
+        const check = async (
+          backendVersion = expectedReference.currentVersion,
+          forSupply = false
+        ) => {
+          await recheckAuthority();
+          const live = requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+          if (
+            live.deadline === null ||
+            live.deadline !== attempt.deadline ||
+            live.deadline <= this.currentTime()
+          )
+            throw new OperationError(
+              'credential_binding_not_live',
+              'Login execution allowance is unavailable.',
+              409
+            );
+          if (
+            (forSupply && !supplyOpen) ||
+            input.signal?.aborted ||
+            live.phase !== 'open' ||
+            live.backendId !== attempt.backendId ||
+            live.inputRef !== consumer.snapshotId ||
+            live.agentSessionId !== consumer.scope.agentSessionId ||
+            live.workspaceId !== consumer.scope.workspaceId ||
+            live.threadId !== consumer.scope.threadId ||
+            live.turnId !== consumer.scope.turnId ||
+            !isDeepStrictEqual(
+              requireAgentEnvironmentPackageSnapshot(db, input.workspaceId, consumer.snapshotId)
+                .snapshot,
+              consumer
+            ) ||
+            this.vaultBackend!() !== backend ||
+            !isDeepStrictEqual(current().reference, expectedReference)
+          )
+            throw new Error('Login authority or generation changed.');
+          // A synchronous rotate precedes its separate canonical publication. Only that
+          // interval may expect the backend successor while the original row is still current.
+          assertCredentialBackendMatchesReference(backend, {
+            ...expectedReference,
+            currentVersion: backendVersion,
+          });
+        };
+        const audited = createVaultUseAuditedBackend({
+          backend,
+          db,
+          ownerScope: 'workspace',
+          workspaceId: input.workspaceId,
+          actor: consumer.scope.triggerActor,
+          agentSessionId: consumer.scope.agentSessionId,
+          grantId: initial.grant.grantId,
+          planId: plan.planId,
+          receiptId,
+          resolvingPath: 'grant',
+          ...(this.now ? { now: this.now } : {}),
+        });
+        const nativeBinding = (reference: VaultReferenceRecord) => ({
+          binding: {
+            consumer: {
+              snapshotId: consumer.snapshotId,
+              scope: consumer.scope,
+              agent: { agentId: consumer.agent.agentId },
+            },
+            declaration,
+            materialVersion: reference.currentVersion,
+          },
+          requester: input.coreAuthority,
+          attemptId: attempt.attemptId,
+          planId: plan.planId,
+          receiptId,
+          reference,
+        });
+        await check();
+        const refreshCancellation = new AbortController();
+        const cancelRefresh = () => refreshCancellation.abort();
+        if (input.signal?.aborted) cancelRefresh();
+        else input.signal?.addEventListener('abort', cancelRefresh, { once: true });
+        let supplyTask: ReturnType<Parameters<typeof deliverAccess>[1]> | undefined;
+        let proof: Awaited<ReturnType<typeof deliverAccess>>;
+        try {
+          proof = await deliverAccess(
+            {
+              workspaceId: consumer.scope.workspaceId,
+              threadId: consumer.scope.threadId,
+              turnId: consumer.scope.turnId,
+              agentSessionId: consumer.scope.agentSessionId,
+              packageSnapshotId: consumer.snapshotId,
+              attemptId: attempt.attemptId,
+              declarationId: declaration.id,
+              grantId: initial.grant.grantId,
+              referenceId: expectedReference.referenceId,
+              planId: plan.planId,
+              receiptId,
+              expectedMaterialVersion: expectedVersion,
+              consumer: 'codex-login',
+            },
+            () => {
+              const task = (async () => {
+                if (!supplyOpen || supplyStarted) throw new Error('Login supply cannot replay.');
+                supplyStarted = true;
+                if (activeLoginRefreshes.has(family))
+                  throw new OperationError('credential_family_busy', 'Login refresh is busy.', 409);
+                activeLoginRefreshes.add(family);
+                try {
+                  await check(expectedReference.currentVersion, true);
+                  const originalMaterial = vaultSecretMaterialToString(
+                    await audited.resolve({
+                      referenceId: expectedReference.referenceId,
+                      version: expectedVersion,
+                    })
+                  );
+                  await check(expectedReference.currentVersion, true);
+                  const refreshed = await refreshCodexLoginMaterial(
+                    originalMaterial,
+                    refreshCancellation.signal,
+                    accountId
+                  );
+                  await check(expectedReference.currentVersion, true);
+                  if (!supplyOpen) throw new Error('Login supply is closed.');
+                  const rotated = backend.rotate({
+                    referenceId: expectedReference.referenceId,
+                    material: refreshed.material,
+                  });
+                  if (rotated.currentVersion !== expectedVersion + 1)
+                    throw new Error('Login successor generation is unavailable.');
+                  const successor = await getControlStoreWorkerClient().vault(
+                    coreDb,
+                    'reference-advance',
+                    {
+                      referenceId: expectedReference.referenceId,
+                      currentVersion: rotated.currentVersion,
+                      loginBinding: nativeBinding(expectedReference),
+                      ...(this.now ? { now: this.now } : {}),
+                    },
+                    () => check(rotated.currentVersion, true)
+                  );
+                  if (
+                    !isDeepStrictEqual(successor, {
+                      ...expectedReference,
+                      currentVersion: expectedVersion + 1,
+                      updatedAt: successor.updatedAt,
+                    })
+                  )
+                    throw new Error('Login successor metadata changed.');
+                  if (!supplyOpen) throw new Error('Login supply is closed.');
+                  expectedReference = successor;
+                  await recheckAuthority(successor);
+                  await check(expectedReference.currentVersion, true);
+                  const delivered = vaultSecretMaterialToString(
+                    await audited.resolve({
+                      referenceId: successor.referenceId,
+                      version: successor.currentVersion,
+                    })
+                  );
+                  await check(expectedReference.currentVersion, true);
+                  if (delivered !== refreshed.material)
+                    throw new Error('Login successor material changed.');
+                  if (!supplyOpen) throw new Error('Login supply is closed.');
+                  suppliedGeneration = successor.currentVersion;
+                  // Only disclosure makes an unproved placement effect possible. A busy
+                  // refresh or pre-disclosure refusal does not fence unrelated access use.
+                  effectAttempt = attempt;
+                  effectPackage = consumer;
+                  return {
+                    accessToken: refreshed.accessToken,
+                    accountId: refreshed.accountId,
+                    planType: null,
+                    receiptId,
+                    materialGeneration: suppliedGeneration,
+                  };
+                } finally {
+                  activeLoginRefreshes.delete(family);
+                }
+              })();
+              supplyTask ??= task;
+              // Core joins the task even when the placement drops its returned Promise.
+              void task.catch(() => {});
+              return task;
+            },
+            () => check()
+          );
+        } finally {
+          supplyOpen = false;
+          cancelRefresh();
+          input.signal?.removeEventListener('abort', cancelRefresh);
+          await supplyTask?.catch(() => {});
+        }
+        await check();
+        if (
+          suppliedGeneration === undefined ||
+          !proof ||
+          Object.keys(proof).length !== 2 ||
+          proof.receiptId !== receiptId ||
+          proof.materialGeneration !== suppliedGeneration ||
+          getVaultInjectionReceipt(coreDb, receiptId)
+        )
+          throw new Error('Login completion acknowledgement is unavailable.');
+        return await getControlStoreWorkerClient().vault(
+          coreDb,
+          'receipt-create',
+          {
+            receiptId,
+            planId: plan.planId,
+            grantId: initial.grant.grantId,
+            agentSessionId: consumer.scope.agentSessionId,
+            backendSummary: 'Access-only credential delivery completed.',
+            injectedAt: this.currentTime(),
+            expiresAt: initial.grant.expiresAt,
+            revocationStatus: 'active',
+            loginBinding: nativeBinding(expectedReference),
+          },
+          () => check()
+        );
+      }
       if (input.action === 'deliver') {
         const receiptId = `receipt_${original.snapshotId}_${declaration.id}`;
         if (
@@ -2369,7 +2649,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             cause,
           })
         : cause;
-      if (cause instanceof OperationError && failure === cause) throw cause;
+      if (
+        cause instanceof OperationError &&
+        failure === cause &&
+        (plan.injectionVisibility !== 'runtime-token' || !effectAttempt)
+      )
+        throw cause;
       throw new OperationError(
         'recovery_required',
         'Credential binding requires inspection.',
@@ -2377,7 +2662,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         { cause: failure }
       );
     } finally {
-      db.sqlite.close();
+      try {
+        db.sqlite.close();
+      } finally {
+        if (loginDeliveryKey) activeLoginDeliveries.delete(loginDeliveryKey);
+      }
     }
   }
 

@@ -138,6 +138,20 @@ it('returns a safe public storage refusal when Core contention outlasts its boun
   let released: Promise<unknown> | undefined;
   vi.spyOn(f.store, 'createWorkspace').mockImplementation(async (...args) => {
     const workspace = await create(...args);
+    // Cold native opening is setup; finish its real ACK before the lock window.
+    // This isolates membership contention without assuming a measured startup duration.
+    const client = getControlStoreWorkerClient();
+    const scope = nativeProductScope(f.root, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: f.root,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
     const blocker = await holdCoreWriter(f.root, 6_000);
     released = new Promise((resolve, reject) => {
       blocker.once('message', resolve);
